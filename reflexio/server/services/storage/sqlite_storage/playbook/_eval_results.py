@@ -238,17 +238,20 @@ class AgentEvaluationResultStoreMixin:
     def _rle_fingerprint_now(self, user_id: str, session_id: str) -> str:
         """Recompute the session fingerprint from live rows (in-transaction)."""
         cur = self.conn.execute(
-            """SELECT i.interaction_id, i.retrieved_learnings
+            """SELECT i.interaction_id, i.role,
+                      substr(i.content, 1, ?) AS content, i.retrieved_learnings
                FROM interactions i JOIN requests r ON i.request_id = r.request_id
                WHERE r.session_id = ? AND i.user_id = ?
                ORDER BY i.created_at ASC, i.interaction_id ASC""",
-            (session_id, user_id),
+            (DEFAULT_TRANSCRIPT_CHAR_LIMIT, session_id, user_id),
         )
         builder = SessionFingerprintBuilder()
         for row in cur:
             builder.add(
                 int(row["interaction_id"]),
                 _parse_attachment_refs(row["retrieved_learnings"]),
+                row["role"] or "User",
+                row["content"] or "",
             )
         return builder.hexdigest()
 
@@ -350,20 +353,30 @@ class AgentEvaluationResultStoreMixin:
         if row:
             snapshot.agent_version = row["agent_version"] or ""
         cursor = self.conn.execute(
+            # ``fp_content`` is truncated to the fixed fingerprint limit,
+            # independent of the caller's ``transcript_char_limit`` snapshot
+            # budget, so the commit-side recompute (which has no such budget)
+            # produces an identical digest.
             """SELECT i.interaction_id, i.role,
-                      substr(i.content, 1, ?) AS content, i.created_at,
-                      i.retrieved_learnings
+                      substr(i.content, 1, ?) AS content,
+                      substr(i.content, 1, ?) AS fp_content,
+                      i.created_at, i.retrieved_learnings
                FROM interactions i JOIN requests r ON i.request_id = r.request_id
                WHERE r.session_id = ? AND i.user_id = ?
                ORDER BY i.created_at ASC, i.interaction_id ASC""",
-            (transcript_char_limit, session_id, user_id),
+            (transcript_char_limit, DEFAULT_TRANSCRIPT_CHAR_LIMIT, session_id, user_id),
         )
         builder = SessionFingerprintBuilder()
         transcript_chars_remaining = transcript_char_limit
         for r in cursor:
             refs = _parse_attachment_refs(r["retrieved_learnings"])
             snapshot.raw_attachment_count += len(refs)
-            builder.add(int(r["interaction_id"]), refs)
+            builder.add(
+                int(r["interaction_id"]),
+                refs,
+                r["role"] or "User",
+                r["fp_content"] or "",
+            )
             if snapshot.raw_attachment_count > raw_ref_limit:
                 snapshot.attachment_limit_exceeded = True
                 snapshot.interactions.clear()
@@ -446,8 +459,8 @@ class AgentEvaluationResultStoreMixin:
                             impact_reason, created_at, governance_subject_ref)
                            VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
                         (
-                            r.user_id,
-                            r.session_id,
+                            user_id,
+                            session_id,
                             r.agent_version,
                             r.kind,
                             r.learning_id,

@@ -63,13 +63,29 @@ class SessionFingerprintBuilder:
         self._digest.update(b"[")
         self._has_entries = False
 
-    def add(self, interaction_id: int, refs: list[tuple[str, str]]) -> None:
+    def add(
+        self,
+        interaction_id: int,
+        refs: list[tuple[str, str]],
+        role: str = "",
+        content: str = "",
+    ) -> None:
+        """Fold one interaction into the running digest.
+
+        ``role``/``content`` are the transcript the judges actually saw, so a
+        content-only edit (e.g. ``INSERT OR REPLACE`` on an existing
+        interaction that keeps its id and attachments) still invalidates the
+        fingerprint. Callers on the precompute and commit-recompute sides MUST
+        pass content truncated identically (``DEFAULT_TRANSCRIPT_CHAR_LIMIT``);
+        otherwise a session would compare unequal and never commit.
+        """
         if self._has_entries:
             self._digest.update(b",")
         self._digest.update(
-            json.dumps([interaction_id, sorted(refs)], separators=(",", ":")).encode(
-                "utf-8"
-            )
+            json.dumps(
+                [interaction_id, sorted(refs), role, content],
+                separators=(",", ":"),
+            ).encode("utf-8")
         )
         self._has_entries = True
 
@@ -169,9 +185,10 @@ def append_bounded_snapshot_interaction(
 def session_fingerprint(snapshot: BoundedRetrievedLearningSnapshot) -> str:
     """Compute the canonical session fingerprint for a bounded snapshot.
 
-    Covers every interaction ID plus each interaction's ``(kind,
-    learning_id)`` refs, so any publish or delete in the session invalidates
-    it. Only this digest is ever persisted.
+    Covers every interaction ID, each interaction's ``(kind, learning_id)``
+    refs, and its transcript role/content, so any publish, delete, or in-place
+    content edit in the session invalidates it. Only this digest is ever
+    persisted.
 
     Args:
         snapshot (BoundedRetrievedLearningSnapshot): The session projection.
@@ -186,7 +203,12 @@ def session_fingerprint(snapshot: BoundedRetrievedLearningSnapshot) -> str:
         snapshot.interactions,
         key=lambda item: (item.created_at, item.interaction_id),
     ):
-        builder.add(interaction.interaction_id, interaction.refs)
+        builder.add(
+            interaction.interaction_id,
+            interaction.refs,
+            interaction.role,
+            interaction.content,
+        )
     return builder.hexdigest()
 
 

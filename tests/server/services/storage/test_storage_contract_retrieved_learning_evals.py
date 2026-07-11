@@ -127,6 +127,56 @@ def test_snapshot_covers_every_interaction_and_ref(storage) -> None:
     assert snapshot.earliest_request_created_at is not None
 
 
+def test_content_only_edit_invalidates_fingerprint(storage) -> None:
+    """An in-place content edit (same id + refs) must invalidate the cache.
+
+    The fingerprint used to cover only interaction ids + refs, so replacing an
+    interaction's transcript while keeping its id and attachments left stale
+    verdicts cached against an unchanged digest.
+    """
+    refs = [RetrievedLearning(kind="profile", learning_id="prof-1")]
+    _seed_session(storage, refs=refs)
+    before = session_fingerprint(
+        storage.load_bounded_retrieved_learning_snapshot(USER, SESSION)
+    )
+    assistant = next(
+        i for i in storage.get_user_interaction(USER) if i.role == "Assistant"
+    )
+
+    # INSERT OR REPLACE the same interaction with different content.
+    storage.add_user_interactions_bulk(
+        USER,
+        [
+            Interaction(
+                interaction_id=assistant.interaction_id,
+                user_id=USER,
+                request_id="r1",
+                content="a completely different assistant answer",
+                role="Assistant",
+                retrieved_learnings=refs,
+            )
+        ],
+    )
+    after = session_fingerprint(
+        storage.load_bounded_retrieved_learning_snapshot(USER, SESSION)
+    )
+    assert after != before
+
+    # The commit-side recompute agrees: a run fenced by the pre-edit
+    # fingerprint is now stale and cannot overwrite the verdicts.
+    generation = storage.begin_retrieved_learning_evaluation_run(USER, SESSION)
+    commit = storage.replace_retrieved_learning_evaluation_results(
+        USER,
+        SESSION,
+        generation,
+        before,
+        "complete",
+        {},
+        [_result("profile", "prof-1")],
+    )
+    assert commit.disposition == "stale"
+
+
 def test_replace_persists_exact_eligible_set(storage) -> None:
     playbook_id = _seed_eligible_learnings(storage)
     _seed_session(

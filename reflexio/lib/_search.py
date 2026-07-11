@@ -105,9 +105,12 @@ class SearchMixin(ReflexioBase):
                 results=results,
                 msg=f"Found {len(results)} retrieved-learning evaluation result(s)",
             )
-        except Exception as e:
+        except Exception:
+            _LOGGER.exception("Failed to read retrieved-learning evaluation results")
             return GetRetrievedLearningEvaluationResultsResponse(
-                success=False, results=[], msg=str(e)
+                success=False,
+                results=[],
+                msg="Failed to read retrieved-learning evaluation results",
             )
 
     def get_requests(

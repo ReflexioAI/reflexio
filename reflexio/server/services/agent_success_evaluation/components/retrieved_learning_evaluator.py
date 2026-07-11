@@ -242,7 +242,10 @@ class RetrievedLearningEvaluator:
             # No attached or eligible refs: zero LLM calls; the storage
             # replacement clears prior rows and records not_applicable.
             return RetrievedLearningEvaluationRun(
-                outcome="evaluated", proposed_status="complete", rows=[]
+                outcome="evaluated",
+                proposed_status="complete",
+                rows=[],
+                diagnostics=diagnostics,
             )
 
         transcript = self._format_transcript(snapshot)
