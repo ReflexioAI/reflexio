@@ -14,6 +14,7 @@ from .service_schemas import (
     Interaction,
     PlaybookStatus,
     Request,
+    RetrievedLearningEvaluationResult,
     Status,
     UserPlaybook,
     UserProfile,
@@ -432,6 +433,26 @@ class GetAgentSuccessEvaluationResultsRequest(BaseModel):
 class GetAgentSuccessEvaluationResultsResponse(BaseModel):
     success: bool
     agent_success_evaluation_results: list[AgentSuccessEvaluationResult]
+    msg: str | None = None
+
+
+class GetRetrievedLearningEvaluationResultsRequest(BaseModel):
+    """Read per-learning retrieved-learning evaluation verdicts.
+
+    Attributes:
+        user_id (str | None): Filter by session owner.
+        session_id (str | None): Filter by session.
+        limit (int): Maximum rows, ordered by created_at DESC, result_id DESC.
+    """
+
+    user_id: str | None = None
+    session_id: str | None = None
+    limit: int = Field(default=100, ge=1, le=1_000)
+
+
+class GetRetrievedLearningEvaluationResultsResponse(BaseModel):
+    success: bool
+    results: list[RetrievedLearningEvaluationResult] = Field(default_factory=list)
     msg: str | None = None
 
 

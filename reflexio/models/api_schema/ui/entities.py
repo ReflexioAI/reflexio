@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from pydantic import BaseModel, Field, field_validator
 
 from ..common import NEVER_EXPIRES_TIMESTAMP, ToolUsed
+from ..domain.entities import RetrievedLearning
 from ..validators import _validate_image_url
 from .enums import (
     PlaybookStatus,
@@ -29,7 +30,12 @@ __all__ = [
 
 
 class InteractionView(BaseModel):
-    """User-facing Interaction — excludes embedding and image_encoding."""
+    """User-facing Interaction — excludes embedding and image_encoding.
+
+    ``retrieved_learnings`` (caller-supplied at publish) is exposed so callers
+    can round-trip what they attached; ``citations`` (agent-claimed influence,
+    server-side signal) is deliberately NOT exposed on this view.
+    """
 
     interaction_id: int = 0
     user_id: str
@@ -43,6 +49,7 @@ class InteractionView(BaseModel):
     shadow_content: str = ""
     expert_content: str = ""
     tools_used: list[ToolUsed] = Field(default_factory=list)
+    retrieved_learnings: list[RetrievedLearning] = Field(default_factory=list)
 
     @field_validator("interacted_image_url", mode="after")
     @classmethod

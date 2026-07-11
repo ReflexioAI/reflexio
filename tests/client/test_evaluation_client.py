@@ -12,6 +12,9 @@ from reflexio import (
     RegenerateStatusResponse,
 )
 from reflexio.client import ReflexioClient
+from reflexio.models.api_schema.retriever_schema import (
+    GetRetrievedLearningEvaluationResultsResponse,
+)
 
 
 def _json_response(payload: dict) -> MagicMock:
@@ -162,6 +165,34 @@ def test_grade_on_demand_accepts_request_dict(mock_session_class) -> None:
         "session_id": "session_001",
         "agent_version": "v2.1.0",
         "evaluation_name": None,
+    }
+
+
+@patch("reflexio.client.client.requests.Session")
+def test_get_retrieved_learning_evaluation_results_posts_filters(
+    mock_session_class,
+) -> None:
+    mock_session = MagicMock()
+    mock_session_class.return_value = mock_session
+    mock_session.request.return_value = _json_response(
+        {"success": True, "results": [], "msg": "Found 0 results"}
+    )
+    client = ReflexioClient(api_key="test_key", url_endpoint="http://localhost:8000")
+
+    result = client.get_retrieved_learning_evaluation_results(
+        user_id="user-1",
+        session_id="session-1",
+        limit=25,
+    )
+
+    assert isinstance(result, GetRetrievedLearningEvaluationResultsResponse)
+    args, kwargs = mock_session.request.call_args
+    assert args[0] == "POST"
+    assert args[1].endswith("/api/get_retrieved_learning_evaluation_results")
+    assert kwargs["json"] == {
+        "user_id": "user-1",
+        "session_id": "session-1",
+        "limit": 25,
     }
 
 

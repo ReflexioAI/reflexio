@@ -166,6 +166,7 @@ class SubjectBarrierMixin:
             "profiles",
             "user_playbooks",
             "agent_success_evaluation_result",
+            "retrieved_learning_evaluation",
         ):
             row = self.conn.execute(
                 f"""SELECT 1 FROM {table}
@@ -198,8 +199,13 @@ class SubjectBarrierMixin:
             request_id_column="request_id",
         ):
             return True
-        return self._legacy_user_id_rows_remain_locked(
+        if self._legacy_user_id_rows_remain_locked(
             table="agent_success_evaluation_result",
+            subject_ref=subject_ref,
+        ):
+            return True
+        return self._legacy_user_id_rows_remain_locked(
+            table="retrieved_learning_evaluation",
             subject_ref=subject_ref,
         )
 

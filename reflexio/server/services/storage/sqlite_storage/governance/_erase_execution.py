@@ -49,6 +49,14 @@ from reflexio.server.services.storage.governance_validation import (
     _successful_erase_identity,
     _validate_governance_purge_id,
 )
+from reflexio.server.services.storage.storage_base.evaluation_state_keys import (
+    GRADE_ON_DEMAND_CACHE_PREFIX,
+    build_agent_success_marker_key,
+    build_grade_on_demand_session_prefix,
+)
+from reflexio.server.services.storage.storage_base.retrieved_learning_state import (
+    build_retrieved_learning_state_key,
+)
 
 from .._governance import _row_to_audit_event, _row_to_purge_operation
 
@@ -204,6 +212,23 @@ class GovernanceEraseExecutionMixin:
                WHERE user_id = ?""",
             (user_id,),
         )
+        rle_results_cur = self.conn.execute(
+            """DELETE FROM retrieved_learning_evaluation
+               WHERE user_id = ?""",
+            (user_id,),
+        )
+        # Snapshot the user's session ids BEFORE requests are deleted — the
+        # evaluation _operation_state namespaces are keyed by session.
+        session_ids = [
+            str(row["session_id"])
+            for row in self.conn.execute(
+                "SELECT DISTINCT session_id FROM requests WHERE user_id = ?",
+                (user_id,),
+            ).fetchall()
+        ]
+        eval_operation_states = self._delete_evaluation_operation_states_locked(
+            user_id, session_ids
+        )
         requests_cur = self.conn.execute(
             "DELETE FROM requests WHERE user_id = ?",
             (user_id,),
@@ -244,9 +269,74 @@ class GovernanceEraseExecutionMixin:
             "profiles": len(delete_profile_ids),
             "requests": requests_cur.rowcount,
             "agent_success_evaluation_results": eval_results_cur.rowcount,
+            # Enterprise-only tables absent from the OSS SQLite backend;
+            # reported as zero so the delete target matrix stays complete.
+            "offline_tuner_reward_labels": 0,
+            "offline_tuner_reward_label_targets_by_target_owner": 0,
+            "retrieved_learning_evaluation_results": rle_results_cur.rowcount,
+            "evaluation_operation_states": eval_operation_states,
             "purged_profiles": purged_profiles,
             "purged_user_playbooks": purged_user_playbooks,
         }
+
+    def _delete_evaluation_operation_states_locked(
+        self, user_id: str, session_ids: list[str]
+    ) -> int:
+        """Scrub the three evaluation ``_operation_state`` namespaces.
+
+        Deletes, for every session the user owns: the retrieved-learning
+        generation/completion state, the ``agent_success_group_eval`` marker
+        (pre-existing RTBF gap), and the ``grade_on_demand`` cache rows
+        (pre-existing RTBF gap). Exact keys are used for the first two; the
+        grade cache is matched by the injective per-session key prefix so any
+        agent_version / evaluation_name variant is covered.
+
+        Returns:
+            int: Number of state rows deleted.
+        """
+        if not session_ids:
+            return 0
+        deleted = 0
+        exact_keys = [
+            build_retrieved_learning_state_key(user_id, session_id)
+            for session_id in session_ids
+        ] + [
+            build_agent_success_marker_key(self.org_id, user_id, session_id)
+            for session_id in session_ids
+        ]
+        chunk_size = 500
+        for start in range(0, len(exact_keys), chunk_size):
+            chunk = exact_keys[start : start + chunk_size]
+            placeholders = ",".join("?" for _ in chunk)
+            cur = self.conn.execute(
+                f"DELETE FROM _operation_state WHERE service_name IN ({placeholders})",  # noqa: S608
+                chunk,
+            )
+            deleted += cur.rowcount
+        # Grade-cache keys embed agent_version/evaluation_name, so enumerate
+        # the namespace and match each session's injective prefix in Python
+        # (LIKE-escaping free-form session ids is not safe).
+        prefixes = tuple(
+            build_grade_on_demand_session_prefix(self.org_id, session_id)
+            for session_id in session_ids
+        )
+        grade_keys = [
+            str(row["service_name"])
+            for row in self.conn.execute(
+                "SELECT service_name FROM _operation_state WHERE service_name LIKE ?",
+                (f"{GRADE_ON_DEMAND_CACHE_PREFIX}::%",),
+            ).fetchall()
+            if str(row["service_name"]).startswith(prefixes)
+        ]
+        for start in range(0, len(grade_keys), chunk_size):
+            chunk = grade_keys[start : start + chunk_size]
+            placeholders = ",".join("?" for _ in chunk)
+            cur = self.conn.execute(
+                f"DELETE FROM _operation_state WHERE service_name IN ({placeholders})",  # noqa: S608
+                chunk,
+            )
+            deleted += cur.rowcount
+        return deleted
 
     def apply_governance_user_data_delete(
         self, purge_id: str, user_id: str
@@ -258,6 +348,14 @@ class GovernanceEraseExecutionMixin:
             "profiles": "profile",
             "requests": "request",
             "agent_success_evaluation_results": "agent_success_evaluation_result",
+            "offline_tuner_reward_labels": "offline_tuner_reward_label",
+            "offline_tuner_reward_label_targets_by_target_owner": (
+                "offline_tuner_reward_label_target_by_target_owner"
+            ),
+            "retrieved_learning_evaluation_results": (
+                "retrieved_learning_evaluation_result"
+            ),
+            "evaluation_operation_states": "evaluation_operation_state",
             "purged_profiles": "profile_purge",
             "purged_user_playbooks": "user_playbook_purge",
         }

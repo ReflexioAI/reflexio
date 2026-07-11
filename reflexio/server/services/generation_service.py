@@ -1383,6 +1383,7 @@ class GenerationService:
                 expert_content=interaction_data.expert_content,
                 tools_used=interaction_data.tools_used,
                 citations=interaction_data.citations,
+                retrieved_learnings=interaction_data.retrieved_learnings,
             )
             for interaction_data in interaction_data_list
         ]

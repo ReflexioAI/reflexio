@@ -536,6 +536,15 @@ FULL_ROUTES = [
         ("default_get_org_id",),
     ),
     (
+        "/api/get_retrieved_learning_evaluation_results",
+        ("POST",),
+        "GetRetrievedLearningEvaluationResultsResponse",
+        None,
+        (),
+        "get_retrieved_learning_evaluation_results",
+        ("default_get_org_id",),
+    ),
+    (
         "/api/update_agent_playbook_status",
         ("PUT",),
         "UpdatePlaybookStatusResponse",

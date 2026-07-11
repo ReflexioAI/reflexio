@@ -34,6 +34,10 @@ def _build_registry() -> dict[str, ModelRegistryEntry]:
     from reflexio.server.services.agent_success_evaluation.agent_success_evaluation_constants import (
         AgentSuccessEvaluationOutput,
     )
+    from reflexio.server.services.agent_success_evaluation.components.retrieved_learning_evaluator import (
+        RetrievedLearningImpactOutput,
+        RetrievedLearningRelevanceOutput,
+    )
     from reflexio.server.services.playbook.components.consolidator import (
         PlaybookConsolidationOutput,
     )
@@ -113,6 +117,30 @@ def _build_registry() -> dict[str, ModelRegistryEntry]:
             minimal_valid={
                 "is_success": True,
                 "is_escalated": False,
+            },
+        ),
+        "retrieved_learning_relevance": ModelRegistryEntry(
+            model_class=RetrievedLearningRelevanceOutput,
+            minimal_valid={
+                "verdicts": [
+                    {
+                        "learning_ref": "profile:mock-profile",
+                        "is_relevant": True,
+                        "relevance_reason": "Applies to the session task.",
+                    },
+                ],
+            },
+        ),
+        "retrieved_learning_impact": ModelRegistryEntry(
+            model_class=RetrievedLearningImpactOutput,
+            minimal_valid={
+                "verdicts": [
+                    {
+                        "learning_ref": "profile:mock-profile",
+                        "impact": "positive",
+                        "impact_reason": "The response followed this learning.",
+                    },
+                ],
             },
         ),
         "tagging": ModelRegistryEntry(

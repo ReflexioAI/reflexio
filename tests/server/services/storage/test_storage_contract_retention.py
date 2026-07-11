@@ -61,10 +61,9 @@ def test_retention_deletes_oldest_interactions(storage: BaseStorage) -> None:
     for i in range(1, 6):
         storage.add_user_interaction("u1", _make_interaction(i, f"req{i}", now + i))
 
-    assert storage.count_retention_target_rows("interactions") == 5
+    assert storage.count_retention_target_rows("interactions") == 5  # type: ignore[attr-defined]
 
-    deleted = storage.delete_oldest_retention_target_rows("interactions", 2)
-
+    deleted = storage.delete_oldest_retention_target_rows("interactions", 2)  # type: ignore[attr-defined]
     assert deleted == 2
     remaining = storage.get_all_interactions(limit=10)
     assert {interaction.interaction_id for interaction in remaining} == {3, 4, 5}
@@ -80,8 +79,7 @@ def test_retention_deletes_oldest_profiles(storage: BaseStorage) -> None:
     conn.execute("UPDATE profiles SET created_at = ? WHERE profile_id = ?", ("3", "p3"))
     conn.commit()
 
-    deleted = storage.delete_oldest_retention_target_rows("profiles", 2)
-
+    deleted = storage.delete_oldest_retention_target_rows("profiles", 2)  # type: ignore[attr-defined]
     assert deleted == 2
     remaining = storage.get_all_profiles(limit=10, status_filter=[None])
     assert {profile.profile_id for profile in remaining} == {"p3"}
@@ -96,8 +94,7 @@ def test_retention_deletes_requests_before_orphaning_interactions(
         storage.add_request(_make_request(request_id, now + i))
         storage.add_user_interaction("u1", _make_interaction(i, request_id, now + i))
 
-    deleted = storage.delete_oldest_retention_target_rows("requests", 2)
-
+    deleted = storage.delete_oldest_retention_target_rows("requests", 2)  # type: ignore[attr-defined]
     assert deleted == 2
     assert storage.get_request("req1") is None
     assert storage.get_request("req2") is None
@@ -120,8 +117,7 @@ def test_retention_interaction_delete_cleans_fts(storage: BaseStorage) -> None:
     ).fetchall()
     assert len(fts_before) == 3
 
-    deleted = storage.delete_oldest_retention_target_rows("interactions", 2)
-
+    deleted = storage.delete_oldest_retention_target_rows("interactions", 2)  # type: ignore[attr-defined]
     assert deleted == 2
     fts_after = conn.execute(
         "SELECT rowid FROM interactions_fts WHERE rowid IN (1, 2)"
@@ -150,8 +146,7 @@ def test_retention_profile_delete_cleans_fts(storage: BaseStorage) -> None:
     ).fetchall()
     assert len(fts_before) == 3
 
-    deleted = storage.delete_oldest_retention_target_rows("profiles", 2)
-
+    deleted = storage.delete_oldest_retention_target_rows("profiles", 2)  # type: ignore[attr-defined]
     assert deleted == 2
     fts_after = conn.execute(
         "SELECT profile_id FROM profiles_fts WHERE profile_id IN ('p1', 'p2')"
@@ -179,8 +174,7 @@ def test_retention_request_cascade_cleans_interaction_fts(
     ).fetchall()
     assert len(fts_before) == 3
 
-    deleted = storage.delete_oldest_retention_target_rows("requests", 2)
-
+    deleted = storage.delete_oldest_retention_target_rows("requests", 2)  # type: ignore[attr-defined]
     assert deleted == 2
     # Interactions 1 and 2 were cascaded; their fts rows must be gone.
     fts_after = conn.execute(
@@ -250,8 +244,7 @@ def test_retention_user_playbook_delete_cleans_fts(storage: BaseStorage) -> None
     ).fetchall()
     assert len(fts_before) == 3, "fts rows must exist before retention delete"
 
-    deleted = storage.delete_oldest_retention_target_rows("user_playbooks", 2)
-
+    deleted = storage.delete_oldest_retention_target_rows("user_playbooks", 2)  # type: ignore[attr-defined]
     assert deleted == 2
 
     # The two oldest entries' fts rows must be gone.
@@ -299,8 +292,7 @@ def test_retention_agent_playbook_delete_cleans_fts(storage: BaseStorage) -> Non
     ).fetchall()
     assert len(fts_before) == 3, "fts rows must exist before retention delete"
 
-    deleted = storage.delete_oldest_retention_target_rows("agent_playbooks", 2)
-
+    deleted = storage.delete_oldest_retention_target_rows("agent_playbooks", 2)  # type: ignore[attr-defined]
     assert deleted == 2
 
     # The two oldest entries' fts rows must be gone.
@@ -406,3 +398,46 @@ def test_delete_all_user_playbooks_by_status_cleans_search_rows(
             "SELECT rowid FROM user_playbooks_vec WHERE rowid = ?", (surviving_id,)
         ).fetchall()
         assert len(vec_kept) == 1, "vec row for surviving playbook must remain"
+
+
+def _seed_rle_row(
+    storage: BaseStorage, *, session_id: str, learning_id: str, created_at: int
+) -> None:
+    conn = storage.conn  # type: ignore[attr-defined]
+    conn.execute(
+        """INSERT INTO retrieved_learning_evaluation
+           (user_id, session_id, agent_version, kind, learning_id, is_relevant,
+            relevance_reason, impact, impact_reason, created_at)
+           VALUES ('u1', ?, 'v1', 'profile', ?, 1, 'r', 'positive', 'i', ?)""",
+        (session_id, learning_id, created_at),
+    )
+    conn.commit()
+
+
+def test_retention_removes_whole_retrieved_learning_sessions(
+    storage: BaseStorage,
+) -> None:
+    """The grouped session target never leaves a partial session snapshot.
+
+    Keys are (user_id, session_id): even when the requested delete count cuts
+    inside the oldest session's rows, every row of each selected session is
+    removed together.
+    """
+    for n in range(3):
+        _seed_rle_row(
+            storage, session_id="old-sess", learning_id=f"old-{n}", created_at=100
+        )
+    for n in range(2):
+        _seed_rle_row(
+            storage, session_id="new-sess", learning_id=f"new-{n}", created_at=200
+        )
+    assert (
+        storage.count_retention_target_rows("retrieved_learning_evaluation") == 5  # type: ignore[attr-defined]
+    )
+
+    # Requesting 2 selects two key tuples, both from the oldest session —
+    # deleting by (user_id, session_id) removes all 3 of its rows.
+    storage.delete_oldest_retention_target_rows("retrieved_learning_evaluation", 2)  # type: ignore[attr-defined]
+    remaining = storage.get_retrieved_learning_evaluation_results(limit=10)
+    assert {row.session_id for row in remaining} == {"new-sess"}
+    assert len(remaining) == 2
