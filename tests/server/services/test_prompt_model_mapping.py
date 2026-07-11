@@ -46,6 +46,10 @@ PROMPT_VERSION_MAP: dict[str, tuple[str, str | None]] = {
     "profile_deduplication": ("v1.0.0", "profile_deduplication"),
     "tagging": ("v1.0.0", "tagging"),
     "agent_success_evaluation": ("v1.0.0", "agent_success_evaluation"),
+    # Retrieved-learning judges — per-learning relevance/impact verdicts for
+    # sessions publishing interactions with ``retrieved_learnings``.
+    "retrieved_learning_relevance": ("v1.0.0", "retrieved_learning_relevance"),
+    "retrieved_learning_impact": ("v1.0.0", "retrieved_learning_impact"),
     # F1 cleanup: the session-level shadow comparison branch was retracted.
     # The prompt directories remain on disk (marked active: false in their
     # frontmatter) as historical records, but they no longer drive any

@@ -19,6 +19,7 @@ from reflexio.models.api_schema.internal_schema import SessionDescriptor
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.services.agent_success_evaluation.runner import (
+    GroupEvaluationOutcome,
     run_group_evaluation,
 )
 from reflexio.server.services.evaluation_overview.eval_sampler import (
@@ -253,7 +254,7 @@ def _dispatch_one(
     """
     if job.cancel_event.is_set():
         raise _CancelledError
-    run_group_evaluation(
+    outcome = run_group_evaluation(
         org_id=job.org_id,
         user_id=sc.user_id,
         session_id=sc.session_id,
@@ -263,6 +264,39 @@ def _dispatch_one(
         llm_client=llm_client,
         force_regenerate=True,
     )
+    reason = _outcome_failure_reason(outcome)
+    if reason is not None:
+        raise _OutcomeFailureError(reason)
+
+
+def _outcome_failure_reason(outcome: GroupEvaluationOutcome) -> str | None:
+    """Classify a runner outcome for the regen counters.
+
+    Completed requires BOTH families in a settled state: agent success in
+    {complete, not_applicable, skipped} and retrieved-learning in
+    {complete, not_applicable, skipped, superseded}. Everything else counts
+    failed with an explicit reason; an unrecognized combination is logged and
+    counted failed rather than silently passed.
+    """
+    agent_ok = outcome.agent_success_status in ("complete", "not_applicable", "skipped")
+    retrieved_ok = outcome.retrieved_learning_status in (
+        "complete",
+        "not_applicable",
+        "skipped",
+        "superseded",
+    )
+    if agent_ok and retrieved_ok:
+        return None
+    if outcome.agent_success_status == "failed":
+        return "agent_success_failed"
+    if outcome.retrieved_learning_status in ("pending", "stale", "degraded", "failed"):
+        return f"retrieved_learning_{outcome.retrieved_learning_status}"
+    logger.warning("Unrecognized group evaluation outcome combination: %s", outcome)
+    return f"unrecognized_outcome:{outcome.agent_success_status}:{outcome.retrieved_learning_status}"
+
+
+class _OutcomeFailureError(Exception):
+    """A settled-but-unsuccessful runner outcome, counted as a job failure."""
 
 
 class _CancelledError(Exception):

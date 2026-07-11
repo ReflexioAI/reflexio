@@ -33,6 +33,8 @@ from reflexio.models.api_schema.retriever_schema import (
     GetProfilesViewResponse,
     GetRequestsRequest,
     GetRequestsViewResponse,
+    GetRetrievedLearningEvaluationResultsRequest,
+    GetRetrievedLearningEvaluationResultsResponse,
     GetUserPlaybooksRequest,
     GetUserPlaybooksViewResponse,
     GetUserProfilesRequest,
@@ -1925,6 +1927,29 @@ class ReflexioClient:
             json=req.model_dump(),
         )
         return GetEvaluationResultsViewResponse(**response)
+
+    def get_retrieved_learning_evaluation_results(
+        self,
+        request: GetRetrievedLearningEvaluationResultsRequest | dict | None = None,
+        *,
+        user_id: str | None = None,
+        session_id: str | None = None,
+        limit: int | None = None,
+    ) -> GetRetrievedLearningEvaluationResultsResponse:
+        """Get per-learning relevance and impact verdicts for retrieved context."""
+        req = self._build_request(
+            request,
+            GetRetrievedLearningEvaluationResultsRequest,
+            user_id=user_id,
+            session_id=session_id,
+            limit=limit,
+        )
+        response = self._make_request(
+            "POST",
+            "/api/get_retrieved_learning_evaluation_results",
+            json=req.model_dump(),
+        )
+        return GetRetrievedLearningEvaluationResultsResponse(**response)
 
     def regenerate_evaluations(
         self,

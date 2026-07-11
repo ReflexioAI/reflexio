@@ -30,6 +30,7 @@ from reflexio.models.api_schema.service_schemas import (
     ProfileTimeToLive,
     RegularVsShadow,
     Request,
+    RetrievedLearning,
     Status,
     ToolUsed,
     UserActionType,
@@ -456,6 +457,12 @@ def _row_to_interaction(row: sqlite3.Row) -> Interaction:
         if citations_raw and isinstance(citations_raw, list)
         else []
     )
+    retrieved_learnings_raw = _json_loads(d.get("retrieved_learnings"))
+    retrieved_learnings = (
+        [RetrievedLearning(**c) for c in retrieved_learnings_raw if isinstance(c, dict)]
+        if retrieved_learnings_raw and isinstance(retrieved_learnings_raw, list)
+        else []
+    )
     return Interaction(
         interaction_id=d["interaction_id"],
         user_id=d["user_id"],
@@ -471,6 +478,7 @@ def _row_to_interaction(row: sqlite3.Row) -> Interaction:
         expert_content=d.get("expert_content") or "",
         tools_used=tools_used,
         citations=citations,
+        retrieved_learnings=retrieved_learnings,
     )
 
 
@@ -862,6 +870,14 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             with self._lock:
                 self.conn.execute(
                     "ALTER TABLE interactions ADD COLUMN image_encoding TEXT NOT NULL DEFAULT ''"
+                )
+                self.conn.commit()
+
+        if "retrieved_learnings" not in columns:
+            logger.info("Adding retrieved_learnings column to interactions table.")
+            with self._lock:
+                self.conn.execute(
+                    "ALTER TABLE interactions ADD COLUMN retrieved_learnings TEXT"
                 )
                 self.conn.commit()
 
@@ -1859,6 +1875,7 @@ CREATE TABLE IF NOT EXISTS interactions (
     expert_content TEXT NOT NULL DEFAULT '',
     tools_used TEXT,
     citations TEXT,
+    retrieved_learnings TEXT,
     embedding TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_interactions_user_id ON interactions(user_id);
@@ -1959,6 +1976,28 @@ CREATE INDEX IF NOT EXISTS idx_eval_agent_version_created_at_desc
     ON agent_success_evaluation_result(agent_version, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_eval_identity_created_at_desc
     ON agent_success_evaluation_result(user_id, session_id, evaluation_name, agent_version, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS retrieved_learning_evaluation (
+    result_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    agent_version TEXT NOT NULL DEFAULT '',
+    kind TEXT NOT NULL,
+    learning_id TEXT NOT NULL,
+    is_relevant INTEGER,
+    relevance_reason TEXT NOT NULL DEFAULT '',
+    impact TEXT,
+    impact_reason TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL,
+    governance_subject_ref TEXT,
+    UNIQUE (user_id, session_id, kind, learning_id)
+);
+CREATE INDEX IF NOT EXISTS idx_rle_created_at_result_id
+    ON retrieved_learning_evaluation(created_at DESC, result_id DESC);
+CREATE INDEX IF NOT EXISTS idx_rle_session_id
+    ON retrieved_learning_evaluation(session_id);
+CREATE INDEX IF NOT EXISTS idx_rle_subject_ref
+    ON retrieved_learning_evaluation(governance_subject_ref);
 
 CREATE TABLE IF NOT EXISTS agent_playbook_source_user_playbooks (
     agent_playbook_id INTEGER NOT NULL,

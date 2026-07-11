@@ -31,6 +31,9 @@ from reflexio.server.services.agent_success_evaluation.regen_jobs import (
     RegenJob,
     run_regen,
 )
+from reflexio.server.services.agent_success_evaluation.runner import (
+    GroupEvaluationOutcome,
+)
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 
 pytestmark = pytest.mark.integration
@@ -97,7 +100,7 @@ def test_run_regen_bounds_concurrent_inflight(
     high_water = 0
     lock = threading.Lock()
 
-    def fake_run_group_evaluation(**_kwargs: object) -> None:
+    def fake_run_group_evaluation(**_kwargs: object) -> GroupEvaluationOutcome:
         nonlocal inflight, high_water
         with lock:
             inflight += 1
@@ -107,6 +110,7 @@ def test_run_regen_bounds_concurrent_inflight(
         time.sleep(0.02)
         with lock:
             inflight -= 1
+        return GroupEvaluationOutcome("complete", "complete", "fp")
 
     monkeypatch.setattr(regen_jobs, "run_group_evaluation", fake_run_group_evaluation)
 
@@ -176,7 +180,7 @@ def test_run_regen_cancel_under_concurrency_drops_cancelled_from_counters(
     lock = threading.Lock()
     # Job is constructed below; the closure captures it via nonlocal lookup.
 
-    def fake_run_group_evaluation(**_kwargs: object) -> None:
+    def fake_run_group_evaluation(**_kwargs: object) -> GroupEvaluationOutcome:
         nonlocal call_count
         with lock:
             call_count += 1
@@ -190,6 +194,7 @@ def test_run_regen_cancel_under_concurrency_drops_cancelled_from_counters(
         # Sleep long enough that pre-cancel in-flight futures land in the
         # `completed` bucket but the pool still has many undequeued futures.
         time.sleep(0.01)
+        return GroupEvaluationOutcome("complete", "complete", "fp")
 
     monkeypatch.setattr(regen_jobs, "run_group_evaluation", fake_run_group_evaluation)
 

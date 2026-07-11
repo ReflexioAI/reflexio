@@ -345,6 +345,39 @@ class AgentPlaybookStoreMixin:
         return _row_to_agent_playbook(row) if row else None
 
     @SQLiteStorageBase.handle_exceptions
+    def get_agent_playbooks_by_ids(
+        self,
+        agent_playbook_ids: list[int],
+        *,
+        status_filter: list[Status | None] | None = None,
+        playbook_status_filter: list[PlaybookStatus] | None = None,
+    ) -> list[AgentPlaybook]:
+        if not agent_playbook_ids:
+            return []
+        unique_ids = list(dict.fromkeys(agent_playbook_ids))
+        rows: list[sqlite3.Row] = []
+        for start in range(0, len(unique_ids), 900):
+            chunk = unique_ids[start : start + 900]
+            placeholders = ",".join("?" for _ in chunk)
+            query = (
+                "SELECT * FROM agent_playbooks "
+                f"WHERE agent_playbook_id IN ({placeholders})"
+            )
+            params: list[Any] = list(chunk)
+            if status_filter is not None:
+                fragment, status_params = _build_status_sql(status_filter)
+                query += f" AND {fragment}"
+                params.extend(status_params)
+            else:
+                query += " AND status IS NULL"
+            if playbook_status_filter:
+                status_placeholders = ",".join("?" for _ in playbook_status_filter)
+                query += f" AND playbook_status IN ({status_placeholders})"
+                params.extend(status.value for status in playbook_status_filter)
+            rows.extend(self._fetchall(query, params))
+        return [_row_to_agent_playbook(row) for row in rows]
+
+    @SQLiteStorageBase.handle_exceptions
     def delete_all_agent_playbooks(self) -> None:
         batch_request_id = uuid.uuid4().hex
         with self._lock:

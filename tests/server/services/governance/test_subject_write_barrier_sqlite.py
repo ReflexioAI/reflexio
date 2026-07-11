@@ -20,6 +20,9 @@ from reflexio.server.services.storage.error import (
     StorageError,
     SubjectWriteBarrierError,
 )
+from reflexio.server.services.storage.governance_validation import (
+    _CANONICAL_DELETE_TARGET_NAMES,
+)
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 
 
@@ -42,15 +45,9 @@ def _mark_all_completion_targets(storage: SQLiteStorage, purge_id: str) -> None:
         target_ref="all",
         detail={"prepared": True},
     )
-    for target_name in (
-        "request",
-        "interaction",
-        "profile",
-        "user_playbook",
-        "agent_success_evaluation_result",
-        "profile_purge",
-        "user_playbook_purge",
-    ):
+    # Single source of truth — a stale local copy of the canonical tuple is
+    # exactly how this suite went red when new delete targets landed.
+    for target_name in _CANONICAL_DELETE_TARGET_NAMES:
         storage.record_purge_target(
             purge_id,
             target_name=target_name,

@@ -32,6 +32,13 @@ def storage(tmp_path, worker_id):
     return SQLiteStorage(org_id=worker_id, db_path=str(db_path))
 
 
+# Pinned to the Config default — a stale hardcoded literal is exactly how this
+# suite went red when the judge prompt version was bumped.
+_PINNED_VERSION = Config(
+    storage_config=StorageConfigSQLite()
+).shadow_comparison_judge_prompt_version
+
+
 def _verdict(
     *,
     interaction_id: str,
@@ -39,7 +46,7 @@ def _verdict(
     better: str,
     reflexio_is_r1: bool,
     ts: int,
-    judge_prompt_version: str = "v1.0.0",
+    judge_prompt_version: str = _PINNED_VERSION,
 ) -> ShadowComparisonVerdict:
     return ShadowComparisonVerdict(
         verdict_id=0,
@@ -94,7 +101,7 @@ def test_service_returns_populated_shadow_win_rate_trend(storage) -> None:
     assert trend.window_total.ties == 0
     assert trend.window_total.win_rate == 0.5
     assert trend.window_total.net_win == 0.0
-    assert trend.judge_prompt_version == "v1.0.0"
+    assert trend.judge_prompt_version == _PINNED_VERSION
     assert len(trend.daily) == 1
     assert trend.daily[0].n == 2
 
@@ -108,7 +115,7 @@ def test_service_empty_window_returns_empty_trend(storage) -> None:
     trend = response.shadow_win_rate_trend
     assert trend.daily == []
     assert trend.window_total.n == 0
-    assert trend.judge_prompt_version == "v1.0.0"
+    assert trend.judge_prompt_version == _PINNED_VERSION
 
 
 def test_service_filters_out_stale_prompt_versions(storage) -> None:
@@ -121,7 +128,7 @@ def test_service_filters_out_stale_prompt_versions(storage) -> None:
             better="1",
             reflexio_is_r1=True,
             ts=base_ts,
-            judge_prompt_version="v1.0.0",
+            judge_prompt_version=_PINNED_VERSION,
         )
     )
     storage.save_shadow_comparison_verdict(
@@ -142,8 +149,8 @@ def test_service_filters_out_stale_prompt_versions(storage) -> None:
         GetEvaluationOverviewRequest(from_ts=base_ts - 1, to_ts=base_ts + 1)
     )
     trend = response.shadow_win_rate_trend
-    # Only the v1.0.0 verdict should show up.
+    # Only the pinned-version verdict should show up.
     assert trend.window_total.n == 1
     assert trend.window_total.wins == 1
     assert trend.window_total.losses == 0
-    assert trend.judge_prompt_version == "v1.0.0"
+    assert trend.judge_prompt_version == _PINNED_VERSION

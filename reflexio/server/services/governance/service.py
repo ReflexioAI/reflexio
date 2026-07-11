@@ -23,6 +23,8 @@ _DELETE_TARGET_NAME_TO_RESULT_KEY = {
     "profile": "profiles",
     "request": "requests",
     "agent_success_evaluation_result": "agent_success_evaluation_results",
+    "retrieved_learning_evaluation_result": "retrieved_learning_evaluation_results",
+    "evaluation_operation_state": "evaluation_operation_states",
     "profile_purge": "purged_profiles",
     "user_playbook_purge": "purged_user_playbooks",
 }

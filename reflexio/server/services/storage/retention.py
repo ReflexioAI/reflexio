@@ -36,6 +36,19 @@ RETENTION_TARGETS: tuple[RetentionTarget, ...] = (
         "created_at",
         ("result_id",),
     ),
+    # Grouped session target: keyed on (user_id, session_id) — not result_id —
+    # so retention always removes whole session snapshots, never a partial
+    # per-learning subset. Rows within a session share created_at (earliest
+    # request timestamp), so ordering keeps groups adjacent. The session's
+    # retrieved-eval _operation_state row is intentionally left in place: it
+    # is content-free (digest + counters) and self-heals on the next
+    # publish/forced evaluation.
+    RetentionTarget(
+        "retrieved_learning_evaluation",
+        "retrieved_learning_evaluation",
+        "created_at",
+        ("user_id", "session_id"),
+    ),
     RetentionTarget(
         "offline_tuner_reward_label",
         "offline_tuner_reward_label",

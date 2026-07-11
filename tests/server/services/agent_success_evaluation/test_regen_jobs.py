@@ -15,6 +15,9 @@ from reflexio.server.services.agent_success_evaluation.regen_jobs import (
     RegenJobRegistry,
     run_regen,
 )
+from reflexio.server.services.agent_success_evaluation.runner import (
+    GroupEvaluationOutcome,
+)
 
 
 def _stub_storage(descriptors: list[SessionDescriptor]) -> MagicMock:
@@ -106,7 +109,8 @@ def test_run_regen_processes_sessions_and_marks_completed():
     )
 
     with patch(
-        "reflexio.server.services.agent_success_evaluation.regen_jobs.run_group_evaluation"
+        "reflexio.server.services.agent_success_evaluation.regen_jobs.run_group_evaluation",
+        return_value=GroupEvaluationOutcome("complete", "complete", "fp"),
     ) as runner:
         run_regen(job=job, request_context=rc, llm_client=llm)
         assert runner.call_count == 2
@@ -139,6 +143,7 @@ def test_run_regen_records_failures_and_continues():
     def runner(**kwargs):
         if kwargs["session_id"] == "bad":
             raise RuntimeError("LLM timeout")
+        return GroupEvaluationOutcome("complete", "complete", "fp")
 
     with patch(
         "reflexio.server.services.agent_success_evaluation.regen_jobs.run_group_evaluation",
@@ -172,6 +177,7 @@ def test_run_regen_observes_cancel_between_sessions():
         call_count["n"] += 1
         if call_count["n"] == 2:
             job.cancel_event.set()
+        return GroupEvaluationOutcome("complete", "complete", "fp")
 
     with patch(
         "reflexio.server.services.agent_success_evaluation.regen_jobs.run_group_evaluation",
@@ -223,3 +229,30 @@ def test_create_still_blocks_when_previous_job_is_running():
 
     with pytest.raises(RuntimeError, match="already running"):
         reg.create(org_id="o", from_ts=0, to_ts=1, total=2)
+
+
+def test_outcome_failure_reason_mapping():
+    """Regen counts completed only when BOTH families are settled."""
+    from reflexio.server.services.agent_success_evaluation.regen_jobs import (
+        _outcome_failure_reason,
+    )
+
+    ok = GroupEvaluationOutcome("complete", "complete", "fp")
+    assert _outcome_failure_reason(ok) is None
+    assert (
+        _outcome_failure_reason(GroupEvaluationOutcome("skipped", "not_applicable"))
+        is None
+    )
+    assert (
+        _outcome_failure_reason(GroupEvaluationOutcome("complete", "superseded"))
+        is None
+    )
+    assert (
+        _outcome_failure_reason(GroupEvaluationOutcome("failed", "skipped"))
+        == "agent_success_failed"
+    )
+    for retrieved in ("pending", "stale", "degraded", "failed"):
+        assert (
+            _outcome_failure_reason(GroupEvaluationOutcome("complete", retrieved))
+            == f"retrieved_learning_{retrieved}"
+        )

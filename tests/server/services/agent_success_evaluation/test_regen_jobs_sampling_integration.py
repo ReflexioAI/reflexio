@@ -28,6 +28,9 @@ from reflexio.server.services.agent_success_evaluation.regen_jobs import (
     RegenJob,
     run_regen,
 )
+from reflexio.server.services.agent_success_evaluation.runner import (
+    GroupEvaluationOutcome,
+)
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 
 pytestmark = pytest.mark.integration
@@ -102,8 +105,9 @@ def test_run_regen_samples_when_stratum_exceeds_cap(
 
     call_log: list[str] = []
 
-    def fake_run(**kwargs: object) -> None:
+    def fake_run(**kwargs: object) -> GroupEvaluationOutcome:
         call_log.append(str(kwargs["session_id"]))
+        return GroupEvaluationOutcome("complete", "complete", "fp")
 
     monkeypatch.setattr(regen_jobs, "run_group_evaluation", fake_run)
 
@@ -148,8 +152,9 @@ def test_run_regen_no_sampling_when_below_cap(
 
     calls: list[str] = []
 
-    def fake_run(**kwargs: object) -> None:
+    def fake_run(**kwargs: object) -> GroupEvaluationOutcome:
         calls.append(str(kwargs["session_id"]))
+        return GroupEvaluationOutcome("complete", "complete", "fp")
 
     monkeypatch.setattr(regen_jobs, "run_group_evaluation", fake_run)
 
@@ -210,8 +215,9 @@ def test_run_regen_uses_first_request_source_for_sampling(
 
     calls: list[str] = []
 
-    def fake_run(**kwargs: object) -> None:
+    def fake_run(**kwargs: object) -> GroupEvaluationOutcome:
         calls.append(str(kwargs["session_id"]))
+        return GroupEvaluationOutcome("complete", "complete", "fp")
 
     monkeypatch.setattr(regen_jobs, "run_group_evaluation", fake_run)
 
@@ -287,8 +293,9 @@ def test_run_regen_continues_when_bulk_first_request_lookup_fails(
 
     calls: list[str] = []
 
-    def fake_run(**kwargs: object) -> None:
+    def fake_run(**kwargs: object) -> GroupEvaluationOutcome:
         calls.append(str(kwargs["session_id"]))
+        return GroupEvaluationOutcome("complete", "complete", "fp")
 
     monkeypatch.setattr(regen_jobs, "run_group_evaluation", fake_run)
 

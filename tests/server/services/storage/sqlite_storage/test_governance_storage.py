@@ -21,6 +21,9 @@ from reflexio.models.api_schema.domain.governance import (
 )
 from reflexio.models.api_schema.retriever_schema import SearchAgentPlaybookRequest
 from reflexio.models.config_schema import GovernanceRetentionConfig
+from reflexio.server.services.storage.governance_validation import (
+    _CANONICAL_DELETE_TARGET_NAMES,
+)
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 from reflexio.server.services.storage.sqlite_storage._governance import (
     init_governance_tables,
@@ -39,15 +42,9 @@ OTHER_SUBJECT_REF = "subref_v1_" + "c" * 32
 REQUEST_REF = "reqref_v1_" + "b" * 32
 OTHER_REQUEST_REF = "reqref_v1_" + "d" * 32
 ACTOR_REF = "actref_v1_" + "e" * 32
-CANONICAL_DELETE_TARGET_NAMES = (
-    "request",
-    "interaction",
-    "profile",
-    "user_playbook",
-    "agent_success_evaluation_result",
-    "profile_purge",
-    "user_playbook_purge",
-)
+# Single source of truth — a stale local copy of this tuple is exactly how
+# this suite went red when new canonical targets landed without test updates.
+CANONICAL_DELETE_TARGET_NAMES = _CANONICAL_DELETE_TARGET_NAMES
 
 
 @pytest.fixture
@@ -3279,6 +3276,10 @@ def test_apply_governance_user_data_delete_retains_lineage_skeleton(
         "profiles": 1,
         "requests": 1,
         "agent_success_evaluation_results": 1,
+        "offline_tuner_reward_labels": 0,
+        "offline_tuner_reward_label_targets_by_target_owner": 0,
+        "retrieved_learning_evaluation_results": 0,
+        "evaluation_operation_states": 0,
         "purged_profiles": 1,
         "purged_user_playbooks": 1,
     }
@@ -3332,6 +3333,10 @@ def test_apply_governance_user_data_delete_retains_lineage_skeleton(
         "profile": 1,
         "user_playbook": 1,
         "agent_success_evaluation_result": 1,
+        "offline_tuner_reward_label": 0,
+        "offline_tuner_reward_label_target_by_target_owner": 0,
+        "retrieved_learning_evaluation_result": 0,
+        "evaluation_operation_state": 0,
         "profile_purge": 1,
         "user_playbook_purge": 1,
     }
