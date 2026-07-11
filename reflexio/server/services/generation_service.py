@@ -568,15 +568,13 @@ class GenerationService:
         agent_version: str,
         force_extraction: bool,
         skip_aggregation: bool,
-        sequential: bool = False,
     ) -> GenerationServiceResult:
-        """Run the learning steps for a deferred job.
+        """Run the learning steps for a deferred job (synchronous / non-durable
+        callers: ``PublishLearningWorker`` and manual reruns).
 
-        Args:
-            sequential: When True, run profile and playbook generation on the
-                calling thread (no ThreadPoolExecutor).  Required when the
-                caller already holds the storage commit_scope lock — spawning
-                worker threads inside that scope would deadlock on the RLock.
+        Runs compute + persist + side-effects together, with profile and playbook
+        generation in parallel — no external ``commit_scope`` is held on this
+        path (the durable worker uses the compute/persist/emit split instead).
         """
         result = GenerationServiceResult(request_id=request_id)
         self._run_learning_steps(
@@ -587,7 +585,7 @@ class GenerationService:
             skip_aggregation=skip_aggregation,
             source=source,
             result=result,
-            parallel=not sequential,
+            parallel=True,
         )
         return result
 

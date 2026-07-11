@@ -389,8 +389,9 @@ def test_real_worker_no_llm_or_embedding_inside_scope(monkeypatch):
         monkeypatch.setattr(storage, "commit_scope", wrapped_scope)
 
         orig_completion = litellm.completion
-        orig_embed = storage._get_embedding
-        orig_expand = storage._expand_document
+        # SQLite-only embedding helpers, not on the BaseStorage ABC surface.
+        orig_embed = storage._get_embedding  # type: ignore[attr-defined]
+        orig_expand = storage._expand_document  # type: ignore[attr-defined]
 
         def guard_completion(*a, **k):
             if scope_open["v"]:
@@ -562,28 +563,41 @@ def test_same_user_two_workers_no_duplicate():
             "after release, the same user's compute must acquire the lock again"
         )
 
-        # --- Part 2: end-to-end no-duplicate oracle (sequential drain) ---
+        # --- Part 2: end-to-end no-duplicate oracle via QUEUE coalescing ---
+        # F4's no-duplicate guarantee at the queue layer: two same-user jobs
+        # enqueued while BOTH still pending coalesce into a SINGLE job (the
+        # enqueue_learning_job ON CONFLICT upsert on (org,user,job_type) WHERE
+        # status='pending'), so one drain runs a single extraction — no double
+        # write. (Two NON-overlapping sequential jobs are legitimately NOT
+        # coalesced and each learn; that is neither what F4 nor this oracle
+        # covers, and under the mocked, dedup-skipping extractor it would just
+        # re-extract — so this oracle deliberately exercises the coalescing path.)
         ctx2 = factory("org_f4_seq")
         storage2 = ctx2.storage
         assert storage2 is not None
-        _setup_job(
-            storage2, org_id="org_f4_seq", user_id="u_seq", request_id="req_seq_a"
-        )
 
-        # Single clean run baseline for this user.
+        # Baseline: one clean single-job run for one user.
+        _setup_job(
+            storage2, org_id="org_f4_seq", user_id="u_base", request_id="req_base"
+        )
         DurableLearningWorker(factory, instance_id="w_seq1").drain_org(
             "org_f4_seq", batch_size=5, lease_seconds=300
         )
-        baseline = storage2.count_all_profiles()
+        baseline = len(storage2.get_user_profile("u_base"))
+        assert baseline > 0, "baseline single run must produce profiles"
 
-        # A second same-user job draining afterwards must not duplicate.
+        # Two same-user jobs enqueued while both pending coalesce to one job; a
+        # single drain must therefore land the same per-user profile count.
         _setup_job(
-            storage2, org_id="org_f4_seq", user_id="u_seq", request_id="req_seq_b"
+            storage2, org_id="org_f4_seq", user_id="u_coal", request_id="req_coal_a"
+        )
+        _setup_job(
+            storage2, org_id="org_f4_seq", user_id="u_coal", request_id="req_coal_b"
         )
         DurableLearningWorker(factory, instance_id="w_seq2").drain_org(
             "org_f4_seq", batch_size=5, lease_seconds=300
         )
-        assert storage2.count_all_profiles() == baseline, (
+        assert len(storage2.get_user_profile("u_coal")) == baseline, (
             "same-user coalescing must produce no duplicate profiles"
         )
 
@@ -659,21 +673,144 @@ def test_cas_drop_leaves_no_torn_state(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_side_effect_identity_vs_baseline():
-    """Row content + lineage events produced by the split compute→persist path
-    must be identical to the pre-split run_deferred_learning path (not just
-    counts).
+def _norm_profiles(profiles) -> list[str]:
+    """Content-stable profile projection (volatile ids/timestamps/embeddings
+    dropped) as sorted JSON strings, for cross-run identity comparison."""
+    return sorted(
+        json.dumps(
+            {
+                "content": p.content,
+                "source": p.source,
+                "status": p.status.value if p.status is not None else None,
+                "ttl": p.profile_time_to_live.value,
+                "custom_features": p.custom_features,
+                "extractor_names": p.extractor_names,
+                "reader_angle": p.reader_angle,
+                "tags": p.tags,
+            },
+            sort_keys=True,
+        )
+        for p in profiles
+    )
 
-    SKIPPED placeholder (Task 1): the split methods do not exist yet, so there is
-    nothing to compare against a golden. Shipping a same-path self-compare here
-    would be vacuous. Task 9 un-skips this and asserts row/lineage identity
-    against a golden captured from the pre-split path, WITH explicit tolerance for
-    the reflection→extractor within-job visibility delta (spec §semantic change).
-    """
-    pytest.skip(
-        "Task 9: capture pre-split golden and compare split path row/lineage "
-        "identity (tolerating the reflection-visibility delta). Split methods "
-        "do not exist in Task 1."
+
+def _norm_playbooks(playbooks) -> list[str]:
+    """Content-stable playbook projection as sorted JSON strings."""
+    return sorted(
+        json.dumps(
+            {
+                "content": pb.content,
+                "playbook_name": pb.playbook_name,
+                "trigger": pb.trigger,
+                "rationale": pb.rationale,
+                "source": pb.source,
+                "status": pb.status.value if pb.status is not None else None,
+                "agent_version": pb.agent_version,
+                "reader_angle": pb.reader_angle,
+                "tags": pb.tags,
+            },
+            sort_keys=True,
+        )
+        for pb in playbooks
+    )
+
+
+def _norm_lineage(events) -> list[str]:
+    """Content-free lineage projection (event_id / entity_id / request_id /
+    org_id / created_at dropped — all volatile per-run) as sorted JSON strings."""
+    return sorted(
+        json.dumps(
+            {
+                "entity_type": e.entity_type,
+                "op": e.op,
+                "prov_relation": e.prov_relation,
+                "actor": e.actor,
+                "reason": e.reason,
+                "from_status": e.from_status,
+                "to_status": e.to_status,
+            },
+            sort_keys=True,
+        )
+        for e in events
+    )
+
+
+def test_side_effect_identity_vs_baseline():
+    """The split durable ``_process_job`` writes the same profile/playbook rows +
+    lineage events (by content, not just count) as the pre-split synchronous
+    ``run_deferred_learning`` path on identical seeded input.
+
+    Golden = a real drive of ``run_deferred_learning`` (unchanged by gate b —
+    ``.run()`` / manual / rerun callers stay behavior-identical, spec §Global
+    Constraints), in its OWN org+db. Split = a real drive of the rewired
+    ``DurableLearningWorker._process_job`` in a SEPARATE org+db. The two paths are
+    genuinely different orchestrations (single synchronous compute-persist-emit vs
+    compute → fenced persist → post-commit emit), so this is not a self-compare.
+
+    Reflection-visibility tolerance (spec §semantic change): the seed is a single
+    interaction, so the reflection stride-gate is closed on BOTH paths (reflection
+    revises nothing), so the within-job reflection→extractor visibility delta does
+    not arise here — the identity assertion holds without filtering reflection
+    output. (Volatile ids/timestamps/embeddings/request_ids ARE normalized out;
+    ``REFLEXIO_EMBEDDING_PROVIDER=off`` keeps embeddings empty on both sides.)
+
+    Note (mock determinism): the root conftest mocks ``litellm.completion``, so
+    extractor content is canned and identical across paths. This test proves the
+    split path produces the SAME persisted side-effects as the synchronous path;
+    it does not (and no unit test can) prove extraction semantics against a real
+    LLM — that is the heavy-skill regression's job (Task 11)."""
+    common = {
+        "session_id": "sess1",
+        "source": "test_src",
+        "agent_version": "v1",
+        "force_extraction": True,
+        "skip_aggregation": False,
+    }
+
+    # --- Golden: synchronous run_deferred_learning in its own db ---
+    with tempfile.TemporaryDirectory() as gold_dir:
+        gctx = _factory(gold_dir)("org_gold")
+        gstore = gctx.storage
+        assert gstore is not None
+        _setup_job(gstore, org_id="org_gold", user_id="u_g", request_id="req_g")
+        _make_gen(gctx).run_deferred_learning(
+            user_id="u_g", request_id="req_g", **common
+        )
+        gold_profiles = _norm_profiles(gstore.get_user_profile("u_g"))
+        gold_playbooks = _norm_playbooks(gstore.get_user_playbooks(user_id="u_g"))
+        gold_lineage = _norm_lineage(gstore.get_lineage_events(org_id="org_gold"))
+
+    # --- Split: the rewired durable _process_job in a separate db ---
+    with tempfile.TemporaryDirectory() as split_dir:
+        factory = _factory(split_dir)
+        sctx = factory("org_split")
+        sstore = sctx.storage
+        assert sstore is not None
+        _setup_job(sstore, org_id="org_split", user_id="u_s", request_id="req_s")
+        [job] = sstore.claim_learning_jobs(
+            claimed_by="w_ident", limit=1, lease_seconds=300
+        )
+        assert (
+            DurableLearningWorker(factory, instance_id="w_ident")._process_job(
+                sctx, job
+            )
+            is True
+        )
+        split_profiles = _norm_profiles(sstore.get_user_profile("u_s"))
+        split_playbooks = _norm_playbooks(sstore.get_user_playbooks(user_id="u_s"))
+        split_lineage = _norm_lineage(sstore.get_lineage_events(org_id="org_split"))
+
+    # Non-vacuous: the golden path must actually have produced rows to compare.
+    assert gold_profiles, "golden run produced no profiles — nothing to compare"
+
+    assert split_profiles == gold_profiles, (
+        "split path profile rows differ from the synchronous baseline"
+    )
+    assert split_playbooks == gold_playbooks, (
+        "split path playbook rows differ from the synchronous baseline"
+    )
+    assert split_lineage == gold_lineage, (
+        "split path lineage events differ from the synchronous baseline"
     )
 
 

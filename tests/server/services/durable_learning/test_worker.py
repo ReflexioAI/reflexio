@@ -34,11 +34,9 @@ import pytest
 
 from reflexio.models.api_schema.domain.entities import Interaction, Request
 from reflexio.server.api_endpoints.request_context import RequestContext
+from reflexio.server.services.deferred_learning_plan import DeferredLearningPlan
 from reflexio.server.services.durable_learning.worker import DurableLearningWorker
-from reflexio.server.services.generation_service import (
-    GenerationService,
-    GenerationServiceResult,
-)
+from reflexio.server.services.generation_service import GenerationService
 
 # ---------------------------------------------------------------------------
 # Module-level fixture: disable the local ONNX embedder for all tests.
@@ -280,8 +278,11 @@ def test_exactly_once_under_claim_race():
 
 
 def test_per_job_flags_honored():
-    """force_extraction and skip_aggregation from the job are passed to
-    run_deferred_learning -- not hardcoded False."""
+    """force_extraction and skip_aggregation from the job reach the worker's
+    compute entry point (compute_deferred_learning) -- not hardcoded False.
+
+    Post gate-b the worker drives compute_deferred_learning (not
+    run_deferred_learning), so the flags are asserted at that seam."""
     with tempfile.TemporaryDirectory() as tmp_dir:
         factory = _factory(tmp_dir)
         ctx = factory("org_flags")
@@ -306,7 +307,7 @@ def test_per_job_flags_honored():
 
         call_kwargs: dict = {}
 
-        def spy_run_deferred(
+        def spy_compute_deferred(
             _self,
             *,
             user_id,
@@ -316,26 +317,35 @@ def test_per_job_flags_honored():
             agent_version,
             force_extraction,
             skip_aggregation,
-            sequential=False,
         ):
             call_kwargs.update(
                 force_extraction=force_extraction,
                 skip_aggregation=skip_aggregation,
             )
-            return GenerationServiceResult(request_id=request_id)
+            # An all-None (lock_acquired=True) plan makes persist + emit no-ops,
+            # so the worker fences + completes cleanly without touching storage.
+            return DeferredLearningPlan(
+                request_id=request_id,
+                user_id=user_id,
+                agent_version=agent_version,
+                lock_acquired=True,
+                reflection=None,
+                profile=None,
+                playbook=None,
+            )
 
         worker = DurableLearningWorker(factory, instance_id="flag_w")
 
         with mock.patch.object(
-            GenerationService, "run_deferred_learning", spy_run_deferred
+            GenerationService, "compute_deferred_learning", spy_compute_deferred
         ):
             worker._process_job(factory("org_flags"), job)
 
         assert call_kwargs.get("force_extraction") is True, (
-            "force_extraction=True must reach run_deferred_learning"
+            "force_extraction=True must reach compute_deferred_learning"
         )
         assert call_kwargs.get("skip_aggregation") is True, (
-            "skip_aggregation=True must reach run_deferred_learning"
+            "skip_aggregation=True must reach compute_deferred_learning"
         )
 
 
@@ -346,7 +356,7 @@ def test_per_job_flags_honored():
 
 def test_missing_request_fails_job():
     """If the stored Request for latest_request_id is absent, the job is failed
-    without calling run_deferred_learning (prevents a run with wrong agent_version).
+    without driving compute (prevents a run with wrong agent_version).
     On the first attempt (attempts=1 < max_attempts=3) it is failed, not dead."""
     with tempfile.TemporaryDirectory() as tmp_dir:
         factory = _factory(tmp_dir)
@@ -377,13 +387,13 @@ def test_missing_request_fails_job():
         worker = DurableLearningWorker(factory, instance_id="missing_w")
 
         with mock.patch.object(
-            GenerationService, "run_deferred_learning", _should_not_run
+            GenerationService, "compute_deferred_learning", _should_not_run
         ):
             result = worker._process_job(factory("org_missing"), job)
 
         assert result is False, "missing request must not be counted as processed"
         assert not ran_learning, (
-            "run_deferred_learning must NOT be called when Request is absent"
+            "compute_deferred_learning must NOT be called when Request is absent"
         )
 
         # First failure: attempts=1 < max_attempts=3 -> status='failed' (not dead).
@@ -426,18 +436,7 @@ def test_dead_transition_after_max_attempts():
 
         worker = DurableLearningWorker(factory, instance_id="dead_w")
 
-        def _always_raise(
-            _self,
-            *,
-            user_id,
-            request_id,
-            session_id,
-            source,
-            agent_version,
-            force_extraction,
-            skip_aggregation,
-            sequential=False,
-        ):
+        def _always_raise(*_args, **_kwargs):
             raise RuntimeError("simulated extraction failure")
 
         # Cycle 1: claim -> attempts=1 (1<3, not dead) -> fail(dead=False) -> status='failed'
@@ -446,7 +445,7 @@ def test_dead_transition_after_max_attempts():
         )
         assert job1.attempts == 1, f"cycle 1: expected attempts=1, got {job1.attempts}"
         with mock.patch.object(
-            GenerationService, "run_deferred_learning", _always_raise
+            GenerationService, "compute_deferred_learning", _always_raise
         ):
             r1 = worker._process_job(factory("org_dead"), job1)
         assert r1 is False
@@ -466,7 +465,7 @@ def test_dead_transition_after_max_attempts():
         )
         assert job2.attempts == 2, f"cycle 2: expected attempts=2, got {job2.attempts}"
         with mock.patch.object(
-            GenerationService, "run_deferred_learning", _always_raise
+            GenerationService, "compute_deferred_learning", _always_raise
         ):
             r2 = worker._process_job(factory("org_dead"), job2)
         assert r2 is False
@@ -484,7 +483,7 @@ def test_dead_transition_after_max_attempts():
         )
         assert job3.attempts == 3, f"cycle 3: expected attempts=3, got {job3.attempts}"
         with mock.patch.object(
-            GenerationService, "run_deferred_learning", _always_raise
+            GenerationService, "compute_deferred_learning", _always_raise
         ):
             r3 = worker._process_job(factory("org_dead"), job3)
         assert r3 is False
@@ -604,10 +603,10 @@ def test_failed_job_is_reclaimable():
 
 
 def test_run_deferred_learning_schedules_tagging():
-    """schedule_tagging must be called even when sequential=True (durable-worker path).
+    """run_deferred_learning must schedule tagging exactly once.
 
-    Previously the sequential branch in _run_learning_steps returned early before
-    reaching schedule_tagging — this test guards that regression.
+    Guards against a regression where a code path returned early before reaching
+    schedule_tagging at the end of _run_learning_steps.
     """
     from reflexio.server.api_endpoints.request_context import RequestContext
     from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
@@ -645,10 +644,9 @@ def test_run_deferred_learning_schedules_tagging():
                 agent_version="v1",
                 force_extraction=False,
                 skip_aggregation=False,
-                sequential=True,
             )
 
         assert len(tagging_calls) == 1, (
-            f"schedule_tagging must be called exactly once on the sequential path, "
+            f"schedule_tagging must be called exactly once, "
             f"got {len(tagging_calls)} calls"
         )
