@@ -309,6 +309,17 @@ class _StubService(BaseGenerationService):  # type: ignore[type-arg]
     def _process_results(self, results):  # pragma: no cover
         pass
 
+    # Legacy write-in-compute shim (mirrors AgentSuccessEvaluationService) so the
+    # stub stays instantiable after gate (b) made these abstract.
+    def _resolve_write_plan(self, results):  # pragma: no cover
+        for result in results:
+            if result:
+                self._finalize_extracted_items(result)
+        return
+
+    def _persist_write_plan(self, plan):  # pragma: no cover
+        return
+
     def _should_track_in_progress(self) -> bool:
         return False
 

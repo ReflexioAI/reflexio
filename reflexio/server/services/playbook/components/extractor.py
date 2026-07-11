@@ -11,6 +11,7 @@ from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.llm.model_defaults import ModelRole, resolve_model_name
 from reflexio.server.llm.token_accounting import RunTokenTotals, sum_trace_tokens
+from reflexio.server.services.deferred_learning_plan import ExtractorBookmarkAdvance
 from reflexio.server.services.extraction.outcome import ExtractionOutcome
 from reflexio.server.services.extraction.resumable_agent import (
     run_resumable_extraction_agent,
@@ -172,25 +173,6 @@ class PlaybookExtractor:
         )
         return session_data_models
 
-    def _update_operation_state(
-        self, request_interaction_data_models: list[RequestInteractionDataModel]
-    ) -> None:
-        """
-        Update operation state after processing interactions.
-
-        Args:
-            request_interaction_data_models: The interactions that were processed
-        """
-        all_interactions = extract_interactions_from_request_interaction_data_models(
-            request_interaction_data_models
-        )
-        mgr = self._create_state_manager()
-        mgr.update_extractor_bookmark(
-            extractor_name=get_extractor_name(self.config),
-            processed_interactions=all_interactions,
-            user_id=self.service_config.user_id,
-        )
-
     # ===============================
     # public methods
     # ===============================
@@ -202,10 +184,12 @@ class PlaybookExtractor:
         This extractor handles its own data collection:
         1. Gets interactions based on its config (window size, source filtering)
         2. Applies time range filter for rerun flows
-        3. Updates operation state after processing
+        3. Defers the stride-bookmark advance onto the outcome (applied in persist)
 
         Returns:
-            list[UserPlaybook]: List of extracted user playbook entries
+            An empty list when there are no interactions to process; otherwise an
+            ExtractionOutcome carrying the extracted playbook entries, the
+            resumable run_id (when set), and the deferred bookmark advance.
         """
         # Collect interactions using extractor's own window_size/stride_size settings
         request_interaction_data_models = self._get_interactions()
@@ -217,17 +201,30 @@ class PlaybookExtractor:
 
         user_playbooks = self.extract_playbook_entries(request_interaction_data_models)
 
-        # Update operation state after successful processing
+        # Defer the stride-bookmark advance onto the outcome instead of
+        # self-advancing here (F1): applied downstream — inside the persist
+        # fence on the durable path, or in ``.run()``'s persist half — so it
+        # stays atomic with the playbook row writes. Only produced when output
+        # was generated (bookmark-iff-rows).
+        bookmark_advance: ExtractorBookmarkAdvance | None = None
         if user_playbooks:
-            self._update_operation_state(request_interaction_data_models)
-
-        if self._last_resumable_run_id:
-            return ExtractionOutcome.completed(
-                user_playbooks,
-                run_id=self._last_resumable_run_id,
-                token_totals=self._last_resumable_token_totals,
+            bookmark_advance = ExtractorBookmarkAdvance(
+                extractor_name=get_extractor_name(self.config),
+                processed_interactions=extract_interactions_from_request_interaction_data_models(
+                    request_interaction_data_models
+                ),
+                user_id=self.service_config.user_id,
             )
-        return user_playbooks
+
+        # Always return an ExtractionOutcome so the bookmark advance rides along
+        # even in the non-resumable case; a resumable run also surfaces its
+        # run_id for _agent_runs finalization.
+        return ExtractionOutcome.completed(
+            user_playbooks,
+            run_id=self._last_resumable_run_id,
+            token_totals=self._last_resumable_token_totals,
+            bookmark_advance=bookmark_advance,
+        )
 
     def extract_playbook_entries(
         self, request_interaction_data_models: list[RequestInteractionDataModel]

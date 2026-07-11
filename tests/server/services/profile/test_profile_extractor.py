@@ -365,39 +365,53 @@ class TestGetInteractions:
 
 
 class TestUpdateOperationState:
-    """Tests for operation state update logic."""
+    """Tests for the deferred stride-bookmark advance (F1).
 
-    def test_updates_state_after_processing(
+    The extractor no longer self-advances its bookmark inside ``run()``; instead
+    it carries the advance on the returned ``ExtractionOutcome`` so persist (or
+    ``.run()``'s persist half) can apply it atomically with the row writes.
+    """
+
+    def test_run_carries_bookmark_advance_with_processed_interactions(
         self,
         request_context,
         mock_llm_client,
-        extractor_config,
         service_config,
         sample_request_interaction_models,
     ):
-        """Test that operation state is updated with processed interactions."""
+        """run() must carry the processed interactions on outcome.bookmark_advance."""
+        config = ProfileExtractorConfig(
+            extractor_name="test_extractor",
+            extraction_definition_prompt="Extract user preferences",
+        )
+        request_context.storage.get_last_k_interactions_grouped.return_value = (
+            sample_request_interaction_models,
+            [],
+        )
+        request_context.storage.get_user_profile.return_value = []
+
         extractor = ProfileExtractor(
             request_context=request_context,
             llm_client=mock_llm_client,
-            extractor_config=extractor_config,
+            extractor_config=config,
             service_config=service_config,
             agent_context="Test agent",
         )
 
-        extractor._update_operation_state(sample_request_interaction_models)
+        with patch.dict(os.environ, {"MOCK_LLM_RESPONSE": "true"}):
+            result = extractor.run()
 
-        # Verify upsert was called
-        request_context.storage.upsert_operation_state.assert_called_once()
+        # Bookmark is NOT self-advanced anymore — no upsert during run().
+        request_context.storage.upsert_operation_state.assert_not_called()
 
-        # Verify state contains interaction IDs
-        call_args = request_context.storage.upsert_operation_state.call_args
-        state_key = call_args[0][0]
-        state = call_args[0][1]
-
-        assert "profile_extractor" in state_key
-        assert "last_processed_interaction_ids" in state
-        assert 1 in state["last_processed_interaction_ids"]
-        assert 2 in state["last_processed_interaction_ids"]
+        assert isinstance(result, ExtractionOutcome)
+        advance = result.bookmark_advance
+        assert advance is not None
+        processed_ids = [
+            interaction.interaction_id for interaction in advance.processed_interactions
+        ]
+        assert 1 in processed_ids
+        assert 2 in processed_ids
 
 
 # ===============================
@@ -505,14 +519,18 @@ class TestRun:
 
         request_context.storage.upsert_operation_state.assert_not_called()
 
-    def test_run_updates_operation_state_on_success(
+    def test_run_carries_bookmark_advance_on_success(
         self,
         request_context,
         mock_llm_client,
         service_config,
         sample_request_interaction_models,
     ):
-        """Test that operation state is updated after successful extraction."""
+        """After successful extraction the outcome carries a bookmark advance.
+
+        The extractor no longer writes the bookmark itself (F1) — it defers the
+        advance onto the ExtractionOutcome for persist to apply.
+        """
         config = ProfileExtractorConfig(
             extractor_name="test_extractor",
             extraction_definition_prompt="Extract user preferences",
@@ -535,9 +553,10 @@ class TestRun:
         with patch.dict(os.environ, {"MOCK_LLM_RESPONSE": "true"}):
             result = extractor.run()
 
-        # Verify operation state was updated
-        if result is not None:
-            request_context.storage.upsert_operation_state.assert_called()
+        assert isinstance(result, ExtractionOutcome)
+        assert result.bookmark_advance is not None
+        # The advance is deferred, not applied inside run().
+        request_context.storage.upsert_operation_state.assert_not_called()
 
 
 class TestResumableAgentPath:

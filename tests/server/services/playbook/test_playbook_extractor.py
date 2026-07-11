@@ -29,6 +29,7 @@ from reflexio.models.config_schema import (
 )
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
+from reflexio.server.services.extraction.outcome import ExtractionOutcome
 from reflexio.server.services.playbook.components.extractor import PlaybookExtractor
 from reflexio.server.services.playbook.playbook_service_utils import (
     StructuredPlaybookContent,
@@ -382,35 +383,50 @@ class TestGetInteractions:
 class TestUpdateOperationState:
     """Tests for operation state update logic."""
 
-    def test_updates_state_with_all_users_interactions(
+    def test_run_bookmark_advance_carries_all_users_interactions(
         self,
         request_context,
         mock_llm_client,
-        extractor_config,
         service_config,
         sample_request_interaction_models,
     ):
-        """Test that operation state is updated with interactions from all users."""
+        """run()'s outcome.bookmark_advance carries interactions from all users.
+
+        The extractor no longer self-advances the bookmark (F1); it defers the
+        advance onto the ExtractionOutcome for persist to apply atomically with
+        the playbook row writes.
+        """
+        config = PlaybookConfig(
+            extractor_name="quality_playbook",
+            extraction_definition_prompt="Evaluate agent quality",
+        )
+        request_context.storage.get_last_k_interactions_grouped.return_value = (
+            sample_request_interaction_models,
+            [],
+        )
         extractor = PlaybookExtractor(
             request_context=request_context,
             llm_client=mock_llm_client,
-            extractor_config=extractor_config,
+            extractor_config=config,
             service_config=service_config,
             agent_context="Test agent",
         )
 
-        extractor._update_operation_state(sample_request_interaction_models)
+        with patch.dict(os.environ, {"MOCK_LLM_RESPONSE": "true"}):
+            result = extractor.run()
 
-        # Verify upsert was called
-        request_context.storage.upsert_operation_state.assert_called_once()
+        # Bookmark is NOT self-advanced anymore — no upsert during run().
+        request_context.storage.upsert_operation_state.assert_not_called()
 
-        # Verify state contains all interaction IDs (from both users)
-        call_args = request_context.storage.upsert_operation_state.call_args
-        state = call_args[0][1]
-
-        assert 1 in state["last_processed_interaction_ids"]
-        assert 2 in state["last_processed_interaction_ids"]
-        assert 3 in state["last_processed_interaction_ids"]
+        assert isinstance(result, ExtractionOutcome)
+        advance = result.bookmark_advance
+        assert advance is not None
+        processed_ids = [
+            interaction.interaction_id for interaction in advance.processed_interactions
+        ]
+        assert 1 in processed_ids
+        assert 2 in processed_ids
+        assert 3 in processed_ids
 
 
 # ===============================
@@ -485,9 +501,9 @@ class TestRun:
         with patch.dict(os.environ, {"MOCK_LLM_RESPONSE": "true"}):
             result = extractor.run()
 
-        assert isinstance(result, list)
-        assert len(result) > 0
-        assert all(isinstance(f, UserPlaybook) for f in result)
+        assert isinstance(result, ExtractionOutcome)
+        assert len(result.items) > 0
+        assert all(isinstance(f, UserPlaybook) for f in result.items)
 
     def test_mock_mode_includes_source_interaction_ids(
         self,
@@ -518,9 +534,9 @@ class TestRun:
         with patch.dict(os.environ, {"MOCK_LLM_RESPONSE": "true"}):
             result = extractor.run()
 
-        assert isinstance(result, list)
-        assert len(result) == 1
-        assert result[0].source_interaction_ids == [1, 2, 3]
+        assert isinstance(result, ExtractionOutcome)
+        assert len(result.items) == 1
+        assert result.items[0].source_interaction_ids == [1, 2, 3]
 
     def test_run_returns_empty_when_no_interactions(
         self,
@@ -551,14 +567,18 @@ class TestRun:
 
         assert result == []
 
-    def test_run_updates_operation_state_on_success(
+    def test_run_carries_bookmark_advance_on_success(
         self,
         request_context,
         mock_llm_client,
         service_config,
         sample_request_interaction_models,
     ):
-        """Test that operation state is updated after successful extraction."""
+        """After successful extraction the outcome carries a bookmark advance.
+
+        The extractor no longer writes the bookmark itself (F1) — it defers the
+        advance onto the ExtractionOutcome for persist to apply.
+        """
         config = PlaybookConfig(
             extractor_name="quality_playbook",
             extraction_definition_prompt="Evaluate agent quality",
@@ -580,9 +600,10 @@ class TestRun:
         with patch.dict(os.environ, {"MOCK_LLM_RESPONSE": "true"}):
             result = extractor.run()
 
-        # Verify operation state was updated
-        if result:
-            request_context.storage.upsert_operation_state.assert_called()
+        assert isinstance(result, ExtractionOutcome)
+        assert result.bookmark_advance is not None
+        # The advance is deferred, not applied inside run().
+        request_context.storage.upsert_operation_state.assert_not_called()
 
 
 class TestResumableAgentPath:

@@ -116,6 +116,19 @@ class ConcreteGenerationService(BaseGenerationService):
     def _process_results(self, results):
         self._processed_results = results
 
+    # Legacy generic service (no durable persist split): write in compute via
+    # the permanent _finalize_extracted_items wrapper, mirroring
+    # AgentSuccessEvaluationService, so it stays instantiable after gate (b)
+    # flipped _resolve_write_plan/_persist_write_plan to @abstractmethod.
+    def _resolve_write_plan(self, results):
+        for result in results:
+            if result:
+                self._finalize_extracted_items(result)
+        return
+
+    def _persist_write_plan(self, plan):
+        return
+
     # Rerun hooks
     def _get_rerun_user_ids(self, request):
         # Get unique user IDs from request interactions

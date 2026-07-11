@@ -194,8 +194,10 @@ def test_dedup_removal_soft_supersedes_and_reconstructs(tmp_path) -> None:
 
 
 def test_supersede_raises_does_not_hard_delete_or_write_legacy() -> None:
-    """If supersede raises, the run does not raise, does not fall back to a
-    hard-delete, and never writes the (frozen) legacy change-log table."""
+    """If supersede raises, the run RE-RAISES (F1 symmetry with playbook persist:
+    a half-applied persist must not silently advance the bookmark), still does not
+    fall back to a hard-delete, and never writes the (frozen) legacy change-log
+    table."""
     mock_storage = MagicMock()
     mock_storage.supersede_profiles_by_ids.side_effect = RuntimeError("boom")
 
@@ -212,10 +214,14 @@ def test_supersede_raises_does_not_hard_delete_or_write_legacy() -> None:
     )
     with mock_dedup_cls as cls, flag:
         cls.return_value = mock_dedup
-        # Must NOT raise — the exception is swallowed and logged.
-        svc._finalize_extracted_items([p_new])
+        # Re-raises (symmetric with playbook) — the failure must not be silently
+        # swallowed, or the extractor bookmark would advance over a window whose
+        # supersede failed to commit.
+        with pytest.raises(RuntimeError, match="boom"):
+            svc._finalize_extracted_items([p_new])
 
     mock_storage.supersede_profiles_by_ids.assert_called_once()
+    # The protected invariant still holds: NO destructive hard-delete fallback.
     mock_storage.delete_user_profile.assert_not_called()
 
 

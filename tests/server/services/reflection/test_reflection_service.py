@@ -1357,3 +1357,122 @@ class TestFieldDerivableCounters:
         assert "old_len=8" in caplog.text
         assert "new_len=30" in caplog.text
         assert "delta=22" in caplog.text
+
+
+class TestDuplicateTargetDecisions:
+    """≥2 LLM decisions on the SAME target must not corrupt state.
+
+    Nothing constrains the reflection LLM to one decision per cited row. Before
+    ``_dedup_decisions_by_target``, two same-target profile revisions tore state:
+    D1 superseded ``p1`` → successor ``X`` (the replacement row is keyed by the
+    cited id); D2 reused the SAME ``X``, re-inserted it, then ``supersede_record``
+    CAS-missed (``p1`` already superseded) and its cleanup DELETED the live
+    successor ``X`` — leaving ``p1.superseded_by`` pointing at a now-deleted row
+    and double-counting ``revised_count``. Deduping at the source makes the first
+    decision the only one applied.
+    """
+
+    def test_duplicate_profile_decisions_apply_once_no_dangling(
+        self, request_context, service, llm_client
+    ):
+        _set_config(request_context)
+        storage = request_context.storage
+        _seed_profile(storage, "u1", "p1", content="old content")
+
+        cite = Citation(kind="profile", real_id="p1")
+        _seed_request_with_interactions(
+            storage,
+            "u1",
+            "r1",
+            [
+                _make_interaction("u1", "r1", "User", "hi"),
+                _make_interaction("u1", "r1", "Assistant", "hello", citations=[cite]),
+            ],
+        )
+
+        # LLM emits TWO revisions for the SAME target p1.
+        llm_client.generate_chat_response.return_value = ReflectionOutput(
+            decisions=[
+                ReflectionDecision(
+                    target_kind="profile",
+                    target_id="p1",
+                    new_content="first revision",
+                    reason="update one",
+                ),
+                ReflectionDecision(
+                    target_kind="profile",
+                    target_id="p1",
+                    new_content="second revision",
+                    reason="update two",
+                ),
+            ]
+        )
+
+        result = service.run(ReflectionServiceRequest(user_id="u1"))
+
+        # Only the first decision applies — no double count.
+        assert result.ran is True
+        assert result.revised_count == 1
+
+        current = storage.get_user_profile("u1", status_filter=[None])
+        superseded = storage.get_user_profile("u1", status_filter=[Status.SUPERSEDED])
+        # Exactly one LIVE successor + exactly one superseded incumbent.
+        assert len(current) == 1
+        assert len(superseded) == 1
+        assert current[0].profile_id != "p1"
+        assert current[0].content == "first revision"
+        assert superseded[0].profile_id == "p1"
+        # superseded_by references the LIVE successor — not a dangling deleted row.
+        assert superseded[0].superseded_by == current[0].profile_id
+
+    def test_duplicate_playbook_decisions_apply_once_no_dangling(
+        self, request_context, service, llm_client
+    ):
+        _set_config(request_context)
+        storage = request_context.storage
+        _seed_playbook(storage, 1, "u1", content="old rule")
+
+        cite = Citation(kind="playbook", real_id="1")
+        _seed_request_with_interactions(
+            storage,
+            "u1",
+            "r1",
+            [
+                _make_interaction("u1", "r1", "User", "hi"),
+                _make_interaction("u1", "r1", "Assistant", "hello", citations=[cite]),
+            ],
+        )
+
+        llm_client.generate_chat_response.return_value = ReflectionOutput(
+            decisions=[
+                ReflectionDecision(
+                    target_kind="playbook",
+                    target_id="1",
+                    new_content="first revision",
+                    new_rationale="rewritten once",
+                    reason="update one",
+                ),
+                ReflectionDecision(
+                    target_kind="playbook",
+                    target_id="1",
+                    new_content="second revision",
+                    new_rationale="rewritten twice",
+                    reason="update two",
+                ),
+            ]
+        )
+
+        result = service.run(ReflectionServiceRequest(user_id="u1"))
+
+        assert result.ran is True
+        assert result.revised_count == 1
+
+        current = storage.get_user_playbooks(user_id="u1", status_filter=[None])
+        superseded = storage.get_user_playbooks(
+            user_id="u1", status_filter=[Status.SUPERSEDED]
+        )
+        assert len(current) == 1
+        assert len(superseded) == 1
+        assert current[0].user_playbook_id != 1
+        assert current[0].content == "first revision"
+        assert superseded[0].user_playbook_id == 1

@@ -145,6 +145,7 @@ class LearningJobStoreABC(ABC):
         job_id: str,
         claim_token: str,
         dead: bool,
+        refund_attempt: bool = False,
     ) -> None:
         """Fenced fail/dead transition — sets status, does NOT increment attempts.
 
@@ -157,6 +158,25 @@ class LearningJobStoreABC(ABC):
         worker's dead-gate (``job.attempts >= max_attempts``) depends on that
         single-increment-per-claim invariant.  Incrementing here would
         double-count and misfire the dead transition.
+
+        ``refund_attempt`` (default ``False``): when ``True``, decrement
+        ``attempts`` by one (floored at 0) as part of this transition. This is
+        the same-user-contention requeue path (F4): the worker claimed the job
+        (``claim_learning_jobs`` did ``attempts += 1``) but could not run because
+        another same-user job holds the per-user lock, so it releases the job
+        WITHOUT having done any real work. Refunding the claim's increment makes
+        a contention cycle (claim +1, contention-release -1) net to zero, so a
+        job that loses the same-user race repeatedly (every ~2s poll while the
+        holder runs its ~60s compute) does NOT inflate ``attempts`` past
+        ``max_attempts`` and dead-letter with zero real retries. It is a no-op
+        unless ``refund_attempt=True``, so the ``dead`` retry path is unchanged.
+
+        # TASK 10: the enterprise Supabase (``reflexio_ext/server/services/
+        # storage/supabase_storage/_learning_jobs.py``) and native-Postgres
+        # ``fail_learning_job`` impls (and their ``claim_learning_jobs`` SQL
+        # functions) need this same ``refund_attempt`` decrement. The param is
+        # optional with a default so this base signature stays back-compatible
+        # until they are updated.
         """
         raise NotImplementedError
 

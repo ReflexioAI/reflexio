@@ -213,6 +213,33 @@ class AgentSuccessEvaluationService(
                     attempt,
                 )
 
+    def _resolve_write_plan(self, results: list) -> None:
+        """Compute-half — write the evaluation results HERE (never durable-split).
+
+        Agent-success evaluation was never split into a durable compute/persist
+        pair: its results never flow through the durable worker's fence, so the
+        save stays inline in compute exactly as before, routed through the
+        permanent ``_finalize_extracted_items`` -> ``_process_results`` path
+        (which has its own retry/backoff + EvalHealth accounting). Returns
+        ``None`` so ``persist_generation`` invokes no further write. This is the
+        concrete default that keeps ``AgentSuccessEvaluationService`` instantiable
+        after ``BaseGenerationService`` flipped ``_resolve_write_plan`` /
+        ``_persist_write_plan`` to ``@abstractmethod`` (gate b, Task 8).
+        """
+        for result in results:
+            if result:
+                self._finalize_extracted_items(result)
+        return
+
+    def _persist_write_plan(self, plan: object) -> None:
+        """Persist-half — NO-OP: the write already ran in ``_resolve_write_plan``.
+
+        ``_resolve_write_plan`` returns ``None`` so ``persist_generation`` never
+        reaches this; it exists only to satisfy the abstract contract.
+        """
+        del plan
+        return
+
     def has_run_failures(self) -> bool:
         """Return True if extractor execution or result persistence failed."""
         extractor_failed_count = self._last_extractor_run_stats.get("failed", 0)

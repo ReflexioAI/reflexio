@@ -25,6 +25,10 @@ from reflexio.server.services.base_generation import (
 from reflexio.server.services.base_generation import (
     StatusChangeOperation as StatusChangeOperation,  # re-export for back-compat
 )
+from reflexio.server.services.deferred_learning_plan import (
+    ExtractorBookmarkAdvance,
+    GenerationComputePlan,
+)
 from reflexio.server.services.extractor_config_utils import (
     get_extractor_name,
 )
@@ -209,6 +213,9 @@ class BaseGenerationService(
         }
         self._last_extraction_run_ids: list[str] = []
         self._last_token_totals: RunTokenTotals | None = None
+        # Stride-bookmark advance deferred off the extractor (F1); captured in
+        # ``_execute_extractor`` and applied in the persist half of the run.
+        self._last_bookmark_advance: ExtractorBookmarkAdvance | None = None
         # Window fetched by the should-run gate (_collect_scoped_interactions_for_precheck),
         # stashed so the billing path (_extraction_input_text) can reuse it instead of
         # re-querying storage. None when the gate did not run (bypass paths).
@@ -501,69 +508,29 @@ class BaseGenerationService(
             raise
 
     def _run_generation(self, request: TRequest) -> None:
-        """
-        Run the actual generation logic.
+        """Run one generation synchronously: compute -> persist -> emit.
 
-        Orchestrates validation, config loading, extractor execution, and result
-        processing by delegating to _prepare_generation_run and _execute_extractor.
+        Thin wrapper preserving the pre-split behavior for the synchronous
+        ``.run()`` / manual / rerun callers: compute (extractor + dedup +
+        embeddings), persist (row writes + the extractor stride-bookmark
+        advance) and post-commit side-effects (telemetry + billing) run together
+        with **no** external ``commit_scope``. Only the durable worker (Task 8/9)
+        drives ``compute_generation`` / ``persist_generation`` /
+        ``emit_generation_side_effects`` separately across its fenced scope.
+
+        The outer ``except`` records ``generation_failed`` and re-raises
+        ``ExtractorExecutionError`` exactly as before.
 
         Args:
             request: The request object containing parameters
         """
-        if not request:
-            logger.error("Received None request for %s", self._get_service_name())
-            return
-
         generation_start = time.perf_counter()
         try:
-            prepared = self._prepare_generation_run(request)
-            if prepared is None:
+            plan = self.compute_generation(request)
+            if plan is None:
                 return
-
-            self._record_generation_event(
-                event_name="generation_started",
-                outcome="started",
-                count_value=1,
-                metadata={
-                    "identifier": prepared.identifier,
-                    "extractor_name": prepared.extractor_name,
-                },
-            )
-            self._last_extraction_run_ids = []
-            self._last_token_totals = None
-            result = self._execute_extractor(
-                prepared.extractor_config, prepared.identifier
-            )
-            generated_count = self._count_generated_results(result)
-
-            try:
-                if result:
-                    self._process_results([result])
-                self._finalize_extraction_runs()
-            except Exception as exc:
-                self._mark_extraction_runs_finalization_failed(exc)
-                raise
-
-            self._record_generation_event(
-                event_name="generation_succeeded",
-                outcome="success",
-                count_value=generated_count,
-                duration_ms=int((time.perf_counter() - generation_start) * 1000),
-                metadata={
-                    "identifier": prepared.identifier,
-                    "extractor_name": prepared.extractor_name,
-                    "extractor_failed": bool(
-                        self._last_extractor_run_stats.get("failed")
-                    ),
-                    "extractor_timed_out": bool(
-                        self._last_extractor_run_stats.get("timed_out")
-                    ),
-                },
-            )
-            self._record_billing_learning_events(
-                prepared=prepared, generated_count=generated_count
-            )
-
+            self.persist_generation(plan)
+            self.emit_generation_side_effects(plan)
         except Exception as e:
             self._record_generation_event(
                 event_name="generation_failed",
@@ -579,6 +546,178 @@ class BaseGenerationService(
             )
             if isinstance(e, ExtractorExecutionError):
                 raise
+
+    def compute_generation(self, request: TRequest) -> GenerationComputePlan | None:
+        """Compute half of one generation run — NO learning DB write, NO fence.
+
+        Runs the prepare gate, the extractor (thread-pool LLM tool-loop), dedup
+        + embedding resolution (``_resolve_write_plan``), and drives the
+        ``agent_run`` rows to their terminal state (``_finalize_extraction_runs``
+        — agent_run only, §4.3). Snapshots the billing inputs onto the returned
+        plan so ``emit_generation_side_effects`` never depends on the reused
+        instance's mutable ``_last_*``.
+
+        Returns a resolved ``GenerationComputePlan`` for persist/emit, or
+        ``None`` when the prepare gate closes (nothing to run). Raises
+        ``ExtractorExecutionError`` on extractor failure — the caller
+        (``_run_generation`` / the durable worker) records ``generation_failed``.
+        """
+        if not request:
+            logger.error("Received None request for %s", self._get_service_name())
+            return None
+
+        generation_start = time.perf_counter()
+        prepared = self._prepare_generation_run(request)
+        if prepared is None:
+            return None
+
+        self._record_generation_event(
+            event_name="generation_started",
+            outcome="started",
+            count_value=1,
+            metadata={
+                "identifier": prepared.identifier,
+                "extractor_name": prepared.extractor_name,
+            },
+        )
+        self._last_extraction_run_ids = []
+        self._last_token_totals = None
+        self._last_bookmark_advance = None
+        result = self._execute_extractor(prepared.extractor_config, prepared.identifier)
+        generated_count = self._count_generated_results(result)
+
+        try:
+            write_plan = self._resolve_write_plan([result]) if result else None
+            self._finalize_extraction_runs()
+        except Exception as exc:
+            self._mark_extraction_runs_finalization_failed(exc)
+            raise
+
+        return GenerationComputePlan(
+            prepared=prepared,
+            generated_count=generated_count,
+            write_plan=write_plan,
+            bookmark_advance=self._last_bookmark_advance,
+            generation_start=generation_start,
+            extraction_run_ids=list(self._last_extraction_run_ids),
+            token_totals=self._last_token_totals,
+        )
+
+    def persist_generation(self, plan: GenerationComputePlan) -> None:
+        """Persist half — apply the write-plan + the extractor bookmark advance.
+
+        This is the ONLY part that runs inside the durable worker's fenced
+        ``commit_scope`` (and inline on the synchronous ``.run()`` path). It
+        issues only the resolved write-plan's row writes (embeddings already
+        precomputed in compute for Tasks 6-7) and the extractor stride-bookmark
+        advance — **no** events, **no** billing, **no** LLM / embedding compute.
+
+        The bookmark advance is applied HERE so that BOTH the synchronous
+        ``.run()`` path and the durable persist fence advance the bookmark
+        atomically with the row writes it corresponds to (F1) — and it is
+        applied in exactly one place, so it is never double-applied.
+        """
+        if plan.write_plan is not None:
+            self._persist_write_plan(plan.write_plan)
+        self._apply_bookmark_advance(plan.bookmark_advance)
+
+    def emit_generation_side_effects(self, plan: GenerationComputePlan) -> None:
+        """Post-commit side-effects — telemetry + ② Learning billing.
+
+        Runs only for a fence-winning job (the durable worker calls it after the
+        scope commits; ``.run()`` calls it inline). Reads the plan's compute-time
+        snapshot (``generated_count`` / ``prepared`` / ``generation_start``) so a
+        fence-lost job never emits.
+
+        Billing purity note (round-2 finding): ``_record_billing_learning_events``
+        also reads ``self._last_token_totals`` / ``self._last_precheck_sessions``,
+        and the ``generation_succeeded`` metadata reads ``self._last_extractor_run_stats``.
+        These are NOT re-plumbed to the plan — the money helper lives in a
+        separate mixin behind a documented patch seam (``_usage_billing.py`` SINK-3)
+        and re-plumbing it would touch the money path for zero behavior change.
+        It is safe under the **single-use-instance invariant**: every generation
+        service instance runs exactly one compute→persist→emit for one job with
+        no interleaving (``.run()`` is synchronous; the durable orchestration in
+        Task 8 holds one ``(instance, plan)`` pair per profile/playbook service
+        and never re-runs compute on that instance before emit), so ``self._last_*``
+        is exactly as compute left it when emit runs. The plan still snapshots the
+        billing inputs so a future durable reuse can re-plumb locally.
+        """
+        self._record_generation_event(
+            event_name="generation_succeeded",
+            outcome="success",
+            count_value=plan.generated_count,
+            duration_ms=int((time.perf_counter() - plan.generation_start) * 1000),
+            metadata={
+                "identifier": plan.prepared.identifier,
+                "extractor_name": plan.prepared.extractor_name,
+                "extractor_failed": bool(self._last_extractor_run_stats.get("failed")),
+                "extractor_timed_out": bool(
+                    self._last_extractor_run_stats.get("timed_out")
+                ),
+            },
+        )
+        self._record_billing_learning_events(
+            prepared=plan.prepared, generated_count=plan.generated_count
+        )
+
+    @abstractmethod
+    def _resolve_write_plan(self, results: list) -> Any | None:
+        """Compute-half of item finalization — resolve a write-plan, NO DB write.
+
+        Runs the dedup + source/status assignment + embedding precompute and
+        returns a resolved write-plan (or ``None`` when there is nothing to
+        write). Issues NO learning DB write — the write is the persist half's
+        job (``_persist_write_plan``), so this stays inside the compute purity
+        contract (the compute-write-tripwire contract test).
+
+        The durable-split ``ProfileGenerationService`` /
+        ``PlaybookGenerationService`` return a real ``ProfileWritePlan`` /
+        ``PlaybookWritePlan`` (Tasks 6-7). ``AgentSuccessEvaluationService`` was
+        never split into a durable persist path — it keeps a concrete override
+        that writes in compute via its permanent ``_finalize_extracted_items``
+        wrapper (its results never flow through the durable worker fence).
+        """
+
+    @abstractmethod
+    def _persist_write_plan(self, plan: Any) -> None:
+        """Persist-half of item finalization — apply the resolved write-plan.
+
+        Issues only the fence-critical row writes for a plan produced by
+        ``_resolve_write_plan`` (embeddings already precomputed in compute), with
+        NO LLM / embedding / dedup. This is the only item-finalization work that
+        runs inside the durable worker's fenced ``commit_scope``.
+
+        ``AgentSuccessEvaluationService`` (never split) implements this as a
+        no-op — its ``_resolve_write_plan`` performs the write in compute and
+        returns ``None`` so ``persist_generation`` never invokes this.
+        """
+
+    def _apply_bookmark_advance(self, advance: ExtractorBookmarkAdvance | None) -> None:
+        """Apply the deferred extractor stride-bookmark advance (F1).
+
+        The extractor emits its bookmark advance on the ``ExtractionOutcome``
+        rather than self-advancing; ``_execute_extractor`` captures it and
+        ``compute_generation`` snapshots it onto the ``GenerationComputePlan``.
+        This applies it via ``update_extractor_bookmark`` using the same
+        OperationStateManager service name the extractor used, so the bookmark
+        key is byte-identical. No-op when the extractor produced no output
+        (``advance`` is ``None``) or the service has no stride bookmark.
+
+        Args:
+            advance: The bookmark advance from ``plan.bookmark_advance``.
+        """
+        if advance is None or self.storage is None:
+            return
+        service_name = self._get_extractor_state_service_name()
+        if service_name is None:
+            return
+        manager = OperationStateManager(self.storage, self.org_id, service_name)
+        manager.update_extractor_bookmark(
+            extractor_name=advance.extractor_name,
+            processed_interactions=advance.processed_interactions,
+            user_id=advance.user_id,
+        )
 
     def _prepare_generation_run(
         self, request: TRequest

@@ -14,6 +14,7 @@ from reflexio.models.config_schema import ProfileExtractorConfig
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.llm.token_accounting import RunTokenTotals, sum_trace_tokens
+from reflexio.server.services.deferred_learning_plan import ExtractorBookmarkAdvance
 from reflexio.server.services.extraction.outcome import ExtractionOutcome
 from reflexio.server.services.extraction.resumable_agent import (
     run_resumable_extraction_agent,
@@ -181,25 +182,6 @@ class ProfileExtractor:
         )
         return session_data_models
 
-    def _update_operation_state(
-        self, request_interaction_data_models: list[RequestInteractionDataModel]
-    ) -> None:
-        """
-        Update operation state after processing interactions.
-
-        Args:
-            request_interaction_data_models: The interactions that were processed
-        """
-        all_interactions = extract_interactions_from_request_interaction_data_models(
-            request_interaction_data_models
-        )
-        mgr = self._create_state_manager()
-        mgr.update_extractor_bookmark(
-            extractor_name=get_extractor_name(self.config),
-            processed_interactions=all_interactions,
-            user_id=self.service_config.user_id,
-        )
-
     def run(self) -> list[UserProfile] | ExtractionOutcome[UserProfile] | None:
         """
         Extract profiles from request interaction groups.
@@ -209,10 +191,12 @@ class ProfileExtractor:
         2. Applies time range filter for rerun flows
         3. Calls LLM to extract profiles
         4. Converts raw extraction to UserProfile objects
-        5. Updates operation state after processing
+        5. Defers the stride-bookmark advance onto the outcome (applied in persist)
 
         Returns:
-            Optional[list[UserProfile]]: List of extracted profiles, or None if no profiles found
+            None when there are no interactions to process; otherwise an
+            ExtractionOutcome carrying the extracted profiles, the resumable
+            run_id (when set), and the deferred bookmark advance.
         """
         # Collect interactions using extractor's own window_size/stride_size settings
         request_interaction_data_models = self._get_interactions()
@@ -257,22 +241,33 @@ class ProfileExtractor:
             request_id=self.service_config.request_id,
             source_interaction_ids=source_interaction_ids,
         )
+        # Defer the stride-bookmark advance onto the outcome instead of
+        # self-advancing here (F1): the advance is applied downstream — inside
+        # the persist fence on the durable path, or in ``.run()``'s persist
+        # half — so it stays atomic with the profile row writes it corresponds
+        # to. Only produced when output was generated (bookmark-iff-rows).
+        bookmark_advance: ExtractorBookmarkAdvance | None = None
         if raw_profiles:
-            # Update operation state (bookmark) only when output was produced.
-            self._update_operation_state(request_interaction_data_models)
-
-        # A resumable run must always surface its run_id so the generation
-        # service can finalize the _agent_runs row (FINALIZED_PENDING_TOOL when
-        # the agent created a follow-up ask and finished with empty output).
-        # Dropping the run_id here would orphan the run in AGENT_COMPLETED and
-        # sever the resolve -> resume chain. Mirrors PlaybookExtractor.run().
-        if self._last_resumable_run_id:
-            return ExtractionOutcome.completed(
-                user_profiles,
-                run_id=self._last_resumable_run_id,
-                token_totals=self._last_resumable_token_totals,
+            bookmark_advance = ExtractorBookmarkAdvance(
+                extractor_name=get_extractor_name(self.config),
+                processed_interactions=extract_interactions_from_request_interaction_data_models(
+                    request_interaction_data_models
+                ),
+                user_id=self.service_config.user_id,
             )
-        return user_profiles or None
+
+        # Always return an ExtractionOutcome so the bookmark advance rides along
+        # even in the non-resumable case. A resumable run must also surface its
+        # run_id so the generation service can finalize the _agent_runs row
+        # (FINALIZED_PENDING_TOOL when the agent created a follow-up ask and
+        # finished with empty output); dropping it would orphan the run in
+        # AGENT_COMPLETED and sever the resolve -> resume chain.
+        return ExtractionOutcome.completed(
+            user_profiles,
+            run_id=self._last_resumable_run_id,
+            token_totals=self._last_resumable_token_totals,
+            bookmark_advance=bookmark_advance,
+        )
 
     def _convert_raw_to_user_profiles(
         self,

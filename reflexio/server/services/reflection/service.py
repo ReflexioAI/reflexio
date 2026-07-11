@@ -39,6 +39,7 @@ from reflexio.models.api_schema.domain.entities import (
     UserProfile,
 )
 from reflexio.server.llm.litellm_client import LiteLLMClient
+from reflexio.server.services.deferred_learning_plan import ReflectionWritePlan
 from reflexio.server.services.operation_state_utils import OperationStateManager
 from reflexio.server.services.playbook.aggregation_trigger import (
     maybe_trigger_user_playbook_aggregation,
@@ -84,23 +85,63 @@ class ReflectionService:
     ):
         self.request_context = request_context
         self.client = llm_client
+        # Per-persist state threaded from the write-plan into the (verbatim)
+        # apply loop's ``_replace_*`` helpers without changing their signatures.
+        # Empty on the direct-call / ``.run()``-without-compute paths, which then
+        # build+embed the replacement row inline exactly as before.
+        self._pending_replacement_profiles: dict[str, UserProfile] = {}
+        self._pending_replacement_playbooks: dict[int, UserPlaybook] = {}
+        self._pending_aggregation_successor_ids: list[int] = []
+        # Partial result threaded out of compute's four no-write paths to run().
+        self._pending_partial_result: ReflectionResult | None = None
 
     def run(self, request: ReflectionServiceRequest) -> ReflectionResult:
-        """Execute one reflection pass.
+        """Execute one reflection pass (compute → persist → side-effects).
 
-        Always returns a ``ReflectionResult`` describing what happened.
-        Routine failure modes (gate closed, no citations, missing rows,
-        LLM error) do not raise. Storage exceptions propagate.
+        Behavior-identical wrapper over the split: ``compute`` does all the
+        read + LLM work (no learning write), ``persist`` applies the resolved
+        write-plan (rows + bookmark) and ``emit_side_effects`` fires the
+        post-write billing + aggregation triggers. Always returns a
+        ``ReflectionResult`` describing what happened. Routine failure modes
+        (gate closed, no citations, missing rows, LLM error) do not raise.
+        Storage exceptions propagate.
+        """
+        self._pending_partial_result = None
+        plan = self.compute(request)
+        if plan is None:
+            # The four no-write paths (config disabled, storage None, gate
+            # closed, extractor failure) thread their partial result out here.
+            return self._pending_partial_result or ReflectionResult()
+        self.persist(plan)
+        self.emit_side_effects(plan)
+        return plan.result
+
+    def compute(self, request: ReflectionServiceRequest) -> ReflectionWritePlan | None:
+        """Resolve one reflection pass into a write-plan, issuing NO write.
+
+        Runs the gate, window pull, citation filter, cited-row resolve and the
+        reflection LLM call, then precomputes the replacement rows' embeddings
+        (V2) so persist embeds nothing inside the fence.
+
+        Returns ``None`` (nothing to persist) on the four no-write paths —
+        config disabled, storage ``None``, gate closed, extractor failure —
+        stashing the partial ``ReflectionResult`` on ``self`` for ``run()``.
+        Returns a ``ReflectionWritePlan`` on all five bookmark-advance paths
+        (the four early-advance returns carry ``decisions=[]`` +
+        ``advance_bookmark=True``; the normal path carries the resolved
+        decisions/rows + ``record_learnings=True``).
         """
         result = ReflectionResult()
         config = self.request_context.configurator.get_config()
         reflection_config = config.reflection_config if config else None
         if reflection_config is not None and not reflection_config.enabled:
-            return result
+            self._pending_partial_result = result
+            return None
 
         storage = self.request_context.storage
         if storage is None:
-            return result
+            self._pending_partial_result = result
+            return None
 
         window_size = config.window_size if config else 10
         stride_size = config.stride_size if config else 5
@@ -120,7 +161,8 @@ class ReflectionService:
         )
         new_count = sum(len(m.interactions) for m in new_models)
         if new_count < stride_size:
-            return result
+            self._pending_partial_result = result
+            return None
         result.gate_open = True
 
         # Pull window of last window_size interactions for the user.
@@ -131,23 +173,16 @@ class ReflectionService:
         )
         window_interactions = _flatten(window_models)
         if not window_interactions:
-            mgr.update_extractor_bookmark(
-                REFLECTION_OPERATION_NAME,
-                processed_interactions=[],
-                user_id=request.user_id,
-            )
-            return result
+            # Empty window: advance the bookmark over nothing (persist).
+            return self._advance_only_plan(request, result, bookmark_interactions=[])
 
         citations = _collect_citations(window_interactions)
         result.cited_count = len(citations)
         if not citations:
             # Advance the bookmark — we did examine this window.
-            mgr.update_extractor_bookmark(
-                REFLECTION_OPERATION_NAME,
-                processed_interactions=window_interactions,
-                user_id=request.user_id,
+            return self._advance_only_plan(
+                request, result, bookmark_interactions=window_interactions
             )
-            return result
 
         # Post-horizon filter: only send citations with enough follow-up context.
         post_horizon_size = (
@@ -162,12 +197,9 @@ class ReflectionService:
         deferred_count = len(citations) - len(eligible)
         result.skipped_count += deferred_count
         if not eligible:
-            mgr.update_extractor_bookmark(
-                REFLECTION_OPERATION_NAME,
-                processed_interactions=window_interactions,
-                user_id=request.user_id,
+            return self._advance_only_plan(
+                request, result, bookmark_interactions=window_interactions
             )
-            return result
 
         eligible_citations = [e.citation for e in eligible]
         horizon_by_key: dict[tuple[str, str], bool] = {
@@ -182,12 +214,9 @@ class ReflectionService:
         result.skipped_count += missing
         result.considered_count = len(cited_profiles) + len(cited_playbooks)
         if result.considered_count == 0:
-            mgr.update_extractor_bookmark(
-                REFLECTION_OPERATION_NAME,
-                processed_interactions=window_interactions,
-                user_id=request.user_id,
+            return self._advance_only_plan(
+                request, result, bookmark_interactions=window_interactions
             )
-            return result
 
         agent_context = (config.agent_context_prompt or "") if config else ""
         model_override = reflection_config.model if reflection_config else None
@@ -218,7 +247,8 @@ class ReflectionService:
                     request.user_id,
                 )
             # Don't advance bookmark — let the next publish retry.
-            return result
+            self._pending_partial_result = result
+            return None
 
         result.ran = True
         profiles_by_id = {p.profile_id: p for p in cited_profiles}
@@ -230,22 +260,76 @@ class ReflectionService:
             else _DEFAULT_MAX_REVISIONS_PER_PASS
         )
 
-        for decision in output.decisions:
+        # Collapse ≥2 decisions on the SAME target to the first (the LLM emits one
+        # decision per cited row, but nothing constrains it to one per target).
+        # Two same-target revisions produce torn state in persist: D1 supersedes
+        # the incumbent, D2 reuses the SAME successor uuid (keyed by cited id),
+        # finds the incumbent already superseded, its CAS misses, and its cleanup
+        # deletes the live successor — a dangling ``superseded_by`` + double-count.
+        # Deduplicating at the source keeps _precompute_replacement_rows and the
+        # persist apply loop in lockstep and makes that state unreachable.
+        decisions = _dedup_decisions_by_target(output.decisions)
+
+        # V2: precompute the replacement rows' embeddings here (outside any
+        # writer transaction) so persist inserts them with skip_embedding=True.
+        replacement_profiles, replacement_playbooks = self._precompute_replacement_rows(
+            request=request,
+            decisions=decisions,
+            profiles_by_id=profiles_by_id,
+            playbooks_by_id=playbooks_by_id,
+            max_revisions_per_pass=max_revisions_per_pass,
+        )
+
+        return ReflectionWritePlan(
+            request=request,
+            result=result,
+            decisions=decisions,
+            profiles_by_id=profiles_by_id,
+            playbooks_by_id=playbooks_by_id,
+            max_revisions_per_pass=max_revisions_per_pass,
+            bookmark_interactions=window_interactions,
+            advance_bookmark=True,
+            record_learnings=True,
+            replacement_profiles=replacement_profiles,
+            replacement_playbooks=replacement_playbooks,
+        )
+
+    def persist(self, plan: ReflectionWritePlan) -> None:
+        """Apply the resolved write-plan inside the caller's fence.
+
+        Runs the cap/validate/CAS apply loop verbatim (mutating ``plan.result``
+        in place), inserting replacement rows with ``skip_embedding=True`` (their
+        embeddings were precomputed in ``compute``), then advances the reflection
+        stride-bookmark iff ``plan.advance_bookmark``. Playbook aggregation
+        triggers are only *collected* here (dispatched post-commit in
+        ``emit_side_effects``) so they never fire on a rolled-back job.
+        """
+        request = plan.request
+        result = plan.result
+        # Thread the precomputed replacement rows + aggregation-trigger sink into
+        # the verbatim apply loop's _replace_* helpers.
+        self._pending_replacement_profiles = plan.replacement_profiles
+        self._pending_replacement_playbooks = plan.replacement_playbooks
+        self._pending_aggregation_successor_ids = plan.aggregation_successor_ids
+
+        for decision in plan.decisions:
             if not _is_revision(decision):
                 result.no_change_count += 1
                 continue
             # Per-pass cap: once we've applied max_revisions_per_pass
             # revisions, skip any further revision-intent decisions.
-            if result.revised_count >= max_revisions_per_pass:
+            if result.revised_count >= plan.max_revisions_per_pass:
                 result.capped_count += 1
                 continue
             try:
-                self._validate_decision(decision, profiles_by_id, playbooks_by_id)
+                self._validate_decision(
+                    decision, plan.profiles_by_id, plan.playbooks_by_id
+                )
                 applied = self._apply_revision(
                     request=request,
                     decision=decision,
-                    profiles_by_id=profiles_by_id,
-                    playbooks_by_id=playbooks_by_id,
+                    profiles_by_id=plan.profiles_by_id,
+                    playbooks_by_id=plan.playbooks_by_id,
                 )
             except Exception as exc:  # noqa: BLE001 — per-decision isolation
                 result.failed_count += 1
@@ -276,38 +360,217 @@ class ReflectionService:
             else:
                 result.skipped_count += 1
 
-        mgr.update_extractor_bookmark(
-            REFLECTION_OPERATION_NAME,
-            processed_interactions=window_interactions,
-            user_id=request.user_id,
+        if plan.advance_bookmark:
+            mgr = OperationStateManager(
+                self.request_context.storage,  # type: ignore[arg-type]
+                self.request_context.org_id,
+                REFLECTION_OPERATION_NAME,
+            )
+            mgr.update_extractor_bookmark(
+                REFLECTION_OPERATION_NAME,
+                processed_interactions=plan.bookmark_interactions,
+                user_id=request.user_id,
+            )
+
+    def emit_side_effects(self, plan: ReflectionWritePlan) -> None:
+        """Fire post-commit billing + aggregation triggers for a winning job.
+
+        Only invoked after the persist fence commits, so nothing here runs for
+        a superseded / rolled-back job (phantom-billing gate).
+        """
+        request = plan.request
+        result = plan.result
+        if plan.record_learnings:
+            self._record_learnings_generated(request, result)
+            logger.info(
+                "event=reflection_done user_id=%s gate_open=%s ran=%s "
+                "cited=%d considered=%d no_change=%d revised=%d "
+                "trigger_revised=%d content_revised=%d ttl_changed=%d capped=%d "
+                "skipped=%d failed=%d",
+                request.user_id,
+                result.gate_open,
+                result.ran,
+                result.cited_count,
+                result.considered_count,
+                result.no_change_count,
+                result.revised_count,
+                result.trigger_revised_count,
+                result.content_revised_count,
+                result.ttl_changed_count,
+                result.capped_count,
+                result.skipped_count,
+                result.failed_count,
+            )
+
+        self._dispatch_aggregation_triggers(plan.aggregation_successor_ids)
+
+    def _advance_only_plan(
+        self,
+        request: ReflectionServiceRequest,
+        result: ReflectionResult,
+        *,
+        bookmark_interactions: list[Interaction],
+    ) -> ReflectionWritePlan:
+        """Build a no-decision plan that only advances the bookmark in persist."""
+        return ReflectionWritePlan(
+            request=request,
+            result=result,
+            decisions=[],
+            profiles_by_id={},
+            playbooks_by_id={},
+            max_revisions_per_pass=0,
+            bookmark_interactions=bookmark_interactions,
+            advance_bookmark=True,
+            record_learnings=False,
         )
 
-        self._record_learnings_generated(request, result)
+    def _dispatch_aggregation_triggers(self, successor_ids: list[int]) -> None:
+        """Best-effort user-playbook aggregation trigger for each successor.
 
-        logger.info(
-            "event=reflection_done user_id=%s gate_open=%s ran=%s "
-            "cited=%d considered=%d no_change=%d revised=%d "
-            "trigger_revised=%d content_revised=%d ttl_changed=%d capped=%d "
-            "skipped=%d failed=%d",
-            request.user_id,
-            result.gate_open,
-            result.ran,
-            result.cited_count,
-            result.considered_count,
-            result.no_change_count,
-            result.revised_count,
-            result.trigger_revised_count,
-            result.content_revised_count,
-            result.ttl_changed_count,
-            result.capped_count,
-            result.skipped_count,
-            result.failed_count,
-        )
-        return result
+        Runs post-commit (outside the persist fence). Reloads each successor to
+        read its ``agent_version``; a reload/trigger failure is logged but never
+        propagates, exactly as the pre-split inline trigger behaved.
+        """
+        storage = self.request_context.storage
+        if storage is None:
+            return
+        for successor_id in successor_ids:
+            try:
+                successor = storage.get_user_playbook_by_id(successor_id)
+                if successor is not None and successor.agent_version:
+                    maybe_trigger_user_playbook_aggregation(
+                        request_context=self.request_context,
+                        llm_client=self.client,
+                        agent_version=successor.agent_version,
+                        reason="reflection",
+                    )
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "event=reflection_aggregation_trigger_failed kind=playbook "
+                    "successor_id=%s",
+                    successor_id,
+                )
 
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    def _precompute_replacement_rows(
+        self,
+        *,
+        request: ReflectionServiceRequest,
+        decisions: list[ReflectionDecision],
+        profiles_by_id: dict[str, UserProfile],
+        playbooks_by_id: dict[int, UserPlaybook],
+        max_revisions_per_pass: int,
+    ) -> tuple[dict[str, UserProfile], dict[int, UserPlaybook]]:
+        """Build + embed the replacement rows persist will insert (V2).
+
+        Mirrors the persist apply loop's cap / validate / resolve so it builds
+        exactly the rows persist applies (no more, no fewer), embedding them via
+        ``precompute_*_embeddings`` outside any writer transaction. Persist then
+        inserts each with ``skip_embedding=True``. Keyed by the **cited** row id
+        (``profile_id`` / ``user_playbook_id``) so ``_replace_*`` can look up the
+        successor for the incumbent it is superseding.
+        """
+        storage = self.request_context.storage
+        replacement_profiles: dict[str, UserProfile] = {}
+        replacement_playbooks: dict[int, UserPlaybook] = {}
+        if storage is None:
+            return replacement_profiles, replacement_playbooks
+
+        applied = 0
+        for decision in decisions:
+            if not _is_revision(decision):
+                continue
+            if applied >= max_revisions_per_pass:
+                # Cap reached — every remaining revision is capped in persist too.
+                break
+            try:
+                self._validate_decision(decision, profiles_by_id, playbooks_by_id)
+            except Exception:  # noqa: BLE001, S112 — mirrors persist per-decision isolation
+                # A validation failure never applies a revision (persist counts
+                # it as failed, not revised) so it consumes no cap and builds no
+                # row — skip it here too.
+                continue
+            if decision.target_kind == "profile":
+                cited_p = profiles_by_id.get(decision.target_id)
+                if cited_p is None:
+                    continue
+                new_profile = self._build_replacement_profile(
+                    request, decision, cited_p
+                )
+                storage.precompute_profile_embeddings([new_profile])
+                replacement_profiles[cited_p.profile_id] = new_profile
+                applied += 1
+            else:
+                try:
+                    target_id = int(decision.target_id)
+                except (TypeError, ValueError):
+                    continue
+                cited_pb = playbooks_by_id.get(target_id)
+                if cited_pb is None:
+                    continue
+                new_playbook = self._build_replacement_playbook(
+                    request, decision, cited_pb
+                )
+                storage.precompute_user_playbook_embeddings([new_playbook])
+                replacement_playbooks[cited_pb.user_playbook_id] = new_playbook
+                applied += 1
+        return replacement_profiles, replacement_playbooks
+
+    def _build_replacement_profile(
+        self,
+        request: ReflectionServiceRequest,  # noqa: ARG002 — parity with _build_replacement_playbook
+        decision: ReflectionDecision,
+        cited: UserProfile,
+    ) -> UserProfile:
+        """Construct the replacement profile row for a revision decision."""
+        now_ts = int(datetime.now(UTC).timestamp())
+        return UserProfile(
+            profile_id=str(uuid.uuid4()),
+            user_id=cited.user_id,
+            content=decision.new_content or cited.content,
+            last_modified_timestamp=now_ts,
+            generated_from_request_id=cited.generated_from_request_id,
+            profile_time_to_live=(
+                decision.new_profile_time_to_live or cited.profile_time_to_live
+            ),
+            custom_features=cited.custom_features,
+            source=cited.source,
+            status=None,
+            extractor_names=cited.extractor_names,
+        )
+
+    def _build_replacement_playbook(
+        self,
+        request: ReflectionServiceRequest,
+        decision: ReflectionDecision,
+        cited: UserPlaybook,
+    ) -> UserPlaybook:
+        """Construct the replacement playbook row for a revision decision."""
+        owning_user_id = cited.user_id or request.user_id
+        return UserPlaybook(
+            user_playbook_id=0,  # auto-assigned by storage
+            user_id=owning_user_id,
+            agent_version=cited.agent_version or request.agent_version,
+            request_id=cited.request_id,
+            playbook_name=cited.playbook_name,
+            content=decision.new_content or cited.content,
+            trigger=(
+                decision.new_trigger
+                if decision.new_trigger is not None
+                else cited.trigger
+            ),
+            rationale=(
+                decision.new_rationale
+                if decision.new_rationale is not None
+                else cited.rationale
+            ),
+            status=None,
+            source=cited.source,
+            source_interaction_ids=list(cited.source_interaction_ids),
+        )
 
     def _record_learnings_generated(
         self, request: ReflectionServiceRequest, result: ReflectionResult
@@ -499,20 +762,15 @@ class ReflectionService:
         storage = self.request_context.storage
         if storage is None:
             return False
-        now_ts = int(datetime.now(UTC).timestamp())
-        new_profile = UserProfile(
-            profile_id=str(uuid.uuid4()),
-            user_id=cited.user_id,
-            content=decision.new_content or cited.content,
-            last_modified_timestamp=now_ts,
-            generated_from_request_id=cited.generated_from_request_id,
-            profile_time_to_live=(
-                decision.new_profile_time_to_live or cited.profile_time_to_live
-            ),
-            custom_features=cited.custom_features,
-            source=cited.source,
-            status=None,
-            extractor_names=cited.extractor_names,
+        # Use the replacement row compute already built + embedded (durable /
+        # .run() path → skip_embedding=True), else build + embed inline (direct
+        # _replace_profile call with no compute-prepared plan).
+        precomputed = self._pending_replacement_profiles.get(cited.profile_id)
+        skip_embedding = precomputed is not None
+        new_profile = (
+            precomputed
+            if precomputed is not None
+            else self._build_replacement_profile(request, decision, cited)
         )
         _log_edit_magnitude(
             kind="profile",
@@ -520,7 +778,9 @@ class ReflectionService:
             old_content=cited.content,
             new_content=new_profile.content,
         )
-        storage.add_user_profile(cited.user_id, [new_profile])
+        storage.add_user_profile(
+            cited.user_id, [new_profile], skip_embedding=skip_embedding
+        )
         ctx = LineageContext(
             op_kind="revise",
             actor="reflection",
@@ -591,26 +851,15 @@ class ReflectionService:
         if storage is None:
             return False
         owning_user_id = cited.user_id or request.user_id
-        new_playbook = UserPlaybook(
-            user_playbook_id=0,  # auto-assigned by storage
-            user_id=owning_user_id,
-            agent_version=cited.agent_version or request.agent_version,
-            request_id=cited.request_id,
-            playbook_name=cited.playbook_name,
-            content=decision.new_content or cited.content,
-            trigger=(
-                decision.new_trigger
-                if decision.new_trigger is not None
-                else cited.trigger
-            ),
-            rationale=(
-                decision.new_rationale
-                if decision.new_rationale is not None
-                else cited.rationale
-            ),
-            status=None,
-            source=cited.source,
-            source_interaction_ids=list(cited.source_interaction_ids),
+        # Use the replacement row compute already built + embedded (durable /
+        # .run() path → skip_embedding=True), else build + embed inline (direct
+        # _replace_playbook call with no compute-prepared plan).
+        precomputed = self._pending_replacement_playbooks.get(cited.user_playbook_id)
+        skip_embedding = precomputed is not None
+        new_playbook = (
+            precomputed
+            if precomputed is not None
+            else self._build_replacement_playbook(request, decision, cited)
         )
         _log_edit_magnitude(
             kind="playbook",
@@ -639,6 +888,7 @@ class ReflectionService:
                 new_playbook=new_playbook,
                 source=new_playbook.source or "reflection",
                 request_id=request.request_id,
+                skip_embedding=skip_embedding,
             )
         except Exception as exc:  # noqa: BLE001
             with sentry_tags(
@@ -659,21 +909,10 @@ class ReflectionService:
                 )
             return True
         if archived > 0:
-            try:
-                successor = storage.get_user_playbook_by_id(archived)
-                if successor is not None and successor.agent_version:
-                    maybe_trigger_user_playbook_aggregation(
-                        request_context=self.request_context,
-                        llm_client=self.client,
-                        agent_version=successor.agent_version,
-                        reason="reflection",
-                    )
-            except Exception:  # noqa: BLE001
-                logger.exception(
-                    "event=reflection_aggregation_trigger_failed kind=playbook "
-                    "successor_id=%s",
-                    archived,
-                )
+            # Defer the user-playbook aggregation trigger to emit_side_effects
+            # (post-commit): collect the successor id so the trigger never fires
+            # on a rolled-back / superseded durable job.
+            self._pending_aggregation_successor_ids.append(archived)
         if archived < 0:
             with sentry_tags(
                 subsystem="reflection",
@@ -740,6 +979,37 @@ def _log_edit_magnitude(
         new_len,
         new_len - old_len,
     )
+
+
+def _dedup_decisions_by_target(
+    decisions: list[ReflectionDecision],
+) -> list[ReflectionDecision]:
+    """Keep only the first decision for each ``(target_kind, target_id)``.
+
+    The reflection LLM is prompted for one decision per cited row, but nothing
+    (schema or code) forbids it from emitting two decisions on the same target.
+    A second same-target revision is not just redundant — it corrupts state: the
+    replacement row is keyed by the cited id, so the second decision reuses the
+    first's successor uuid, re-inserts it, then supersede CAS-misses (the
+    incumbent is already superseded) and deletes the live successor, leaving a
+    dangling ``superseded_by`` pointer. Collapsing duplicates here — before both
+    ``_precompute_replacement_rows`` and the persist apply loop consume the
+    decisions — makes that torn state unreachable and keeps the two loops (which
+    must build/apply exactly the same rows) in lockstep.
+
+    Ids are compared as the canonical strings the prompt is fed
+    (``profile_id`` / ``str(user_playbook_id)``), which is what the LLM echoes
+    back as ``target_id``.
+    """
+    seen: set[tuple[str, str]] = set()
+    out: list[ReflectionDecision] = []
+    for decision in decisions:
+        key = (decision.target_kind, decision.target_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(decision)
+    return out
 
 
 def _is_revision(decision: ReflectionDecision) -> bool:

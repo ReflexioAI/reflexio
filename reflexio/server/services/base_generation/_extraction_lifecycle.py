@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm.token_accounting import RunTokenTotals
+from reflexio.server.services.deferred_learning_plan import ExtractorBookmarkAdvance
 from reflexio.server.services.extraction.outcome import ExtractionOutcome
 from reflexio.server.services.extractor_config_utils import get_extractor_name
 from reflexio.server.services.storage.storage_base import AgentRunStatus, BaseStorage
@@ -61,6 +62,7 @@ class ExtractionRunLifecycleMixin(Generic[TExtractorConfig, TGenerationServiceCo
     _last_extractor_run_stats: dict[str, int]
     _last_extraction_run_ids: list[str]
     _last_token_totals: RunTokenTotals | None
+    _last_bookmark_advance: ExtractorBookmarkAdvance | None
 
     if TYPE_CHECKING:
         # Abstract on the base ABC (stays there per SINK-2); declared here type-only so
@@ -117,6 +119,10 @@ class ExtractionRunLifecycleMixin(Generic[TExtractorConfig, TGenerationServiceCo
                 if result.run_id:
                     self._last_extraction_run_ids.append(result.run_id)
                 self._last_token_totals = result.token_totals
+                # Capture the deferred stride-bookmark advance (F1); applied
+                # later in ``persist_generation`` (durable fence) or in
+                # ``_run_generation``'s persist half for the synchronous path.
+                self._last_bookmark_advance = result.bookmark_advance
                 if result.status == "completed" and result.items:
                     return result.items
                 logger.info(

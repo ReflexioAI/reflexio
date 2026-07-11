@@ -311,7 +311,7 @@ class TestProcessResults:
         service._process_results([[sample_profile]])
 
         request_context.storage.add_user_profile.assert_called_once_with(
-            "user_1", [sample_profile]
+            "user_1", [sample_profile], skip_embedding=True
         )
         assert sample_profile.source == "api"
         assert sample_profile.status is None  # CURRENT (not pending)
@@ -330,12 +330,21 @@ class TestProcessResults:
 
         assert sample_profile.status == Status.PENDING
 
-    def test_save_failure_returns_early(self, service, request_context, sample_profile):
-        """When add_user_profile raises, the method returns without deleting."""
+    def test_save_failure_reraises_without_deleting(
+        self, service, request_context, sample_profile
+    ):
+        """When add_user_profile raises, persist RE-RAISES (F1 symmetry with
+        playbook) without falling back to a delete.
+
+        The raise rolls back the fenced commit_scope (durable path) or leaves the
+        extractor bookmark un-advanced (sync path) so a failed write never
+        advances the bookmark over its window.
+        """
         self._setup_service_config(service)
         request_context.storage.add_user_profile.side_effect = RuntimeError("DB error")
 
-        service._process_results([[sample_profile]])
+        with pytest.raises(RuntimeError, match="DB error"):
+            service._process_results([[sample_profile]])
 
         request_context.storage.delete_user_profile.assert_not_called()
 
@@ -353,7 +362,7 @@ class TestProcessResults:
         service._process_results([[sample_profile]])
 
         request_context.storage.add_user_profile.assert_called_once_with(
-            "user_1", [sample_profile]
+            "user_1", [sample_profile], skip_embedding=True
         )
 
 

@@ -208,12 +208,14 @@ class ProfileStoreMixin:
         sql = f"SELECT * FROM profiles WHERE {' AND '.join(conditions)}"
         return [_row_to_profile(r) for r in self._fetchall(sql, all_params)]
 
-    @SQLiteStorageBase.handle_exceptions
-    def add_user_profile(self, user_id: str, user_profiles: list[UserProfile]) -> None:  # noqa: ARG002
-        for profile in user_profiles:
-            subject_ref = self._subject_ref_for_user_id(profile.user_id)
-            with self._lock:
-                self._assert_subject_writable_locked(subject_ref)
+    def precompute_profile_embeddings(self, profiles: list[UserProfile]) -> None:
+        """Populate ``.embedding`` / ``.expanded_terms`` in place; no DB write.
+
+        Extracted verbatim from the former ``add_user_profile`` prelude so the
+        durable compute/persist split can embed outside the writer transaction
+        and then persist with ``skip_embedding=True``.
+        """
+        for profile in profiles:
             embedding_text = "\n".join([profile.content, str(profile.custom_features)])
             if self._should_expand_documents():
                 with ThreadPoolExecutor(max_workers=2) as executor:
@@ -223,6 +225,25 @@ class ProfileStoreMixin:
                     profile.expanded_terms = exp_future.result(timeout=15)
             else:
                 profile.embedding = self._get_embedding(embedding_text)
+
+    @SQLiteStorageBase.handle_exceptions
+    def add_user_profile(
+        self,
+        user_id: str,  # noqa: ARG002
+        user_profiles: list[UserProfile],
+        *,
+        skip_embedding: bool = False,
+    ) -> None:
+        for profile in user_profiles:
+            subject_ref = self._subject_ref_for_user_id(profile.user_id)
+            with self._lock:
+                self._assert_subject_writable_locked(subject_ref)
+            # Default (skip_embedding=False) recomputes unconditionally, exactly
+            # as before — model_copy callers that change content while keeping
+            # the old embedding depend on this. The durable persist path opts
+            # out (embedding already set by precompute_profile_embeddings).
+            if not skip_embedding:
+                self.precompute_profile_embeddings([profile])
             embedding = profile.embedding
             with self._lock:
                 own_txn = self._own_transaction()

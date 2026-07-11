@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from reflexio.server.api_endpoints.request_context import RequestContext
     from reflexio.server.llm.litellm_client import LiteLLMClient
+    from reflexio.server.services.deferred_learning_plan import GenerationComputePlan
     from reflexio.server.services.storage.storage_base import BaseStorage
 
 from reflexio.models.api_schema.internal_schema import RequestInteractionDataModel
@@ -26,6 +27,7 @@ from reflexio.server.services.base_generation_service import (
     BaseGenerationService,
     StatusChangeOperation,
 )
+from reflexio.server.services.deferred_learning_plan import PlaybookWritePlan
 from reflexio.server.services.playbook.aggregation_trigger import (
     maybe_trigger_user_playbook_aggregation,
 )
@@ -287,13 +289,30 @@ class PlaybookGenerationService(
                 all_playbooks.extend(result)
         self._finalize_extracted_items(all_playbooks)
 
-    def _finalize_extracted_items(self, all_playbooks: list[UserPlaybook]) -> None:
-        """Deduplicate, persist, and aggregate extracted user playbook items."""
+    def _resolve_write_plan(
+        self, results: list[list[UserPlaybook]]
+    ) -> PlaybookWritePlan | None:
+        """Compute-half of playbook finalization — NO learning DB write.
+
+        Flattens + ``dedupe_and_drop_empty``, runs the deduplicator (its 2nd
+        LLM call + reads of existing rows), assigns ``source``/``status``, and
+        **precomputes embeddings** on the survivors. Returns a
+        :class:`PlaybookWritePlan` for the persist half, or ``None`` when there
+        is nothing to write (matching the pre-split ``if all_playbooks:`` gate,
+        which suppressed save/lineage/schedulers alike). Issues no
+        ``save_user_playbooks``/``merge_records``/``supersede_*`` — the write is
+        the persist half's job (compute is write-free).
+        """
         from reflexio.server.services.playbook.playbook_service_utils import (
             dedupe_and_drop_empty,
         )
 
         generation_request_id = self.service_config.request_id  # type: ignore[reportOptionalMemberAccess]
+
+        all_playbooks: list[UserPlaybook] = []
+        for result in results:
+            if isinstance(result, list):
+                all_playbooks.extend(result)
         all_playbooks = dedupe_and_drop_empty(all_playbooks)
 
         # Deduplicate against existing entries in DB when deduplicator is enabled
@@ -340,6 +359,9 @@ class PlaybookGenerationService(
 
         logger.info("All user playbook entries: %s", all_playbooks)
 
+        if not all_playbooks:
+            return None
+
         logger.info(
             "Successfully completed %d %s playbook generation for request id: %s",
             len(all_playbooks),
@@ -347,34 +369,105 @@ class PlaybookGenerationService(
             generation_request_id,
         )
 
-        # Save results
-        if all_playbooks:
-            try:
-                self.storage.save_user_playbooks(all_playbooks)  # type: ignore[reportOptionalMemberAccess]
-                self._enqueue_user_playbook_optimization(all_playbooks)
-                self._apply_consolidation_lineage(
-                    all_playbooks, merge_groups, existing_ids_to_delete
-                )
-            except Exception as e:
-                logger.error(
-                    "Failed to save %s results for request id: %s due to %s, exception type: %s",
-                    self._get_service_name(),
-                    generation_request_id,
-                    str(e),
-                    type(e).__name__,
-                )
-                raise
+        # Precompute embeddings on the survivors (compute-side, NO DB write). The
+        # persist half passes skip_embedding=True so no embedding runs in the fence.
+        self.storage.precompute_user_playbook_embeddings(all_playbooks)  # type: ignore[reportOptionalMemberAccess]
 
-            # Trigger playbook aggregation
-            if not self.output_pending_status and not self.skip_aggregation:
-                logger.info("Trigger playbook aggregation")
-                self._trigger_playbook_aggregation()
+        return PlaybookWritePlan(
+            request_id=generation_request_id,
+            output_pending_status=self.output_pending_status,
+            skip_aggregation=self.skip_aggregation,
+            new_playbooks=all_playbooks,
+            superseded_ids=existing_ids_to_delete,
+            merge_groups=merge_groups,
+        )
+
+    def _persist_write_plan(self, plan: PlaybookWritePlan) -> None:
+        """Persist-half of playbook finalization — apply the resolved write-plan.
+
+        Issues only the fence-critical row writes: saves the new playbooks
+        (``skip_embedding=True`` — embeddings were precomputed in compute; the
+        save also assigns survivor ids) then materializes the consolidation
+        lineage, which MUST see those survivor ids and so runs AFTER the save.
+        NO LLM / embedding / dedup. The off-thread optimization/aggregation
+        schedulers are NOT here — they fire post-commit in
+        ``emit_generation_side_effects`` (durable / ``.run()``) or right after
+        persist in ``_finalize_extracted_items`` (resume/manual).
+        """
+        if not plan.new_playbooks:
+            return
+        try:
+            self.storage.save_user_playbooks(  # type: ignore[reportOptionalMemberAccess]
+                plan.new_playbooks, skip_embedding=True
+            )
+            self._apply_consolidation_lineage(
+                plan.new_playbooks,
+                plan.merge_groups,
+                plan.superseded_ids,
+                request_id=plan.request_id,
+            )
+        except Exception as e:
+            logger.error(
+                "Failed to save %s results for request id: %s due to %s, exception type: %s",
+                self._get_service_name(),
+                plan.request_id,
+                str(e),
+                type(e).__name__,
+            )
+            raise
+
+    def _dispatch_playbook_schedulers(self, plan: PlaybookWritePlan) -> None:
+        """Fire the off-thread optimization + aggregation schedulers post-persist.
+
+        Phantom-billing gate: on the durable / ``.run()`` path this is invoked
+        from ``emit_generation_side_effects`` (post-commit), so a fence-lost
+        (superseded) job never enqueues optimization or triggers aggregation. On
+        the synchronous resume/manual path the permanent
+        ``_finalize_extracted_items`` wrapper invokes it right after persist,
+        keeping that path identical to the pre-split monolith. The two callers
+        are mutually exclusive, so the schedulers fire exactly once per run.
+        """
+        self._enqueue_user_playbook_optimization(plan.new_playbooks)
+        if not plan.output_pending_status and not plan.skip_aggregation:
+            logger.info("Trigger playbook aggregation")
+            self._trigger_playbook_aggregation()
+
+    def emit_generation_side_effects(self, plan: GenerationComputePlan) -> None:
+        """Post-commit side-effects — base telemetry/billing + playbook schedulers.
+
+        Extends the base emit (``generation_succeeded`` + ② Learning billing)
+        with the off-thread optimization/aggregation schedulers, which move here
+        so they fire only for a fence-winning durable job (never for a
+        superseded one) — the phantom-billing gate.
+        """
+        super().emit_generation_side_effects(plan)
+        write_plan = plan.write_plan
+        if write_plan is not None:
+            self._dispatch_playbook_schedulers(write_plan)
+
+    def _finalize_extracted_items(self, all_playbooks: list[UserPlaybook]) -> None:
+        """Permanent V3 wrapper: compute→persist→schedulers together (no fence).
+
+        Kept for the synchronous resume/manual callers
+        (``ExtractionResumeWorker`` calls this directly). Routes them through the
+        same ``_resolve_write_plan`` (compute) + ``_persist_write_plan``
+        (persist) split the durable worker uses — with no external
+        ``commit_scope`` — then dispatches the same off-thread schedulers, so the
+        result is identical to the pre-split monolith.
+        """
+        plan = self._resolve_write_plan([all_playbooks])
+        if plan is None:
+            return
+        self._persist_write_plan(plan)
+        self._dispatch_playbook_schedulers(plan)
 
     def _apply_consolidation_lineage(
         self,
         saved_playbooks: list[UserPlaybook],
         merge_groups: list[tuple[int, list[int]]],
         existing_ids_to_delete: list[int],
+        *,
+        request_id: str,
     ) -> None:
         """Materialize consolidation merges as lineage tombstones.
 
@@ -391,10 +484,14 @@ class PlaybookGenerationService(
             saved_playbooks: The just-persisted entries (survivor ids assigned).
             merge_groups: ``(survivor_index, source_existing_ids)`` per merge.
             existing_ids_to_delete: ALL archived ids (merge sources + leftovers).
+            request_id: Generation request id — the lineage key recorded on the
+                merge/supersede events. Passed explicitly (from the write-plan)
+                rather than read off ``self.service_config`` so persist stays
+                decoupled from the mutable service config on the fenced path.
         """
         from reflexio.models.api_schema.domain.entities import LineageContext
 
-        generation_request_id = self.service_config.request_id  # type: ignore[reportOptionalMemberAccess]
+        generation_request_id = request_id
         merged_source_ids: set[int] = set()
         for survivor_idx, source_ids in merge_groups:
             survivor_id = saved_playbooks[survivor_idx].user_playbook_id

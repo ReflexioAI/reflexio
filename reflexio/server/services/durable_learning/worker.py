@@ -1,8 +1,15 @@
-"""DurableLearningWorker: claim jobs from the durable queue, process in a fenced
-commit_scope so exactly one of N racing workers commits its outputs.
+"""DurableLearningWorker: claim jobs from the durable queue, split each into
+compute (no writer transaction) -> persist (short fenced commit_scope) ->
+post-commit side-effects so exactly one of N racing workers commits its outputs.
 
-Design constraints (v1 — do not remove):
-- LLM calls are inside the commit_scope (compute/persist separation is deferred).
+Design constraints (gate b — do not remove):
+- LLM extraction + dedup + embeddings run in compute_deferred_learning, OUTSIDE
+  the commit_scope. Only the fence-critical writes (profile/playbook rows +
+  bookmark advances + complete_learning_job) run inside the scope; billing /
+  telemetry / tagging / off-thread schedulers + the per-user lock release run
+  AFTER the scope commits (emit_deferred_learning_side_effects). Holding the
+  writer transaction across the ~30-120s LLM window is exactly what this split
+  removes.
 - No heartbeat thread (deferred; would deadlock a SQLite scope anyway).
 - Exactly-once is guaranteed by the fenced complete_learning_job:
     rowcount == 0  -> lease was stolen -> _SupersededError -> rollback.
@@ -27,8 +34,9 @@ class _SupersededError(Exception):
     """Raised inside commit_scope when complete_learning_job returns 0.
 
     Propagating this exception causes commit_scope to roll back all writes
-    (profiles, playbooks) made by run_deferred_learning for the superseded
-    worker — guaranteeing exactly-once side effects.
+    (profiles, playbooks, bookmark advances) made by persist_deferred_learning
+    for the superseded worker — guaranteeing exactly-once side effects. The
+    post-commit emit is skipped, so a superseded job phantom-bills nothing.
     """
 
     def __init__(self, job_id: str) -> None:
@@ -142,28 +150,59 @@ class DurableLearningWorker:
             )
             return False
 
+        gen: GenerationService | None = None
         try:
             reflexio = get_reflexio(
                 org_id=ctx.org_id, storage_base_dir=ctx.storage_base_dir
             )
             gen = GenerationService(llm_client=reflexio.llm_client, request_context=ctx)
 
-            with storage.commit_scope():
-                gen.run_deferred_learning(
-                    user_id=job.user_id,
-                    request_id=job.latest_request_id,
-                    session_id=request.session_id,
-                    source=request.source,
-                    agent_version=request.agent_version,
-                    force_extraction=job.force_extraction,
-                    skip_aggregation=job.skip_aggregation,
-                    sequential=True,  # prevent ThreadPoolExecutor deadlock on commit_scope RLock
+            # COMPUTE — LLM extraction + dedup + embeddings, NO writer transaction
+            # held. Acquires the per-user F4 lock; issues no learning DB write.
+            plan = gen.compute_deferred_learning(
+                user_id=job.user_id,
+                request_id=job.latest_request_id,
+                session_id=request.session_id,
+                source=request.source,
+                agent_version=request.agent_version,
+                force_extraction=job.force_extraction,
+                skip_aggregation=job.skip_aggregation,
+            )
+
+            # Same-user contention (F4): another same-user durable job holds the
+            # per-user lock. Leave THIS job reclaimable (dead=False) — do NOT
+            # complete it — so the queue re-claims it once the holder finishes.
+            # REFUND the attempt (refund_attempt=True): claim_learning_jobs did
+            # attempts += 1 on this claim, but no real work ran, and the ~2s poll
+            # would otherwise re-claim (and re-increment) every couple of seconds
+            # while the holder is in its ~60s compute — inflating attempts past
+            # max_attempts in seconds so the eventual winner dead-letters on its
+            # first transient error with zero real retries. The refund nets each
+            # contention cycle (claim +1, release -1) to zero. No lock to release
+            # (compute never acquired it).
+            if not plan.lock_acquired:
+                storage.fail_learning_job(
+                    job_id=job.job_id,
+                    claim_token=claim_token,
+                    dead=False,
+                    refund_attempt=True,
                 )
+                return False
+
+            # PERSIST — short fenced scope: fence-critical writes + bookmark
+            # advances only, then the claim-token fence. rows == 0 -> lease
+            # stolen -> _SupersededError -> the scope rolls persist back.
+            with storage.commit_scope():
+                gen.persist_deferred_learning(plan)
                 rows = storage.complete_learning_job(
                     job_id=job.job_id, claim_token=claim_token
                 )
                 if rows == 0:
                     raise _SupersededError(job.job_id)
+
+            # POST-COMMIT — billing / telemetry / tagging / off-thread schedulers
+            # + the per-user lock release, only for the winning worker.
+            gen.emit_deferred_learning_side_effects(plan)
             logger.info(
                 "event=learning_job_done job_id=%s org_id=%s user_id=%s",
                 job.job_id,
@@ -177,6 +216,9 @@ class DurableLearningWorker:
                 job.job_id,
                 job.org_id,
             )
+            # The persist rolled back and emit never ran, so the per-user lock is
+            # still held by this compute — release it so the reclaim isn't blocked.
+            self._release_user_lock(gen, job)
             return False
         except Exception:
             logger.exception(
@@ -185,9 +227,36 @@ class DurableLearningWorker:
                 job.org_id,
                 job.user_id,
             )
+            # emit (which releases the lock) never ran on this path — release the
+            # per-user lock so a failed job doesn't strand it.
+            self._release_user_lock(gen, job)
             # attempts was incremented by claim_learning_jobs; go dead when we've
             # exhausted max_attempts total claim attempts.
             storage.fail_learning_job(
                 job_id=job.job_id, claim_token=claim_token, dead=dead
             )
             return False
+
+    def _release_user_lock(
+        self, gen: GenerationService | None, job: LearningJob
+    ) -> None:
+        """Best-effort release of the per-user F4 lock after a rolled-back/failed
+        job, so a job whose emit (the normal release site) never ran does not
+        strand the lock and block the same user's re-claim.
+
+        Safe to call even when compute never acquired the lock: the release is a
+        CAS on the holder (``clear_in_progress_lock_if_owner``) — a no-op unless
+        this compute's ``request_id`` still owns it. Never raises.
+        """
+        if gen is None or job.latest_request_id is None:
+            return
+        try:
+            gen._release_durable_learning_lock(
+                user_id=job.user_id, request_id=job.latest_request_id
+            )
+        except Exception:
+            logger.exception(
+                "event=learning_job_lock_release_failed job_id=%s org_id=%s",
+                job.job_id,
+                job.org_id,
+            )

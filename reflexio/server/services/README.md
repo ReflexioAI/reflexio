@@ -22,7 +22,7 @@ strings before deleting old import paths in the same PR.
 
 | File | Purpose |
 |------|---------|
-| `generation_service.py` | `GenerationService` — saves interactions, runs/defer-runs profile + playbook generation, schedules deferred evaluation when `session_id` is present, and exposes `run_deferred_learning()` for queue workers. |
+| `generation_service.py` | `GenerationService` — saves interactions, runs/defer-runs profile + playbook generation, schedules deferred evaluation when `session_id` is present, exposes `run_deferred_learning()` for the non-durable publish worker, and the durable `compute_deferred_learning()` → `persist_deferred_learning()` → `emit_deferred_learning_side_effects()` split (compute outside any scope; only persist + fence inside `commit_scope()`). |
 | `publish_learning_worker.py` | Deferred post-persist publish learning worker — queues async publish learning after durable interaction writes and requeues under publish limiter pressure. |
 | `base_generation_service.py` + `base_generation/` | `BaseGenerationService` stable import surface plus mixins for batch progress, config filtering, extraction lifecycle, should-run prechecks, status transitions, and usage billing. Per-extractor timeout `EXTRACTOR_TIMEOUT_SECONDS = 300`. |
 | `operation_state_utils.py` | `OperationStateManager` — all `_operation_state` access (progress, concurrency locks, extractor/aggregator bookmarks, cluster fingerprints, cancellation). |
@@ -42,7 +42,7 @@ strings before deleting old import paths in the same PR.
 
 | Directory | Purpose |
 |-----------|---------|
-| `durable_learning/` | Durable `learning_jobs` scheduler + worker. Gated by `REFLEXIO_DURABLE_LEARNING_QUEUE`; discovers orgs with pending work, claims jobs with leases, runs `GenerationService.run_deferred_learning()` inside `storage.commit_scope()`, and uses fenced completion to guarantee exactly-once side effects. |
+| `durable_learning/` | Durable `learning_jobs` scheduler + worker. Gated by `REFLEXIO_DURABLE_LEARNING_QUEUE`; discovers orgs with pending work, claims jobs with leases, then per job runs `compute_deferred_learning()` **outside** any writer transaction, applies `persist_deferred_learning()` + fenced `complete_learning_job()` inside a short `storage.commit_scope()`, and fires `emit_deferred_learning_side_effects()` post-commit — fenced completion guarantees exactly-once side effects. |
 | `extraction/` | Shared async extraction runtime: `resumable_agent.py`, `resume_scheduler.py`, `resume_worker.py`, `pending_tool_call_dispatch.py` (`ask_human`), `prior_answer_search.py`, `agent_run_records.py`, and `outcome.py`. Long-horizon / tool-mediated extraction continues outside the request path. See [README](extraction/README.md). |
 
 ## Evaluation, Search & Integrations

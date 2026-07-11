@@ -97,12 +97,17 @@ class UserPlaybookStoreMixin:
         )
         return row
 
-    @SQLiteStorageBase.handle_exceptions
-    def save_user_playbooks(self, user_playbooks: list[UserPlaybook]) -> None:
-        for up in user_playbooks:
-            subject_ref = self._subject_ref_for_user_id(up.user_id)
-            with self._lock:
-                self._assert_subject_writable_locked(subject_ref)
+    def precompute_user_playbook_embeddings(
+        self, playbooks: list[UserPlaybook]
+    ) -> None:
+        """Populate ``.embedding`` / ``.expanded_terms`` in place; no DB write.
+
+        Extracted verbatim from the former ``save_user_playbooks`` prelude
+        (including the ``if embedding_text:`` guard) so the durable
+        compute/persist split can embed outside the writer transaction and then
+        persist with ``skip_embedding=True``.
+        """
+        for up in playbooks:
             embedding_text = up.trigger or up.content
             if embedding_text:
                 if self._should_expand_documents():
@@ -117,6 +122,24 @@ class UserPlaybookStoreMixin:
                         up.expanded_terms = exp_future.result(timeout=15)
                 else:
                     up.embedding = self._get_embedding(embedding_text)
+
+    @SQLiteStorageBase.handle_exceptions
+    def save_user_playbooks(
+        self,
+        user_playbooks: list[UserPlaybook],
+        *,
+        skip_embedding: bool = False,
+    ) -> None:
+        for up in user_playbooks:
+            subject_ref = self._subject_ref_for_user_id(up.user_id)
+            with self._lock:
+                self._assert_subject_writable_locked(subject_ref)
+            # Default (skip_embedding=False) recomputes unconditionally, exactly
+            # as before — model_copy callers that change content while keeping
+            # the old embedding depend on this. The durable persist path opts
+            # out (embedding already set by precompute_user_playbook_embeddings).
+            if not skip_embedding:
+                self.precompute_user_playbook_embeddings([up])
 
             created_at_iso = _epoch_to_iso(up.created_at)
             with self._lock:

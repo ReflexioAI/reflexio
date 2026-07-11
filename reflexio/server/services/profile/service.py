@@ -27,6 +27,7 @@ from reflexio.server.services.base_generation_service import (
     BaseGenerationService,
     StatusChangeOperation,
 )
+from reflexio.server.services.deferred_learning_plan import ProfileWritePlan
 from reflexio.server.services.profile.components.extractor import ProfileExtractor
 from reflexio.server.services.profile.profile_generation_service_utils import (
     ProfileGenerationRequest,
@@ -148,12 +149,24 @@ class ProfileGenerationService(
             [p for result in results if result for p in result]
         )
 
-    def _finalize_extracted_items(self, all_new_profiles: list[UserProfile]) -> None:
-        """Deduplicate, persist, and changelog extracted profile items."""
+    def _resolve_write_plan(
+        self, results: list[list[UserProfile]]
+    ) -> ProfileWritePlan | None:
+        """Compute-half of profile finalization — NO learning DB write.
+
+        Flattens the extractor results, runs the deduplicator (the 2nd LLM call
+        + reads of existing rows), assigns ``source``/``status``, resolves the
+        missing-``request_id`` guard (dropping unreconstructable supersede ids),
+        and **precomputes embeddings** on the new rows. Returns a
+        :class:`ProfileWritePlan` for the persist half, or ``None`` when there is
+        nothing to write. Issues no ``add_user_profile``/``supersede_*`` — the
+        write is the persist half's job (compute is write-free).
+        """
         user_id = self.service_config.user_id  # type: ignore[reportOptionalMemberAccess]
         source = self.service_config.source  # type: ignore[reportOptionalMemberAccess]
         generation_request_id = self.service_config.request_id  # type: ignore[reportOptionalMemberAccess]
 
+        all_new_profiles = [p for result in results if result for p in result]
         existing_ids_to_delete: list[str] = []
 
         # Always run deduplicator when enabled and there are new profiles
@@ -186,10 +199,62 @@ class ProfileGenerationService(
             profile.source = source
             profile.status = Status.PENDING if self.output_pending_status else None
 
-        # Save new profiles
+        # Missing-request_id guard (moved here, in compute). An empty request_id
+        # makes the supersede unreconstructable (the lineage events are keyed on
+        # it). Fail loud and drop those ids entirely — never silently
+        # hard-delete. Persist then only supersedes with a non-empty request_id.
+        if existing_ids_to_delete and not generation_request_id:
+            capture_anomaly(
+                "lineage.dedup.missing_request_id",
+                level="error",
+                org_id=self.org_id,
+                user_id=user_id,
+            )
+            existing_ids_to_delete = []
+
+        if not all_new_profiles and not existing_ids_to_delete:
+            return None
+
+        # Precompute embeddings on the new rows (compute-side, NO DB write). The
+        # persist half passes skip_embedding=True so no embedding runs in the fence.
         if all_new_profiles:
+            self.storage.precompute_profile_embeddings(all_new_profiles)  # type: ignore[reportOptionalMemberAccess]
+
+        return ProfileWritePlan(
+            user_id=user_id,
+            request_id=generation_request_id,
+            new_profiles=all_new_profiles,
+            superseded_ids=existing_ids_to_delete,
+        )
+
+    def _persist_write_plan(self, plan: ProfileWritePlan) -> None:
+        """Persist-half of profile finalization — apply the resolved write-plan.
+
+        Issues only the fence-critical row writes: inserts the new profiles
+        (``skip_embedding=True`` — embeddings were precomputed in compute) then
+        soft-supersedes the dedup'd existing ids. NO LLM / embedding / dedup.
+        The soft-supersede emits the lineage events the profile change log is
+        reconstructed from (the legacy ``profile_change_logs`` table is no longer
+        written — see reconstruct_profile_change_log).
+
+        On a write failure this **re-raises** (symmetric with playbook
+        ``_persist_write_plan``): on the durable path the raise rolls back the
+        fenced ``commit_scope`` so the rows AND the extractor bookmark advance
+        (applied by ``persist_generation`` only if persist returns) are discarded
+        together — never a "write failed but bookmark advanced" window. On the
+        synchronous ``.run()`` path ``_run_generation`` catches it, records
+        ``generation_failed``, and leaves the bookmark un-advanced so the next
+        publish retries the window.
+        """
+        user_id = plan.user_id
+        generation_request_id = plan.request_id
+
+        # Save new profiles (embeddings already set → skip re-embedding).
+        if plan.new_profiles:
             try:
-                self.storage.add_user_profile(user_id, all_new_profiles)  # type: ignore[reportOptionalMemberAccess]
+                self.storage.add_user_profile(  # type: ignore[reportOptionalMemberAccess]
+                    user_id, plan.new_profiles, skip_embedding=True
+                )
             except Exception as e:
                 with sentry_tags(
                     subsystem="profile_generation",
@@ -203,43 +268,51 @@ class ProfileGenerationService(
                         "Failed to save profiles for user id: %s",
                         user_id,
                     )
-                return
+                # Re-raise so the bookmark advance is skipped / the fence rolls
+                # back (F1 symmetry with playbook persist) — never advance the
+                # extractor bookmark over a window whose rows failed to write.
+                raise
 
-        # Always soft-supersede superseded existing profiles (never hard-delete on
-        # the dedup path). This emits the lineage events that the profile change log
-        # is reconstructed from (the legacy `profile_change_logs` table is no longer
-        # written — see reconstruct_profile_change_log).
-        if existing_ids_to_delete:
-            if not generation_request_id:
-                # An empty request_id makes the removal unreconstructable (the lineage
-                # events are keyed on it). Fail loud and skip removal entirely — never
-                # silently hard-delete.
-                capture_anomaly(
-                    "lineage.dedup.missing_request_id",
-                    level="error",
+        # Always soft-supersede superseded existing profiles (never hard-delete
+        # on the dedup path). Compute already dropped these when request_id was
+        # empty, so any ids here carry a valid lineage key.
+        if plan.superseded_ids:
+            try:
+                self.storage.supersede_profiles_by_ids(  # type: ignore[reportOptionalMemberAccess]
+                    user_id=user_id,
+                    profile_ids=plan.superseded_ids,
+                    request_id=generation_request_id,
+                )
+            except Exception as e:
+                with sentry_tags(
+                    subsystem="profile_generation",
+                    op="supersede_profiles",
                     org_id=self.org_id,
                     user_id=user_id,
-                )
-            else:
-                try:
-                    self.storage.supersede_profiles_by_ids(  # type: ignore[reportOptionalMemberAccess]
-                        user_id=user_id,
-                        profile_ids=existing_ids_to_delete,
-                        request_id=generation_request_id,
+                    request_id=generation_request_id,
+                    error_type=type(e).__name__,
+                ):
+                    logger.exception(
+                        "Failed to soft-delete superseded profiles for user %s",
+                        user_id,
                     )
-                except Exception as e:
-                    with sentry_tags(
-                        subsystem="profile_generation",
-                        op="supersede_profiles",
-                        org_id=self.org_id,
-                        user_id=user_id,
-                        request_id=generation_request_id,
-                        error_type=type(e).__name__,
-                    ):
-                        logger.exception(
-                            "Failed to soft-delete superseded profiles for user %s",
-                            user_id,
-                        )
+                # Re-raise for the same reason: a half-applied persist (new rows
+                # in, supersede failed) must not advance the bookmark. Playbook's
+                # _apply_consolidation_lineage raises here too.
+                raise
+
+    def _finalize_extracted_items(self, all_new_profiles: list[UserProfile]) -> None:
+        """Permanent V3 wrapper: compute-then-persist together (no external fence).
+
+        Kept for the synchronous resume/manual callers
+        (``ExtractionResumeWorker`` calls this directly). Routes them through the
+        same ``_resolve_write_plan`` (compute) + ``_persist_write_plan``
+        (persist) split the durable worker uses — with no external
+        ``commit_scope`` — so the result is identical to the pre-split monolith.
+        """
+        plan = self._resolve_write_plan([all_new_profiles])
+        if plan is not None:
+            self._persist_write_plan(plan)
 
     def check_and_update_profiles(self, profiles: list[UserProfile]) -> None:
         """check if the profiles are expired and update them if they are"""
