@@ -1,0 +1,22 @@
+name: retention archive platforms
+
+on:
+  pull_request:
+    paths:
+      - "reflexio/server/services/storage/retention_archive.py"
+      - "tests/portability/test_retention_archive_filesystem.py"
+      - ".github/workflows/retention-archive-platforms.yml"
+  workflow_dispatch:
+
+jobs:
+  filesystem:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python tests/portability/test_retention_archive_filesystem.py

@@ -22,6 +22,7 @@ from reflexio.server.services.storage.retention import (
     RetentionTarget,
 )
 from reflexio.server.services.storage.retention_archive import (
+    RETENTION_ARCHIVE_DELETE_BATCH,
     append_archive_batch,
     retention_archive_enabled,
 )
@@ -109,6 +110,8 @@ class RetentionMixin(ABC):
         if not self._retention_table_exists(target.table_name):
             return 0
         archive_enabled = retention_archive_enabled()
+        if archive_enabled:
+            count = min(count, RETENTION_ARCHIVE_DELETE_BATCH)
         guard = self._retention_guard() if archive_enabled else nullcontext()
         with guard:
             keys = self._retention_select_oldest_keys(target, count)
@@ -117,24 +120,7 @@ class RetentionMixin(ABC):
             if archive_enabled:
                 try:
                     archive_dir = self._retention_archive_directory()
-                    parent_ids = [(key[0],) for key in keys]
-                    cascades = RETENTION_CASCADES.get(target.name, ())
-                    rows_by_table: dict[str, list[dict[str, Any]]] = {}
-                    if cascades and len(target.id_columns) != 1:
-                        raise AssertionError(
-                            f"Cascade archive target {target.name} must have one key"
-                        )
-                    for cascade in cascades:
-                        rows = self._retention_fetch_rows(
-                            cascade.table_name,
-                            (cascade.fk_column,),
-                            parent_ids,
-                        )
-                        rows_by_table[cascade.table_name] = rows
-                    rows_by_table[target.table_name] = self._retention_fetch_rows(
-                        target.table_name, target.id_columns, keys
-                    )
-                    append_archive_batch(archive_dir, rows_by_table)
+                    self._archive_retention_keys(target, keys, archive_dir)
                 except Exception:  # noqa: BLE001 - archiving must not stop retention
                     logger.error(  # noqa: G201 - contract requires an explicit error log
                         "Failed to archive retention rows for target %s; evidence was "
@@ -144,6 +130,47 @@ class RetentionMixin(ABC):
                     )
             self._retention_perform_delete(target, keys)
             return len(keys)
+
+    def _archive_retention_keys(
+        self, target: RetentionTarget, keys: list[tuple[Any, ...]], archive_dir: Path
+    ) -> None:
+        """Archive keys, splitting oversized batches while keeping rows intact."""
+        rows_by_table = self._retention_rows_for_keys(target, keys)
+        if append_archive_batch(archive_dir, rows_by_table):
+            return
+        if len(keys) == 1:
+            logger.error(
+                "One retention target and its related rows exceed the entire "
+                "archive ceiling; that evidence was not preserved while live-row "
+                "retention continues: target=%s",
+                target.name,
+            )
+            return
+        midpoint = len(keys) // 2
+        self._archive_retention_keys(target, keys[:midpoint], archive_dir)
+        self._archive_retention_keys(target, keys[midpoint:], archive_dir)
+
+    def _retention_rows_for_keys(
+        self, target: RetentionTarget, keys: list[tuple[Any, ...]]
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Fetch target rows and related rows that share their retention fate."""
+        cascades = RETENTION_CASCADES.get(target.name, ())
+        if cascades and len(target.id_columns) != 1:
+            raise AssertionError(
+                f"Cascade archive target {target.name} must have one key"
+            )
+        rows_by_table = {
+            cascade.table_name: self._retention_fetch_rows(
+                cascade.table_name,
+                (cascade.fk_column,),
+                [(key[0],) for key in keys],
+            )
+            for cascade in cascades
+        }
+        rows_by_table[target.table_name] = self._retention_fetch_rows(
+            target.table_name, target.id_columns, keys
+        )
+        return rows_by_table
 
     def _retention_perform_delete(
         self, target: RetentionTarget, keys: list[tuple[Any, ...]]

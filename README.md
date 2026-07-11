@@ -302,15 +302,18 @@ JSONL files. The feature is off by default.
 | Environment variable | Meaning |
 |---|---|
 | `REFLEXIO_RETENTION_ARCHIVE=1` | Archive rows before retention deletes them. |
-| `REFLEXIO_RETENTION_ARCHIVE_DIR=/path` | Override the default `<database-directory>/archive` location. |
 | `REFLEXIO_RETENTION_ARCHIVE_MAX_BYTES=10737418240` | Bound completed JSONL segments to this total size (10 GiB by default). |
 
-Each archive-enabled SQLite transaction processes at most 1,000 parent rows.
-One JSONL segment contains that target batch and its cascade-deleted rows. After
-the newest segment is complete, Reflexio removes the oldest whole segments until
-the archive is back under its ceiling (FIFO). A single batch larger than the
-ceiling, or any archive I/O failure, is logged as evidence loss; live retention
-still continues. The local archive is implemented for SQLite.
+Archive files are stored in an `archive` directory beside the SQLite database.
+Each archive-enabled SQLite transaction processes at most 1,000 retention-target
+rows. A JSONL segment contains those rows and any related rows deleted with them,
+so a segment can contain records from multiple tables. If a segment would exceed
+the ceiling, Reflexio splits the target batch into smaller complete segments.
+Only one indivisible target and its related rows can be skipped if that group
+alone exceeds the entire ceiling. After each segment is complete, Reflexio
+removes the oldest whole segments until the archive is back under its ceiling
+(FIFO). Archive I/O failures are logged as evidence loss; live retention still
+continues. The local archive is implemented for SQLite.
 
 ## Integrations
 

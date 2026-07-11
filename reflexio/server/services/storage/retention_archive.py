@@ -30,17 +30,14 @@ def retention_archive_enabled() -> bool:
 
 
 def resolve_archive_directory(database_path: str) -> Path:
-    """Return the configured archive directory or the SQLite-local default.
+    """Return the archive directory beside the SQLite database.
 
     Args:
         database_path: Path to the SQLite database.
 
     Returns:
-        Configured archive directory, or a sibling ``archive`` directory.
+        A sibling ``archive`` directory.
     """
-    override = os.environ.get("REFLEXIO_RETENTION_ARCHIVE_DIR")
-    if override:
-        return Path(override).expanduser()
     return Path(database_path).expanduser().parent / "archive"
 
 
@@ -125,16 +122,7 @@ def append_archive_batch(
     if not encoded:
         return True
     max_bytes = retention_archive_max_bytes()
-    row_count = sum(len(rows) for rows in rows_by_table.values())
     if len(encoded) > max_bytes:
-        logger.error(
-            "Retention archive batch exceeds the archive ceiling; skipping evidence "
-            "while live-row retention continues: rows_skipped=%d batch_bytes=%d "
-            "ceiling_bytes=%d",
-            row_count,
-            len(encoded),
-            max_bytes,
-        )
         return False
 
     archive_dir.mkdir(parents=True, exist_ok=True)

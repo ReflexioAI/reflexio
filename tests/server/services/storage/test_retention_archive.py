@@ -80,7 +80,6 @@ def test_archive_flag_off_preserves_existing_delete_behavior(
     storage: BaseStorage, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.delenv("REFLEXIO_RETENTION_ARCHIVE", raising=False)
-    monkeypatch.delenv("REFLEXIO_RETENTION_ARCHIVE_DIR", raising=False)
     monkeypatch.setattr(
         storage,
         "_retention_guard",
@@ -107,8 +106,33 @@ def test_single_batch_over_ceiling_skips_evidence_but_caps_live_rows(
     assert storage.get_all_interactions(limit=10) == []
     archive_dir = Path(storage.db_path).parent / "archive"  # type: ignore[attr-defined]
     assert sum(path.stat().st_size for path in archive_dir.glob("*.jsonl")) == 0
-    assert "rows_skipped=1" in caplog.text
+    assert "One retention target and its related rows exceed" in caplog.text
     assert "live-row retention continues" in caplog.text
+
+
+def test_oversized_batch_splits_before_skipping_evidence(
+    storage: BaseStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("REFLEXIO_RETENTION_ARCHIVE", "true")
+    for interaction_id in (1, 2):
+        storage.add_user_interaction("u1", _interaction(interaction_id, "req1"))
+    archived_batch_sizes: list[int] = []
+
+    def archive_if_one_row(
+        _archive_dir: Path, rows_by_table: dict[str, list[dict[str, Any]]]
+    ) -> bool:
+        size = sum(len(rows) for rows in rows_by_table.values())
+        archived_batch_sizes.append(size)
+        return size == 1
+
+    monkeypatch.setattr(
+        "reflexio.server.services.storage.retention_mixin.append_archive_batch",
+        archive_if_one_row,
+    )
+
+    assert storage.delete_oldest_retention_target_rows("interactions", 2) == 2  # type: ignore[attr-defined]
+    assert archived_batch_sizes == [2, 1, 1]
+    assert storage.get_all_interactions(limit=10) == []
 
 
 def test_archive_fifo_evicts_oldest_segment_for_latest_batch(
@@ -433,18 +457,32 @@ def test_archive_failure_logs_evidence_loss_and_continues_deletion(
     assert "live-row retention continues" in caplog.text
 
 
-def test_archive_directory_override_is_respected(
-    storage: BaseStorage, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+def test_archive_directory_is_beside_sqlite_database(
+    storage: BaseStorage, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    archive_dir = tmp_path / "custom-archive"
+    archive_dir = Path(storage.db_path).parent / "archive"  # type: ignore[attr-defined]
     monkeypatch.setenv("REFLEXIO_RETENTION_ARCHIVE", "true")
-    monkeypatch.setenv("REFLEXIO_RETENTION_ARCHIVE_DIR", str(archive_dir))
     storage.add_user_interaction("u1", _interaction(1, "req1"))
 
     storage.delete_oldest_retention_target_rows("interactions", 1)  # type: ignore[attr-defined]
 
     assert len(list(archive_dir.glob("*.jsonl"))) == 1
-    assert not (Path(storage.db_path).parent / "archive").exists()  # type: ignore[attr-defined]
+
+
+def test_archive_enabled_direct_delete_is_capped_at_one_thousand_targets(
+    storage: BaseStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    selected_counts: list[int] = []
+    monkeypatch.setenv("REFLEXIO_RETENTION_ARCHIVE", "true")
+
+    def select_none(_target: RetentionTarget, count: int) -> list[tuple[Any, ...]]:
+        selected_counts.append(count)
+        return []
+
+    monkeypatch.setattr(storage, "_retention_select_oldest_keys", select_none)
+
+    assert storage.delete_oldest_retention_target_rows("interactions", 10_000) == 0  # type: ignore[attr-defined]
+    assert selected_counts == [1_000]
 
 
 def test_archive_enabled_cleanup_bounds_each_writer_guard(

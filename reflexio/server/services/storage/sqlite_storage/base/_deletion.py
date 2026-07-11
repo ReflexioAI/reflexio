@@ -53,7 +53,7 @@ class SQLiteDeletionMixin:
                     self.conn.rollback()
 
     def _retention_archive_directory(self) -> Path:
-        """Return this SQLite database's configured archive directory."""
+        """Return the archive directory beside this SQLite database."""
         return resolve_archive_directory(self.db_path)
 
     @SQLiteStorageBase.handle_exceptions
