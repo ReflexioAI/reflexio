@@ -134,13 +134,13 @@ class RetentionMixin(ABC):
                         target.table_name, target.id_columns, keys
                     )
                     append_archive_rows(archive_dir, target.table_name, rows)
-                except Exception:  # noqa: BLE001 - any archive failure must stop deletion
+                except Exception:  # noqa: BLE001 - archiving must not stop retention
                     logger.error(  # noqa: G201 - contract requires an explicit error log
-                        "Failed to archive retention rows for target %s; deletion aborted",
+                        "Failed to archive retention rows for target %s; evidence was "
+                        "not preserved, but live-row retention continues",
                         target.name,
                         exc_info=True,
                     )
-                    raise
             self._retention_perform_delete(target, keys)
             return len(keys)
 

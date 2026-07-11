@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-DEFAULT_RETENTION_ARCHIVE_WARN_BYTES = 10 * 1024**3
+DEFAULT_RETENTION_ARCHIVE_MAX_BYTES = 10 * 1024**3
 RETENTION_ARCHIVE_DELETE_BATCH = 1_000
 logger = logging.getLogger(__name__)
 _warned_archive_dirs: set[Path] = set()
@@ -38,34 +38,34 @@ def resolve_archive_directory(database_path: str) -> Path:
     return Path(database_path).expanduser().parent / "archive"
 
 
-def retention_archive_warning_bytes() -> int:
-    """Return the total archive-directory warning threshold in bytes.
+def retention_archive_max_bytes() -> int:
+    """Return the total archive-directory hard ceiling in bytes.
 
     Returns:
-        Positive warning threshold. Defaults to 10 GiB.
+        Positive archive ceiling. Defaults to 10 GiB.
 
     Invalid values log an error and fall back to 10 GiB so observability
     configuration can never stop live-row retention.
     """
-    raw = os.environ.get("REFLEXIO_RETENTION_ARCHIVE_WARN_BYTES")
+    raw = os.environ.get("REFLEXIO_RETENTION_ARCHIVE_MAX_BYTES")
     if raw is None or not raw.strip():
-        return DEFAULT_RETENTION_ARCHIVE_WARN_BYTES
+        return DEFAULT_RETENTION_ARCHIVE_MAX_BYTES
     try:
         value = int(raw)
     except ValueError:
         logger.error(
-            "Invalid REFLEXIO_RETENTION_ARCHIVE_WARN_BYTES=%r; using %d",
+            "Invalid REFLEXIO_RETENTION_ARCHIVE_MAX_BYTES=%r; using %d",
             raw,
-            DEFAULT_RETENTION_ARCHIVE_WARN_BYTES,
+            DEFAULT_RETENTION_ARCHIVE_MAX_BYTES,
         )
-        return DEFAULT_RETENTION_ARCHIVE_WARN_BYTES
+        return DEFAULT_RETENTION_ARCHIVE_MAX_BYTES
     if value <= 0:
         logger.error(
-            "Invalid REFLEXIO_RETENTION_ARCHIVE_WARN_BYTES=%r; using %d",
+            "Invalid REFLEXIO_RETENTION_ARCHIVE_MAX_BYTES=%r; using %d",
             raw,
-            DEFAULT_RETENTION_ARCHIVE_WARN_BYTES,
+            DEFAULT_RETENTION_ARCHIVE_MAX_BYTES,
         )
-        return DEFAULT_RETENTION_ARCHIVE_WARN_BYTES
+        return DEFAULT_RETENTION_ARCHIVE_MAX_BYTES
     return value
 
 
@@ -85,7 +85,7 @@ def archive_size_bytes(archive_dir: Path) -> int:
 
 def append_archive_rows(
     archive_dir: Path, table_name: str, rows: list[dict[str, Any]]
-) -> None:
+) -> bool:
     """Append sanitized rows to ``table_name``'s archive file.
 
     Each JSON line is emitted with one ``write`` call. Values unsupported by
@@ -96,41 +96,54 @@ def append_archive_rows(
         table_name: Physical table being archived.
         rows: Complete database rows selected for retention removal.
 
-    The warning threshold is observability only. Crossing it never blocks
-    live-row retention.
+    The configured threshold is a hard archive ceiling. A batch that would
+    cross it is skipped whole so disk usage stays bounded; callers must still
+    continue live-row retention.
+
+    Returns:
+        True when all rows were appended, or False when the ceiling skipped
+        the batch.
     """
     if not rows:
-        return
+        return True
     archive_dir.mkdir(parents=True, exist_ok=True)
     archived_at = int(time.time())
-    warning_bytes = retention_archive_warning_bytes()
+    max_bytes = retention_archive_max_bytes()
     projected_bytes = archive_size_bytes(archive_dir)
     resolved_archive_dir = archive_dir.resolve()
-    if projected_bytes <= warning_bytes:
+    if projected_bytes <= max_bytes:
         _warned_archive_dirs.discard(resolved_archive_dir)
     path = archive_dir / f"{table_name}.jsonl"
-    with path.open("ab") as archive_file:
-        for row in rows:
-            sanitized = {key: value for key, value in row.items() if key != "embedding"}
-            record = {
-                "table": table_name,
-                "archived_at": archived_at,
-                "row": sanitized,
-            }
-            encoded_line = (
-                json.dumps(record, default=repr, separators=(",", ":")) + "\n"
-            ).encode("utf-8")
-            archive_file.write(encoded_line)
-            projected_bytes += len(encoded_line)
-    if (
-        projected_bytes > warning_bytes
-        and resolved_archive_dir not in _warned_archive_dirs
-    ):
+    encoded_lines: list[bytes] = []
+    for row in rows:
+        sanitized = {key: value for key, value in row.items() if key != "embedding"}
+        record = {
+            "table": table_name,
+            "archived_at": archived_at,
+            "row": sanitized,
+        }
+        encoded_lines.append(
+            (json.dumps(record, default=repr, separators=(",", ":")) + "\n").encode(
+                "utf-8"
+            )
+        )
+    batch_bytes = sum(len(line) for line in encoded_lines)
+    if projected_bytes + batch_bytes > max_bytes:
         logger.error(
-            "Retention archive exceeded its warning threshold: directory=%s "
-            "size_bytes=%d warning_bytes=%d; live-row retention continues",
+            "Retention archive ceiling reached; skipping evidence archive while "
+            "live-row retention continues: directory=%s table=%s rows_skipped=%d "
+            "size_bytes=%d batch_bytes=%d ceiling_bytes=%d",
             archive_dir,
+            table_name,
+            len(rows),
             projected_bytes,
-            warning_bytes,
+            batch_bytes,
+            max_bytes,
         )
         _warned_archive_dirs.add(resolved_archive_dir)
+        return False
+    with path.open("ab") as archive_file:
+        for encoded_line in encoded_lines:
+            archive_file.write(encoded_line)
+            projected_bytes += len(encoded_line)
+    return True

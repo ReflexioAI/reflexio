@@ -83,30 +83,31 @@ def test_archive_flag_off_preserves_existing_delete_behavior(
     assert not archive_dir.exists()
 
 
-def test_archive_warning_does_not_stop_live_row_retention(
+def test_archive_ceiling_skips_evidence_but_caps_live_rows(
     storage: BaseStorage,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     monkeypatch.setenv("REFLEXIO_RETENTION_ARCHIVE", "true")
-    monkeypatch.setenv("REFLEXIO_RETENTION_ARCHIVE_WARN_BYTES", "1")
+    monkeypatch.setenv("REFLEXIO_RETENTION_ARCHIVE_MAX_BYTES", "1")
     storage.add_user_interaction("u1", _interaction(1, "req1"))
 
     assert storage.delete_oldest_retention_target_rows("interactions", 1) == 1  # type: ignore[attr-defined]
 
     assert storage.get_all_interactions(limit=10) == []
     archive_dir = Path(storage.db_path).parent / "archive"  # type: ignore[attr-defined]
-    assert sum(path.stat().st_size for path in archive_dir.glob("*.jsonl")) > 1
+    assert sum(path.stat().st_size for path in archive_dir.glob("*.jsonl")) == 0
+    assert "rows_skipped=1" in caplog.text
     assert "live-row retention continues" in caplog.text
 
 
-def test_automatic_cleanup_continues_after_archive_warning(
+def test_automatic_cleanup_continues_after_archive_ceiling(
     storage: BaseStorage,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     monkeypatch.setenv("REFLEXIO_RETENTION_ARCHIVE", "true")
-    monkeypatch.setenv("REFLEXIO_RETENTION_ARCHIVE_WARN_BYTES", "1")
+    monkeypatch.setenv("REFLEXIO_RETENTION_ARCHIVE_MAX_BYTES", "1")
     monkeypatch.setattr(
         "reflexio.server.services.generation_service.get_row_retention_limits",
         lambda: {"interactions": 1},
@@ -129,13 +130,13 @@ def test_invalid_archive_warning_threshold_never_blocks_retention(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     monkeypatch.setenv("REFLEXIO_RETENTION_ARCHIVE", "true")
-    monkeypatch.setenv("REFLEXIO_RETENTION_ARCHIVE_WARN_BYTES", "not-a-number")
+    monkeypatch.setenv("REFLEXIO_RETENTION_ARCHIVE_MAX_BYTES", "not-a-number")
     storage.add_user_interaction("u1", _interaction(1, "req1"))
 
     assert storage.delete_oldest_retention_target_rows("interactions", 1) == 1  # type: ignore[attr-defined]
 
     assert storage.get_all_interactions(limit=10) == []
-    assert "Invalid REFLEXIO_RETENTION_ARCHIVE_WARN_BYTES" in caplog.text
+    assert "Invalid REFLEXIO_RETENTION_ARCHIVE_MAX_BYTES" in caplog.text
 
 
 def test_archive_preserves_deleted_rows_without_embeddings(
@@ -211,7 +212,7 @@ def test_large_over_limit_cleanup_caps_live_rows_and_preserves_removed_rows(
     storage: BaseStorage, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("REFLEXIO_RETENTION_ARCHIVE", "true")
-    monkeypatch.setenv("REFLEXIO_RETENTION_ARCHIVE_WARN_BYTES", str(10 * 1024**2))
+    monkeypatch.setenv("REFLEXIO_RETENTION_ARCHIVE_MAX_BYTES", str(10 * 1024**2))
     monkeypatch.setattr(
         "reflexio.server.services.generation_service.get_row_retention_limits",
         lambda: {"interactions": 1000},
@@ -325,7 +326,7 @@ def test_archive_and_delete_hold_one_sqlite_writer_guard(
     }
 
 
-def test_archive_failure_prevents_deletion(
+def test_archive_failure_logs_evidence_loss_and_continues_deletion(
     storage: BaseStorage,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
@@ -339,13 +340,11 @@ def test_archive_failure_prevents_deletion(
     monkeypatch.setattr(
         "reflexio.server.services.storage.retention_mixin.append_archive_rows", fail
     )
-    with pytest.raises(OSError, match="disk full"):
-        storage.delete_oldest_retention_target_rows("interactions", 1)  # type: ignore[attr-defined]
+    assert storage.delete_oldest_retention_target_rows("interactions", 1) == 1  # type: ignore[attr-defined]
 
-    assert {item.interaction_id for item in storage.get_all_interactions(limit=10)} == {
-        1
-    }
+    assert storage.get_all_interactions(limit=10) == []
     assert "Failed to archive retention rows" in caplog.text
+    assert "live-row retention continues" in caplog.text
 
 
 def test_archive_directory_override_is_respected(
@@ -399,7 +398,7 @@ def test_composite_archive_fetch_omits_embeddings(storage: BaseStorage) -> None:
     ]
 
 
-def test_non_sqlite_archive_support_fails_before_deletion(
+def test_non_sqlite_archive_failure_does_not_block_deletion(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class UnsupportedArchiveStorage(RetentionMixin):
@@ -429,7 +428,6 @@ def test_non_sqlite_archive_support_fails_before_deletion(
     monkeypatch.setenv("REFLEXIO_RETENTION_ARCHIVE", "true")
     unsupported = UnsupportedArchiveStorage()
 
-    with pytest.raises(NotImplementedError, match="unavailable"):
-        unsupported.delete_oldest_retention_target_rows("interactions", 1)
+    assert unsupported.delete_oldest_retention_target_rows("interactions", 1) == 1
 
-    assert not unsupported.deleted
+    assert unsupported.deleted
