@@ -36,6 +36,7 @@ __all__ = [
     "CitationKind",
     "Citation",
     "RetrievedLearningKind",
+    "RetrievedLearningSnapshot",
     "RetrievedLearning",
     "LearningImpact",
     "Interaction",
@@ -175,23 +176,34 @@ type RetrievedLearningKind = Literal["profile", "user_playbook", "agent_playbook
 type LearningImpact = Literal["positive", "negative", "neutral"]
 
 
+class RetrievedLearningSnapshot(BaseModel):
+    """Source learning fields captured at injection time for later evaluation."""
+
+    title: str = Field(default="", max_length=1_000)
+    content: str = Field(max_length=1_000_000)
+    trigger: str = Field(default="", max_length=10_000)
+    rationale: str = Field(default="", max_length=10_000)
+
+
 class RetrievedLearning(BaseModel):
     """A learning the caller retrieved and injected into the agent context.
 
-    Deliberately minimal — just the identity pair. It does NOT reuse
-    ``Citation``: citations carry injection-time debug fields (``tag``,
-    ``title``) that callers should not need to supply (or see) when declaring
-    what was retrieved.
+    The identity pair remains sufficient for compatibility. New callers may
+    include the injection-time snapshot needed for historically
+    accurate evaluation.
 
     Attributes:
         kind (RetrievedLearningKind): Which kind of learning this references.
         learning_id (str): Stable storage id — ``profile_id`` for profiles,
             ``user_playbook_id`` for user playbooks, ``agent_playbook_id``
             for agent playbooks (numeric ids as decimal strings).
+        snapshot (RetrievedLearningSnapshot | None): Source learning fields
+            captured at injection time. Optional for older callers.
     """
 
     kind: RetrievedLearningKind
     learning_id: str = Field(min_length=1, max_length=1_000)
+    snapshot: RetrievedLearningSnapshot | None = None
 
 
 # information about the user interaction sent by the client

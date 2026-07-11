@@ -13,6 +13,8 @@ import pytest
 from reflexio.models.api_schema.service_schemas import (
     Interaction,
     Request,
+    RetrievedLearning,
+    RetrievedLearningSnapshot,
     UserActionType,
 )
 from reflexio.server.services.generation_service import GenerationService
@@ -31,6 +33,18 @@ def _interaction(interaction_id: int, request_id: str) -> Interaction:
         user_action=UserActionType.NONE,
         user_action_description="",
         interacted_image_url="",
+        retrieved_learnings=[
+            RetrievedLearning(
+                kind="profile",
+                learning_id="profile-1",
+                snapshot=RetrievedLearningSnapshot(
+                    title="Injected preference",
+                    content="Use the injection-time wording.",
+                    trigger="",
+                    rationale="",
+                ),
+            )
+        ],
     )
 
 
@@ -144,6 +158,18 @@ def test_archive_preserves_deleted_rows_without_embeddings(
     assert all(record["table"] == "interactions" for record in records)
     assert all(isinstance(record["archived_at"], int) for record in records)
     assert all("embedding" not in record["row"] for record in records)  # type: ignore[operator]
+    assert json.loads(records[0]["row"]["retrieved_learnings"]) == [
+        {
+            "kind": "profile",
+            "learning_id": "profile-1",
+            "snapshot": {
+                "title": "Injected preference",
+                "content": "Use the injection-time wording.",
+                "trigger": "",
+                "rationale": "",
+            },
+        }
+    ]
 
 
 def test_over_limit_cleanup_archives_before_automatic_retention(

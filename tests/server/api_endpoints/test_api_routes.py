@@ -61,6 +61,18 @@ class TestPublishInteraction:
                     "interaction_type": "conversation",
                     "user_message": "Hello",
                     "agent_message": "Hi there!",
+                    "retrieved_learnings": [
+                        {
+                            "kind": "profile",
+                            "learning_id": "profile-1",
+                            "snapshot": {
+                                "title": "Concise answers",
+                                "content": "Keep answers concise.",
+                                "trigger": "",
+                                "rationale": "",
+                            },
+                        }
+                    ],
                 }
             ],
         }
@@ -94,6 +106,14 @@ class TestPublishInteraction:
         assert run_with_operation_limit.call_args.kwargs["operation"] == "publish"
         add_user_interaction.assert_called_once()
         assert add_user_interaction.call_args.kwargs["use_publish_limiter"] is False
+        snapshot = (
+            add_user_interaction.call_args.kwargs["request"]
+            .interaction_data_list[0]
+            .retrieved_learnings[0]
+            .snapshot
+        )
+        assert snapshot is not None
+        assert snapshot.content == "Keep answers concise."
 
     def test_async_publish_returns_queued(self, client, patched_reflexio):
         """Async mode returns immediate acknowledgement without calling publisher."""

@@ -20,6 +20,7 @@ from reflexio.models.api_schema.domain import (
     Request,
     RetrievedLearning,
     RetrievedLearningEvaluationResult,
+    RetrievedLearningSnapshot,
     UserPlaybook,
     UserProfile,
 )
@@ -98,7 +99,16 @@ def _result(kind: str, learning_id: str) -> RetrievedLearningEvaluationResult:
 
 def test_retrieved_learnings_round_trip(storage) -> None:
     refs = [
-        RetrievedLearning(kind="profile", learning_id="prof-1"),
+        RetrievedLearning(
+            kind="profile",
+            learning_id="prof-1",
+            snapshot=RetrievedLearningSnapshot(
+                title="Preference at injection",
+                content="Keep answers concise.",
+                trigger="",
+                rationale="",
+            ),
+        ),
         RetrievedLearning(kind="user_playbook", learning_id="42"),
         RetrievedLearning(kind="agent_playbook", learning_id="7"),
     ]
@@ -110,6 +120,12 @@ def test_retrieved_learnings_round_trip(storage) -> None:
         ("user_playbook", "42"),
         ("agent_playbook", "7"),
     ]
+    assert assistant.retrieved_learnings[0].snapshot == RetrievedLearningSnapshot(
+        title="Preference at injection",
+        content="Keep answers concise.",
+        trigger="",
+        rationale="",
+    )
     user_turn = next(i for i in back if i.role == "User")
     assert user_turn.retrieved_learnings == []
 
