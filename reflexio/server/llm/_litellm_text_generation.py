@@ -325,8 +325,16 @@ class TextGenerationMixin:
         }
 
         # Drop any fallback entry that points back at the primary — sending the
-        # same broken endpoint twice never helps.
-        fallback_models = [m for m in fallback_models_raw if m != actual_model]
+        # same broken endpoint twice never helps. Also drop in-process ``local/*``
+        # embedding models: they have no litellm completion route (they are served
+        # in-process by ``_litellm_embedding.py``), so litellm would raise
+        # ``BadRequestError: LLM Provider NOT provided`` deep inside its fallback
+        # ladder if one ever landed in this list (Sentry PYTHON-FASTAPI-CV).
+        fallback_models = [
+            m
+            for m in fallback_models_raw
+            if m != actual_model and not m.startswith("local/")
+        ]
 
         temperature = kwargs.pop("temperature", self.config.temperature)
         if self._is_temperature_restricted_model(actual_model):
