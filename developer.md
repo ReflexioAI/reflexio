@@ -179,10 +179,10 @@ Today the E2E suite runs `Reflexio` in-process with `StorageConfigSQLite` config
 If you add a future harness that boots services from a clean checkout — analogous to claude-smart's `tests/integration/integration.sh` — it must:
 
 1. Sandbox storage: point `LOCAL_STORAGE_PATH` (or the SQLite `db_path`) at a temp dir, never the default `~/.reflexio/data/`.
-2. Use non-default ports: `BACKEND_PORT=19061`, `DOCS_PORT=19062` (or higher), and refuse production ports (`8061`, `8062`) unless the user explicitly opts in.
-3. Refuse to use the real `$HOME` as the integration home; create a temp `INTEG_HOME` and export it before launching services.
+2. Use non-default ports: pick a `1XXXX` form that mirrors the production `8061`/`8062` while staying clear of common dev ranges (e.g. `BACKEND_PORT=19061`, `DOCS_PORT=19062`, or higher), and refuse production ports (`8061`, `8062`) unless the user explicitly opts in.
+3. Never use the real `$HOME` as the integration home; create a temp `INTEG_HOME` and export `HOME=$INTEG_HOME` before launching services so every subprocess inherits the isolated home.
 
-Rationale: claude-smart learned this the hard way when its harness bound production ports (`8071`/`8072`/`3001`) and either failed or replaced the user's installed instance — see [claude-smart PR #125](https://github.com/ReflexioAI/claude-smart/pull/125) (`test: isolate integration harness runtime`). OSS avoids the hazard today only because no such harness exists yet; the above rule prevents reintroducing it when one is added.
+Rationale: claude-smart encountered this when its harness bound production ports (`8071`/`8072`/`3001`) and either failed or replaced the user's installed instance. OSS avoids the hazard today only because no such harness exists yet; the above rule prevents reintroducing it when one is added.
 
 ## Commit & PR Conventions
 
