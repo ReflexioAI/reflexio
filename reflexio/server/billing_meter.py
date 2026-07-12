@@ -36,7 +36,10 @@ def record_extraction_tokens(
 ) -> None:
     """Emit the Learning cost facet — call only when extraction fired.
 
-    No-op when ``billing_input_tokens <= 0``.
+    No-op when ``billing_input_tokens <= 0``. Each call mints a fresh
+    ``event_key=f"tok:{uuid4()}"`` so two token emits under the same
+    ``request_id`` (e.g. profile + playbook extraction in one request) never
+    collapse into one billed event downstream.
 
     Args:
         org_id: Organisation identifier.
@@ -58,6 +61,7 @@ def record_extraction_tokens(
         pipeline=pipeline,
         request_id=request_id,
         session_id=session_id,
+        event_key=f"tok:{uuid.uuid4()}",
         count_value=billing_input_tokens,
         prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens,
@@ -351,6 +355,8 @@ def record_applied_learnings(
     """Emit the Application line — surfaced top-K learnings.
 
     No-op unless ``caller_type == "production_agent"`` AND ``surfaced_count > 0``.
+    Each call mints a fresh ``event_key=f"applied:{uuid4()}"`` — a distinct
+    key per search-response moment, never collapsed by ``request_id``.
 
     Args:
         org_id: Organisation identifier.
@@ -371,6 +377,7 @@ def record_applied_learnings(
         pipeline=pipeline,
         request_id=request_id,
         session_id=session_id,
+        event_key=f"applied:{uuid.uuid4()}",
         count_value=surfaced_count,
         platform_llm=platform_llm,
         platform_storage=platform_storage,
@@ -389,7 +396,10 @@ def record_search_request(
 
     No-op unless ``caller_type == "production_agent"``. Unlike
     :func:`record_applied_learnings`, empty search responses still count because
-    this measures requests made, not learnings surfaced.
+    this measures requests made, not learnings surfaced. Each call mints a
+    fresh ``event_key=f"search:{uuid4()}"`` — a distinct key per request, so
+    two searches under the same ``request_id`` are never collapsed into one
+    billed event downstream.
 
     Args:
         org_id: Organisation identifier.
@@ -405,6 +415,7 @@ def record_search_request(
         event_category="application",
         request_id=request_id,
         session_id=session_id,
+        event_key=f"search:{uuid.uuid4()}",
         count_value=1,
         caller_type=caller_type,
     )
