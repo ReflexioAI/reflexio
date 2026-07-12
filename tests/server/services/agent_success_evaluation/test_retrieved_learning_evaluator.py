@@ -289,6 +289,12 @@ def test_merged_profile_refs_collapsing_to_one_survivor_are_judged_once(
     ]
     assert run.diagnostics["resolved_via_lineage"] == 2
     assert llm.generate_chat_response.call_count == 2
+    prompts = [
+        call.kwargs["messages"][0]["content"]
+        for call in llm.generate_chat_response.call_args_list
+    ]
+    assert all("current preference" in prompt for prompt in prompts)
+    assert all("old preference" not in prompt for prompt in prompts)
 
 
 def test_purged_lineage_survivor_is_not_judged(storage: SQLiteStorage) -> None:

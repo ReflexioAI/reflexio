@@ -257,7 +257,7 @@ class AgentEvaluationResultStoreMixin:
         return builder.hexdigest()
 
     def _rle_attached_refs(self, user_id: str, session_id: str) -> set[tuple[str, str]]:
-        """Current non-purged identities reached from the session's attachments."""
+        """Return the live identities reached from the session's attachments."""
         cur = self.conn.execute(
             """SELECT i.retrieved_learnings
                FROM interactions i JOIN requests r ON i.request_id = r.request_id
@@ -273,9 +273,24 @@ class AgentEvaluationResultStoreMixin:
                 current = resolve_current(self, cast(EntityType, kind), learning_id)
             except (TypeError, ValueError):
                 continue
-            if current is not None and not current.is_purged:
+            if current is None:
+                continue
+            if not current.is_purged:
                 attached.add((kind, str(current.id)))
         return attached
+
+    def _rle_lineage_changed(self, refs: set[tuple[str, str]]) -> bool:
+        """Whether any evaluated identity now points elsewhere or is purged."""
+        for kind, learning_id in refs:
+            try:
+                current = resolve_current(self, cast(EntityType, kind), learning_id)
+            except (TypeError, ValueError):
+                continue
+            if current is not None and (
+                current.is_purged or str(current.id) != learning_id
+            ):
+                return True
+        return False
 
     def _rle_eligible_refs(
         self, user_id: str, results: list[RetrievedLearningEvaluationResult]
@@ -470,6 +485,13 @@ class AgentEvaluationResultStoreMixin:
                 # to trip the UNIQUE index and roll back the commit — caller
                 # bugs fail loud rather than silently dropping data.
                 attached = self._rle_attached_refs(user_id, session_id)
+                proposed = {(r.kind, r.learning_id) for r in results}
+                # A candidate that now resolves elsewhere changed while the
+                # judge was running. Retry instead of caching a false terminal
+                # ``not_applicable`` result.
+                if self._rle_lineage_changed(proposed):
+                    self.conn.rollback()
+                    return RetrievedLearningCommitResult(disposition="stale")
                 eligible = self._rle_eligible_refs(user_id, results)
                 kept = [
                     r

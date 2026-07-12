@@ -17,6 +17,7 @@ import pytest
 
 from reflexio.models.api_schema.domain import (
     Interaction,
+    LineageContext,
     Request,
     RetrievedLearning,
     RetrievedLearningEvaluationResult,
@@ -175,6 +176,96 @@ def test_content_only_edit_invalidates_fingerprint(storage) -> None:
         [_result("profile", "prof-1")],
     )
     assert commit.disposition == "stale"
+
+
+def test_merge_during_evaluation_makes_the_commit_stale(storage) -> None:
+    source_id = _seed_eligible_learnings(storage)
+    survivor = UserPlaybook(
+        user_id=USER,
+        playbook_name="current checklist",
+        request_id="r2",
+        agent_version="v1",
+        content="use the current checklist",
+    )
+    storage.save_user_playbooks([survivor])
+    _seed_session(
+        storage,
+        refs=[RetrievedLearning(kind="user_playbook", learning_id=str(source_id))],
+    )
+    snapshot = storage.load_bounded_retrieved_learning_snapshot(USER, SESSION)
+    fingerprint = session_fingerprint(snapshot)
+    generation = storage.begin_retrieved_learning_evaluation_run(USER, SESSION)
+
+    storage.merge_records(
+        entity_type="user_playbook",
+        survivor_id=str(survivor.user_playbook_id),
+        source_ids=[str(source_id)],
+        context=LineageContext(op_kind="merge", actor="test", request_id="r-merge"),
+    )
+    commit = storage.replace_retrieved_learning_evaluation_results(
+        USER,
+        SESSION,
+        generation,
+        fingerprint,
+        "complete",
+        {},
+        [_result("user_playbook", str(source_id))],
+    )
+
+    assert commit.disposition == "stale"
+    assert storage.get_retrieved_learning_evaluation_results(session_id=SESSION) == []
+
+
+def test_survivor_merge_during_evaluation_makes_the_commit_stale(storage) -> None:
+    source_id = _seed_eligible_learnings(storage)
+    first_survivor = UserPlaybook(
+        user_id=USER,
+        playbook_name="current checklist",
+        request_id="r2",
+        agent_version="v1",
+        content="use the current checklist",
+    )
+    final_survivor = UserPlaybook(
+        user_id=USER,
+        playbook_name="final checklist",
+        request_id="r3",
+        agent_version="v1",
+        content="use the final checklist",
+    )
+    storage.save_user_playbooks([first_survivor, final_survivor])
+    _seed_session(
+        storage,
+        refs=[RetrievedLearning(kind="user_playbook", learning_id=str(source_id))],
+    )
+    storage.merge_records(
+        entity_type="user_playbook",
+        survivor_id=str(first_survivor.user_playbook_id),
+        source_ids=[str(source_id)],
+        context=LineageContext(op_kind="merge", actor="test", request_id="r-merge-1"),
+    )
+    fingerprint = session_fingerprint(
+        storage.load_bounded_retrieved_learning_snapshot(USER, SESSION)
+    )
+    generation = storage.begin_retrieved_learning_evaluation_run(USER, SESSION)
+
+    storage.merge_records(
+        entity_type="user_playbook",
+        survivor_id=str(final_survivor.user_playbook_id),
+        source_ids=[str(first_survivor.user_playbook_id)],
+        context=LineageContext(op_kind="merge", actor="test", request_id="r-merge-2"),
+    )
+    commit = storage.replace_retrieved_learning_evaluation_results(
+        USER,
+        SESSION,
+        generation,
+        fingerprint,
+        "complete",
+        {},
+        [_result("user_playbook", str(first_survivor.user_playbook_id))],
+    )
+
+    assert commit.disposition == "stale"
+    assert storage.get_retrieved_learning_evaluation_results(session_id=SESSION) == []
 
 
 def test_replace_persists_exact_eligible_set(storage) -> None:
