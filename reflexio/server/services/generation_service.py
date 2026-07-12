@@ -7,12 +7,12 @@ import os
 import threading
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 from contextlib import nullcontext
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from reflexio.defaults import resolve_agent_version
 from reflexio.models.api_schema.service_schemas import (
@@ -327,18 +327,14 @@ class GenerationService:
                     agent_version=agent_version,
                     source=source,
                 )
-                record_usage_event(
-                    org_id=self.org_id,
+                self._emit_publish_success_events(
+                    interactions=new_interactions,
                     user_id=user_id,
                     request_id=request_id,
                     session_id=new_request.session_id,
                     source=source,
                     agent_version=agent_version,
                     backend="evaluation_only",
-                    event_name="publish_request_succeeded",
-                    event_category="publish",
-                    outcome="success",
-                    count_value=len(new_interactions),
                     duration_ms=int((time.perf_counter() - publish_start) * 1000),
                     metadata={
                         "evaluation_only": True,
@@ -366,17 +362,13 @@ class GenerationService:
                     agent_version=agent_version,
                     source=source,
                 )
-                record_usage_event(
-                    org_id=self.org_id,
+                self._emit_publish_success_events(
+                    interactions=new_interactions,
                     user_id=user_id,
                     request_id=request_id,
                     session_id=new_request.session_id,
                     source=source,
                     agent_version=agent_version,
-                    event_name="publish_request_succeeded",
-                    event_category="publish",
-                    outcome="success",
-                    count_value=len(new_interactions),
                     duration_ms=int((time.perf_counter() - publish_start) * 1000),
                     metadata={"warning_count": len(result.warnings)},
                 )
@@ -411,18 +403,14 @@ class GenerationService:
                         agent_version=agent_version,
                         source=source,
                     )
-                    record_usage_event(
-                        org_id=self.org_id,
+                    self._emit_publish_success_events(
+                        interactions=new_interactions,
                         user_id=user_id,
                         request_id=request_id,
                         session_id=new_request.session_id,
                         source=source,
                         agent_version=agent_version,
                         backend="durable",
-                        event_name="publish_request_succeeded",
-                        event_category="publish",
-                        outcome="success",
-                        count_value=len(new_interactions),
                         duration_ms=int((time.perf_counter() - publish_start) * 1000),
                         metadata={
                             "defer_learning": True,
@@ -456,18 +444,14 @@ class GenerationService:
                         skip_aggregation=publish_user_interaction_request.skip_aggregation,
                     )
                 )
-                record_usage_event(
-                    org_id=self.org_id,
+                self._emit_publish_success_events(
+                    interactions=new_interactions,
                     user_id=user_id,
                     request_id=request_id,
                     session_id=new_request.session_id,
                     source=source,
                     agent_version=agent_version,
                     backend="classic",
-                    event_name="publish_request_succeeded",
-                    event_category="publish",
-                    outcome="success",
-                    count_value=len(new_interactions),
                     duration_ms=int((time.perf_counter() - publish_start) * 1000),
                     metadata={
                         "defer_learning": True,
@@ -509,18 +493,14 @@ class GenerationService:
                 source=source,
             )
 
-            record_usage_event(
-                org_id=self.org_id,
+            self._emit_publish_success_events(
+                interactions=new_interactions,
                 user_id=user_id,
                 request_id=request_id,
                 session_id=new_request.session_id,
                 source=source,
                 agent_version=agent_version,
                 backend="classic",
-                event_name="publish_request_succeeded",
-                event_category="publish",
-                outcome="success",
-                count_value=len(new_interactions),
                 duration_ms=int((time.perf_counter() - publish_start) * 1000),
                 metadata={"warning_count": len(result.warnings)},
             )
@@ -553,6 +533,47 @@ class GenerationService:
                     user_id,
                 )
             raise
+
+    def _emit_publish_success_events(
+        self,
+        *,
+        interactions: list[Interaction],
+        user_id: str,
+        request_id: str,
+        session_id: str,
+        source: str | None,
+        agent_version: str,
+        duration_ms: int,
+        metadata: Mapping[str, Any],
+        backend: str | None = None,
+    ) -> None:
+        """Emit one ``publish_request_succeeded`` event per interaction.
+
+        Replaces the old single aggregate event (``count_value=len(interactions)``)
+        with one entity-backed event per interaction (``count_value=1``,
+        ``event_key=f"pub:{interaction_id}"``, ``entity_id=interaction_id``) so
+        downstream dedup can key on the interaction id. The summed
+        ``count_value`` across the emitted events equals the old aggregate
+        count, so totals are unchanged.
+        """
+        for interaction in interactions:
+            record_usage_event(
+                org_id=self.org_id,
+                user_id=user_id,
+                request_id=request_id,
+                session_id=session_id,
+                source=source,
+                agent_version=agent_version,
+                backend=backend,
+                event_name="publish_request_succeeded",
+                event_category="publish",
+                outcome="success",
+                count_value=1,
+                event_key=f"pub:{interaction.interaction_id}",
+                entity_id=str(interaction.interaction_id),
+                duration_ms=duration_ms,
+                metadata=metadata,
+            )
 
     # ===============================
     # deferred learning
