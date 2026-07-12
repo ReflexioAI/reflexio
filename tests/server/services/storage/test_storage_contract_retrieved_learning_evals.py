@@ -268,6 +268,44 @@ def test_survivor_merge_during_evaluation_makes_the_commit_stale(storage) -> Non
     assert storage.get_retrieved_learning_evaluation_results(session_id=SESSION) == []
 
 
+def test_delete_during_evaluation_makes_commit_stale_and_keeps_prior(storage) -> None:
+    _seed_eligible_learnings(storage)
+    _seed_session(
+        storage,
+        refs=[RetrievedLearning(kind="profile", learning_id="prof-1")],
+    )
+    fingerprint = session_fingerprint(
+        storage.load_bounded_retrieved_learning_snapshot(USER, SESSION)
+    )
+    first_generation = storage.begin_retrieved_learning_evaluation_run(USER, SESSION)
+    first = storage.replace_retrieved_learning_evaluation_results(
+        USER,
+        SESSION,
+        first_generation,
+        fingerprint,
+        "complete",
+        {},
+        [_result("profile", "prof-1")],
+    )
+    assert first.disposition == "applied"
+
+    generation = storage.begin_retrieved_learning_evaluation_run(USER, SESSION)
+    assert storage.delete_profiles_by_ids(["prof-1"]) == 1
+    commit = storage.replace_retrieved_learning_evaluation_results(
+        USER,
+        SESSION,
+        generation,
+        fingerprint,
+        "complete",
+        {},
+        [_result("profile", "prof-1")],
+    )
+
+    assert commit.disposition == "stale"
+    kept = storage.get_retrieved_learning_evaluation_results(session_id=SESSION)
+    assert [(row.kind, row.learning_id) for row in kept] == [("profile", "prof-1")]
+
+
 def test_replace_persists_exact_eligible_set(storage) -> None:
     playbook_id = _seed_eligible_learnings(storage)
     _seed_session(

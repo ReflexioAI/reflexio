@@ -36,6 +36,7 @@ class AgentEvaluationResultStoreMixin:
     # Type hints for instance attributes/methods provided by SQLiteStorageBase via MRO
     _lock: Any
     conn: sqlite3.Connection
+    org_id: str
     _execute: Any
     _fetchall: Any
     _fetchone: Any
@@ -286,11 +287,44 @@ class AgentEvaluationResultStoreMixin:
                 current = resolve_current(self, cast(EntityType, kind), learning_id)
             except (TypeError, ValueError):
                 continue
-            if current is not None and (
-                current.is_purged or str(current.id) != learning_id
-            ):
+            if current is None:
+                if self._rle_ref_has_history(kind, learning_id):
+                    return True
+                continue
+            if current.is_purged:
+                return True
+            if str(current.id) != learning_id:
                 return True
         return False
+
+    def _rle_ref_has_history(self, kind: str, learning_id: str) -> bool:
+        """Whether an unresolvable identity previously existed or had lineage."""
+        table_and_key = {
+            "profile": ("profiles", "profile_id"),
+            "user_playbook": ("user_playbooks", "user_playbook_id"),
+            "agent_playbook": ("agent_playbooks", "agent_playbook_id"),
+        }.get(kind)
+        if table_and_key is None:
+            return False
+        table, key = table_and_key
+        if self.conn.execute(
+            f"SELECT 1 FROM {table} WHERE {key} = ? LIMIT 1",  # noqa: S608
+            (learning_id,),
+        ).fetchone():
+            return True
+        return (
+            self.conn.execute(
+                """SELECT 1 FROM lineage_event e
+                   WHERE e.org_id = ? AND e.entity_type = ?
+                     AND (e.entity_id = ? OR EXISTS (
+                         SELECT 1 FROM json_each(e.source_ids)
+                         WHERE CAST(value AS TEXT) = ?
+                     ))
+                   LIMIT 1""",
+                (self.org_id, kind, learning_id, learning_id),
+            ).fetchone()
+            is not None
+        )
 
     def _rle_eligible_refs(
         self, user_id: str, results: list[RetrievedLearningEvaluationResult]

@@ -228,6 +228,8 @@ class AgentEvaluationResultStoreMixin:
         to match a session attachment after lineage resolution, and rechecks
         its source row for retrieval eligibility. Rows that fail either check
         are dropped before the prior session set is atomically replaced.
+        If a proposed identity no longer resolves to itself or is purged, the
+        method returns ``stale`` without replacing the prior result set.
 
         When commit-time eligibility removes every candidate, prior rows are
         cleared and the final status is ``not_applicable`` regardless of
