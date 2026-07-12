@@ -15,6 +15,7 @@ from reflexio.models.api_schema.service_schemas import (
     UserActionType,
     UserProfile,
 )
+from reflexio.server.services.storage.error import StorageError
 from reflexio.server.services.storage.storage_base import BaseStorage
 
 pytestmark = pytest.mark.integration
@@ -296,6 +297,30 @@ class TestGetProfilesByIds:
         )
         assert len(result) == 1
         assert result[0].profile_id == "p1"
+
+    def test_include_inactive_returns_archived(self, storage: BaseStorage) -> None:
+        storage.add_user_profile("u1", [_make_profile("u1", "p1", "x")])
+        storage.archive_profile_by_id("u1", "p1")
+        result = storage.get_profiles_by_ids("u1", ["p1"], include_inactive=True)
+        assert [p.profile_id for p in result] == ["p1"]
+
+    def test_include_inactive_still_filters_by_user_id(
+        self, storage: BaseStorage
+    ) -> None:
+        """user_id is the only predicate left standing under include_inactive."""
+        storage.add_user_profile("u2", [_make_profile("u2", "p2", "b")])
+        storage.archive_profile_by_id("u2", "p2")
+        assert storage.get_profiles_by_ids("u1", ["p2"], include_inactive=True) == []
+
+    def test_include_inactive_with_status_filter_is_rejected(
+        self, storage: BaseStorage
+    ) -> None:
+        """The two are contradictory — fail loud rather than drop the filter."""
+        storage.add_user_profile("u1", [_make_profile("u1", "p1", "x")])
+        with pytest.raises(StorageError):
+            storage.get_profiles_by_ids(
+                "u1", ["p1"], status_filter=[Status.ARCHIVED], include_inactive=True
+            )
 
 
 class TestArchiveProfileById:

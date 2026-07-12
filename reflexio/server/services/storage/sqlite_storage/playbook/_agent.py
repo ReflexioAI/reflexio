@@ -19,6 +19,9 @@ from reflexio.models.api_schema.service_schemas import (
     Status,
 )
 from reflexio.models.config_schema import SearchMode, SearchOptions
+from reflexio.server.services.storage.lifecycle_filters import (
+    validate_include_inactive,
+)
 from reflexio.server.services.storage.storage_base._playbook import (
     AGGREGATE_REASON_PREFIX,
 )
@@ -351,7 +354,13 @@ class AgentPlaybookStoreMixin:
         *,
         status_filter: list[Status | None] | None = None,
         playbook_status_filter: list[PlaybookStatus] | None = None,
+        include_inactive: bool = False,
     ) -> list[AgentPlaybook]:
+        validate_include_inactive(
+            include_inactive=include_inactive,
+            status_filter=status_filter,
+            playbook_status_filter=playbook_status_filter,
+        )
         if not agent_playbook_ids:
             return []
         unique_ids = list(dict.fromkeys(agent_playbook_ids))
@@ -364,16 +373,17 @@ class AgentPlaybookStoreMixin:
                 f"WHERE agent_playbook_id IN ({placeholders})"
             )
             params: list[Any] = list(chunk)
-            if status_filter is not None:
-                fragment, status_params = _build_status_sql(status_filter)
-                query += f" AND {fragment}"
-                params.extend(status_params)
-            else:
-                query += " AND status IS NULL"
-            if playbook_status_filter:
-                status_placeholders = ",".join("?" for _ in playbook_status_filter)
-                query += f" AND playbook_status IN ({status_placeholders})"
-                params.extend(status.value for status in playbook_status_filter)
+            if not include_inactive:
+                if status_filter is not None:
+                    fragment, status_params = _build_status_sql(status_filter)
+                    query += f" AND {fragment}"
+                    params.extend(status_params)
+                else:
+                    query += " AND status IS NULL"
+                if playbook_status_filter:
+                    status_placeholders = ",".join("?" for _ in playbook_status_filter)
+                    query += f" AND playbook_status IN ({status_placeholders})"
+                    params.extend(status.value for status in playbook_status_filter)
             rows.extend(self._fetchall(query, params))
         return [_row_to_agent_playbook(row) for row in rows]
 

@@ -16,6 +16,9 @@ from reflexio.models.api_schema.service_schemas import (
     Status,
     UserProfile,
 )
+from reflexio.server.services.storage.lifecycle_filters import (
+    validate_include_inactive,
+)
 
 from .._base import (
     _PROFILE_TOMBSTONE_STATUS_VALUES,
@@ -660,14 +663,25 @@ class ProfileStoreMixin:
         user_id: str,
         profile_ids: list[str],
         status_filter: list[Status | None] | None = None,
+        *,
+        include_inactive: bool = False,
     ) -> list[UserProfile]:
+        validate_include_inactive(
+            include_inactive=include_inactive, status_filter=status_filter
+        )
         if not profile_ids:
             return []
+        ph = ",".join("?" for _ in profile_ids)
+        if include_inactive:
+            rows = self._fetchall(
+                f"SELECT * FROM profiles WHERE user_id = ? AND profile_id IN ({ph})",
+                (user_id, *profile_ids),
+            )
+            return [_row_to_profile(r) for r in rows]
         if status_filter is None:
             status_filter = [None]
         current_ts = _epoch_now()
         frag, sparams = _build_status_sql(status_filter)
-        ph = ",".join("?" for _ in profile_ids)
         sql = (
             f"SELECT * FROM profiles "
             f"WHERE user_id = ? AND profile_id IN ({ph}) "

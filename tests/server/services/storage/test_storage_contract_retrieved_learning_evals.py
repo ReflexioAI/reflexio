@@ -5,7 +5,7 @@ Covers the two core invariants:
 1. Round-trip parity — ``retrieved_learnings`` survives publish/storage/read
    identically on every locally-testable backend.
 2. Exact evaluation set — replacement persists exactly the attached AND
-   retrieval-eligible identities, atomically, fenced by generation +
+   historically resolvable identities, atomically, fenced by generation +
    session fingerprint.
 """
 
@@ -177,7 +177,7 @@ def test_content_only_edit_invalidates_fingerprint(storage) -> None:
     assert commit.disposition == "stale"
 
 
-def test_replace_persists_exact_eligible_set(storage) -> None:
+def test_replace_persists_exact_resolvable_set(storage) -> None:
     playbook_id = _seed_eligible_learnings(storage)
     _seed_session(
         storage,
@@ -218,11 +218,43 @@ def test_replace_persists_exact_eligible_set(storage) -> None:
     assert state["committed_count"] == 2
 
 
+def test_replace_keeps_attached_source_that_becomes_inactive(storage) -> None:
+    """A lifecycle change during judging must not discard the historical verdict."""
+    playbook_id = _seed_eligible_learnings(storage)
+    _seed_session(
+        storage,
+        refs=[RetrievedLearning(kind="user_playbook", learning_id=str(playbook_id))],
+    )
+    snapshot = storage.load_bounded_retrieved_learning_snapshot(USER, SESSION)
+    fingerprint = session_fingerprint(snapshot)
+    generation = storage.begin_retrieved_learning_evaluation_run(USER, SESSION)
+
+    # Simulate aggregation or consolidation completing while the LLM judges run.
+    assert storage.archive_user_playbook_by_id(USER, playbook_id)
+    commit = storage.replace_retrieved_learning_evaluation_results(
+        USER,
+        SESSION,
+        generation,
+        fingerprint,
+        "complete",
+        {},
+        [_result("user_playbook", str(playbook_id))],
+    )
+
+    assert commit.disposition == "applied"
+    assert commit.status == "complete"
+    assert commit.committed_count == 1
+    rows = storage.get_retrieved_learning_evaluation_results(session_id=SESSION)
+    assert [(row.kind, row.learning_id) for row in rows] == [
+        ("user_playbook", str(playbook_id))
+    ]
+
+
 def test_replace_drops_eligible_but_unattached(storage) -> None:
     """Commit keeps only records attached to the live session.
 
-    Guards the ``attached AND retrieval-eligible`` contract at the storage
-    layer: an otherwise-eligible ref that was never attached to the session
+    Guards the ``attached AND historically resolvable`` contract at the storage
+    layer: an otherwise-resolvable ref that was never attached to the session
     must be dropped rather than persisted.
     """
     _seed_eligible_learnings(storage)
@@ -253,8 +285,8 @@ def test_replace_drops_eligible_but_unattached(storage) -> None:
         "complete",
         {},
         [
-            _result("profile", "prof-1"),  # attached + eligible
-            _result("profile", "prof-2"),  # eligible but never attached
+            _result("profile", "prof-1"),  # attached + resolvable
+            _result("profile", "prof-2"),  # resolvable but never attached
         ],
     )
     assert commit.disposition == "applied"
@@ -263,7 +295,7 @@ def test_replace_drops_eligible_but_unattached(storage) -> None:
     assert [(r.kind, r.learning_id) for r in rows] == [("profile", "prof-1")]
 
 
-def test_replace_with_no_eligible_rows_clears_and_records_not_applicable(
+def test_replace_with_no_resolvable_rows_clears_and_records_not_applicable(
     storage,
 ) -> None:
     _seed_eligible_learnings(storage)
@@ -284,7 +316,7 @@ def test_replace_with_no_eligible_rows_clears_and_records_not_applicable(
     )
     assert commit.disposition == "applied" and commit.committed_count == 1
 
-    # A later run whose candidates all became ineligible clears prior rows.
+    # A later run whose candidates no longer exist clears prior rows.
     generation = storage.begin_retrieved_learning_evaluation_run(USER, SESSION)
     commit = storage.replace_retrieved_learning_evaluation_results(
         USER,

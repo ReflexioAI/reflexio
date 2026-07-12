@@ -168,8 +168,35 @@ class AgentPlaybookStoreMixin:
         *,
         status_filter: list[Status | None] | None = None,
         playbook_status_filter: list[PlaybookStatus] | None = None,
+        include_inactive: bool = False,
     ) -> list[AgentPlaybook]:
-        """Fetch agent playbooks in bulk with lifecycle filters."""
+        """Fetch agent playbooks in bulk with lifecycle filters.
+
+        Args:
+            agent_playbook_ids (list[int]): Playbook ids to fetch. Empty list
+                returns ``[]`` without hitting storage.
+            status_filter (list[Status | None] | None): Lifecycle statuses to
+                include. ``None`` (default) means CURRENT only.
+            playbook_status_filter (list[PlaybookStatus] | None): Approval
+                statuses to include. ``None`` (default) means no approval filter.
+            include_inactive (bool): Return every matching row regardless of
+                lifecycle status *or* approval status. This is the *historical
+                resolution* mode (see ``RetrievedLearningEvaluator``): it answers
+                "what did this id point at", not "what is retrievable now", so an
+                archived or never-approved playbook that was actually served is
+                still returned. It is a strict superset of ``include_tombstones``
+                on ``get_agent_playbook_by_id``, which only unhides
+                MERGED/SUPERSEDED for lineage walks. The default preserves
+                retrieval behavior.
+
+        Returns:
+            list[AgentPlaybook]: Matching playbooks. Order is unspecified.
+
+        Raises:
+            StorageError: If ``include_inactive`` is combined with an explicit
+                ``status_filter`` or ``playbook_status_filter`` — the two are
+                contradictory.
+        """
         raise NotImplementedError
 
     @abstractmethod
