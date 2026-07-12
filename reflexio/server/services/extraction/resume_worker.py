@@ -789,8 +789,54 @@ class ExtractionResumeWorker:
     def _record_finalized_learnings(
         self, run: AgentRunRecord, items: list[Any], *, entity_type: str
     ) -> None:
-        from reflexio.server.billing_meter import emit_learnings_generated
+        """Emit ``learnings_generated`` for a finalized resumable-extraction batch.
 
+        Prefers one event per learning id (``entity_id``/``profile_id`` for
+        profiles, ``user_playbook_id`` for playbooks) when every item in
+        ``items`` carries a durable id — the common case, since these ids are
+        assigned by the extractor (profile) or by ``save_user_playbooks``
+        in-place during ``_finalize_extracted_items`` (playbook), which has
+        already run by the time this is called. Falls back to the
+        count-based aggregate event when any item lacks one (e.g. dropped by
+        within-batch/consolidator dedup before persist, leaving a default
+        ``user_playbook_id=0``) — this avoids both fabricating an id for a row
+        that never persisted and colliding on the shared default-id key.
+        Totals are preserved either way: ``len(items)`` learnings are counted
+        whether via ``len(learning_ids)`` per-record events or one aggregate
+        ``count=len(items)`` event.
+        """
+        from reflexio.server.billing_meter import (
+            emit_learnings_generated,
+            emit_learnings_generated_records,
+        )
+
+        if not items:
+            return
+
+        id_attr = "profile_id" if entity_type == "profile" else "user_playbook_id"
+        learning_ids = [
+            str(getattr(item, id_attr))
+            for item in items
+            if getattr(item, id_attr, None)
+        ]
+        metadata = {
+            "run_id": run.id,
+            "extractor_kind": run.binding.extractor_kind,
+        }
+        if len(learning_ids) == len(items):
+            emit_learnings_generated_records(
+                org_id=self.request_context.org_id,
+                configurator=self.request_context.configurator,
+                learning_ids=learning_ids,
+                source="resumable_extraction",
+                pipeline=run.binding.extractor_kind,
+                user_id=run.binding.user_id,
+                request_id=run.binding.request_id,
+                agent_version=run.binding.agent_version,
+                entity_type=entity_type,
+                metadata=metadata,
+            )
+            return
         emit_learnings_generated(
             org_id=self.request_context.org_id,
             configurator=self.request_context.configurator,
@@ -801,10 +847,7 @@ class ExtractionResumeWorker:
             request_id=run.binding.request_id,
             agent_version=run.binding.agent_version,
             entity_type=entity_type,
-            metadata={
-                "run_id": run.id,
-                "extractor_kind": run.binding.extractor_kind,
-            },
+            metadata=metadata,
         )
 
     def _schedule_finalized_tagging(self, run: AgentRunRecord) -> None:

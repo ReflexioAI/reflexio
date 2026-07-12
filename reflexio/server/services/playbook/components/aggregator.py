@@ -729,7 +729,9 @@ class PlaybookAggregator:
                 metadata=stats,
             )
             self._record_learnings_generated(
-                count=len(saved_playbook_list),
+                learning_ids=[
+                    str(saved.agent_playbook_id) for saved in saved_playbook_list
+                ],
                 playbook_name=playbook_name,
                 request_id=_run_id,
                 metadata=stats,
@@ -769,17 +771,17 @@ class PlaybookAggregator:
     def _record_learnings_generated(
         self,
         *,
-        count: int,
+        learning_ids: list[str],
         playbook_name: str,
         request_id: str,
         metadata: Mapping[str, Any],
     ) -> None:
-        from reflexio.server.billing_meter import emit_learnings_generated
+        from reflexio.server.billing_meter import emit_learnings_generated_records
 
-        emit_learnings_generated(
+        emit_learnings_generated_records(
             org_id=self.request_context.org_id,
             configurator=self.configurator,
-            count=count,
+            learning_ids=learning_ids,
             source="aggregation",
             pipeline="playbook",
             request_id=request_id,

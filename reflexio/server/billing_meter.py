@@ -9,6 +9,7 @@ wrapper over the ``record_usage_event`` hook (which only enqueues). No DB I/O.
 from __future__ import annotations
 
 import logging
+import uuid
 from collections.abc import Mapping
 from typing import Any
 
@@ -85,7 +86,15 @@ def record_learnings_generated(
 ) -> None:
     """Emit the Learning value facet — number of profiles/playbooks generated.
 
-    No-op when ``count <= 0``.
+    Documented FALLBACK for callers that genuinely lack a per-record id list
+    (e.g. dedup/consolidation can reduce the persisted count below the raw
+    extracted count, so there is no safe 1:1 id per unit of ``count``). Prefer
+    :func:`record_learnings_generated_records` whenever the caller has the
+    durable learning ids in scope. No-op when ``count <= 0``.
+
+    Emits a single event carrying a synthesized ``event_key=f"learn-batch:{uuid4()}"``
+    (distinct per call) so this aggregate event still has a dedup key, even
+    though it is not entity-backed.
 
     Args:
         org_id: Organisation identifier.
@@ -116,12 +125,81 @@ def record_learnings_generated(
         agent_version=agent_version,
         playbook_name=playbook_name,
         entity_type=entity_type,
+        event_key=f"learn-batch:{uuid.uuid4()}",
         count_value=count,
         platform_llm=platform_llm,
         platform_storage=platform_storage,
         caller_type=_INTERNAL,
         metadata=metadata,
     )
+
+
+def record_learnings_generated_records(
+    *,
+    org_id: str,
+    learning_ids: list[str],
+    platform_llm: bool | None,
+    platform_storage: bool | None,
+    pipeline: str | None = None,
+    user_id: str | None = None,
+    request_id: str | None = None,
+    session_id: str | None = None,
+    source: str | None = None,
+    agent_version: str | None = None,
+    playbook_name: str | None = None,
+    entity_type: str | None = None,
+    metadata: Mapping[str, Any] | None = None,
+) -> None:
+    """Emit the Learning value facet — one event per generated learning record.
+
+    Entity-backed alternative to :func:`record_learnings_generated`: emits one
+    ``learnings_generated`` event per id in ``learning_ids`` (``count_value=1``,
+    ``event_key=f"learn:{id}"``, ``entity_id=id``) instead of a single
+    aggregate event, so downstream dedup can key on the learning id. The
+    summed ``count_value`` across the emitted events equals
+    ``len(learning_ids)`` — unchanged from the total a caller would have
+    passed as ``count`` to :func:`record_learnings_generated`.
+
+    Callers must pass real, durable ids — never fabricate one to pad the
+    list. No-op when ``learning_ids`` is empty.
+
+    Args:
+        org_id: Organisation identifier.
+        learning_ids: Ids of the learnings durably generated in this run
+            (e.g. ``profile_id`` / ``user_playbook_id`` / ``agent_playbook_id``).
+        platform_llm: True iff the platform supplies the LLM for this org.
+        platform_storage: True iff the platform supplies storage; None defers to rollup.
+        pipeline: Optional pipeline tag (e.g. ``"playbook"``).
+        user_id: Optional user ID tied to the generated learning.
+        request_id: Optional request correlation ID.
+        session_id: Optional session ID.
+        source: Optional metering source/path label.
+        agent_version: Optional agent version tied to the generated learning.
+        playbook_name: Optional playbook name for playbook learnings.
+        entity_type: Optional entity type (e.g. ``"profile"``).
+        metadata: Optional path-specific usage metadata (shared across events).
+    """
+    for learning_id in learning_ids:
+        record_usage_event(
+            org_id=org_id,
+            event_name="learnings_generated",
+            event_category="learning",
+            pipeline=pipeline,
+            user_id=user_id,
+            request_id=request_id,
+            session_id=session_id,
+            source=source,
+            agent_version=agent_version,
+            playbook_name=playbook_name,
+            entity_type=entity_type,
+            entity_id=learning_id,
+            event_key=f"learn:{learning_id}",
+            count_value=1,
+            platform_llm=platform_llm,
+            platform_storage=platform_storage,
+            caller_type=_INTERNAL,
+            metadata=metadata,
+        )
 
 
 def emit_learnings_generated(
@@ -186,6 +264,73 @@ def emit_learnings_generated(
         logger.warning(
             "emit_learnings_generated failed for source=%s org=%s; "
             "learnings_generated event not emitted",
+            source,
+            org_id,
+            exc_info=True,
+        )
+
+
+def emit_learnings_generated_records(
+    *,
+    org_id: str,
+    configurator: Any,
+    learning_ids: list[str],
+    source: str,
+    pipeline: str | None = None,
+    user_id: str | None = None,
+    request_id: str | None = None,
+    agent_version: str | None = None,
+    playbook_name: str | None = None,
+    entity_type: str | None = None,
+    metadata: Mapping[str, Any] | None = None,
+) -> None:
+    """Resolve ``platform_llm`` from config and emit one event per learning id.
+
+    Entity-backed counterpart to :func:`emit_learnings_generated` for the
+    non-extraction learning-mutation paths (reflection, resumable-extraction
+    finalization, aggregation, offline-tuner auto-apply) when the caller has
+    the durable learning ids in scope. Same guard semantics: config resolution
+    and emission are wrapped and any exception is logged and swallowed — the
+    product path must never fail because metering failed. No-op when
+    ``learning_ids`` is empty.
+
+    Args:
+        org_id: Organisation identifier.
+        configurator: Object exposing ``get_config()`` for platform-LLM resolution.
+        learning_ids: Ids of the learnings durably produced by this path.
+        source: Metering source/path label (e.g. ``"reflection"``).
+        pipeline: Optional pipeline tag (e.g. ``"playbook"``).
+        user_id: Optional user ID tied to the generated learning.
+        request_id: Optional request correlation ID.
+        agent_version: Optional agent version tied to the generated learning.
+        playbook_name: Optional playbook name for playbook learnings.
+        entity_type: Optional entity type (e.g. ``"profile"``).
+        metadata: Optional path-specific usage metadata (shared across events).
+    """
+    if not learning_ids:
+        return
+    try:
+        from reflexio.server.billing_signals import platform_llm_from_config
+
+        config = configurator.get_config()
+        record_learnings_generated_records(
+            org_id=org_id,
+            learning_ids=learning_ids,
+            platform_llm=platform_llm_from_config(config),
+            platform_storage=None,
+            pipeline=pipeline,
+            user_id=user_id,
+            request_id=request_id,
+            source=source,
+            agent_version=agent_version,
+            playbook_name=playbook_name,
+            entity_type=entity_type,
+            metadata=metadata,
+        )
+    except Exception:
+        logger.warning(
+            "emit_learnings_generated_records failed for source=%s org=%s; "
+            "learnings_generated events not emitted",
             source,
             org_id,
             exc_info=True,

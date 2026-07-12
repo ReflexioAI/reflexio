@@ -88,18 +88,12 @@ def test_reflection_zero_revisions_records_nothing() -> None:
     assert events == []
 
 
-def test_resumable_finalization_records_learnings_generated() -> None:
-    events: list[UsageEvent] = []
-    configure_usage_event_recorder(events.append)
-    worker = ExtractionResumeWorker(
-        request_context=_request_context(),
-        llm_client=MagicMock(),
-    )
-    run = AgentRunRecord(
+def _agent_run(*, extractor_kind: str) -> AgentRunRecord:
+    return AgentRunRecord(
         id="run-1",
         binding=AgentBinding(
             org_id="org-1",
-            extractor_kind="profile",
+            extractor_kind=extractor_kind,
             user_id="user-1",
             request_id="req-1",
             agent_version="v1",
@@ -108,6 +102,20 @@ def test_resumable_finalization_records_learnings_generated() -> None:
         status=AgentRunStatus.FINALIZING,
         generation_request_snapshot={},
     )
+
+
+def test_resumable_finalization_falls_back_when_items_lack_ids() -> None:
+    """Items with no durable id (e.g. plain objects) fall back to the
+    count-based aggregate event -- Task A3's documented fallback, since there
+    is no safe per-record id to key a dedup event on.
+    """
+    events: list[UsageEvent] = []
+    configure_usage_event_recorder(events.append)
+    worker = ExtractionResumeWorker(
+        request_context=_request_context(),
+        llm_client=MagicMock(),
+    )
+    run = _agent_run(extractor_kind="profile")
 
     worker._record_finalized_learnings(
         run,
@@ -123,9 +131,107 @@ def test_resumable_finalization_records_learnings_generated() -> None:
     assert event.source == "resumable_extraction"
     assert event.entity_type == "profile"
     assert event.metadata == {"run_id": "run-1", "extractor_kind": "profile"}
+    assert event.event_key is not None and event.event_key.startswith("learn-batch:")
+
+
+def test_resumable_finalization_emits_one_event_per_profile_id() -> None:
+    """When every item carries a durable ``profile_id`` (the common case --
+    profile ids are assigned by the extractor before finalize runs), emit one
+    entity-backed event per profile instead of the count-only fallback.
+    """
+    events: list[UsageEvent] = []
+    configure_usage_event_recorder(events.append)
+    worker = ExtractionResumeWorker(
+        request_context=_request_context(),
+        llm_client=MagicMock(),
+    )
+    run = _agent_run(extractor_kind="profile")
+
+    class _FakeProfile:
+        def __init__(self, profile_id: str) -> None:
+            self.profile_id = profile_id
+
+    worker._record_finalized_learnings(
+        run,
+        [_FakeProfile("prof-1"), _FakeProfile("prof-2")],
+        entity_type="profile",
+    )
+
+    assert len(events) == 2
+    assert sum(e.count_value for e in events) == 2  # total unchanged vs old count=2
+    assert {e.event_key for e in events} == {"learn:prof-1", "learn:prof-2"}
+    assert {e.entity_id for e in events} == {"prof-1", "prof-2"}
+    for event in events:
+        assert event.count_value == 1
+        assert event.entity_type == "profile"
+        assert event.source == "resumable_extraction"
+
+
+def test_resumable_finalization_emits_one_event_per_playbook_id() -> None:
+    """Same as above for the playbook (``user_playbook_id``) kind."""
+    events: list[UsageEvent] = []
+    configure_usage_event_recorder(events.append)
+    worker = ExtractionResumeWorker(
+        request_context=_request_context(),
+        llm_client=MagicMock(),
+    )
+    run = _agent_run(extractor_kind="playbook")
+
+    class _FakePlaybook:
+        def __init__(self, user_playbook_id: int) -> None:
+            self.user_playbook_id = user_playbook_id
+
+    worker._record_finalized_learnings(
+        run,
+        [_FakePlaybook(11), _FakePlaybook(12), _FakePlaybook(13)],
+        entity_type="user_playbook",
+    )
+
+    assert len(events) == 3
+    assert sum(e.count_value for e in events) == 3  # total unchanged vs old count=3
+    assert {e.event_key for e in events} == {"learn:11", "learn:12", "learn:13"}
+    assert {e.entity_id for e in events} == {"11", "12", "13"}
+
+
+def test_resumable_finalization_falls_back_when_a_playbook_id_is_unset() -> None:
+    """A ``user_playbook_id=0`` (default, unset) mixed in with real ids means
+    dedup dropped that item before persist -- fall back to the count-based
+    aggregate rather than emit a colliding ``learn:0`` key or fabricate an id.
+    """
+    events: list[UsageEvent] = []
+    configure_usage_event_recorder(events.append)
+    worker = ExtractionResumeWorker(
+        request_context=_request_context(),
+        llm_client=MagicMock(),
+    )
+    run = _agent_run(extractor_kind="playbook")
+
+    class _FakePlaybook:
+        def __init__(self, user_playbook_id: int) -> None:
+            self.user_playbook_id = user_playbook_id
+
+    worker._record_finalized_learnings(
+        run,
+        [_FakePlaybook(21), _FakePlaybook(0)],
+        entity_type="user_playbook",
+    )
+
+    assert len(events) == 1
+    assert events[0].count_value == 2  # total unchanged vs old count=2
+    assert events[0].event_key is not None and events[0].event_key.startswith(
+        "learn-batch:"
+    )
 
 
 def test_aggregation_records_attributed_learnings_generated() -> None:
+    """Aggregation emits one entity-backed event per generated playbook.
+
+    ``saved_playbook_list`` entries always carry a real ``agent_playbook_id``
+    (``save_agent_playbook_with_aggregate_event`` raises rather than
+    returning a partial row) -- aggregator.py is the one caller with a clean,
+    always-populated per-record id list, so it uses the entity-backed path
+    (Task A3) rather than the count-only fallback.
+    """
     events: list[UsageEvent] = []
     configure_usage_event_recorder(events.append)
     aggregator = PlaybookAggregator(
@@ -135,21 +241,24 @@ def test_aggregation_records_attributed_learnings_generated() -> None:
     )
 
     aggregator._record_learnings_generated(
-        count=3,
+        learning_ids=["101", "102", "103"],
         playbook_name="agent_rules",
         request_id="agg-run-1",
         metadata={"playbooks_generated": 3},
     )
 
-    assert len(events) == 1
-    event = events[0]
-    assert event.event_name == "learnings_generated"
-    assert event.count_value == 3
-    assert event.pipeline == "playbook"
-    assert event.source == "aggregation"
-    assert event.entity_type == "agent_playbook"
-    assert event.agent_version == "v1"
-    assert event.playbook_name == "agent_rules"
+    assert len(events) == 3
+    assert sum(e.count_value for e in events) == 3  # total unchanged vs old count=3
+    assert {e.event_key for e in events} == {"learn:101", "learn:102", "learn:103"}
+    assert {e.entity_id for e in events} == {"101", "102", "103"}
+    for event in events:
+        assert event.event_name == "learnings_generated"
+        assert event.count_value == 1
+        assert event.pipeline == "playbook"
+        assert event.source == "aggregation"
+        assert event.entity_type == "agent_playbook"
+        assert event.agent_version == "v1"
+        assert event.playbook_name == "agent_rules"
 
 
 def test_metering_failure_is_isolated_from_the_product_path() -> None:
