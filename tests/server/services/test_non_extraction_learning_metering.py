@@ -159,7 +159,10 @@ def test_resumable_finalization_emits_one_event_per_profile_id() -> None:
 
     assert len(events) == 2
     assert sum(e.count_value for e in events) == 2  # total unchanged vs old count=2
-    assert {e.event_key for e in events} == {"learn:prof-1", "learn:prof-2"}
+    assert {e.event_key for e in events} == {
+        "learn:profile:prof-1",
+        "learn:profile:prof-2",
+    }
     assert {e.entity_id for e in events} == {"prof-1", "prof-2"}
     for event in events:
         assert event.count_value == 1
@@ -189,7 +192,11 @@ def test_resumable_finalization_emits_one_event_per_playbook_id() -> None:
 
     assert len(events) == 3
     assert sum(e.count_value for e in events) == 3  # total unchanged vs old count=3
-    assert {e.event_key for e in events} == {"learn:11", "learn:12", "learn:13"}
+    assert {e.event_key for e in events} == {
+        "learn:user_playbook:11",
+        "learn:user_playbook:12",
+        "learn:user_playbook:13",
+    }
     assert {e.entity_id for e in events} == {"11", "12", "13"}
 
 
@@ -249,7 +256,11 @@ def test_aggregation_records_attributed_learnings_generated() -> None:
 
     assert len(events) == 3
     assert sum(e.count_value for e in events) == 3  # total unchanged vs old count=3
-    assert {e.event_key for e in events} == {"learn:101", "learn:102", "learn:103"}
+    assert {e.event_key for e in events} == {
+        "learn:agent_playbook:101",
+        "learn:agent_playbook:102",
+        "learn:agent_playbook:103",
+    }
     assert {e.entity_id for e in events} == {"101", "102", "103"}
     for event in events:
         assert event.event_name == "learnings_generated"
@@ -259,6 +270,37 @@ def test_aggregation_records_attributed_learnings_generated() -> None:
         assert event.entity_type == "agent_playbook"
         assert event.agent_version == "v1"
         assert event.playbook_name == "agent_rules"
+
+
+def test_aggregation_falls_back_when_an_agent_playbook_id_is_falsy() -> None:
+    """Whole-branch-review finding (2): a falsy/0 ``agent_playbook_id`` mixed
+    into the run must not mint a colliding ``learn:agent_playbook:0`` key --
+    fall back to the count-based aggregate event instead, matching
+    ``ExtractionResumeWorker``'s guard for the same failure mode.
+    """
+    events: list[UsageEvent] = []
+    configure_usage_event_recorder(events.append)
+    aggregator = PlaybookAggregator(
+        llm_client=MagicMock(),
+        request_context=_request_context(),
+        agent_version="v1",
+    )
+
+    aggregator._record_learnings_generated(
+        learning_ids=["201"],  # one id missing relative to total_count=2
+        playbook_name="agent_rules",
+        request_id="agg-run-2",
+        metadata={"playbooks_generated": 2},
+        total_count=2,
+    )
+
+    assert len(events) == 1
+    assert events[0].count_value == 2  # total unchanged vs old count=2
+    assert events[0].event_key is not None and events[0].event_key.startswith(
+        "learn-batch:"
+    )
+    assert events[0].entity_type == "agent_playbook"
+    assert events[0].source == "aggregation"
 
 
 def test_metering_failure_is_isolated_from_the_product_path() -> None:

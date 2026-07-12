@@ -4,9 +4,13 @@ synthesized-key event-moment counters (Task A4).
 Phase A of the BYOC metering redesign: ``learnings_generated`` gains an
 entity-backed emission path, ``record_learnings_generated_records`` /
 ``emit_learnings_generated_records``, that emits ONE event per learning id
-(``count_value=1``, ``event_key=f"learn:{id}"``, ``entity_id=id``) instead of
-a single aggregate event with ``count_value=N``, so downstream dedup can key
-on the learning id.
+(``count_value=1``, ``event_key=f"learn:{entity_type}:{id}"``, ``entity_id=id``)
+instead of a single aggregate event with ``count_value=N``, so downstream
+dedup can key on the learning id. The ``entity_type`` segment is required for
+collision-freedom: ``user_playbook_id`` and ``agent_playbook_id`` are each an
+autoincrement primary key in a SEPARATE table, so the same integer id can
+legitimately occur in both -- without the entity-type segment those would
+mint the same ``event_key`` and collapse into one event downstream.
 
 The existing count-based ``record_learnings_generated`` / ``emit_learnings_generated``
 remain as the documented FALLBACK for callers that genuinely lack a per-record
@@ -60,6 +64,7 @@ def test_records_emits_one_event_per_id():
             platform_llm=True,
             platform_storage=None,
             pipeline="profile",
+            entity_type="profile",
         )
     assert hook.call_count == 3
     for call, learning_id in zip(hook.call_args_list, ["p1", "p2", "p3"], strict=True):
@@ -67,8 +72,46 @@ def test_records_emits_one_event_per_id():
         assert kwargs["event_name"] == "learnings_generated"
         assert kwargs["event_category"] == "learning"
         assert kwargs["count_value"] == 1
-        assert kwargs["event_key"] == f"learn:{learning_id}"
+        assert kwargs["event_key"] == f"learn:profile:{learning_id}"
         assert kwargs["entity_id"] == learning_id
+
+
+def test_records_key_uses_placeholder_when_entity_type_is_none():
+    """No entity_type -> stable '_' placeholder, never a literal 'None'."""
+    with patch(HOOK) as hook:
+        record_learnings_generated_records(
+            org_id="org1",
+            learning_ids=["z1"],
+            platform_llm=True,
+            platform_storage=None,
+        )
+    assert hook.call_args.kwargs["event_key"] == "learn:_:z1"
+
+
+def test_records_key_disambiguates_same_id_across_entity_types():
+    """Regression guard for the cross-table collision finding: a
+    user_playbook id and an agent_playbook id that share the same integer
+    (both tables are separate AUTOINCREMENT PKs starting at 1) must produce
+    DISTINCT event_keys.
+    """
+    with patch(HOOK) as hook:
+        record_learnings_generated_records(
+            org_id="org1",
+            learning_ids=["11"],
+            platform_llm=True,
+            platform_storage=None,
+            entity_type="user_playbook",
+        )
+        record_learnings_generated_records(
+            org_id="org1",
+            learning_ids=["11"],
+            platform_llm=True,
+            platform_storage=None,
+            entity_type="agent_playbook",
+        )
+    keys = [call.kwargs["event_key"] for call in hook.call_args_list]
+    assert keys == ["learn:user_playbook:11", "learn:agent_playbook:11"]
+    assert len(set(keys)) == 2
 
 
 def test_records_emits_distinct_keys():
@@ -188,12 +231,13 @@ def test_emit_records_resolves_platform_llm_and_emits_per_id():
             learning_ids=["r1", "r2"],
             source="reflection",
             pipeline="reflection",
+            entity_type="profile",
         )
     assert hook.call_count == 2
     assert all(call.kwargs["platform_llm"] is True for call in hook.call_args_list)
     assert {call.kwargs["event_key"] for call in hook.call_args_list} == {
-        "learn:r1",
-        "learn:r2",
+        "learn:profile:r1",
+        "learn:profile:r2",
     }
 
 

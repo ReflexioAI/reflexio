@@ -158,11 +158,19 @@ def record_learnings_generated_records(
 
     Entity-backed alternative to :func:`record_learnings_generated`: emits one
     ``learnings_generated`` event per id in ``learning_ids`` (``count_value=1``,
-    ``event_key=f"learn:{id}"``, ``entity_id=id``) instead of a single
-    aggregate event, so downstream dedup can key on the learning id. The
-    summed ``count_value`` across the emitted events equals
-    ``len(learning_ids)`` — unchanged from the total a caller would have
-    passed as ``count`` to :func:`record_learnings_generated`.
+    ``event_key=f"learn:{entity_type}:{id}"``, ``entity_id=id``) instead of a
+    single aggregate event, so downstream dedup can key on the learning id.
+    The ``entity_type`` segment is required for collision-freedom: entity-backed
+    callers draw ids from separate autoincrement primary keys in separate
+    tables (e.g. ``user_playbook_id`` and ``agent_playbook_id`` both start at
+    1), so the same integer id can legitimately occur in two tables — without
+    the entity-type segment those would mint the same ``event_key`` and
+    collapse into one event downstream. When ``entity_type`` is falsy, a
+    stable ``"_"`` placeholder is used (``learn:_:{id}``) rather than emitting
+    ``entity_type=None`` literally into the key. The summed ``count_value``
+    across the emitted events equals ``len(learning_ids)`` — unchanged from
+    the total a caller would have passed as ``count`` to
+    :func:`record_learnings_generated`.
 
     Callers must pass real, durable ids — never fabricate one to pad the
     list. No-op when ``learning_ids`` is empty.
@@ -183,6 +191,7 @@ def record_learnings_generated_records(
         entity_type: Optional entity type (e.g. ``"profile"``).
         metadata: Optional path-specific usage metadata (shared across events).
     """
+    key_entity_type = entity_type or "_"
     for learning_id in learning_ids:
         record_usage_event(
             org_id=org_id,
@@ -197,7 +206,7 @@ def record_learnings_generated_records(
             playbook_name=playbook_name,
             entity_type=entity_type,
             entity_id=learning_id,
-            event_key=f"learn:{learning_id}",
+            event_key=f"learn:{key_entity_type}:{learning_id}",
             count_value=1,
             platform_llm=platform_llm,
             platform_storage=platform_storage,
@@ -290,13 +299,16 @@ def emit_learnings_generated_records(
 ) -> None:
     """Resolve ``platform_llm`` from config and emit one event per learning id.
 
-    Entity-backed counterpart to :func:`emit_learnings_generated` for the
-    non-extraction learning-mutation paths (reflection, resumable-extraction
-    finalization, aggregation, offline-tuner auto-apply) when the caller has
-    the durable learning ids in scope. Same guard semantics: config resolution
-    and emission are wrapped and any exception is logged and swallowed — the
-    product path must never fail because metering failed. No-op when
-    ``learning_ids`` is empty.
+    Entity-backed counterpart to :func:`emit_learnings_generated`, currently
+    adopted by two of the non-extraction learning-mutation paths —
+    resumable-extraction finalization and aggregation — the callers with
+    durable per-record ids in scope. Extraction, reflection, and offline-tuner
+    auto-apply do not have a safe 1:1 id per unit of count (see
+    :func:`record_learnings_generated_records`) and use the count-based
+    :func:`emit_learnings_generated` fallback instead. Same guard semantics:
+    config resolution and emission are wrapped and any exception is logged
+    and swallowed — the product path must never fail because metering
+    failed. No-op when ``learning_ids`` is empty.
 
     Args:
         org_id: Organisation identifier.
