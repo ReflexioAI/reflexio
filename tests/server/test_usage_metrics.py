@@ -7,8 +7,11 @@ def test_usage_event_carries_event_key():
     usage_metrics.configure_usage_event_recorder(captured.append)
     try:
         usage_metrics.record_usage_event(
-            org_id="7", event_name="search_request", event_category="application",
-            count_value=1, event_key="search:abc",
+            org_id="7",
+            event_name="search_request",
+            event_category="application",
+            count_value=1,
+            event_key="search:abc",
         )
     finally:
         usage_metrics.configure_usage_event_recorder(None)
