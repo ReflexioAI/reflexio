@@ -8,6 +8,7 @@ from dataclasses import dataclass
 
 DEFAULT_ROW_RETENTION_LIMIT = 250_000
 ROW_RETENTION_DELETE_FRACTION = 0.20
+TOMBSTONE_STATUSES = ("archived", "merged", "superseded", "expired")
 
 
 @dataclass(frozen=True, slots=True)
@@ -18,17 +19,32 @@ class RetentionTarget:
     table_name: str
     order_column: str
     id_columns: tuple[str, ...]
+    priority_statuses: tuple[str, ...] = ()
 
 
 RETENTION_TARGETS: tuple[RetentionTarget, ...] = (
-    RetentionTarget("profiles", "profiles", "created_at", ("profile_id",)),
+    RetentionTarget(
+        "profiles",
+        "profiles",
+        "created_at",
+        ("profile_id",),
+        priority_statuses=TOMBSTONE_STATUSES,
+    ),
     RetentionTarget("interactions", "interactions", "created_at", ("interaction_id",)),
     RetentionTarget("requests", "requests", "created_at", ("request_id",)),
     RetentionTarget(
-        "user_playbooks", "user_playbooks", "created_at", ("user_playbook_id",)
+        "user_playbooks",
+        "user_playbooks",
+        "created_at",
+        ("user_playbook_id",),
+        priority_statuses=TOMBSTONE_STATUSES,
     ),
     RetentionTarget(
-        "agent_playbooks", "agent_playbooks", "created_at", ("agent_playbook_id",)
+        "agent_playbooks",
+        "agent_playbooks",
+        "created_at",
+        ("agent_playbook_id",),
+        priority_statuses=TOMBSTONE_STATUSES,
     ),
     RetentionTarget(
         "agent_success_evaluation_result",

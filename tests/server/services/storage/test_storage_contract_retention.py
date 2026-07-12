@@ -9,6 +9,7 @@ from reflexio.models.api_schema.service_schemas import (
     Interaction,
     ProfileTimeToLive,
     Request,
+    Status,
     UserActionType,
     UserPlaybook,
     UserProfile,
@@ -214,6 +215,103 @@ def _make_agent_playbook(agent_playbook_id: int) -> AgentPlaybook:
         content=f"content-{agent_playbook_id}",
         created_at=agent_playbook_id,
     )
+
+
+def _seed_status_retention_rows(
+    storage: BaseStorage, target: str, statuses: list[Status]
+) -> tuple[str, str, list[str | int]]:
+    """Seed one row per status and return their IDs in insertion order."""
+    conn = storage.conn  # type: ignore[attr-defined]
+    if target == "profiles":
+        ids: list[str | int] = [f"retention-profile-{i}" for i in range(len(statuses))]
+        storage.add_user_profile(
+            "u1", [_make_profile(str(profile_id)) for profile_id in ids]
+        )
+        table_name, id_column = "profiles", "profile_id"
+    elif target == "user_playbooks":
+        storage.save_user_playbooks(
+            [_make_user_playbook(i + 1) for i in range(len(statuses))]
+        )
+        table_name, id_column = "user_playbooks", "user_playbook_id"
+        ids = [
+            row[id_column]
+            for row in conn.execute(
+                f"SELECT {id_column} FROM {table_name} ORDER BY {id_column}"  # noqa: S608
+            ).fetchall()
+        ]
+    else:
+        storage.save_agent_playbooks(
+            [_make_agent_playbook(i + 1) for i in range(len(statuses))]
+        )
+        table_name, id_column = "agent_playbooks", "agent_playbook_id"
+        ids = [
+            row[id_column]
+            for row in conn.execute(
+                f"SELECT {id_column} FROM {table_name} ORDER BY {id_column}"  # noqa: S608
+            ).fetchall()
+        ]
+
+    for created_at, (row_id, status) in enumerate(zip(ids, statuses, strict=True), 1):
+        conn.execute(
+            f"UPDATE {table_name} SET created_at = ?, status = ? "  # noqa: S608
+            f"WHERE {id_column} = ?",
+            (created_at, status.value, row_id),
+        )
+    conn.commit()
+    return table_name, id_column, ids
+
+
+@pytest.mark.parametrize("target", ["profiles", "user_playbooks", "agent_playbooks"])
+def test_retention_prioritizes_terminal_tombstones(
+    storage: BaseStorage, target: str
+) -> None:
+    statuses = [
+        Status.CURRENT,
+        Status.PENDING,
+        Status.ARCHIVE_IN_PROGRESS,
+        Status.ARCHIVED,
+        Status.MERGED,
+        Status.SUPERSEDED,
+        Status.EXPIRED,
+    ]
+    table_name, id_column, ids = _seed_status_retention_rows(storage, target, statuses)
+
+    deleted = storage.delete_oldest_retention_target_rows(target, 4)  # type: ignore[attr-defined]
+
+    assert deleted == 4
+    remaining_ids = {
+        row[id_column]
+        for row in storage.conn.execute(  # type: ignore[attr-defined]
+            f"SELECT {id_column} FROM {table_name}"  # noqa: S608
+        ).fetchall()
+    }
+    assert remaining_ids == set(ids[:3])
+
+
+@pytest.mark.parametrize("target", ["profiles", "user_playbooks", "agent_playbooks"])
+def test_retention_falls_back_to_oldest_rows_after_tombstones(
+    storage: BaseStorage, target: str
+) -> None:
+    statuses = [
+        Status.CURRENT,
+        Status.PENDING,
+        Status.ARCHIVE_IN_PROGRESS,
+        Status.ARCHIVED,
+        Status.MERGED,
+        Status.SUPERSEDED,
+    ]
+    table_name, id_column, ids = _seed_status_retention_rows(storage, target, statuses)
+
+    deleted = storage.delete_oldest_retention_target_rows(target, 5)  # type: ignore[attr-defined]
+
+    assert deleted == 5
+    remaining_ids = {
+        row[id_column]
+        for row in storage.conn.execute(  # type: ignore[attr-defined]
+            f"SELECT {id_column} FROM {table_name}"  # noqa: S608
+        ).fetchall()
+    }
+    assert remaining_ids == {ids[2]}
 
 
 def test_retention_user_playbook_delete_cleans_fts(storage: BaseStorage) -> None:

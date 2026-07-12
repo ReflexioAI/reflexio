@@ -46,14 +46,25 @@ class SQLiteDeletionMixin:
 
     @SQLiteStorageBase.handle_exceptions
     def _retention_select_oldest_keys(
-        self, target: RetentionTarget, count: int
+        self,
+        target: RetentionTarget,
+        count: int,
+        statuses: tuple[str, ...] | None = None,
     ) -> list[tuple[Any, ...]]:
+        if statuses is not None and not statuses:
+            return []
         id_sql = ", ".join(target.id_columns)
-        tiebreak_sql = id_sql
+        where_sql = ""
+        params: list[Any] = []
+        if statuses:
+            placeholders = ", ".join("?" for _ in statuses)
+            where_sql = f"WHERE status IN ({placeholders}) "
+            params.extend(statuses)
+        params.append(count)
         rows = self._fetchall(
-            f"SELECT {id_sql} FROM {target.table_name} "  # noqa: S608
-            f"ORDER BY {target.order_column} ASC, {tiebreak_sql} ASC LIMIT ?",
-            (count,),
+            f"SELECT {id_sql} FROM {target.table_name} {where_sql}"  # noqa: S608
+            f"ORDER BY {target.order_column} ASC, {id_sql} ASC LIMIT ?",
+            tuple(params),
         )
         return [tuple(row[col] for col in target.id_columns) for row in rows]
 
