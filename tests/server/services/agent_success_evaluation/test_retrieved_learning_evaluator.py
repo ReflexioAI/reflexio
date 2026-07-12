@@ -11,6 +11,7 @@ import pytest
 
 from reflexio.models.api_schema.domain import (
     AgentPlaybook,
+    LineageContext,
     PlaybookStatus,
     UserPlaybook,
     UserProfile,
@@ -192,11 +193,139 @@ def test_resolution_skips_missing_and_ineligible(storage: SQLiteStorage) -> None
         ("agent_playbook", str(apb_id)),
     }
     assert run.diagnostics["invalid_ref_count"] == 1
+    assert run.diagnostics["unresolvable_ref_count"] == 1
+    assert run.diagnostics["ineligible_ref_count"] == 1
     row = next(r for r in run.rows if r.kind == "profile")
     assert row.is_relevant is True and row.impact == "positive"
     assert row.agent_version == "evaluated-v2"
     assert row.created_at == 1_700_000_000
     bulk_agent_lookup.assert_called_once()
+
+
+def test_merged_user_playbook_is_judged_as_its_live_survivor(
+    storage: SQLiteStorage,
+) -> None:
+    source = UserPlaybook(
+        user_id=USER,
+        playbook_name="old checklist",
+        request_id="r-source",
+        agent_version="v1",
+        content="use the outdated deployment steps",
+    )
+    survivor = UserPlaybook(
+        user_id=USER,
+        playbook_name="current checklist",
+        request_id="r-survivor",
+        agent_version="v1",
+        content="use the current deployment steps",
+    )
+    storage.save_user_playbooks([source, survivor])
+    storage.merge_records(
+        entity_type="user_playbook",
+        survivor_id=str(survivor.user_playbook_id),
+        source_ids=[str(source.user_playbook_id)],
+        context=LineageContext(op_kind="merge", actor="test", request_id="r-merge"),
+    )
+    llm = _echoing_llm()
+
+    run = _make_evaluator(storage, llm).evaluate(
+        USER,
+        SESSION,
+        "v1",
+        _snapshot({1: [("user_playbook", str(source.user_playbook_id))]}),
+    )
+
+    assert [(row.kind, row.learning_id) for row in run.rows] == [
+        ("user_playbook", str(survivor.user_playbook_id))
+    ]
+    assert run.diagnostics["resolved_via_lineage"] == 1
+    prompts = [call.kwargs["messages"][0]["content"] for call in llm.mock_calls]
+    assert all("use the current deployment steps" in prompt for prompt in prompts)
+    assert all("use the outdated deployment steps" not in prompt for prompt in prompts)
+
+
+def test_merged_profile_refs_collapsing_to_one_survivor_are_judged_once(
+    storage: SQLiteStorage,
+) -> None:
+    profiles = [
+        UserProfile(
+            profile_id=profile_id,
+            user_id=USER,
+            content=content,
+            last_modified_timestamp=1,
+            generated_from_request_id="r1",
+        )
+        for profile_id, content in (
+            ("profile-source-1", "old preference one"),
+            ("profile-source-2", "old preference two"),
+            ("profile-survivor", "current preference"),
+        )
+    ]
+    storage.add_user_profile(USER, profiles)
+    storage.merge_records(
+        entity_type="profile",
+        survivor_id="profile-survivor",
+        source_ids=["profile-source-1", "profile-source-2"],
+        context=LineageContext(op_kind="merge", actor="test", request_id="r-merge"),
+    )
+    llm = _echoing_llm()
+
+    run = _make_evaluator(storage, llm).evaluate(
+        USER,
+        SESSION,
+        "v1",
+        _snapshot(
+            {
+                1: [
+                    ("profile", "profile-source-1"),
+                    ("profile", "profile-source-2"),
+                ]
+            }
+        ),
+    )
+
+    assert [(row.kind, row.learning_id) for row in run.rows] == [
+        ("profile", "profile-survivor")
+    ]
+    assert run.diagnostics["resolved_via_lineage"] == 2
+    assert llm.generate_chat_response.call_count == 2
+
+
+def test_purged_lineage_survivor_is_not_judged(storage: SQLiteStorage) -> None:
+    profiles = [
+        UserProfile(
+            profile_id=profile_id,
+            user_id=USER,
+            content=content,
+            last_modified_timestamp=1,
+            generated_from_request_id="r1",
+        )
+        for profile_id, content in (
+            ("profile-source", "old preference"),
+            ("profile-survivor", "current preference"),
+        )
+    ]
+    storage.add_user_profile(USER, profiles)
+    storage.merge_records(
+        entity_type="profile",
+        survivor_id="profile-survivor",
+        source_ids=["profile-source"],
+        context=LineageContext(op_kind="merge", actor="test", request_id="r-merge"),
+    )
+    assert storage.purge_content(entity_type="profile", entity_id="profile-survivor")
+    llm = _echoing_llm()
+
+    run = _make_evaluator(storage, llm).evaluate(
+        USER,
+        SESSION,
+        "v1",
+        _snapshot({1: [("profile", "profile-source")]}),
+    )
+
+    assert run.outcome == "evaluated"
+    assert run.rows == []
+    assert run.diagnostics["purged_ref_count"] == 1
+    llm.generate_chat_response.assert_not_called()
 
 
 def test_unapproved_agent_playbook_is_ineligible(storage: SQLiteStorage) -> None:

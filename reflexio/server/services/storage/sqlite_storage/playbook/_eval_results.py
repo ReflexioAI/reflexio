@@ -2,12 +2,13 @@
 
 import sqlite3
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
 from reflexio.models.api_schema.service_schemas import (
     AgentSuccessEvaluationResult,
     RetrievedLearningEvaluationResult,
 )
+from reflexio.server.services.lineage.resolve import EntityType, resolve_current
 
 from ...storage_base.retrieved_learning_state import (
     CANONICAL_RETRIEVED_KINDS,
@@ -256,16 +257,24 @@ class AgentEvaluationResultStoreMixin:
         return builder.hexdigest()
 
     def _rle_attached_refs(self, user_id: str, session_id: str) -> set[tuple[str, str]]:
-        """Canonical ``(kind, learning_id)`` refs attached to the live session."""
+        """Current non-purged identities reached from the session's attachments."""
         cur = self.conn.execute(
             """SELECT i.retrieved_learnings
                FROM interactions i JOIN requests r ON i.request_id = r.request_id
                WHERE r.session_id = ? AND i.user_id = ?""",
             (session_id, user_id),
         )
-        attached: set[tuple[str, str]] = set()
+        original: set[tuple[str, str]] = set()
         for row in cur:
-            attached.update(_parse_attachment_refs(row["retrieved_learnings"]))
+            original.update(_parse_attachment_refs(row["retrieved_learnings"]))
+        attached: set[tuple[str, str]] = set()
+        for kind, learning_id in original:
+            try:
+                current = resolve_current(self, cast(EntityType, kind), learning_id)
+            except (TypeError, ValueError):
+                continue
+            if current is not None and not current.is_purged:
+                attached.add((kind, str(current.id)))
         return attached
 
     def _rle_eligible_refs(

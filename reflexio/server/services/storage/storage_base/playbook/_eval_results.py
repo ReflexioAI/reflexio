@@ -224,10 +224,10 @@ class AgentEvaluationResultStoreMixin:
         In one transaction: locks the session's state row, requires the
         current generation to equal ``generation`` (else ``superseded``),
         recomputes the session fingerprint from live rows and requires it to
-        equal ``session_fingerprint`` (else ``stale``), rechecks every
-        result's source row for retrieval eligibility (ineligible rows are
-        dropped), then deletes the prior session set, inserts the filtered
-        set, and persists completion state — all or nothing.
+        equal ``session_fingerprint`` (else ``stale``), requires every result
+        to match a session attachment after lineage resolution, and rechecks
+        its source row for retrieval eligibility. Rows that fail either check
+        are dropped before the prior session set is atomically replaced.
 
         When commit-time eligibility removes every candidate, prior rows are
         cleared and the final status is ``not_applicable`` regardless of

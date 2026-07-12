@@ -454,8 +454,8 @@ class RetrievedLearningEvaluationResult(BaseModel):
         agent_version (str): Version supplied to group evaluation;
             informational, not part of the uniqueness key.
         kind (RetrievedLearningKind): The learning kind.
-        learning_id (str): Stable storage id, matching
-            ``RetrievedLearning.learning_id``.
+        learning_id (str): Current stable storage id. When an attached learning
+            has been merged or superseded, this is the live survivor's id.
         is_relevant (bool | None): Whether the learning applies to the
             session. ``None`` only when the relevance judge/chunk failed.
         relevance_reason (str): Judge reasoning; empty when ``is_relevant``

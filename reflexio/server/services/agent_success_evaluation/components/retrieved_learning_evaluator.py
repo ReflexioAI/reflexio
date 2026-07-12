@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from pydantic import ConfigDict, Field
 
@@ -28,6 +28,7 @@ from reflexio.models.api_schema.domain import (
 )
 from reflexio.models.structured_output import StrictStructuredOutput
 from reflexio.server.llm.model_defaults import ModelRole, resolve_model_name
+from reflexio.server.services.lineage.resolve import EntityType, resolve_current
 from reflexio.server.services.service_utils import (
     log_llm_messages,
     log_model_response,
@@ -219,6 +220,10 @@ class RetrievedLearningEvaluator:
         """
         diagnostics: dict[str, Any] = {
             "invalid_ref_count": 0,
+            "resolved_via_lineage": 0,
+            "unresolvable_ref_count": 0,
+            "purged_ref_count": 0,
+            "ineligible_ref_count": 0,
             "failed_relevance_chunks": 0,
             "failed_impact_chunks": 0,
         }
@@ -364,24 +369,37 @@ class RetrievedLearningEvaluator:
         storage = self.request_context.storage
         if storage is None:
             return []
-        profile_ids = [lid for (kind, lid) in refs if kind == "profile"]
-        user_playbook_ids: list[int] = []
-        agent_playbook_ids: list[int] = []
+        current_refs: dict[tuple[str, str], None] = {}
         for kind, lid in refs:
-            if kind not in ("user_playbook", "agent_playbook"):
+            lookup_id: str | int = lid
+            if kind in ("user_playbook", "agent_playbook"):
+                try:
+                    lookup_id = int(lid)
+                except ValueError:
+                    diagnostics["invalid_ref_count"] += 1
+                    continue
+                if lookup_id <= 0:
+                    diagnostics["invalid_ref_count"] += 1
+                    continue
+            current = resolve_current(storage, cast(EntityType, kind), lookup_id)
+            if current is None:
+                diagnostics["unresolvable_ref_count"] += 1
                 continue
-            try:
-                parsed = int(lid)
-            except ValueError:
-                diagnostics["invalid_ref_count"] += 1
+            if current.is_purged:
+                diagnostics["purged_ref_count"] += 1
                 continue
-            if parsed <= 0:
-                diagnostics["invalid_ref_count"] += 1
-                continue
-            if kind == "user_playbook":
-                user_playbook_ids.append(parsed)
-            else:
-                agent_playbook_ids.append(parsed)
+            current_key = (kind, str(current.id))
+            if current_key != (kind, lid):
+                diagnostics["resolved_via_lineage"] += 1
+            current_refs.setdefault(current_key, None)
+
+        profile_ids = [lid for (kind, lid) in current_refs if kind == "profile"]
+        user_playbook_ids = [
+            int(lid) for (kind, lid) in current_refs if kind == "user_playbook"
+        ]
+        agent_playbook_ids = [
+            int(lid) for (kind, lid) in current_refs if kind == "agent_playbook"
+        ]
 
         resolved: dict[tuple[str, str], LearningCandidate] = {}
         if profile_ids:
@@ -420,8 +438,11 @@ class RetrievedLearningEvaluator:
                 content=playbook.content,
                 trigger=playbook.trigger or "",
             )
-        # Preserve first-seen order of the attached refs.
-        return [resolved[key] for key in refs if key in resolved]
+        diagnostics["ineligible_ref_count"] += sum(
+            key not in resolved for key in current_refs
+        )
+        # Preserve first-seen order after refs that share a survivor collapse.
+        return [resolved[key] for key in current_refs if key in resolved]
 
     # ===============================
     # judging

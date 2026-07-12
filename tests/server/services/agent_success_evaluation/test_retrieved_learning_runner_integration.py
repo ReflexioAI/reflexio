@@ -19,6 +19,7 @@ import pytest
 from reflexio.models.api_schema.domain import (
     AgentPlaybook,
     Interaction,
+    LineageContext,
     PlaybookStatus,
     Request,
     RetrievedLearning,
@@ -188,6 +189,54 @@ def test_publish_to_verdicts_end_to_end(storage: SQLiteStorage) -> None:
         assert row.impact == "positive"
         assert row.agent_version == "v1"
         assert row.created_at == OLD_TS
+
+
+def test_force_regenerate_replaces_merged_learning_with_its_survivor(
+    storage: SQLiteStorage,
+) -> None:
+    source = UserPlaybook(
+        user_id=USER,
+        playbook_name="old checklist",
+        request_id="source-request",
+        agent_version="v1",
+        content="use the old deployment steps",
+    )
+    survivor = UserPlaybook(
+        user_id=USER,
+        playbook_name="current checklist",
+        request_id="survivor-request",
+        agent_version="v1",
+        content="use the current deployment steps",
+    )
+    storage.save_user_playbooks([source, survivor])
+    _seed_session(
+        storage,
+        refs=[
+            RetrievedLearning(
+                kind="user_playbook", learning_id=str(source.user_playbook_id)
+            )
+        ],
+    )
+    first = _run(storage)
+    assert first.retrieved_learning_status == "complete"
+    assert [
+        row.learning_id
+        for row in storage.get_retrieved_learning_evaluation_results(session_id=SESSION)
+    ] == [str(source.user_playbook_id)]
+
+    storage.merge_records(
+        entity_type="user_playbook",
+        survivor_id=str(survivor.user_playbook_id),
+        source_ids=[str(source.user_playbook_id)],
+        context=LineageContext(op_kind="merge", actor="test", request_id="r-merge"),
+    )
+    regenerated = _run(storage, force=True)
+
+    assert regenerated.retrieved_learning_status == "complete"
+    assert [
+        row.learning_id
+        for row in storage.get_retrieved_learning_evaluation_results(session_id=SESSION)
+    ] == [str(survivor.user_playbook_id)]
 
 
 def test_rerun_short_circuits_and_force_is_idempotent(
