@@ -168,6 +168,8 @@ def test_resumable_finalization_emits_one_event_per_profile_id() -> None:
         assert event.count_value == 1
         assert event.entity_type == "profile"
         assert event.source == "resumable_extraction"
+        # tie key<->entity together so a swapped association can't pass on sets alone
+        assert event.event_key == f"learn:{event.entity_type}:{event.entity_id}"
 
 
 def test_resumable_finalization_emits_one_event_per_playbook_id() -> None:
@@ -198,6 +200,9 @@ def test_resumable_finalization_emits_one_event_per_playbook_id() -> None:
         "learn:user_playbook:13",
     }
     assert {e.entity_id for e in events} == {"11", "12", "13"}
+    for event in events:
+        # tie key<->entity together so a swapped association can't pass on sets alone
+        assert event.event_key == f"learn:{event.entity_type}:{event.entity_id}"
 
 
 def test_resumable_finalization_falls_back_when_a_playbook_id_is_unset() -> None:
@@ -270,6 +275,8 @@ def test_aggregation_records_attributed_learnings_generated() -> None:
         assert event.entity_type == "agent_playbook"
         assert event.agent_version == "v1"
         assert event.playbook_name == "agent_rules"
+        # tie key<->entity together so a swapped association can't pass on sets alone
+        assert event.event_key == f"learn:{event.entity_type}:{event.entity_id}"
 
 
 def test_aggregation_falls_back_when_an_agent_playbook_id_is_falsy() -> None:
