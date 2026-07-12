@@ -10,6 +10,9 @@ from reflexio.models.api_schema.common import BlockingIssue
 from reflexio.models.api_schema.retriever_schema import SearchUserPlaybookRequest
 from reflexio.models.api_schema.service_schemas import Status, UserPlaybook
 from reflexio.models.config_schema import SearchMode, SearchOptions
+from reflexio.server.services.storage.lifecycle_filters import (
+    validate_include_inactive,
+)
 
 from .._base import (
     _TOMBSTONE_STATUS_VALUES,
@@ -544,13 +547,25 @@ class UserPlaybookStoreMixin:
         user_id: str,
         user_playbook_ids: list[int],
         status_filter: list[Status | None] | None = None,
+        *,
+        include_inactive: bool = False,
     ) -> list[UserPlaybook]:
+        validate_include_inactive(
+            include_inactive=include_inactive, status_filter=status_filter
+        )
         if not user_playbook_ids:
             return []
+        ph = ",".join("?" for _ in user_playbook_ids)
+        if include_inactive:
+            rows = self._fetchall(
+                "SELECT * FROM user_playbooks "
+                f"WHERE user_id = ? AND user_playbook_id IN ({ph})",
+                (user_id, *user_playbook_ids),
+            )
+            return [_row_to_user_playbook(r) for r in rows]
         if status_filter is None:
             status_filter = [None]
         frag, sparams = _build_status_sql(status_filter)
-        ph = ",".join("?" for _ in user_playbook_ids)
         sql = (
             f"SELECT * FROM user_playbooks "
             f"WHERE user_id = ? AND user_playbook_id IN ({ph}) AND {frag}"

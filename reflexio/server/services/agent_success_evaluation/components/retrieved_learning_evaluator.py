@@ -22,10 +22,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import ConfigDict, Field
 
-from reflexio.models.api_schema.domain import (
-    PlaybookStatus,
-    RetrievedLearningEvaluationResult,
-)
+from reflexio.models.api_schema.domain import RetrievedLearningEvaluationResult
 from reflexio.models.structured_output import StrictStructuredOutput
 from reflexio.server.llm.model_defaults import ModelRole, resolve_model_name
 from reflexio.server.services.service_utils import (
@@ -121,9 +118,9 @@ class RetrievedLearningImpactOutput(StrictStructuredOutput):
 
 @dataclass
 class LearningCandidate:
-    """One resolved retrieval-eligible learning.
+    """One resolved historically attached learning.
 
-    ``title`` comes from the resolved live row (playbook name; empty for
+    ``title`` comes from the resolved original row (playbook name; empty for
     profiles) and is shown to the judges only — it is never persisted.
     """
 
@@ -204,7 +201,7 @@ class RetrievedLearningEvaluator:
         agent_version: str,
         snapshot: BoundedRetrievedLearningSnapshot,
     ) -> RetrievedLearningEvaluationRun:
-        """Evaluate every attached, retrieval-eligible learning in a session.
+        """Evaluate every attached learning whose original row still exists.
 
         Args:
             user_id (str): Session owner.
@@ -356,10 +353,17 @@ class RetrievedLearningEvaluator:
         refs: dict[tuple[str, str], None],
         diagnostics: dict[str, Any],
     ) -> list[LearningCandidate]:
-        """Resolve refs to live retrieval-eligible rows; skip the rest.
+        """Resolve attached refs to their original rows; skip missing rows.
 
-        Learning content/trigger/title come from the resolved live row.
-        Unresolvable or ineligible refs are counted, never raised.
+        Lifecycle status and agent-playbook approval do not affect historical
+        evaluation. Learning content/trigger/title come from the original row;
+        unresolvable refs are skipped, never followed to a successor.
+
+        Resolution is best-effort, not a durability guarantee: row retention
+        (``RETENTION_TARGETS``) evicts tombstoned rows first and
+        ``gc_expired_tombstones`` hard-deletes aged ones, so a learning that was
+        genuinely served can age out and then resolve to nothing. That is a
+        silent skip by design — an old session simply judges fewer learnings.
         """
         storage = self.request_context.storage
         if storage is None:
@@ -386,7 +390,7 @@ class RetrievedLearningEvaluator:
         resolved: dict[tuple[str, str], LearningCandidate] = {}
         if profile_ids:
             for profile in storage.get_profiles_by_ids(
-                user_id, profile_ids, status_filter=[None]
+                user_id, profile_ids, include_inactive=True
             ):
                 resolved[("profile", profile.profile_id)] = LearningCandidate(
                     kind="profile",
@@ -397,7 +401,7 @@ class RetrievedLearningEvaluator:
                 )
         if user_playbook_ids:
             for playbook in storage.get_user_playbooks_by_ids(
-                user_id, user_playbook_ids, status_filter=[None]
+                user_id, user_playbook_ids, include_inactive=True
             ):
                 key = ("user_playbook", str(playbook.user_playbook_id))
                 resolved[key] = LearningCandidate(
@@ -409,8 +413,7 @@ class RetrievedLearningEvaluator:
                 )
         for playbook in storage.get_agent_playbooks_by_ids(
             agent_playbook_ids,
-            status_filter=[None],
-            playbook_status_filter=[PlaybookStatus.APPROVED],
+            include_inactive=True,
         ):
             key = ("agent_playbook", str(playbook.agent_playbook_id))
             resolved[key] = LearningCandidate(

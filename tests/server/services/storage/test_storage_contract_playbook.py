@@ -249,6 +249,37 @@ class TestGetUserPlaybooksByIds:
         assert len(result) == 1
         assert result[0].user_playbook_id == upid
 
+    def test_include_inactive_returns_archived(self, storage):
+        storage.save_user_playbooks([_make_user_playbook(1, "u1", "fb", "v1")])
+        upid = storage.get_user_playbooks(user_id="u1", status_filter=[None])[
+            0
+        ].user_playbook_id
+        storage.archive_user_playbook_by_id("u1", upid)
+        result = storage.get_user_playbooks_by_ids("u1", [upid], include_inactive=True)
+        assert [p.user_playbook_id for p in result] == [upid]
+
+    def test_include_inactive_still_filters_by_user_id(self, storage):
+        """user_id is the only predicate left standing under include_inactive."""
+        storage.save_user_playbooks([_make_user_playbook(1, "u2", "fb", "v1")])
+        upid = storage.get_user_playbooks(user_id="u2", status_filter=[None])[
+            0
+        ].user_playbook_id
+        storage.archive_user_playbook_by_id("u2", upid)
+        assert (
+            storage.get_user_playbooks_by_ids("u1", [upid], include_inactive=True) == []
+        )
+
+    def test_include_inactive_with_status_filter_is_rejected(self, storage):
+        """The two are contradictory — fail loud rather than drop the filter."""
+        storage.save_user_playbooks([_make_user_playbook(1, "u1", "fb", "v1")])
+        upid = storage.get_user_playbooks(user_id="u1", status_filter=[None])[
+            0
+        ].user_playbook_id
+        with pytest.raises(StorageError):
+            storage.get_user_playbooks_by_ids(
+                "u1", [upid], status_filter=[Status.ARCHIVED], include_inactive=True
+            )
+
 
 class TestArchiveUserPlaybookById:
     """Contract tests for archive_user_playbook_by_id (used by ReflectionService)."""

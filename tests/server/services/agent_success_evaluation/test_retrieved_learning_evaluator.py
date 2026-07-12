@@ -11,6 +11,7 @@ import pytest
 
 from reflexio.models.api_schema.domain import (
     AgentPlaybook,
+    LineageContext,
     PlaybookStatus,
     UserPlaybook,
     UserProfile,
@@ -162,9 +163,10 @@ def _echoing_llm() -> MagicMock:
     return llm
 
 
-def test_resolution_skips_missing_and_ineligible(storage: SQLiteStorage) -> None:
+def test_resolution_preserves_archived_attached_id(storage: SQLiteStorage) -> None:
     profile_id, upb_id, apb_id = _seed_all_kinds(storage)
-    # Archive the user playbook — no longer retrieval-eligible.
+    # Archive the user playbook after publication. It is no longer retrievable,
+    # but it remains the exact learning that was injected into the response.
     assert storage.archive_user_playbook_by_id(USER, upb_id)
     llm = _echoing_llm()
     evaluator = _make_evaluator(storage, llm)
@@ -189,6 +191,7 @@ def test_resolution_skips_missing_and_ineligible(storage: SQLiteStorage) -> None
     assert run.proposed_status == "complete"
     assert {(r.kind, r.learning_id) for r in run.rows} == {
         ("profile", profile_id),
+        ("user_playbook", str(upb_id)),
         ("agent_playbook", str(apb_id)),
     }
     assert run.diagnostics["invalid_ref_count"] == 1
@@ -199,7 +202,9 @@ def test_resolution_skips_missing_and_ineligible(storage: SQLiteStorage) -> None
     bulk_agent_lookup.assert_called_once()
 
 
-def test_unapproved_agent_playbook_is_ineligible(storage: SQLiteStorage) -> None:
+def test_unapproved_agent_playbook_is_evaluated_when_attached(
+    storage: SQLiteStorage,
+) -> None:
     storage.save_agent_playbooks(
         [
             AgentPlaybook(
@@ -217,7 +222,127 @@ def test_unapproved_agent_playbook_is_ineligible(storage: SQLiteStorage) -> None
         USER, SESSION, "v1", _snapshot({1: [("agent_playbook", str(apb_id))]})
     )
     assert run.outcome == "evaluated"
-    assert run.rows == []
+    assert [(row.kind, row.learning_id) for row in run.rows] == [
+        ("agent_playbook", str(apb_id))
+    ]
+
+
+def test_expired_profile_is_evaluated_when_attached(storage: SQLiteStorage) -> None:
+    profile_id, _, _ = _seed_all_kinds(storage)
+    storage.conn.execute(
+        "UPDATE profiles SET expiration_timestamp = 1 WHERE profile_id = ?",
+        (profile_id,),
+    )
+    storage.conn.commit()
+    assert storage.expire_active_profiles(now=2) == 1
+
+    run = _make_evaluator(storage, _echoing_llm()).evaluate(
+        USER, SESSION, "v1", _snapshot({1: [("profile", profile_id)]})
+    )
+
+    assert [(row.kind, row.learning_id) for row in run.rows] == [
+        ("profile", profile_id)
+    ]
+
+
+def test_resolution_uses_original_superseded_ids_and_content(
+    storage: SQLiteStorage,
+) -> None:
+    profile_id, upb_id, apb_id = _seed_all_kinds(storage)
+    storage.add_user_profile(
+        USER,
+        [
+            UserProfile(
+                profile_id="prof-successor",
+                user_id=USER,
+                content="successor profile content",
+                last_modified_timestamp=2,
+                generated_from_request_id="r2",
+            )
+        ],
+    )
+    storage.save_user_playbooks(
+        [
+            UserPlaybook(
+                user_id=USER,
+                playbook_name="successor checklist",
+                request_id="r2",
+                agent_version="v1",
+                content="successor user playbook content",
+            )
+        ]
+    )
+    successor_upb_id = next(
+        playbook.user_playbook_id
+        for playbook in storage.get_user_playbooks(user_id=USER, limit=10)
+        if playbook.user_playbook_id != upb_id
+    )
+    storage.save_agent_playbooks(
+        [
+            AgentPlaybook(
+                playbook_name="successor deploy",
+                agent_version="v1",
+                content="successor agent playbook content",
+                playbook_status=PlaybookStatus.PENDING,
+            )
+        ]
+    )
+    successor_apb_id = next(
+        playbook.agent_playbook_id
+        for playbook in storage.get_agent_playbooks(limit=10)
+        if playbook.agent_playbook_id != apb_id
+    )
+    context = LineageContext(op_kind="revise", actor="test", request_id="r2")
+    assert storage.supersede_record(
+        entity_type="profile",
+        incumbent_id=profile_id,
+        successor_id="prof-successor",
+        context=context,
+    )
+    assert storage.supersede_record(
+        entity_type="user_playbook",
+        incumbent_id=str(upb_id),
+        successor_id=str(successor_upb_id),
+        context=context,
+    )
+    assert storage.supersede_record(
+        entity_type="agent_playbook",
+        incumbent_id=str(apb_id),
+        successor_id=str(successor_apb_id),
+        context=context,
+    )
+
+    llm = _echoing_llm()
+    run = _make_evaluator(storage, llm).evaluate(
+        USER,
+        SESSION,
+        "v1",
+        _snapshot(
+            {
+                1: [
+                    ("profile", profile_id),
+                    ("user_playbook", str(upb_id)),
+                    ("agent_playbook", str(apb_id)),
+                ]
+            }
+        ),
+    )
+
+    assert {(row.kind, row.learning_id) for row in run.rows} == {
+        ("profile", profile_id),
+        ("user_playbook", str(upb_id)),
+        ("agent_playbook", str(apb_id)),
+    }
+    judge_payloads = "\n".join(
+        call.kwargs["messages"][0]["content"]
+        for call in llm.generate_chat_response.call_args_list
+    )
+    assert "prefers concise answers" in judge_payloads
+    assert "always produce a checklist" in judge_payloads
+    assert "verify before deploy" in judge_payloads
+    assert "successor profile content" not in judge_payloads
+    assert "successor user playbook content" not in judge_payloads
+    assert "successor agent playbook content" not in judge_payloads
 
 
 def test_empty_candidates_make_zero_llm_calls(storage: SQLiteStorage) -> None:

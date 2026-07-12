@@ -268,24 +268,22 @@ class AgentEvaluationResultStoreMixin:
             attached.update(_parse_attachment_refs(row["retrieved_learnings"]))
         return attached
 
-    def _rle_eligible_refs(
+    def _rle_resolvable_refs(
         self, user_id: str, results: list[RetrievedLearningEvaluationResult]
     ) -> set[tuple[str, str]]:
-        """Recheck source rows for retrieval eligibility (in-transaction)."""
+        """Recheck original source rows for historical resolution (in-transaction)."""
         by_kind: dict[str, list[str]] = {}
         for r in results:
             by_kind.setdefault(r.kind, []).append(r.learning_id)
-        eligible: set[tuple[str, str]] = set()
-        now_epoch = int(self._current_epoch())
+        resolvable: set[tuple[str, str]] = set()
         for chunk in _chunked(by_kind.get("profile", [])):
             ph = ",".join("?" for _ in chunk)
             cur = self.conn.execute(
                 f"""SELECT profile_id FROM profiles
-                    WHERE user_id = ? AND profile_id IN ({ph})
-                      AND status IS NULL AND expiration_timestamp > ?""",
-                (user_id, *chunk, now_epoch),
+                    WHERE user_id = ? AND profile_id IN ({ph})""",
+                (user_id, *chunk),
             )
-            eligible.update(("profile", str(row[0])) for row in cur.fetchall())
+            resolvable.update(("profile", str(row[0])) for row in cur.fetchall())
         user_playbook_ids = [
             i for i in (_as_int(x) for x in by_kind.get("user_playbook", [])) if i
         ]
@@ -293,11 +291,10 @@ class AgentEvaluationResultStoreMixin:
             ph = ",".join("?" for _ in chunk)
             cur = self.conn.execute(
                 f"""SELECT user_playbook_id FROM user_playbooks
-                    WHERE user_id = ? AND user_playbook_id IN ({ph})
-                      AND status IS NULL""",
+                    WHERE user_id = ? AND user_playbook_id IN ({ph})""",
                 (user_id, *chunk),
             )
-            eligible.update(("user_playbook", str(row[0])) for row in cur.fetchall())
+            resolvable.update(("user_playbook", str(row[0])) for row in cur.fetchall())
         agent_playbook_ids = [
             i for i in (_as_int(x) for x in by_kind.get("agent_playbook", [])) if i
         ]
@@ -305,12 +302,11 @@ class AgentEvaluationResultStoreMixin:
             ph = ",".join("?" for _ in chunk)
             cur = self.conn.execute(
                 f"""SELECT agent_playbook_id FROM agent_playbooks
-                    WHERE agent_playbook_id IN ({ph})
-                      AND status IS NULL AND playbook_status = 'approved'""",
+                    WHERE agent_playbook_id IN ({ph})""",
                 chunk,
             )
-            eligible.update(("agent_playbook", str(row[0])) for row in cur.fetchall())
-        return eligible
+            resolvable.update(("agent_playbook", str(row[0])) for row in cur.fetchall())
+        return resolvable
 
     @SQLiteStorageBase.handle_exceptions
     def begin_retrieved_learning_evaluation_run(
@@ -457,16 +453,16 @@ class AgentEvaluationResultStoreMixin:
                     self.conn.rollback()
                     return RetrievedLearningCommitResult(disposition="stale")
                 # Persist only records that are still attached to the live
-                # session AND retrieval-eligible. A duplicate identity is left
+                # session AND whose original row still exists. A duplicate identity is left
                 # to trip the UNIQUE index and roll back the commit — caller
                 # bugs fail loud rather than silently dropping data.
                 attached = self._rle_attached_refs(user_id, session_id)
-                eligible = self._rle_eligible_refs(user_id, results)
+                resolvable = self._rle_resolvable_refs(user_id, results)
                 kept = [
                     r
                     for r in results
                     if (r.kind, r.learning_id) in attached
-                    and (r.kind, r.learning_id) in eligible
+                    and (r.kind, r.learning_id) in resolvable
                 ]
                 final_status = proposed_status if kept else "not_applicable"
                 self.conn.execute(
@@ -503,7 +499,7 @@ class AgentEvaluationResultStoreMixin:
                         "generation": generation,
                         "status": final_status,
                         "session_fingerprint": session_fingerprint,
-                        "eligible_count": len(eligible),
+                        "resolvable_count": len(resolvable),
                         "committed_count": len(kept),
                         "completed_at": int(self._current_epoch()),
                     }

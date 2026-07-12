@@ -220,6 +220,8 @@ class UserPlaybookStoreMixin:
         user_id: str,
         user_playbook_ids: list[int],
         status_filter: list[Status | None] | None = None,
+        *,
+        include_inactive: bool = False,
     ) -> list[UserPlaybook]:
         """Fetch the subset of a user's playbooks whose ids are in the list.
 
@@ -234,11 +236,23 @@ class UserPlaybookStoreMixin:
             status_filter (list[Status | None] | None): Statuses to
                 include. ``None`` (default) means CURRENT only — same
                 default as ``get_user_playbooks`` for consistency.
+            include_inactive (bool): Return matching owned rows regardless of
+                lifecycle status. This is the *historical resolution* mode (see
+                ``RetrievedLearningEvaluator``): it answers "what did this id
+                point at", not "what is retrievable now". It is a strict superset
+                of ``include_tombstones`` on ``get_user_playbook_by_id``, which
+                only unhides MERGED/SUPERSEDED for lineage walks —
+                ``include_inactive`` also returns ARCHIVED rows. ``user_id``
+                scoping still applies. The default preserves retrieval behavior.
 
         Returns:
             list[UserPlaybook]: Matching playbooks. Order is unspecified.
                 Ids that do not exist (or do not match the user / status
                 filter) are silently omitted.
+
+        Raises:
+            StorageError: If ``include_inactive`` is combined with an explicit
+                ``status_filter`` — the two are contradictory.
         """
         raise NotImplementedError
 
