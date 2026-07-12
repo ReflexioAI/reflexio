@@ -27,6 +27,7 @@ class UsageEvent:
     pipeline: str | None = None
     entity_type: str | None = None
     entity_id: str | None = None
+    event_key: str | None = None
     extractor_name: str | None = None
     playbook_name: str | None = None
     source: str | None = None
@@ -72,6 +73,7 @@ def record_usage_event(
     pipeline: str | None = None,
     entity_type: str | None = None,
     entity_id: str | None = None,
+    event_key: str | None = None,
     extractor_name: str | None = None,
     playbook_name: str | None = None,
     source: str | None = None,
@@ -109,6 +111,7 @@ def record_usage_event(
                 pipeline=pipeline,
                 entity_type=entity_type,
                 entity_id=entity_id,
+                event_key=event_key,
                 extractor_name=extractor_name,
                 playbook_name=playbook_name,
                 source=source,
