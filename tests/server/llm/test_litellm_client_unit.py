@@ -1468,6 +1468,64 @@ class TestStructuredOutputRetry:
 
         assert call_count == 1
 
+    def _request_end_failure_records(self, caplog):
+        return [
+            r
+            for r in caplog.records
+            if "event=llm_request_end" in r.getMessage()
+            and "success=False" in r.getMessage()
+        ]
+
+    def test_transient_upstream_error_logged_at_warning(self, caplog):
+        """A transient upstream failure (provider timeout / connection / 529
+        overload) logs the request-end failure at WARNING, not ERROR — callers
+        own fatality and most degrade gracefully — but still raises."""
+
+        def fake_completion(**kwargs):
+            raise TimeoutError("provider hung")  # incl. our LLMHardTimeoutError
+
+        client = _build_client(
+            LiteLLMConfig(model="minimax/MiniMax-M3", max_retries=1, retry_delay=0)
+        )
+        with (
+            patch("litellm.completion", side_effect=fake_completion),
+            caplog.at_level(logging.DEBUG),
+            pytest.raises(LiteLLMClientError),
+        ):
+            client.generate_chat_response(
+                messages=[{"role": "user", "content": "test"}],
+                response_format=SampleResponse,
+            )
+
+        ends = self._request_end_failure_records(caplog)
+        assert ends, "expected a request-end failure log record"
+        assert all(r.levelno == logging.WARNING for r in ends)
+        assert not any(r.levelno == logging.ERROR for r in ends)
+
+    def test_unexpected_error_still_logged_at_error(self, caplog):
+        """A genuinely-unexpected error (not a known transient upstream type)
+        stays at ERROR."""
+
+        def fake_completion(**kwargs):
+            raise RuntimeError("boom")
+
+        client = _build_client(
+            LiteLLMConfig(model="gpt-4o-mini", max_retries=1, retry_delay=0)
+        )
+        with (
+            patch("litellm.completion", side_effect=fake_completion),
+            caplog.at_level(logging.DEBUG),
+            pytest.raises(LiteLLMClientError),
+        ):
+            client.generate_chat_response(
+                messages=[{"role": "user", "content": "test"}],
+                response_format=SampleResponse,
+            )
+
+        ends = self._request_end_failure_records(caplog)
+        assert ends, "expected a request-end failure log record"
+        assert all(r.levelno == logging.ERROR for r in ends)
+
 
 # ===================================================================
 # _extract_json_from_string tests

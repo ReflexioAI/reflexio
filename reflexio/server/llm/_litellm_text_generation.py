@@ -74,6 +74,36 @@ _MODEL_TIMEOUT_FLOOR_SECONDS: dict[str, int] = {
 }
 
 
+# Upstream-provider errors that are EXPECTED and transient. By the time one of
+# these reaches the request handler the fallback ladder is already exhausted,
+# but the caller — not the client — owns fatality, and many callers degrade
+# gracefully (FTS fallback for document expansion, skip-dedup for profile
+# consolidation). Log these at WARNING so a flaky provider (e.g. minimax
+# timeouts / 529 overload) can't flood ERROR-level alerts for handled failures;
+# genuinely-unexpected errors (bugs, auth, malformed structured output) stay
+# ERROR. Classified by exception TYPE NAME to avoid importing the heavy
+# ``litellm``/``openai`` exception hierarchies at module import.
+_TRANSIENT_LLM_ERROR_NAMES: frozenset[str] = frozenset(
+    {
+        "Timeout",
+        "APITimeoutError",
+        "APIConnectionError",
+        "RateLimitError",
+        "InternalServerError",
+        "ServiceUnavailableError",
+    }
+)
+
+
+def _is_expected_transient_llm_error(exc: BaseException) -> bool:
+    """True for expected transient upstream failures (timeout / connection /
+    rate-limit / overload), including our own ``LLMHardTimeoutError`` (a
+    ``TimeoutError`` subclass raised when a provider hang is killed)."""
+    if isinstance(exc, TimeoutError):  # incl. LLMHardTimeoutError
+        return True
+    return type(exc).__name__ in _TRANSIENT_LLM_ERROR_NAMES
+
+
 class TextGenerationMixin:
     """Chat/response generation, completion-param build, hard-timeout, cost, multimodal.
 
@@ -826,7 +856,15 @@ class TextGenerationMixin:
                 )
                 return _call_and_parse()
         except Exception as e:
-            self.logger.error(
+            # Expected transient upstream failures (provider timeout / connection
+            # / rate-limit / overload) log at WARNING — callers own fatality and
+            # most degrade gracefully; only genuinely-unexpected errors are ERROR.
+            log = (
+                self.logger.warning
+                if _is_expected_transient_llm_error(e)
+                else self.logger.error
+            )
+            log(
                 "event=llm_request_end model=%s elapsed_seconds=%.3f success=False error_type=%s error=%s",
                 params.get("model"),
                 time.perf_counter() - request_start,
