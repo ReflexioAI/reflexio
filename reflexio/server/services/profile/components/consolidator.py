@@ -465,7 +465,14 @@ class ProfileConsolidator(BaseDeduplicator):
 
             dedup_output = response
         except Exception as e:
-            logger.error("Failed to identify duplicates: %s", str(e))
+            # Graceful degradation: dedup is best-effort — on any failure
+            # (commonly a transient minimax timeout/overload) keep the profiles
+            # un-deduped rather than failing the caller. WARNING, not ERROR, so a
+            # flaky provider doesn't flood error alerts for a handled fallback.
+            logger.warning(
+                "Failed to identify duplicates (%s); keeping profiles un-deduped",
+                str(e),
+            )
             return _strip_deletion_markers(new_profiles), [], []
 
         if not dedup_output.duplicate_groups and not dedup_output.deletions:
