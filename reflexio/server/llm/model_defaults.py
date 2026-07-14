@@ -267,6 +267,34 @@ _PROVIDER_DEFAULTS: dict[str, ProviderDefaults] = {
 }
 
 
+# Output-token cap applied when neither the call site nor the client config
+# sets max_tokens. MiniMax-M3 misbehaves with unbounded output: omitting
+# max_tokens (especially combined with a strict json_schema response_format)
+# deterministically stalls generation into litellm's 120s timeout (reproduced
+# 2026-07; observed in prod as consolidator/document-expansion timeouts).
+# Sizing (measured in prod, 2026-07-14): M3's reasoning tokens count against
+# this budget, so too small a cap starves the visible output — at 4096 the
+# model regularly spent the whole budget thinking and returned empty/truncated
+# content (structured-output parse failures ran ~10-20x the 8192-era rate,
+# breaking extraction). 8192 was the healthiest measured setting. The 120s
+# provider stalls occur at every cap value (provider-side; mitigate with
+# fallback models, not here). Providers absent from this map stay unbounded.
+_PROVIDER_DEFAULT_MAX_TOKENS: dict[str, int] = {"minimax": 8192}
+
+
+def default_max_tokens_for_model(model: str) -> int | None:
+    """Return the provider-level default output-token cap for ``model``.
+
+    Args:
+        model (str): Full model name, e.g. ``"minimax/MiniMax-M3"``.
+
+    Returns:
+        int | None: Cap to apply when the caller set none, or None (no cap).
+    """
+    provider = model.split("/", 1)[0] if "/" in model else ""
+    return _PROVIDER_DEFAULT_MAX_TOKENS.get(provider)
+
+
 EMBEDDING_CAPABLE_PROVIDERS: frozenset[str] = frozenset(
     p for p, d in _PROVIDER_DEFAULTS.items() if d.embedding is not None
 )

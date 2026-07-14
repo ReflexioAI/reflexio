@@ -1809,6 +1809,43 @@ class TestBuildCompletionParams:
         assert call_kwargs["max_tokens"] == 100
 
     @patch("reflexio.server.llm.litellm_client.litellm.completion")
+    def test_minimax_gets_default_max_tokens_cap(self, mock_completion):
+        """Unset max_tokens on a MiniMax model applies the provider cap.
+
+        MiniMax-M3 with unbounded output deterministically stalls into the
+        120s litellm timeout (prod consolidator/document-expansion outage,
+        2026-07-14). The provider-level default in model_defaults bounds it.
+        """
+        mock_completion.return_value = _make_completion_response("ok")
+        client = LiteLLMClient(LiteLLMConfig(model="minimax/MiniMax-M3"))
+
+        client.generate_response("hi")
+
+        assert mock_completion.call_args.kwargs["max_tokens"] == 8192
+
+    @patch("reflexio.server.llm.litellm_client.litellm.completion")
+    def test_minimax_explicit_max_tokens_beats_provider_cap(self, mock_completion):
+        """Config/call-site max_tokens overrides the provider default cap."""
+        mock_completion.return_value = _make_completion_response("ok")
+        client = LiteLLMClient(
+            LiteLLMConfig(model="minimax/MiniMax-M3", max_tokens=100)
+        )
+
+        client.generate_response("hi")
+
+        assert mock_completion.call_args.kwargs["max_tokens"] == 100
+
+    @patch("reflexio.server.llm.litellm_client.litellm.completion")
+    def test_unmapped_provider_stays_unbounded(self, mock_completion):
+        """Providers without a default cap keep omitting max_tokens."""
+        mock_completion.return_value = _make_completion_response("ok")
+        client = LiteLLMClient(LiteLLMConfig(model="gpt-4o"))
+
+        client.generate_response("hi")
+
+        assert "max_tokens" not in mock_completion.call_args.kwargs
+
+    @patch("reflexio.server.llm.litellm_client.litellm.completion")
     def test_top_p_non_default(self, mock_completion):
         mock_completion.return_value = _make_completion_response("ok")
         config = LiteLLMConfig(model="gpt-4o", top_p=0.9)
