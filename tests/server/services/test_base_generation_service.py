@@ -27,6 +27,7 @@ from reflexio.server.services.base_generation_service import (
     StatusChangeOperation,
     _cheap_should_run_reject,
     _is_pure_slash_command,
+    _weighted_content_length,
 )
 from reflexio.server.services.extraction.outcome import ExtractionOutcome
 from reflexio.server.services.storage.storage_base import AgentRunStatus
@@ -2139,7 +2140,7 @@ class TestPureSlashCommand:
 
 
 class TestCheapShouldRunReject:
-    """Regression tests for the ``all_slash_commands`` rule after the /btw fix."""
+    """Regression tests for the cheap pre-LLM signal filter."""
 
     @staticmethod
     def _batch(*contents: str) -> list[RequestInteractionDataModel]:
@@ -2180,6 +2181,68 @@ class TestCheapShouldRunReject:
 
     def test_mixed_bare_and_content_bearing_passes(self):
         batch = self._batch("/learn", "/btw actually keep this whole batch around")
+        assert _cheap_should_run_reject(batch) is None
+
+    @pytest.mark.parametrize("length", [29, 30])
+    def test_latin_boundary_is_unchanged(self, length):
+        content = "a" * length
+        expected = "all_user_turns_too_short" if length == 29 else None
+        assert _weighted_content_length(content) == length
+        assert _cheap_should_run_reject(self._batch(content)) == expected
+
+    def test_long_content_skips_weighted_length(self, monkeypatch):
+        def fail_if_called(_content):
+            pytest.fail("weighted length should only run below the base threshold")
+
+        monkeypatch.setattr(
+            "reflexio.server.services.base_generation_service._weighted_content_length",
+            fail_if_called,
+        )
+        assert _cheap_should_run_reject(self._batch("a" * 30)) is None
+
+    @pytest.mark.parametrize("character", ["汉", "あ", "한", "م", "я", "١"])
+    def test_non_latin_letters_and_numbers_count_twice(self, character):
+        assert _weighted_content_length(character * 14) == 28
+        assert _cheap_should_run_reject(self._batch(character * 14)) == (
+            "all_user_turns_too_short"
+        )
+        assert _weighted_content_length(character * 15) == 30
+        assert _cheap_should_run_reject(self._batch(character * 15)) is None
+
+    def test_mixed_latin_and_non_latin_content_uses_weighted_length(self):
+        content = "a" * 10 + "汉" * 10
+        assert _weighted_content_length(content) == 30
+        assert _cheap_should_run_reject(self._batch(content)) is None
+
+    def test_full_width_latin_normalizes_without_non_latin_bonus(self):
+        content = "Ａ" * 29
+        assert _weighted_content_length(content) == 29
+        assert _cheap_should_run_reject(self._batch(content)) == (
+            "all_user_turns_too_short"
+        )
+
+    @pytest.mark.parametrize("character", ["ﬃ", "Ⅷ"])
+    def test_latin_compatibility_forms_do_not_expand_the_length(self, character):
+        content = character * 29
+        assert _weighted_content_length(content) == 29
+        assert _cheap_should_run_reject(self._batch(content)) == (
+            "all_user_turns_too_short"
+        )
+
+    def test_decomposed_latin_accents_preserve_the_original_length(self):
+        content = "e\u0301" * 15
+        assert len(content) == 30
+        assert _weighted_content_length(content) == 30
+        assert _cheap_should_run_reject(self._batch(content)) is None
+
+    def test_chinese_memory_request_is_not_rejected_as_too_short(self):
+        batch = self._batch(
+            "现在你需要叫我蜘蛛侠",
+            "请记住这个名字，写入到memory",
+            "我是谁",
+            "我是谁",
+            "现在请你记住，我现在就叫蜘蛛侠，无论哪个对话，我都叫蜘蛛侠",
+        )
         assert _cheap_should_run_reject(batch) is None
 
 

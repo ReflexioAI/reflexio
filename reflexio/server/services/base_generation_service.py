@@ -5,6 +5,7 @@ Base class for generation services
 import logging
 import re
 import time
+import unicodedata
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -42,10 +43,11 @@ class ExtractorExecutionError(RuntimeError):
 logger = logging.getLogger(__name__)
 
 
-# Cheap-signal thresholds for the pre-LLM should_run filter. Tuned for
+# Cheap-signal threshold for the pre-LLM should_run filter. Tuned for
 # coding-assistant traffic where most turns are either slash commands
 # or tool scaffolding, and where the LLM should_run gate costs 5–7s
-# even when it ultimately votes False.
+# even when it ultimately votes False. Non-Latin letters and numbers
+# count twice because many scripts carry more meaning per character.
 _MIN_USER_CONTENT_LEN = 30
 # Heuristic match for reflexio's own extractor system prompts that
 # sometimes leak into the corpus via the claude-code LLM provider's
@@ -91,6 +93,31 @@ def _iter_user_contents(
     return out
 
 
+def _weighted_content_length(content: str) -> int:
+    """Count original non-Latin letters and numbers twice.
+
+    Normalize each code point only for script classification so compatibility
+    forms such as full-width Latin stay unweighted without changing the
+    original content length.
+    """
+    stripped = content.strip()
+
+    def is_non_latin_letter_or_number(char: str) -> bool:
+        normalized_chars = [
+            normalized_char
+            for normalized_char in unicodedata.normalize("NFKC", char)
+            if unicodedata.category(normalized_char)[0] in {"L", "N"}
+        ]
+        return bool(normalized_chars) and all(
+            not normalized_char.isascii()
+            and "LATIN" not in unicodedata.name(normalized_char, "")
+            for normalized_char in normalized_chars
+        )
+
+    non_latin_bonus = sum(1 for char in stripped if is_non_latin_letter_or_number(char))
+    return len(stripped) + non_latin_bonus
+
+
 def _cheap_should_run_reject(
     session_data_models: list[RequestInteractionDataModel],
 ) -> str | None:
@@ -102,8 +129,9 @@ def _cheap_should_run_reject(
     should run.
 
     Rejection rules:
-        - No user message at least ``_MIN_USER_CONTENT_LEN`` chars long
-          (purely short commands / confirmations).
+        - No user message reaches ``_MIN_USER_CONTENT_LEN`` weighted
+          characters (purely short commands / confirmations). Non-Latin
+          letters and numbers count twice.
         - Every user message is a bare slash-command dispatch with no
           substantive trailing text (e.g. ``/commit``, ``/review``,
           ``/claude-smart:tag``). Slash commands that carry user text
@@ -127,7 +155,11 @@ def _cheap_should_run_reject(
         if any(lowered.startswith(p) for p in _EXTRACTOR_PROMPT_PREFIXES):
             return "extractor_prompt_echo"
 
-    if not any(len(c.strip()) >= _MIN_USER_CONTENT_LEN for c in user_contents):
+    if not any(
+        len(content.strip()) >= _MIN_USER_CONTENT_LEN
+        or _weighted_content_length(content) >= _MIN_USER_CONTENT_LEN
+        for content in user_contents
+    ):
         return "all_user_turns_too_short"
 
     if all(_is_pure_slash_command(c) for c in user_contents):
