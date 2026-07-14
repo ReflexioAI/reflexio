@@ -82,13 +82,18 @@ def _is_pure_slash_command(content: str) -> bool:
 def _iter_user_contents(
     session_data_models: list[RequestInteractionDataModel],
 ) -> list[str]:
-    """Collect the ``content`` of every User-role interaction, order-preserving."""
+    """Collect non-empty user-authored content, preserving interaction order.
+
+    Role matching is case-insensitive because API and CLI publishers use
+    different casing. These contents feed user-text-only heuristics; they do
+    not determine stride or window eligibility.
+    """
     out: list[str] = []
     for model in session_data_models:
         out.extend(
             interaction.content
             for interaction in model.interactions
-            if interaction.role == "User" and interaction.content
+            if interaction.role.casefold() == "user" and interaction.content
         )
     return out
 
@@ -128,7 +133,11 @@ def _cheap_should_run_reject(
     LLM call. Returns None when we cannot decide cheaply and the LLM
     should run.
 
-    Rejection rules:
+    When the scoped batch has no non-empty user-authored content, these
+    user-text-only heuristics are inapplicable and the batch falls through to
+    the LLM gate. Stride and window eligibility are evaluated independently.
+
+    Rejection rules when user-authored content is present:
         - No user message reaches ``_MIN_USER_CONTENT_LEN`` weighted
           characters (purely short commands / confirmations). Non-Latin
           letters and numbers count twice.
@@ -148,7 +157,7 @@ def _cheap_should_run_reject(
     """
     user_contents = _iter_user_contents(session_data_models)
     if not user_contents:
-        return "no_user_turns"
+        return None
 
     for content in user_contents:
         lowered = content.lstrip().lower()

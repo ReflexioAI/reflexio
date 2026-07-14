@@ -123,10 +123,10 @@ class ShouldRunPrecheckMixin(Generic[TExtractorConfig, TGenerationServiceConfig]
             )
             return False
 
-        # Cheap pre-filter: reject batches that are structurally unable
-        # to yield signal (slash-commands only, too-short user turns,
-        # extractor-prompt echoes) without burning a 5–7s LLM call. See
-        # _cheap_should_run_reject for the rule set.
+        # Cheap pre-filter: apply user-text-only heuristics (slash-commands,
+        # short turns, extractor-prompt echoes) without burning a 5–7s LLM
+        # call. Batches with no non-empty user text bypass these heuristics;
+        # stride/window eligibility was already evaluated independently.
         from reflexio.server.services.base_generation_service import (
             _cheap_should_run_reject,
         )
