@@ -18,12 +18,12 @@ def test_empty_when_no_evaluated_sessions_ever() -> None:
 
 
 def test_shadow_off_when_disabled_and_some_data() -> None:
-    """State 3: shadow off, >=7 days of trend → shadow_off."""
+    """State 3: shadow off with any data → shadow_off."""
     state = compute_hero_state(
         shadow_enabled=False,
-        days_since_first_eval=10,
+        days_since_first_eval=0,
         n_shadow_in_window=0,
-        total_results=42,
+        total_results=1,
     )
     assert state == HeroState.SHADOW_OFF
 

@@ -11,7 +11,6 @@ from enum import StrEnum
 
 _FULL_MIN_DAYS = 14
 _FULL_MIN_SHADOW_N = 500
-_SHADOW_OFF_MIN_DAYS = 7
 
 
 class HeroState(StrEnum):
@@ -50,7 +49,7 @@ def compute_hero_state(
             migration pair in supabase/data/supabase/migrations/. The
             per-turn shadow grade in F1 lives on a different surface.)
         total_results (int): Total AgentSuccessEvaluationResult rows in the
-            trend window (used only to differentiate EMPTY from SHADOW_OFF).
+            trend window, used to distinguish EMPTY from states with data.
 
     Returns:
         HeroState: The single applicable state. Empty wins over everything;
@@ -59,15 +58,7 @@ def compute_hero_state(
     if total_results == 0:
         return HeroState.EMPTY
     if not shadow_enabled:
-        if (
-            days_since_first_eval is not None
-            and days_since_first_eval >= _SHADOW_OFF_MIN_DAYS
-        ):
-            return HeroState.SHADOW_OFF
-        # <7 days since first eval AND shadow off → still onboarding;
-        # render as EMPTY so the frontend shows onboarding rather than a
-        # partly-formed trend.
-        return HeroState.EMPTY
+        return HeroState.SHADOW_OFF
     if days_since_first_eval is None or days_since_first_eval < _FULL_MIN_DAYS:
         return HeroState.EARLY
     if n_shadow_in_window < _FULL_MIN_SHADOW_N:
