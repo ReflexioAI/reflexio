@@ -889,7 +889,7 @@ class Config(BaseModel):
     # Skip the LLM pre-extraction eligibility check (always run extraction)
     skip_should_run_check: bool = False
     # Enable storage-time document expansion for improved FTS recall
-    enable_document_expansion: bool = True
+    enable_document_expansion: bool = False
     # Whether this org has opted into shadow-mode runs. Drives /healthz/eval
     # liveness derivation and the /api/get_evaluation_overview hero state
     # machine. When True, each publish optionally schedules a parallel

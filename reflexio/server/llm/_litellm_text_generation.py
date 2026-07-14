@@ -53,7 +53,11 @@ from reflexio.server.llm.image_utils import (
     encode_image_to_base64 as _encode_image_to_base64,
 )
 from reflexio.server.llm.llm_utils import is_pydantic_model
-from reflexio.server.llm.model_defaults import ModelRole, resolve_model_name
+from reflexio.server.llm.model_defaults import (
+    ModelRole,
+    default_max_tokens_for_model,
+    resolve_model_name,
+)
 
 if TYPE_CHECKING:
     from reflexio.server.llm._litellm_types import LiteLLMConfig
@@ -398,6 +402,10 @@ class TextGenerationMixin:
             params["temperature"] = 0.0
 
         max_tokens = kwargs.pop("max_tokens", self.config.max_tokens)
+        if max_tokens is None:
+            # Provider-level guard: some providers (MiniMax-M3) stall into the
+            # request timeout when max_tokens is omitted. See model_defaults.
+            max_tokens = default_max_tokens_for_model(actual_model)
         if max_tokens:
             params["max_tokens"] = max_tokens
         if self.config.top_p != 1.0:

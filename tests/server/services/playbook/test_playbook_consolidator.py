@@ -212,32 +212,56 @@ class TestRetrieveExistingPlaybooks:
     """Tests for _retrieve_existing_playbooks."""
 
     def test_with_embeddings(self, mock_consolidator):
-        """Test retrieval using embeddings for vector search."""
+        """Test retrieval embeds queries via the storage's own embedding path."""
         new_fb = _make_user_playbook(0, trigger="user asks about billing")
         existing_fb = _make_user_playbook(
             1, user_playbook_id=100, trigger="billing inquiry"
         )
 
-        mock_consolidator.client.get_embeddings.return_value = [[0.1, 0.2, 0.3]]
-        mock_consolidator.request_context.storage.search_user_playbooks.return_value = [
-            existing_fb
-        ]
+        storage = mock_consolidator.request_context.storage
+        storage._get_embedding.return_value = [0.1, 0.2, 0.3]
+        storage.search_user_playbooks.return_value = [existing_fb]
 
         result = mock_consolidator._retrieve_existing_playbooks([new_fb])
 
         assert len(result) == 1
         assert result[0].user_playbook_id == 100
-        mock_consolidator.client.get_embeddings.assert_called_once()
+        storage._get_embedding.assert_called_once_with(
+            "user asks about billing", purpose="query"
+        )
+        # The dedup path must never use the client's default embedding model:
+        # it resolves the OSS default, which does not match the indexed vectors
+        # (and the enterprise embedding daemon rejects it with 409).
+        mock_consolidator.client.get_embeddings.assert_not_called()
+
+    def test_fallback_embeddings_use_storage_model_and_query_prefix(
+        self, mock_consolidator
+    ):
+        """Without a storage embedding path, pin the client to the storage's model."""
+        storage = mock_consolidator.request_context.storage
+        storage._get_embedding = None
+        storage.embedding_model_name = "local/test-embedding-model"
+        storage.embedding_dimensions = 768
+        storage.search_user_playbooks.return_value = []
+        mock_consolidator.client.get_embeddings.return_value = [[0.1] * 768]
+
+        new_fb = _make_user_playbook(0, trigger="user asks about billing")
+        mock_consolidator._retrieve_existing_playbooks([new_fb])
+
+        mock_consolidator.client.get_embeddings.assert_called_once_with(
+            ["search_query: user asks about billing"],
+            model="local/test-embedding-model",
+            dimensions=768,
+        )
 
     def test_fallback_to_text_search(self, mock_consolidator):
         """Test fallback to text-only search when embedding generation fails."""
         new_fb = _make_user_playbook(0)
         existing_fb = _make_user_playbook(1, user_playbook_id=200)
 
-        mock_consolidator.client.get_embeddings.side_effect = Exception("embed error")
-        mock_consolidator.request_context.storage.search_user_playbooks.return_value = [
-            existing_fb
-        ]
+        storage = mock_consolidator.request_context.storage
+        storage._get_embedding.side_effect = Exception("embed error")
+        storage.search_user_playbooks.return_value = [existing_fb]
 
         result = mock_consolidator._retrieve_existing_playbooks([new_fb])
 

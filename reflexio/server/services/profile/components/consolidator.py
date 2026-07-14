@@ -7,7 +7,6 @@ import logging
 import os
 import uuid
 from datetime import UTC, datetime
-from typing import Any, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -20,8 +19,8 @@ from reflexio.server.services.deduplication_utils import (
     BaseDeduplicator,
     format_dedup_timestamp,
     parse_item_id,
+    resolve_dedup_query_embeddings,
 )
-from reflexio.server.services.embedding_text import embedding_input
 from reflexio.server.services.profile.profile_generation_service_utils import (
     ProfileTimeToLive,
     calculate_expiration_timestamp,
@@ -306,42 +305,9 @@ class ProfileConsolidator(BaseDeduplicator):
 
         # Generate embeddings with the request storage backend so dedup search
         # uses the same model/prefix/routing as normal profile search.
-        embeddings: list[list[float] | None]
-        try:
-            get_storage_embedding = getattr(storage, "_get_embedding", None)
-            if callable(get_storage_embedding):
-                logger.info(
-                    "Profile dedup query embeddings: source=storage model=%s",
-                    getattr(storage, "embedding_model_name", "unknown"),
-                )
-                embeddings = [
-                    cast(
-                        list[float],
-                        get_storage_embedding(query_text, purpose="query"),
-                    )
-                    for query_text in query_texts
-                ]
-            else:
-                storage_with_embeddings = cast(Any, storage)
-                embedding_model_name = storage_with_embeddings.embedding_model_name
-                embedding_dimensions = storage_with_embeddings.embedding_dimensions
-                logger.info(
-                    "Profile dedup query embeddings: source=llm_client model=%s",
-                    embedding_model_name,
-                )
-                embeddings = list(
-                    self.client.get_embeddings(
-                        [
-                            embedding_input(query_text, purpose="query")
-                            for query_text in query_texts
-                        ],
-                        model=embedding_model_name,
-                        dimensions=embedding_dimensions,
-                    )
-                )
-        except Exception as e:
-            logger.warning("Failed to generate embeddings for dedup search: %s", e)
-            embeddings = [None] * len(query_texts)
+        embeddings = resolve_dedup_query_embeddings(
+            storage, self.client, query_texts, entity_label="Profile"
+        )
 
         # Search for each new profile.
         #

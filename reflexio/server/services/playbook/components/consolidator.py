@@ -13,7 +13,6 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from reflexio.models.api_schema.retriever_schema import SearchUserPlaybookRequest
 from reflexio.models.api_schema.service_schemas import UserPlaybook
 from reflexio.models.config_schema import (
-    EMBEDDING_DIMENSIONS,
     DeduplicationConfig,
     SearchOptions,
 )
@@ -23,6 +22,7 @@ from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.services.deduplication_utils import (
     BaseDeduplicator,
     format_dedup_timestamp,
+    resolve_dedup_query_embeddings,
 )
 from reflexio.server.services.profile.profile_generation_service_utils import (
     check_string_token_overlap,
@@ -561,15 +561,12 @@ class PlaybookConsolidator(BaseDeduplicator):
         if not query_texts:
             return []
 
-        # Batch-generate embeddings
-        try:
-            embeddings = self.client.get_embeddings(
-                query_texts, dimensions=EMBEDDING_DIMENSIONS
-            )
-        except Exception as e:
-            logger.warning("Failed to generate embeddings for dedup search: %s", e)
-            # Fall back to text-only search
-            embeddings = [None] * len(query_texts)
+        # Embed dedup queries with the same model that indexed the store —
+        # see resolve_dedup_query_embeddings for why the client's default
+        # embedding model must not be used here.
+        embeddings = resolve_dedup_query_embeddings(
+            storage, self.client, query_texts, entity_label="Playbook"
+        )
 
         # Search for each new entry
         seen_ids: set[int] = set()

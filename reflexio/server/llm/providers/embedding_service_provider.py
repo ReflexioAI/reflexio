@@ -430,14 +430,22 @@ def _post_embedding_batch(
             last_error = exc
             break
 
+    # For HTTP-status failures the response body carries the actionable
+    # detail (e.g. the daemon's 409 "already owns model X" message) — without
+    # it the log reads as a connectivity problem when it is a config conflict.
+    error_detail = str(last_error)
+    if isinstance(last_error, httpx.HTTPStatusError):
+        body = last_error.response.text.strip()
+        if body:
+            error_detail = f"{last_error} — response body: {body[:300]}"
     _LOGGER.warning(
         "Embedding service unavailable at %s: %s",
         url,
-        last_error,
+        error_detail,
         extra={"mode": mode},
     )
     raise EmbeddingUnavailableError(
-        f"Embedding service unavailable at {url}: {last_error}"
+        f"Embedding service unavailable at {url}: {error_detail}"
     ) from last_error
 
 
