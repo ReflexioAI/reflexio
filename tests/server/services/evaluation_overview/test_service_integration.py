@@ -141,28 +141,29 @@ def test_service_reports_single_recent_success_as_100_percent() -> None:
     assert response.context_tiles.success.current == 100.0
 
 
-def test_service_uses_first_ever_eval_for_hero_age() -> None:
-    """A narrow window should not make a mature org look newly onboarded."""
+def test_service_shows_recent_evaluations_immediately() -> None:
+    """A new org with results should render its available trend immediately."""
     now = int(time.time())
     storage = _storage_with_results(
         [
             _eval_result(
                 result_id=1,
-                session_id="old",
+                session_id="recent",
                 is_success=True,
-                created_at=now - 10 * 24 * 60 * 60,
-            ),
-            _eval_result(
-                result_id=2, session_id="current", is_success=True, created_at=now
-            ),
+                created_at=now,
+            )
         ]
     )
     config = Config(storage_config=StorageConfigSQLite())
 
     svc = EvaluationOverviewService(storage=storage, config=config)
-    response = svc.run(GetEvaluationOverviewRequest(from_ts=now - 60, to_ts=now))
+    response = svc.run(
+        GetEvaluationOverviewRequest(from_ts=now - 3600, to_ts=now, bucket="day")
+    )
 
     assert response.hero.state == "shadow_off"
+    assert response.hero.regular_success_rate_pp == 100.0
+    assert sum(bucket.regular_n for bucket in response.hero.buckets) == 1
 
 
 def test_service_honors_day_bucket_for_hero_trend() -> None:
@@ -193,6 +194,7 @@ def test_service_honors_day_bucket_for_hero_trend() -> None:
 
     assert [bucket.ts for bucket in response.hero.buckets] == [day, 2 * day]
     assert [bucket.regular_n for bucket in response.hero.buckets] == [2, 1]
+    assert [bucket.regular_rate for bucket in response.hero.buckets] == [0.5, 1.0]
 
 
 def test_service_uses_bulk_storage_methods_without_per_session_reads() -> None:
