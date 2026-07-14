@@ -2190,6 +2190,16 @@ class TestCheapShouldRunReject:
         assert _weighted_content_length(content) == length
         assert _cheap_should_run_reject(self._batch(content)) == expected
 
+    def test_long_content_skips_weighted_length(self, monkeypatch):
+        def fail_if_called(_content):
+            pytest.fail("weighted length should only run below the base threshold")
+
+        monkeypatch.setattr(
+            "reflexio.server.services.base_generation_service._weighted_content_length",
+            fail_if_called,
+        )
+        assert _cheap_should_run_reject(self._batch("a" * 30)) is None
+
     @pytest.mark.parametrize("character", ["汉", "あ", "한", "م", "я", "١"])
     def test_non_latin_letters_and_numbers_count_twice(self, character):
         assert _weighted_content_length(character * 14) == 28

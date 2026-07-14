@@ -156,7 +156,8 @@ def _cheap_should_run_reject(
             return "extractor_prompt_echo"
 
     if not any(
-        _weighted_content_length(content) >= _MIN_USER_CONTENT_LEN
+        len(content.strip()) >= _MIN_USER_CONTENT_LEN
+        or _weighted_content_length(content) >= _MIN_USER_CONTENT_LEN
         for content in user_contents
     ):
         return "all_user_turns_too_short"
