@@ -345,7 +345,9 @@ class StrideEnabledService(ConcreteGenerationService):
 class TestFilterConfigByStride:
     """Tests for the _filter_config_by_stride method."""
 
-    def _make_request_interaction_models(self, n_interactions: int):
+    def _make_request_interaction_models(
+        self, n_interactions: int, *, role: str = "User"
+    ):
         """Create mock RequestInteractionDataModel objects with n interactions."""
         from reflexio.models.api_schema.internal_schema import (
             RequestInteractionDataModel,
@@ -359,7 +361,7 @@ class TestFilterConfigByStride:
                 content=f"message {i}",
                 request_id="req1",
                 created_at=1000 + i,
-                role="User",
+                role=role,
             )
             for i in range(n_interactions)
         ]
@@ -420,7 +422,7 @@ class TestFilterConfigByStride:
         assert result is config
 
     def _setup_stride_size_service(
-        self, llm_client, request_context, n_new_interactions
+        self, llm_client, request_context, n_new_interactions, *, role="User"
     ):
         """Create a StrideEnabledService with mocked storage for stride_size tests.
 
@@ -432,7 +434,9 @@ class TestFilterConfigByStride:
         request_context.configurator.get_config.return_value = None
 
         mock_storage = MagicMock()
-        new_interactions = self._make_request_interaction_models(n_new_interactions)
+        new_interactions = self._make_request_interaction_models(
+            n_new_interactions, role=role
+        )
         mock_storage.get_operation_state_with_new_request_interaction = MagicMock(
             return_value=({}, new_interactions)
         )
@@ -456,6 +460,19 @@ class TestFilterConfigByStride:
     def test_passes_config_when_stride_size_met(self, llm_client, request_context):
         """Verify config passes through when new interaction count >= stride_size."""
         service = self._setup_stride_size_service(llm_client, request_context, 8)
+        service.service_config = MockServiceConfig(auto_run=True, source="api")
+
+        config = MockExtractorConfig(extractor_name="ext1")
+        result = service._filter_config_by_stride(config)
+        assert result is config
+
+    def test_agent_only_interactions_count_toward_stride(
+        self, llm_client, request_context
+    ):
+        """Stride counts every interaction, independent of user-text filtering."""
+        service = self._setup_stride_size_service(
+            llm_client, request_context, 8, role="Agent"
+        )
         service.service_config = MockServiceConfig(auto_run=True, source="api")
 
         config = MockExtractorConfig(extractor_name="ext1")
@@ -512,6 +529,24 @@ class TestShouldRunBeforeExtraction:
 
         config = Config(storage_config={"type": "sqlite"})
         assert config.skip_should_run_check is False
+
+    def test_completely_empty_scoped_batch_is_rejected(
+        self, llm_client, request_context, monkeypatch
+    ):
+        """No interactions remains a hard rejection before the cheap filter."""
+        monkeypatch.delenv("MOCK_LLM_RESPONSE", raising=False)
+        service = ConcreteGenerationService(llm_client, request_context)
+        service.service_config = MockServiceConfig(auto_run=True)
+        extractor_config = MockExtractorConfig(extractor_name="test")
+        service._collect_scoped_interactions_for_precheck = MagicMock(  # type: ignore[method-assign]
+            return_value=([], extractor_config)
+        )
+        llm_client.generate_chat_response = MagicMock()
+
+        result = service._should_run_before_extraction(extractor_config)
+
+        assert result is False
+        llm_client.generate_chat_response.assert_not_called()
 
     def test_should_run_before_extraction_returns_true_when_force_extraction(
         self, llm_client, request_context
@@ -2144,6 +2179,14 @@ class TestCheapShouldRunReject:
 
     @staticmethod
     def _batch(*contents: str) -> list[RequestInteractionDataModel]:
+        return TestCheapShouldRunReject._batch_with_roles(
+            *(("User", content) for content in contents)
+        )
+
+    @staticmethod
+    def _batch_with_roles(
+        *role_contents: tuple[str, str],
+    ) -> list[RequestInteractionDataModel]:
         return [
             RequestInteractionDataModel(
                 session_id="s",
@@ -2153,11 +2196,52 @@ class TestCheapShouldRunReject:
                     session_id="test_session",
                 ),
                 interactions=[
-                    Interaction(user_id="u", request_id="r", role="User", content=c)
-                    for c in contents
+                    Interaction(user_id="u", request_id="r", role=role, content=content)
+                    for role, content in role_contents
                 ],
             )
         ]
+
+    @pytest.mark.parametrize("role", ["User", "user", "USER", "uSeR"])
+    def test_user_role_matching_is_case_insensitive(self, role):
+        short_batch = self._batch_with_roles((role, "short"))
+        long_batch = self._batch_with_roles((role, "a" * 30))
+
+        assert _cheap_should_run_reject(short_batch) == "all_user_turns_too_short"
+        assert _cheap_should_run_reject(long_batch) is None
+
+    @pytest.mark.parametrize("role", ["Agent", "agent", "Assistant", "assistant"])
+    def test_non_user_only_batch_bypasses_user_text_filter(self, role):
+        batch = self._batch_with_roles((role, "non-empty response"))
+
+        assert _cheap_should_run_reject(batch) is None
+
+    def test_empty_user_content_with_other_interactions_bypasses_filter(self):
+        batch = self._batch_with_roles(
+            ("user", ""),
+            ("Agent", "A non-empty agent response with useful signal"),
+        )
+
+        assert _cheap_should_run_reject(batch) is None
+
+    def test_lowercase_user_unicode_content_passes(self):
+        batch = self._batch_with_roles(("user", "汉" * 15))
+
+        assert _cheap_should_run_reject(batch) is None
+
+    @pytest.mark.parametrize("role", ["User", "user", "USER", "uSeR"])
+    def test_slash_command_rejection_is_role_case_insensitive(self, role):
+        batch = self._batch_with_roles((role, "/learn"))
+
+        assert _cheap_should_run_reject(batch) is not None
+
+    @pytest.mark.parametrize("role", ["User", "user", "USER", "uSeR"])
+    def test_extractor_prompt_rejection_is_role_case_insensitive(self, role):
+        batch = self._batch_with_roles(
+            (role, "You are an extractor deciding whether this content matters")
+        )
+
+        assert _cheap_should_run_reject(batch) == "extractor_prompt_echo"
 
     def test_btw_with_note_is_not_rejected(self):
         batch = self._batch("/btw some side note with real content from the user")
