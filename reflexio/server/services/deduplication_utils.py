@@ -8,13 +8,85 @@ ProfileConsolidator and PlaybookConsolidator.
 import logging
 from abc import ABC
 from datetime import UTC, datetime
+from typing import Any, cast
 
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.llm.model_defaults import ModelRole, resolve_model_name
+from reflexio.server.services.embedding_text import embedding_input
 from reflexio.server.site_var.site_var_manager import SiteVarManager
 
 logger = logging.getLogger(__name__)
+
+
+def resolve_dedup_query_embeddings(
+    storage: Any,
+    client: LiteLLMClient,
+    query_texts: list[str],
+    *,
+    entity_label: str,
+) -> list[list[float] | None]:
+    """Embed dedup-search queries with the model that indexed the store.
+
+    Prefers the storage's own embedding path (correct model + "query" prefix);
+    falls back to ``client`` pinned to the storage's model/dimensions. Letting
+    the client resolve its default embedding model would be wrong here: it
+    picks the OSS default, which the enterprise embedding daemon rejects
+    (409 model conflict) and which would not match the indexed vectors anyway.
+
+    Args:
+        storage: Storage backend (duck-typed: ``_get_embedding`` preferred,
+            else ``embedding_model_name`` / ``embedding_dimensions``).
+        client: Shared LLM client, used only in the fallback path.
+        query_texts: Query strings to embed.
+        entity_label: Log prefix identifying the caller, e.g. "Profile".
+
+    Returns:
+        One embedding (or None) per query text, in input order. On any
+        failure, all entries are None so the caller degrades to text-only
+        search. A backend that signals embedding-service unavailability with
+        an empty vector (e.g. the Supabase query path) is normalized to None
+        so search falls back to its own embedding/FTS path instead of sending
+        an empty vector to the database.
+    """
+    try:
+        get_storage_embedding = getattr(storage, "_get_embedding", None)
+        if callable(get_storage_embedding):
+            logger.info(
+                "%s dedup query embeddings: source=storage model=%s",
+                entity_label,
+                getattr(storage, "embedding_model_name", "unknown"),
+            )
+            embeddings = [
+                cast(
+                    "list[float] | None",
+                    get_storage_embedding(query_text, purpose="query"),
+                )
+                for query_text in query_texts
+            ]
+        else:
+            embedding_model_name = storage.embedding_model_name
+            embedding_dimensions = storage.embedding_dimensions
+            logger.info(
+                "%s dedup query embeddings: source=llm_client model=%s",
+                entity_label,
+                embedding_model_name,
+            )
+            embeddings = list(
+                client.get_embeddings(
+                    [
+                        embedding_input(query_text, purpose="query")
+                        for query_text in query_texts
+                    ],
+                    model=embedding_model_name,
+                    dimensions=embedding_dimensions,
+                )
+            )
+    except Exception as e:
+        logger.warning("Failed to generate embeddings for dedup search: %s", e)
+        return [None] * len(query_texts)
+    return [emb or None for emb in embeddings]
+
 
 # Format used for "Last Modified" timestamps shown to deduplication LLMs.
 # Includes hours and minutes so same-day contradictions (morning vs evening)
