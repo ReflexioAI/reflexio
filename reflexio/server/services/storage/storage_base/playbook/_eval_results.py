@@ -193,23 +193,18 @@ class AgentEvaluationResultStoreMixin:
         user_id: str,
         session_id: str,
         session_fingerprint: str,
-        *,
-        statuses: frozenset[str] | None = None,
     ) -> dict[str, Any] | None:
-        """Return the session's settled evaluation state if still fresh.
+        """Return the session's terminal evaluation state if still fresh.
 
         Implementations must use a writer transaction and recompute the live
-        session fingerprint in that transaction. A match requires an accepted
-        status and equality among the supplied, persisted, and live fingerprints.
+        session fingerprint in that transaction. A match requires a status in
+        ``TERMINAL_RETRIEVED_STATUSES`` and equality among the supplied,
+        persisted, and live fingerprints.
 
         Args:
             user_id (str): Session owner.
             session_id (str): Evaluated session.
             session_fingerprint (str): Fingerprint of the current session.
-            statuses (frozenset[str], optional): Accepted persisted statuses.
-                Defaults to ``TERMINAL_RETRIEVED_STATUSES``. Consumers that can
-                use a partial-but-committed row set (see
-                ``SETTLED_RETRIEVED_STATUSES``) pass a wider set.
 
         Returns:
             dict | None: The persisted state JSON on a match, else None.

@@ -84,7 +84,8 @@ _STALL_WARNING_PREFIX = "Reflexio learning is paused"
 # session and delete/re-inserts rows that are already committed — and a
 # deterministically degrading chunk (an over-length learning, a content-filter
 # refusal) degrades again on every attempt, so the whole bill buys nothing.
-# Consumers read degraded rows directly via SETTLED_RETRIEVED_STATUSES.
+# It is re-judged fresh (new generation) on the next scheduled run and
+# self-heals to "complete" once the transient failure clears.
 _RETRIABLE_RETRIEVED_STATUSES = frozenset({"failed", "pending"})
 _MAX_RETRIEVED_LEARNING_RETRIES = 3
 

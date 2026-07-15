@@ -27,28 +27,16 @@ RETRIEVED_LEARNING_STATE_PREFIX = "retrieved_learning_eval"
 RETRIEVED_LEARNING_EVALUATION_VERSION = 2
 
 # Statuses persisted in _operation_state. "complete" and "not_applicable" are
-# terminal (the fast path may short-circuit on them). "degraded" is an APPLIED
-# commit with a partial row set (see SETTLED_RETRIEVED_STATUSES). "failed" and
-# "pending" committed nothing and are retried by the next scheduled or forced run.
+# terminal (the fast path may short-circuit on them, and consumers such as the
+# offline tuner read TERMINAL only). "degraded" is an APPLIED commit with a
+# partial row set; it is not terminal and is re-judged fresh on the next
+# scheduled run, self-healing to "complete" once the transient failure clears.
+# "failed" and "pending" committed nothing and are retried by the next scheduled
+# or forced run.
 type RetrievedLearningPersistedStatus = Literal[
     "pending", "in_progress", "complete", "degraded", "failed", "not_applicable"
 ]
 TERMINAL_RETRIEVED_STATUSES: frozenset[str] = frozenset({"complete", "not_applicable"})
-
-# Statuses whose persisted rows are SETTLED: the commit was applied and
-# fingerprint-fenced, so the rows describe the session as it stands.
-#
-# "degraded" belongs here even though it is not terminal. A degraded commit IS
-# applied — the rows are persisted, and only the chunks whose judge failed carry
-# NULL is_relevant/impact. Consumers that already drop unsigned rows (the offline
-# tuner does) can use the rest safely: verdicts are per-(session, learning) with
-# no cross-learning dependency, so a partial set is not a corrupted set.
-#
-# Treating degraded as unusable is what forces a full re-judge of the whole
-# session to recover rows that are already committed — and a deterministically
-# degrading chunk (an over-length learning, a content-filter refusal) will
-# degrade on every retry, so that cost never buys anything.
-SETTLED_RETRIEVED_STATUSES: frozenset[str] = TERMINAL_RETRIEVED_STATUSES | {"degraded"}
 
 # Outcomes of one runner invocation. "stale"/"superseded"/"skipped" are
 # invocation outcomes only and are never stored as persisted status.

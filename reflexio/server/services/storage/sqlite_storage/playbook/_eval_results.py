@@ -418,10 +418,7 @@ class AgentEvaluationResultStoreMixin:
         user_id: str,
         session_id: str,
         session_fingerprint: str,
-        *,
-        statuses: frozenset[str] | None = None,
     ) -> dict[str, Any] | None:
-        accepted = statuses or TERMINAL_RETRIEVED_STATUSES
         state_key = build_retrieved_learning_state_key(user_id, session_id)
         with self._lock:
             try:
@@ -429,7 +426,7 @@ class AgentEvaluationResultStoreMixin:
                 state = self._rle_state_row(state_key)
                 live_fingerprint = self._rle_fingerprint_now(user_id, session_id)
                 matched = (
-                    state.get("status") in accepted
+                    state.get("status") in TERMINAL_RETRIEVED_STATUSES
                     and state.get("evaluation_version")
                     == RETRIEVED_LEARNING_EVALUATION_VERSION
                     and state.get("session_fingerprint") == session_fingerprint

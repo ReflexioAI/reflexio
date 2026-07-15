@@ -455,8 +455,8 @@ def test_degraded_is_never_retried(
     and delete/re-insert rows that are already committed. A deterministically
     degrading chunk (an over-length learning, a content-filter refusal) degrades
     again on every attempt, so a bounded 3-retry sweep would burn 4x the judge
-    bill on that slice and buy nothing. Consumers read degraded rows directly
-    (SETTLED_RETRIEVED_STATUSES).
+    bill on that slice and buy nothing. It is re-judged fresh on the next
+    scheduled run and self-heals to "complete" once the transient failure clears.
     """
     _, runner = _run_with_outcome(service, monkeypatch, "degraded")
 
