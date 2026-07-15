@@ -11,6 +11,7 @@ Covers:
 7. Version-based auto-invalidation: stale entries are evicted on next get
 """
 
+import importlib
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
@@ -471,3 +472,33 @@ class TestVersionBasedInvalidation:
         c = get_reflexio("org-1")
         assert c is third
         assert mock_reflexio_cls.call_count == 3
+
+
+# =============================================================================
+# Env-tunable cache max size
+# =============================================================================
+
+
+def test_cache_max_size_env_override(monkeypatch: pytest.MonkeyPatch):
+    """REFLEXIO_CACHE_MAX_SIZE is read from the environment at import time."""
+    import reflexio.server.cache.reflexio_cache as cache_mod
+
+    monkeypatch.setenv("REFLEXIO_CACHE_MAX_SIZE", "400")
+    try:
+        cache_mod = importlib.reload(cache_mod)
+        assert cache_mod.REFLEXIO_CACHE_MAX_SIZE == 400
+        assert cache_mod.get_cache_stats()["max_size"] == 400
+    finally:
+        # Restore the module-global cache to its default sizing so the
+        # resized cache doesn't leak into other tests.
+        monkeypatch.delenv("REFLEXIO_CACHE_MAX_SIZE", raising=False)
+        importlib.reload(cache_mod)
+
+
+def test_cache_max_size_defaults_to_100(monkeypatch: pytest.MonkeyPatch):
+    """Without the env var set, the max size falls back to 100."""
+    import reflexio.server.cache.reflexio_cache as cache_mod
+
+    monkeypatch.delenv("REFLEXIO_CACHE_MAX_SIZE", raising=False)
+    cache_mod = importlib.reload(cache_mod)
+    assert cache_mod.REFLEXIO_CACHE_MAX_SIZE == 100
