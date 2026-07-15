@@ -2890,6 +2890,23 @@ class TestFallbackObservability:
 
         assert "llm.fallback_used" not in tags
 
+    def test_sentry_tag_not_set_when_provider_strips_prefix(self, monkeypatch):
+        tags = self._install_fake_sentry(monkeypatch)
+        client = LiteLLMClient(LiteLLMConfig(model="minimax/MiniMax-M3"))
+
+        # MiniMax returns the bare model name even when LiteLLM was called
+        # through the provider-prefixed name. That is still the primary model,
+        # not a fallback.
+        response = _make_completion_response("ok")
+        response._hidden_params = {"model_id": "MiniMax-M3"}
+        response.model = "MiniMax-M3"
+
+        monkeypatch.setattr("litellm.completion", lambda **_p: response)
+
+        client.generate_chat_response([{"role": "user", "content": "hi"}])
+
+        assert "llm.fallback_used" not in tags
+
 
 class TestEmbeddingRetries:
     """Embedding calls get num_retries parity with chat. Cross-model
