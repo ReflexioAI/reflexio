@@ -743,7 +743,9 @@ def test_window_read_is_exhaustive_past_the_paged_readers_cap(storage, count) ->
     """
     refs = _seed_many_profiles(storage, count)
     _seed_session(storage, refs=refs)
-    _commit(storage, [_result("profile", f"win-prof-{n}") for n in range(count)])
+    _commit(
+        storage, [_result(storage, "profile", f"win-prof-{n}") for n in range(count)]
+    )
 
     assert (
         len(storage.get_retrieved_learning_evaluation_results(session_id=SESSION))
@@ -759,7 +761,11 @@ def test_window_read_bounds_are_inclusive_and_exclude_outside(storage) -> None:
     refs = _seed_many_profiles(storage, 2)
     _seed_session(storage, refs=refs)
     _commit(
-        storage, [_result("profile", "win-prof-0"), _result("profile", "win-prof-1")]
+        storage,
+        [
+            _result(storage, "profile", "win-prof-0"),
+            _result(storage, "profile", "win-prof-1"),
+        ],
     )
 
     (sample,) = storage.get_retrieved_learning_evaluation_results_in_window(
@@ -781,7 +787,7 @@ def test_window_read_bounds_are_inclusive_and_exclude_outside(storage) -> None:
 def test_window_read_orders_ascending_and_filters_agent_version(storage) -> None:
     refs = _seed_many_profiles(storage, 3)
     _seed_session(storage, refs=refs)
-    _commit(storage, [_result("profile", f"win-prof-{n}") for n in range(3)])
+    _commit(storage, [_result(storage, "profile", f"win-prof-{n}") for n in range(3)])
 
     rows = storage.get_retrieved_learning_evaluation_results_in_window(0, 2_000_000_000)
     keys = [(row.created_at, row.result_id) for row in rows]
@@ -836,7 +842,7 @@ def test_terminal_state_fence_accepts_a_wider_status_set_on_request(storage) -> 
         fingerprint,
         "degraded",
         {},
-        [_result("profile", "prof-1")],
+        [_result(storage, "profile", "prof-1")],
     )
 
     # Default (TERMINAL) rejects it...
@@ -870,7 +876,13 @@ def test_a_stale_degraded_session_is_still_rejected(storage) -> None:
     fingerprint = session_fingerprint(snapshot)
     generation = storage.begin_retrieved_learning_evaluation_run(USER, SESSION)
     storage.replace_retrieved_learning_evaluation_results(
-        USER, SESSION, generation, fingerprint, "degraded", {}, [_result("profile", "prof-1")]
+        USER,
+        SESSION,
+        generation,
+        fingerprint,
+        "degraded",
+        {},
+        [_result(storage, "profile", "prof-1")],
     )
 
     # The session changes after the verdict was committed.
