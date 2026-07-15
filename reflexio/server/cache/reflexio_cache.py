@@ -8,12 +8,13 @@ from typing import Any, Final
 from cachetools import TTLCache
 
 from reflexio.lib.reflexio_lib import Reflexio
+from reflexio.server.llm.llm_utils import positive_int_env
 from reflexio.server.tracing import profile_step
 
 logger = logging.getLogger(__name__)
 
 # Cache configuration
-REFLEXIO_CACHE_MAX_SIZE = 100
+REFLEXIO_CACHE_MAX_SIZE = positive_int_env("REFLEXIO_CACHE_MAX_SIZE", 100, logger)
 REFLEXIO_CACHE_TTL_SECONDS = 3600  # 1 hour safety net
 
 # Type alias for cache key: (org_id, storage_base_dir)
