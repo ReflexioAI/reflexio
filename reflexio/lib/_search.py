@@ -82,11 +82,12 @@ class SearchMixin(ReflexioBase):
 
         Args:
             request (GetRetrievedLearningEvaluationResultsRequest | dict): The
-                read request (optional user/session filters + limit).
+                read request (optional user/session/interaction-time filters + limit).
 
         Returns:
             GetRetrievedLearningEvaluationResultsResponse: Matching verdicts
-            ordered by created_at DESC, result_id DESC.
+            ordered by target interaction time for time-filtered reads and by
+            result creation time otherwise.
         """
         if not self._is_storage_configured():
             return GetRetrievedLearningEvaluationResultsResponse(
@@ -98,6 +99,10 @@ class SearchMixin(ReflexioBase):
             results = self._get_storage().get_retrieved_learning_evaluation_results(
                 user_id=request.user_id,
                 session_id=request.session_id,
+                from_ts=(
+                    int(request.start_time.timestamp()) if request.start_time else None
+                ),
+                to_ts=int(request.end_time.timestamp()) if request.end_time else None,
                 limit=request.limit,
             )
             return GetRetrievedLearningEvaluationResultsResponse(

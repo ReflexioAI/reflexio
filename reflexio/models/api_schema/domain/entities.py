@@ -441,11 +441,12 @@ class AgentSuccessEvaluationResult(BaseModel):
 
 
 class RetrievedLearningEvaluationResult(BaseModel):
-    """Latest per-learning relevance/impact verdict for one evaluated session.
+    """Latest per-learning relevance/impact verdict for one interaction.
 
-    One row per ``(user_id, session_id, kind, learning_id)``. The table holds
-    the most recent successfully persisted evaluation set for a session, not
-    an append-only history.
+    New rows are unique per ``(user_id, session_id, interaction_id, kind,
+    learning_id)``. Nullable interaction fields preserve read compatibility
+    with legacy session-level rows while the table continues to hold only the
+    most recent successfully persisted evaluation set for a session.
 
     Attributes:
         result_id (int): DB auto-increment identifier (0 = placeholder).
@@ -453,11 +454,15 @@ class RetrievedLearningEvaluationResult(BaseModel):
         session_id (str): Evaluated session.
         agent_version (str): Version supplied to group evaluation;
             informational, not part of the uniqueness key.
+        interaction_id (int | None): Interaction that received the learning.
+            ``None`` only for legacy session-level rows.
+        interaction_created_at (int | None): Timestamp of the target
+            interaction. ``None`` only for legacy session-level rows.
         kind (RetrievedLearningKind): The learning kind.
         learning_id (str): Stable storage id, matching
             ``RetrievedLearning.learning_id``.
-        is_relevant (bool | None): Whether the learning applies to the
-            session. ``None`` only when the relevance judge/chunk failed.
+        is_relevant (bool | None): Whether the learning applies to its target
+            interaction. ``None`` only when the relevance judge/chunk failed.
         relevance_reason (str): Judge reasoning; empty when ``is_relevant``
             is ``None``.
         impact (LearningImpact | None): Whether the learning improved,
@@ -473,6 +478,8 @@ class RetrievedLearningEvaluationResult(BaseModel):
     user_id: str
     session_id: str
     agent_version: str = ""
+    interaction_id: int | None = None
+    interaction_created_at: int | None = None
     kind: RetrievedLearningKind
     learning_id: str
     is_relevant: bool | None = None

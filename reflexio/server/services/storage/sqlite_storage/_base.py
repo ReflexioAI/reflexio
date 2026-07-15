@@ -748,6 +748,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         # permanently stuck. The helper is guarded (no-ops when the table is
         # absent), so running it before _DDL is safe on fresh databases too.
         self._migrate_eval_result_user_id()
+        self._migrate_retrieved_learning_interaction_identity()
         with self._lock:
             cur = self.conn.cursor()
             cur.executescript(_DDL)
@@ -1578,6 +1579,72 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         self.conn.commit()
         logger.info("Created shadow_comparison_verdicts table (F1 migration)")
 
+    def _migrate_retrieved_learning_interaction_identity(self) -> None:
+        """Rebuild legacy session-learning verdicts for occurrence identity.
+
+        Existing rows are preserved with nullable interaction fields. Fresh
+        evaluator runs replace a session snapshot with fully attributed rows.
+        """
+        columns = {
+            row["name"]
+            for row in self.conn.execute(
+                "PRAGMA table_info(retrieved_learning_evaluation)"
+            ).fetchall()
+        }
+        if not columns or {
+            "interaction_id",
+            "interaction_created_at",
+        }.issubset(columns):
+            return
+        self.conn.executescript("""
+            CREATE TABLE retrieved_learning_evaluation_new (
+                result_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                agent_version TEXT NOT NULL DEFAULT '',
+                interaction_id INTEGER,
+                interaction_created_at INTEGER,
+                kind TEXT NOT NULL,
+                learning_id TEXT NOT NULL,
+                is_relevant INTEGER,
+                relevance_reason TEXT NOT NULL DEFAULT '',
+                impact TEXT,
+                impact_reason TEXT NOT NULL DEFAULT '',
+                created_at INTEGER NOT NULL,
+                governance_subject_ref TEXT,
+                UNIQUE (
+                    user_id, session_id, interaction_id, kind, learning_id
+                )
+            );
+            INSERT INTO retrieved_learning_evaluation_new (
+                result_id, user_id, session_id, agent_version, kind,
+                learning_id, is_relevant, relevance_reason, impact,
+                impact_reason, created_at, governance_subject_ref
+            )
+            SELECT
+                result_id, user_id, session_id, agent_version, kind,
+                learning_id, is_relevant, relevance_reason, impact,
+                impact_reason, created_at, governance_subject_ref
+            FROM retrieved_learning_evaluation;
+            DROP TABLE retrieved_learning_evaluation;
+            ALTER TABLE retrieved_learning_evaluation_new
+                RENAME TO retrieved_learning_evaluation;
+            CREATE INDEX IF NOT EXISTS idx_rle_created_at_result_id
+                ON retrieved_learning_evaluation(created_at DESC, result_id DESC);
+            CREATE INDEX IF NOT EXISTS idx_rle_interaction_created_at
+                ON retrieved_learning_evaluation(
+                    interaction_created_at DESC, interaction_id DESC, result_id DESC
+                );
+            CREATE INDEX IF NOT EXISTS idx_rle_session_id
+                ON retrieved_learning_evaluation(session_id);
+            CREATE INDEX IF NOT EXISTS idx_rle_subject_ref
+                ON retrieved_learning_evaluation(governance_subject_ref);
+        """)
+        self.conn.commit()
+        logger.info(
+            "Migrated retrieved-learning verdicts to interaction occurrence identity"
+        )
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
@@ -1982,6 +2049,8 @@ CREATE TABLE IF NOT EXISTS retrieved_learning_evaluation (
     user_id TEXT NOT NULL,
     session_id TEXT NOT NULL,
     agent_version TEXT NOT NULL DEFAULT '',
+    interaction_id INTEGER,
+    interaction_created_at INTEGER,
     kind TEXT NOT NULL,
     learning_id TEXT NOT NULL,
     is_relevant INTEGER,
@@ -1990,10 +2059,14 @@ CREATE TABLE IF NOT EXISTS retrieved_learning_evaluation (
     impact_reason TEXT NOT NULL DEFAULT '',
     created_at INTEGER NOT NULL,
     governance_subject_ref TEXT,
-    UNIQUE (user_id, session_id, kind, learning_id)
+    UNIQUE (user_id, session_id, interaction_id, kind, learning_id)
 );
 CREATE INDEX IF NOT EXISTS idx_rle_created_at_result_id
     ON retrieved_learning_evaluation(created_at DESC, result_id DESC);
+CREATE INDEX IF NOT EXISTS idx_rle_interaction_created_at
+    ON retrieved_learning_evaluation(
+        interaction_created_at DESC, interaction_id DESC, result_id DESC
+    );
 CREATE INDEX IF NOT EXISTS idx_rle_session_id
     ON retrieved_learning_evaluation(session_id);
 CREATE INDEX IF NOT EXISTS idx_rle_subject_ref

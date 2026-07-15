@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
 
 from reflexio import (
@@ -182,6 +183,8 @@ def test_get_retrieved_learning_evaluation_results_posts_filters(
     result = client.get_retrieved_learning_evaluation_results(
         user_id="user-1",
         session_id="session-1",
+        start_time=datetime(2026, 1, 1, tzinfo=UTC),
+        end_time=datetime(2026, 1, 2, tzinfo=UTC),
         limit=25,
     )
 
@@ -192,6 +195,8 @@ def test_get_retrieved_learning_evaluation_results_posts_filters(
     assert kwargs["json"] == {
         "user_id": "user-1",
         "session_id": "session-1",
+        "start_time": datetime(2026, 1, 1, tzinfo=UTC),
+        "end_time": datetime(2026, 1, 2, tzinfo=UTC),
         "limit": 25,
     }
 

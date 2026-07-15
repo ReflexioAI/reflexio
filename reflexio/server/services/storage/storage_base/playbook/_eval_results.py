@@ -279,6 +279,8 @@ class AgentEvaluationResultStoreMixin:
         self,
         user_id: str | None = None,
         session_id: str | None = None,
+        from_ts: int | None = None,
+        to_ts: int | None = None,
         limit: int = 100,
     ) -> list[RetrievedLearningEvaluationResult]:
         """Read persisted per-learning verdicts.
@@ -286,8 +288,11 @@ class AgentEvaluationResultStoreMixin:
         Args:
             user_id (str, optional): Filter by session owner.
             session_id (str, optional): Filter by session.
+            from_ts (int, optional): Target-interaction lower timestamp.
+            to_ts (int, optional): Target-interaction upper timestamp.
             limit (int): Maximum rows, ordered by
-                ``created_at DESC, result_id DESC``.
+                target interaction recency when a time filter is supplied,
+                otherwise ``created_at DESC, result_id DESC``.
 
         Returns:
             list[RetrievedLearningEvaluationResult]: Matching rows.

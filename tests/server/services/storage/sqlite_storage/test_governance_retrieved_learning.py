@@ -73,6 +73,7 @@ def _seed_user(storage: SQLiteStorage, user_id: str, session_id: str) -> None:
         ],
     )
     snapshot = storage.load_bounded_retrieved_learning_snapshot(user_id, session_id)
+    target = next(item for item in snapshot.interactions if item.refs)
     fingerprint = session_fingerprint(snapshot)
     generation = storage.begin_retrieved_learning_evaluation_run(user_id, session_id)
     commit = storage.replace_retrieved_learning_evaluation_results(
@@ -86,6 +87,8 @@ def _seed_user(storage: SQLiteStorage, user_id: str, session_id: str) -> None:
             RetrievedLearningEvaluationResult(
                 user_id=user_id,
                 session_id=session_id,
+                interaction_id=target.interaction_id,
+                interaction_created_at=target.created_at,
                 kind="profile",
                 learning_id=f"prof-{user_id}",
                 is_relevant=True,

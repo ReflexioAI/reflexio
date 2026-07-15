@@ -81,11 +81,35 @@ def _seed_eligible_learnings(storage) -> int:
     return saved[0].user_playbook_id
 
 
-def _result(kind: str, learning_id: str) -> RetrievedLearningEvaluationResult:
+def _result(storage, kind: str, learning_id: str) -> RetrievedLearningEvaluationResult:
+    interaction = next(
+        item for item in storage.get_user_interaction(USER) if item.role == "Assistant"
+    )
     return RetrievedLearningEvaluationResult(
         user_id=USER,
         session_id=SESSION,
         agent_version="v1",
+        interaction_id=interaction.interaction_id,
+        interaction_created_at=interaction.created_at,
+        kind=kind,  # type: ignore[arg-type]
+        learning_id=learning_id,
+        is_relevant=True,
+        relevance_reason="applies",
+        impact="positive",
+        impact_reason="helped",
+        created_at=1_700_000_000,
+    )
+
+
+def _result_for(
+    interaction: Interaction, kind: str, learning_id: str
+) -> RetrievedLearningEvaluationResult:
+    return RetrievedLearningEvaluationResult(
+        user_id=USER,
+        session_id=SESSION,
+        agent_version="v1",
+        interaction_id=interaction.interaction_id,
+        interaction_created_at=interaction.created_at,
         kind=kind,  # type: ignore[arg-type]
         learning_id=learning_id,
         is_relevant=True,
@@ -172,7 +196,7 @@ def test_content_only_edit_invalidates_fingerprint(storage) -> None:
         before,
         "complete",
         {},
-        [_result("profile", "prof-1")],
+        [_result(storage, "profile", "prof-1")],
     )
     assert commit.disposition == "stale"
 
@@ -192,10 +216,10 @@ def test_replace_persists_exact_resolvable_set(storage) -> None:
     generation = storage.begin_retrieved_learning_evaluation_run(USER, SESSION)
 
     proposed = [
-        _result("profile", "prof-1"),
-        _result("user_playbook", str(playbook_id)),
+        _result(storage, "profile", "prof-1"),
+        _result(storage, "user_playbook", str(playbook_id)),
         # Attached but nonexistent — must be dropped at commit time.
-        _result("user_playbook", "999999"),
+        _result(storage, "user_playbook", "999999"),
     ]
     commit = storage.replace_retrieved_learning_evaluation_results(
         USER, SESSION, generation, fingerprint, "complete", {}, proposed
@@ -218,6 +242,66 @@ def test_replace_persists_exact_resolvable_set(storage) -> None:
     assert state["committed_count"] == 2
 
 
+def test_replace_tracks_the_same_learning_on_each_interaction(storage) -> None:
+    _seed_eligible_learnings(storage)
+    ref = RetrievedLearning(kind="profile", learning_id="prof-1")
+    _seed_session(storage, refs=[ref])
+    storage.add_request(Request(request_id="r2", user_id=USER, session_id=SESSION))
+    storage.add_user_interactions_bulk(
+        USER,
+        [
+            Interaction(user_id=USER, request_id="r2", content="again", role="User"),
+            Interaction(
+                user_id=USER,
+                request_id="r2",
+                content="second answer",
+                role="Assistant",
+                retrieved_learnings=[ref],
+            ),
+        ],
+    )
+    assistants = sorted(
+        (
+            item
+            for item in storage.get_user_interaction(USER)
+            if item.role == "Assistant"
+        ),
+        key=lambda item: item.interaction_id or 0,
+    )
+    assert len(assistants) == 2
+    snapshot = storage.load_bounded_retrieved_learning_snapshot(USER, SESSION)
+    generation = storage.begin_retrieved_learning_evaluation_run(USER, SESSION)
+    proposed = [
+        _result_for(assistants[0], "profile", "prof-1"),
+        _result_for(assistants[1], "profile", "prof-1"),
+        # Correct learning, but not an attachment occurrence in this session.
+        RetrievedLearningEvaluationResult(
+            **{
+                **_result_for(assistants[1], "profile", "prof-1").model_dump(),
+                "interaction_id": 999_999,
+            }
+        ),
+    ]
+
+    commit = storage.replace_retrieved_learning_evaluation_results(
+        USER,
+        SESSION,
+        generation,
+        session_fingerprint(snapshot),
+        "complete",
+        {},
+        proposed,
+    )
+
+    assert commit.disposition == "applied"
+    assert commit.committed_count == 2
+    rows = storage.get_retrieved_learning_evaluation_results(session_id=SESSION)
+    assert {row.interaction_id for row in rows} == {
+        assistants[0].interaction_id,
+        assistants[1].interaction_id,
+    }
+
+
 def test_replace_keeps_attached_source_that_becomes_inactive(storage) -> None:
     """A lifecycle change during judging must not discard the historical verdict."""
     playbook_id = _seed_eligible_learnings(storage)
@@ -238,7 +322,7 @@ def test_replace_keeps_attached_source_that_becomes_inactive(storage) -> None:
         fingerprint,
         "complete",
         {},
-        [_result("user_playbook", str(playbook_id))],
+        [_result(storage, "user_playbook", str(playbook_id))],
     )
 
     assert commit.disposition == "applied"
@@ -285,8 +369,8 @@ def test_replace_drops_eligible_but_unattached(storage) -> None:
         "complete",
         {},
         [
-            _result("profile", "prof-1"),  # attached + resolvable
-            _result("profile", "prof-2"),  # resolvable but never attached
+            _result(storage, "profile", "prof-1"),  # attached + resolvable
+            _result(storage, "profile", "prof-2"),  # resolvable but never attached
         ],
     )
     assert commit.disposition == "applied"
@@ -312,7 +396,7 @@ def test_replace_with_no_resolvable_rows_clears_and_records_not_applicable(
         fingerprint,
         "complete",
         {},
-        [_result("profile", "prof-1")],
+        [_result(storage, "profile", "prof-1")],
     )
     assert commit.disposition == "applied" and commit.committed_count == 1
 
@@ -325,7 +409,7 @@ def test_replace_with_no_resolvable_rows_clears_and_records_not_applicable(
         fingerprint,
         "complete",
         {},
-        [_result("profile", "no-longer-exists")],
+        [_result(storage, "profile", "no-longer-exists")],
     )
     assert commit.disposition == "applied"
     assert commit.status == "not_applicable"
@@ -341,16 +425,11 @@ def test_none_verdict_fields_round_trip(storage) -> None:
     snapshot = storage.load_bounded_retrieved_learning_snapshot(USER, SESSION)
     fingerprint = session_fingerprint(snapshot)
     generation = storage.begin_retrieved_learning_evaluation_run(USER, SESSION)
-    half = RetrievedLearningEvaluationResult(
-        user_id=USER,
-        session_id=SESSION,
-        kind="profile",
-        learning_id="prof-1",
-        is_relevant=None,
-        impact="negative",
-        impact_reason="hurt",
-        created_at=1,
-    )
+    half = _result(storage, "profile", "prof-1")
+    half.is_relevant = None
+    half.relevance_reason = ""
+    half.impact = "negative"
+    half.impact_reason = "hurt"
     commit = storage.replace_retrieved_learning_evaluation_results(
         USER, SESSION, generation, fingerprint, "degraded", {}, [half]
     )
@@ -374,7 +453,13 @@ def test_stale_fingerprint_and_superseded_generation(storage) -> None:
 
     # Older generation cannot commit after a newer one started.
     commit = storage.replace_retrieved_learning_evaluation_results(
-        USER, SESSION, gen1, fingerprint, "complete", {}, [_result("profile", "prof-1")]
+        USER,
+        SESSION,
+        gen1,
+        fingerprint,
+        "complete",
+        {},
+        [_result(storage, "profile", "prof-1")],
     )
     assert commit.disposition == "superseded"
 
@@ -386,7 +471,7 @@ def test_stale_fingerprint_and_superseded_generation(storage) -> None:
         "not-the-fingerprint",
         "complete",
         {},
-        [_result("profile", "prof-1")],
+        [_result(storage, "profile", "prof-1")],
     )
     assert commit.disposition == "stale"
     assert storage.get_retrieved_learning_evaluation_results(session_id=SESSION) == []
@@ -407,7 +492,7 @@ def test_publish_and_delete_invalidate_fingerprint(storage) -> None:
         fingerprint,
         "complete",
         {},
-        [_result("profile", "prof-1")],
+        [_result(storage, "profile", "prof-1")],
     )
     assert commit.disposition == "applied"
     assert (
@@ -451,7 +536,7 @@ def test_publish_and_delete_invalidate_fingerprint(storage) -> None:
         fingerprint,
         "complete",
         {},
-        [_result("profile", "prof-1")],
+        [_result(storage, "profile", "prof-1")],
     )
     assert commit.disposition == "stale"
 
@@ -576,7 +661,7 @@ def test_results_ordering_and_filters(storage) -> None:
         fingerprint,
         "complete",
         {},
-        [_result("profile", "prof-1")],
+        [_result(storage, "profile", "prof-1")],
     )
     assert storage.get_retrieved_learning_evaluation_results(user_id="other") == []
     assert storage.get_retrieved_learning_evaluation_results(session_id="other") == []
