@@ -45,6 +45,7 @@ from reflexio.server.llm._litellm_types import (
     StructuredOutputParseError,
     ToolCallingChatResponse,
 )
+from reflexio.server.llm._provider_concurrency import provider_slot
 from reflexio.server.llm.image_utils import (
     SUPPORTED_IMAGE_MIME_TYPES,
     ImageEncodingError,
@@ -791,7 +792,8 @@ class TextGenerationMixin:
         )
 
         def _call_and_parse() -> str | BaseModel | ToolCallingChatResponse:
-            response = self._completion_with_hard_timeout(params, hard_timeout)
+            with provider_slot(params["model"]):
+                response = self._completion_with_hard_timeout(params, hard_timeout)
             self._emit_fallback_observability(response, params)
             message = response.choices[0].message  # type: ignore[reportAttributeAccessIssue]
             content = message.content

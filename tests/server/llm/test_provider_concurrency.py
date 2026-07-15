@@ -40,6 +40,18 @@ def test_second_provider_independent(monkeypatch):
     assert a is not b
 
 
+def test_generation_seam_imports_provider_slot():
+    import reflexio.server.llm._litellm_text_generation as tg
+
+    assert hasattr(tg, "provider_slot")
+
+
+def test_embedding_seam_imports_provider_slot():
+    import reflexio.server.llm._litellm_embedding as emb
+
+    assert hasattr(emb, "provider_slot")
+
+
 def test_unknown_provider_not_capped(monkeypatch):
     monkeypatch.setattr(pc, "_provider_key", lambda _m: None)
     # Should be a no-op context (never blocks, never raises).
