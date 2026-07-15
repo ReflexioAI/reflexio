@@ -20,8 +20,14 @@ def test_local_storage_path_defaults_to_home_reflexio_data() -> None:
 
     expected = str(reflexio_home() / "data")
 
-    env = {k: v for k, v in os.environ.items() if k != "LOCAL_STORAGE_PATH"}
     import reflexio.server as server_module
+
+    assert (
+        Path(server_module.LOCAL_STORAGE_PATH).resolve()
+        == Path(os.environ["LOCAL_STORAGE_PATH"]).resolve()
+    )
+
+    env = {k: v for k, v in os.environ.items() if k != "LOCAL_STORAGE_PATH"}
 
     try:
         with patch.dict(os.environ, env, clear=True):
