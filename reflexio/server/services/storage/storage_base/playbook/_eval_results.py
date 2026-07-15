@@ -189,14 +189,17 @@ class AgentEvaluationResultStoreMixin:
 
     @abstractmethod
     def get_matching_retrieved_learning_terminal_state(
-        self, user_id: str, session_id: str, session_fingerprint: str
+        self,
+        user_id: str,
+        session_id: str,
+        session_fingerprint: str,
     ) -> dict[str, Any] | None:
         """Return the session's terminal evaluation state if still fresh.
 
         Implementations must use a writer transaction and recompute the live
-        session fingerprint in that transaction. A match requires terminal
-        status and equality among the supplied, persisted, and live
-        fingerprints.
+        session fingerprint in that transaction. A match requires a status in
+        ``TERMINAL_RETRIEVED_STATUSES`` and equality among the supplied,
+        persisted, and live fingerprints.
 
         Args:
             user_id (str): Session owner.
@@ -296,5 +299,31 @@ class AgentEvaluationResultStoreMixin:
 
         Returns:
             list[RetrievedLearningEvaluationResult]: Matching rows.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_retrieved_learning_evaluation_results_in_window(
+        self,
+        from_ts: int,
+        to_ts: int,
+        *,
+        agent_version: str | None = None,
+    ) -> list[RetrievedLearningEvaluationResult]:
+        """Read every verdict whose ``created_at`` falls in a closed window.
+
+        Unlike :meth:`get_retrieved_learning_evaluation_results`, this read is
+        exhaustive: it has no ``limit`` and must not truncate. Consumers treat
+        the result as the complete set of verdicts for the window, so a silently
+        short read would drop real signal rather than merely paginate it.
+
+        Args:
+            from_ts (int): Inclusive lower bound on ``created_at``.
+            to_ts (int): Inclusive upper bound on ``created_at``.
+            agent_version (str, optional): Restrict to one agent version.
+
+        Returns:
+            list[RetrievedLearningEvaluationResult]: Every matching row,
+                ordered by ``created_at ASC, result_id ASC``.
         """
         raise NotImplementedError

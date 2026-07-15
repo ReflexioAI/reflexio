@@ -110,20 +110,6 @@ _embedding_cache_lock = threading.Lock()
 _embedding_cache: OrderedDict[tuple[str, int, str, str], tuple[float, list[float]]] = (
     OrderedDict()
 )
-RetrievalCaptureHook = Callable[
-    [UnifiedSearchRequest, UnifiedSearchResponse, BaseStorage, str], None
-]
-_retrieval_capture_hook: RetrievalCaptureHook | None = None
-
-
-def configure_retrieval_capture_hook(hook: RetrievalCaptureHook | None) -> None:
-    """Register an optional final-response retrieval capture hook.
-
-    Deployments that capture retrieval logs install the hook; OSS leaves it
-    unset so unified search behavior is unchanged by default.
-    """
-    global _retrieval_capture_hook
-    _retrieval_capture_hook = hook
 
 
 def run_unified_search(
@@ -310,32 +296,7 @@ def run_unified_search(
     )
     if session_id:
         session_seen_cache.record(org_id, session_id, _served_entity_keys(response))
-    _maybe_capture_final_response(
-        request=request,
-        response=response,
-        storage=storage,
-        org_id=org_id,
-    )
     return response
-
-
-def _maybe_capture_final_response(
-    *,
-    request: UnifiedSearchRequest,
-    response: UnifiedSearchResponse,
-    storage: BaseStorage,
-    org_id: str,
-) -> None:
-    hook = _retrieval_capture_hook
-    if hook is None:
-        return
-    try:
-        hook(request, response, storage, org_id)
-    except Exception:
-        logger.warning(
-            "Unified search retrieval capture hook failed",
-            exc_info=True,
-        )
 
 
 def _run_phase_a(

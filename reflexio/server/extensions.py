@@ -16,10 +16,6 @@ from typing import ClassVar
 
 from fastapi import APIRouter
 
-from reflexio.server.services.unified_search_service import (
-    RetrievalCaptureHook,
-    configure_retrieval_capture_hook,
-)
 from reflexio.server.tracing import Tracer, configure_tracer
 from reflexio.server.usage_metrics import (
     UsageEventRecorder,
@@ -113,14 +109,6 @@ class HookRegistry:
         """
         configure_usage_event_recorder(recorder)
 
-    def set_retrieval_capture(self, hook: RetrievalCaptureHook | None) -> None:
-        """Install (or clear) the process-global retrieval-capture hook.
-
-        Args:
-            hook (RetrievalCaptureHook | None): Hook callable, or None to disable.
-        """
-        configure_retrieval_capture_hook(hook)
-
 
 @dataclass(frozen=True)
 class AppContext:
@@ -152,7 +140,7 @@ class Capability(ABC):
         """Register runtime-service providers (process-global). Default: none."""
 
     def install_hooks(self, hooks: HookRegistry) -> None:  # noqa: B027
-        """Install pipeline hooks (tracer/usage-recorder/retrieval-capture). Default: none.
+        """Install pipeline hooks (tracer / usage-recorder). Default: none.
 
         Args:
             hooks (HookRegistry): Registry to install hooks through.

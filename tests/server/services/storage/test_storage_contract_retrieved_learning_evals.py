@@ -688,3 +688,124 @@ def test_concurrent_begin_allocates_distinct_generations(storage) -> None:
     for t in threads:
         t.join()
     assert sorted(generations) == [1, 2]
+
+
+def _seed_many_profiles(storage, count: int) -> list[RetrievedLearning]:
+    """Seed ``count`` eligible profiles; return refs attaching all of them."""
+    storage.add_user_profile(
+        USER,
+        [
+            UserProfile(
+                profile_id=f"win-prof-{n}",
+                user_id=USER,
+                content=f"fact {n}",
+                last_modified_timestamp=1,
+                generated_from_request_id="r1",
+            )
+            for n in range(count)
+        ],
+    )
+    return [
+        RetrievedLearning(kind="profile", learning_id=f"win-prof-{n}")
+        for n in range(count)
+    ]
+
+
+def _commit(storage, results: list[RetrievedLearningEvaluationResult]) -> None:
+    snapshot = storage.load_bounded_retrieved_learning_snapshot(USER, SESSION)
+    generation = storage.begin_retrieved_learning_evaluation_run(USER, SESSION)
+    storage.replace_retrieved_learning_evaluation_results(
+        USER,
+        SESSION,
+        generation,
+        session_fingerprint(snapshot),
+        "complete",
+        {},
+        results,
+    )
+
+
+def test_window_read_is_empty_when_no_verdicts_exist(storage) -> None:
+    _seed_session(storage)
+    assert (
+        storage.get_retrieved_learning_evaluation_results_in_window(0, 2_000_000_000)
+        == []
+    )
+
+
+@pytest.mark.parametrize("count", [100, 101, 250])
+def test_window_read_is_exhaustive_past_the_paged_readers_cap(storage, count) -> None:
+    """The paged reader caps at limit=100 with no cursor; this one must not.
+
+    The offline tuner treats the window read as the COMPLETE set of verdicts, so
+    a silently short read drops real playbook signal rather than merely
+    paginating it.
+    """
+    refs = _seed_many_profiles(storage, count)
+    _seed_session(storage, refs=refs)
+    _commit(
+        storage, [_result(storage, "profile", f"win-prof-{n}") for n in range(count)]
+    )
+
+    assert (
+        len(storage.get_retrieved_learning_evaluation_results(session_id=SESSION))
+        == 100
+    )
+
+    rows = storage.get_retrieved_learning_evaluation_results_in_window(0, 2_000_000_000)
+    assert len(rows) == count
+    assert {row.learning_id for row in rows} == {f"win-prof-{n}" for n in range(count)}
+
+
+def test_window_read_bounds_are_inclusive_and_exclude_outside(storage) -> None:
+    refs = _seed_many_profiles(storage, 2)
+    _seed_session(storage, refs=refs)
+    _commit(
+        storage,
+        [
+            _result(storage, "profile", "win-prof-0"),
+            _result(storage, "profile", "win-prof-1"),
+        ],
+    )
+
+    (sample,) = storage.get_retrieved_learning_evaluation_results_in_window(
+        0, 2_000_000_000
+    )[:1]
+    at = sample.created_at
+
+    assert len(storage.get_retrieved_learning_evaluation_results_in_window(at, at)) == 2
+    assert (
+        storage.get_retrieved_learning_evaluation_results_in_window(at + 1, at + 100)
+        == []
+    )
+    assert (
+        storage.get_retrieved_learning_evaluation_results_in_window(at - 100, at - 1)
+        == []
+    )
+
+
+def test_window_read_orders_ascending_and_filters_agent_version(storage) -> None:
+    refs = _seed_many_profiles(storage, 3)
+    _seed_session(storage, refs=refs)
+    _commit(storage, [_result(storage, "profile", f"win-prof-{n}") for n in range(3)])
+
+    rows = storage.get_retrieved_learning_evaluation_results_in_window(0, 2_000_000_000)
+    keys = [(row.created_at, row.result_id) for row in rows]
+    assert keys == sorted(keys), (
+        "window read must be ordered created_at ASC, result_id ASC"
+    )
+
+    assert (
+        len(
+            storage.get_retrieved_learning_evaluation_results_in_window(
+                0, 2_000_000_000, agent_version="v1"
+            )
+        )
+        == 3
+    )
+    assert (
+        storage.get_retrieved_learning_evaluation_results_in_window(
+            0, 2_000_000_000, agent_version="does-not-exist"
+        )
+        == []
+    )

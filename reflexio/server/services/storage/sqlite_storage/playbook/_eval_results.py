@@ -414,7 +414,10 @@ class AgentEvaluationResultStoreMixin:
 
     @SQLiteStorageBase.handle_exceptions
     def get_matching_retrieved_learning_terminal_state(
-        self, user_id: str, session_id: str, session_fingerprint: str
+        self,
+        user_id: str,
+        session_id: str,
+        session_fingerprint: str,
     ) -> dict[str, Any] | None:
         state_key = build_retrieved_learning_state_key(user_id, session_id)
         with self._lock:
@@ -592,6 +595,26 @@ class AgentEvaluationResultStoreMixin:
         params.append(limit)
         rows = self._fetchall(sql, params)
         return [_row_to_retrieved_learning_result(r) for r in rows]
+
+    @SQLiteStorageBase.handle_exceptions
+    def get_retrieved_learning_evaluation_results_in_window(
+        self,
+        from_ts: int,
+        to_ts: int,
+        *,
+        agent_version: str | None = None,
+    ) -> list[RetrievedLearningEvaluationResult]:
+        sql = (
+            "SELECT * FROM retrieved_learning_evaluation "
+            "WHERE created_at >= ? AND created_at <= ?"
+        )
+        params: list[Any] = [from_ts, to_ts]
+        if agent_version is not None:
+            sql += " AND agent_version = ?"
+            params.append(agent_version)
+        sql += " ORDER BY created_at ASC, result_id ASC"
+        rows = self._fetchall(sql, params)
+        return [_row_to_retrieved_learning_result(row) for row in rows]
 
     def _current_epoch(self) -> int:
         return int(datetime.now(UTC).timestamp())

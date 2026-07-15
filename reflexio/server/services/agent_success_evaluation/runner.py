@@ -102,6 +102,8 @@ def run_group_evaluation(
     llm_client: LiteLLMClient,
     *,
     force_regenerate: bool = False,
+    run_agent_success: bool = True,
+    run_retrieved_learning: bool = True,
 ) -> GroupEvaluationOutcome:
     """Run agent success evaluation for an entire session.
 
@@ -129,6 +131,12 @@ def run_group_evaluation(
         force_regenerate: When True, bypass the already-evaluated short-circuit
             and the completeness delay gate so the regenerate worker can
             re-evaluate sessions of any age regardless of prior state.
+        run_agent_success: Whether this session was admitted for the
+            session-success judge. The publish scheduler samples the two
+            families independently (see ``sampling.py``) and passes the result;
+            direct callers leave it True.
+        run_retrieved_learning: Whether this session was admitted for the
+            retrieved-learning relevance/impact judge.
 
     Returns:
         GroupEvaluationOutcome: Per-family statuses for this invocation.
@@ -160,7 +168,24 @@ def run_group_evaluation(
             )
             return GroupEvaluationOutcome("skipped", "skipped")
 
-    # 3. Check if agent success is already evaluated — skipped in
+    # 3. Per-family admission. The scheduler samples the two families
+    # independently and tells us which ones this session was admitted for, so a
+    # session sampled only for retrieved-learning never pays the session-success
+    # judge. Direct callers (regen jobs, the on-demand grade route) leave both
+    # flags at their default and run both families, as before.
+    if not run_agent_success:
+        return _finish_with_retrieved_evaluation(
+            "skipped",
+            user_id=user_id,
+            session_id=session_id,
+            agent_version=agent_version,
+            request_context=request_context,
+            llm_client=llm_client,
+            force_regenerate=force_regenerate,
+            run_retrieved_learning=run_retrieved_learning,
+        )
+
+    # 4. Check if agent success is already evaluated — skipped in
     # force_regenerate mode so the regenerate worker can re-evaluate a session
     # that's already been marked. Retrieved-learning evaluation still runs
     # below: its completion is independent of the agent-success marker.
@@ -187,6 +212,7 @@ def run_group_evaluation(
             request_context=request_context,
             llm_client=llm_client,
             force_regenerate=force_regenerate,
+            run_retrieved_learning=run_retrieved_learning,
         )
 
     # 4. Fetch interactions for all requests
@@ -318,6 +344,7 @@ def run_group_evaluation(
         request_context=request_context,
         llm_client=llm_client,
         force_regenerate=force_regenerate,
+        run_retrieved_learning=run_retrieved_learning,
     )
 
 
@@ -330,8 +357,11 @@ def _finish_with_retrieved_evaluation(
     request_context: RequestContext,
     llm_client: LiteLLMClient,
     force_regenerate: bool,
+    run_retrieved_learning: bool = True,
 ) -> GroupEvaluationOutcome:
     """Run the retrieved-learning phase best-effort and build the outcome."""
+    if not run_retrieved_learning:
+        return GroupEvaluationOutcome(agent_success_status, "skipped")
     try:
         retrieved_status, fingerprint = _run_retrieved_learning_evaluation(
             user_id=user_id,

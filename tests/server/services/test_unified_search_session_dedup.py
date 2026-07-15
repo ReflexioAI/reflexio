@@ -20,7 +20,6 @@ from reflexio.models.api_schema.retriever_schema import UnifiedSearchRequest
 from reflexio.server.services.pre_retrieval import ReformulationResult
 from reflexio.server.services.retrieval.session_dedup import session_seen_cache
 from reflexio.server.services.unified_search_service import (
-    configure_retrieval_capture_hook,
     run_unified_search,
 )
 
@@ -107,7 +106,6 @@ def _search(storage: MagicMock, session_id: str | None) -> tuple:
 class TestUnifiedSearchSessionDedup(unittest.TestCase):
     def setUp(self):
         session_seen_cache.clear()
-        configure_retrieval_capture_hook(None)
 
     def tearDown(self):
         session_seen_cache.clear()
