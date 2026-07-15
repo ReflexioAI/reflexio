@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 RETRIEVED_LEARNING_STATE_PREFIX = "retrieved_learning_eval"
+RETRIEVED_LEARNING_EVALUATION_VERSION = 2
 
 # Statuses persisted in _operation_state. "complete" and "not_applicable" are
 # terminal (the fast path may short-circuit on them); "degraded" and "failed"

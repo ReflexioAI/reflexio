@@ -12,6 +12,7 @@ from reflexio.models.api_schema.service_schemas import (
 from ...storage_base.retrieved_learning_state import (
     CANONICAL_RETRIEVED_KINDS,
     DEFAULT_TRANSCRIPT_CHAR_LIMIT,
+    RETRIEVED_LEARNING_EVALUATION_VERSION,
     TERMINAL_RETRIEVED_STATUSES,
     BoundedRetrievedLearningSnapshot,
     RetrievedLearningCommitResult,
@@ -255,17 +256,24 @@ class AgentEvaluationResultStoreMixin:
             )
         return builder.hexdigest()
 
-    def _rle_attached_refs(self, user_id: str, session_id: str) -> set[tuple[str, str]]:
-        """Canonical ``(kind, learning_id)`` refs attached to the live session."""
+    def _rle_attached_refs(
+        self, user_id: str, session_id: str
+    ) -> set[tuple[int, str, str]]:
+        """Canonical occurrence refs attached to the live session."""
         cur = self.conn.execute(
-            """SELECT i.retrieved_learnings
+            """SELECT i.interaction_id, i.retrieved_learnings
                FROM interactions i JOIN requests r ON i.request_id = r.request_id
                WHERE r.session_id = ? AND i.user_id = ?""",
             (session_id, user_id),
         )
-        attached: set[tuple[str, str]] = set()
+        attached: set[tuple[int, str, str]] = set()
         for row in cur:
-            attached.update(_parse_attachment_refs(row["retrieved_learnings"]))
+            attached.update(
+                (int(row["interaction_id"]), kind, learning_id)
+                for kind, learning_id in _parse_attachment_refs(
+                    row["retrieved_learnings"]
+                )
+            )
         return attached
 
     def _rle_resolvable_refs(
@@ -325,6 +333,7 @@ class AgentEvaluationResultStoreMixin:
                         "user_id": user_id,
                         "session_id": session_id,
                         "generation": generation,
+                        "evaluation_version": RETRIEVED_LEARNING_EVALUATION_VERSION,
                         "attempted_at": int(self._current_epoch()),
                     }
                 )
@@ -415,6 +424,8 @@ class AgentEvaluationResultStoreMixin:
                 live_fingerprint = self._rle_fingerprint_now(user_id, session_id)
                 matched = (
                     state.get("status") in TERMINAL_RETRIEVED_STATUSES
+                    and state.get("evaluation_version")
+                    == RETRIEVED_LEARNING_EVALUATION_VERSION
                     and state.get("session_fingerprint") == session_fingerprint
                     and live_fingerprint == session_fingerprint
                 )
@@ -461,7 +472,8 @@ class AgentEvaluationResultStoreMixin:
                 kept = [
                     r
                     for r in results
-                    if (r.kind, r.learning_id) in attached
+                    if r.interaction_id is not None
+                    and (r.interaction_id, r.kind, r.learning_id) in attached
                     and (r.kind, r.learning_id) in resolvable
                 ]
                 final_status = proposed_status if kept else "not_applicable"
@@ -473,14 +485,17 @@ class AgentEvaluationResultStoreMixin:
                 for r in kept:
                     self.conn.execute(
                         """INSERT INTO retrieved_learning_evaluation
-                           (user_id, session_id, agent_version, kind,
+                           (user_id, session_id, agent_version, interaction_id,
+                            interaction_created_at, kind,
                             learning_id, is_relevant, relevance_reason, impact,
                             impact_reason, created_at, governance_subject_ref)
-                           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                         (
                             user_id,
                             session_id,
                             r.agent_version,
+                            r.interaction_id,
+                            r.interaction_created_at,
                             r.kind,
                             r.learning_id,
                             None if r.is_relevant is None else int(r.is_relevant),
@@ -497,6 +512,7 @@ class AgentEvaluationResultStoreMixin:
                         "user_id": user_id,
                         "session_id": session_id,
                         "generation": generation,
+                        "evaluation_version": RETRIEVED_LEARNING_EVALUATION_VERSION,
                         "status": final_status,
                         "session_fingerprint": session_fingerprint,
                         "resolvable_count": len(resolvable),
@@ -545,6 +561,8 @@ class AgentEvaluationResultStoreMixin:
         self,
         user_id: str | None = None,
         session_id: str | None = None,
+        from_ts: int | None = None,
+        to_ts: int | None = None,
         limit: int = 100,
     ) -> list[RetrievedLearningEvaluationResult]:
         sql = "SELECT * FROM retrieved_learning_evaluation"
@@ -556,9 +574,21 @@ class AgentEvaluationResultStoreMixin:
         if session_id is not None:
             clauses.append("session_id = ?")
             params.append(session_id)
+        if from_ts is not None:
+            clauses.append("interaction_created_at >= ?")
+            params.append(from_ts)
+        if to_ts is not None:
+            clauses.append("interaction_created_at <= ?")
+            params.append(to_ts)
         if clauses:
             sql += " WHERE " + " AND ".join(clauses)
-        sql += " ORDER BY created_at DESC, result_id DESC LIMIT ?"
+        if from_ts is not None or to_ts is not None:
+            sql += (
+                " ORDER BY interaction_created_at DESC, interaction_id DESC,"
+                " result_id DESC LIMIT ?"
+            )
+        else:
+            sql += " ORDER BY created_at DESC, result_id DESC LIMIT ?"
         params.append(limit)
         rows = self._fetchall(sql, params)
         return [_row_to_retrieved_learning_result(r) for r in rows]
@@ -592,6 +622,8 @@ def _row_to_retrieved_learning_result(
         user_id=d["user_id"],
         session_id=d["session_id"],
         agent_version=d.get("agent_version") or "",
+        interaction_id=d.get("interaction_id"),
+        interaction_created_at=d.get("interaction_created_at"),
         kind=d["kind"],
         learning_id=d["learning_id"],
         is_relevant=None if d.get("is_relevant") is None else bool(d["is_relevant"]),

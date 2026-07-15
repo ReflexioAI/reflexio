@@ -1,9 +1,9 @@
 """Retrieved-learning relevance/impact evaluator.
 
-Judges every learning that was retrieved and injected into a session
+Judges every learning occurrence that was retrieved and injected into an interaction
 (``Interaction.retrieved_learnings``) with two LLM judge families:
 
-- **relevance**: does the learning apply to the session's task/response?
+- **relevance**: does the learning apply to its target interaction/response?
 - **impact**: relative to the agent's definition of success, did applying it
   move the response toward success, away from it, or not materially change it
   (counterfactual judgment from the observed transcript)?
@@ -57,7 +57,7 @@ class RetrievedLearningRelevanceVerdict(StrictStructuredOutput):
 
     learning_ref: str = Field(
         description="Exact echo of the learning_ref shown in the prompt,"
-        " e.g. 'profile:abc123'"
+        " e.g. '17:profile:abc123'"
     )
     is_relevant: bool = Field(
         description="Whether this learning applies to the user's task and the"
@@ -89,7 +89,7 @@ class RetrievedLearningImpactVerdict(StrictStructuredOutput):
 
     learning_ref: str = Field(
         description="Exact echo of the learning_ref shown in the prompt,"
-        " e.g. 'user_playbook:42'"
+        " e.g. '17:user_playbook:42'"
     )
     impact: Literal["positive", "negative", "neutral"] = Field(
         description="Whether applying this learning plausibly improved,"
@@ -124,6 +124,8 @@ class LearningCandidate:
     profiles) and is shown to the judges only — it is never persisted.
     """
 
+    interaction_id: int
+    interaction_created_at: int
     kind: str
     learning_id: str
     title: str
@@ -132,7 +134,7 @@ class LearningCandidate:
 
     @property
     def learning_ref(self) -> str:
-        return f"{self.kind}:{self.learning_id}"
+        return f"{self.interaction_id}:{self.kind}:{self.learning_id}"
 
 
 @dataclass
@@ -298,6 +300,8 @@ class RetrievedLearningEvaluator:
                     user_id=user_id,
                     session_id=session_id,
                     agent_version=agent_version,
+                    interaction_id=candidate.interaction_id,
+                    interaction_created_at=candidate.interaction_created_at,
                     kind=candidate.kind,  # type: ignore[arg-type]
                     learning_id=candidate.learning_id,
                     is_relevant=(
@@ -332,25 +336,28 @@ class RetrievedLearningEvaluator:
     def _collect_canonical_refs(
         snapshot: BoundedRetrievedLearningSnapshot,
         diagnostics: dict[str, Any],
-    ) -> dict[tuple[str, str], None]:
-        """Dedupe ``(kind, learning_id)`` refs in chronological order.
+    ) -> dict[tuple[int, str, str], int]:
+        """Dedupe occurrence refs within each interaction in chronological order.
 
         Returns:
-            dict: ``(kind, learning_id) -> None`` used as an ordered set.
+            dict: ``(interaction_id, kind, learning_id) -> created_at``.
         """
-        refs: dict[tuple[str, str], None] = {}
+        refs: dict[tuple[int, str, str], int] = {}
         for interaction in snapshot.interactions:
             for kind, learning_id in interaction.refs:
                 if kind not in CANONICAL_RETRIEVED_KINDS:
                     diagnostics["invalid_ref_count"] += 1
                     continue
-                refs.setdefault((kind, learning_id), None)
+                refs.setdefault(
+                    (interaction.interaction_id, kind, learning_id),
+                    interaction.created_at,
+                )
         return refs
 
     def _resolve_candidates(
         self,
         user_id: str,
-        refs: dict[tuple[str, str], None],
+        refs: dict[tuple[int, str, str], int],
         diagnostics: dict[str, Any],
     ) -> list[LearningCandidate]:
         """Resolve attached refs to their original rows; skip missing rows.
@@ -368,10 +375,11 @@ class RetrievedLearningEvaluator:
         storage = self.request_context.storage
         if storage is None:
             return []
-        profile_ids = [lid for (kind, lid) in refs if kind == "profile"]
+        learning_refs = {(kind, lid) for _, kind, lid in refs}
+        profile_ids = [lid for kind, lid in learning_refs if kind == "profile"]
         user_playbook_ids: list[int] = []
         agent_playbook_ids: list[int] = []
-        for kind, lid in refs:
+        for kind, lid in learning_refs:
             if kind not in ("user_playbook", "agent_playbook"):
                 continue
             try:
@@ -387,44 +395,54 @@ class RetrievedLearningEvaluator:
             else:
                 agent_playbook_ids.append(parsed)
 
-        resolved: dict[tuple[str, str], LearningCandidate] = {}
+        resolved: dict[tuple[str, str], tuple[str, str, str]] = {}
         if profile_ids:
             for profile in storage.get_profiles_by_ids(
                 user_id, profile_ids, include_inactive=True
             ):
-                resolved[("profile", profile.profile_id)] = LearningCandidate(
-                    kind="profile",
-                    learning_id=profile.profile_id,
-                    title="",
-                    content=profile.content,
-                    trigger="",
+                resolved[("profile", profile.profile_id)] = (
+                    "",
+                    profile.content,
+                    "",
                 )
         if user_playbook_ids:
             for playbook in storage.get_user_playbooks_by_ids(
                 user_id, user_playbook_ids, include_inactive=True
             ):
                 key = ("user_playbook", str(playbook.user_playbook_id))
-                resolved[key] = LearningCandidate(
-                    kind="user_playbook",
-                    learning_id=str(playbook.user_playbook_id),
-                    title=playbook.playbook_name,
-                    content=playbook.content,
-                    trigger=playbook.trigger or "",
+                resolved[key] = (
+                    playbook.playbook_name,
+                    playbook.content,
+                    playbook.trigger or "",
                 )
         for playbook in storage.get_agent_playbooks_by_ids(
             agent_playbook_ids,
             include_inactive=True,
         ):
             key = ("agent_playbook", str(playbook.agent_playbook_id))
-            resolved[key] = LearningCandidate(
-                kind="agent_playbook",
-                learning_id=str(playbook.agent_playbook_id),
-                title=playbook.playbook_name,
-                content=playbook.content,
-                trigger=playbook.trigger or "",
+            resolved[key] = (
+                playbook.playbook_name,
+                playbook.content,
+                playbook.trigger or "",
             )
-        # Preserve first-seen order of the attached refs.
-        return [resolved[key] for key in refs if key in resolved]
+        candidates: list[LearningCandidate] = []
+        for (interaction_id, kind, learning_id), created_at in refs.items():
+            body = resolved.get((kind, learning_id))
+            if body is None:
+                continue
+            title, content, trigger = body
+            candidates.append(
+                LearningCandidate(
+                    interaction_id=interaction_id,
+                    interaction_created_at=created_at,
+                    kind=kind,
+                    learning_id=learning_id,
+                    title=title,
+                    content=content,
+                    trigger=trigger,
+                )
+            )
+        return candidates
 
     # ===============================
     # judging
@@ -433,6 +451,7 @@ class RetrievedLearningEvaluator:
     @staticmethod
     def _format_transcript(snapshot: BoundedRetrievedLearningSnapshot) -> str:
         lines = [
+            f"[interaction_id={interaction.interaction_id}] "
             f"{interaction.role}: {interaction.content}"
             for interaction in snapshot.interactions
             if interaction.role or interaction.content
@@ -446,6 +465,7 @@ class RetrievedLearningEvaluator:
             [
                 {
                     "learning_ref": c.learning_ref,
+                    "target_interaction_id": c.interaction_id,
                     "kind": c.kind,
                     "title": c.title,
                     "content": slice_content_by_tokens(

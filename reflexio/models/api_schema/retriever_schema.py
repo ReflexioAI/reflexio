@@ -442,12 +442,23 @@ class GetRetrievedLearningEvaluationResultsRequest(BaseModel):
     Attributes:
         user_id (str | None): Filter by session owner.
         session_id (str | None): Filter by session.
-        limit (int): Maximum rows, ordered by created_at DESC, result_id DESC.
+        start_time (datetime | None): Filter by target interaction timestamp.
+        end_time (datetime | None): Filter by target interaction timestamp.
+        limit (int): Maximum rows. Time-filtered reads group newest target
+            interactions first; otherwise rows use created_at DESC.
     """
 
     user_id: str | None = None
     session_id: str | None = None
+    start_time: datetime | None = None
+    end_time: datetime | None = None
     limit: int = Field(default=100, ge=1, le=1_000)
+
+    @model_validator(mode="after")
+    def check_time_range(self) -> Self:
+        """Validate that end_time is after start_time."""
+        TimeRangeValidatorMixin.validate_time_range(self.start_time, self.end_time)
+        return self
 
 
 class GetRetrievedLearningEvaluationResultsResponse(BaseModel):

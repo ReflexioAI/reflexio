@@ -42,17 +42,34 @@ def _seed_rows(org_id: str) -> None:
     assert storage is not None
     conn = storage.conn  # type: ignore[attr-defined]
     rows = [
-        ("u1", "sess-1", "profile", "prof-1", 100),
-        ("u1", "sess-1", "user_playbook", "42", 100),
-        ("u2", "sess-2", "agent_playbook", "7", 200),
+        ("u1", "sess-1", 11, 110, "profile", "prof-1", 100),
+        ("u1", "sess-1", 11, 110, "user_playbook", "42", 100),
+        ("u2", "sess-2", 22, 220, "agent_playbook", "7", 200),
     ]
-    for user_id, session_id, kind, learning_id, created_at in rows:
+    for (
+        user_id,
+        session_id,
+        interaction_id,
+        interaction_created_at,
+        kind,
+        learning_id,
+        created_at,
+    ) in rows:
         conn.execute(
             """INSERT INTO retrieved_learning_evaluation
-               (user_id, session_id, agent_version, kind, learning_id,
+               (user_id, session_id, agent_version, interaction_id,
+                interaction_created_at, kind, learning_id,
                 is_relevant, relevance_reason, impact, impact_reason, created_at)
-               VALUES (?, ?, 'v1', ?, ?, 1, 'fits', 'positive', 'helped', ?)""",
-            (user_id, session_id, kind, learning_id, created_at),
+               VALUES (?, ?, 'v1', ?, ?, ?, ?, 1, 'fits', 'positive', 'helped', ?)""",
+            (
+                user_id,
+                session_id,
+                interaction_id,
+                interaction_created_at,
+                kind,
+                learning_id,
+                created_at,
+            ),
         )
     conn.commit()
 
@@ -71,6 +88,8 @@ def test_returns_rows_newest_first_with_filters(isolated_client) -> None:
     assert first["learning_id"] == "7"
     assert first["is_relevant"] is True
     assert first["impact"] == "positive"
+    assert first["interaction_id"] == 22
+    assert first["interaction_created_at"] == 220
     assert "title" not in first
     assert "real_id" not in first
 
@@ -80,6 +99,14 @@ def test_returns_rows_newest_first_with_filters(isolated_client) -> None:
     assert len(by_user["results"]) == 1
     limited = client.post(ENDPOINT, json={"limit": 1}).json()
     assert len(limited["results"]) == 1
+    in_window = client.post(
+        ENDPOINT,
+        json={
+            "start_time": "1970-01-01T00:02:00Z",
+            "end_time": "1970-01-01T00:04:00Z",
+        },
+    ).json()
+    assert [row["interaction_id"] for row in in_window["results"]] == [22]
 
 
 def test_empty_result_is_success(isolated_client) -> None:
@@ -113,6 +140,7 @@ def test_result_model_round_trips_none_verdicts(isolated_client) -> None:
     row = body["results"][0]
     assert row["is_relevant"] is None
     assert row["impact"] is None
+    assert row["interaction_id"] is None
     # The wire shape parses back into the public entity.
     parsed = RetrievedLearningEvaluationResult(**row)
     assert parsed.learning_id == "p9"

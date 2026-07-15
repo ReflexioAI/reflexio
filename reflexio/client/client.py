@@ -1934,14 +1934,22 @@ class ReflexioClient:
         *,
         user_id: str | None = None,
         session_id: str | None = None,
+        start_time: datetime | None = None,
+        end_time: datetime | None = None,
         limit: int | None = None,
     ) -> GetRetrievedLearningEvaluationResultsResponse:
-        """Get per-learning relevance and impact verdicts for retrieved context."""
+        """Get per-learning relevance and impact verdicts for retrieved context.
+
+        Time filters apply to the interaction that received the learning, not
+        to the later timestamp when its evaluation row was generated.
+        """
         req = self._build_request(
             request,
             GetRetrievedLearningEvaluationResultsRequest,
             user_id=user_id,
             session_id=session_id,
+            start_time=start_time,
+            end_time=end_time,
             limit=limit,
         )
         response = self._make_request(

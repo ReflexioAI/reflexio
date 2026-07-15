@@ -196,10 +196,41 @@ def test_resolution_preserves_archived_attached_id(storage: SQLiteStorage) -> No
     }
     assert run.diagnostics["invalid_ref_count"] == 1
     row = next(r for r in run.rows if r.kind == "profile")
+    assert row.interaction_id == 1
+    assert row.interaction_created_at == 1_700_000_001
     assert row.is_relevant is True and row.impact == "positive"
     assert row.agent_version == "evaluated-v2"
     assert row.created_at == 1_700_000_000
     bulk_agent_lookup.assert_called_once()
+
+
+def test_repeated_learning_is_evaluated_once_per_interaction(
+    storage: SQLiteStorage,
+) -> None:
+    profile_id, _, _ = _seed_all_kinds(storage)
+    llm = _echoing_llm()
+    run = _make_evaluator(storage, llm).evaluate(
+        USER,
+        SESSION,
+        "v1",
+        _snapshot(
+            {
+                10: [("profile", profile_id), ("profile", profile_id)],
+                20: [("profile", profile_id)],
+            }
+        ),
+    )
+
+    assert [(row.interaction_id, row.kind, row.learning_id) for row in run.rows] == [
+        (10, "profile", profile_id),
+        (20, "profile", profile_id),
+    ]
+    prompt = llm.generate_chat_response.call_args_list[0].kwargs["messages"][0][
+        "content"
+    ]
+    assert '"learning_ref": "10:profile:prof-1"' in prompt
+    assert '"target_interaction_id": 10' in prompt
+    assert "[interaction_id=20] Assistant: hello" in prompt
 
 
 def test_unapproved_agent_playbook_is_evaluated_when_attached(
@@ -393,7 +424,7 @@ def test_one_bounded_repair_then_chunk_failure(storage: SQLiteStorage) -> None:
         return RetrievedLearningImpactOutput(
             verdicts=[
                 RetrievedLearningImpactVerdict(
-                    learning_ref=f"profile:{profile_id}",
+                    learning_ref=f"1:profile:{profile_id}",
                     impact="neutral",
                     impact_reason="none",
                 )
@@ -428,7 +459,7 @@ def test_all_judges_failed_reports_failure(storage: SQLiteStorage) -> None:
     assert run.diagnostics["error_type"] == "all_judges_failed"
 
 
-def test_duplicate_refs_across_interactions_judged_once(
+def test_duplicate_refs_across_interactions_are_distinct_occurrences(
     storage: SQLiteStorage,
 ) -> None:
     profile_id, _, _ = _seed_all_kinds(storage)
@@ -436,8 +467,8 @@ def test_duplicate_refs_across_interactions_judged_once(
     evaluator = _make_evaluator(storage, llm)
     snapshot = _snapshot({1: [("profile", profile_id)], 2: [("profile", profile_id)]})
     run = evaluator.evaluate(USER, SESSION, "v1", snapshot)
-    assert len(run.rows) == 1
-    # One relevance + one impact call for the single deduped candidate.
+    assert [row.interaction_id for row in run.rows] == [1, 2]
+    # Both occurrences still fit in one relevance + one impact chunk.
     assert llm.generate_chat_response.call_count == 2
 
 
