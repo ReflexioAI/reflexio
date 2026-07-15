@@ -102,6 +102,12 @@ RETENTION_TARGETS: tuple[RetentionTarget, ...] = (
         "created_at",
         ("event_id",),
     ),
+    # RETIRED WRITER, LIVE PII. Nothing writes playbook_retrieval_logs any more
+    # (the retrieval-capture subsystem is gone), but the table still exists and
+    # still holds user_id/session_id until a later release DROPs it — so it must
+    # keep being trimmed. Every backend gates on ``_retention_table_exists``
+    # before counting/deleting, so this target no-ops cleanly once the table is
+    # dropped and an old task never issues a raw DELETE against a missing table.
     RetentionTarget(
         "playbook_retrieval_logs",
         "playbook_retrieval_logs",
@@ -149,6 +155,9 @@ RETENTION_CASCADES: dict[str, tuple[CascadeRef, ...]] = {
     "playbook_optimization_candidates": (
         CascadeRef("playbook_optimization_evaluations", "candidate_id"),
     ),
+    # Retired writer, live PII — see the RETENTION_TARGETS note above. The
+    # cascade only runs when the parent target yielded keys, which requires the
+    # parent table to exist, so a dropped pair no-ops without a raw DELETE.
     "playbook_retrieval_logs": (
         CascadeRef("playbook_retrieval_log_items", "retrieval_log_id"),
     ),

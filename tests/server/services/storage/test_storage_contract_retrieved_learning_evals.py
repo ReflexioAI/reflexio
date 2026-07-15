@@ -688,3 +688,211 @@ def test_concurrent_begin_allocates_distinct_generations(storage) -> None:
     for t in threads:
         t.join()
     assert sorted(generations) == [1, 2]
+
+
+def _seed_many_profiles(storage, count: int) -> list[RetrievedLearning]:
+    """Seed ``count`` eligible profiles; return refs attaching all of them."""
+    storage.add_user_profile(
+        USER,
+        [
+            UserProfile(
+                profile_id=f"win-prof-{n}",
+                user_id=USER,
+                content=f"fact {n}",
+                last_modified_timestamp=1,
+                generated_from_request_id="r1",
+            )
+            for n in range(count)
+        ],
+    )
+    return [
+        RetrievedLearning(kind="profile", learning_id=f"win-prof-{n}")
+        for n in range(count)
+    ]
+
+
+def _commit(storage, results: list[RetrievedLearningEvaluationResult]) -> None:
+    snapshot = storage.load_bounded_retrieved_learning_snapshot(USER, SESSION)
+    generation = storage.begin_retrieved_learning_evaluation_run(USER, SESSION)
+    storage.replace_retrieved_learning_evaluation_results(
+        USER,
+        SESSION,
+        generation,
+        session_fingerprint(snapshot),
+        "complete",
+        {},
+        results,
+    )
+
+
+def test_window_read_is_empty_when_no_verdicts_exist(storage) -> None:
+    _seed_session(storage)
+    assert (
+        storage.get_retrieved_learning_evaluation_results_in_window(0, 2_000_000_000)
+        == []
+    )
+
+
+@pytest.mark.parametrize("count", [100, 101, 250])
+def test_window_read_is_exhaustive_past_the_paged_readers_cap(storage, count) -> None:
+    """The paged reader caps at limit=100 with no cursor; this one must not.
+
+    The offline tuner treats the window read as the COMPLETE set of verdicts, so
+    a silently short read drops real playbook signal rather than merely
+    paginating it.
+    """
+    refs = _seed_many_profiles(storage, count)
+    _seed_session(storage, refs=refs)
+    _commit(storage, [_result("profile", f"win-prof-{n}") for n in range(count)])
+
+    assert (
+        len(storage.get_retrieved_learning_evaluation_results(session_id=SESSION))
+        == 100
+    )
+
+    rows = storage.get_retrieved_learning_evaluation_results_in_window(0, 2_000_000_000)
+    assert len(rows) == count
+    assert {row.learning_id for row in rows} == {f"win-prof-{n}" for n in range(count)}
+
+
+def test_window_read_bounds_are_inclusive_and_exclude_outside(storage) -> None:
+    refs = _seed_many_profiles(storage, 2)
+    _seed_session(storage, refs=refs)
+    _commit(
+        storage, [_result("profile", "win-prof-0"), _result("profile", "win-prof-1")]
+    )
+
+    (sample,) = storage.get_retrieved_learning_evaluation_results_in_window(
+        0, 2_000_000_000
+    )[:1]
+    at = sample.created_at
+
+    assert len(storage.get_retrieved_learning_evaluation_results_in_window(at, at)) == 2
+    assert (
+        storage.get_retrieved_learning_evaluation_results_in_window(at + 1, at + 100)
+        == []
+    )
+    assert (
+        storage.get_retrieved_learning_evaluation_results_in_window(at - 100, at - 1)
+        == []
+    )
+
+
+def test_window_read_orders_ascending_and_filters_agent_version(storage) -> None:
+    refs = _seed_many_profiles(storage, 3)
+    _seed_session(storage, refs=refs)
+    _commit(storage, [_result("profile", f"win-prof-{n}") for n in range(3)])
+
+    rows = storage.get_retrieved_learning_evaluation_results_in_window(0, 2_000_000_000)
+    keys = [(row.created_at, row.result_id) for row in rows]
+    assert keys == sorted(keys), (
+        "window read must be ordered created_at ASC, result_id ASC"
+    )
+
+    assert (
+        len(
+            storage.get_retrieved_learning_evaluation_results_in_window(
+                0, 2_000_000_000, agent_version="v1"
+            )
+        )
+        == 3
+    )
+    assert (
+        storage.get_retrieved_learning_evaluation_results_in_window(
+            0, 2_000_000_000, agent_version="does-not-exist"
+        )
+        == []
+    )
+
+
+def test_terminal_state_fence_accepts_a_wider_status_set_on_request(storage) -> None:
+    """The fence defaults to TERMINAL, but a caller may ask for SETTLED.
+
+    `degraded` is an APPLIED, fingerprint-fenced commit whose rows are persisted.
+    A consumer that already drops unsigned rows (the offline tuner does) can use
+    the rest, so it must be able to ask for a status set that admits degraded —
+    otherwise every good verdict in a degraded session is stranded, and the only
+    way to recover them is a full re-judge of rows that are already committed.
+    """
+    from reflexio.server.services.storage.storage_base.retrieved_learning_state import (
+        SETTLED_RETRIEVED_STATUSES,
+        TERMINAL_RETRIEVED_STATUSES,
+    )
+
+    assert "degraded" in SETTLED_RETRIEVED_STATUSES
+    assert "degraded" not in TERMINAL_RETRIEVED_STATUSES
+
+    _seed_eligible_learnings(storage)
+    _seed_session(
+        storage, refs=[RetrievedLearning(kind="profile", learning_id="prof-1")]
+    )
+    snapshot = storage.load_bounded_retrieved_learning_snapshot(USER, SESSION)
+    fingerprint = session_fingerprint(snapshot)
+    generation = storage.begin_retrieved_learning_evaluation_run(USER, SESSION)
+    storage.replace_retrieved_learning_evaluation_results(
+        USER,
+        SESSION,
+        generation,
+        fingerprint,
+        "degraded",
+        {},
+        [_result("profile", "prof-1")],
+    )
+
+    # Default (TERMINAL) rejects it...
+    assert (
+        storage.get_matching_retrieved_learning_terminal_state(
+            USER, SESSION, fingerprint
+        )
+        is None
+    )
+    # ...but SETTLED accepts it, and the committed row is readable.
+    state = storage.get_matching_retrieved_learning_terminal_state(
+        USER, SESSION, fingerprint, statuses=SETTLED_RETRIEVED_STATUSES
+    )
+    assert state is not None
+    assert state["status"] == "degraded"
+    rows = storage.get_retrieved_learning_evaluation_results(session_id=SESSION)
+    assert [(r.kind, r.learning_id) for r in rows] == [("profile", "prof-1")]
+
+
+def test_a_stale_degraded_session_is_still_rejected(storage) -> None:
+    """Widening the status set must NOT weaken the freshness fence."""
+    from reflexio.server.services.storage.storage_base.retrieved_learning_state import (
+        SETTLED_RETRIEVED_STATUSES,
+    )
+
+    _seed_eligible_learnings(storage)
+    _seed_session(
+        storage, refs=[RetrievedLearning(kind="profile", learning_id="prof-1")]
+    )
+    snapshot = storage.load_bounded_retrieved_learning_snapshot(USER, SESSION)
+    fingerprint = session_fingerprint(snapshot)
+    generation = storage.begin_retrieved_learning_evaluation_run(USER, SESSION)
+    storage.replace_retrieved_learning_evaluation_results(
+        USER, SESSION, generation, fingerprint, "degraded", {}, [_result("profile", "prof-1")]
+    )
+
+    # The session changes after the verdict was committed.
+    storage.add_user_interactions_bulk(
+        USER,
+        [
+            Interaction(
+                user_id=USER,
+                request_id="r1",
+                content="a new turn nobody judged",
+                role="User",
+            )
+        ],
+    )
+    live = session_fingerprint(
+        storage.load_bounded_retrieved_learning_snapshot(USER, SESSION)
+    )
+    assert live != fingerprint
+
+    assert (
+        storage.get_matching_retrieved_learning_terminal_state(
+            USER, SESSION, live, statuses=SETTLED_RETRIEVED_STATUSES
+        )
+        is None
+    )

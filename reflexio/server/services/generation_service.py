@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import contextvars
-import hashlib
 import logging
 import os
 import threading
@@ -27,6 +26,10 @@ from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.operation_limiter import operation_limit
 from reflexio.server.services.agent_success_evaluation.runner import (
     run_group_evaluation,
+)
+from reflexio.server.services.agent_success_evaluation.sampling import (
+    samples_agent_success,
+    samples_retrieved_learning,
 )
 from reflexio.server.services.agent_success_evaluation.scheduler import (
     GroupEvaluationScheduler,
@@ -72,6 +75,19 @@ CLEANUP_STALE_LOCK_SECONDS = 600
 GENERATION_SERVICE_TIMEOUT_SECONDS = 600
 _STALL_WARNING_PREFIX = "Reflexio learning is paused"
 
+# Retrieved-learning statuses that committed NOTHING and have no other retry
+# trigger. These are the only ones worth re-running.
+#
+# "degraded" is deliberately EXCLUDED. It is an APPLIED, fingerprint-fenced
+# commit: the rows are persisted and only the chunks whose judge failed carry
+# NULL impact. Retrying it re-executes EVERY relevance + impact chunk for the
+# session and delete/re-inserts rows that are already committed — and a
+# deterministically degrading chunk (an over-length learning, a content-filter
+# refusal) degrades again on every attempt, so the whole bill buys nothing.
+# Consumers read degraded rows directly via SETTLED_RETRIEVED_STATUSES.
+_RETRIABLE_RETRIEVED_STATUSES = frozenset({"failed", "pending"})
+_MAX_RETRIEVED_LEARNING_RETRIES = 3
+
 # ── Durable-learning same-user guard (F4) ──
 # Service prefix for the per-user in-progress lock that serializes concurrent
 # durable-learning jobs for one user (compute → persist across the fence).
@@ -106,15 +122,6 @@ def _retention_cleanup_interval_seconds() -> float:
 _RETENTION_CLEANUP_INTERVAL_SECONDS = _retention_cleanup_interval_seconds()
 _retention_cleanup_last_run: dict[tuple[str, str], float] = {}
 _retention_cleanup_lock = threading.Lock()
-
-
-def _stable_group_sampling_fraction(
-    org_id: str, user_id: str, session_id: str
-) -> float:
-    """Return a deterministic [0, 1) sample value for one session."""
-    key = f"{org_id}\0{user_id}\0{session_id}".encode()
-    digest = hashlib.sha256(key).digest()
-    return int.from_bytes(digest[:8], "big") / 2**64
 
 
 def _org_in_durable_allowlist(org_id: str | None) -> bool:
@@ -1148,9 +1155,10 @@ class GenerationService:
             source (str | None): Optional source label.
         """
         session_id = new_request.session_id
-        if not self._should_sample_group_evaluation(
+        run_agent_success, run_retrieved_learning = self._sampled_evaluation_families(
             user_id=user_id, session_id=session_id
-        ):
+        )
+        if not (run_agent_success or run_retrieved_learning):
             logger.info(
                 "Skipping group evaluation scheduling for unsampled session=%s user=%s",
                 session_id,
@@ -1169,9 +1177,12 @@ class GenerationService:
             _src: str | None,
             _rc: RequestContext,
             _llm: LiteLLMClient,
+            _run_agent_success: bool,
+            _run_retrieved_learning: bool,
+            _attempt: int,
         ) -> Callable[[], None]:
             def callback() -> None:
-                run_group_evaluation(
+                outcome = run_group_evaluation(
                     org_id=_org_id,
                     user_id=_user_id,
                     session_id=_sid,
@@ -1179,7 +1190,47 @@ class GenerationService:
                     source=_src,
                     request_context=_rc,
                     llm_client=_llm,
+                    run_agent_success=_run_agent_success,
+                    run_retrieved_learning=_run_retrieved_learning,
                 )
+                # Retry sweep: a retrieved-learning run that ends non-terminal
+                # (degraded / failed / pending) is NEVER retried on its own —
+                # nothing re-triggers it unless the session receives more
+                # traffic, so a session that degrades once would stay invisible
+                # to downstream consumers forever. Re-arm the session on the
+                # scheduler, bounded, and only for the agent-success family's
+                # sibling: regen jobs and the on-demand grade route drive their
+                # own retries.
+                if (
+                    _run_retrieved_learning
+                    and outcome.retrieved_learning_status
+                    in _RETRIABLE_RETRIEVED_STATUSES
+                    and _attempt < _MAX_RETRIEVED_LEARNING_RETRIES
+                ):
+                    logger.info(
+                        "event=retrieved_learning_retry_scheduled session=%s"
+                        " status=%s attempt=%d",
+                        _sid,
+                        outcome.retrieved_learning_status,
+                        _attempt + 1,
+                    )
+                    scheduler.schedule(
+                        key,
+                        make_callback(
+                            _org_id,
+                            _user_id,
+                            _sid,
+                            _av,
+                            _src,
+                            _rc,
+                            _llm,
+                            # The success judge already ran (or was skipped); do
+                            # not pay for it again on a retrieved-only retry.
+                            False,
+                            True,
+                            _attempt + 1,
+                        ),
+                    )
 
             return callback
 
@@ -1193,24 +1244,35 @@ class GenerationService:
                 source,
                 self.request_context,
                 self.client,
+                run_agent_success,
+                run_retrieved_learning,
+                0,
             ),
         )
 
-    def _should_sample_group_evaluation(self, *, user_id: str, session_id: str) -> bool:
+    def _sampled_evaluation_families(
+        self, *, user_id: str, session_id: str
+    ) -> tuple[bool, bool]:
+        """Which judge families this session is sampled for.
+
+        The two families sample independently (see
+        ``agent_success_evaluation.sampling``). We schedule when EITHER admits
+        the session and pass both flags to the runner, so a session sampled only
+        for retrieved-learning never pays the session-success judge.
+
+        Returns:
+            tuple[bool, bool]: ``(run_agent_success, run_retrieved_learning)``.
+        """
         config = self.configurator.get_config()
         agent_success_config = getattr(config, "agent_success_config", None)
-        if agent_success_config is None:
-            return False
-
-        sampling_rate = agent_success_config.sampling_rate
-        if sampling_rate >= 1.0:
-            return True
-        if sampling_rate <= 0.0:
-            return False
-
+        scope = {
+            "org_id": self.org_id,
+            "user_id": user_id,
+            "session_id": session_id,
+        }
         return (
-            _stable_group_sampling_fraction(self.org_id, user_id, session_id)
-            < sampling_rate
+            samples_agent_success(agent_success_config, **scope),
+            samples_retrieved_learning(agent_success_config, **scope),
         )
 
     def _maybe_run_reflection(

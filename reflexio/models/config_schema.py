@@ -513,6 +513,18 @@ class AgentSuccessConfig(_ExtractorWindowOverrideCompatMixin, BaseModel):
         le=1.0,
         description="Fraction of sessions to evaluate automatically.",
     )
+    retrieved_learning_sampling_rate: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Fraction of sessions to judge for retrieved-learning relevance and"
+            " impact. None inherits sampling_rate. Set this independently when"
+            " the retrieved-learning verdicts feed a downstream consumer (e.g."
+            " the offline playbook tuner) that needs denser coverage than the"
+            " session-success judge."
+        ),
+    )
     window_size_override: int | None = Field(default=None, gt=0)
     stride_size_override: int | None = Field(default=None, gt=0)
 

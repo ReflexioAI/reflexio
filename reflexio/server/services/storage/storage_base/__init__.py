@@ -28,7 +28,6 @@ from ._learning_jobs import LearningJob, LearningJobStatus, LearningJobStoreABC
 from ._lineage import EntityType, LineageEventMixin
 from ._operations import OperationMixin
 from ._requests import RequestMixin
-from ._retrieval_log import RetrievalLogMixin
 from ._shadow_verdicts import ShadowVerdictsMixin
 from ._share_links import ShareLinkMixin
 from ._stall_state import StallStateMixin
@@ -62,7 +61,6 @@ class BaseStorage(
     PlaybookSourceLinkageMixin,
     OptimizationJobStoreMixin,
     AgentEvaluationResultStoreMixin,
-    RetrievalLogMixin,
     AuditEventStoreMixin,
     PurgeOperationStoreMixin,
     SubjectBarrierMixin,
@@ -303,7 +301,6 @@ __all__ = [
     "InteractionStoreMixin",
     "ProfileSearchMixin",
     "ProfileStoreMixin",
-    "RetrievalLogMixin",
     "PriorAnswerMatch",
     "RunToolDependencyKind",
     "RunToolDependencyRecord",

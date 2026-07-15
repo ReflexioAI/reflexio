@@ -289,3 +289,216 @@ def test_learning_stall_path_calls_post_publish_helper(
     storage.add_request.assert_called_once()
     storage.add_user_interactions_bulk.assert_called_once()
     post_publish.assert_called_once()
+
+
+def _set_rates(
+    service: GenerationService, *, success: float, retrieved: float | None
+) -> None:
+    cast(Any, service.configurator.get_config).return_value = Config(
+        storage_config=StorageConfigSQLite(),
+        agent_success_config=AgentSuccessConfig(
+            success_definition_prompt="Evaluate whether the agent succeeded.",
+            sampling_rate=success,
+            retrieved_learning_sampling_rate=retrieved,
+        ),
+    )
+
+
+def _schedule_and_capture(
+    service: GenerationService, monkeypatch: pytest.MonkeyPatch
+) -> MagicMock:
+    """Schedule, then run the queued callback with run_group_evaluation stubbed."""
+    scheduler = MagicMock()
+    monkeypatch.setattr(
+        "reflexio.server.services.generation_service.GroupEvaluationScheduler.get_instance",
+        lambda: scheduler,
+    )
+    runner = MagicMock(name="run_group_evaluation")
+    monkeypatch.setattr(
+        "reflexio.server.services.generation_service.run_group_evaluation", runner
+    )
+
+    service._schedule_group_evaluation_if_needed(
+        new_request=MagicMock(session_id="sess_split"),
+        user_id="user_test",
+        agent_version="v_test",
+        source=None,
+    )
+    if scheduler.schedule.call_count:
+        scheduler.schedule.call_args[0][1]()  # invoke the queued callback
+    return runner
+
+
+def test_retrieved_only_sampling_schedules_but_skips_the_success_judge(
+    service: GenerationService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The core coverage guarantee: dense tuner signal without the success bill.
+
+    A session sampled ONLY for retrieved-learning must still be scheduled, and
+    the runner must be told to skip the session-success judge.
+    """
+    _set_rates(service, success=0.0, retrieved=1.0)
+
+    runner = _schedule_and_capture(service, monkeypatch)
+
+    runner.assert_called_once()
+    kwargs = runner.call_args.kwargs
+    assert kwargs["run_agent_success"] is False
+    assert kwargs["run_retrieved_learning"] is True
+
+
+def test_success_only_sampling_skips_the_retrieved_learning_judge(
+    service: GenerationService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _set_rates(service, success=1.0, retrieved=0.0)
+
+    runner = _schedule_and_capture(service, monkeypatch)
+
+    runner.assert_called_once()
+    kwargs = runner.call_args.kwargs
+    assert kwargs["run_agent_success"] is True
+    assert kwargs["run_retrieved_learning"] is False
+
+
+def test_neither_family_sampled_does_not_schedule_at_all(
+    service: GenerationService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _set_rates(service, success=0.0, retrieved=0.0)
+
+    runner = _schedule_and_capture(service, monkeypatch)
+
+    runner.assert_not_called()
+
+
+def test_unset_retrieved_rate_inherits_success_rate(
+    service: GenerationService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Orgs that have not opted in keep exactly their previous behavior."""
+    _set_rates(service, success=1.0, retrieved=None)
+
+    runner = _schedule_and_capture(service, monkeypatch)
+
+    kwargs = runner.call_args.kwargs
+    assert kwargs["run_agent_success"] is True
+    assert kwargs["run_retrieved_learning"] is True
+
+
+def _drain_scheduler(scheduler: MagicMock, *, max_rounds: int = 10) -> int:
+    """Run queued callbacks until the scheduler stops re-arming. Returns rounds."""
+    rounds = 0
+    seen = 0
+    while scheduler.schedule.call_count > seen and rounds < max_rounds:
+        seen = scheduler.schedule.call_count
+        scheduler.schedule.call_args_list[seen - 1][0][1]()
+        rounds += 1
+    return rounds
+
+
+def _run_with_outcome(
+    service: GenerationService,
+    monkeypatch: pytest.MonkeyPatch,
+    retrieved_status: str,
+) -> tuple[MagicMock, MagicMock]:
+    scheduler = MagicMock()
+    monkeypatch.setattr(
+        "reflexio.server.services.generation_service.GroupEvaluationScheduler.get_instance",
+        lambda: scheduler,
+    )
+    runner = MagicMock(
+        name="run_group_evaluation",
+        return_value=SimpleNamespace(
+            agent_success_status="complete",
+            retrieved_learning_status=retrieved_status,
+            retrieved_learning_fingerprint=None,
+        ),
+    )
+    monkeypatch.setattr(
+        "reflexio.server.services.generation_service.run_group_evaluation", runner
+    )
+    _set_rates(service, success=1.0, retrieved=1.0)
+
+    service._schedule_group_evaluation_if_needed(
+        new_request=MagicMock(session_id="sess_retry"),
+        user_id="user_test",
+        agent_version="v_test",
+        source=None,
+    )
+    _drain_scheduler(scheduler)
+    return scheduler, runner
+
+
+@pytest.mark.parametrize("status", ["failed", "pending"])
+def test_a_run_that_committed_nothing_is_retried(
+    service: GenerationService, monkeypatch: pytest.MonkeyPatch, status: str
+) -> None:
+    """`failed` and `pending` persisted NO rows, so nothing else re-triggers them
+    unless the session happens to get more traffic. These are the retriable ones."""
+    _, runner = _run_with_outcome(service, monkeypatch, status)
+
+    # 1 initial + 3 bounded retries.
+    assert runner.call_count == 1 + 3
+
+    retries = runner.call_args_list[1:]
+    for call in retries:
+        # A retry must not re-pay the session-success judge.
+        assert call.kwargs["run_agent_success"] is False
+        assert call.kwargs["run_retrieved_learning"] is True
+
+
+def test_degraded_is_never_retried(
+    service: GenerationService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`degraded` is an APPLIED, fingerprint-fenced commit — its rows are already
+    persisted, and only the chunks whose judge failed carry NULL impact.
+
+    Retrying it would re-execute EVERY relevance + impact chunk for the session
+    and delete/re-insert rows that are already committed. A deterministically
+    degrading chunk (an over-length learning, a content-filter refusal) degrades
+    again on every attempt, so a bounded 3-retry sweep would burn 4x the judge
+    bill on that slice and buy nothing. Consumers read degraded rows directly
+    (SETTLED_RETRIEVED_STATUSES).
+    """
+    _, runner = _run_with_outcome(service, monkeypatch, "degraded")
+
+    assert runner.call_count == 1
+
+
+@pytest.mark.parametrize("status", ["complete", "not_applicable"])
+def test_terminal_retrieved_learning_is_not_retried(
+    service: GenerationService, monkeypatch: pytest.MonkeyPatch, status: str
+) -> None:
+    _, runner = _run_with_outcome(service, monkeypatch, status)
+
+    assert runner.call_count == 1
+
+
+def test_retrieved_learning_retry_does_not_fire_when_family_not_sampled(
+    service: GenerationService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A session not admitted for retrieved-learning must never retry it."""
+    scheduler = MagicMock()
+    monkeypatch.setattr(
+        "reflexio.server.services.generation_service.GroupEvaluationScheduler.get_instance",
+        lambda: scheduler,
+    )
+    runner = MagicMock(
+        return_value=SimpleNamespace(
+            agent_success_status="complete",
+            retrieved_learning_status="skipped",
+            retrieved_learning_fingerprint=None,
+        ),
+    )
+    monkeypatch.setattr(
+        "reflexio.server.services.generation_service.run_group_evaluation", runner
+    )
+    _set_rates(service, success=1.0, retrieved=0.0)
+
+    service._schedule_group_evaluation_if_needed(
+        new_request=MagicMock(session_id="sess_norl"),
+        user_id="user_test",
+        agent_version="v_test",
+        source=None,
+    )
+    _drain_scheduler(scheduler)
+
+    assert runner.call_count == 1

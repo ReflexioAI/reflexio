@@ -15,6 +15,10 @@ AuditEntityType = Literal[
     "request",
     "session",
     "agent_success_evaluation_result",
+    # READ-COMPAT ONLY — do not remove. The retrieval-capture subsystem is gone
+    # and no writer emits this entity type any more, but historical audit_events
+    # rows still carry it; dropping the literal would make Pydantic reject those
+    # rows on read.
     "playbook_retrieval_log",
     "org",
 ]
