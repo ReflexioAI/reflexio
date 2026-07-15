@@ -31,6 +31,7 @@ import litellm
 import tiktoken
 
 from reflexio.server.llm._litellm_types import LiteLLMClientError
+from reflexio.server.llm._provider_concurrency import provider_slot
 from reflexio.server.llm.model_defaults import ModelRole, resolve_model_name
 from reflexio.server.llm.providers.embedding_service_provider import (
     EmbeddingUnavailableError,
@@ -408,11 +409,12 @@ class EmbeddingMixin:
             if api_version:
                 params["api_version"] = api_version
 
-            response = litellm.embedding(
-                **params,
-                timeout=self.config.timeout,
-                num_retries=self.config.max_retries,
-            )
+            with provider_slot(params["model"]):
+                response = litellm.embedding(
+                    **params,
+                    timeout=self.config.timeout,
+                    num_retries=self.config.max_retries,
+                )
             # Response data may not be in order, sort by index to ensure correct ordering
             sorted_data = sorted(response.data, key=lambda x: x["index"])
             return [item["embedding"] for item in sorted_data]
