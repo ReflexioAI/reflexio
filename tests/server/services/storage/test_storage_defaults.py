@@ -30,7 +30,10 @@ def test_local_storage_path_defaults_to_home_reflexio_data() -> None:
     env = {k: v for k, v in os.environ.items() if k != "LOCAL_STORAGE_PATH"}
 
     try:
-        with patch.dict(os.environ, env, clear=True):
+        with (
+            patch.dict(os.environ, env, clear=True),
+            patch("reflexio.cli.env_loader.load_reflexio_env"),
+        ):
             reloaded = importlib.reload(server_module)
             assert expected == reloaded.LOCAL_STORAGE_PATH
     finally:

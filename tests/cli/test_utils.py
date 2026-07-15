@@ -47,13 +47,22 @@ def _patch_run_services_environment(
     pidfile = tmp_path / "services.json"
     monkeypatch.setattr(utils, "ensure_requested_ports_available", lambda _ports: None)
     monkeypatch.setattr(utils, "get_pidfile_path", lambda _ports: pidfile)
+    monkeypatch.setattr(
+        utils,
+        "get_stop_request_path",
+        lambda name, port: tmp_path / f"{name}_{port}.stop",
+    )
     monkeypatch.setattr(utils.signal, "signal", lambda *_args: None)
     clock = [0.0]
     monkeypatch.setattr(utils.time, "monotonic", lambda: clock[0])
+
+    def advance_time(seconds: float) -> None:
+        clock[0] += seconds
+
     monkeypatch.setattr(
         utils.time,
         "sleep",
-        lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+        advance_time,
     )
     return pidfile
 
@@ -252,8 +261,13 @@ def test_stop_services_writes_intent_before_killing_saved_pids(
     pidfile = tmp_path / "services.json"
     pidfile.write_text('{"backend": 1234}')
     stop_requests: list[list[int]] = []
-    stop_request_path = utils.get_stop_request_path("backend", 8071)
+    stop_request_path = tmp_path / "backend_8071.stop"
     monkeypatch.setattr(utils, "get_pidfile_path", lambda _ports: pidfile)
+    monkeypatch.setattr(
+        utils,
+        "get_stop_request_path",
+        lambda _name, _port: stop_request_path,
+    )
     monkeypatch.setattr(utils, "find_pids_on_port", lambda _port: [])
     monkeypatch.setattr(utils, "find_pids_by_pattern", lambda _pattern: [])
 
