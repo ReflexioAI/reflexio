@@ -6,6 +6,7 @@ import contextlib
 import dataclasses
 import hashlib
 import json
+import math
 import os
 import signal
 import subprocess
@@ -17,6 +18,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from reflexio.cli.log_format import format_service_line
+from reflexio.server.env_utils import env_str
 
 
 @dataclasses.dataclass
@@ -182,6 +184,34 @@ def remove_pidfile(pidfile: Path) -> None:
         pidfile.unlink(missing_ok=True)
 
 
+def _get_float_env(name: str, default: float, *, minimum: float) -> float:
+    """Read a bounded floating-point environment setting."""
+    raw = env_str(name, str(default))
+    try:
+        value = float(raw)
+    except ValueError:
+        print(f"Warning: invalid {name}={raw!r}, using default {default}")
+        return default
+    if not math.isfinite(value) or value < minimum:
+        print(f"Warning: invalid {name}={raw!r}, using default {default}")
+        return default
+    return value
+
+
+def _get_int_env(name: str, default: int, *, minimum: int) -> int:
+    """Read a bounded integer environment setting."""
+    raw = env_str(name, str(default))
+    try:
+        value = int(raw)
+    except ValueError:
+        print(f"Warning: invalid {name}={raw!r}, using default {default}")
+        return default
+    if value < minimum:
+        print(f"Warning: invalid {name}={raw!r}, using default {default}")
+        return default
+    return value
+
+
 # Patterns that indicate a service is ready to accept requests
 _READY_PATTERNS: dict[str, list[str]] = {
     "backend": ["Application startup complete"],
@@ -228,6 +258,23 @@ def _stream_output(
             ready_event.set()
 
 
+def _wait_for_all_ready(ready_events: dict[str, threading.Event]) -> bool:
+    """Wait up to 60 seconds for every service to report readiness."""
+    deadline = time.monotonic() + 60
+    return all(
+        event.wait(timeout=max(0, deadline - time.monotonic()))
+        for event in ready_events.values()
+    )
+
+
+def _sleep_while_services_run(
+    processes: dict[str, subprocess.Popen[bytes]],
+) -> None:
+    """Avoid a busy monitor loop while at least one child remains alive."""
+    if processes:
+        time.sleep(0.5)
+
+
 def run_services(
     services: list[ServiceConfig],
     ports: dict[str, int],
@@ -248,10 +295,56 @@ def run_services(
     processes: dict[str, subprocess.Popen[bytes]] = {}
     threads: list[threading.Thread] = []
     ready_events: dict[str, threading.Event] = {}
+    service_configs = {svc.name: svc for svc in services}
+    recent_failures: dict[str, list[float]] = {}
     output_lock = threading.RLock()
     pidfile = get_pidfile_path(ports)
+    healthy_secs = _get_float_env("REFLEXIO_SERVICE_HEALTHY_SECS", 30.0, minimum=0.001)
+    max_fails = _get_int_env("REFLEXIO_SERVICE_MAX_FAILS", 5, minimum=1)
+    respawn_delay = _get_float_env("REFLEXIO_SERVICE_RESPAWN_DELAY", 2.0, minimum=0.0)
+    shutting_down = False
+
+    def write_current_pidfile() -> None:
+        write_pidfile(pidfile, {name: proc.pid for name, proc in processes.items()})
+
+    def start_service(svc: ServiceConfig, *, respawn: bool = False) -> None:
+        noise_env = _NOISE_SUPPRESSION_ENV.get(svc.name, {})
+        merged_env = {**os.environ, **(svc.env or {}), **noise_env}
+        with output_lock:
+            action = "Respawning" if respawn else "Starting"
+            sys.stdout.write(f"{action} {svc.name}...\n")
+            sys.stdout.flush()
+        proc = subprocess.Popen(
+            svc.command,
+            cwd=svc.cwd,
+            env=merged_env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+        try:
+            processes[svc.name] = proc
+            ready_event = threading.Event()
+            ready_events[svc.name] = ready_event
+            t = threading.Thread(
+                target=_stream_output,
+                args=(proc, svc.name, output_lock, ready_event),
+                daemon=True,
+            )
+            t.start()
+            threads.append(t)
+        except (OSError, RuntimeError):
+            processes.pop(svc.name, None)
+            ready_events.pop(svc.name, None)
+            with contextlib.suppress(OSError):
+                proc.terminate()
+            raise
+        with output_lock:
+            sys.stdout.write(f"  {svc.name} started (PID {proc.pid})\n")
+            sys.stdout.flush()
 
     def shutdown(_signum: int | None = None, _frame: object = None) -> None:
+        nonlocal shutting_down
+        shutting_down = True
         with output_lock:
             sys.stdout.write("\nShutting down services...\n")
             sys.stdout.flush()
@@ -271,51 +364,72 @@ def run_services(
         remove_pidfile(pidfile)
         sys.exit(0)
 
+    def handle_service_exit(name: str, ret: int) -> None:
+        with output_lock:
+            sys.stdout.write(
+                format_service_line(name, f"exited with code {ret}") + "\n"
+            )
+            sys.stdout.flush()
+        del processes[name]
+        ready_events.pop(name, None)
+        write_current_pidfile()
+
+        if ret == 0 or shutting_down:
+            recent_failures.pop(name, None)
+            return
+
+        now = time.monotonic()
+        failures = [
+            timestamp
+            for timestamp in recent_failures.get(name, [])
+            if now - timestamp <= healthy_secs
+        ]
+        failures.append(now)
+        recent_failures[name] = failures
+        if len(failures) >= max_fails:
+            with output_lock:
+                sys.stdout.write(
+                    format_service_line(
+                        name,
+                        f"marked degraded after {len(failures)} "
+                        "rapid failures; will not respawn",
+                    )
+                    + "\n"
+                )
+                sys.stdout.flush()
+            return
+
+        time.sleep(respawn_delay)
+        if shutting_down:
+            return
+        try:
+            start_service(service_configs[name], respawn=True)
+            write_current_pidfile()
+        except (OSError, RuntimeError) as exc:
+            ready_events.pop(name, None)
+            with contextlib.suppress(KeyError, OSError):
+                processes.pop(name).terminate()
+            with output_lock:
+                sys.stdout.write(
+                    format_service_line(name, f"respawn failed; marked degraded: {exc}")
+                    + "\n"
+                )
+                sys.stdout.flush()
+
     signal.signal(signal.SIGINT, shutdown)
     signal.signal(signal.SIGTERM, shutdown)
 
     ensure_requested_ports_available(ports)
 
     for svc in services:
-        noise_env = _NOISE_SUPPRESSION_ENV.get(svc.name, {})
-        merged_env = {**os.environ, **(svc.env or {}), **noise_env}
-        with output_lock:
-            sys.stdout.write(f"Starting {svc.name}...\n")
-            sys.stdout.flush()
-        proc = subprocess.Popen(
-            svc.command,
-            cwd=svc.cwd,
-            env=merged_env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-        )
-        processes[svc.name] = proc
-        ready_event = threading.Event()
-        ready_events[svc.name] = ready_event
-        t = threading.Thread(
-            target=_stream_output,
-            args=(proc, svc.name, output_lock, ready_event),
-            daemon=True,
-        )
-        t.start()
-        threads.append(t)
-        with output_lock:
-            sys.stdout.write(f"  {svc.name} started (PID {proc.pid})\n")
-            sys.stdout.flush()
+        start_service(svc)
 
     # Write pidfile
-    pids = {name: proc.pid for name, proc in processes.items()}
-    write_pidfile(pidfile, pids)
+    write_current_pidfile()
 
     # Wait for all services to be ready (or timeout with shared deadline)
-    if on_all_ready:
-        deadline = time.monotonic() + 60
-        all_ready = all(
-            evt.wait(timeout=max(0, deadline - time.monotonic()))
-            for evt in ready_events.values()
-        )
-        if all_ready:
-            on_all_ready(ports)
+    if on_all_ready and _wait_for_all_ready(ready_events):
+        on_all_ready(ports)
 
     # Wait for any child to exit
     try:
@@ -323,14 +437,8 @@ def run_services(
             for name, proc in list(processes.items()):
                 ret = proc.poll()
                 if ret is not None:
-                    with output_lock:
-                        sys.stdout.write(
-                            format_service_line(name, f"exited with code {ret}") + "\n"
-                        )
-                        sys.stdout.flush()
-                    del processes[name]
-            if processes:
-                time.sleep(0.5)
+                    handle_service_exit(name, ret)
+            _sleep_while_services_run(processes)
     except KeyboardInterrupt:
         shutdown()
 

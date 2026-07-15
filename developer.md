@@ -102,6 +102,9 @@ Copy `.env.example` to `.env` and fill in values. Key variables:
 - **Storage**: `LOCAL_STORAGE_PATH` (defaults to `~/.reflexio/data`) — houses the SQLite DB file. (Not used by `supabase`/`postgres`, which use external connections.)
 - **Storage backend**: `REFLEXIO_STORAGE` — `sqlite` (default), `supabase`, or `postgres`. Selects the data storage backend independently from auth configuration.
 - **Testing**: `IS_TEST_ENV`, `DEBUG_LOG_TO_CONSOLE`, `MOCK_LLM_RESPONSE`
+- **Local service supervisor**: `REFLEXIO_SERVICE_HEALTHY_SECS` (default 30),
+  `REFLEXIO_SERVICE_MAX_FAILS` (default 5), and
+  `REFLEXIO_SERVICE_RESPAWN_DELAY` (default 2 seconds)
 
 Never change env variable values in `.env` directly for port overrides — use shell exports instead.
 
