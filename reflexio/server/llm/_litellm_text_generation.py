@@ -109,6 +109,33 @@ def _is_expected_transient_llm_error(exc: BaseException) -> bool:
     return type(exc).__name__ in _TRANSIENT_LLM_ERROR_NAMES
 
 
+def _same_observed_model(primary_model: Any, served_model: Any) -> bool:
+    """Return True when the served model is the primary model modulo provider-prefix drift.
+
+    Some providers echo back the bare model name (e.g. ``MiniMax-M3``) even when
+    LiteLLM was called through the provider-prefixed name (``minimax/MiniMax-M3``).
+    Treat those as the same model so fallback observability does not misreport the
+    primary as a fallback. The match is anchored on a ``/`` boundary in either
+    direction, so ``gpt-4`` never matches ``gpt-40``.
+
+    Args:
+        primary_model: The originally requested model name (may be ``None``).
+        served_model: The model LiteLLM reports as having served the call (may be ``None``).
+
+    Returns:
+        bool: True if the names are equal or differ only by a provider prefix.
+    """
+    if not primary_model or not served_model:
+        return False
+    primary = str(primary_model)
+    served = str(served_model)
+    return (
+        primary == served
+        or primary.endswith(f"/{served}")
+        or served.endswith(f"/{primary}")
+    )
+
+
 class TextGenerationMixin:
     """Chat/response generation, completion-param build, hard-timeout, cost, multimodal.
 
@@ -696,7 +723,7 @@ class TextGenerationMixin:
                 or getattr(response, "model", None)
             )
 
-            if not served_model or served_model == primary_model:
+            if not served_model or _same_observed_model(primary_model, served_model):
                 return
 
             self.logger.info(
