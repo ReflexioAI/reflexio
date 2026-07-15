@@ -48,9 +48,6 @@ def _patch_run_services_environment(
     monkeypatch.setattr(utils, "get_pidfile_path", lambda _ports: pidfile)
     monkeypatch.setattr(utils.signal, "signal", lambda *_args: None)
     monkeypatch.setattr(utils.time, "sleep", lambda _seconds: None)
-    monkeypatch.setenv("REFLEXIO_SERVICE_HEALTHY_SECS", "30")
-    monkeypatch.setenv("REFLEXIO_SERVICE_MAX_FAILS", "2")
-    monkeypatch.setenv("REFLEXIO_SERVICE_RESPAWN_DELAY", "0")
     return pidfile
 
 
@@ -164,11 +161,18 @@ def test_run_services_gives_up_on_crash_loop_and_keeps_sibling_running(
         {"crash": 8071, "sibling": 8072},
     )
 
-    assert [name for name, _proc in started] == ["crash", "sibling", "crash"]
+    assert [name for name, _proc in started] == [
+        "crash",
+        "sibling",
+        "crash",
+        "crash",
+        "crash",
+        "crash",
+    ]
     sibling = next(proc for name, proc in started if name == "sibling")
     assert sibling._poll_count == 10
     assert sibling.terminated is False
-    assert "marked degraded after 2 rapid failures" in capsys.readouterr().out
+    assert "marked degraded after 5 rapid failures" in capsys.readouterr().out
 
 
 @pytest.mark.unit
@@ -228,38 +232,6 @@ def test_run_services_does_not_respawn_clean_exit(
     )
 
     assert len(started) == 1
-
-
-@pytest.mark.unit
-def test_run_services_rejects_nonfinite_supervisor_env_values(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """Fall back safely when supervisor float settings are non-finite."""
-    _patch_run_services_environment(monkeypatch, tmp_path)
-    monkeypatch.setenv("REFLEXIO_SERVICE_HEALTHY_SECS", "nan")
-    monkeypatch.setenv("REFLEXIO_SERVICE_RESPAWN_DELAY", "inf")
-    started: list[_FakeProcess] = []
-
-    def fake_popen(*_args, **_kwargs) -> _FakeProcess:
-        proc = _FakeProcess(
-            pid=1000 + len(started),
-            polls_to_exit=1,
-            returncode=1 if not started else 0,
-        )
-        started.append(proc)
-        return proc
-
-    monkeypatch.setattr(utils.subprocess, "Popen", fake_popen)
-
-    utils.run_services(
-        [utils.ServiceConfig(name="backend", command=["backend"])],
-        {"backend": 8071},
-    )
-
-    output = capsys.readouterr().out
-    assert len(started) == 2
-    assert "invalid REFLEXIO_SERVICE_HEALTHY_SECS='nan'" in output
-    assert "invalid REFLEXIO_SERVICE_RESPAWN_DELAY='inf'" in output
 
 
 @pytest.mark.unit

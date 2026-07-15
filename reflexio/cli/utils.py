@@ -6,7 +6,6 @@ import contextlib
 import dataclasses
 import hashlib
 import json
-import math
 import os
 import signal
 import subprocess
@@ -18,7 +17,6 @@ from collections.abc import Callable
 from pathlib import Path
 
 from reflexio.cli.log_format import format_service_line
-from reflexio.server.env_utils import env_str
 
 
 @dataclasses.dataclass
@@ -184,34 +182,6 @@ def remove_pidfile(pidfile: Path) -> None:
         pidfile.unlink(missing_ok=True)
 
 
-def _get_float_env(name: str, default: float, *, minimum: float) -> float:
-    """Read a bounded floating-point environment setting."""
-    raw = env_str(name, str(default))
-    try:
-        value = float(raw)
-    except ValueError:
-        print(f"Warning: invalid {name}={raw!r}, using default {default}")
-        return default
-    if not math.isfinite(value) or value < minimum:
-        print(f"Warning: invalid {name}={raw!r}, using default {default}")
-        return default
-    return value
-
-
-def _get_int_env(name: str, default: int, *, minimum: int) -> int:
-    """Read a bounded integer environment setting."""
-    raw = env_str(name, str(default))
-    try:
-        value = int(raw)
-    except ValueError:
-        print(f"Warning: invalid {name}={raw!r}, using default {default}")
-        return default
-    if value < minimum:
-        print(f"Warning: invalid {name}={raw!r}, using default {default}")
-        return default
-    return value
-
-
 # Patterns that indicate a service is ready to accept requests
 _READY_PATTERNS: dict[str, list[str]] = {
     "backend": ["Application startup complete"],
@@ -227,6 +197,11 @@ _NOISE_SUPPRESSION_ENV: dict[str, dict[str, str]] = {
     "frontend": {"NODE_NO_WARNINGS": "1"},
     "docs": {"NODE_NO_WARNINGS": "1"},
 }
+
+# Keep supervisor tuning internal until operational evidence justifies exposing it.
+_SERVICE_HEALTHY_WINDOW_SECS = 30.0
+_SERVICE_MAX_RAPID_FAILURES = 5
+_SERVICE_RESPAWN_DELAY_SECS = 2.0
 
 
 def _stream_output(
@@ -299,9 +274,6 @@ def run_services(
     recent_failures: dict[str, list[float]] = {}
     output_lock = threading.RLock()
     pidfile = get_pidfile_path(ports)
-    healthy_secs = _get_float_env("REFLEXIO_SERVICE_HEALTHY_SECS", 30.0, minimum=0.001)
-    max_fails = _get_int_env("REFLEXIO_SERVICE_MAX_FAILS", 5, minimum=1)
-    respawn_delay = _get_float_env("REFLEXIO_SERVICE_RESPAWN_DELAY", 2.0, minimum=0.0)
     shutting_down = False
 
     def write_current_pidfile() -> None:
@@ -382,11 +354,11 @@ def run_services(
         failures = [
             timestamp
             for timestamp in recent_failures.get(name, [])
-            if now - timestamp <= healthy_secs
+            if now - timestamp <= _SERVICE_HEALTHY_WINDOW_SECS
         ]
         failures.append(now)
         recent_failures[name] = failures
-        if len(failures) >= max_fails:
+        if len(failures) >= _SERVICE_MAX_RAPID_FAILURES:
             with output_lock:
                 sys.stdout.write(
                     format_service_line(
@@ -399,7 +371,7 @@ def run_services(
                 sys.stdout.flush()
             return
 
-        time.sleep(respawn_delay)
+        time.sleep(_SERVICE_RESPAWN_DELAY_SECS)
         if shutting_down:
             return
         try:
