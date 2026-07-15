@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import signal
 import tempfile
+import threading
 from pathlib import Path
 from subprocess import CompletedProcess
 
@@ -47,7 +48,13 @@ def _patch_run_services_environment(
     monkeypatch.setattr(utils, "ensure_requested_ports_available", lambda _ports: None)
     monkeypatch.setattr(utils, "get_pidfile_path", lambda _ports: pidfile)
     monkeypatch.setattr(utils.signal, "signal", lambda *_args: None)
-    monkeypatch.setattr(utils.time, "sleep", lambda _seconds: None)
+    clock = [0.0]
+    monkeypatch.setattr(utils.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        utils.time,
+        "sleep",
+        lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+    )
     return pidfile
 
 
@@ -110,7 +117,15 @@ def test_run_services_respawns_unexpected_exit(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """Respawn a service after an unexpected non-zero exit."""
-    _patch_run_services_environment(monkeypatch, tmp_path)
+    pidfile = _patch_run_services_environment(monkeypatch, tmp_path)
+    pidfile_writes: list[tuple[Path, dict[str, int]]] = []
+    original_write_pidfile = utils.write_pidfile
+
+    def record_pidfile(path: Path, pids: dict[str, int]) -> None:
+        original_write_pidfile(path, pids)
+        pidfile_writes.append((path, pids.copy()))
+
+    monkeypatch.setattr(utils, "write_pidfile", record_pidfile)
     started: list[_FakeProcess] = []
 
     def fake_popen(*_args, **_kwargs) -> _FakeProcess:
@@ -131,6 +146,132 @@ def test_run_services_respawns_unexpected_exit(
 
     assert len(started) == 2
     assert started[0].pid != started[1].pid
+    assert (pidfile, {"backend": started[1].pid}) in pidfile_writes
+
+
+@pytest.mark.unit
+def test_run_services_cleans_up_when_initial_service_start_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Terminate earlier children when a later initial launch fails."""
+    pidfile = _patch_run_services_environment(monkeypatch, tmp_path)
+    started: list[_FakeProcess] = []
+
+    def fake_popen(*_args, **_kwargs) -> _FakeProcess:
+        if started:
+            raise OSError("simulated initial spawn failure")
+        proc = _FakeProcess(pid=1000, polls_to_exit=None)
+        started.append(proc)
+        return proc
+
+    monkeypatch.setattr(utils.subprocess, "Popen", fake_popen)
+
+    with pytest.raises(OSError, match="simulated initial spawn failure"):
+        utils.run_services(
+            [
+                utils.ServiceConfig(name="backend", command=["backend"]),
+                utils.ServiceConfig(name="embedding", command=["embedding"]),
+            ],
+            {"backend": 8071, "embedding": 8072},
+        )
+
+    assert started[0].terminated is True
+    assert pidfile.exists() is False
+
+
+@pytest.mark.unit
+def test_wait_for_all_ready_returns_when_process_exits() -> None:
+    """Do not wait for the full readiness timeout after a child exits."""
+    ready_event = threading.Event()
+    process = _FakeProcess(pid=1000, polls_to_exit=1, returncode=1)
+
+    assert (
+        utils._wait_for_all_ready({"backend": ready_event}, {"backend": process})
+        is False
+    )
+    assert process._poll_count == 1
+
+
+@pytest.mark.unit
+def test_run_services_calls_on_all_ready_once(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Invoke the readiness callback once after all services are ready."""
+    _patch_run_services_environment(monkeypatch, tmp_path)
+    monkeypatch.setattr(utils, "_wait_for_all_ready", lambda _events, _processes: True)
+    started: list[_FakeProcess] = []
+    ready_calls: list[dict[str, int]] = []
+
+    def fake_popen(*_args, **_kwargs) -> _FakeProcess:
+        proc = _FakeProcess(pid=1000 + len(started), polls_to_exit=1, returncode=0)
+        started.append(proc)
+        return proc
+
+    monkeypatch.setattr(utils.subprocess, "Popen", fake_popen)
+
+    utils.run_services(
+        [utils.ServiceConfig(name="backend", command=["backend"])],
+        {"backend": 8071},
+        on_all_ready=lambda ports: ready_calls.append(ports),
+    )
+
+    assert ready_calls == [{"backend": 8071}]
+
+
+@pytest.mark.unit
+def test_run_services_does_not_respawn_an_explicitly_stopped_service(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Honor a stop request written by a separate stop-services command."""
+    _patch_run_services_environment(monkeypatch, tmp_path)
+    monkeypatch.setattr(utils, "_wait_for_all_ready", lambda _events, _processes: True)
+    started: list[_FakeProcess] = []
+
+    def fake_popen(*_args, **_kwargs) -> _FakeProcess:
+        proc = _FakeProcess(pid=1000 + len(started), polls_to_exit=1, returncode=1)
+        started.append(proc)
+        return proc
+
+    def request_stop(_ports: dict[str, int]) -> None:
+        utils.get_stop_request_path("backend", 8071).touch()
+
+    monkeypatch.setattr(utils.subprocess, "Popen", fake_popen)
+
+    utils.run_services(
+        [utils.ServiceConfig(name="backend", command=["backend"])],
+        {"backend": 8071},
+        on_all_ready=request_stop,
+    )
+
+    assert len(started) == 1
+
+
+def test_stop_services_writes_intent_before_killing_saved_pids(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    pidfile = tmp_path / "services.json"
+    pidfile.write_text('{"backend": 1234}')
+    stop_requests: list[list[int]] = []
+    stop_request_path = utils.get_stop_request_path("backend", 8071)
+    monkeypatch.setattr(utils, "get_pidfile_path", lambda _ports: pidfile)
+    monkeypatch.setattr(utils, "find_pids_on_port", lambda _port: [])
+    monkeypatch.setattr(utils, "find_pids_by_pattern", lambda _pattern: [])
+
+    def record_stop(pids: list[int], **_kwargs: object) -> None:
+        assert stop_request_path.exists()
+        stop_requests.append(pids)
+
+    monkeypatch.setattr(
+        utils,
+        "kill_processes",
+        record_stop,
+    )
+
+    utils.stop_services({"backend": 8071}, {"backend": "backend"})
+
+    assert stop_requests == [[1234]]
+    assert stop_request_path.exists()
+    utils.remove_pidfile(stop_request_path)
 
 
 @pytest.mark.unit
