@@ -137,6 +137,7 @@ def test_service_reports_single_recent_success_as_100_percent() -> None:
         GetEvaluationOverviewRequest(from_ts=now - 3600, to_ts=now, bucket="day")
     )
 
+    assert response.hero.state == "shadow_off"
     assert response.hero.regular_success_rate_pp == 100.0
     assert response.context_tiles.success.current == 100.0
 
