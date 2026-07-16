@@ -33,6 +33,8 @@ import multiprocessing
 import os
 import queue
 import time
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import litellm
@@ -43,6 +45,7 @@ from reflexio.server.llm._litellm_types import (
     LiteLLMClientError,
     LLMHardTimeoutError,
     StructuredOutputParseError,
+    StructuredOutputRepairError,
     ToolCallingChatResponse,
 )
 from reflexio.server.llm._provider_concurrency import provider_slot
@@ -98,6 +101,21 @@ _TRANSIENT_LLM_ERROR_NAMES: frozenset[str] = frozenset(
         "ServiceUnavailableError",
     }
 )
+
+_MAX_REPAIR_ERRORS = 8
+_MAX_REPAIR_ERROR_CHARS = 4000
+_MAX_REPAIR_ECHO_CHARS = 4000
+
+StructuredOutputValidator = Callable[[BaseModel], Sequence[str]]
+
+
+@dataclass
+class _StructuredAttempt:
+    value: str | BaseModel | ToolCallingChatResponse
+    raw_content: str | None
+    parsed_output: BaseModel | None
+    finish_reason: str | None
+    model: str
 
 
 def _is_expected_transient_llm_error(exc: BaseException) -> bool:
@@ -243,6 +261,7 @@ class TextGenerationMixin:
         model_role: ModelRole | None = None,
         max_retries: int | None = None,
         fallback_models: list[str] | None = None,
+        structured_output_validator: StructuredOutputValidator | None = None,
         **kwargs: Any,
     ) -> str | BaseModel | ToolCallingChatResponse:
         """
@@ -264,6 +283,9 @@ class TextGenerationMixin:
             fallback_models (list[str] | None): Optional per-call override for the
                 fallback model chain. When ``None`` (the default), the value falls
                 back to ``LiteLLMConfig.fallback_models``.
+            structured_output_validator: Optional semantic validator for parsed
+                structured output. Passing one opts the call into the corrective
+                repair ladder for parse, blank, and semantic failures.
             **kwargs: Additional parameters including:
                 - response_format: Pydantic BaseModel class for structured output
                 - parse_structured_output: Whether to parse structured output (default True)
@@ -315,6 +337,8 @@ class TextGenerationMixin:
             kwargs["max_retries"] = max_retries
         if fallback_models is not None:
             kwargs["fallback_models"] = fallback_models
+        if structured_output_validator is not None:
+            kwargs["structured_output_validator"] = structured_output_validator
 
         return self._make_request(final_messages, **kwargs)
 
@@ -744,7 +768,7 @@ class TextGenerationMixin:
         except Exception:  # noqa: BLE001 — observability must not break the call
             return
 
-    def _make_request(
+    def _make_request(  # noqa: C901
         self, messages: list[dict[str, Any]], **kwargs: Any
     ) -> str | BaseModel | ToolCallingChatResponse:
         """
@@ -773,142 +797,450 @@ class TextGenerationMixin:
             LiteLLMClientError: If the request fails after all retries and
                 fallbacks have been exhausted by litellm.
         """
-        params, response_format, parse_structured_output, _max_retries, fallbacks = (
-            self._build_completion_params(messages, **kwargs)
+        structured_output_validator: StructuredOutputValidator | None = kwargs.pop(
+            "structured_output_validator", None
         )
+        original_kwargs = dict(kwargs)
 
-        # Hand the fallback ladder to litellm, but DISABLE same-model retries.
-        # litellm walks [primary, *fallbacks] inside one litellm.completion call,
-        # copying ``timeout`` unchanged into each rung. With num_retries>=1 it
-        # retries a *hung* primary num_retries+1 times (each up to a full
-        # provider timeout) before ever reaching a fallback — making the fallback
-        # unreachable within any sane wall-clock bound (root cause of Sentry
-        # PYTHON-FASTAPI-62). num_retries=0 makes the fallback LIST the resilience
-        # mechanism: each model is tried once, in order.
-        params["num_retries"] = 0
-        if fallbacks:
-            params["fallbacks"] = fallbacks
-
-        # Size the hard (wall-clock) timeout to cover the WHOLE ladder. litellm
-        # copies this single ``params["timeout"]`` into EVERY rung (primary + each
-        # fallback), so every rung shares the primary's per-attempt budget and the
-        # subprocess must be allowed to run ``(1 + len(fallbacks))`` of them plus
-        # one grace buffer before being killed — otherwise it is killed before
-        # litellm can reach a fallback.
-        #
-        # ASYMMETRIC-FLOOR FOOTGUN: because every rung shares one timeout, a
-        # fallback whose _MODEL_TIMEOUT_FLOOR_SECONDS floor is HIGHER than the
-        # primary's would run — and be killed — at the primary's shorter timeout,
-        # reintroducing the "fallback killed early" failure this fix removes. The
-        # floor table is single-valued today (MiniMax-M3 == the 120 default), so
-        # this is latent; revisit the sizing (e.g. max floor across rungs, passed
-        # as ``params["timeout"]``) before adding an asymmetric floor entry.
-        per_attempt_timeout = self._coerce_timeout_seconds(params)
-        hard_timeout = (
-            1 + len(fallbacks)
-        ) * per_attempt_timeout + self._hard_timeout_grace_seconds()
-
-        request_start = time.perf_counter()
-        self.logger.info(
-            "event=llm_request_start model=%s timeout=%s has_response_format=%s num_retries=0 fallbacks=%s hard_timeout=%.3f",
-            params.get("model"),
-            params.get("timeout"),
-            response_format is not None,
-            fallbacks,
-            hard_timeout,
-        )
-
-        def _call_and_parse() -> str | BaseModel | ToolCallingChatResponse:
-            with provider_slot(params["model"]):
-                response = self._completion_with_hard_timeout(params, hard_timeout)
-            self._emit_fallback_observability(response, params)
-            message = response.choices[0].message  # type: ignore[reportAttributeAccessIssue]
-            content = message.content
-            self._log_token_usage(params, response)
-            self.logger.info(
-                "event=llm_request_end model=%s timeout=%s has_response_format=%s elapsed_seconds=%.3f success=%s",
-                params.get("model"),
-                params.get("timeout"),
-                response_format is not None,
-                time.perf_counter() - request_start,
-                True,
-            )
-
-            # Tool-calling path: return a structured response instead of
-            # going through _maybe_parse_structured_output.
-            if "tools" in params:
-                raw_usage = getattr(response, "usage", None)
-                call_cost = self._compute_cost_usd(response, params.get("model"))
-                tool_calls = getattr(message, "tool_calls", None)
-                # Structured-output + tools: when the model ends the turn with a
-                # plain (non-tool) response and a response_format was requested,
-                # the content IS the final structured answer. Parse it here so a
-                # tool-loop caller can finish on it. A malformed parse raises
-                # StructuredOutputParseError, which the outer wrapper retries once.
-                parsed_output: BaseModel | None = None
-                if response_format is not None and not tool_calls:
-                    parsed = self._maybe_parse_structured_output(
-                        content,  # type: ignore[reportArgumentType]
-                        response_format,
-                        parse_structured_output,
-                    )
-                    if isinstance(parsed, BaseModel):
-                        parsed_output = parsed
-                return ToolCallingChatResponse(
-                    content=content,
-                    tool_calls=tool_calls,
-                    finish_reason=response.choices[0].finish_reason,  # type: ignore[reportAttributeAccessIssue]
-                    usage=raw_usage,
-                    cost_usd=call_cost,
-                    parsed_output=parsed_output,
-                )
-
-            return self._maybe_parse_structured_output(
-                content,  # type: ignore[reportArgumentType]
+        def _prepare_turn(
+            turn_messages: list[dict[str, Any]], turn_kwargs: dict[str, Any]
+        ) -> tuple[dict[str, Any], Any, bool, list[str], float]:
+            (
+                params,
                 response_format,
                 parse_structured_output,
+                _max_retries,
+                fallbacks,
+            ) = self._build_completion_params(turn_messages, **dict(turn_kwargs))
+
+            # Hand the fallback ladder to litellm, but DISABLE same-model retries.
+            # litellm walks [primary, *fallbacks] inside one litellm.completion call,
+            # copying ``timeout`` unchanged into each rung. With num_retries>=1 it
+            # retries a *hung* primary num_retries+1 times before ever reaching a
+            # fallback (root cause of Sentry PYTHON-FASTAPI-62).
+            params["num_retries"] = 0
+            if fallbacks:
+                params["fallbacks"] = fallbacks
+
+            # Size the hard (wall-clock) timeout to cover the WHOLE ladder. litellm
+            # copies one ``timeout`` into every rung, so the subprocess must cover
+            # primary + fallbacks plus one grace buffer before being killed.
+            per_attempt_timeout = self._coerce_timeout_seconds(params)
+            hard_timeout = (
+                1 + len(fallbacks)
+            ) * per_attempt_timeout + self._hard_timeout_grace_seconds()
+            return (
+                params,
+                response_format,
+                parse_structured_output,
+                fallbacks,
+                hard_timeout,
             )
 
-        try:
+        params, response_format, parse_structured_output, fallbacks, hard_timeout = (
+            _prepare_turn(messages, original_kwargs)
+        )
+        if structured_output_validator is not None and (
+            response_format is None or not parse_structured_output
+        ):
+            raise ValueError(
+                "structured_output_validator requires response_format and "
+                "parse_structured_output=True"
+            )
+
+        def _is_refusal(response: Any, message: Any) -> bool:
+            refusal = getattr(message, "refusal", None)
+            if isinstance(refusal, str) and refusal.strip():
+                return True
+            choice = response.choices[0]  # type: ignore[reportAttributeAccessIssue]
+            stop_reason = (
+                getattr(message, "stop_reason", None)
+                or getattr(choice, "stop_reason", None)
+                or getattr(response, "stop_reason", None)
+            )
+            return stop_reason == "refusal"
+
+        def _call_and_parse(
+            turn_params: dict[str, Any],
+            turn_response_format: Any,
+            turn_parse_structured_output: bool,
+            turn_fallbacks: list[str],
+            turn_hard_timeout: float,
+            *,
+            detect_refusal: bool,
+        ) -> _StructuredAttempt:
+            request_start = time.perf_counter()
+            self.logger.info(
+                "event=llm_request_start model=%s timeout=%s has_response_format=%s num_retries=0 fallbacks=%s hard_timeout=%.3f",
+                turn_params.get("model"),
+                turn_params.get("timeout"),
+                turn_response_format is not None,
+                turn_fallbacks,
+                turn_hard_timeout,
+            )
             try:
-                return _call_and_parse()
-            except StructuredOutputParseError:
-                # litellm's fallbacks cover API/timeout errors, but a Pydantic
-                # re-validation failure happens AFTER litellm sees a successful
-                # 200 — litellm can't detect it, so we owe one explicit second
-                # attempt at the model. PR #121 documented this as a MiniMax-M3
-                # mitigation. (A hard timeout is NOT retried here: same-model
-                # retry of a hang is what produced the 490s in PYTHON-FASTAPI-62;
-                # the fallback ladder inside _call_and_parse handles it instead.)
-                #
-                # This second pass re-walks the full ladder, so the worst-case
-                # wall clock is ~2x the ladder bound. That ceiling is only reached
-                # if a model returns a malformed-but-successful 200 AND runs near
-                # the timeout on BOTH passes — a hang (the common case) raises
-                # LLMHardTimeoutError, which is not caught here and exits after a
-                # single ladder.
-                self.logger.warning(
-                    "event=llm_parse_retry model=%s — primary returned malformed structured output, retrying once",
-                    params.get("model"),
+                with provider_slot(turn_params["model"]):
+                    response = self._completion_with_hard_timeout(
+                        turn_params, turn_hard_timeout
+                    )
+                self._emit_fallback_observability(response, turn_params)
+                message = response.choices[0].message  # type: ignore[reportAttributeAccessIssue]
+                content = message.content
+                finish_reason = response.choices[0].finish_reason  # type: ignore[reportAttributeAccessIssue]
+                self._log_token_usage(turn_params, response)
+                self.logger.info(
+                    "event=llm_request_end model=%s timeout=%s has_response_format=%s elapsed_seconds=%.3f success=%s",
+                    turn_params.get("model"),
+                    turn_params.get("timeout"),
+                    turn_response_format is not None,
+                    time.perf_counter() - request_start,
+                    True,
                 )
-                return _call_and_parse()
-        except Exception as e:
-            # Expected transient upstream failures (provider timeout / connection
-            # / rate-limit / overload) log at WARNING — callers own fatality and
-            # most degrade gracefully; only genuinely-unexpected errors are ERROR.
-            log = (
-                self.logger.warning
-                if _is_expected_transient_llm_error(e)
-                else self.logger.error
+
+                if detect_refusal and _is_refusal(response, message):
+                    raise StructuredOutputRepairError(
+                        "Structured output repair stopped on provider refusal",
+                        failure_kind="refusal",
+                        model=str(turn_params.get("model")),
+                        raw_content=content if isinstance(content, str) else None,
+                    )
+
+                if "tools" in turn_params:
+                    raw_usage = getattr(response, "usage", None)
+                    call_cost = self._compute_cost_usd(
+                        response, turn_params.get("model")
+                    )
+                    tool_calls = getattr(message, "tool_calls", None)
+                    parsed_output: BaseModel | None = None
+                    if turn_response_format is not None and not tool_calls:
+                        try:
+                            parsed = self._maybe_parse_structured_output(
+                                content,  # type: ignore[reportArgumentType]
+                                turn_response_format,
+                                turn_parse_structured_output,
+                            )
+                        except StructuredOutputParseError as exc:
+                            exc.finish_reason = finish_reason
+                            if exc.raw_content is None and isinstance(content, str):
+                                exc.raw_content = content
+                            raise
+                        if isinstance(parsed, BaseModel):
+                            parsed_output = parsed
+                    value = ToolCallingChatResponse(
+                        content=content,
+                        tool_calls=tool_calls,
+                        finish_reason=finish_reason,
+                        usage=raw_usage,
+                        cost_usd=call_cost,
+                        parsed_output=parsed_output,
+                    )
+                    return _StructuredAttempt(
+                        value=value,
+                        raw_content=content if isinstance(content, str) else None,
+                        parsed_output=parsed_output,
+                        finish_reason=finish_reason,
+                        model=str(turn_params.get("model")),
+                    )
+
+                try:
+                    value = self._maybe_parse_structured_output(
+                        content,  # type: ignore[reportArgumentType]
+                        turn_response_format,
+                        turn_parse_structured_output,
+                    )
+                except StructuredOutputParseError as exc:
+                    exc.finish_reason = finish_reason
+                    if exc.raw_content is None and isinstance(content, str):
+                        exc.raw_content = content
+                    raise
+                return _StructuredAttempt(
+                    value=value,
+                    raw_content=content if isinstance(content, str) else None,
+                    parsed_output=value if isinstance(value, BaseModel) else None,
+                    finish_reason=finish_reason,
+                    model=str(turn_params.get("model")),
+                )
+            except (StructuredOutputParseError, StructuredOutputRepairError):
+                raise
+            except Exception as e:
+                log = (
+                    self.logger.warning
+                    if _is_expected_transient_llm_error(e)
+                    else self.logger.error
+                )
+                log(
+                    "event=llm_request_end model=%s elapsed_seconds=%.3f success=False error_type=%s error=%s",
+                    turn_params.get("model"),
+                    time.perf_counter() - request_start,
+                    type(e).__name__,
+                    e,
+                )
+                raise LiteLLMClientError(f"API call failed: {e}") from e
+
+        def _bounded_errors(errors: Sequence[str]) -> tuple[str, ...]:
+            bounded: list[str] = []
+            remaining = _MAX_REPAIR_ERROR_CHARS
+            for error in errors[:_MAX_REPAIR_ERRORS]:
+                text = str(error)
+                if len(text) > remaining:
+                    text = text[: max(0, remaining)] + "...(truncated)"
+                bounded.append(text)
+                remaining -= len(text)
+                if remaining <= 0:
+                    break
+            if len(errors) > len(bounded):
+                bounded.append(f"...({len(errors) - len(bounded)} more errors)")
+            return tuple(bounded)
+
+        def _echo_content(
+            raw_content: str | None,
+            finish_reason: str | None,
+            turn_params: dict[str, Any],
+        ) -> str:
+            if finish_reason == "length":
+                token_limit = turn_params.get("max_tokens")
+                if token_limit:
+                    return f"(output truncated at {token_limit} tokens)"
+                return "(output truncated at the model output limit)"
+            if raw_content is None or not raw_content.strip():
+                return "(empty response)"
+            if len(raw_content) <= _MAX_REPAIR_ECHO_CHARS:
+                return raw_content
+            half = _MAX_REPAIR_ECHO_CHARS // 2
+            omitted = len(raw_content) - (half * 2)
+            return (
+                raw_content[:half]
+                + f"\n...(omitted {omitted} characters from previous response)...\n"
+                + raw_content[-half:]
             )
-            log(
-                "event=llm_request_end model=%s elapsed_seconds=%.3f success=False error_type=%s error=%s",
-                params.get("model"),
-                time.perf_counter() - request_start,
-                type(e).__name__,
-                e,
+
+        def _repair_messages(
+            base_messages: list[dict[str, Any]],
+            *,
+            raw_content: str | None,
+            finish_reason: str | None,
+            turn_params: dict[str, Any],
+            schema_name: str,
+            errors: Sequence[str],
+        ) -> list[dict[str, Any]]:
+            error_lines = "\n".join(f"- {error}" for error in _bounded_errors(errors))
+            return [
+                *base_messages,
+                {
+                    "role": "assistant",
+                    "content": _echo_content(raw_content, finish_reason, turn_params),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        "Your previous response failed validation for schema "
+                        f"{schema_name}:\n{error_lines}\n\n"
+                        "Reply with a corrected response that satisfies the schema. "
+                        "Respond only with the corrected structured output."
+                    ),
+                },
+            ]
+
+        def _validate_attempt(
+            attempt: _StructuredAttempt,
+        ) -> tuple[bool, tuple[str, ...], str]:
+            if (
+                isinstance(attempt.value, ToolCallingChatResponse)
+                and attempt.value.tool_calls
+            ):
+                return True, (), "semantic"
+            parsed = attempt.parsed_output
+            if parsed is None and isinstance(attempt.value, BaseModel):
+                parsed = attempt.value
+            if parsed is None:
+                return False, ("Response was empty or did not parse.",), "parse"
+            if structured_output_validator is None:
+                raise RuntimeError("structured_output_validator is not configured")
+            errors = tuple(structured_output_validator(parsed))
+            if errors:
+                return False, errors, "semantic"
+            return True, (), "semantic"
+
+        def _repair_error(
+            *,
+            failure_kind: str,
+            attempt: _StructuredAttempt | None,
+            errors: Sequence[str],
+            model: str,
+        ) -> StructuredOutputRepairError:
+            return StructuredOutputRepairError(
+                "Structured output repair exhausted",
+                failure_kind="parse" if failure_kind == "parse" else "semantic",
+                model=model,
+                raw_content=attempt.raw_content if attempt else None,
+                parsed_output=attempt.parsed_output if attempt else None,
+                validation_errors=tuple(errors),
             )
-            raise LiteLLMClientError(f"API call failed: {e}") from e
+
+        def _repair_target_kwargs() -> list[dict[str, Any]]:
+            # One same-model corrective turn, then (when a fallback ladder is
+            # configured) one final escalation turn to the first eligible
+            # fallback model with the rest of the ladder behind it.
+            targets = [dict(original_kwargs)]
+            if fallbacks:
+                escalation_kwargs = dict(original_kwargs)
+                escalation_kwargs["model"] = fallbacks[0]
+                escalation_kwargs["fallback_models"] = fallbacks[1:]
+                targets.append(escalation_kwargs)
+            return targets
+
+        def _attempt_repair(
+            first_error: StructuredOutputParseError | None,
+            first_attempt: _StructuredAttempt | None,
+        ) -> str | BaseModel | ToolCallingChatResponse:
+            schema_name = getattr(response_format, "__name__", "structured output")
+            if first_error is not None:
+                failure_kind = "parse"
+                errors: tuple[str, ...] = (str(first_error),)
+                raw_content = first_error.raw_content
+                finish_reason = first_error.finish_reason
+                latest_parsed_output = None
+            else:
+                assert first_attempt is not None  # noqa: S101
+                valid, errors, failure_kind = _validate_attempt(first_attempt)
+                if valid:
+                    return first_attempt.value
+                raw_content = first_attempt.raw_content
+                finish_reason = first_attempt.finish_reason
+                latest_parsed_output = first_attempt.parsed_output
+
+            # Each turn echoes the PREVIOUS attempt's output and errors, so
+            # raw_content / finish_reason / errors roll forward per iteration.
+            prior_params = params
+            repair_attempt: _StructuredAttempt | None = None
+            for target_kwargs in _repair_target_kwargs():
+                repair_base = _repair_messages(
+                    messages,
+                    raw_content=raw_content,
+                    finish_reason=finish_reason,
+                    turn_params=prior_params,
+                    schema_name=schema_name,
+                    errors=errors,
+                )
+                (
+                    repair_params,
+                    repair_response_format,
+                    repair_parse,
+                    repair_fallbacks,
+                    repair_timeout,
+                ) = _prepare_turn(repair_base, target_kwargs)
+                self.logger.warning(
+                    "event=llm_structured_repair_attempted model=%s repair_target_model=%s schema=%s failure_kind=%s",
+                    params.get("model"),
+                    repair_params.get("model"),
+                    schema_name,
+                    failure_kind,
+                )
+                try:
+                    repair_attempt = _call_and_parse(
+                        repair_params,
+                        repair_response_format,
+                        repair_parse,
+                        repair_fallbacks,
+                        repair_timeout,
+                        detect_refusal=True,
+                    )
+                except StructuredOutputParseError as exc:
+                    repair_attempt = _StructuredAttempt(
+                        value="",
+                        raw_content=exc.raw_content,
+                        parsed_output=None,
+                        finish_reason=exc.finish_reason,
+                        model=str(repair_params.get("model")),
+                    )
+                    errors = (str(exc),)
+                    failure_kind = "parse"
+                else:
+                    valid, errors, failure_kind = _validate_attempt(repair_attempt)
+                    if valid:
+                        self.logger.info(
+                            "event=llm_structured_repair_succeeded model=%s repair_target_model=%s schema=%s",
+                            params.get("model"),
+                            repair_params.get("model"),
+                            schema_name,
+                        )
+                        return repair_attempt.value
+                raw_content = repair_attempt.raw_content
+                finish_reason = repair_attempt.finish_reason
+                latest_parsed_output = (
+                    repair_attempt.parsed_output or latest_parsed_output
+                )
+                prior_params = repair_params
+
+            assert repair_attempt is not None  # noqa: S101 — loop runs at least once
+            self.logger.warning(
+                "event=llm_structured_repair_exhausted model=%s schema=%s failure_kind=%s",
+                repair_attempt.model,
+                schema_name,
+                failure_kind,
+            )
+            repair_attempt.parsed_output = (
+                repair_attempt.parsed_output or latest_parsed_output
+            )
+            raise _repair_error(
+                failure_kind=failure_kind,
+                attempt=repair_attempt,
+                errors=errors,
+                model=repair_attempt.model,
+            )
+
+        if structured_output_validator is None:
+            request_start = time.perf_counter()
+            try:
+                try:
+                    return _call_and_parse(
+                        params,
+                        response_format,
+                        parse_structured_output,
+                        fallbacks,
+                        hard_timeout,
+                        detect_refusal=False,
+                    ).value
+                except StructuredOutputParseError:
+                    self.logger.warning(
+                        "event=llm_parse_retry model=%s — primary returned malformed structured output, retrying once",
+                        params.get("model"),
+                    )
+                    return _call_and_parse(
+                        params,
+                        response_format,
+                        parse_structured_output,
+                        fallbacks,
+                        hard_timeout,
+                        detect_refusal=False,
+                    ).value
+            except LiteLLMClientError:
+                raise
+            except StructuredOutputParseError as exc:
+                # A parse failure happens after litellm saw a 200, so no turn
+                # logged a request-end failure — emit it here or log-based
+                # failure metrics miss this class entirely.
+                self.logger.error(
+                    "event=llm_request_end model=%s elapsed_seconds=%.3f success=False error_type=%s error=%s",
+                    params.get("model"),
+                    time.perf_counter() - request_start,
+                    type(exc).__name__,
+                    exc,
+                )
+                raise LiteLLMClientError(f"API call failed: {exc}") from exc
+
+        try:
+            first_attempt = _call_and_parse(
+                params,
+                response_format,
+                parse_structured_output,
+                fallbacks,
+                hard_timeout,
+                detect_refusal=True,
+            )
+        except StructuredOutputParseError as exc:
+            return _attempt_repair(exc, None)
+        return _attempt_repair(None, first_attempt)
 
     def _apply_prompt_caching(
         self, messages: list[dict[str, Any]], model: str

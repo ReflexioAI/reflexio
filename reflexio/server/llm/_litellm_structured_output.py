@@ -177,7 +177,8 @@ class StructuredOutputMixin:
 
                     if _looks_truncated_json(json_str):
                         raise StructuredOutputParseError(
-                            "Structured output appears truncated"
+                            "Structured output appears truncated",
+                            raw_content=content,
                         )
 
                     repaired = repair_json(json_str, return_objects=True)
@@ -191,5 +192,6 @@ class StructuredOutputMixin:
                     )
                     raise StructuredOutputParseError(
                         f"Structured output parse failed for model={model!r}: {e}. "
-                        f"Content snippet: {snippet!r}"
+                        f"Content snippet: {snippet!r}",
+                        raw_content=content if isinstance(content, str) else None,
                     ) from e

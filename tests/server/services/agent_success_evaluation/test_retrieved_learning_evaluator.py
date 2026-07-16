@@ -17,6 +17,7 @@ from reflexio.models.api_schema.domain import (
     UserProfile,
 )
 from reflexio.models.config_schema import Config, StorageConfigSQLite
+from reflexio.server.llm.litellm_client import StructuredOutputRepairError
 from reflexio.server.prompt.prompt_manager import PromptManager
 from reflexio.server.services.agent_success_evaluation.components.retrieved_learning_evaluator import (
     MAX_CANONICAL_CANDIDATES,
@@ -131,7 +132,7 @@ def _echoing_llm() -> MagicMock:
     """LLM double that returns exact-coverage verdicts for any chunk."""
     llm = MagicMock()
 
-    def respond(*, messages, model, response_format):  # noqa: ARG001
+    def respond(*, messages, model, response_format, **_kwargs):  # noqa: ARG001
         import re
 
         # Scan only the [Retrieved Learnings] payload — the [Output] example
@@ -406,13 +407,15 @@ def test_candidate_limit_fails_with_zero_llm_calls(storage: SQLiteStorage) -> No
 
 
 def test_one_bounded_repair_then_chunk_failure(storage: SQLiteStorage) -> None:
-    """A judge with a persistent coverage error gets exactly one retry."""
+    """A judge with a persistent coverage error degrades after client repair exhausts."""
     profile_id, _, _ = _seed_all_kinds(storage)
     llm = MagicMock()
 
-    def bad_relevance_good_impact(*, messages, model, response_format):  # noqa: ARG001
+    def bad_relevance_good_impact(
+        *, messages, model, response_format, structured_output_validator
+    ):  # noqa: ARG001
         if response_format is RetrievedLearningRelevanceOutput:
-            return RetrievedLearningRelevanceOutput(
+            bad_output = RetrievedLearningRelevanceOutput(
                 verdicts=[
                     RetrievedLearningRelevanceVerdict(
                         learning_ref="unknown:ref",
@@ -420,6 +423,14 @@ def test_one_bounded_repair_then_chunk_failure(storage: SQLiteStorage) -> None:
                         relevance_reason="x",
                     )
                 ]
+            )
+            errors = structured_output_validator(bad_output)
+            raise StructuredOutputRepairError(
+                "repair exhausted",
+                failure_kind="semantic",
+                model=model,
+                parsed_output=bad_output,
+                validation_errors=tuple(errors),
             )
         return RetrievedLearningImpactOutput(
             verdicts=[
@@ -440,8 +451,7 @@ def test_one_bounded_repair_then_chunk_failure(storage: SQLiteStorage) -> None:
     assert run.proposed_status == "degraded"
     assert run.diagnostics["failed_relevance_chunks"] == 1
     assert run.diagnostics["failed_impact_chunks"] == 0
-    # 2 relevance attempts (initial + one repair) + 1 impact call.
-    assert llm.generate_chat_response.call_count == 3
+    assert llm.generate_chat_response.call_count == 2
     row = run.rows[0]
     assert row.is_relevant is None and row.relevance_reason == ""
     assert row.impact == "neutral"
@@ -483,9 +493,11 @@ def test_success_definition_reaches_only_impact_prompt(
     llm = _echoing_llm()
     inner = llm.generate_chat_response.side_effect
 
-    def recording(*, messages, model, response_format):
+    def recording(*, messages, model, response_format, **kwargs):
         prompts_by_format[response_format] = messages[0]["content"]
-        return inner(messages=messages, model=model, response_format=response_format)
+        return inner(
+            messages=messages, model=model, response_format=response_format, **kwargs
+        )
 
     llm.generate_chat_response.side_effect = recording
     evaluator = _make_evaluator(storage, llm, success_definition=marker)

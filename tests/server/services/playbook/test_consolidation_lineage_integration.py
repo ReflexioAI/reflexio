@@ -263,7 +263,12 @@ def test_consolidation_repair_persists_only_repaired_multi_new_unify(
             )
         ]
     )
-    generation_service.client.generate_chat_response.return_value = repaired_output
+    def repaired_consolidation(*, structured_output_validator, **_kwargs):
+        assert structured_output_validator(initial_output)
+        assert structured_output_validator(repaired_output) == []
+        return repaired_output
+
+    generation_service.client.generate_chat_response.side_effect = repaired_consolidation
 
     with (
         patch(
@@ -278,10 +283,6 @@ def test_consolidation_repair_persists_only_repaired_multi_new_unify(
         patch(
             "reflexio.server.services.playbook.components.consolidator.PlaybookConsolidator._retrieve_existing_playbooks",
             return_value=[],
-        ),
-        patch(
-            "reflexio.server.services.playbook.components.consolidator.PlaybookConsolidator._consolidation_decisions",
-            return_value=initial_output,
         ),
         patch.dict("os.environ", {"MOCK_LLM_RESPONSE": "false"}),
     ):

@@ -31,6 +31,8 @@ PUBLIC_SYMBOLS = [
     "LiteLLMClient",
     "LiteLLMConfig",
     "LiteLLMClientError",
+    "StructuredOutputRepairError",
+    "StructuredOutputValidator",
     "ToolCallingChatResponse",
     "create_litellm_client",
 ]
