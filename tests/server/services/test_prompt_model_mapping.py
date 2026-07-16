@@ -65,7 +65,6 @@ PROMPT_VERSION_MAP: dict[str, tuple[str, str | None]] = {
     # rendered — literal braces broke str.format and the expander swallowed it).
     "document_expansion": ("v1.1.0", None),
     "compress_session_for_query": ("v1.3.0", None),
-    "rerank_relevance": ("v1.1.0", None),
     # Answer-LLM system prompt for memory-grounded user questions
     "answer_synthesis": ("v1.5.2", None),
     # F1 — per-turn shadow comparison judge. Produces structured
