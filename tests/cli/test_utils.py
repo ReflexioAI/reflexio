@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import io
+import os
+import shutil
 import signal
+import socket
 import tempfile
 import threading
 from pathlib import Path
@@ -75,8 +78,21 @@ def test_pidfile_path_uses_platform_temp_dir() -> None:
     assert path.name.startswith("reflexio_services_")
 
 
-def test_find_pids_on_port_queries_tcp_listeners_only(monkeypatch) -> None:
+def test_find_pids_on_port_reports_bound_sockets_not_clients(monkeypatch) -> None:
     calls: list[list[str]] = []
+    # One listener (123), one orphaned bound-but-not-listening socket (456),
+    # and one client merely connected to the port (789) which must be excluded.
+    lsof_output = (
+        "p123\n"
+        "f13\n"
+        "n*:8090\n"
+        "p456\n"
+        "f3\n"
+        "n127.0.0.1:8090\n"
+        "p789\n"
+        "f91\n"
+        "n127.0.0.1:55006->127.0.0.1:8090\n"
+    )
 
     def fake_run(
         cmd: list[str],
@@ -89,12 +105,32 @@ def test_find_pids_on_port_queries_tcp_listeners_only(monkeypatch) -> None:
         assert capture_output is True
         assert text is True
         assert check is False
-        return CompletedProcess(cmd, 0, stdout="123\nnot-a-pid\n456\n")
+        return CompletedProcess(cmd, 0, stdout=lsof_output)
 
     monkeypatch.setattr(utils.subprocess, "run", fake_run)
 
     assert utils.find_pids_on_port(8090) == [123, 456]
-    assert calls == [["lsof", "-nP", "-t", "-iTCP:8090", "-sTCP:LISTEN"]]
+    assert calls == [["lsof", "-nP", "-Fpn", "-iTCP:8090"]]
+
+
+def test_find_pids_on_port_ignores_other_ports_with_same_suffix(monkeypatch) -> None:
+    def fake_run(cmd: list[str], **_kwargs) -> CompletedProcess[str]:
+        return CompletedProcess(cmd, 0, stdout="p123\nn*:18090\n")
+
+    monkeypatch.setattr(utils.subprocess, "run", fake_run)
+
+    assert utils.find_pids_on_port(8090) == []
+
+
+@pytest.mark.skipif(shutil.which("lsof") is None, reason="lsof not available")
+def test_find_pids_on_port_detects_bound_socket_without_listen() -> None:
+    # Regression: an orphaned process can hold a port bound without listening
+    # (e.g. a leaked uvicorn --reload worker); it must still be detected.
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+
+        assert os.getpid() in utils.find_pids_on_port(port)
 
 
 def test_requested_port_conflicts_detect_duplicate_service_ports(

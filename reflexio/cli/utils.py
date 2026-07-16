@@ -42,21 +42,44 @@ def get_env_port(name: str, default: int) -> int:
 
 
 def find_pids_on_port(port: int) -> list[int]:
-    """Find process IDs listening on the given port using lsof."""
+    """
+    Find process IDs with a TCP socket bound to the given port using lsof.
+
+    Matches listeners and bound-but-not-listening sockets (e.g. an orphaned
+    uvicorn --reload worker holding the port in CLOSED state, which blocks
+    rebinding but is invisible to a LISTEN-only check). Client connections to
+    the port (sockets with a peer address) are excluded so unrelated processes
+    that merely connected to the service are never reported or killed.
+
+    Args:
+        port (int): TCP port to inspect
+
+    Returns:
+        list[int]: Sorted, de-duplicated PIDs holding a socket bound to the port
+    """
     try:
         result = subprocess.run(
-            ["lsof", "-nP", "-t", f"-iTCP:{port}", "-sTCP:LISTEN"],
+            ["lsof", "-nP", "-Fpn", f"-iTCP:{port}"],
             capture_output=True,
             text=True,
             check=False,
         )
-        if result.returncode == 0 and result.stdout.strip():
-            return [
-                int(p) for p in result.stdout.strip().split("\n") if p.strip().isdigit()
-            ]
     except FileNotFoundError:
-        pass
-    return []
+        return []
+    if result.returncode != 0 or not result.stdout.strip():
+        return []
+
+    pids: set[int] = set()
+    current_pid: int | None = None
+    suffix = f":{port}"
+    for line in result.stdout.splitlines():
+        if line.startswith("p") and line[1:].isdigit():
+            current_pid = int(line[1:])
+        elif line.startswith("n") and current_pid is not None:
+            name = line[1:]
+            if "->" not in name and name.endswith(suffix):
+                pids.add(current_pid)
+    return sorted(pids)
 
 
 def find_pids_by_pattern(pattern: str) -> list[int]:
