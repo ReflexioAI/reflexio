@@ -174,7 +174,11 @@ uv run pytest -k "test_name"           # by name
 
 ### Self-bootstrapping test harnesses
 
-Today the E2E suite runs `Reflexio` in-process with `StorageConfigSQLite` configured against a `tmp_path` fixture (`tests/e2e_tests/conftest.py`), so tests neither bind production ports nor write to `~/.reflexio`.
+The test bootstrap redirects `REFLEXIO_LOG_DIR` and `LOCAL_STORAGE_PATH` to a
+temporary directory before test collection uses storage. In-process E2E
+fixtures also configure `StorageConfigSQLite` against a `tmp_path` fixture
+(`tests/e2e_tests/conftest.py`). Together these guards keep tests from binding
+production ports or writing to `~/.reflexio`.
 
 If you add a future harness that boots services from a clean checkout, it must:
 

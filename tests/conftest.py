@@ -8,15 +8,11 @@ from pathlib import Path
 
 import pytest
 
-from reflexio.server.extensions import reset_services
-
 _THIS_DIR = Path(__file__).resolve().parent  # tests/
 PROJECT_ROOT = _THIS_DIR.parent.parent  # repo root
 
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
-
-from reflexio.test_support.llm_mock import cleanup_llm_mock, configure_llm_mock
 
 # Env vars that change OSS code paths and must not leak in from a developer's
 # `~/.reflexio/.env` or the enterprise worktree `.env`. CI sets none of these,
@@ -34,6 +30,13 @@ _OSS_TEST_POLLUTING_ENV_VARS = (
 for _var in _OSS_TEST_POLLUTING_ENV_VARS:
     os.environ.pop(_var, None)
 
+# Load the developer's provider credentials without importing the server yet.
+# The server configures file handlers during import, so the temporary paths
+# below must be in place before that import occurs.
+from reflexio.cli.env_loader import load_reflexio_env  # noqa: E402
+
+load_reflexio_env()
+
 # Redirect `~/.reflexio` for the entire test session so tests that call
 # `reflexio.cli.paths.reflexio_home()` (e.g. via `LocalFileConfigStorage`'s
 # default `base_dir`) don't pick up the developer's existing
@@ -44,6 +47,13 @@ for _var in _OSS_TEST_POLLUTING_ENV_VARS:
 # the leftover was from a prior `--storage supabase` run.
 _REFLEXIO_TEST_HOME = Path(tempfile.mkdtemp(prefix="reflexio-test-home-"))
 os.environ["REFLEXIO_LOG_DIR"] = str(_REFLEXIO_TEST_HOME)
+os.environ["LOCAL_STORAGE_PATH"] = str(_REFLEXIO_TEST_HOME / ".reflexio" / "data")
+import reflexio.server as _test_server  # noqa: E402
+from reflexio.server.extensions import reset_services  # noqa: E402
+
+_test_server.LOCAL_STORAGE_PATH = os.environ["LOCAL_STORAGE_PATH"]
+
+from reflexio.test_support.llm_mock import cleanup_llm_mock, configure_llm_mock
 
 
 def pytest_configure(config):
