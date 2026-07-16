@@ -1866,6 +1866,39 @@ class TestStructuredOutputRepair:
         assert not isinstance(exc_info.value, StructuredOutputRepairError)
         assert len(calls) == 2
 
+    def test_exhaustion_keeps_latest_parsed_output_after_final_parse_failure(self):
+        """When the final attempt fails to PARSE, the error's parsed_output is
+        the most recent attempt that parsed (the mid-ladder repair), not the
+        first attempt's parse."""
+        responses = [
+            '{"answer": "first", "score": 1}',  # parses, semantic failure
+            '{"answer": "repair", "score": 2}',  # parses, semantic failure
+            '{"answer": "esc", "sco',  # escalation: parse failure
+        ]
+
+        def fake_completion(**kwargs):
+            return self._make_mock_response(responses.pop(0))
+
+        client = _build_client(
+            LiteLLMConfig(model="primary-model", fallback_models=["fallback-a"])
+        )
+
+        with (
+            patch("litellm.completion", side_effect=fake_completion),
+            pytest.raises(StructuredOutputRepairError) as exc_info,
+        ):
+            client.generate_chat_response(
+                messages=[{"role": "user", "content": "test"}],
+                response_format=SampleResponse,
+                structured_output_validator=self._score_validator,
+            )
+
+        err = exc_info.value
+        assert err.failure_kind == "parse"
+        assert err.raw_content == '{"answer": "esc", "sco'
+        assert isinstance(err.parsed_output, SampleResponse)
+        assert err.parsed_output.score == 2
+
 
 # ===================================================================
 # _extract_json_from_string tests

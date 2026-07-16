@@ -1099,7 +1099,7 @@ class TextGenerationMixin:
                 errors: tuple[str, ...] = (str(first_error),)
                 raw_content = first_error.raw_content
                 finish_reason = first_error.finish_reason
-                first_parsed_output = None
+                latest_parsed_output = None
             else:
                 assert first_attempt is not None  # noqa: S101
                 valid, errors, failure_kind = _validate_attempt(first_attempt)
@@ -1107,7 +1107,7 @@ class TextGenerationMixin:
                     return first_attempt.value
                 raw_content = first_attempt.raw_content
                 finish_reason = first_attempt.finish_reason
-                first_parsed_output = first_attempt.parsed_output
+                latest_parsed_output = first_attempt.parsed_output
 
             # Each turn echoes the PREVIOUS attempt's output and errors, so
             # raw_content / finish_reason / errors roll forward per iteration.
@@ -1167,6 +1167,9 @@ class TextGenerationMixin:
                         return repair_attempt.value
                 raw_content = repair_attempt.raw_content
                 finish_reason = repair_attempt.finish_reason
+                latest_parsed_output = (
+                    repair_attempt.parsed_output or latest_parsed_output
+                )
                 prior_params = repair_params
 
             assert repair_attempt is not None  # noqa: S101 — loop runs at least once
@@ -1177,7 +1180,7 @@ class TextGenerationMixin:
                 failure_kind,
             )
             repair_attempt.parsed_output = (
-                repair_attempt.parsed_output or first_parsed_output
+                repair_attempt.parsed_output or latest_parsed_output
             )
             raise _repair_error(
                 failure_kind=failure_kind,
