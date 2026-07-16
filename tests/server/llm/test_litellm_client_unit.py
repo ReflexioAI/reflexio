@@ -46,6 +46,8 @@ from reflexio.server.llm.litellm_client import (
     LiteLLMConfig,
     LLMHardTimeoutError,
     StructuredOutputParseError,
+    StructuredOutputRepairError,
+    ToolCallingChatResponse,
     _CompletionErrorSnapshot,
     _extract_json_from_string,
     _get_embedding_encoding,
@@ -1525,6 +1527,344 @@ class TestStructuredOutputRetry:
         ends = self._request_end_failure_records(caplog)
         assert ends, "expected a request-end failure log record"
         assert all(r.levelno == logging.ERROR for r in ends)
+
+
+    def test_parse_exhaustion_logs_request_end_failure(self, caplog):
+        """Blind-retry exhaustion (no validator) still emits the request-end
+        failure record — litellm saw a 200, so only this layer can log it."""
+
+        def fake_completion(**kwargs):
+            choice = MagicMock()
+            choice.message.content = '{"answer": "bad", "sco'  # truncated JSON
+            choice.message.tool_calls = None
+            choice.finish_reason = "stop"
+            resp = MagicMock()
+            resp.choices = [choice]
+            resp.usage = MagicMock(
+                prompt_tokens=10, completion_tokens=5, total_tokens=15
+            )
+            resp.usage.prompt_tokens_details = None
+            resp.usage.cache_creation_input_tokens = None
+            resp.usage.cache_read_input_tokens = None
+            return resp
+
+        client = _build_client(LiteLLMConfig(model="primary-model"))
+        with (
+            patch("litellm.completion", side_effect=fake_completion),
+            caplog.at_level(logging.DEBUG),
+            pytest.raises(LiteLLMClientError),
+        ):
+            client.generate_chat_response(
+                messages=[{"role": "user", "content": "test"}],
+                response_format=SampleResponse,
+            )
+
+        ends = self._request_end_failure_records(caplog)
+        assert ends, "expected a request-end failure log record"
+        assert all(r.levelno == logging.ERROR for r in ends)
+
+
+class TestStructuredOutputRepair:
+    """Tests for opt-in corrective repair of structured output."""
+
+    def _make_mock_response(
+        self, content: str, *, finish_reason: str = "stop"
+    ) -> MagicMock:
+        choice = MagicMock()
+        choice.message.content = content
+        choice.message.tool_calls = None
+        choice.finish_reason = finish_reason
+        resp = MagicMock()
+        resp.choices = [choice]
+        resp.usage = MagicMock(prompt_tokens=10, completion_tokens=5, total_tokens=15)
+        resp.usage.prompt_tokens_details = None
+        resp.usage.cache_creation_input_tokens = None
+        resp.usage.cache_read_input_tokens = None
+        return resp
+
+    @staticmethod
+    def _score_validator(output: BaseModel) -> list[str]:
+        assert isinstance(output, SampleResponse)
+        if output.score == 42:
+            return []
+        return [f"score must be 42, got {output.score}"]
+
+    def test_validator_repairs_semantic_failure_on_same_model(self):
+        calls: list[dict[str, Any]] = []
+        original_messages = [{"role": "user", "content": "test"}]
+        responses = [
+            '{"answer": "bad", "score": 1}',
+            '{"answer": "ok", "score": 42}',
+        ]
+
+        def fake_completion(**kwargs):
+            calls.append(kwargs)
+            return self._make_mock_response(responses[len(calls) - 1])
+
+        client = _build_client(LiteLLMConfig(model="primary-model"))
+
+        with patch("litellm.completion", side_effect=fake_completion):
+            result = client.generate_chat_response(
+                messages=original_messages,
+                response_format=SampleResponse,
+                structured_output_validator=self._score_validator,
+            )
+
+        assert isinstance(result, SampleResponse)
+        assert result.score == 42
+        assert [call["model"] for call in calls] == ["primary-model", "primary-model"]
+        repair_messages = calls[1]["messages"]
+        assert [m["role"] for m in repair_messages] == ["user", "assistant", "user"]
+        assert '"score":1' in repair_messages[1]["content"].replace(" ", "")
+        assert "score must be 42" in repair_messages[2]["content"]
+        assert original_messages == [{"role": "user", "content": "test"}]
+
+    def test_validator_escalates_once_to_first_eligible_fallback(self):
+        calls: list[dict[str, Any]] = []
+        responses = [
+            '{"answer": "bad", "score": 1}',
+            '{"answer": "still bad", "score": 2}',
+            '{"answer": "ok", "score": 42}',
+        ]
+
+        def fake_completion(**kwargs):
+            calls.append(kwargs)
+            return self._make_mock_response(responses[len(calls) - 1])
+
+        client = _build_client(
+            LiteLLMConfig(
+                model="primary-model",
+                fallback_models=[
+                    "local/embedder",
+                    "primary-model",
+                    "fallback-a",
+                    "fallback-b",
+                ],
+            )
+        )
+
+        with patch("litellm.completion", side_effect=fake_completion):
+            result = client.generate_chat_response(
+                messages=[{"role": "user", "content": "test"}],
+                response_format=SampleResponse,
+                structured_output_validator=self._score_validator,
+            )
+
+        assert isinstance(result, SampleResponse)
+        assert result.score == 42
+        assert [call["model"] for call in calls] == [
+            "primary-model",
+            "primary-model",
+            "fallback-a",
+        ]
+        assert calls[2]["fallbacks"] == ["fallback-b"]
+        assert '"score":2' in calls[2]["messages"][1]["content"].replace(" ", "")
+
+    def test_validator_exhaustion_raises_typed_error_with_latest_response(self):
+        responses = [
+            '{"answer": "bad", "score": 1}',
+            '{"answer": "latest secret", "score": 2}',
+        ]
+
+        def fake_completion(**kwargs):
+            return self._make_mock_response(responses.pop(0))
+
+        client = _build_client(LiteLLMConfig(model="primary-model"))
+
+        with (
+            patch("litellm.completion", side_effect=fake_completion),
+            pytest.raises(StructuredOutputRepairError) as exc_info,
+        ):
+            client.generate_chat_response(
+                messages=[{"role": "user", "content": "test"}],
+                response_format=SampleResponse,
+                structured_output_validator=self._score_validator,
+            )
+
+        err = exc_info.value
+        assert err.failure_kind == "semantic"
+        assert err.model == "primary-model"
+        assert err.raw_content == '{"answer": "latest secret", "score": 2}'
+        assert isinstance(err.parsed_output, SampleResponse)
+        assert err.parsed_output.score == 2
+        assert err.validation_errors == ("score must be 42, got 2",)
+        assert "latest secret" not in str(err)
+
+    def test_validator_requires_structured_parsing(self):
+        client = _build_client(LiteLLMConfig(model="primary-model"))
+
+        with pytest.raises(ValueError):
+            client.generate_chat_response(
+                messages=[{"role": "user", "content": "test"}],
+                structured_output_validator=self._score_validator,
+            )
+
+        with pytest.raises(ValueError):
+            client.generate_chat_response(
+                messages=[{"role": "user", "content": "test"}],
+                response_format=SampleResponse,
+                parse_structured_output=False,
+                structured_output_validator=self._score_validator,
+            )
+
+    def test_validator_does_not_repair_intermediate_tool_calls(self):
+        calls: list[dict[str, Any]] = []
+        tool_call = MagicMock()
+        tool_call.function.name = "lookup"
+        choice = MagicMock()
+        choice.message.content = None
+        choice.message.tool_calls = [tool_call]
+        choice.finish_reason = "tool_calls"
+        response = MagicMock()
+        response.choices = [choice]
+        response.usage = MagicMock(
+            prompt_tokens=10, completion_tokens=5, total_tokens=15
+        )
+        response.usage.prompt_tokens_details = None
+        response.usage.cache_creation_input_tokens = None
+        response.usage.cache_read_input_tokens = None
+
+        def fake_completion(**kwargs):
+            calls.append(kwargs)
+            return response
+
+        def fail_validator(output: BaseModel) -> list[str]:
+            raise AssertionError(f"validator should not run for tool call: {output!r}")
+
+        client = _build_client(LiteLLMConfig(model="primary-model"))
+
+        with patch("litellm.completion", side_effect=fake_completion):
+            result = client.generate_chat_response(
+                messages=[{"role": "user", "content": "test"}],
+                tools=[
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "lookup",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {},
+                            },
+                        },
+                    }
+                ],
+                response_format=SampleResponse,
+                structured_output_validator=fail_validator,
+            )
+
+        assert isinstance(result, ToolCallingChatResponse)
+        assert result.tool_calls == [tool_call]
+        assert len(calls) == 1
+        assert calls[0]["messages"] == [{"role": "user", "content": "test"}]
+
+    def test_repair_triggers_on_parse_failure_first_attempt(self):
+        calls: list[dict[str, Any]] = []
+        responses = [
+            '{"answer": "bad", "sco',  # truncated JSON -> parse error
+            '{"answer": "ok", "score": 42}',
+        ]
+
+        def fake_completion(**kwargs):
+            calls.append(kwargs)
+            return self._make_mock_response(responses[len(calls) - 1])
+
+        client = _build_client(LiteLLMConfig(model="primary-model"))
+
+        with patch("litellm.completion", side_effect=fake_completion):
+            result = client.generate_chat_response(
+                messages=[{"role": "user", "content": "test"}],
+                response_format=SampleResponse,
+                structured_output_validator=self._score_validator,
+            )
+
+        assert isinstance(result, SampleResponse)
+        assert result.score == 42
+        assert len(calls) == 2
+        repair_messages = calls[1]["messages"]
+        assert [m["role"] for m in repair_messages] == ["user", "assistant", "user"]
+        # The malformed output is echoed back verbatim for the corrective turn.
+        assert repair_messages[1]["content"] == '{"answer": "bad", "sco'
+        assert "truncated" in repair_messages[2]["content"]
+
+    def test_repair_echo_replaces_length_truncated_output(self):
+        calls: list[dict[str, Any]] = []
+        responses = [
+            '{"answer": "bad", "sco',
+            '{"answer": "ok", "score": 42}',
+        ]
+
+        def fake_completion(**kwargs):
+            calls.append(kwargs)
+            index = len(calls) - 1
+            return self._make_mock_response(
+                responses[index],
+                finish_reason="length" if index == 0 else "stop",
+            )
+
+        client = _build_client(LiteLLMConfig(model="primary-model"))
+
+        with patch("litellm.completion", side_effect=fake_completion):
+            result = client.generate_chat_response(
+                messages=[{"role": "user", "content": "test"}],
+                response_format=SampleResponse,
+                structured_output_validator=self._score_validator,
+            )
+
+        assert isinstance(result, SampleResponse)
+        # A length-truncated response is NOT echoed back; the placeholder
+        # tells the model its previous output overflowed instead.
+        repair_echo = calls[1]["messages"][1]["content"]
+        assert repair_echo.startswith("(output truncated at")
+
+    def test_refusal_short_circuits_repair(self):
+        calls: list[dict[str, Any]] = []
+
+        def fake_completion(**kwargs):
+            calls.append(kwargs)
+            resp = self._make_mock_response('{"answer": "no", "score": 1}')
+            resp.choices[0].message.refusal = "I cannot help with that."
+            return resp
+
+        client = _build_client(LiteLLMConfig(model="primary-model"))
+
+        with (
+            patch("litellm.completion", side_effect=fake_completion),
+            pytest.raises(StructuredOutputRepairError) as exc_info,
+        ):
+            client.generate_chat_response(
+                messages=[{"role": "user", "content": "test"}],
+                response_format=SampleResponse,
+                structured_output_validator=self._score_validator,
+            )
+
+        assert exc_info.value.failure_kind == "refusal"
+        assert len(calls) == 1
+
+    def test_repair_transport_failure_raises_client_error_not_repair_error(self):
+        """Callers that keep the first parsed output (e.g. the consolidator)
+        rely on repair-turn transport failures surfacing as LiteLLMClientError."""
+        calls: list[dict[str, Any]] = []
+
+        def fake_completion(**kwargs):
+            calls.append(kwargs)
+            if len(calls) == 1:
+                return self._make_mock_response('{"answer": "bad", "score": 1}')
+            raise RuntimeError("connection dropped")
+
+        client = _build_client(LiteLLMConfig(model="primary-model"))
+
+        with (
+            patch("litellm.completion", side_effect=fake_completion),
+            pytest.raises(LiteLLMClientError) as exc_info,
+        ):
+            client.generate_chat_response(
+                messages=[{"role": "user", "content": "test"}],
+                response_format=SampleResponse,
+                structured_output_validator=self._score_validator,
+            )
+
+        assert not isinstance(exc_info.value, StructuredOutputRepairError)
+        assert len(calls) == 2
 
 
 # ===================================================================

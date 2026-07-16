@@ -63,11 +63,13 @@ from reflexio.server.llm._litellm_subprocess import (
     _PromptTokenDetailsSnapshot as _PromptTokenDetailsSnapshot,
 )
 from reflexio.server.llm._litellm_text_generation import (
+    StructuredOutputValidator,
     TextGenerationMixin,
 )
 from reflexio.server.llm._litellm_types import (
     LiteLLMClientError,
     LiteLLMConfig,
+    StructuredOutputRepairError,
     ToolCallingChatResponse,
 )
 from reflexio.server.llm._litellm_types import (
@@ -106,6 +108,8 @@ __all__ = [
     "LiteLLMClient",
     "LiteLLMConfig",
     "LiteLLMClientError",
+    "StructuredOutputRepairError",
+    "StructuredOutputValidator",
     "ToolCallingChatResponse",
     "create_litellm_client",
 ]

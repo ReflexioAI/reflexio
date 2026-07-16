@@ -18,7 +18,11 @@ from reflexio.models.config_schema import (
 )
 from reflexio.models.structured_output import StrictStructuredOutput
 from reflexio.server.api_endpoints.request_context import RequestContext
-from reflexio.server.llm.litellm_client import LiteLLMClient
+from reflexio.server.llm.litellm_client import (
+    LiteLLMClient,
+    LiteLLMClientError,
+    StructuredOutputRepairError,
+)
 from reflexio.server.services.deduplication_utils import (
     BaseDeduplicator,
     format_dedup_timestamp,
@@ -710,11 +714,40 @@ class PlaybookConsolidator(BaseDeduplicator):
             [{"role": "user", "content": prompt}],
         )
 
-        response = self.client.generate_chat_response(
-            messages=[{"role": "user", "content": prompt}],
-            model=self.model_name,
-            response_format=output_schema_class,
-        )
+        first_parsed_output: PlaybookConsolidationOutput | None = None
+
+        def _validate_output(output: BaseModel) -> list[str]:
+            nonlocal first_parsed_output
+            if not isinstance(output, PlaybookConsolidationOutput):
+                return [f"Unexpected output type: {type(output).__name__}."]
+            if first_parsed_output is None:
+                first_parsed_output = output
+            errors = validate_consolidation_output(new_playbooks, output)
+            if not errors:
+                errors = self._find_suspicious_under_consumed_new_rows(
+                    new_playbooks, output
+                )
+            if errors:
+                return [
+                    *errors,
+                    "Return corrected decisions that cover every NEW id exactly once. "
+                    "If a unified rule uses facts/details from multiple NEW rows, "
+                    "`new_id` must list every consumed NEW id. Keep decisions that are "
+                    "otherwise semantically correct and fix only the coverage.",
+                ]
+            return []
+
+        try:
+            response = self.client.generate_chat_response(
+                messages=[{"role": "user", "content": prompt}],
+                model=self.model_name,
+                response_format=output_schema_class,
+                structured_output_validator=_validate_output,
+            )
+        except (StructuredOutputRepairError, LiteLLMClientError):
+            if first_parsed_output is not None:
+                return first_parsed_output
+            raise
 
         log_model_response(logger, "Consolidation response", response)
 
@@ -818,13 +851,6 @@ class PlaybookConsolidator(BaseDeduplicator):
             len(dedup_output.decisions),
             generation_request_id,
         )
-        dedup_output = self._repair_consolidation_output_if_needed(
-            new_playbooks=new_playbooks,
-            existing_playbooks=existing_playbooks,
-            dedup_output=dedup_output,
-            request_id=request_id,
-        )
-
         # Build consolidated result via the discriminated-union apply path
         return self._build_deduplicated_results(
             new_playbooks=new_playbooks,
@@ -833,133 +859,6 @@ class PlaybookConsolidator(BaseDeduplicator):
             generation_request_id=generation_request_id,
             agent_version=agent_version,
         )
-
-    def _repair_consolidation_output_if_needed(
-        self,
-        *,
-        new_playbooks: list[UserPlaybook],
-        existing_playbooks: list[UserPlaybook],
-        dedup_output: PlaybookConsolidationOutput,
-        request_id: str | None,
-    ) -> PlaybookConsolidationOutput:
-        errors = validate_consolidation_output(new_playbooks, dedup_output)
-        if not errors:
-            errors = self._find_suspicious_under_consumed_new_rows(
-                new_playbooks, dedup_output
-            )
-        if not errors:
-            return dedup_output
-
-        repaired = self._repair_consolidation_output(
-            original_prompt=self._render_consolidation_prompt(
-                new_playbooks, existing_playbooks
-            ),
-            invalid_output=dedup_output,
-            errors=errors,
-            request_id=request_id,
-        )
-        if repaired is None:
-            return dedup_output
-
-        repaired_errors = validate_consolidation_output(new_playbooks, repaired)
-        if repaired_errors:
-            logger.warning(
-                "event=consolidation_repair_failed request_id=%s errors=%s",
-                request_id,
-                repaired_errors,
-            )
-            return dedup_output
-
-        logger.info(
-            "event=consolidation_repaired request_id=%s decision_count=%d",
-            request_id,
-            len(repaired.decisions),
-        )
-        return repaired
-
-    def _repair_consolidation_output(
-        self,
-        *,
-        original_prompt: str,
-        invalid_output: PlaybookConsolidationOutput,
-        errors: list[str],
-        request_id: str | None,
-    ) -> PlaybookConsolidationOutput | None:
-        """Ask the model to fix its consolidation output in a follow-up turn.
-
-        The repair is sent as the third turn of the original conversation —
-        [user: consolidation prompt, assistant: the invalid decisions, user:
-        validation errors + fix instruction] — so the model retains the full
-        first-turn context (rendered rows, decision-kind rules, output format)
-        without restating any of it.
-
-        Args:
-            original_prompt: The exact rendered first-turn consolidation prompt.
-            invalid_output: The parsed decisions that failed validation.
-            errors: Human-readable validation errors to feed back.
-            request_id: Request ID for log correlation.
-
-        Returns:
-            The repaired ``PlaybookConsolidationOutput``, or None when the
-            repair call fails or returns an unexpected shape.
-        """
-        logger.warning(
-            "event=consolidation_repair_attempted request_id=%s errors=%s",
-            request_id,
-            errors,
-        )
-        followup = "\n".join(
-            [
-                "Your decisions above violate the NEW-id coverage contract:",
-                "",
-                "\n".join(f"- {error}" for error in errors),
-                "",
-                "Return corrected decisions that cover every NEW id exactly once. "
-                "If a unified rule uses facts/details from multiple NEW rows, `new_id` must list all of them. "
-                "If your decisions are semantically correct apart from these errors, "
-                "keep them and fix only the coverage.",
-                "",
-                'Respond ONLY with valid JSON matching PlaybookConsolidationOutput: {"decisions": [...]}.',
-            ]
-        )
-        messages = [
-            {"role": "user", "content": original_prompt},
-            {"role": "assistant", "content": invalid_output.model_dump_json()},
-            {"role": "user", "content": followup},
-        ]
-
-        from reflexio.server.services.service_utils import (
-            log_llm_messages,
-            log_model_response,
-        )
-
-        log_llm_messages(logger, "Playbook consolidation repair", messages)
-
-        try:
-            response = self.client.generate_chat_response(
-                messages=messages,
-                model=self.model_name,
-                response_format=self._get_output_schema_class(),
-            )
-        except Exception as exc:  # noqa: BLE001 — repair is best-effort
-            logger.warning(
-                "event=consolidation_repair_failed request_id=%s error_type=%s",
-                request_id,
-                type(exc).__name__,
-                exc_info=True,
-            )
-            return None
-
-        log_model_response(logger, "Consolidation repair response", response)
-
-        if not isinstance(response, PlaybookConsolidationOutput):
-            logger.warning(
-                "event=consolidation_repair_failed request_id=%s unexpected_type=%s",
-                request_id,
-                type(response),
-            )
-            return None
-        return response
 
     @staticmethod
     def _find_suspicious_under_consumed_new_rows(

@@ -9,6 +9,8 @@ from .litellm_client import (
     LiteLLMClient,
     LiteLLMClientError,
     LiteLLMConfig,
+    StructuredOutputRepairError,
+    StructuredOutputValidator,
     ToolCallingChatResponse,
     create_litellm_client,
 )
@@ -22,6 +24,8 @@ __all__ = [
     "LiteLLMClient",
     "LiteLLMConfig",
     "LiteLLMClientError",
+    "StructuredOutputRepairError",
+    "StructuredOutputValidator",
     "ModelRole",
     "ToolCallingChatResponse",
     "create_litellm_client",

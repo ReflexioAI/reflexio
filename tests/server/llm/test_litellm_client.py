@@ -26,6 +26,7 @@ from reflexio.server.llm.litellm_client import (
     LiteLLMClient,
     LiteLLMClientError,
     LiteLLMConfig,
+    _sanitize_json_string,
     create_litellm_client,
 )
 from tests.server.test_utils import skip_in_precommit, skip_low_priority
@@ -974,75 +975,67 @@ class TestLiteLLMClientAPIKeyOverride:
 
 
 class TestSanitizeJsonString:
-    """Unit tests for LiteLLMClient._sanitize_json_string."""
+    """Unit tests for the module-level _sanitize_json_string helper."""
 
-    @pytest.fixture
-    def client(self):
-        config = LiteLLMConfig(
-            model="gpt-5.4-mini",
-            api_key_config=APIKeyConfig(openai=OpenAIConfig(api_key="test")),
-        )
-        return LiteLLMClient(config)
-
-    def test_single_quotes_to_double(self, client):
+    def test_single_quotes_to_double(self):
         """Single-quoted JSON keys and values are converted to double quotes."""
-        result = client._sanitize_json_string("{'key': 'value'}")
+        result = _sanitize_json_string("{'key': 'value'}")
         assert result == '{"key": "value"}'
 
-    def test_python_booleans(self, client):
+    def test_python_booleans(self):
         """Python True/False/None are converted to JSON true/false/null."""
-        result = client._sanitize_json_string('{"a": True, "b": False, "c": None}')
+        result = _sanitize_json_string('{"a": True, "b": False, "c": None}')
         assert result == '{"a": true, "b": false, "c": null}'
 
-    def test_python_booleans_inside_strings_preserved(self, client):
+    def test_python_booleans_inside_strings_preserved(self):
         """True/False/None inside quoted strings are NOT converted."""
-        result = client._sanitize_json_string('{"msg": "True story about None"}')
+        result = _sanitize_json_string('{"msg": "True story about None"}')
         assert result == '{"msg": "True story about None"}'
 
-    def test_trailing_commas(self, client):
+    def test_trailing_commas(self):
         """Trailing commas before } or ] are removed."""
-        result = client._sanitize_json_string('{"a": 1, "b": 2,}')
+        result = _sanitize_json_string('{"a": 1, "b": 2,}')
         assert result == '{"a": 1, "b": 2}'
 
-    def test_trailing_comma_in_array(self, client):
+    def test_trailing_comma_in_array(self):
         """Trailing commas in arrays are removed."""
-        result = client._sanitize_json_string("[1, 2, 3,]")
+        result = _sanitize_json_string("[1, 2, 3,]")
         assert result == "[1, 2, 3]"
 
-    def test_escaped_apostrophe_in_single_quoted_string(self, client):
+    def test_escaped_apostrophe_in_single_quoted_string(self):
         """Escaped apostrophes inside single-quoted strings are handled."""
         import json
 
-        result = client._sanitize_json_string("{'text': 'didn\\'t work'}")
+        result = _sanitize_json_string("{'text': 'didn\\'t work'}")
         parsed = json.loads(result)
         assert parsed["text"] == "didn't work"
 
-    def test_double_quotes_inside_single_quoted_string(self, client):
+    def test_double_quotes_inside_single_quoted_string(self):
         """Double quotes inside single-quoted strings are escaped."""
         import json
 
-        result = client._sanitize_json_string("{'text': 'he said \"hello\"'}")
+        result = _sanitize_json_string("{'text': 'he said \"hello\"'}")
         parsed = json.loads(result)
         assert parsed["text"] == 'he said "hello"'
 
-    def test_mixed_all_issues(self, client):
+    def test_mixed_all_issues(self):
         """Combined: single quotes, Python booleans, trailing comma."""
         import json
 
-        result = client._sanitize_json_string(
+        result = _sanitize_json_string(
             "{'is_success': True, 'failure_type': None, 'reason': 'ok',}"
         )
         parsed = json.loads(result)
         assert parsed == {"is_success": True, "failure_type": None, "reason": "ok"}
 
-    def test_valid_json_passthrough(self, client):
+    def test_valid_json_passthrough(self):
         """Already-valid JSON passes through unchanged."""
         original = '{"is_success": true, "count": 42}'
-        result = client._sanitize_json_string(original)
+        result = _sanitize_json_string(original)
         assert result == original
 
-    def test_word_boundary_prevents_partial_replacement(self, client):
+    def test_word_boundary_prevents_partial_replacement(self):
         """Words containing True/False as substrings are not replaced."""
-        result = client._sanitize_json_string('{"TrueValue": 1, "isFalsey": 2}')
+        result = _sanitize_json_string('{"TrueValue": 1, "isFalsey": 2}')
         assert '"TrueValue"' in result
         assert '"isFalsey"' in result

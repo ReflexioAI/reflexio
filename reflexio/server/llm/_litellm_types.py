@@ -12,7 +12,7 @@ so the ~102 importers are unchanged.
 
 import os
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel
 
@@ -39,7 +39,10 @@ class LiteLLMConfig:
         top_p: Top-p sampling parameter.
         api_key_config: Optional API key configuration from Config (overrides env vars).
         fallback_models: Models LiteLLM tries in order after the primary's single
-            attempt. Passed directly to litellm's fallbacks param.
+            transport attempt. Passed to litellm's fallbacks param within each
+            generation turn. For opted-in structured-output repair, the first
+            eligible network entry is also used as the final repair escalation
+            model after same-model repair fails.
             Default is an empty list (no fallback) so local reflexio and the
             claude-smart integration are never silently routed to an unintended
             provider. Production opts in via the env var
@@ -98,12 +101,51 @@ class LiteLLMClientError(Exception):
     """Custom exception for LiteLLM client errors."""
 
 
+class StructuredOutputRepairError(LiteLLMClientError):
+    """Raised when an opted-in structured-output repair ladder is exhausted.
+
+    Field pairing caveat: ``raw_content``/``validation_errors`` describe the
+    LAST attempt, while ``parsed_output`` falls back to the most recent attempt
+    that parsed at all — when the final attempt failed to parse, these fields
+    describe different attempts. Callers must not assume ``validation_errors``
+    were produced by validating ``parsed_output``.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        failure_kind: Literal["parse", "semantic", "refusal"],
+        model: str,
+        raw_content: str | None = None,
+        parsed_output: BaseModel | None = None,
+        validation_errors: tuple[str, ...] = (),
+    ) -> None:
+        super().__init__(message)
+        self.failure_kind = failure_kind
+        self.model = model
+        self.raw_content = raw_content
+        self.parsed_output = parsed_output
+        self.validation_errors = validation_errors
+
+
 class StructuredOutputParseError(Exception):
     """Raised when a structured-output LLM call returns content that cannot be parsed.
 
     Caught by the retry loop in ``_make_request`` so a malformed response
     burns a retry attempt rather than silently returning unparsed content.
     """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        raw_content: str | None = None,
+        finish_reason: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.raw_content = raw_content
+        self.finish_reason = finish_reason
 
 
 class LLMHardTimeoutError(TimeoutError):

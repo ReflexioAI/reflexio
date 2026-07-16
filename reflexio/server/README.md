@@ -131,6 +131,9 @@ Key files:
 - API keys read from environment variables (OPENAI_API_KEY, ANTHROPIC_API_KEY) or `ApiKeyConfig`
 - Interface: `generate_response()`, `generate_chat_response()`, `get_embedding()`
 - **Structured Outputs**: Supports Pydantic models via `response_format` parameter
+- **Structured-output repair**: `generate_chat_response(..., response_format=..., structured_output_validator=...)` opts a call into bounded corrective repair. The validator receives the parsed Pydantic object and returns semantic errors; an empty list means valid. Opted-in calls repair malformed, blank, and semantically invalid outputs with one same-model corrective follow-up. If that still fails and `REFLEXIO_LLM_FALLBACK_MODELS` has an eligible network fallback, one final corrective turn is sent to the first eligible fallback model. Exhaustion raises `StructuredOutputRepairError` with the latest raw/parsed response fields for programmatic handling; exception text does not include raw output.
+- **Two-level retry model**: transport failures/timeouts use LiteLLM's fallback ladder within a generation turn (`num_retries=0`, primary then configured fallbacks). Structured-output repair is across turns and is opt-in via `structured_output_validator`; callers without a validator keep the legacy one-shot blind parse retry.
+- **Fallback model dual role**: `REFLEXIO_LLM_FALLBACK_MODELS` now controls both transport availability and the optional final structured-output repair escalation. Entries are comma-separated LiteLLM model names; `local/*` entries and self-references are ignored for chat fallback. Operators should order the first eligible network model as the preferred repair escalation target. A smaller fallback is acceptable because escalated output must still pass schema parsing and the caller's semantic validator.
 - Return types: `str` for text, or `BaseModel` for Pydantic models
 
 **Usage**:

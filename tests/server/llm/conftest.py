@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import tempfile
 from collections.abc import Generator
 from unittest.mock import patch
@@ -36,8 +37,13 @@ def _isolate_machine_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture
-def storage() -> Generator[BaseStorage]:
+def storage(monkeypatch: pytest.MonkeyPatch) -> Generator[BaseStorage]:
     """Yield a fresh, isolated SQLiteStorage instance with migrations applied."""
+    # SQLiteStorage.__init__ resolves a generation model via provider
+    # auto-detection, which needs SOME provider key in the env. Guarantee one
+    # so the fixture works on machines without real API keys.
+    if not os.environ.get("OPENAI_API_KEY"):
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-placeholder-mock")
     with tempfile.TemporaryDirectory() as temp_dir:
         from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 

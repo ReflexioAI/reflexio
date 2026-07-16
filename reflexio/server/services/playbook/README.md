@@ -71,7 +71,7 @@ Consolidates newly extracted playbooks against existing playbooks in the databas
 - `differentiate` — archive the existing row and emit two refined rows (one per side) with sharpened triggers.
 - `independent` — both rows are kept; the new candidate is inserted alongside the existing row.
 
-A safety fallback inserts any new candidate that no decision consumed, so extracted data is never silently dropped on a malformed LLM response.
+The LLM call opts into the shared structured-output repair path: malformed, blank, or partition-invalid decisions get a corrective same-model follow-up, and deployments with `REFLEXIO_LLM_FALLBACK_MODELS` can use the first eligible fallback model for one final corrective turn. If repair exhausts, the consolidator applies the first parsed output through the defensive apply path; if nothing parsed, a safety fallback inserts every new candidate so extracted data is never silently dropped.
 
 ## Prompt IDs
 

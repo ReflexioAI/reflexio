@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from reflexio.models.api_schema.service_schemas import UserPlaybook
+from reflexio.server.llm.litellm_client import StructuredOutputRepairError
 from reflexio.server.services.playbook.components.consolidator import (
     DifferentiateDecision,
     IndependentDecision,
@@ -89,6 +90,38 @@ def _unify(
         trigger=trigger,
         rationale=rationale,
     )
+
+
+def _shared_repair_side_effect(*outputs: PlaybookConsolidationOutput):
+    """Simulate the shared client validator/repair contract for service tests."""
+
+    def _side_effect(*, response_format, structured_output_validator, model, **_kwargs):
+        assert response_format is PlaybookConsolidationOutput
+        first_output = outputs[0]
+        first_errors = structured_output_validator(first_output)
+        if not first_errors:
+            return first_output
+        if len(outputs) > 1:
+            repaired_output = outputs[1]
+            repaired_errors = structured_output_validator(repaired_output)
+            if not repaired_errors:
+                return repaired_output
+            raise StructuredOutputRepairError(
+                "repair exhausted",
+                failure_kind="semantic",
+                model=model,
+                parsed_output=repaired_output,
+                validation_errors=tuple(repaired_errors),
+            )
+        raise StructuredOutputRepairError(
+            "repair exhausted",
+            failure_kind="semantic",
+            model=model,
+            parsed_output=first_output,
+            validation_errors=tuple(first_errors),
+        )
+
+    return _side_effect
 
 
 # ===============================
@@ -1157,26 +1190,29 @@ class TestConsolidationRepair:
 
         mock_consolidator.client.get_embeddings.return_value = [[0.1], [0.2]]
         mock_consolidator.request_context.storage.search_user_playbooks.return_value = []
-        mock_consolidator.client.generate_chat_response.side_effect = [
-            PlaybookConsolidationOutput(
-                decisions=[
-                    _unify(
-                        "NEW-0",
-                        content="alpha beta gamma delta",
-                        trigger="when combined",
-                    )
-                ]
-            ),
-            PlaybookConsolidationOutput(
-                decisions=[
-                    _unify(
-                        ["NEW-0", "NEW-1"],
-                        content="alpha beta gamma delta",
-                        trigger="when combined",
-                    )
-                ]
-            ),
-        ]
+        bad_output = PlaybookConsolidationOutput(
+            decisions=[
+                _unify(
+                    "NEW-0",
+                    content="alpha beta gamma delta",
+                    trigger="when combined",
+                )
+            ]
+        )
+        mock_consolidator.client.generate_chat_response.side_effect = (
+            _shared_repair_side_effect(
+                bad_output,
+                PlaybookConsolidationOutput(
+                    decisions=[
+                        _unify(
+                            ["NEW-0", "NEW-1"],
+                            content="alpha beta gamma delta",
+                            trigger="when combined",
+                        )
+                    ]
+                ),
+            )
+        )
 
         with patch.dict("os.environ", {"MOCK_LLM_RESPONSE": "false"}):
             result, delete_ids, merge_groups = mock_consolidator.deduplicate(
@@ -1190,21 +1226,11 @@ class TestConsolidationRepair:
         assert result[0].source_interaction_ids == [10, 11]
         assert delete_ids == []
         assert merge_groups == []
-        assert mock_consolidator.client.generate_chat_response.call_count == 2
-
-        # The repair is a follow-up turn of the original conversation, so the
-        # model keeps the full first-turn context: [user: original prompt,
-        # assistant: the invalid decisions, user: errors + fix instruction].
-        first_call, repair_call = (
-            mock_consolidator.client.generate_chat_response.call_args_list
-        )
-        original_prompt = first_call.kwargs["messages"][0]["content"]
-        repair_messages = repair_call.kwargs["messages"]
-        assert [m["role"] for m in repair_messages] == ["user", "assistant", "user"]
-        assert repair_messages[0]["content"] == original_prompt
-        assert '"NEW-0"' in repair_messages[1]["content"]
-        assert "exactly once" in repair_messages[2]["content"]
-        assert "missing NEW ids: NEW-1" in repair_messages[2]["content"]
+        assert mock_consolidator.client.generate_chat_response.call_count == 1
+        validator = mock_consolidator.client.generate_chat_response.call_args.kwargs[
+            "structured_output_validator"
+        ]
+        assert any("missing NEW ids: NEW-1" in error for error in validator(bad_output))
 
     def test_repair_failure_falls_back_to_original_output(
         self, mock_consolidator, caplog
@@ -1227,12 +1253,14 @@ class TestConsolidationRepair:
                 )
             ]
         )
-        mock_consolidator.client.generate_chat_response.side_effect = [
-            original_output,
-            PlaybookConsolidationOutput(
-                decisions=[IndependentDecision(new_id="NEW-0")]
-            ),
-        ]
+        mock_consolidator.client.generate_chat_response.side_effect = (
+            _shared_repair_side_effect(
+                original_output,
+                PlaybookConsolidationOutput(
+                    decisions=[IndependentDecision(new_id="NEW-0")]
+                ),
+            )
+        )
 
         with (
             patch.dict("os.environ", {"MOCK_LLM_RESPONSE": "false"}),
@@ -1249,11 +1277,7 @@ class TestConsolidationRepair:
             "gamma delta",
         ]
         assert delete_ids == []
-        assert mock_consolidator.client.generate_chat_response.call_count == 2
-        assert any(
-            "event=consolidation_repair_failed" in record.message
-            for record in caplog.records
-        )
+        assert mock_consolidator.client.generate_chat_response.call_count == 1
 
     def test_suspicious_same_source_split_triggers_repair(self, mock_consolidator):
         new_0 = _make_user_playbook(
@@ -1269,27 +1293,30 @@ class TestConsolidationRepair:
 
         mock_consolidator.client.get_embeddings.return_value = [[0.1], [0.2]]
         mock_consolidator.request_context.storage.search_user_playbooks.return_value = []
-        mock_consolidator.client.generate_chat_response.side_effect = [
-            PlaybookConsolidationOutput(
-                decisions=[
-                    _unify(
-                        "NEW-0",
-                        content="check target group security group health check",
-                        trigger="when deploying",
-                    ),
-                    IndependentDecision(new_id="NEW-1"),
-                ]
-            ),
-            PlaybookConsolidationOutput(
-                decisions=[
-                    _unify(
-                        ["NEW-0", "NEW-1"],
-                        content="check target group security group health check",
-                        trigger="when deploying",
-                    )
-                ]
-            ),
-        ]
+        bad_output = PlaybookConsolidationOutput(
+            decisions=[
+                _unify(
+                    "NEW-0",
+                    content="check target group security group health check",
+                    trigger="when deploying",
+                ),
+                IndependentDecision(new_id="NEW-1"),
+            ]
+        )
+        mock_consolidator.client.generate_chat_response.side_effect = (
+            _shared_repair_side_effect(
+                bad_output,
+                PlaybookConsolidationOutput(
+                    decisions=[
+                        _unify(
+                            ["NEW-0", "NEW-1"],
+                            content="check target group security group health check",
+                            trigger="when deploying",
+                        )
+                    ]
+                ),
+            )
+        )
 
         with patch.dict("os.environ", {"MOCK_LLM_RESPONSE": "false"}):
             result, _, _ = mock_consolidator.deduplicate(
@@ -1300,7 +1327,7 @@ class TestConsolidationRepair:
 
         assert len(result) == 1
         assert result[0].source_interaction_ids == [15, 16]
-        assert mock_consolidator.client.generate_chat_response.call_count == 2
+        assert mock_consolidator.client.generate_chat_response.call_count == 1
 
     def test_low_overlap_same_source_split_does_not_trigger_repair(
         self, mock_consolidator
@@ -1407,7 +1434,7 @@ class TestConsolidationRepair:
 
         mock_consolidator.client.get_embeddings.return_value = [[0.1], [0.2]]
         mock_consolidator.request_context.storage.search_user_playbooks.return_value = []
-        mock_consolidator.client.generate_chat_response.side_effect = [
+        mock_consolidator.client.generate_chat_response.side_effect = _shared_repair_side_effect(
             PlaybookConsolidationOutput(
                 decisions=[
                     _unify(
@@ -1431,7 +1458,7 @@ class TestConsolidationRepair:
                     )
                 ]
             ),
-        ]
+        )
 
         with patch.dict("os.environ", {"MOCK_LLM_RESPONSE": "false"}):
             result, _, _ = mock_consolidator.deduplicate(
@@ -1442,7 +1469,7 @@ class TestConsolidationRepair:
 
         assert len(result) == 1
         assert result[0].source_interaction_ids == [15, 16]
-        assert mock_consolidator.client.generate_chat_response.call_count == 2
+        assert mock_consolidator.client.generate_chat_response.call_count == 1
 
     def test_distinct_sibling_unifies_do_not_trigger_repair(self, mock_consolidator):
         """Same-source unify pair with genuinely different final contents is a
@@ -1513,10 +1540,9 @@ class TestConsolidationRepair:
 
         mock_consolidator.client.get_embeddings.return_value = [[0.1], [0.2]]
         mock_consolidator.request_context.storage.search_user_playbooks.return_value = []
-        mock_consolidator.client.generate_chat_response.side_effect = [
-            same_output,
-            same_output,
-        ]
+        mock_consolidator.client.generate_chat_response.side_effect = (
+            _shared_repair_side_effect(same_output, same_output)
+        )
 
         with patch.dict("os.environ", {"MOCK_LLM_RESPONSE": "false"}):
             result, _, _ = mock_consolidator.deduplicate(
@@ -1526,7 +1552,7 @@ class TestConsolidationRepair:
             )
 
         assert len(result) == 2
-        assert mock_consolidator.client.generate_chat_response.call_count == 2
+        assert mock_consolidator.client.generate_chat_response.call_count == 1
 
     def test_same_batch_duplicate_regression_drops_raw_source_after_repair(
         self, mock_consolidator
@@ -1544,26 +1570,28 @@ class TestConsolidationRepair:
 
         mock_consolidator.client.get_embeddings.return_value = [[0.1], [0.2]]
         mock_consolidator.request_context.storage.search_user_playbooks.return_value = []
-        mock_consolidator.client.generate_chat_response.side_effect = [
-            PlaybookConsolidationOutput(
-                decisions=[
-                    _unify(
-                        "NEW-0",
-                        content="Always update target groups and security groups.",
-                        trigger="when changing AWS deploy wiring",
-                    )
-                ]
-            ),
-            PlaybookConsolidationOutput(
-                decisions=[
-                    _unify(
-                        ["NEW-0", "NEW-1"],
-                        content="Always update target groups and security groups.",
-                        trigger="when changing AWS deploy wiring",
-                    )
-                ]
-            ),
-        ]
+        mock_consolidator.client.generate_chat_response.side_effect = (
+            _shared_repair_side_effect(
+                PlaybookConsolidationOutput(
+                    decisions=[
+                        _unify(
+                            "NEW-0",
+                            content="Always update target groups and security groups.",
+                            trigger="when changing AWS deploy wiring",
+                        )
+                    ]
+                ),
+                PlaybookConsolidationOutput(
+                    decisions=[
+                        _unify(
+                            ["NEW-0", "NEW-1"],
+                            content="Always update target groups and security groups.",
+                            trigger="when changing AWS deploy wiring",
+                        )
+                    ]
+                ),
+            )
+        )
 
         with patch.dict("os.environ", {"MOCK_LLM_RESPONSE": "false"}):
             result, _, _ = mock_consolidator.deduplicate(

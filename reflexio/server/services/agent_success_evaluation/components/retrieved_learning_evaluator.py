@@ -20,10 +20,11 @@ import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
-from pydantic import ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from reflexio.models.api_schema.domain import RetrievedLearningEvaluationResult
 from reflexio.models.structured_output import StrictStructuredOutput
+from reflexio.server.llm.litellm_client import LiteLLMClientError
 from reflexio.server.llm.model_defaults import ModelRole, resolve_model_name
 from reflexio.server.services.service_utils import (
     log_llm_messages,
@@ -492,9 +493,9 @@ class RetrievedLearningEvaluator:
         """Run one judge call for one chunk, with one bounded semantic repair.
 
         A response is valid only when its verdict refs exactly equal the
-        chunk's input refs (no duplicates, no missing, no unknown). One
-        corrective retry naming only the coverage error; after the second
-        failure the chunk is marked failed.
+        chunk's input refs (no duplicates, no missing, no unknown). The shared
+        client repair ladder names only the coverage error; if repair exhausts,
+        the chunk is marked failed.
         """
         expected_refs = {c.learning_ref for c in chunk}
         variables: dict[str, Any] = {
@@ -508,48 +509,48 @@ class RetrievedLearningEvaluator:
             variables["success_definition_prompt"] = self.success_definition
         prompt = self.request_context.prompt_manager.render_prompt(prompt_id, variables)
         messages: list[dict[str, Any]] = [{"role": "user", "content": prompt}]
-        for attempt in range(2):
-            log_llm_messages(logger, f"Retrieved-learning judge {prompt_id}", messages)
+
+        def _validate_output(output: BaseModel) -> list[str]:
+            if not isinstance(output, output_model):
+                return [f"Unexpected output type: {type(output).__name__}."]
+            coverage_error = _verdict_coverage_error(
+                [v.learning_ref for v in output.verdicts], expected_refs
+            )
+            if coverage_error is None:
+                return []
+            return [
+                f"Coverage error: {coverage_error}.",
+                "Return exactly one verdict per learning_ref listed in the "
+                "original prompt; no duplicates, no omissions, no other refs.",
+            ]
+
+        log_llm_messages(logger, f"Retrieved-learning judge {prompt_id}", messages)
+        try:
             response = self.client.generate_chat_response(
                 messages=messages,
                 model=self.model_name,
                 response_format=output_model,
+                structured_output_validator=_validate_output,
             )
-            if not isinstance(response, output_model):
-                logger.warning(
-                    "event=retrieved_learning_eval_judge_bad_response prompt=%s"
-                    " attempt=%d type=%s",
-                    prompt_id,
-                    attempt,
-                    type(response).__name__,
-                )
-                return None
-            log_model_response(logger, f"Judge {prompt_id} response", response)
-            coverage_error = _verdict_coverage_error(
-                [v.learning_ref for v in response.verdicts], expected_refs
+        except LiteLLMClientError as exc:
+            # Covers StructuredOutputRepairError (repair exhausted) and
+            # transport failures alike; the client already logged specifics,
+            # this adds the prompt context it doesn't have.
+            logger.warning(
+                "event=retrieved_learning_eval_judge_failed prompt=%s error_type=%s",
+                prompt_id,
+                type(exc).__name__,
             )
-            if coverage_error is None:
-                return response
-            if attempt == 0:
-                logger.info(
-                    "event=retrieved_learning_eval_chunk_retry prompt=%s reason=%s",
-                    prompt_id,
-                    coverage_error,
-                )
-                messages = [
-                    *messages,
-                    {"role": "assistant", "content": response.model_dump_json()},
-                    {
-                        "role": "user",
-                        "content": (
-                            "Your previous response had a coverage error:"
-                            f" {coverage_error}. Return exactly one verdict per"
-                            " learning_ref listed in the original prompt — no"
-                            " duplicates, no omissions, no other refs."
-                        ),
-                    },
-                ]
-        return None
+            return None
+        if not isinstance(response, output_model):
+            logger.warning(
+                "event=retrieved_learning_eval_judge_bad_response prompt=%s type=%s",
+                prompt_id,
+                type(response).__name__,
+            )
+            return None
+        log_model_response(logger, f"Judge {prompt_id} response", response)
+        return response
 
 
 def _verdict_coverage_error(refs: list[str], expected: set[str]) -> str | None:
