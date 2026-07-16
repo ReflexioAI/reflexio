@@ -75,7 +75,7 @@ class StructuredPlaybookContent(BaseModel):
     )
     trigger: str | None = Field(
         default=None,
-        description="The condition or context when this rule applies",
+        description="The condition or context when this rule applies, evaluable at the earliest decision point — do not require facts that only appear later in the conversation",
     )
     content: str | None = Field(
         default=None,
