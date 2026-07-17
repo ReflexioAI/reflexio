@@ -46,7 +46,7 @@ def compute_hero_state(
             grade. (Note: the direct-grade `shadow_is_success` /
             `shadow_is_escalated` columns added briefly in May 2026 were
             retracted before any production deploy — see the deleted
-            migration pair in supabase/data/supabase/migrations/. The
+            migration pair in supabase/data/tenant/. The
             per-turn shadow grade in F1 lives on a different surface.)
         total_results (int): Total AgentSuccessEvaluationResult rows in the
             trend window, used to distinguish EMPTY from states with data.
