@@ -5,6 +5,9 @@ from unittest.mock import ANY, MagicMock, patch
 import pytest
 
 import reflexio.server.llm.rerank.cross_encoder_reranker as reranker
+from reflexio.server.llm.rerank.cross_encoder_reranker import (
+    CrossEncoderUnavailableError,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -61,3 +64,12 @@ def test_score_pairs_forces_identity_activation_for_raw_logits():
     assert scores == [-3.5]
     _, kwargs = model.predict.call_args
     assert isinstance(kwargs["activation_fn"], nn.Identity)
+
+
+def test_score_pairs_predict_failure_raises_unavailable():
+    model = MagicMock()
+    model.predict.side_effect = RuntimeError("cuda oom")
+    reranker._MODEL = model
+
+    with pytest.raises(CrossEncoderUnavailableError):
+        reranker.score_pairs("query", ["doc"])

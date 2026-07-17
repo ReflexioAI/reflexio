@@ -25,12 +25,17 @@ import os
 import threading
 from typing import Any
 
+import httpx
+
+from reflexio.server.env_utils import env_str
+
 _LOGGER = logging.getLogger(__name__)
 
 # HuggingFace identifier for the cross-encoder. Chosen for the
 # size/quality trade-off: 22M parameters, ~50 ms for K=30 on CPU,
 # well-known MS-MARCO benchmark performance.
-_MODEL_NAME = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+RERANK_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+_MODEL_NAME = RERANK_MODEL
 
 # Device override for the cross-encoder. Defaults to CPU: without an
 # explicit device sentence-transformers auto-selects MPS on Apple
@@ -38,10 +43,14 @@ _MODEL_NAME = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 # GPU buffers it never returns to the OS — and the 22M-param model
 # gains nothing from GPU at K=30 pairs. Mirrors NOMIC_EMBED_DEVICE.
 _DEVICE_ENV_VAR = "REFLEXIO_RERANK_DEVICE"
+_SERVICE_URL_ENV_VAR = "REFLEXIO_RERANK_SERVICE_URL"
+_SERVICE_TIMEOUT_MS_ENV_VAR = "REFLEXIO_RERANK_SERVICE_TIMEOUT_MS"
+_DEFAULT_SERVICE_TIMEOUT_MS = 5_000
 
 # Singleton state — never accessed directly outside ``_get_model``.
 _MODEL: Any | None = None
 _MODEL_LOCK = threading.Lock()
+_PREDICT_LOCK = threading.Lock()
 
 
 class CrossEncoderUnavailableError(RuntimeError):
@@ -130,6 +139,9 @@ def _get_model() -> Any:
 def score_pairs(query: str, docs: list[str]) -> list[float]:
     """Score ``(query, doc)`` pairs with the cross-encoder.
 
+    When ``REFLEXIO_RERANK_SERVICE_URL`` is set, scoring is delegated to that
+    internal service. Otherwise the local in-process cross-encoder is used.
+
     Higher score means more relevant. Scores are not bounded to a fixed
     range — they are raw model logits — so callers should treat them as
     opaque relative-ranking signal, not as probabilities.
@@ -143,9 +155,19 @@ def score_pairs(query: str, docs: list[str]) -> list[float]:
             ``docs``. Empty list when ``docs`` is empty.
 
     Raises:
-        CrossEncoderUnavailableError: If the cross-encoder cannot be
-            loaded (re-raised from :func:`_get_model`).
+        CrossEncoderUnavailableError: If the cross-encoder cannot be loaded or
+            the configured service cannot score the request.
     """
+    if not docs:
+        return []
+    service_url = env_str(_SERVICE_URL_ENV_VAR)
+    if service_url:
+        return _score_pairs_remote(service_url, query, docs)
+    return _score_pairs_local(query, docs)
+
+
+def _score_pairs_local(query: str, docs: list[str]) -> list[float]:
+    """Score pairs with this process's local cross-encoder instance."""
     if not docs:
         return []
     model = _get_model()
@@ -157,14 +179,89 @@ def score_pairs(query: str, docs: list[str]) -> list[float]:
             "torch is not installed; cannot use the cross-encoder reranker"
         ) from e
 
-    raw_scores = model.predict(
-        pairs,
-        show_progress_bar=False,
-        activation_fn=nn.Identity(),
-    )
-    # ``predict`` returns a numpy array; convert to plain Python floats so
-    # the caller can serialise the result without numpy as a dependency.
-    return [float(s) for s in raw_scores]
+    try:
+        with _PREDICT_LOCK:
+            raw_scores = model.predict(
+                pairs,
+                show_progress_bar=False,
+                activation_fn=nn.Identity(),
+            )
+        # ``predict`` returns a numpy array; convert to plain Python floats so
+        # the caller can serialise the result without numpy as a dependency.
+        return [float(s) for s in raw_scores]
+    except Exception as e:  # noqa: BLE001 — surface score failures as degraded rerank
+        raise CrossEncoderUnavailableError(
+            f"Failed to score with cross-encoder model {_MODEL_NAME!r}: {e}"
+        ) from e
+
+
+def _score_pairs_remote(service_url: str, query: str, docs: list[str]) -> list[float]:
+    """Score pairs through an internal reranker service."""
+    url = f"{service_url.rstrip('/')}/v1/rerank"
+    payload = {"model": RERANK_MODEL, "query": query, "documents": docs}
+    try:
+        response = httpx.post(
+            url,
+            json=payload,
+            timeout=_rerank_service_timeout_seconds(),
+        )
+        response.raise_for_status()
+        body = response.json()
+        return _ordered_scores_from_response(body.get("data"), len(docs))
+    except (httpx.HTTPError, ValueError, TypeError, KeyError, AttributeError) as exc:
+        raise CrossEncoderUnavailableError(
+            f"Rerank service request failed at {url}: {exc}"
+        ) from exc
+
+
+def _rerank_service_timeout_seconds() -> float:
+    raw = env_str(_SERVICE_TIMEOUT_MS_ENV_VAR, str(_DEFAULT_SERVICE_TIMEOUT_MS))
+    try:
+        timeout_ms = int(raw)
+    except ValueError as exc:
+        raise CrossEncoderUnavailableError(
+            f"{_SERVICE_TIMEOUT_MS_ENV_VAR} must be an integer number of milliseconds"
+        ) from exc
+    return max(timeout_ms, 1) / 1000
+
+
+def _ordered_scores_from_response(data: Any, expected_count: int) -> list[float]:
+    if not isinstance(data, list):
+        raise ValueError("rerank service response is missing data[]")
+    if len(data) != expected_count:
+        raise ValueError(
+            "rerank service response cardinality mismatch: "
+            f"expected {expected_count}, got {len(data)}"
+        )
+
+    seen: set[int] = set()
+    indexed_scores: list[tuple[int, float]] = []
+    for item in data:
+        if not isinstance(item, dict):
+            raise ValueError("rerank service response data[] has invalid item")
+
+        index = item.get("index")
+        if type(index) is not int:
+            raise ValueError("rerank service response has invalid index")
+        if index in seen:
+            raise ValueError(f"rerank service response has duplicate index {index}")
+        if index < 0 or index >= expected_count:
+            raise ValueError(f"rerank service response has out-of-range index {index}")
+        seen.add(index)
+
+        score = item.get("score")
+        if not isinstance(score, int | float) or isinstance(score, bool):
+            raise ValueError("rerank service response has invalid score")
+        indexed_scores.append((index, float(score)))
+
+    expected_indices = set(range(expected_count))
+    if seen != expected_indices:
+        raise ValueError(
+            "rerank service response indices mismatch: "
+            f"expected {sorted(expected_indices)}, got {sorted(seen)}"
+        )
+
+    return [score for _, score in sorted(indexed_scores)]
 
 
 def prewarm() -> bool:

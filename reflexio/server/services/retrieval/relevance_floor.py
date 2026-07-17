@@ -104,10 +104,9 @@ def apply_relevance_floors(
 ) -> list[RelevanceFloorResult]:
     """Floor every arm with a single cross-encoder batch.
 
-    CPU cross-encoder inference does not parallelize across threads, so
-    scoring all arms in one ``score_pairs`` call beats one call per arm:
-    the model runs one batched forward pass and per-call overhead is paid
-    once.
+    Scoring all arms in one ``score_pairs`` call beats one call per arm:
+    the model or remote rerank service runs one batched scoring pass and
+    per-call overhead is paid once.
 
     Args:
         query: The search query.

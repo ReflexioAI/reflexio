@@ -21,6 +21,11 @@ from reflexio.server.llm.providers.nomic_embedding_provider import (
     NomicEmbedder,
     is_nomic_model,
 )
+from reflexio.server.llm.rerank.cross_encoder_reranker import (
+    RERANK_MODEL,
+    CrossEncoderUnavailableError,
+    _score_pairs_local,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -119,6 +124,23 @@ class EmbeddingResponse(BaseModel):
     model: str
 
 
+class RerankRequest(BaseModel):
+    model: str
+    query: str
+    documents: list[str]
+
+
+class RerankData(BaseModel):
+    index: int
+    score: float
+
+
+class RerankResponse(BaseModel):
+    object: str = "list"
+    data: list[RerankData]
+    model: str
+
+
 def create_embedding_app(default_model: str | None = None) -> FastAPI:
     """Create the embedding daemon app and optionally warm a default model."""
 
@@ -158,6 +180,26 @@ def create_embedding_app(default_model: str | None = None) -> FastAPI:
             data=[
                 EmbeddingData(embedding=embedding, index=index)
                 for index, embedding in enumerate(embeddings)
+            ],
+            model=request.model,
+        )
+
+    @embedding_app.post("/v1/rerank")
+    def create_rerank_scores(request: RerankRequest) -> RerankResponse:
+        """Score query/document pairs using this daemon's local cross-encoder."""
+        if request.model != RERANK_MODEL:
+            raise HTTPException(
+                status_code=400, detail=f"Unsupported model: {request.model}"
+            )
+        try:
+            scores = _score_pairs_local(request.query, request.documents)
+        except CrossEncoderUnavailableError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+        return RerankResponse(
+            data=[
+                RerankData(index=index, score=score)
+                for index, score in enumerate(scores)
             ],
             model=request.model,
         )
