@@ -131,7 +131,9 @@ def test_publish_generation_passes_source_request_id_to_legacy_dtos(
         llm_client = LiteLLMClient(llm_config)
         generation_service = GenerationService(
             llm_client=llm_client,
-            request_context=RequestContext(org_id="test_org", storage_base_dir=temp_dir),
+            request_context=RequestContext(
+                org_id="test_org", storage_base_dir=temp_dir
+            ),
         )
         request = PublishUserInteractionRequest(
             request_id=source_request_id,
@@ -148,12 +150,8 @@ def test_publish_generation_passes_source_request_id_to_legacy_dtos(
         result = generation_service.run(request)
 
     assert result.request_id == source_request_id
-    assert [req.request_id for req in captured_profile_requests] == [
-        source_request_id
-    ]
-    assert [req.request_id for req in captured_playbook_requests] == [
-        source_request_id
-    ]
+    assert [req.request_id for req in captured_profile_requests] == [source_request_id]
+    assert [req.request_id for req in captured_playbook_requests] == [source_request_id]
 
 
 def test_publish_request_tagging_schedule_failure_is_best_effort(mock_llm_responses):

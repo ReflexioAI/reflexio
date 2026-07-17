@@ -6,15 +6,12 @@ Verifies that:
    change-log rows (not merged/collapsed).
 2. Empty-request_id group is SKIPPED — the new model guards against merging
    unrelated runs under "".
-3. ReflectionServiceRequest.request_id has a non-empty default_factory so the
-   production path always supplies a non-empty id.
-4. supersede_record and merge_records raise ValueError on empty/None
+3. supersede_record and merge_records raise ValueError on empty/None
    context.request_id (production raise, not a test-only helper).
 """
 
 from __future__ import annotations
 
-import uuid
 from datetime import UTC, datetime
 
 import pytest
@@ -179,47 +176,7 @@ def test_empty_request_id_group_is_skipped(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Test 3 — ReflectionServiceRequest has a non-empty default_factory
-# (production safety: no production call path arrives with an empty id)
-# ---------------------------------------------------------------------------
-
-
-def test_reflection_service_request_default_request_id_is_nonempty():
-    """ReflectionServiceRequest.request_id default_factory yields a non-empty str.
-
-    The default_factory is ``lambda: uuid.uuid4().hex``.  This test proves that
-    a bare ``ReflectionServiceRequest(user_id="u")`` always carries a non-empty
-    request_id — so the production reflection→supersede path is guarded by
-    construction.
-    """
-    from reflexio.server.services.reflection.reflection_service_utils import (
-        ReflectionServiceRequest,
-    )
-
-    req = ReflectionServiceRequest(user_id="u1")
-    assert req.request_id != "", "default request_id must be non-empty"
-    assert len(req.request_id) > 0
-
-    # Two independently-constructed requests must not share the same id.
-    req2 = ReflectionServiceRequest(user_id="u1")
-    assert req.request_id != req2.request_id, (
-        "each ReflectionServiceRequest must mint a unique request_id by default"
-    )
-
-
-def test_reflection_service_request_explicit_request_id_preserved():
-    """An explicitly-supplied request_id is passed through unchanged."""
-    from reflexio.server.services.reflection.reflection_service_utils import (
-        ReflectionServiceRequest,
-    )
-
-    fixed_id = uuid.uuid4().hex
-    req = ReflectionServiceRequest(user_id="u1", request_id=fixed_id)
-    assert req.request_id == fixed_id
-
-
-# ---------------------------------------------------------------------------
-# Test 4 — supersede_record and merge_records raise on empty request_id
+# Test 3 — supersede_record and merge_records raise on empty request_id
 # (production guards in _lineage.py, not a test-only helper)
 # ---------------------------------------------------------------------------
 

@@ -57,7 +57,6 @@ PROMPT_VERSION_MAP: dict[str, tuple[str, str | None]] = {
     # registry key was removed, so they are mapped without a registry key.
     "agent_success_evaluation_with_comparison": ("v1.0.0", None),
     "shadow_content_evaluation": ("v1.0.0", None),
-    "memory_reflection": ("v1.7.0", None),
     # v2.0.0: structured output — rewrite + temporal signals (window,
     # recency_dominant, wants_current) in the same pre-search LLM call.
     "query_reformulation": ("v2.0.0", "query_reformulation"),

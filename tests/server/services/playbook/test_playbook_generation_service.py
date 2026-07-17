@@ -317,12 +317,15 @@ def test_maybe_trigger_user_playbook_aggregation_reports_timeout_saturation():
     ctx = MagicMock(configurator=configurator, org_id="test-org")
     task_results: list[Any] = []
 
-    with patch(
-        "reflexio.server.services.playbook.aggregation_trigger.run_with_operation_limit",
-        side_effect=TimeoutError("aggregation limiter saturated"),
-    ), patch(
-        "reflexio.server.services.playbook.aggregation_trigger._start_aggregation_thread",
-        side_effect=lambda task: task_results.append(task()),
+    with (
+        patch(
+            "reflexio.server.services.playbook.aggregation_trigger.run_with_operation_limit",
+            side_effect=TimeoutError("aggregation limiter saturated"),
+        ),
+        patch(
+            "reflexio.server.services.playbook.aggregation_trigger._start_aggregation_thread",
+            side_effect=lambda task: task_results.append(task()),
+        ),
     ):
         result = maybe_trigger_user_playbook_aggregation(
             request_context=ctx,

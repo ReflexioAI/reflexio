@@ -44,7 +44,7 @@ def test_dispatcher_rejects_single_fact_questions(query: str) -> None:
 
 # NOTE: The agentic search-agent pipeline (``render_search_prompt``, the
 # ``search_agent`` prompt bank, per-pattern A-H recipes, and Pattern D
-# conditional rehydration) was removed in the "post-horizon reflection +
-# polarity-aware playbook lifecycle" work. The ``is_pattern_d_question``
+# conditional rehydration) was removed during the polarity-aware playbook
+# lifecycle work. The ``is_pattern_d_question``
 # classifier survives, so its tests above are retained; the render-path tests
 # that exercised the deleted ``render_search_prompt`` API were removed.

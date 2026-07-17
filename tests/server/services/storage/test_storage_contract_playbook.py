@@ -178,7 +178,7 @@ class TestUserPlaybookCRUD:
 
 
 class TestGetUserPlaybooksByIds:
-    """Contract tests for get_user_playbooks_by_ids (used by ReflectionService)."""
+    """Contract tests for the shared get_user_playbooks_by_ids lookup."""
 
     def test_returns_only_requested_ids(self, storage):
         storage.save_user_playbooks(
@@ -282,7 +282,7 @@ class TestGetUserPlaybooksByIds:
 
 
 class TestArchiveUserPlaybookById:
-    """Contract tests for archive_user_playbook_by_id (used by ReflectionService)."""
+    """Contract tests for the shared archive_user_playbook_by_id mutation."""
 
     def test_archives_current_playbook(self, storage):
         storage.save_user_playbooks([_make_user_playbook(1, "u1", "fb", "v1")])

@@ -22,15 +22,10 @@ judge*. A cheap deterministic *kind accuracy* is tracked alongside.
 | `runner.py` | `run_eval` runner + `EvalResults` metrics (kind accuracy, judge agreement, over/under-merge, self-contradiction) |
 | `fixtures/` | `illustrative_cases.json` + loader (`load_illustrative_cases`) |
 
-Mirrors the conventions of `tests/eval/reflection/` (Pydantic verdict,
-`LiteLLMClient`-style client, model never hardcoded — it comes from the
-rubric's `judge_model`).
-
 ## Kind mapping (explicit, not heuristic)
 
-Unlike the reflection harness — whose decision carries no mode label and must
-be reconstructed from field presence — a consolidation decision carries an
-explicit discriminator `kind` (`unify` / `reject_new` / `differentiate` /
+ A consolidation decision carries an explicit discriminator `kind`
+(`unify` / `reject_new` / `differentiate` /
 `independent`). So `kind_for_decision(decision)` simply returns
 `decision.kind`; there is no heuristic to get wrong.
 

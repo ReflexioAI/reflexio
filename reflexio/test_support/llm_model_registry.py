@@ -53,9 +53,6 @@ def _build_registry() -> dict[str, ModelRegistryEntry]:
         ProfileUpdateOutput,
         StructuredProfilesOutput,
     )
-    from reflexio.server.services.reflection.reflection_service_utils import (
-        ReflectionOutput,
-    )
     from reflexio.server.services.tagging.service import TagsOutput
 
     return {
@@ -146,18 +143,6 @@ def _build_registry() -> dict[str, ModelRegistryEntry]:
         "tagging": ModelRegistryEntry(
             model_class=TagsOutput,
             minimal_valid={"tags": ["example_tag"]},
-        ),
-        "reflection": ModelRegistryEntry(
-            model_class=ReflectionOutput,
-            minimal_valid={
-                "decisions": [
-                    {
-                        "target_kind": "profile",
-                        "target_id": "PROFILE-0",
-                        "reason": "no change",
-                    },
-                ],
-            },
         ),
         "playbook_optimizer_judge": ModelRegistryEntry(
             model_class=JudgeOutput,

@@ -3,8 +3,8 @@
 Scaffolding to score the **extractor** (profiles + playbooks) against curated
 gold cases, and to catch regressions when the extraction prompts change.
 
-It is **AI-judged** and **float-scored** — unlike the reflection /
-consolidation *decision*-evals (which classify a decision into a discrete
+It is **AI-judged** and **float-scored** — unlike consolidation decision evals
+(which classify a decision into a discrete
 kind), extraction quality is graded by an LLM judge on two continuous
 dimensions. The judge, rubric, golden cases, and fixtures already exist; this
 package adds the **runner** that wires them together (load → extract / supply →

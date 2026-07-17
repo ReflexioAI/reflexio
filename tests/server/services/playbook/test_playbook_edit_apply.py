@@ -220,7 +220,7 @@ def test_apply_raises_on_empty_or_none_request_id(bad_request_id):
 def test_apply_lineage_event_carries_operation_run_id():
     """apply_playbook_edit records the operation-run request_id on the revise event.
 
-    The lineage event must carry the operation request_id (the reflection run id),
+    The lineage event must carry the operation request_id,
     NOT the incumbent's birth request_id.  This enables correct run-correlation.
     """
     from reflexio.server.services.playbook.playbook_edit_apply import (
@@ -235,13 +235,13 @@ def test_apply_lineage_event_carries_operation_run_id():
             old_id = old.user_playbook_id
             assert old_id > 0
 
-            operation_run_id = "reflection_run_xyz"
+            operation_run_id = "optimizer_run_xyz"
             new = _playbook(content="new")
             new_id = apply_playbook_edit(
                 s,
                 incumbent_id=old_id,
                 new_playbook=new,
-                source="reflection",
+                source="offline_optimizer",
                 request_id=operation_run_id,
             )
         assert new_id > 0

@@ -13,8 +13,6 @@ import pytest
 from tests.eval import prompt_deviation_guard as guard
 from tests.eval.consolidation.runner import CaseOutcome as ConsOutcome
 from tests.eval.consolidation.runner import EvalResults as ConsResults
-from tests.eval.reflection.runner import CaseOutcome as ReflOutcome
-from tests.eval.reflection.runner import EvalResults as ReflResults
 
 
 def _cons(rows, *, judged: bool = False) -> ConsResults:
@@ -29,22 +27,6 @@ def _cons(rows, *, judged: bool = False) -> ConsResults:
                 kind_match=(gold == produced),
                 judge_correct=(gold == produced) if judged else None,
                 self_contradiction=False if (judged and produced == "unify") else None,
-            )
-        )
-    return res
-
-
-def _refl(rows, *, judged: bool = False) -> ReflResults:
-    """Build reflection ``EvalResults`` from ``(case_id, gold, produced)``."""
-    res = ReflResults()
-    for cid, gold, produced in rows:
-        res.outcomes.append(
-            ReflOutcome(
-                case_id=cid,
-                gold_label=gold,
-                produced_label=produced,
-                label_match=(gold == produced),
-                judge_correct=(gold == produced) if judged else None,
             )
         )
     return res
@@ -96,14 +78,6 @@ def test_kind_accuracy_drop_fails() -> None:
     assert _metric(report, "kind_accuracy").delta == -1.0
 
 
-def test_label_accuracy_drop_fails_reflection() -> None:
-    base = _refl([(str(i), "widen", "widen") for i in range(4)])  # 1.0
-    cand = _refl([(str(i), "widen", "no_change") for i in range(4)])  # 0.0
-    report = guard.compare(component="reflection", baseline=base, candidate=cand)
-    assert not report.passed
-    assert _metric(report, "label_accuracy").regressed
-
-
 # ---------------------------------------------------------------------------
 # FAIL — lower-is-better metric rises
 # ---------------------------------------------------------------------------
@@ -121,17 +95,6 @@ def test_over_merge_rate_rise_fails() -> None:
     assert not report.passed
     # kind_accuracy unchanged (0.0 -> 0.0), so it must NOT be flagged.
     assert not _metric(report, "kind_accuracy").regressed
-
-
-def test_false_tighten_rate_rise_fails_reflection() -> None:
-    base = _refl([("a", "widen", "no_change")])  # not a false tighten
-    cand = _refl([("a", "widen", "tighten")])  # gold != tighten, produced tighten
-    report = guard.compare(component="reflection", baseline=base, candidate=cand)
-    ft = _metric(report, "false_tighten_rate")
-    assert ft.baseline == 0.0
-    assert ft.candidate == 1.0
-    assert ft.regressed
-    assert not report.passed
 
 
 # ---------------------------------------------------------------------------
@@ -164,9 +127,8 @@ def test_agreement_rate_counts_unchanged_cases() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_prompt_ids_resolve_for_both_components() -> None:
+def test_prompt_id_resolves() -> None:
     assert guard._prompt_id("consolidation") == "playbook_consolidation"
-    assert guard._prompt_id("reflection") == "memory_reflection"
 
 
 def test_metric_specs_cover_every_component() -> None:
@@ -174,10 +136,9 @@ def test_metric_specs_cover_every_component() -> None:
         specs = guard._METRIC_SPECS[component]
         assert specs
         # Every spec name must be a real EvalResults property.
-        results_cls = ConsResults if component == "consolidation" else ReflResults
         for spec in specs:
             assert isinstance(
-                getattr(results_cls(), spec.name, "MISSING"), (float, type(None))
+                getattr(ConsResults(), spec.name, "MISSING"), (float, type(None))
             )
 
 

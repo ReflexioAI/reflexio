@@ -1,7 +1,7 @@
 """Shared atomic supersede primitive for applying a playbook edit.
 
-Extracted from ReflectionService._replace_playbook so online and background
-playbook repair paths share one lifecycle (insert-then-supersede, no orphan).
+Online and background playbook repair paths share one lifecycle
+(insert-then-supersede, no orphan).
 """
 
 from typing import TYPE_CHECKING
@@ -41,15 +41,12 @@ def apply_playbook_edit(
         source: Provenance label stored on the new playbook row and in the
             lineage event actor field.
         request_id: Operation-run correlation id for the lineage event. Must be
-            non-empty; use the reflection run id (``ReflectionServiceRequest.request_id``)
-            or another operation-scoped id. Raises ``ValueError`` immediately
-            (before any storage write) when empty, preventing orphaned successor rows.
+            non-empty; use an operation-scoped id. Raises ``ValueError``
+            immediately (before any storage write) when empty, preventing
+            orphaned successor rows.
         skip_embedding: Forwarded to ``save_user_playbooks``. Defaults to
             ``False`` (recompute the embedding at write time — what every online
-            / offline-tuner caller relies on). The durable reflection persist
-            path passes ``True`` because the successor's embedding was already
-            precomputed off the writer transaction, so no embedding runs inside
-            the fence.
+            / offline-tuner caller relies on).
 
     Returns:
         The ``user_playbook_id`` of the newly inserted playbook, or ``-1`` if

@@ -141,9 +141,8 @@ class Citation(BaseModel):
 
     Carried inline on an Assistant ``InteractionData`` row to mark
     which previously-injected playbook rule or user-profile row
-    materially shaped that response. The server uses these to drive
-    reflection (does the cited rule still look right after seeing how
-    it was applied?).
+    materially shaped that response. The server stores these for retrieval
+    attribution and evaluation.
 
     Attributes:
         kind (CitationKind): Which kind of cited item this references.
@@ -498,7 +497,7 @@ class LineageEvent(BaseModel):
         op (str): create|revise|merge|aggregate|archive|soft_delete|hard_delete|purge|status_change.
         prov_relation (str): W3C PROV relation (see spec §14).
         source_ids (list[str]): Records merged/superseded into entity_id.
-        actor (str): Who/what triggered it (consolidator|reflection|offline_optimizer|...).
+        actor (str): Who/what triggered it (consolidator|offline_optimizer|...).
         request_id (str): Triggering request — part of the idempotency key.
         reason (str): Free-text rationale (no PII).
         created_at (int): Unix epoch seconds (0 = unset; storage stamps it).

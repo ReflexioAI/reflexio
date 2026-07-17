@@ -229,8 +229,8 @@ def test_emit_records_resolves_platform_llm_and_emits_per_id():
             org_id="org1",
             configurator=_configurator(),
             learning_ids=["r1", "r2"],
-            source="reflection",
-            pipeline="reflection",
+            source="offline_optimizer",
+            pipeline="playbook",
             entity_type="profile",
         )
     assert hook.call_count == 2
@@ -247,7 +247,7 @@ def test_emit_records_noop_for_empty_ids():
             org_id="org1",
             configurator=_configurator(),
             learning_ids=[],
-            source="reflection",
+            source="offline_optimizer",
         )
     hook.assert_not_called()
 
@@ -261,7 +261,7 @@ def test_emit_records_swallows_exceptions():
             org_id="org1",
             configurator=configurator,
             learning_ids=["r1"],
-            source="reflection",
+            source="offline_optimizer",
         )
     hook.assert_not_called()
 

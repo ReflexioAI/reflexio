@@ -141,7 +141,6 @@ client (Python SDK)
   - `playbook/` - Playbook extraction, consolidation, and aggregation
   - `agent_success_evaluation/` - Success evaluation
   - `durable_learning/` - Claim/drain durable `learning_jobs` for deferred extraction when `REFLEXIO_DURABLE_LEARNING_QUEUE` is enabled
-  - `reflection/` - Post-horizon reflection extraction
   - `extraction/` - Resumable async extraction agent infrastructure
   - `shadow_comparison/` - Per-turn regular vs shadow verdict judge
   - `evaluation_overview/` - Evaluation-page aggregates and hero metrics

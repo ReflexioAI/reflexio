@@ -14,10 +14,6 @@ Round shapes
   provider, then route each produced playbook through the live consolidation
   provider against the *current* book. Each consolidation decision is judged
   (``judge_consolidation_decision``) and applied (``apply_consolidation``).
-- ``reflect`` round: build a reflection eval-case over the round's
-  interaction window against the cited book rule, run the live reflection
-  provider, judge it (``judge_reflection_decision``), and apply it
-  (``apply_reflection``).
 
 Gating
 ------
@@ -25,10 +21,9 @@ A ``learn`` round is ``judged_correct`` iff EVERY produced rule's
 consolidation verdict is ``correct``. (Extraction quality is *recorded* in
 the round detail when an ``extraction_judge`` + ``extraction_signal`` gold
 are supplied, but it does NOT gate — gating stays on the consolidation
-verdicts, which are the decisions that actually mutate the book.) A
-``reflect`` round is ``judged_correct`` iff the reflection verdict is
-``correct``. The optional end-state judge scores the final book against the
-scenario's ``gold_end_state`` and gates only when supplied.
+verdicts, which are the decisions that actually mutate the book.) The optional
+end-state judge scores the final book against the scenario's
+``gold_end_state`` and gates only when supplied.
 
 Position-vs-id contract (lines up with the apply shim)
 ------------------------------------------------------
@@ -52,19 +47,15 @@ import json
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from reflexio.models.api_schema.domain.entities import Interaction
 from tests.eval.consolidation.case import (
     CandidatePlaybook,
     ConsolidationEvalCase,
     ExistingPlaybook,
 )
 from tests.eval.consolidation.judge import judge_consolidation_decision
-from tests.eval.reflection.case import CitedItem, ReflectionEvalCase
-from tests.eval.reflection.judge import judge_reflection_decision
 from tests.eval.scenarios.book import (
     _next_id,
     apply_consolidation,
-    apply_reflection,
 )
 from tests.eval.scenarios.case import BookRule
 
@@ -81,7 +72,7 @@ class RoundOutcome:
 
     Attributes:
         round_index: 0-based index of the round within the scenario.
-        kind: ``"learn"`` or ``"reflect"`` (the round's kind).
+        kind: ``"learn"``.
         judged_correct: Whether the round's gating verdict(s) passed.
         detail: Human-readable summary (produced kinds + judge reasons).
     """
@@ -182,38 +173,6 @@ def _candidate(rule: BookRule) -> CandidatePlaybook:
     )
 
 
-def _interactions(round: ScenarioRound) -> list[Interaction]:
-    """Build ``Interaction`` entities from a round's loose interaction dicts.
-
-    Mirrors the fields the reflection provider's window consumes: ``role`` /
-    ``content`` (and ``tools_used`` when present). ``user_id`` / ``request_id``
-    are required on ``Interaction`` so they are stamped with eval constants.
-    """
-    interactions: list[Interaction] = []
-    for idx, turn in enumerate(round.interactions, start=1):
-        kwargs: dict[str, Any] = {
-            "interaction_id": idx,
-            "user_id": "eval",
-            "request_id": "eval",
-            "role": str(turn.get("role", "User")),
-            "content": str(turn.get("content", "")),
-        }
-        if turn.get("tools_used") is not None:
-            kwargs["tools_used"] = turn["tools_used"]
-        interactions.append(Interaction(**kwargs))
-    return interactions
-
-
-def _cited_item(rule: BookRule) -> CitedItem:
-    """Build the reflection cited item for a book rule (always a playbook)."""
-    return CitedItem(
-        kind="playbook",
-        target_id=str(rule.id),
-        content=rule.content,
-        trigger=rule.trigger,
-    )
-
-
 def _run_learn_round(
     *,
     scenario: MemoryScenario,
@@ -285,56 +244,12 @@ def _run_learn_round(
     )
 
 
-def _run_reflect_round(
-    *,
-    scenario: MemoryScenario,
-    idx: int,
-    round: ScenarioRound,
-    book: list[BookRule],
-    reflection_provider: Callable[[ReflectionEvalCase], Any],
-    reflection_judge_client: Any,
-) -> tuple[list[BookRule], RoundOutcome]:
-    """Run one reflect round: build case -> reflect -> judge -> apply."""
-    cited = next((r for r in book if r.id == round.cited), None)
-    if cited is None:
-        return book, RoundOutcome(
-            round_index=idx,
-            kind=round.kind,
-            judged_correct=False,
-            detail=f"cited rule not in book (cited={round.cited})",
-        )
-
-    refl_case = ReflectionEvalCase(
-        id=f"{scenario.id}-{idx}",
-        agent_context=scenario.agent_context,
-        window=_interactions(round),
-        cited_item=_cited_item(cited),
-        gold_label=round.gold.get("reflection", "no_change"),
-    )
-    decision = reflection_provider(refl_case)
-    verdict = judge_reflection_decision(
-        case=refl_case,
-        produced_decision=decision,
-        llm_client=reflection_judge_client,
-    )
-    book = apply_reflection(book, cited.id, decision)
-
-    return book, RoundOutcome(
-        round_index=idx,
-        kind=round.kind,
-        judged_correct=verdict.correct,
-        detail=f"gold={refl_case.gold_label} | {verdict.reason}",
-    )
-
-
 def run_scenario(
     *,
     scenario: MemoryScenario,
     extraction_provider: Callable[[dict], tuple[list[Any], list[Any]]],
     consolidation_provider: Callable[[ConsolidationEvalCase], Any],
-    reflection_provider: Callable[[ReflectionEvalCase], Any],
     consolidation_judge_client: Any,
-    reflection_judge_client: Any,
     extraction_judge: LLMJudge | None = None,
     end_state_judge: LLMJudge | None = None,
 ) -> ScenarioResult:
@@ -352,9 +267,7 @@ def run_scenario(
             extraction case dict ``{"id", "sessions"}`` and returns
             ``(profiles, playbooks)``.
         consolidation_provider: Live consolidation decision provider.
-        reflection_provider: Live reflection decision provider.
         consolidation_judge_client: LLM client for the consolidation judge.
-        reflection_judge_client: LLM client for the reflection judge.
         extraction_judge: Optional judge that scores extraction signal — used
             only for the round detail; it never gates.
         end_state_judge: Optional judge that scores the final book against
@@ -369,26 +282,16 @@ def run_scenario(
     outcomes: list[RoundOutcome] = []
 
     for idx, round in enumerate(scenario.rounds):
-        if round.kind == "learn":
-            book, outcome = _run_learn_round(
-                scenario=scenario,
-                idx=idx,
-                round=round,
-                book=book,
-                extraction_provider=extraction_provider,
-                consolidation_provider=consolidation_provider,
-                consolidation_judge_client=consolidation_judge_client,
-                extraction_judge=extraction_judge,
-            )
-        else:
-            book, outcome = _run_reflect_round(
-                scenario=scenario,
-                idx=idx,
-                round=round,
-                book=book,
-                reflection_provider=reflection_provider,
-                reflection_judge_client=reflection_judge_client,
-            )
+        book, outcome = _run_learn_round(
+            scenario=scenario,
+            idx=idx,
+            round=round,
+            book=book,
+            extraction_provider=extraction_provider,
+            consolidation_provider=consolidation_provider,
+            consolidation_judge_client=consolidation_judge_client,
+            extraction_judge=extraction_judge,
+        )
         outcomes.append(outcome)
 
     end_state_correct: bool | None = None

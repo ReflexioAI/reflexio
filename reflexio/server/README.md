@@ -18,7 +18,7 @@ Description: FastAPI backend server that processes user interactions to generate
   - [Playbook Extraction](#playbook-extraction)
   - [Agent Success Evaluation](#agent-success-evaluation)
   - [Durable Learning Queue](#durable-learning-queue)
-  - [Reflection and Async Extraction](#reflection-and-async-extraction)
+  - [Async Extraction](#async-extraction)
   - [Shadow Comparison and Evaluation Overview](#shadow-comparison-and-evaluation-overview)
   - [Playbook Optimizer and Braintrust](#playbook-optimizer-and-braintrust)
   - [Lineage](#lineage)
@@ -212,12 +212,12 @@ python -m reflexio.server.scripts.manage_invitation_codes list --show-used
 **Service Boundary**: The service layer owns LLM orchestration, extraction, evaluation, optimization, search preparation, storage access, and long-running operation state. API endpoints should validate/authenticate requests, build `RequestContext`, and delegate into `Reflexio` or focused service helpers rather than embedding business logic.
 
 **Encapsulated Components**:
-- **Publish pipeline**: `generation_service.py` coordinates interaction persistence, profile generation, playbook generation, reflection, and deferred evaluation scheduling.
+- **Publish pipeline**: `generation_service.py` coordinates interaction persistence, profile generation, playbook generation, and deferred evaluation scheduling.
 - **Profile memory**: `profile/` extracts, deduplicates, and applies user profile updates.
 - **Playbook memory**: `playbook/` extracts user playbooks, consolidates them against existing rows, aggregates them into agent playbooks, and tracks aggregation change logs.
 - **Evaluation**: `agent_success_evaluation/service.py`, `agent_success_evaluation/runner.py`, `agent_success_evaluation/scheduler.py`, `agent_success_evaluation/components/evaluator.py`, `shadow_comparison/`, and `evaluation_overview/` handle session grading, per-turn shadow verdicts, regeneration jobs, and dashboard-facing rollups.
 - **Durable learning queue**: `durable_learning/scheduler.py` and `durable_learning/worker.py` drain `learning_jobs` after deferred publishes and report coverage through `GET /api/learning_status`.
-- **Async clarification**: `extraction/` and `reflection/` manage resumable agent runs, pending tool calls, prior-answer search, and long-horizon reflection updates.
+- **Async clarification**: `extraction/` manages resumable agent runs, pending tool calls, and prior-answer search.
 - **Search preparation**: `pre_retrieval/` and `unified_search_service.py` handle query reformulation, document expansion, embeddings, and cross-entity search orchestration.
 - **Optimization/integrations**: `playbook_optimizer/` and `braintrust/` run candidate playbook optimization, rollout support, and Braintrust export/sync.
 - **Lineage**: `lineage/` resolves active records across superseded chains and schedules tombstone garbage collection for profile/playbook storage.
@@ -446,13 +446,11 @@ Key files:
 
 **Pattern**: `POST /api/publish_interaction` returns immediately when `wait_for_response=false`; callers use the returned `request_id` with `GET /api/learning_status`. Queue workers run the LLM compute **outside** any writer transaction; only the persist half + the fenced `complete_learning_job()` run inside `storage.commit_scope()`, and must raise/rollback if `complete_learning_job()` returns 0 because another worker stole the lease.
 
-### Reflection and Async Extraction
+### Async Extraction
 
-**Directories**: `services/reflection/`, `services/extraction/`
+**Directory**: `services/extraction/`
 
 Key files:
-- `reflection/service.py`: Post-horizon reflection orchestration for synthesizing longer-range memory artifacts
-- `reflection/components/extractor.py`: LLM extractor used by the reflection service
 - `extraction/resumable_agent.py`: Resumable extraction agent runtime
 - `extraction/resume_scheduler.py` and `extraction/resume_worker.py`: Background scheduling/worker loop for paused extraction runs
 - `extraction/pending_tool_call_dispatch.py` and `extraction/prior_answer_search.py`: Tool surface and prior-answer context for async extraction agents

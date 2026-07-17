@@ -226,8 +226,8 @@ class UserPlaybookStoreMixin:
         """Fetch the subset of a user's playbooks whose ids are in the list.
 
         Server-side filter on (``user_id``, ``user_playbook_id IN (...)``)
-        so callers (e.g. the reflection service resolving a small set of
-        cited playbook ids) avoid scanning every playbook for the user.
+        so callers resolving a small set of known playbook ids avoid scanning
+        every playbook for the user.
 
         Args:
             user_id (str): Owning user id.

@@ -13,7 +13,7 @@ obtained by running a live extractor — this module:
   ``extraction_rubric.yaml``) to score the pair, and
 - aggregates the per-case ``JudgeScore`` floats into means + a pass-rate.
 
-Unlike the reflection / consolidation *decision*-evals, extraction is
+Unlike consolidation decision evals, extraction is
 **float-scored, not label-scored**: there is no decision "kind" and no
 confusion matrix. The headline metrics are the judge's:
 

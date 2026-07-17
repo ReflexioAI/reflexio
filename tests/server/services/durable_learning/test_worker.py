@@ -329,7 +329,6 @@ def test_per_job_flags_honored():
                 user_id=user_id,
                 agent_version=agent_version,
                 lock_acquired=True,
-                reflection=None,
                 profile=None,
                 playbook=None,
             )
@@ -639,7 +638,6 @@ def test_contention_refund_keeps_attempts_bounded():
                 user_id=user_id,
                 agent_version=agent_version,
                 lock_acquired=False,
-                reflection=None,
                 profile=None,
                 playbook=None,
             )
@@ -730,7 +728,6 @@ def test_run_deferred_learning_schedules_tagging():
             mock.patch(
                 "reflexio.server.services.generation_service.PlaybookGenerationService"
             ),
-            mock.patch.object(gen, "_maybe_run_reflection"),
         ):
             gen.run_deferred_learning(
                 user_id="u_tag",
