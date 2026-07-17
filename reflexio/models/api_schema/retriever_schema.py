@@ -741,7 +741,7 @@ class UnifiedSearchRequest(BaseModel):
     Args:
         query (str): Search query text
         top_k (int, optional): Maximum results per entity type. Defaults to 5
-        threshold (float, optional): Similarity threshold for vector search. Defaults to 0.3
+        threshold (float, optional): Similarity threshold for vector search. Defaults to 0.45
         agent_version (str, optional): Filter by agent version (agent_playbooks, user_playbooks)
         playbook_name (str, optional): Filter by playbook name (agent_playbooks, user_playbooks)
         user_id (str, optional): Filter by user ID (profiles, user_playbooks)
@@ -757,7 +757,7 @@ class UnifiedSearchRequest(BaseModel):
 
     query: NonEmptyStr
     top_k: int | None = Field(default=5, gt=0)
-    threshold: float | None = Field(default=0.3, ge=0.0, le=1.0)
+    threshold: float | None = Field(default=0.45, ge=0.0, le=1.0)
     agent_version: str | None = None
     playbook_name: str | None = None
     user_id: str | None = None
