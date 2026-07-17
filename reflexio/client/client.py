@@ -2517,7 +2517,7 @@ class ReflexioClient:
             request (Optional[UnifiedSearchRequest]): The search request object (alternative to kwargs)
             query (str): Search query text
             top_k (Optional[int]): Maximum results per entity type (default: 5)
-            threshold (Optional[float]): Similarity threshold for vector search (default: 0.3)
+            threshold (Optional[float]): Similarity threshold for vector search (default: 0.45)
             agent_version (Optional[str]): Filter by agent version (agent_playbooks, user_playbooks)
             playbook_name (Optional[str]): Filter by playbook name (agent_playbooks, user_playbooks)
             user_id (Optional[str]): Filter by user ID (profiles, user_playbooks)

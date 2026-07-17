@@ -144,7 +144,7 @@ def run_unified_search(
         return UnifiedSearchResponse(success=True, msg="No query provided")
 
     top_k = request.top_k if request.top_k is not None else 5
-    threshold = request.threshold if request.threshold is not None else 0.3
+    threshold = request.threshold if request.threshold is not None else 0.45
 
     floor_cfg = retrieval_floor or RetrievalFloorConfig()
     floor_on = floor_cfg.enabled
