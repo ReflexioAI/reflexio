@@ -96,7 +96,7 @@ class RerankUserProfilesRequest(BaseModel):
 
     Use after ``search_user_profiles`` (or any other source of candidate ids)
     when initial results are noisy. The server fetches each candidate's full
-    content, scores ``(query, content)`` pairs with a CPU cross-encoder, and
+    content, scores ``(query, content)`` pairs with a cross-encoder, and
     returns the top_k profiles sorted by descending score.
 
     Args:
