@@ -20,7 +20,7 @@ so this module moves BEFORE ``_litellm_text_generation``.
 
 import json
 from functools import lru_cache
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, get_origin
 
 import litellm
 from pydantic import BaseModel
@@ -39,6 +39,29 @@ from reflexio.server.llm.llm_utils import (
 
 if TYPE_CHECKING:
     from reflexio.server.llm._litellm_types import LiteLLMConfig
+
+
+def _single_list_field_name(response_format: type[BaseModel]) -> str | None:
+    """Return the wrapper field for schemas shaped as ``{"items": [...]}``."""
+    fields = getattr(response_format, "model_fields", {})
+    if len(fields) != 1:
+        return None
+
+    field_name, field = next(iter(fields.items()))
+    if field.annotation is list or get_origin(field.annotation) is list:
+        return field_name
+    return None
+
+
+def _validate_structured_payload(
+    response_format: type[BaseModel],
+    parsed: Any,
+) -> BaseModel:
+    if isinstance(parsed, list) and (
+        field_name := _single_list_field_name(response_format)
+    ):
+        return response_format.model_validate({field_name: parsed})
+    return response_format.model_validate(parsed)
 
 
 class StructuredOutputMixin:
@@ -159,14 +182,14 @@ class StructuredOutputMixin:
             parsed = json.loads(json_str)
 
             # response_format must be a Pydantic model (validated at entry points)
-            return response_format.model_validate(parsed)
+            return _validate_structured_payload(response_format, parsed)
         except Exception:
             # LLMs sometimes produce Python-style output (single quotes, True/False,
             # trailing commas). Try to sanitize before giving up.
             try:
                 sanitized = _sanitize_json_string(json_str)
                 parsed = json.loads(sanitized)
-                return response_format.model_validate(parsed)
+                return _validate_structured_payload(response_format, parsed)
             except Exception:
                 # Last resort: json-repair can recover complete responses with
                 # small syntax glitches, such as missing commas. Do not repair
@@ -182,7 +205,7 @@ class StructuredOutputMixin:
                         )
 
                     repaired = repair_json(json_str, return_objects=True)
-                    return response_format.model_validate(repaired)
+                    return _validate_structured_payload(response_format, repaired)
                 except Exception as e:
                     model = self.config.model
                     snippet = (
