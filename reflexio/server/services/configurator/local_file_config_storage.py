@@ -1,11 +1,13 @@
 import contextlib
 import copy
+import fcntl
 import json
 import logging
 import os
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 
 from reflexio.cli.paths import reflexio_home
 from reflexio.models.config_schema import (
@@ -15,7 +17,11 @@ from reflexio.models.config_schema import (
     StorageConfigSQLite,
     validate_stored_config,
 )
-from reflexio.server.services.configurator.config_storage import ConfigStorage
+from reflexio.server.services.configurator.config_storage import (
+    ConfigPayloadUpdateResult,
+    ConfigStorage,
+    ConfigWriteConflict,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +80,7 @@ class LocalFileConfigStorage(ConfigStorage):
         """
         if not Path(self.config_file).exists():
             config = self.get_default_config()
-            self._save_config_to_local_dir(config=config)
+            self.save_config(config=config)
             return config
 
         try:
@@ -106,8 +112,8 @@ class LocalFileConfigStorage(ConfigStorage):
                 config = validate_stored_config(data)
                 if config.model_dump(mode="json") != original_payload:
                     try:
-                        self._save_config_to_local_dir(config=config)
-                    except OSError:
+                        self.save_config(config=config)
+                    except (OSError, ConfigWriteConflict):
                         logger.exception(
                             "Loaded config from %s after normalizing its stored "
                             "schema, but could not rewrite the file; cleanup will "
@@ -131,11 +137,58 @@ class LocalFileConfigStorage(ConfigStorage):
             config (Config): Configuration object to save
         """
         if self.base_dir and self.config_file:
-            self._save_config_to_local_dir(config=config)
+            self.update_config_payload(lambda _current: config.model_dump(mode="json"))
         else:
             print(
                 f"Cannot save config for org {self.org_id}: no local directory configured"
             )
+
+    def update_config_payload(
+        self,
+        transform: Callable[[dict[str, Any]], dict[str, Any]],
+    ) -> ConfigPayloadUpdateResult:
+        """Apply a payload update while holding a non-blocking file lock."""
+        if not (self.base_dir and self.config_file):
+            raise ValueError("base_dir and config_file must be set")
+
+        final_path = Path(self.config_file)
+        final_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path = final_path.with_suffix(f"{final_path.suffix}.lock")
+        with lock_path.open("a+b") as lock_file:
+            self._acquire_lock(lock_file)
+            try:
+                current = self._read_payload_unlocked(final_path)
+                updated = transform(dict(current))
+                if updated == current:
+                    return ConfigPayloadUpdateResult(
+                        payload=current,
+                        changed=False,
+                    )
+                self._save_payload_to_local_dir(updated)
+                return ConfigPayloadUpdateResult(payload=updated, changed=True)
+            finally:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+    @staticmethod
+    def _acquire_lock(lock_file: BinaryIO) -> None:
+        try:
+            fcntl.flock(
+                lock_file.fileno(),
+                fcntl.LOCK_EX | fcntl.LOCK_NB,
+            )
+        except BlockingIOError as exc:
+            raise ConfigWriteConflict(
+                "Configuration update already in progress"
+            ) from exc
+
+    @staticmethod
+    def _read_payload_unlocked(path: Path) -> dict[str, Any]:
+        if not path.exists():
+            return {}
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("Configuration JSON must decode to an object")
+        return data
 
     def get_version(self) -> tuple[str, Any] | None:
         """Return the on-disk mtime of the org's config file, if it exists.
@@ -181,13 +234,20 @@ class LocalFileConfigStorage(ConfigStorage):
         if not (self.base_dir and self.config_file):
             raise ValueError("base_dir and config_file must be set")
 
+        self._save_payload_to_local_dir(config.model_dump(mode="json"))
+
+    def _save_payload_to_local_dir(self, payload: dict[str, Any]) -> None:
+        """Atomically replace the local config file with a raw payload."""
         final_path = Path(self.config_file)
         final_path.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = final_path.with_name(
             f"{final_path.name}.{os.getpid()}.{time.time_ns()}.tmp"
         )
         try:
-            tmp_path.write_text(config.model_dump_json(), encoding="utf-8")
+            tmp_path.write_text(
+                json.dumps(payload, separators=(",", ":")),
+                encoding="utf-8",
+            )
             tmp_path.replace(final_path)
         except OSError:
             with contextlib.suppress(OSError):

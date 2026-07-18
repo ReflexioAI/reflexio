@@ -20,9 +20,6 @@ from reflexio.models.api_schema.retriever_schema import (
 from reflexio.models.api_schema.service_schemas import (
     MyConfigResponse,
 )
-from reflexio.models.config_schema import (
-    Config,
-)
 from reflexio.server.api_endpoints import (
     account_api,
 )
@@ -31,9 +28,17 @@ from reflexio.server.auth import (
 )
 from reflexio.server.cache import reflexio_cache
 from reflexio.server.rate_limit import limiter
+from reflexio.server.services.configurator.config_storage import ConfigWriteConflict
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def _config_write_conflict() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail="Configuration update already in progress",
+    )
 
 
 @router.get(
@@ -93,10 +98,7 @@ def set_config(
     reflexio = reflexio_cache.get_reflexio(org_id=org_id)
     configurator = reflexio.request_context.configurator
     try:
-        normalized_config = configurator.normalize_config_payload(config)
-        if not isinstance(normalized_config, dict):
-            normalized_config = config
-        Config.model_validate(normalized_config)
+        prepared = configurator.prepare_config_write(config)
     except ValidationError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -104,10 +106,13 @@ def set_config(
         ) from exc
 
     # Set the config using Reflexio's set_config method
-    response = reflexio.set_config(normalized_config)
+    try:
+        response = reflexio.set_config(prepared)
+    except ConfigWriteConflict as exc:
+        raise _config_write_conflict() from exc
 
     # Invalidate cache on successful config change to ensure fresh instance next request
-    if response.success:
+    if response.success and response.msg != "Configuration unchanged":
         reflexio_cache.invalidate_reflexio_cache(org_id=org_id)
 
     return response
@@ -156,9 +161,7 @@ def update_config(
     from pydantic import ValidationError
 
     reflexio = reflexio_cache.get_reflexio(org_id=org_id)
-    existing_config = reflexio.request_context.configurator.get_config()
-    existing = existing_config.model_dump(mode="python")
-    merged = {**existing, **partial}
+    configurator = reflexio.request_context.configurator
     # Pydantic validates the merged shape and rejects unknown / malformed
     # fields here, before storage validation in reflexio.set_config.
     # Convert ValidationError into 422 so callers passing a partial that
@@ -166,7 +169,7 @@ def update_config(
     # {"user_playbook_extractor_config": {"aggregation_config": {...}}})
     # get a clean client-error response instead of a 500.
     try:
-        merged_config = Config(**merged)
+        prepared = configurator.prepare_config_write(partial, partial=True)
     except ValidationError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -182,12 +185,11 @@ def update_config(
                 "validation_errors": exc.errors(),
             },
         ) from exc
-    if merged_config.model_dump(mode="python") == existing:
-        logger.info("Skipping no-op config update for org %s", org_id)
-        return SetConfigResponse(success=True, msg="Configuration unchanged")
-
-    response = reflexio.set_config(merged_config)
-    if response.success:
+    try:
+        response = reflexio.set_config(prepared)
+    except ConfigWriteConflict as exc:
+        raise _config_write_conflict() from exc
+    if response.success and response.msg != "Configuration unchanged":
         reflexio_cache.invalidate_reflexio_cache(org_id=org_id)
     return response
 

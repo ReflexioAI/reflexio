@@ -101,6 +101,13 @@ Description: FastAPI backend server that processes user interactions to generate
 
 **Pattern**: Core route handlers call `Reflexio` through `get_reflexio(org_id)`; endpoint helper files should not instantiate `Reflexio` directly.
 
+Config writes validate the complete resulting document before persistence.
+`set_config` replaces the shared document, while `update_config` applies a
+top-level shallow patch that is re-merged against the latest payload under the
+storage lock. Unknown or malformed fields return HTTP 422. Concurrent writers
+fail immediately with HTTP 409 (`Configuration update already in progress`);
+successful response shapes are unchanged.
+
 ## Extension Registry
 
 **File**: `extensions.py`

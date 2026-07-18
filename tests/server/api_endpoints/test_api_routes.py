@@ -23,6 +23,34 @@ from reflexio.models.api_schema.service_schemas import (
     UserProfile,
 )
 from reflexio.models.config_schema import Config, StorageConfigSQLite
+from reflexio.server.services.configurator.base_configurator import PreparedConfigWrite
+from reflexio.server.services.configurator.config_storage import ConfigWriteConflict
+
+
+def _prepare_config_write(
+    existing: Config,
+):
+    def prepare(
+        payload: Config | dict,
+        *,
+        partial: bool = False,
+    ) -> PreparedConfigWrite:
+        raw = (
+            payload.model_dump(mode="python")
+            if isinstance(payload, Config)
+            else dict(payload)
+        )
+        current = existing.model_dump(mode="python")
+        candidate = {**current, **raw} if partial else raw
+        config = Config.model_validate(candidate)
+        return PreparedConfigWrite(
+            config=config,
+            payload=raw,
+            partial=partial,
+            changed=config.model_dump(mode="json") != existing.model_dump(mode="json"),
+        )
+
+    return prepare
 
 
 class TestHealthEndpoints:
@@ -269,6 +297,11 @@ class TestSetConfigRoute:
     def test_unknown_field_returns_422_before_set_config(
         self, client, patched_reflexio, mock_reflexio
     ):
+        existing = Config(storage_config=StorageConfigSQLite())
+        configurator = MagicMock()
+        configurator.prepare_config_write.side_effect = _prepare_config_write(existing)
+        mock_reflexio.request_context.configurator = configurator
+
         response = client.post(
             "/api/set_config",
             json={
@@ -305,6 +338,7 @@ class TestUpdateConfigRoute:
     def _wire_mock(self, mock_reflexio: MagicMock, existing: Config) -> None:
         configurator = MagicMock()
         configurator.get_config.return_value = existing
+        configurator.prepare_config_write.side_effect = _prepare_config_write(existing)
         mock_reflexio.request_context.configurator = configurator
         mock_reflexio.set_config.return_value = SetConfigResponse(
             success=True, msg="Configuration set successfully"
@@ -329,19 +363,23 @@ class TestUpdateConfigRoute:
         # The reflexio.set_config call receives a merged Config with the
         # new field flipped AND the existing storage_config preserved.
         assert mock_reflexio.set_config.call_count == 1
-        merged = mock_reflexio.set_config.call_args.args[0]
-        assert isinstance(merged, Config)
-        assert merged.window_size == 25
-        assert merged.storage_config == existing.storage_config
+        prepared = mock_reflexio.set_config.call_args.args[0]
+        assert isinstance(prepared, PreparedConfigWrite)
+        assert prepared.config.window_size == 25
+        assert prepared.config.storage_config == existing.storage_config
 
         # Cache invalidated on success.
         mock_invalidate.assert_called_once_with(org_id="test-org")
 
-    def test_no_op_patch_skips_set_config_and_cache_invalidation(
+    def test_no_op_patch_commits_under_lock_without_cache_invalidation(
         self, client, patched_reflexio, mock_reflexio
     ):
         existing = self._existing_config()
         self._wire_mock(mock_reflexio, existing)
+        mock_reflexio.set_config.return_value = SetConfigResponse(
+            success=True,
+            msg="Configuration unchanged",
+        )
 
         with patch(
             "reflexio.server.cache.reflexio_cache.invalidate_reflexio_cache"
@@ -356,7 +394,7 @@ class TestUpdateConfigRoute:
             "success": True,
             "msg": "Configuration unchanged",
         }
-        mock_reflexio.set_config.assert_not_called()
+        mock_reflexio.set_config.assert_called_once()
         mock_invalidate.assert_not_called()
 
     def test_unknown_field_returns_422_before_set_config(
@@ -386,10 +424,10 @@ class TestUpdateConfigRoute:
         )
 
         assert response.status_code == 200, response.text
-        merged = mock_reflexio.set_config.call_args.args[0]
-        assert isinstance(merged, Config)
-        assert isinstance(merged.storage_config, StorageConfigSQLite)
-        assert merged.storage_config.db_path == "/new/path.db"
+        prepared = mock_reflexio.set_config.call_args.args[0]
+        assert isinstance(prepared, PreparedConfigWrite)
+        assert isinstance(prepared.config.storage_config, StorageConfigSQLite)
+        assert prepared.config.storage_config.db_path == "/new/path.db"
 
     def test_does_not_invalidate_on_failure(
         self, client, patched_reflexio, mock_reflexio
@@ -398,6 +436,7 @@ class TestUpdateConfigRoute:
         existing = self._existing_config()
         configurator = MagicMock()
         configurator.get_config.return_value = existing
+        configurator.prepare_config_write.side_effect = _prepare_config_write(existing)
         mock_reflexio.request_context.configurator = configurator
         mock_reflexio.set_config.return_value = SetConfigResponse(
             success=False, msg="storage validation failed"
@@ -481,12 +520,14 @@ class TestUpdateConfigRoute:
             )
 
         assert response.status_code == 200, response.text
-        merged = mock_reflexio.set_config.call_args.args[0]
-        assert isinstance(merged, Config)
-        assert merged.profile_extractor_config is not None
-        assert merged.profile_extractor_config.extractor_name == "profile"
-        assert merged.user_playbook_extractor_config is not None
-        assert merged.user_playbook_extractor_config.extractor_name == "playbook"
+        prepared = mock_reflexio.set_config.call_args.args[0]
+        assert isinstance(prepared, PreparedConfigWrite)
+        assert prepared.config.profile_extractor_config is not None
+        assert prepared.config.profile_extractor_config.extractor_name == "profile"
+        assert prepared.config.user_playbook_extractor_config is not None
+        assert (
+            prepared.config.user_playbook_extractor_config.extractor_name == "playbook"
+        )
 
     def test_null_extractor_configs_disable_existing_extractors(
         self, client, patched_reflexio, mock_reflexio
@@ -505,10 +546,10 @@ class TestUpdateConfigRoute:
             )
 
         assert response.status_code == 200, response.text
-        merged = mock_reflexio.set_config.call_args.args[0]
-        assert isinstance(merged, Config)
-        assert merged.profile_extractor_config is None
-        assert merged.user_playbook_extractor_config is None
+        prepared = mock_reflexio.set_config.call_args.args[0]
+        assert isinstance(prepared, PreparedConfigWrite)
+        assert prepared.config.profile_extractor_config is None
+        assert prepared.config.user_playbook_extractor_config is None
 
     def test_nested_config_preserved_when_patching_unrelated_field(
         self, client, patched_reflexio, mock_reflexio
@@ -524,12 +565,28 @@ class TestUpdateConfigRoute:
             )
 
         assert response.status_code == 200, response.text
-        merged = mock_reflexio.set_config.call_args.args[0]
-        assert isinstance(merged, Config)
+        prepared = mock_reflexio.set_config.call_args.args[0]
+        assert isinstance(prepared, PreparedConfigWrite)
         # The partial-touched field changed
-        assert merged.window_size == 25
-        assert merged.user_playbook_extractor_config is not None
-        agg = merged.user_playbook_extractor_config.aggregation_config
+        assert prepared.config.window_size == 25
+        assert prepared.config.user_playbook_extractor_config is not None
+        agg = prepared.config.user_playbook_extractor_config.aggregation_config
         assert agg is not None
         assert agg.min_cluster_size == 2
         assert agg.clustering_similarity == 0.45
+
+    def test_lock_conflict_returns_409_without_cache_invalidation(
+        self, client, patched_reflexio, mock_reflexio
+    ):
+        existing = self._existing_config()
+        self._wire_mock(mock_reflexio, existing)
+        mock_reflexio.set_config.side_effect = ConfigWriteConflict("busy")
+
+        with patch(
+            "reflexio.server.cache.reflexio_cache.invalidate_reflexio_cache"
+        ) as mock_invalidate:
+            response = client.post("/api/update_config", json={"window_size": 25})
+
+        assert response.status_code == 409
+        assert response.json()["detail"] == "Configuration update already in progress"
+        mock_invalidate.assert_not_called()

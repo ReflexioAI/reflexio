@@ -7,10 +7,14 @@ get_dashboard_stats for DashboardMixin with mocked storage.
 from typing import Any, cast
 from unittest.mock import MagicMock
 
+import pytest
+
 from reflexio.lib._config import ConfigMixin
 from reflexio.lib._dashboard import DashboardMixin
 from reflexio.models.api_schema.retriever_schema import GetDashboardStatsRequest
 from reflexio.models.config_schema import Config, StorageConfigSQLite
+from reflexio.server.services.configurator.base_configurator import PreparedConfigWrite
+from reflexio.server.services.configurator.config_storage import ConfigWriteConflict
 
 # ---------------------------------------------------------------------------
 # ConfigMixin helpers
@@ -26,6 +30,30 @@ def _make_config_mixin(*, storage_configured: bool = True) -> ConfigMixin:
     mock_request_context.org_id = "test_org"
     mock_request_context.storage = mock_storage if storage_configured else None
     mock_request_context.is_storage_configured.return_value = storage_configured
+    configurator = mock_request_context.configurator
+
+    def prepare(
+        value: Config | dict,
+        *,
+        partial: bool = False,
+    ) -> PreparedConfigWrite:
+        if isinstance(value, dict):
+            parsed = Config.model_validate(value)
+            payload = dict(value)
+        else:
+            parsed = value
+            payload = (
+                value.model_dump(mode="python") if isinstance(value, Config) else {}
+            )
+        return PreparedConfigWrite(
+            config=parsed,
+            payload=payload,
+            partial=partial,
+            changed=True,
+        )
+
+    configurator.prepare_config_write.side_effect = prepare
+    configurator.commit_config_write.return_value = True
 
     mixin.request_context = mock_request_context
     mixin.llm_client = MagicMock()
@@ -87,7 +115,7 @@ class TestSetConfig:
 
         assert response.success is True
         assert "successfully" in (response.msg or "").lower()
-        _get_configurator(mixin).set_config.assert_called_once()
+        _get_configurator(mixin).commit_config_write.assert_called_once()
 
     def test_set_config_storage_validation_fails(self):
         """Returns failure when storage validation fails."""
@@ -121,7 +149,8 @@ class TestSetConfig:
         assert response.success is True
         _get_configurator(mixin).is_storage_config_ready_to_test.assert_not_called()
         _get_configurator(mixin).test_and_init_storage_config.assert_not_called()
-        _get_configurator(mixin).set_config.assert_called_once_with(config)
+        prepared = _get_configurator(mixin).commit_config_write.call_args.args[0]
+        assert prepared.config is config
 
     def test_set_config_initializes_storage_when_storage_changed(self):
         """Changing storage still validates and initializes the new target."""
@@ -150,7 +179,8 @@ class TestSetConfig:
         _get_configurator(mixin).test_and_init_storage_config.assert_called_once_with(
             storage_config=new_storage_config
         )
-        _get_configurator(mixin).set_config.assert_called_once_with(config)
+        prepared = _get_configurator(mixin).commit_config_write.call_args.args[0]
+        assert prepared.config is config
 
     def test_set_config_storage_not_ready(self):
         """Returns failure when storage config is incomplete."""
@@ -186,6 +216,26 @@ class TestSetConfig:
         assert response.success is True
         # Verify storage_config was set to the existing one
         assert mock_config.storage_config == existing_storage_config
+
+    def test_partial_write_preserves_existing_storage_in_payload(self):
+        """The locked merge must not reintroduce an explicit redacted value."""
+        mixin = _make_config_mixin()
+        current_storage = StorageConfigSQLite(db_path="/var/data/current.db")
+        prepared = PreparedConfigWrite(
+            config=Config(storage_config=None, window_size=23),
+            payload={"storage_config": None, "window_size": 23},
+            partial=True,
+            changed=True,
+        )
+        _get_configurator(
+            mixin
+        ).get_current_storage_configuration.return_value = current_storage
+
+        response = mixin.set_config(prepared)
+
+        assert response.success is True
+        committed = _get_configurator(mixin).commit_config_write.call_args.args[0]
+        assert committed.payload["storage_config"] == current_storage
 
     def test_set_config_preserves_storage_on_managed_marker(self):
         """Round-tripping the redacted platform-managed marker that get_config()
@@ -223,11 +273,7 @@ class TestSetConfig:
     def test_set_config_dict_input(self):
         """Accepts dict input and auto-converts to Config."""
         mixin = _make_config_mixin()
-        # normalize_config_payload is identity in the base configurator; the
-        # MagicMock default would otherwise return another MagicMock and break
-        # the **kwargs expansion below.
         payload = {"storage_config": {"db_path": "/var/data/test.db"}}
-        _get_configurator(mixin).normalize_config_payload.return_value = payload
         _get_configurator(
             mixin
         ).get_current_storage_configuration.return_value = MagicMock()
@@ -240,6 +286,20 @@ class TestSetConfig:
         response = mixin.set_config(payload)
 
         assert response.success is True
+
+    def test_set_config_propagates_write_conflict(self):
+        """Lock conflicts remain distinguishable for the HTTP route."""
+        mixin = _make_config_mixin()
+        config = Config(storage_config=StorageConfigSQLite())
+        _get_configurator(
+            mixin
+        ).get_current_storage_configuration.return_value = config.storage_config
+        _get_configurator(mixin).commit_config_write.side_effect = ConfigWriteConflict(
+            "busy"
+        )
+
+        with pytest.raises(ConfigWriteConflict, match="busy"):
+            mixin.set_config(config)
 
     def test_set_config_exception(self):
         """Returns failure on unexpected exception."""

@@ -8,6 +8,7 @@ backends later.
 
 from __future__ import annotations
 
+import fcntl
 import json
 import tempfile
 from collections.abc import Generator
@@ -17,6 +18,8 @@ from typing import TYPE_CHECKING
 import pytest
 
 from reflexio.models.config_schema import Config
+from reflexio.server.services.configurator.config_storage import ConfigWriteConflict
+from reflexio.server.services.configurator.configurator import DefaultConfigurator
 from reflexio.server.services.configurator.local_file_config_storage import (
     LocalFileConfigStorage,
 )
@@ -198,6 +201,61 @@ class TestConfigStorageContract:
 
         leaked = list(Path(tmp_path).rglob(f"{Path(storage.config_file).name}*.tmp"))
         assert not leaked, f"tmp file should be cleaned up on failure: {leaked}"
+
+    def test_save_config_fails_immediately_when_lock_is_held(self, tmp_path) -> None:
+        storage = LocalFileConfigStorage(org_id="locked-org", base_dir=str(tmp_path))
+        lock_path = Path(storage.config_file).with_suffix(".json.lock")
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with lock_path.open("a+b") as lock_file:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with pytest.raises(
+                ConfigWriteConflict,
+                match="already in progress",
+            ):
+                storage.save_config(storage.get_default_config())
+
+    def test_schema_cleanup_conflict_returns_valid_stored_config(
+        self, tmp_path
+    ) -> None:
+        storage = LocalFileConfigStorage(org_id="read-locked", base_dir=str(tmp_path))
+        payload = storage.get_default_config().model_dump(mode="json")
+        payload["retired_field"] = "ignored"
+        config_path = Path(storage.config_file)
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(json.dumps(payload), encoding="utf-8")
+        lock_path = config_path.with_suffix(".json.lock")
+
+        with lock_path.open("a+b") as lock_file:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            loaded = storage.load_config()
+
+        assert loaded.storage_config == storage.get_default_config().storage_config
+        assert json.loads(config_path.read_text())["retired_field"] == "ignored"
+
+    def test_sequential_partial_commits_reload_latest_payload(self, tmp_path) -> None:
+        configurator = DefaultConfigurator(
+            org_id="partial-org",
+            base_dir=str(tmp_path),
+        )
+        first = configurator.prepare_config_write(
+            {"agent_context_prompt": "first"},
+            partial=True,
+        )
+        second = configurator.prepare_config_write(
+            {"window_size": 23},
+            partial=True,
+        )
+
+        assert configurator.commit_config_write(first) is True
+        assert configurator.commit_config_write(second) is True
+
+        reloaded = DefaultConfigurator(
+            org_id="partial-org",
+            base_dir=str(tmp_path),
+        ).get_config()
+        assert reloaded.agent_context_prompt == "first"
+        assert reloaded.window_size == 23
 
     def test_get_version_changes_after_save(
         self, config_storage: ConfigStorage

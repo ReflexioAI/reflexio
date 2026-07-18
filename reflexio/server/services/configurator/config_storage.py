@@ -1,7 +1,21 @@
 from abc import ABC, abstractmethod
+from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 from reflexio.models.config_schema import Config
+
+
+class ConfigWriteConflict(RuntimeError):  # noqa: N818 - domain name is part of contract
+    """Raised when another writer already owns an organization's config lock."""
+
+
+@dataclass(frozen=True)
+class ConfigPayloadUpdateResult:
+    """Result of one read-modify-write operation on a persisted config payload."""
+
+    payload: dict[str, Any]
+    changed: bool
 
 
 class ConfigStorage(ABC):
@@ -60,3 +74,22 @@ class ConfigStorage(ABC):
             TTL safety net.
         """
         return None
+
+    def update_config_payload(
+        self,
+        transform: Callable[[dict[str, Any]], dict[str, Any]],
+    ) -> ConfigPayloadUpdateResult:
+        """Apply ``transform`` to the latest payload and persist the result.
+
+        Backends with concurrency support override this method so the load,
+        transform, and save happen under one lock or transaction. The default
+        preserves compatibility for simple/test adapters.
+        """
+        current = self.load_config().model_dump(mode="json")
+        updated = transform(dict(current))
+        config = Config.model_validate(updated)
+        canonical = config.model_dump(mode="json")
+        if canonical == current:
+            return ConfigPayloadUpdateResult(payload=current, changed=False)
+        self.save_config(config)
+        return ConfigPayloadUpdateResult(payload=canonical, changed=True)

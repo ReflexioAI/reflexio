@@ -3,10 +3,14 @@ from typing import Any
 from reflexio.lib._base import ReflexioBase
 from reflexio.models.api_schema.retriever_schema import SetConfigResponse
 from reflexio.models.config_schema import Config, StorageConfigManagedSupabase
+from reflexio.server.services.configurator.base_configurator import PreparedConfigWrite
+from reflexio.server.services.configurator.config_storage import ConfigWriteConflict
 
 
 class ConfigMixin(ReflexioBase):
-    def set_config(self, config: Config | dict) -> SetConfigResponse:
+    def set_config(
+        self, config: Config | dict | PreparedConfigWrite
+    ) -> SetConfigResponse:
         """Set configuration for the organization.
 
         Args:
@@ -17,9 +21,12 @@ class ConfigMixin(ReflexioBase):
         """
         try:
             configurator = self.request_context.configurator
-            if isinstance(config, dict):
-                config = configurator.normalize_config_payload(config)
-                config = Config(**config)
+            prepared = (
+                config
+                if isinstance(config, PreparedConfigWrite)
+                else configurator.prepare_config_write(config)
+            )
+            validated_config = prepared.config
 
             # Validate storage connection before setting config.
             # If no storage_config provided, or the caller round-tripped the
@@ -30,12 +37,14 @@ class ConfigMixin(ReflexioBase):
             # an unfillable StorageConfigManagedSupabase and fails with
             # "Storage configuration is incomplete".
             current_storage_config = configurator.get_current_storage_configuration()
-            storage_config = config.storage_config
+            storage_config = validated_config.storage_config
             if storage_config is None or isinstance(
                 storage_config, StorageConfigManagedSupabase
             ):
                 storage_config = current_storage_config
-                config.storage_config = storage_config
+                validated_config.storage_config = storage_config
+                if "storage_config" in prepared.payload:
+                    prepared.payload["storage_config"] = storage_config
 
             storage_config_changed = storage_config != current_storage_config
             if storage_config_changed or current_storage_config is None:
@@ -62,9 +71,18 @@ class ConfigMixin(ReflexioBase):
                     )
 
             # Only set config if validation passed
-            configurator.set_config(config)
+            changed = configurator.commit_config_write(prepared)
 
-            return SetConfigResponse(success=True, msg="Configuration set successfully")
+            return SetConfigResponse(
+                success=True,
+                msg=(
+                    "Configuration set successfully"
+                    if changed
+                    else "Configuration unchanged"
+                ),
+            )
+        except ConfigWriteConflict:
+            raise
         except Exception as e:
             return SetConfigResponse(
                 success=False, msg=f"Failed to set configuration: {str(e)}"

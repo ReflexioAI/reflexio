@@ -3,12 +3,18 @@ from __future__ import annotations
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar
 
 from pydantic import BaseModel
 
-from reflexio.models.config_schema import Config, StorageConfig, StorageConfigTest
+from reflexio.models.config_schema import (
+    Config,
+    StorageConfig,
+    StorageConfigTest,
+    validate_stored_config,
+)
 from reflexio.server.services.configurator.config_storage import ConfigStorage
 from reflexio.server.services.storage.error import StorageError
 from reflexio.server.services.storage.storage_base import BaseStorage
@@ -21,6 +27,16 @@ _CONFIG_NAME_ALIASES = {
     "extraction_window_size": "window_size",
     "extraction_window_stride": "stride_size",
 }
+
+
+@dataclass(frozen=True)
+class PreparedConfigWrite:
+    """Side-effect-free, validated config write ready for storage checks."""
+
+    config: Config
+    payload: dict[str, Any]
+    partial: bool
+    changed: bool
 
 
 class BaseConfigurator(ABC):
@@ -82,6 +98,50 @@ class BaseConfigurator(ABC):
         """Normalize raw API config payloads before Pydantic validation."""
         return config
 
+    def prepare_config_write(
+        self,
+        config: Config | dict[str, Any],
+        *,
+        partial: bool = False,
+    ) -> PreparedConfigWrite:
+        """Validate a full or partial write without mutating configurator state."""
+        if isinstance(config, Config):
+            payload = config.model_dump(mode="python")
+        else:
+            payload = self.normalize_config_payload(dict(config))
+
+        current = self.config.model_dump(mode="python")
+        candidate = {**current, **payload} if partial else payload
+        validated = Config.model_validate(candidate)
+        canonical = validated.model_dump(mode="json")
+        return PreparedConfigWrite(
+            config=validated,
+            payload=dict(payload),
+            partial=partial,
+            changed=canonical != self.config.model_dump(mode="json"),
+        )
+
+    def commit_config_write(self, prepared: PreparedConfigWrite) -> bool:
+        """Persist a prepared write and update in-memory state.
+
+        Returns:
+            bool: Whether the persisted payload changed.
+        """
+
+        def replace_payload(current: dict[str, Any]) -> dict[str, Any]:
+            if not prepared.partial:
+                return prepared.config.model_dump(mode="json")
+            current_config = validate_stored_config(current)
+            candidate = {
+                **current_config.model_dump(mode="python"),
+                **prepared.payload,
+            }
+            return Config.model_validate(candidate).model_dump(mode="json")
+
+        result = self.config_storage.update_config_payload(replace_payload)
+        self.config = Config.model_validate(result.payload)
+        return result.changed
+
     def get_prompt_bank_paths(self) -> list[Path]:
         """Return additional prompt banks this configurator contributes."""
         return []
@@ -93,8 +153,8 @@ class BaseConfigurator(ABC):
         return context.strip()
 
     def set_config(self, config: Config) -> None:
-        self.config_storage.save_config(config=config)
-        self.config = config
+        prepared = self.prepare_config_write(config)
+        self.commit_config_write(prepared)
 
     def set_config_by_name(
         self,
@@ -120,8 +180,9 @@ class BaseConfigurator(ABC):
         ):
             resolved_value = config_value[0] if config_value else None
 
-        setattr(self.config, config_name, resolved_value)
-        self.set_config(config=self.config)
+        candidate = self.config.model_copy(deep=True)
+        setattr(candidate, config_name, resolved_value)
+        self.set_config(config=candidate)
 
     # ==========================
     # Storage
