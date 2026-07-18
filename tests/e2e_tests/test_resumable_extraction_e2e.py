@@ -388,10 +388,12 @@ def test_resumable_extraction_resumes_after_human_answer(
         with (
             patch("litellm.completion", side_effect=[response]),
             patch(
-                "reflexio.server.site_var.feature_flags.is_deduplicator_enabled",
-                return_value=False,
-            ),
+                "reflexio.server.services.profile.components.consolidator.ProfileConsolidator",
+            ) as mock_consolidator_cls,
         ):
+            mock_consolidator_cls.return_value.deduplicate.side_effect = (
+                lambda profiles, _user_id, _request_id: (profiles, [], [])
+            )
             resumed = worker.drain(max_runs=1)
 
         run = storage.get_agent_run("run_1")

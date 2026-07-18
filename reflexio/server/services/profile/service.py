@@ -169,30 +169,27 @@ class ProfileGenerationService(
         all_new_profiles = [p for result in results if result for p in result]
         existing_ids_to_delete: list[str] = []
 
-        # Always run deduplicator when enabled and there are new profiles
+        # Always run deduplicator when there are new profiles
         if all_new_profiles:
-            from reflexio.server.site_var.feature_flags import is_deduplicator_enabled
+            from reflexio.server.services.profile.components.consolidator import (
+                ProfileConsolidator,
+            )
 
-            if is_deduplicator_enabled(self.org_id):
-                from reflexio.server.services.profile.components.consolidator import (
-                    ProfileConsolidator,
+            consolidator = ProfileConsolidator(
+                request_context=self.request_context,
+                llm_client=self.client,
+                output_pending_status=self.output_pending_status,
+            )
+            all_new_profiles, existing_ids_to_delete, _superseded_profiles = (
+                consolidator.deduplicate(
+                    all_new_profiles, user_id, generation_request_id
                 )
-
-                consolidator = ProfileConsolidator(
-                    request_context=self.request_context,
-                    llm_client=self.client,
-                    output_pending_status=self.output_pending_status,
-                )
-                all_new_profiles, existing_ids_to_delete, _superseded_profiles = (
-                    consolidator.deduplicate(
-                        all_new_profiles, user_id, generation_request_id
-                    )
-                )
-                logger.info(
-                    "Profile updates after deduplication: %d profiles, %d existing to delete",
-                    len(all_new_profiles),
-                    len(existing_ids_to_delete),
-                )
+            )
+            logger.info(
+                "Profile updates after deduplication: %d profiles, %d existing to delete",
+                len(all_new_profiles),
+                len(existing_ids_to_delete),
+            )
 
         # Set source and status for all profiles
         for profile in all_new_profiles:

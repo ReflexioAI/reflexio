@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import inspect
 from pathlib import Path
 
 
@@ -31,7 +30,6 @@ def test_profile_consolidator_preserves_durable_names() -> None:
         ProfileConsolidator,
         ProfileDeduplicationOutput,
     )
-    from reflexio.server.site_var import feature_flags
     from reflexio.test_support.llm_model_registry import _build_registry
 
     registry = _build_registry()
@@ -39,4 +37,3 @@ def test_profile_consolidator_preserves_durable_names() -> None:
     assert ProfileConsolidator.DEDUPLICATION_PROMPT_ID == "profile_deduplication"
     assert registry["profile_deduplication"].model_class is ProfileDeduplicationOutput
     assert "deduplication_config" in UserPlaybookExtractorConfig.model_fields
-    assert '"deduplicator"' in inspect.getsource(feature_flags.is_deduplicator_enabled)

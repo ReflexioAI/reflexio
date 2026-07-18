@@ -3,7 +3,6 @@ from unittest.mock import patch
 
 from reflexio.server.site_var.feature_flags import (
     get_all_feature_flags,
-    is_deduplicator_enabled,
     is_feature_enabled,
     is_lineage_dual_read_diff_enabled,
     is_resumable_extraction_agent_enabled,
@@ -22,9 +21,9 @@ MOCK_CONFIG = {
         "enabled": True,
         "enabled_org_ids": [],
     },
-    "deduplicator": {
+    "scoped_feature": {
         "enabled": False,
-        "enabled_org_ids": ["org-dedup"],
+        "enabled_org_ids": ["org-scoped"],
     },
     "resumable_extraction_agent": {
         "enabled": False,
@@ -50,7 +49,7 @@ class TestFeatureFlags(unittest.TestCase):
     )
     def test_org_specific_enabled(self, _mock):
         """A feature disabled globally but with org in enabled_org_ids should be enabled for that org."""
-        self.assertTrue(is_feature_enabled("org-dedup", "deduplicator"))
+        self.assertTrue(is_feature_enabled("org-scoped", "scoped_feature"))
 
     @patch(
         "reflexio.server.site_var.feature_flags._get_feature_flags_config",
@@ -58,7 +57,7 @@ class TestFeatureFlags(unittest.TestCase):
     )
     def test_org_not_in_enabled_list(self, _mock):
         """A feature disabled globally with org NOT in enabled_org_ids should be disabled."""
-        self.assertFalse(is_feature_enabled("org-999", "deduplicator"))
+        self.assertFalse(is_feature_enabled("org-999", "scoped_feature"))
 
     @patch(
         "reflexio.server.site_var.feature_flags._get_feature_flags_config",
@@ -89,7 +88,7 @@ class TestFeatureFlags(unittest.TestCase):
                 "analytics_v2": True,
                 "beta_feature": False,
                 "pre_retrieval": True,
-                "deduplicator": False,
+                "scoped_feature": False,
                 "resumable_extraction_agent": False,
             },
         )
@@ -107,7 +106,7 @@ class TestFeatureFlags(unittest.TestCase):
                 "analytics_v2": True,
                 "beta_feature": False,
                 "pre_retrieval": True,
-                "deduplicator": False,
+                "scoped_feature": False,
                 "resumable_extraction_agent": False,
             },
         )
@@ -128,31 +127,6 @@ class TestFeatureFlags(unittest.TestCase):
         """get_all_feature_flags with empty config should return empty dict."""
         result = get_all_feature_flags("org-123")
         self.assertEqual(result, {})
-
-    @patch(
-        "reflexio.server.site_var.feature_flags._get_feature_flags_config",
-        return_value=MOCK_CONFIG,
-    )
-    def test_is_deduplicator_enabled_for_enabled_org(self, _mock):
-        """is_deduplicator_enabled should return True for orgs in enabled_org_ids."""
-        self.assertTrue(is_deduplicator_enabled("org-dedup"))
-
-    @patch(
-        "reflexio.server.site_var.feature_flags._get_feature_flags_config",
-        return_value=MOCK_CONFIG,
-    )
-    def test_is_deduplicator_disabled_for_other_org(self, _mock):
-        """is_deduplicator_enabled should return False for orgs not in enabled_org_ids."""
-        self.assertFalse(is_deduplicator_enabled("org-123"))
-        self.assertFalse(is_deduplicator_enabled("org-999"))
-
-    @patch(
-        "reflexio.server.site_var.feature_flags._get_feature_flags_config",
-        return_value={},
-    )
-    def test_is_deduplicator_enabled_unknown_defaults_enabled(self, _mock):
-        """is_deduplicator_enabled with empty config should default to enabled."""
-        self.assertTrue(is_deduplicator_enabled("org-123"))
 
     @patch(
         "reflexio.server.site_var.feature_flags._get_feature_flags_config",

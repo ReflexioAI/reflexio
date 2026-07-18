@@ -174,10 +174,6 @@ def test_consolidation_merge_routes_through_merge_records(
     )
 
     with (
-        patch(
-            "reflexio.server.site_var.feature_flags.is_deduplicator_enabled",
-            return_value=True,
-        ),
         patch.object(
             PlaybookGenerationService,
             "_configured_playbook_config",
@@ -274,10 +270,6 @@ def test_consolidation_repair_persists_only_repaired_multi_new_unify(
     )
 
     with (
-        patch(
-            "reflexio.server.site_var.feature_flags.is_deduplicator_enabled",
-            return_value=True,
-        ),
         patch.object(
             PlaybookGenerationService,
             "_configured_playbook_config",
@@ -324,10 +316,6 @@ def test_consolidation_differentiate_tombstones_split_source(
     )
 
     with (
-        patch(
-            "reflexio.server.site_var.feature_flags.is_deduplicator_enabled",
-            return_value=True,
-        ),
         patch.object(
             PlaybookGenerationService,
             "_configured_playbook_config",
@@ -369,10 +357,6 @@ def test_consolidation_differentiate_propagates_tombstone_failure(
     )
 
     with (
-        patch(
-            "reflexio.server.site_var.feature_flags.is_deduplicator_enabled",
-            return_value=True,
-        ),
         patch.object(
             PlaybookGenerationService,
             "_configured_playbook_config",

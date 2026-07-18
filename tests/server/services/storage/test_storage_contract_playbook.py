@@ -434,6 +434,24 @@ class TestAgentPlaybookCRUD:
         result = storage.get_agent_playbooks(playbook_name="fb")
         assert len(result) == 2
 
+    def test_get_agent_playbooks_orders_tied_timestamps_deterministically(
+        self, storage
+    ):
+        playbooks = [
+            _make_agent_playbook(1, "fb", "v1"),
+            _make_agent_playbook(2, "fb", "v1"),
+            _make_agent_playbook(3, "fb", "v1"),
+        ]
+        for playbook in playbooks:
+            playbook.created_at = 1_700_000_000
+        storage.save_agent_playbooks(playbooks)
+
+        first_page = storage.get_agent_playbooks(limit=2, offset=0)
+        second_page = storage.get_agent_playbooks(limit=2, offset=2)
+
+        assert [p.agent_playbook_id for p in first_page] == [3, 2]
+        assert [p.agent_playbook_id for p in second_page] == [1]
+
     def test_get_agent_playbooks_filters_query_before_limit(self, storage):
         newer = _make_agent_playbook(1, "alpha", "v1")
         newer.content = "newer nonmatch"

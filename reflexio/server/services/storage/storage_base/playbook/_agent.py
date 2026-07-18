@@ -124,6 +124,7 @@ class AgentPlaybookStoreMixin:
         query: str | None = None,
         start_time: int | None = None,
         end_time: int | None = None,
+        offset: int = 0,
     ) -> list[AgentPlaybook]:
         """Get agent playbooks from storage.
 
@@ -139,6 +140,7 @@ class AgentPlaybookStoreMixin:
             playbook_status_filter (Optional[list[PlaybookStatus]]): List of PlaybookStatus values to filter by.
                 If None, returns all playbook statuses.
             tags (list[str], optional): Match playbooks having any of these tags.
+            offset (int): Number of matching rows to skip. Defaults to 0.
 
         Returns:
             list[AgentPlaybook]: List of agent playbook objects
