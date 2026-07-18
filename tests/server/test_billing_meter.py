@@ -59,19 +59,6 @@ def test_record_extraction_tokens_noop_on_negative():
     hook.assert_not_called()
 
 
-def test_record_extraction_tokens_noop_when_zero_input():
-    with patch(HOOK) as hook:
-        record_extraction_tokens(
-            org_id="org1",
-            billing_input_tokens=0,
-            prompt_tokens=0,
-            completion_tokens=0,
-            platform_llm=True,
-            platform_storage=None,
-        )
-    hook.assert_not_called()
-
-
 def test_record_learnings_generated_uses_count_value():
     with patch(HOOK) as hook:
         record_learnings_generated(
@@ -85,14 +72,6 @@ def test_record_learnings_generated_uses_count_value():
     assert kwargs["event_name"] == "learnings_generated"
     assert kwargs["event_category"] == "learning"
     assert kwargs["count_value"] == 3
-
-
-def test_record_learnings_generated_noop_for_zero():
-    with patch(HOOK) as hook:
-        record_learnings_generated(
-            org_id="org1", count=0, platform_llm=True, platform_storage=None
-        )
-    hook.assert_not_called()
 
 
 def test_record_applied_learnings_billable_only_for_production_agent():

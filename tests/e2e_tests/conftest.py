@@ -28,8 +28,6 @@ from reflexio.server.services.configurator.configurator import DefaultConfigurat
 _TEST_DATA_DIR = Path(__file__).resolve().parent.parent / "test_data"
 _SCENARIO_DIR = _TEST_DATA_DIR / "scenarios" / "e2e"
 
-pytestmark = pytest.mark.e2e
-
 
 @pytest.fixture(autouse=True)
 def _zero_group_evaluation_delay():

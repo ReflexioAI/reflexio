@@ -62,6 +62,16 @@ def pytest_configure(config):
     configure_llm_mock(config)
 
 
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    """Classify path-based test tiers before ``-m`` selection is evaluated."""
+    for item in items:
+        path = Path(str(item.path))
+        if "e2e_tests" in path.parts:
+            item.add_marker(pytest.mark.e2e)
+        elif path.name.endswith(("_integration.py", "_integration_test.py")):
+            item.add_marker(pytest.mark.integration)
+
+
 def pytest_unconfigure(config):
     cleanup_llm_mock(config)
 
