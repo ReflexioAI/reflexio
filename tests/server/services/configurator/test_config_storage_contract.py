@@ -83,10 +83,13 @@ class TestConfigStorageContract:
         assert loaded.window_size == default.window_size
 
     def test_load_ignores_retired_fields_without_resetting_user_values(
-        self, config_storage: ConfigStorage
+        self, tmp_path: Path
     ) -> None:
         """Schema deletions drop only retired fields from stored config."""
-        config_path = Path(config_storage.config_file)  # type: ignore[attr-defined]
+        local_storage = LocalFileConfigStorage(
+            org_id="legacy-config-org", base_dir=str(tmp_path)
+        )
+        config_path = Path(local_storage.config_file)
         config_path.parent.mkdir(parents=True, exist_ok=True)
         config_path.write_text(
             json.dumps(
@@ -105,7 +108,7 @@ class TestConfigStorageContract:
             encoding="utf-8",
         )
 
-        loaded = config_storage.load_config()
+        loaded = local_storage.load_config()
 
         assert loaded.agent_context_prompt == "preserve this"
         assert loaded.window_size == 23
