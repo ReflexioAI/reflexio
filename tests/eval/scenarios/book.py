@@ -1,9 +1,8 @@
 """TEST-ONLY apply shim for the multi-round memory-scenario harness.
 
-This module mechanically reflects a *real* component decision (a
-``ConsolidationDecision`` or a ``ReflectionDecision`` produced by the live
-service/LLM) into the accumulating in-memory ``book`` so the next round
-can read the settled state. It does **not** re-implement the services'
+This module mechanically applies a real ``ConsolidationDecision`` produced by
+the live service/LLM to the accumulating in-memory ``book`` so the next round
+can read the settled state. It does **not** re-implement the service's
 private ``_apply_*`` internals or any storage/embedding/timestamp
 semantics — only the minimal structural change the next round needs to
 observe. The decision itself is the real component's judged output; this
@@ -23,10 +22,6 @@ from the book.
 (the consolidator references the single differentiated existing row by its
 integer id), so it is matched against ``BookRule.id`` directly.
 
-Reflection decisions reference their cited row by id (``cited_id`` ->
-``BookRule.id``) and only edit playbook content/trigger; TTL/profile
-fields are ignored here because the book holds playbook rules.
-
 Everything in this module is small and pure: no I/O, no LLM.
 """
 
@@ -36,9 +31,6 @@ from reflexio.server.services.playbook.components.consolidator import (
     ConsolidationDecision,
     DifferentiateDecision,
     UnifyDecision,
-)
-from reflexio.server.services.reflection.reflection_service_utils import (
-    ReflectionDecision,
 )
 from tests.eval.scenarios.case import BookRule
 
@@ -133,43 +125,4 @@ def apply_consolidation(
     # independent
     new_book = [rule.model_copy() for rule in book]
     new_book.append(candidate.model_copy(update={"id": _next_id(new_book)}))
-    return new_book
-
-
-def apply_reflection(
-    book: list[BookRule],
-    cited_id: int,
-    decision: ReflectionDecision,
-) -> list[BookRule]:
-    """Reflect one reflection decision into a NEW book list.
-
-    Finds the rule with ``id == cited_id`` and applies the decision's
-    replacement fields: if ``decision.new_content`` is not None, update
-    ``content``; if ``decision.new_trigger`` is not None, update
-    ``trigger``. If both are None (a ``no_change`` decision) the book is
-    returned unchanged. TTL / profile fields are ignored because the book
-    holds playbook rules.
-
-    Args:
-        book: The current accumulating book (not mutated).
-        cited_id: The :class:`BookRule.id` the reflection targets.
-        decision: The real reflection decision to reflect.
-
-    Returns:
-        A new ``list[BookRule]`` with the decision applied.
-    """
-    if decision.new_content is None and decision.new_trigger is None:
-        return [rule.model_copy() for rule in book]
-
-    new_book: list[BookRule] = []
-    for rule in book:
-        if rule.id != cited_id:
-            new_book.append(rule.model_copy())
-            continue
-        update: dict = {}
-        if decision.new_content is not None:
-            update["content"] = decision.new_content
-        if decision.new_trigger is not None:
-            update["trigger"] = decision.new_trigger
-        new_book.append(rule.model_copy(update=update))
     return new_book

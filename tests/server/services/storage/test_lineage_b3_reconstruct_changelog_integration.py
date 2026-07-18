@@ -5,8 +5,8 @@ Phase B3 / Task 2: Rebuild the ProfileChangeLog view on demand using stable sign
                  (includes tombstones — a profile added in R1 and later
                  tombstoned in R2 is STILL added in R1).
   - removed(R) = entity_ids of status_change events with to_status=="superseded"
-                 and request_id==R  (the dedup soft-delete signature; distinct
-                 from reflection which emits op="revise").
+                 and request_id==R (the dedup soft-delete signature; distinct
+                 from generic op="revise" events).
 
 Tested scenarios:
   - Dedup run (adds via generated_from_request_id + removes via supersede_profiles_by_ids)
@@ -15,7 +15,7 @@ Tested scenarios:
     classified as added in R1, removed in R2.
   - Empty request_id group is skipped (never merged with unrelated runs).
   - Purged tombstone → blank removed content, no crash.
-  - Reflection revise event does NOT get counted as a dedup removal.
+  - Generic revise event does NOT get counted as a dedup removal.
   - limit, ordering, cross-org isolation, empty storage.
 """
 
@@ -308,20 +308,19 @@ def test_purged_tombstone_no_crash(tmp_path):
 
 
 # --------------------------------------------------------------------------
-# Reflection revise event: must NOT be counted as a dedup removal
+# Generic revise event: must NOT be counted as a dedup removal
 # --------------------------------------------------------------------------
 
 
-def test_reflection_revise_event_not_counted_as_removal(tmp_path):
-    """A reflection op="revise" event must NOT appear as a removed profile.
+def test_revise_event_not_counted_as_removal(tmp_path):
+    """A generic op="revise" event must NOT appear as a removed profile.
 
     The dedup removal signal is specifically op="status_change" with
-    to_status="superseded". A revise event from reflection is a different op
+    to_status="superseded". A revise event is a different op
     and must be ignored by reconstruct_profile_change_log.
     """
     s = _store(tmp_path)
-    # Add two profiles; supersede one via supersede_record (reflection path,
-    # emits op="revise") — NOT the dedup path.
+    # Add two profiles; supersede one via the generic revision path — NOT dedup.
     old = _make_profile(
         user_id="u1", profile_id="p-revise-old", content="old", request_id="r-reflect"
     )
@@ -330,7 +329,7 @@ def test_reflection_revise_event_not_counted_as_removal(tmp_path):
     )
     s.add_user_profile("u1", [old, new])
     ctx = LineageContext(
-        op_kind="revise", actor="reflection", request_id="r-reflect-req"
+        op_kind="revise", actor="offline_optimizer", request_id="r-revise-req"
     )
     s.supersede_record(
         entity_type="profile",
@@ -340,7 +339,7 @@ def test_reflection_revise_event_not_counted_as_removal(tmp_path):
     )
 
     result = reconstruct_profile_change_log(s)
-    # The "r-reflect-req" has events, but no status_change+superseded events,
+    # The revision request has events, but no status_change+superseded events,
     # so removed should be empty. The "r-reflect" request_id has profiles with
     # generated_from_request_id="r-reflect", so it may appear as adds-only.
     # The key invariant: p-revise-old must NOT appear as a removed profile via
@@ -349,7 +348,7 @@ def test_reflection_revise_event_not_counted_as_removal(tmp_path):
         p.profile_id for row in result.profile_change_logs for p in row.removed_profiles
     }
     assert "p-revise-old" not in all_removed_ids, (
-        "reflection revise event must NOT count as dedup removal"
+        "revise event must NOT count as dedup removal"
     )
 
 

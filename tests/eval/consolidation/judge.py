@@ -1,7 +1,7 @@
 """AI-judge for consolidation decisions.
 
-Mirrors ``tests/eval/reflection/judge.py``: wraps a ``LiteLLMClient``-style
-client (anything exposing ``generate_chat_response(messages,
+Wraps a ``LiteLLMClient``-style client (anything exposing
+``generate_chat_response(messages,
 response_format, model)``) and asks an LLM whether a *produced*
 consolidation decision matches the *intended* outcome captured by a case's
 ``gold_kind`` — and, for a ``unify``, whether the merge introduced a

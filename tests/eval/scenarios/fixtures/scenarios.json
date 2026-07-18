@@ -23,7 +23,6 @@
             "content": "Noted. Avoid Friday-afternoon deploys so someone is around if it breaks."
           }
         ],
-        "cited": null,
         "gold": {
           "consolidation_kind": "unify",
           "extraction_signal": "avoidance rule about deploy timing"
@@ -56,7 +55,6 @@
             "content": "Understood. I will ask a clarifying question before answering."
           }
         ],
-        "cited": null,
         "gold": {
           "consolidation_kind": "differentiate",
           "extraction_signal": "opposing advice on the same trigger"
@@ -64,55 +62,5 @@
       }
     ],
     "gold_end_state": "two rules under refined distinct triggers, not merged"
-  },
-  {
-    "id": "reflect_corrects",
-    "agent_context": "Assistant that drives a multi-step task runner.",
-    "seed_book": [
-      {
-        "id": 1,
-        "content": "Always auto-retry a failed step.",
-        "trigger": "a step fails",
-        "rationale": ""
-      }
-    ],
-    "rounds": [
-      {
-        "kind": "learn",
-        "interactions": [
-          {
-            "role": "user",
-            "content": "Use a dark theme for the dashboard from now on."
-          },
-          {
-            "role": "assistant",
-            "content": "Recommend defaulting the dashboard to dark theme."
-          }
-        ],
-        "cited": null,
-        "gold": {
-          "consolidation_kind": "independent",
-          "extraction_signal": "unrelated preference"
-        }
-      },
-      {
-        "kind": "reflect",
-        "interactions": [
-          {
-            "role": "user",
-            "content": "The payment step failed and the auto-retry ran it again, so we double-committed the charge."
-          },
-          {
-            "role": "user",
-            "content": "Do not auto-retry like that. That caused a duplicate charge and I had to refund it."
-          }
-        ],
-        "cited": 1,
-        "gold": {
-          "reflection": "tighten"
-        }
-      }
-    ],
-    "gold_end_state": "the auto-retry rule narrowed or rewritten to avoid the double-commit"
   }
 ]

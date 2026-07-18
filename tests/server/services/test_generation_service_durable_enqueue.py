@@ -12,16 +12,27 @@ from unittest.mock import Mock, patch
 
 import pytest
 
+from reflexio.lib.reflexio_lib import Reflexio
 from reflexio.models.api_schema.service_schemas import (
     InteractionData,
     PublishUserInteractionRequest,
 )
+from reflexio.models.config_schema import (
+    Config,
+    PlaybookConfig,
+    ProfileExtractorConfig,
+    StorageConfigSQLite,
+)
 from reflexio.server.api_endpoints.request_context import RequestContext
+from reflexio.server.cache.reflexio_cache import clear_reflexio_cache
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
+from reflexio.server.services.configurator.configurator import DefaultConfigurator
+from reflexio.server.services.durable_learning.worker import DurableLearningWorker
 from reflexio.server.services.generation_service import (
     GenerationService,
     _org_in_durable_allowlist,
 )
+from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 
 
 def _make_svc(tmp_dir: str, org_id: str = "test_org") -> GenerationService:
@@ -77,6 +88,83 @@ def test_durable_enqueue_persists_job_atomically(monkeypatch):
         assert any(j.user_id == "u1" for j in jobs), "expected one pending job for u1"
 
 
+def test_public_publish_to_durable_worker_persists_profile_and_playbook(monkeypatch):
+    """The public deferred-publish path survives without the retired service.
+
+    This exercises the complete in-process boundary: public facade, atomic queue
+    enqueue, real durable worker, extraction, and persisted profile/playbook rows.
+    The suite-level LiteLLM double is the only mocked external boundary.
+    """
+    monkeypatch.setenv("REFLEXIO_DURABLE_LEARNING_QUEUE", "true")
+    monkeypatch.setenv("REFLEXIO_EMBEDDING_PROVIDER", "off")
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        org_id = "durable_public_boundary"
+        db_path = f"{tmp_dir}/durable-boundary.db"
+        configurator = DefaultConfigurator(org_id=org_id, base_dir=tmp_dir)
+        configurator.set_config(
+            Config(
+                storage_config=StorageConfigSQLite(db_path=db_path),
+                window_size=1,
+                stride_size=1,
+                agent_context_prompt="A customer-support assistant.",
+                profile_extractor_config=ProfileExtractorConfig(
+                    extraction_definition_prompt=(
+                        "Extract stable user preferences and account context."
+                    ),
+                ),
+                user_playbook_extractor_config=PlaybookConfig(
+                    extraction_definition_prompt=(
+                        "Extract instructions that would improve the next response."
+                    ),
+                ),
+            )
+        )
+        reflexio = Reflexio(
+            org_id=org_id,
+            storage_base_dir=tmp_dir,
+            configurator=configurator,
+        )
+
+        response = reflexio.publish_interaction(
+            {
+                "request_id": "durable-public-request",
+                "user_id": "durable-public-user",
+                "session_id": "durable-public-session",
+                "agent_version": "v1",
+                "source": "durable-boundary-test",
+                "interaction_data_list": [
+                    {
+                        "content": (
+                            "I prefer concise answers. Next time, confirm the account "
+                            "number before suggesting a billing change."
+                        ),
+                        "created_at": int(datetime.datetime.now(UTC).timestamp()),
+                    }
+                ],
+            },
+            defer_learning=True,
+        )
+
+        assert response.success is True
+        storage = reflexio.get_storage()
+        assert storage.count_all_profiles() == 0
+        assert storage.count_user_playbooks() == 0
+
+        worker = DurableLearningWorker(
+            lambda requested_org_id: RequestContext(
+                org_id=requested_org_id,
+                storage_base_dir=tmp_dir,
+            ),
+            instance_id="durable-boundary-worker",
+        )
+        assert worker.drain_org(org_id, batch_size=1, lease_seconds=300) == 1
+        assert storage.count_all_profiles() > 0
+        assert storage.count_user_playbooks() > 0
+
+    clear_reflexio_cache()
+
+
 def test_enqueue_failure_rolls_back_interactions(monkeypatch):
     """Zero-loss proof: if enqueue_learning_job raises inside commit_scope, the
     entire transaction rolls back — neither the request nor its interactions
@@ -119,6 +207,7 @@ def test_no_get_embeddings_inside_scope_when_prepare_degraded(monkeypatch):
     with tempfile.TemporaryDirectory() as tmp_dir:
         svc = _make_svc(tmp_dir)
         req = _publish_request(user_id="u3", request_id="r3")
+        assert isinstance(svc.storage, SQLiteStorage)
 
         # Simulate embedding service being unavailable during prepare.
         monkeypatch.setattr(

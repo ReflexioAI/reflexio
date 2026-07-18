@@ -1,7 +1,7 @@
 """End-to-end test for write-time contradiction resolution.
 
-Verifies the load-bearing invariant of the reflection-extraction-polarity
-feature at the consolidator boundary:
+Verifies the load-bearing no-self-contradiction invariant at the consolidator
+boundary:
 
 When an EXISTING positive ``UserPlaybook`` collides with a NEW
 failure-path-derived NEGATIVE candidate on the same trigger (a

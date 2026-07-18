@@ -1528,7 +1528,6 @@ class TestStructuredOutputRetry:
         assert ends, "expected a request-end failure log record"
         assert all(r.levelno == logging.ERROR for r in ends)
 
-
     def test_parse_exhaustion_logs_request_end_failure(self, caplog):
         """Blind-retry exhaustion (no validator) still emits the request-end
         failure record — litellm saw a 200, so only this layer can log it."""

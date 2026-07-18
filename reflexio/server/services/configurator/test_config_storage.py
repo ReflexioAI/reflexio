@@ -7,6 +7,7 @@ Simple test script to verify the new config storage classes work correctly.
 import json
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 from reflexio.models.config_schema import (
     Config,
@@ -134,6 +135,51 @@ def test_load_config_upgrades_legacy_list_shape():
         assert loaded.user_playbook_extractor_config.extractor_name == "legacy_playbook"
         assert loaded.agent_success_config is not None
         assert loaded.agent_success_config.evaluation_name == "legacy_success"
+
+
+def test_load_config_removes_retired_reflection_key_and_preserves_settings():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        storage = LocalFileConfigStorage(org_id="legacy_reflection", base_dir=temp_dir)
+        payload = {
+            "storage_config": StorageConfigSQLite().model_dump(mode="json"),
+            "agent_context_prompt": "keep this setting",
+            "reflection_config": {"enabled": False},
+        }
+        path = Path(storage.config_file)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload), encoding="utf-8")
+
+        loaded = storage.load_config()
+
+        assert loaded.agent_context_prompt == "keep this setting"
+        rewritten = json.loads(path.read_text(encoding="utf-8"))
+        assert "reflection_config" not in rewritten
+        assert rewritten["agent_context_prompt"] == "keep this setting"
+
+
+def test_load_config_returns_validated_config_when_cleanup_rewrite_fails():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        storage = LocalFileConfigStorage(
+            org_id="readonly_reflection", base_dir=temp_dir
+        )
+        payload = {
+            "storage_config": StorageConfigSQLite().model_dump(mode="json"),
+            "agent_context_prompt": "still available",
+            "reflection_config": {"enabled": True},
+        }
+        path = Path(storage.config_file)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload), encoding="utf-8")
+
+        with patch.object(
+            storage,
+            "_save_config_to_local_dir",
+            side_effect=OSError("read only"),
+        ):
+            loaded = storage.load_config()
+
+        assert loaded.agent_context_prompt == "still available"
+        assert "reflection_config" in json.loads(path.read_text(encoding="utf-8"))
 
 
 def test_load_config():

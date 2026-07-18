@@ -9,8 +9,8 @@ test exercises the same RIDM + config + extractor construction and call path
 without a real API call so default CI catches provider bugs.
 
 Call path (no storage seeding required, but storage IS required):
-    Unlike the reflection / consolidation decision seams (which need no
-    storage), the classic extractors route through
+    Unlike the consolidation decision seam (which needs no storage), the
+    classic extractors route through
     ``run_resumable_extraction_agent`` -> ``ResumableExtractionAgent``, which
     *requires* ``request_context.storage`` (it writes an ``_agent_runs`` row).
     ``RequestContext(org_id=..., storage_base_dir=tmp)`` auto-wires a real

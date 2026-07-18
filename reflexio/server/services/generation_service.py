@@ -48,10 +48,6 @@ from reflexio.server.services.profile.profile_generation_service_utils import (
 from reflexio.server.services.profile.service import (
     ProfileGenerationService,
 )
-from reflexio.server.services.reflection.reflection_service_utils import (
-    ReflectionServiceRequest,
-)
-from reflexio.server.services.reflection.service import ReflectionService
 from reflexio.server.services.shadow_comparison.worker import (
     ShadowComparisonJob,
     enqueue_shadow_comparison,
@@ -65,7 +61,6 @@ from reflexio.server.tracing import sentry_tags
 from reflexio.server.usage_metrics import record_usage_event
 
 if TYPE_CHECKING:
-    from reflexio.server.services.deferred_learning_plan import ReflectionWritePlan
     from reflexio.server.services.unified_search_service import UnifiedSearchService
 
 logger = logging.getLogger(__name__)
@@ -635,7 +630,7 @@ class GenerationService:
     ) -> DeferredLearningPlan:
         """Compute half of one durable-learning job — NO ``commit_scope`` held.
 
-        Runs the same-user guard (F4) first, then reflection + profile + playbook
+        Runs the same-user guard (F4) first, then profile + playbook
         compute (LLM extraction, dedup, embeddings) entirely OUTSIDE any writer
         transaction, and assembles a :class:`DeferredLearningPlan` of the held
         ``(service, plan)`` pairs. Issues NO learning DB write (F3): the only
@@ -645,15 +640,13 @@ class GenerationService:
 
         F4 GUARD FIRST: acquires a DB-backed per-user in-progress lock BEFORE any
         LLM work. On contention returns ``DeferredLearningPlan(lock_acquired=
-        False, reflection/profile/playbook=None)`` immediately (no compute) — the
+        False, profile/playbook=None)`` immediately (no compute) — the
         worker must then leave the job reclaimable (Task 9), NOT complete it.
 
-        Reflection runs first on the calling thread (it reads the pre-persist
-        snapshot); profile + playbook ``compute_generation`` then run in parallel
-        (no ``commit_scope`` is held, so the old ``sequential=True`` RLock
-        avoidance is unnecessary). Per-half failures are best-effort — captured
-        into ``warnings`` and the half dropped — mirroring
-        ``_run_learning_steps``.
+        Profile + playbook ``compute_generation`` run in parallel (no
+        ``commit_scope`` is held, so the old ``sequential=True`` RLock avoidance
+        is unnecessary). Per-half failures are best-effort — captured into
+        ``warnings`` and the half dropped — mirroring ``_run_learning_steps``.
         """
         warnings: list[str] = []
 
@@ -672,20 +665,10 @@ class GenerationService:
                 user_id=user_id,
                 agent_version=agent_version,
                 lock_acquired=False,
-                reflection=None,
                 profile=None,
                 playbook=None,
                 warnings=warnings,
             )
-
-        # Reflection first (calling thread) — one pre-persist read snapshot.
-        reflection_pair = self._compute_reflection(
-            user_id=user_id,
-            request_id=request_id,
-            agent_version=agent_version,
-            source=source,
-            warnings=warnings,
-        )
 
         # Profile + playbook compute in parallel — no scope held, so no RLock
         # contention (the pre-split sequential mode only existed to avoid the
@@ -774,7 +757,6 @@ class GenerationService:
             user_id=user_id,
             agent_version=agent_version,
             lock_acquired=True,
-            reflection=reflection_pair,
             profile=profile_pair,
             playbook=playbook_pair,
             warnings=warnings,
@@ -785,15 +767,12 @@ class GenerationService:
 
         This is the ONLY part the durable worker runs inside its fenced
         ``commit_scope``. For each present half it calls the held instance's
-        persist (reflection apply loop + bookmark; profile/playbook row writes +
-        extractor bookmark advance). Issues NO side-effects (telemetry, billing,
-        tagging, off-thread schedulers, lock release) — those are post-commit
-        (``emit_deferred_learning_side_effects``) so a fence-lost job never fires
-        them.
+        persist (profile/playbook row writes + extractor bookmark advance).
+        Issues NO side-effects (telemetry, billing, tagging, off-thread
+        schedulers, lock release) — those are post-commit
+        (``emit_deferred_learning_side_effects``) so a fence-lost job never
+        fires them.
         """
-        if plan.reflection is not None:
-            reflection_service, reflection_plan = plan.reflection
-            reflection_service.persist(reflection_plan)
         if plan.profile is not None:
             profile_service, profile_plan = plan.profile
             profile_service.persist_generation(profile_plan)
@@ -820,16 +799,6 @@ class GenerationService:
         strands the lock.
         """
         try:
-            if plan.reflection is not None:
-                reflection_service, reflection_plan = plan.reflection
-                try:
-                    reflection_service.emit_side_effects(reflection_plan)
-                except Exception:
-                    logger.exception(
-                        "Failed to emit reflection side effects for deferred "
-                        "learning request %s",
-                        plan.request_id,
-                    )
             if plan.profile is not None:
                 profile_service, profile_plan = plan.profile
                 try:
@@ -915,52 +884,6 @@ class GenerationService:
             dict(_DURABLE_LOCK_CLEARED_STATE),
         )
 
-    def _compute_reflection(
-        self,
-        *,
-        user_id: str,
-        request_id: str,
-        agent_version: str,
-        source: str | None,
-        warnings: list[str],
-    ) -> tuple[ReflectionService, ReflectionWritePlan] | None:
-        """Run reflection ``compute`` best-effort; return its held pair or None.
-
-        Mirrors ``_maybe_run_reflection`` (a reflection failure must never break
-        the publish) but returns the ``(service, plan)`` pair so the caller can
-        defer ``persist`` / ``emit_side_effects`` across the worker fence.
-        Returns ``None`` when reflection has nothing to persist (gate closed /
-        disabled / storage None) or a compute error (logged + appended to
-        ``warnings``).
-        """
-        try:
-            service = ReflectionService(
-                request_context=self.request_context,
-                llm_client=self.client,
-            )
-            reflection_plan = service.compute(
-                ReflectionServiceRequest(
-                    user_id=user_id,
-                    request_id=request_id,
-                    agent_version=agent_version,
-                    source=source,
-                )
-            )
-            if reflection_plan is None:
-                return None
-            return (service, reflection_plan)
-        except Exception as exc:  # noqa: BLE001 — reflection must not break publish
-            with sentry_tags(
-                subsystem="generation",
-                op="reflection",
-                org_id=self.org_id,
-                user_id=user_id,
-                error_type=type(exc).__name__,
-            ):
-                logger.exception("reflection compute failed for user %s", user_id)
-            warnings.append(f"reflection failed: {exc}")
-            return None
-
     def _run_learning_steps(
         self,
         *,
@@ -973,15 +896,6 @@ class GenerationService:
         result: GenerationServiceResult,
         parallel: bool = True,
     ) -> None:
-        # Reflection runs as its own sliding-window step BEFORE the extractor
-        # pool spins up, so replacements are visible to extractors.
-        self._maybe_run_reflection(
-            user_id=user_id,
-            request_id=request_id,
-            agent_version=agent_version,
-            source=source,
-        )
-
         profile_generation_service = ProfileGenerationService(
             llm_client=self.client, request_context=self.request_context
         )
@@ -1275,41 +1189,6 @@ class GenerationService:
             samples_agent_success(agent_success_config, **scope),
             samples_retrieved_learning(agent_success_config, **scope),
         )
-
-    def _maybe_run_reflection(
-        self, *, user_id: str, request_id: str, agent_version: str, source: str | None
-    ) -> None:
-        """Best-effort reflection pass before extraction.
-
-        Any failure is caught and logged so the surrounding publish
-        flow (extraction + delayed evaluation) is unaffected.
-        """
-        try:
-            service = ReflectionService(
-                request_context=self.request_context,
-                llm_client=self.client,
-            )
-            service.run(
-                ReflectionServiceRequest(
-                    user_id=user_id,
-                    request_id=request_id,
-                    agent_version=agent_version,
-                    source=source,
-                )
-            )
-        except Exception as exc:  # noqa: BLE001 — must not break publish
-            # Promoted to logger.exception so Sentry's LoggingIntegration
-            # captures the event. The except still doesn't re-raise — the
-            # publish loop continues — but on-call now sees the failure
-            # instead of it being buried at WARNING level.
-            with sentry_tags(
-                subsystem="generation",
-                op="reflection",
-                org_id=self.org_id,
-                user_id=user_id,
-                error_type=type(exc).__name__,
-            ):
-                logger.exception("reflection step failed for user %s", user_id)
 
     def _cleanup_storage_tables_if_needed(self) -> None:
         """Best-effort publish-boundary cleanup for capped storage tables."""

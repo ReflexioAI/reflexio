@@ -5,11 +5,8 @@ component's deterministic eval harness under **two pinned prompt versions** —
 the prior (baseline) and the new (candidate) — and fails if any guard metric
 regresses beyond a tolerance, so a degrading edit is caught before you adopt it.
 
-Two components are covered, each driven by its existing live provider + judge:
-
-- ``consolidation`` -> ``playbook_consolidation`` prompt, via
-  ``tests/eval/consolidation``
-- ``reflection`` -> ``memory_reflection`` prompt, via ``tests/eval/reflection``
+The playbook-consolidation component is covered through its existing live
+provider and judge under ``tests/eval/consolidation``.
 
 Version pinning needs no core change: ``RequestContext`` builds its own
 ``PromptManager``, but the providers read ``ctx.prompt_manager``, so we swap in
@@ -42,8 +39,8 @@ import tempfile
 from dataclasses import dataclass, field
 from typing import Literal
 
-Component = Literal["consolidation", "reflection"]
-COMPONENTS: tuple[Component, ...] = ("consolidation", "reflection")
+Component = Literal["consolidation"]
+COMPONENTS: tuple[Component, ...] = ("consolidation",)
 
 # Default per-metric tolerance: a higher-is-better metric may not drop by more
 # than this, and a lower-is-better metric may not rise by more than this.
@@ -76,18 +73,11 @@ _METRIC_SPECS: dict[Component, tuple[MetricSpec, ...]] = {
         MetricSpec("under_merge_rate", higher_is_better=False),
         MetricSpec("self_contradiction_rate", higher_is_better=False),
     ),
-    "reflection": (
-        MetricSpec("label_accuracy", higher_is_better=True),
-        MetricSpec("judge_accuracy", higher_is_better=True),
-        MetricSpec("false_tighten_rate", higher_is_better=False),
-        MetricSpec("over_specialization_rate", higher_is_better=False),
-    ),
 }
 
 # The per-case produced field used for the baseline<->candidate agreement rate.
 _PRODUCED_ATTR: dict[Component, str] = {
     "consolidation": "produced_kind",
-    "reflection": "produced_label",
 }
 
 
@@ -306,51 +296,29 @@ def _run_component_eval(
         if version is not None:
             ctx.prompt_manager = PromptManager(version_override={prompt_id: version})
 
-        # Each branch is kept fully self-contained (own provider, cases, runner)
-        # so the two components' incompatible decision/case types never unify.
-        if component == "consolidation":
-            from tests.eval.consolidation.fixtures import load_illustrative_cases
-            from tests.eval.consolidation.providers import (
-                make_consolidation_decision_provider,
-            )
-            from tests.eval.consolidation.runner import run_eval as run_consolidation
+        from tests.eval.consolidation.fixtures import load_illustrative_cases
+        from tests.eval.consolidation.providers import (
+            make_consolidation_decision_provider,
+        )
+        from tests.eval.consolidation.runner import run_eval as run_consolidation
 
-            cons_provider = make_consolidation_decision_provider(
-                llm_client=client, request_context=ctx
-            )
-            return run_consolidation(
-                cases=load_illustrative_cases(),
-                decision_provider=cons_provider,
-                llm_client=judge,
-            )
-
-        from tests.eval.reflection.fixtures import load_illustrative_cases
-        from tests.eval.reflection.providers import make_reflection_decision_provider
-        from tests.eval.reflection.runner import run_eval as run_reflection
-
-        refl_provider = make_reflection_decision_provider(
+        cons_provider = make_consolidation_decision_provider(
             llm_client=client, request_context=ctx
         )
-        return run_reflection(
+        return run_consolidation(
             cases=load_illustrative_cases(),
-            decision_provider=refl_provider,
+            decision_provider=cons_provider,
             llm_client=judge,
         )
 
 
 def _prompt_id(component: Component) -> str:
     """Return the prompt-bank id for a component."""
-    if component == "consolidation":
-        from reflexio.server.services.playbook.components.consolidator import (
-            PlaybookConsolidator,
-        )
-
-        return PlaybookConsolidator.DEDUPLICATION_PROMPT_ID
-    from reflexio.server.services.reflection.components.extractor import (
-        REFLECTION_PROMPT_ID,
+    from reflexio.server.services.playbook.components.consolidator import (
+        PlaybookConsolidator,
     )
 
-    return REFLECTION_PROMPT_ID
+    return PlaybookConsolidator.DEDUPLICATION_PROMPT_ID
 
 
 def _active_version(component: Component) -> str | None:

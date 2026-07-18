@@ -624,8 +624,8 @@ def reconstruct_profile_change_log(
     * **removed(R)** — entity_ids of ``status_change`` lineage events with
       ``to_status == "superseded"`` and ``request_id == R``.  This is the
       exact signature emitted by ``supersede_profiles_by_ids`` (the dedup
-      soft-delete path).  It is distinct from reflection which emits
-      ``op="revise"``, so reflection events are never mis-counted as removals.
+      soft-delete path). Other revision events are never mis-counted as
+      removals.
 
     Groups are formed over the union of request_ids from both signals.
     Request_id ``""`` is skipped — it would merge unrelated runs.
@@ -656,8 +656,7 @@ def reconstruct_profile_change_log(
 
     # Dedup soft-delete signature: status_change to_status=="superseded".
     # Each such event records one profile removed in the dedup run ``request_id``.
-    # Distinct from reflection which emits op="revise" — so revise events are
-    # never counted as removals here.
+    # Revise events are never counted as removals here.
     removal_by_req: dict[str, list[str]] = defaultdict(list)
     sort_key: dict[str, tuple[int, int]] = {}  # request_id -> (created_at, event_id)
     for evt in all_events:

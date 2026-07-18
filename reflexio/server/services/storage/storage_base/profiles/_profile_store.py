@@ -216,8 +216,8 @@ class ProfileStoreMixin:
         """Fetch the subset of a user's profiles whose ids are in the list.
 
         Server-side filter on (``user_id``, ``profile_id IN (...)``) so
-        callers (e.g. the reflection service resolving a small set of
-        cited profile ids) avoid scanning every profile for the user.
+        callers resolving a small set of known profile ids avoid scanning
+        every profile for the user.
 
         Args:
             user_id (str): Owning user id.

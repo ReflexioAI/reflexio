@@ -242,7 +242,7 @@ class TestProfileCRUD:
 
 
 class TestGetProfilesByIds:
-    """Contract tests for get_profiles_by_ids (used by ReflectionService)."""
+    """Contract tests for the shared get_profiles_by_ids lookup."""
 
     def test_returns_only_requested_ids(self, storage: BaseStorage) -> None:
         storage.add_user_profile(
@@ -324,7 +324,7 @@ class TestGetProfilesByIds:
 
 
 class TestArchiveProfileById:
-    """Contract tests for archive_profile_by_id (used by ReflectionService)."""
+    """Contract tests for the shared archive_profile_by_id mutation."""
 
     def test_archives_current_profile(self, storage: BaseStorage) -> None:
         storage.add_user_profile("u1", [_make_profile("u1", "p1", "old content")])

@@ -1,10 +1,9 @@
 """Case schema for the multi-round memory-scenario eval harness.
 
 A :class:`MemoryScenario` describes a *chained* memory exercise: a seed
-book of playbook rules followed by an ordered list of rounds. Each round
-is either a ``learn`` round (drives extract -> consolidate) or a
-``reflect`` round (drives the reflector against a cited rule). Between
-rounds, each real component decision is mechanically reflected into an
+book of playbook rules followed by an ordered list of ``learn`` rounds
+(drives extract -> consolidate). Between rounds, each real component
+decision is mechanically applied to an
 accumulating in-memory :class:`BookRule` list (see ``book.py``), so the
 next round reads the state the prior rounds settled.
 
@@ -23,7 +22,6 @@ kind        gold keys
 ==========  ============================================================
 ``learn``   ``{"consolidation_kind": "unify|reject_new|differentiate|
             independent", "extraction_signal": "<text>"}``
-``reflect`` ``{"reflection": "tighten|widen|rewrite|no_change"}``
 ==========  ============================================================
 """
 
@@ -38,14 +36,13 @@ class BookRule(BaseModel):
     """One accumulating in-memory playbook rule.
 
     The ``book`` is a flat list of these — the running state the scenario
-    chain builds up. Mirrors the loose shape the consolidation/reflection
-    eval cases use (a small readable model, not the full ``UserPlaybook``
+    chain builds up. Mirrors the loose shape the consolidation eval cases use
+    (a small readable model, not the full ``UserPlaybook``
     entity) so fixtures stay compact.
 
     Attributes:
-        id: Stable integer id of the rule. Rules are referenced by this id
-            in reflection decisions (``cited``) and by *list position* in
-            unify decisions (see ``book.apply_consolidation``).
+        id: Stable integer id of the rule. Rules are referenced by *list
+            position* in unify decisions (see ``book.apply_consolidation``).
         content: Current content text of the rule.
         trigger: Current trigger (None when unscoped).
         rationale: Current rationale text, if any.
@@ -60,26 +57,19 @@ class BookRule(BaseModel):
 class ScenarioRound(BaseModel):
     """One round in a multi-round memory scenario.
 
-    A ``learn`` round feeds ``interactions`` to the extractor and routes
-    each produced rule through the consolidator against the current book.
-    A ``reflect`` round runs the reflector over ``interactions`` against
-    the cited rule (``cited`` -> a :class:`BookRule` id).
+    A round feeds ``interactions`` to the extractor and routes each produced
+    rule through the consolidator against the current book.
 
     Attributes:
-        kind: ``"learn"`` (extract -> consolidate) or ``"reflect"``.
+        kind: ``"learn"`` (extract -> consolidate).
         interactions: The interaction window for the round. Each entry is
             a loose dict (e.g. ``{"role", "content", "tools_used"}``).
-        cited: For ``reflect`` rounds, the :class:`BookRule.id` the round
-            reflects on (None for ``learn`` rounds).
-        gold: The round's intended outcome. For ``learn``:
+        gold: The round's intended outcome:
             ``{"consolidation_kind": ..., "extraction_signal": ...}``.
-            For ``reflect``: ``{"reflection": ...}``. Keys are documented
-            at the module top.
     """
 
-    kind: Literal["learn", "reflect"]
+    kind: Literal["learn"]
     interactions: list[dict] = Field(default_factory=list)
-    cited: int | None = None
     gold: dict = Field(default_factory=dict)
 
 

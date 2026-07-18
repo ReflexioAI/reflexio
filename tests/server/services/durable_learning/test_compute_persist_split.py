@@ -612,8 +612,7 @@ def test_cas_drop_leaves_no_torn_state(monkeypatch):
     that incumbent out-of-band between compute and persist; persist must swallow
     the 0-rows/False from the guarded mutator (no raise) and leave no orphan.
 
-    Regression guard for the relaxed reflection→extractor visibility (spec
-    § semantic change). RED now: AttributeError on compute_deferred_learning."""
+    Regression guard for an incumbent changed between compute and persist."""
     with tempfile.TemporaryDirectory() as tmp_dir:
         ctx = _factory(tmp_dir)("org_cas")
         storage = ctx.storage
@@ -747,12 +746,8 @@ def test_side_effect_identity_vs_baseline():
     genuinely different orchestrations (single synchronous compute-persist-emit vs
     compute → fenced persist → post-commit emit), so this is not a self-compare.
 
-    Reflection-visibility tolerance (spec §semantic change): the seed is a single
-    interaction, so the reflection stride-gate is closed on BOTH paths (reflection
-    revises nothing), so the within-job reflection→extractor visibility delta does
-    not arise here — the identity assertion holds without filtering reflection
-    output. (Volatile ids/timestamps/embeddings/request_ids ARE normalized out;
-    ``REFLEXIO_EMBEDDING_PROVIDER=off`` keeps embeddings empty on both sides.)
+    Volatile ids/timestamps/embeddings/request_ids are normalized out;
+    ``REFLEXIO_EMBEDDING_PROVIDER=off`` keeps embeddings empty on both sides.
 
     Note (mock determinism): the root conftest mocks ``litellm.completion``, so
     extractor content is canned and identical across paths. This test proves the
@@ -821,8 +816,8 @@ def test_side_effect_identity_vs_baseline():
 
 def test_superseded_job_emits_no_billing(monkeypatch):
     """Force complete_learning_job → 0 (fence lost); assert the post-commit
-    side-effects never fire: _record_billing_learning_events, schedule_tagging,
-    and reflection _record_learnings_generated.
+    side-effects never fire: _record_billing_learning_events and
+    schedule_tagging.
 
     RED now: the current _process_job runs run_deferred_learning (which fires
     billing + schedule_tagging) INSIDE the scope, before complete_learning_job
@@ -836,7 +831,6 @@ def test_superseded_job_emits_no_billing(monkeypatch):
     that is what is asserted here. Flagged for Tasks 2-11 review.
     """
     import reflexio.server.services.generation_service as gen_mod
-    from reflexio.server.services.reflection.service import ReflectionService
 
     fired: list[str] = []
 
@@ -848,12 +842,6 @@ def test_superseded_job_emits_no_billing(monkeypatch):
     monkeypatch.setattr(
         gen_mod, "schedule_tagging", lambda *_a, **_k: fired.append("tagging")
     )
-    monkeypatch.setattr(
-        ReflectionService,
-        "_record_learnings_generated",
-        lambda _self, *_a, **_k: fired.append("reflection_learnings"),
-    )
-
     with tempfile.TemporaryDirectory() as tmp_dir:
         factory = _factory(tmp_dir)
         ctx = factory("org_nobill")

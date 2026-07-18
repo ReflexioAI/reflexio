@@ -231,8 +231,8 @@ def emit_learnings_generated(
 ) -> None:
     """Resolve ``platform_llm`` from config and emit the Learning value facet.
 
-    Convenience wrapper for the non-extraction learning-mutation paths (reflection,
-    resumable-extraction finalization, aggregation, offline-tuner auto-apply). It
+    Convenience wrapper for non-extraction learning-mutation paths such as
+    resumable-extraction finalization, aggregation, and offline-tuner auto-apply. It
     owns the ``configurator.get_config()`` + ``platform_llm_from_config`` lookup so
     each call site stays a thin one-liner, and — critically — is **guarded**: the
     product path must never fail because metering failed, so config resolution and
@@ -244,7 +244,7 @@ def emit_learnings_generated(
         org_id: Organisation identifier.
         configurator: Object exposing ``get_config()`` for platform-LLM resolution.
         count: Number of learnings durably produced by this path.
-        source: Metering source/path label (e.g. ``"reflection"``).
+        source: Metering source/path label (e.g. ``"offline_optimizer"``).
         pipeline: Optional pipeline tag (e.g. ``"playbook"``).
         user_id: Optional user ID tied to the generated learning.
         request_id: Optional request correlation ID.
@@ -302,8 +302,8 @@ def emit_learnings_generated_records(
     Entity-backed counterpart to :func:`emit_learnings_generated`, currently
     adopted by two of the non-extraction learning-mutation paths —
     resumable-extraction finalization and aggregation — the callers with
-    durable per-record ids in scope. Extraction, reflection, and offline-tuner
-    auto-apply do not have a safe 1:1 id per unit of count (see
+    durable per-record ids in scope. Extraction and offline-tuner auto-apply do
+    not have a safe 1:1 id per unit of count (see
     :func:`record_learnings_generated_records`) and use the count-based
     :func:`emit_learnings_generated` fallback instead. Same guard semantics:
     config resolution and emission are wrapped and any exception is logged
@@ -314,7 +314,7 @@ def emit_learnings_generated_records(
         org_id: Organisation identifier.
         configurator: Object exposing ``get_config()`` for platform-LLM resolution.
         learning_ids: Ids of the learnings durably produced by this path.
-        source: Metering source/path label (e.g. ``"reflection"``).
+        source: Metering source/path label (e.g. ``"aggregation"``).
         pipeline: Optional pipeline tag (e.g. ``"playbook"``).
         user_id: Optional user ID tied to the generated learning.
         request_id: Optional request correlation ID.

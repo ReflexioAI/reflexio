@@ -263,12 +263,15 @@ def test_consolidation_repair_persists_only_repaired_multi_new_unify(
             )
         ]
     )
+
     def repaired_consolidation(*, structured_output_validator, **_kwargs):
         assert structured_output_validator(initial_output)
         assert structured_output_validator(repaired_output) == []
         return repaired_output
 
-    generation_service.client.generate_chat_response.side_effect = repaired_consolidation
+    generation_service.client.generate_chat_response.side_effect = (
+        repaired_consolidation
+    )
 
     with (
         patch(

@@ -51,9 +51,7 @@ def _to_user_playbook(
     """Build a minimal ``UserPlaybook`` for the consolidation prompt.
 
     Only the fields the consolidation prompt reads are populated; everything
-    else uses entity defaults. Mirrors the reflection provider's minimal
-    builder (``user_playbook_id``, ``agent_version=""``, ``request_id``,
-    ``content``, ``trigger``, ``rationale``).
+    else uses entity defaults.
 
     Args:
         user_playbook_id: Stable integer id of the row (EXISTING rows use

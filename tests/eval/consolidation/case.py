@@ -7,10 +7,7 @@ surfaced, and the one NEW candidate fragment under consideration) plus the
 
 Mapping a live decision to a kind
 ---------------------------------
-Unlike the reflection harness — where the live decision carries **no mode
-label** and the outcome must be reconstructed from which replacement fields
-are set (see ``reflection.case.label_for_decision``) — a consolidation
-decision is an explicit discriminated union. Each concrete decision
+A consolidation decision is an explicit discriminated union. Each concrete decision
 (:class:`UnifyDecision`, :class:`RejectNewDecision`,
 :class:`DifferentiateDecision`, :class:`IndependentDecision`) carries a
 ``kind`` literal that *is* the outcome. So the mapper here is trivial: it
@@ -127,9 +124,8 @@ class ConsolidationEvalCase(BaseModel):
 def kind_for_decision(decision: ConsolidationDecision) -> str:
     """Map a produced consolidation decision to its coarse kind.
 
-    Unlike reflection's ``label_for_decision`` — which reconstructs a label
-    from field presence with a precedence rule — the consolidation kind is
-    explicit: every concrete decision in the :data:`ConsolidationDecision`
+    The consolidation kind is explicit: every concrete decision in the
+    :data:`ConsolidationDecision`
     union carries a ``kind`` discriminator literal that *is* the outcome.
     This function therefore just returns that literal, with no heuristic.
 

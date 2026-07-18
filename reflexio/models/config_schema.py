@@ -542,56 +542,6 @@ def _default_agent_success_config() -> AgentSuccessConfig:
     )
 
 
-class ReflectionConfig(BaseModel):
-    """Configuration for the sliding-window reflection step.
-
-    Reflection runs inside ``GenerationService.run`` as its own
-    sliding-window step (window = global ``window_size``, stride = global
-    ``stride_size``, bookmark via ``OperationStateManager``). When
-    the gate opens and at least one Assistant interaction in the window
-    cites a current user playbook / user profile row, the LLM is asked
-    whether any cited rows should be replaced. When ``enabled`` is
-    False the step short-circuits.
-
-    Args:
-        enabled (bool): Master switch. When False, no LLM call is made.
-        model (str | None): Optional model name override. Falls back to
-            ``LLMConfig.generation_model_name`` and then the site
-            default for ``ModelRole.GENERATION`` when None.
-        post_horizon_size (int): Minimum interactions after a citation before
-            reflection judges it with full confidence. Citations near the recent
-            edge of the window with fewer than this many follow-up turns get a
-            'last_chance' judgment with the prompt biased toward no_change.
-            Set to 0 to disable the filter (legacy behavior).
-        max_revisions_per_pass (int): Cap on the number of revision decisions
-            applied in a single reflection pass (regularization). Once the cap
-            is hit, remaining revision-intent decisions are skipped and counted
-            in ``ReflectionResult.capped_count``.
-    """
-
-    enabled: bool = True
-    model: str | None = None
-    post_horizon_size: int = Field(
-        default=3,
-        description=(
-            "Minimum interactions after a citation before reflection judges "
-            "it with full confidence. Citations near the recent edge of the "
-            "window with fewer than this many follow-up turns get a "
-            "'last_chance' judgment with the prompt biased toward no_change. "
-            "Set to 0 to disable the filter (legacy behavior)."
-        ),
-        ge=0,
-    )
-    max_revisions_per_pass: int = Field(
-        default=8,
-        gt=0,
-        description=(
-            "Cap on revision decisions applied per reflection pass "
-            "(regularization; excess are skipped)."
-        ),
-    )
-
-
 class RetrievalFloorConfig(BaseModel):
     """Read-path relevance floor: drop search results below a per-arm cross-encoder score.
 
@@ -877,8 +827,6 @@ class Config(BaseModel):
     api_key_config: APIKeyConfig | None = None
     # LLM model configuration overrides
     llm_config: LLMConfig | None = None
-    # Post-publish reflection service configuration
-    reflection_config: ReflectionConfig = Field(default_factory=ReflectionConfig)
     # Read-path relevance floor (per-arm cross-encoder score cutoff)
     retrieval_floor: RetrievalFloorConfig = Field(default_factory=RetrievalFloorConfig)
     # Optional GEPA-backed playbook content optimizer
@@ -949,7 +897,6 @@ class Config(BaseModel):
             for key in (
                 "window_size",
                 "stride_size",
-                "reflection_config",
                 "playbook_optimizer_config",
                 "lineage_gc",
                 "expiry_reclamation",

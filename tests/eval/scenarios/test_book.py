@@ -4,7 +4,7 @@ Pure logic, no LLM and no storage: build a small book + each real
 decision kind, apply it via the shim, and assert the exact resulting
 book. Covers the position-vs-id mapping (unify uses ``existing_order``
 list positions; differentiate uses ``existing_id`` = a ``BookRule.id``)
-and the reflection content/trigger/no-change paths.
+for every consolidation decision kind.
 """
 
 from __future__ import annotations
@@ -15,13 +15,9 @@ from reflexio.server.services.playbook.components.consolidator import (
     RejectNewDecision,
     UnifyDecision,
 )
-from reflexio.server.services.reflection.reflection_service_utils import (
-    ReflectionDecision,
-)
 from tests.eval.scenarios.book import (
     _next_id,
     apply_consolidation,
-    apply_reflection,
 )
 from tests.eval.scenarios.case import BookRule
 
@@ -107,52 +103,3 @@ def test_independent_appends_candidate() -> None:
         r2,
         BookRule(id=3, content="cand", trigger="t-cand", rationale="rc"),
     ]
-
-
-def test_reflection_new_content_updates_cited_rule() -> None:
-    r1, r2 = _seed()
-    book = [r1, r2]
-    decision = ReflectionDecision(
-        target_kind="playbook",
-        target_id="1",
-        new_content="use tabs",
-    )
-
-    result = apply_reflection(book, cited_id=1, decision=decision)
-
-    assert result == [
-        BookRule(id=1, content="use tabs", trigger="formatting", rationale="r1"),
-        r2,
-    ]
-
-
-def test_reflection_new_trigger_updates_cited_rule() -> None:
-    r1, r2 = _seed()
-    book = [r1, r2]
-    decision = ReflectionDecision(
-        target_kind="playbook",
-        target_id="1",
-        new_trigger="python formatting",
-    )
-
-    result = apply_reflection(book, cited_id=1, decision=decision)
-
-    assert result == [
-        BookRule(
-            id=1,
-            content="use spaces",
-            trigger="python formatting",
-            rationale="r1",
-        ),
-        r2,
-    ]
-
-
-def test_reflection_no_change_is_noop() -> None:
-    r1, r2 = _seed()
-    book = [r1, r2]
-    decision = ReflectionDecision(target_kind="playbook", target_id="1")
-
-    result = apply_reflection(book, cited_id=1, decision=decision)
-
-    assert result == [r1, r2]

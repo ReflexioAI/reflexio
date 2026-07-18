@@ -21,9 +21,7 @@ def _make_request(
     return Request(request_id=request_id, user_id=user_id, session_id=session_id)
 
 
-def _make_user_playbook(
-    *, user_id: str, request_id: str, content: str
-) -> UserPlaybook:
+def _make_user_playbook(*, user_id: str, request_id: str, content: str) -> UserPlaybook:
     return UserPlaybook(
         user_id=user_id,
         agent_version="v1",
