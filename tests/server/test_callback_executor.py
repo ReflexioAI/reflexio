@@ -21,6 +21,38 @@ def test_callbacks_run() -> None:
     assert ran.wait(timeout=2.0)
 
 
+def test_drain_waits_for_active_and_queued_callbacks() -> None:
+    ex = BoundedCallbackExecutor(workers=1, queue_size=8)
+    started = threading.Event()
+    release = threading.Event()
+    ran: list[str] = []
+
+    def blocker() -> None:
+        started.set()
+        release.wait(timeout=5)
+        ran.append("blocker")
+
+    ex.submit("blocker", blocker)
+    assert started.wait(timeout=2.0), "blocker never started running"
+    ex.submit("after", lambda: ran.append("after"))
+
+    drained = threading.Event()
+
+    def drain() -> None:
+        if ex.drain(timeout_seconds=2.0):
+            drained.set()
+
+    waiter = threading.Thread(target=drain)
+    waiter.start()
+    time.sleep(0.05)
+    assert not drained.is_set(), "drain returned before active work completed"
+
+    release.set()
+    waiter.join(timeout=2.0)
+    assert drained.is_set(), f"drain timed out before callbacks finished: {ran}"
+    assert ran == ["blocker", "after"]
+
+
 def test_queue_bound_drops_oldest(monkeypatch) -> None:
     monkeypatch.setattr(
         ce_mod,

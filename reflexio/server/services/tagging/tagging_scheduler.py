@@ -23,7 +23,7 @@ from collections.abc import Callable
 from functools import partial
 
 from reflexio.server.api_endpoints.request_context import RequestContext
-from reflexio.server.callback_executor import submit_callback
+from reflexio.server.callback_executor import drain_callbacks, submit_callback
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.services.tagging.service import TaggingService
 
@@ -72,6 +72,20 @@ class TaggingScheduler:
             self._scheduled[key] = (fire_time, callback)
             heapq.heappush(self._heap, (fire_time, key))
         self._wake_event.set()
+
+    def drain(self, *, timeout_seconds: float = 5.0) -> bool:
+        """Wait for scheduled tagging callbacks and executor work to settle."""
+        deadline = time.monotonic() + timeout_seconds
+        while True:
+            with self._mutex:
+                scheduled = bool(self._scheduled)
+            if not scheduled:
+                remaining = max(0.0, deadline - time.monotonic())
+                return drain_callbacks(timeout_seconds=remaining)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            time.sleep(min(0.01, remaining))
 
     def _scheduler_loop(self) -> None:
         while True:
@@ -146,3 +160,10 @@ def schedule_tagging(
         )
 
     TaggingScheduler.get_instance().schedule(key, callback)
+
+
+def drain_tagging(*, timeout_seconds: float = 5.0) -> bool:
+    """Wait for the singleton tagging scheduler and callback executor to settle."""
+    if TaggingScheduler._instance is None:
+        return drain_callbacks(timeout_seconds=timeout_seconds)
+    return TaggingScheduler._instance.drain(timeout_seconds=timeout_seconds)
