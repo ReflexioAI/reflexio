@@ -2085,7 +2085,14 @@ class ReflexioClient:
                 continue
             status_response = GetOperationStatusResponse(**response)
             op = status_response.operation_status
-            if op and min_started_at is not None and op.started_at < min_started_at:
+            # The API stores operation timestamps at second precision. Accept a
+            # one-second skew so a just-submitted operation that starts near the
+            # client timestamp boundary is not treated as stale forever.
+            if (
+                op
+                and min_started_at is not None
+                and op.started_at < min_started_at - 1
+            ):
                 op = None
             if op and op.status in (
                 OperationStatus.COMPLETED,
