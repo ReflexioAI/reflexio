@@ -1,4 +1,5 @@
 import contextlib
+import copy
 import json
 import logging
 import os
@@ -82,7 +83,7 @@ class LocalFileConfigStorage(ConfigStorage):
                 data = json.loads(str(config_content))
                 if not isinstance(data, dict):
                     raise ValueError("Configuration JSON must decode to an object")
-                original_payload = data
+                original_payload = copy.deepcopy(data)
                 # Detect legacy on-disk configs that used the removed "disk"
                 # storage backend and rewrite only the storage_config field
                 # to default SQLite. Other persisted fields (extractors,
