@@ -24,6 +24,7 @@ from reflexio.models.config_schema import (
     ToolUseConfig,
 )
 from reflexio.server.services.configurator.configurator import DefaultConfigurator
+from reflexio.server.services.tagging.tagging_scheduler import drain_tagging
 
 _TEST_DATA_DIR = Path(__file__).resolve().parent.parent / "test_data"
 _SCENARIO_DIR = _TEST_DATA_DIR / "scenarios" / "e2e"
@@ -50,6 +51,14 @@ def _zero_group_evaluation_delay():
         0,
     ):
         yield
+
+
+@pytest.fixture(autouse=True)
+def _drain_background_tagging_callbacks():
+    yield
+    assert drain_tagging(timeout_seconds=10.0), (
+        "background tagging callbacks did not drain before test teardown"
+    )
 
 
 @pytest.fixture

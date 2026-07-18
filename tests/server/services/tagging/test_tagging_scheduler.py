@@ -26,6 +26,17 @@ def test_scheduler_fires_scheduled_callback(monkeypatch: Any) -> None:
     assert fired.wait(timeout=5)
 
 
+def test_scheduler_drain_waits_for_scheduled_callback(monkeypatch: Any) -> None:
+    # Keep the debounce tiny so the test does not wait on the real delay.
+    monkeypatch.setattr(tagging_scheduler, "_EFFECTIVE_DELAY_SECONDS", 0.01)
+    fired = threading.Event()
+    scheduler = TaggingScheduler.get_instance()
+    scheduler.schedule(("org", "drain-user", "v1"), fired.set)
+
+    assert scheduler.drain(timeout_seconds=2.0)
+    assert fired.is_set()
+
+
 def test_schedule_tagging_skips_when_no_user(monkeypatch: Any) -> None:
     scheduled: list[tuple[Any, Any]] = []
     monkeypatch.setattr(

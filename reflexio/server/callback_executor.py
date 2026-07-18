@@ -56,6 +56,7 @@ class BoundedCallbackExecutor:
         self._queue: deque[tuple[str, Callable[[], None]]] = deque()
         self._queue_size = queue_size
         self._cond = threading.Condition()
+        self._active = 0
         self._drop_times: deque[float] = deque()
         self._last_drop_anomaly = 0.0
         for i in range(workers):
@@ -78,9 +79,24 @@ class BoundedCallbackExecutor:
                 dropped_name, _ = self._queue.popleft()
                 drop_facts = self._record_drop_locked(dropped_name)
             self._queue.append((name, fn))
-            self._cond.notify()
+            self._cond.notify_all()
         if drop_facts is not None:
             self._emit_drop(drop_facts)
+
+    def drain(self, *, timeout_seconds: float = 5.0) -> bool:
+        """Wait until queued and in-flight callbacks finish.
+
+        This is primarily used by tests and graceful harnesses that must not let
+        daemon callback logs outlive their capture/lifecycle boundary.
+        """
+        deadline = time.monotonic() + timeout_seconds
+        with self._cond:
+            while self._queue or self._active:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                self._cond.wait(timeout=remaining)
+            return True
 
     def _record_drop_locked(self, dropped_name: str) -> _DropFacts:
         """Collect the facts of one drop while ``self._cond`` is held.
@@ -133,6 +149,7 @@ class BoundedCallbackExecutor:
                 while not self._queue:
                     self._cond.wait()
                 name, fn = self._queue.popleft()
+                self._active += 1
             try:
                 fn()
             except BaseException:  # noqa: BLE001 — daemon worker threads must
@@ -143,6 +160,11 @@ class BoundedCallbackExecutor:
                 logger.exception(
                     "event=callback_executor_callback_failed name=%s", name
                 )
+            finally:
+                with self._cond:
+                    self._active -= 1
+                    if not self._queue and self._active == 0:
+                        self._cond.notify_all()
 
 
 _executor: BoundedCallbackExecutor | None = None
@@ -162,3 +184,10 @@ def submit_callback(name: str, fn: Callable[[], None]) -> None:
             if _executor is None:
                 _executor = BoundedCallbackExecutor()
     _executor.submit(name, fn)
+
+
+def drain_callbacks(*, timeout_seconds: float = 5.0) -> bool:
+    """Wait for the process-global callback executor to become idle."""
+    if _executor is None:
+        return True
+    return _executor.drain(timeout_seconds=timeout_seconds)
