@@ -27,6 +27,12 @@ from reflexio.server.services.configurator.configurator import DefaultConfigurat
 
 _TEST_DATA_DIR = Path(__file__).resolve().parent.parent / "test_data"
 _SCENARIO_DIR = _TEST_DATA_DIR / "scenarios" / "e2e"
+_CUSTOMER_SUPPORT_WINDOW_SIZE = 20
+_CUSTOMER_SUPPORT_PROFILE_DEFINITION = """
+name, occupation, location, membership tier, order context, communication preferences,
+formatting preferences, timeline preferences, and other durable customer-support
+personalization facts from the conversation
+"""
 
 
 @pytest.fixture(autouse=True)
@@ -76,6 +82,8 @@ def reflexio_instance(
     config = Config(
         storage_config=sqlite_storage_config,
         agent_context_prompt="this is a sales agent",
+        skip_should_run_check=True,
+        window_size=_CUSTOMER_SUPPORT_WINDOW_SIZE,
         # Single configured profile extractor (the list-valued field is retired and
         # the Config constructor would ignore it, dropping tagging_definition_prompt).
         profile_extractor_config=ProfileExtractorConfig(
@@ -83,9 +91,7 @@ def reflexio_instance(
             context_prompt="""
 Conversation between sales agent and user, extract any information from the interaction if contains any information listed under definition
 """,
-            extraction_definition_prompt="""
-name, age, intent of the conversations
-""",
+            extraction_definition_prompt=_CUSTOMER_SUPPORT_PROFILE_DEFINITION,
             tagging_definition_prompt="""
 choice of ['basic_info', 'conversation_intent']
 """,
@@ -126,15 +132,15 @@ def reflexio_instance_profile_only(
     config = Config(
         storage_config=sqlite_storage_config,
         agent_context_prompt="this is a sales agent",
+        skip_should_run_check=True,
+        window_size=_CUSTOMER_SUPPORT_WINDOW_SIZE,
         user_playbook_extractor_config=None,
         profile_extractor_config=ProfileExtractorConfig(
             extractor_name="test_profile_extractor",
             context_prompt="""
 Conversation between sales agent and user, extract any information from the interaction if contains any information listed under definition
 """,
-            extraction_definition_prompt="""
-name, age, intent of the conversations
-""",
+            extraction_definition_prompt=_CUSTOMER_SUPPORT_PROFILE_DEFINITION,
             tagging_definition_prompt="""
 choice of ['basic_info', 'conversation_intent']
 """,

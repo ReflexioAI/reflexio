@@ -20,7 +20,7 @@ so this module moves BEFORE ``_litellm_text_generation``.
 
 import json
 from functools import lru_cache
-from typing import TYPE_CHECKING, Any, get_origin
+from typing import TYPE_CHECKING, Any, get_args, get_origin
 
 import litellm
 from pydantic import BaseModel
@@ -48,9 +48,20 @@ def _single_list_field_name(response_format: type[BaseModel]) -> str | None:
         return None
 
     field_name, field = next(iter(fields.items()))
-    if field.annotation is list or get_origin(field.annotation) is list:
+    if _is_list_annotation(field.annotation):
         return field_name
     return None
+
+
+def _is_list_annotation(annotation: Any) -> bool:
+    """Return whether an annotation accepts a list value."""
+    if annotation is list or get_origin(annotation) is list:
+        return True
+    return any(
+        _is_list_annotation(arg)
+        for arg in get_args(annotation)
+        if arg is not type(None)
+    )
 
 
 def _validate_structured_payload(
