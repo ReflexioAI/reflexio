@@ -681,9 +681,8 @@ def test_finalize_drops_empty_and_same_batch_duplicates_with_dedup_flag_off():
 
         with (
             patch(
-                "reflexio.server.site_var.feature_flags.is_deduplicator_enabled",
-                return_value=False,
-            ),
+                "reflexio.server.services.playbook.components.consolidator.PlaybookConsolidator",
+            ) as mock_dedup_cls,
             patch.object(
                 _storage(playbook_generation_service), "save_user_playbooks"
             ) as save_user_playbooks,
@@ -691,6 +690,13 @@ def test_finalize_drops_empty_and_same_batch_duplicates_with_dedup_flag_off():
                 playbook_generation_service, "_enqueue_user_playbook_optimization"
             ),
         ):
+            mock_dedup_cls.return_value.deduplicate.side_effect = (
+                lambda results, *_args, **_kwargs: (
+                    [p for r in results for p in r],
+                    [],
+                    [],
+                )
+            )
             playbook_generation_service._finalize_extracted_items(
                 [first, duplicate, blank]
             )

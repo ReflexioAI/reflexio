@@ -175,10 +175,12 @@ def test_resume_worker_resumes_profile_run_and_consumes_dependency(
     with (
         patch("litellm.completion", side_effect=[response]),
         patch(
-            "reflexio.server.site_var.feature_flags.is_deduplicator_enabled",
-            return_value=False,
-        ),
+            "reflexio.server.services.profile.components.consolidator.ProfileConsolidator",
+        ) as mock_consolidator_cls,
     ):
+        mock_consolidator_cls.return_value.deduplicate.side_effect = (
+            lambda profiles, _user_id, _request_id: (profiles, [], [])
+        )
         resumed = worker.drain(max_runs=1)
 
     assert resumed == 1

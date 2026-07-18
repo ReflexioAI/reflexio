@@ -73,6 +73,8 @@ Consolidates newly extracted playbooks against existing playbooks in the databas
 
 The LLM call opts into the shared structured-output repair path: malformed, blank, or partition-invalid decisions get a corrective same-model follow-up, and deployments with `REFLEXIO_LLM_FALLBACK_MODELS` can use the first eligible fallback model for one final corrective turn. If repair exhausts, the consolidator applies the first parsed output through the defensive apply path; if nothing parsed, a safety fallback inserts every new candidate so extracted data is never silently dropped.
 
+Inline consolidation always runs during generation (the legacy `deduplicator` feature flag is retired). The enterprise repo additionally ships a **scheduled second-pass job** (`reflexio_ext/server/services/playbook_reconsolidation/`) that re-runs consolidation daily over already-persisted rows — user playbooks per `(user_id, agent_version)` and agent playbooks per `agent_version` — by rendering each duplicate group as NEW candidates against an empty EXISTING side via `_consolidation_decisions`, then tombstoning merged sources with `merge_records` lineage.
+
 ## Prompt IDs
 
 | Constant | Prompt ID | Used By |

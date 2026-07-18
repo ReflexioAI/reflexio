@@ -43,7 +43,6 @@ from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 
 pytestmark = pytest.mark.integration
 
-_DEDUP_FLAG = "reflexio.server.site_var.feature_flags.is_deduplicator_enabled"
 _DEDUP_CLS = (
     "reflexio.server.services.profile.components.consolidator.ProfileConsolidator"
 )
@@ -106,15 +105,14 @@ def _build_service(
 
 
 def _patch_dedup(*, all_new, existing_ids, superseded):
-    """Patch is_deduplicator_enabled=True and the ProfileConsolidator class.
+    """Patch the ProfileConsolidator class with a canned deduplicate result.
 
     Returns a context-manager-yielding helper used as ``with _patch_dedup(...):``.
     """
     mock_dedup = MagicMock()
     mock_dedup.deduplicate.return_value = (all_new, existing_ids, superseded)
     mock_dedup_cls = patch(_DEDUP_CLS)
-    flag = patch(_DEDUP_FLAG, return_value=True)
-    return mock_dedup, mock_dedup_cls, flag
+    return mock_dedup, mock_dedup_cls
 
 
 # ===========================================================================
@@ -145,12 +143,12 @@ def test_dedup_removal_soft_supersedes_and_reconstructs(tmp_path) -> None:
     )
 
     svc = _build_service(storage, org_id=org_id, user_id=user_id, request_id=request_id)
-    mock_dedup, mock_dedup_cls, flag = _patch_dedup(
+    mock_dedup, mock_dedup_cls = _patch_dedup(
         all_new=[p_new],
         existing_ids=[p_old.profile_id],
         superseded=[p_old],
     )
-    with mock_dedup_cls as cls, flag:
+    with mock_dedup_cls as cls:
         cls.return_value = mock_dedup
         svc._finalize_extracted_items([p_new])
 
@@ -207,12 +205,12 @@ def test_supersede_raises_does_not_hard_delete_or_write_legacy() -> None:
     svc = _build_service(
         mock_storage, org_id="org_B", user_id="u_B", request_id="run_B"
     )
-    mock_dedup, mock_dedup_cls, flag = _patch_dedup(
+    mock_dedup, mock_dedup_cls = _patch_dedup(
         all_new=[p_new],
         existing_ids=["old_B"],
         superseded=[p_old],
     )
-    with mock_dedup_cls as cls, flag:
+    with mock_dedup_cls as cls:
         cls.return_value = mock_dedup
         # Re-raises (symmetric with playbook) — the failure must not be silently
         # swallowed, or the extractor bookmark would advance over a window whose
@@ -238,12 +236,12 @@ def test_supersede_called_with_full_intent_and_no_legacy_write() -> None:
     svc = _build_service(
         mock_storage, org_id="org_B2", user_id="u_B2", request_id="run_B2"
     )
-    mock_dedup, mock_dedup_cls, flag = _patch_dedup(
+    mock_dedup, mock_dedup_cls = _patch_dedup(
         all_new=[p_new],
         existing_ids=["old_1", "old_2"],
         superseded=superseded,
     )
-    with mock_dedup_cls as cls, flag:
+    with mock_dedup_cls as cls:
         cls.return_value = mock_dedup
         svc._finalize_extracted_items([p_new])
 
@@ -272,12 +270,12 @@ def test_empty_request_id_skips_removal_and_fires_anomaly() -> None:
     p_new = _make_profile("u_C", "new_C")
 
     svc = _build_service(mock_storage, org_id="org_C", user_id="u_C", request_id="")
-    mock_dedup, mock_dedup_cls, flag = _patch_dedup(
+    mock_dedup, mock_dedup_cls = _patch_dedup(
         all_new=[p_new],
         existing_ids=["old_C"],
         superseded=[p_old],
     )
-    with mock_dedup_cls as cls, flag, patch(_CAPTURE_ANOMALY) as mock_anomaly:
+    with mock_dedup_cls as cls, patch(_CAPTURE_ANOMALY) as mock_anomaly:
         cls.return_value = mock_dedup
         svc._finalize_extracted_items([p_new])
 
@@ -307,12 +305,12 @@ def test_success_path_supersedes_and_never_hard_deletes() -> None:
     svc = _build_service(
         mock_storage, org_id="org_D", user_id="u_D", request_id="run_D"
     )
-    mock_dedup, mock_dedup_cls, flag = _patch_dedup(
+    mock_dedup, mock_dedup_cls = _patch_dedup(
         all_new=[p_new],
         existing_ids=["old_D"],
         superseded=[p_old],
     )
-    with mock_dedup_cls as cls, flag:
+    with mock_dedup_cls as cls:
         cls.return_value = mock_dedup
         svc._finalize_extracted_items([p_new])
 

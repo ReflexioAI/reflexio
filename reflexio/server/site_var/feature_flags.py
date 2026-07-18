@@ -40,7 +40,7 @@ def is_feature_enabled(org_id: str, feature_name: str) -> bool:
 
     Args:
         org_id (str): The organization ID to check
-        feature_name (str): The feature flag name (e.g. "deduplicator")
+        feature_name (str): The feature flag name (e.g. "resumable_extraction_agent")
 
     Returns:
         bool: True if the feature is enabled for this org
@@ -88,19 +88,6 @@ def is_invitation_only_enabled() -> bool:
     if invitation_config is None:
         return False
     return invitation_config.get("enabled", False)
-
-
-def is_deduplicator_enabled(org_id: str) -> bool:
-    """
-    Convenience check for whether the deduplicator is enabled for an org.
-
-    Args:
-        org_id (str): The organization ID to check
-
-    Returns:
-        bool: True if deduplicator is enabled
-    """
-    return is_feature_enabled(org_id, "deduplicator")
 
 
 def _is_fail_closed_flag_enabled(org_id: str, feature_key: str) -> bool:

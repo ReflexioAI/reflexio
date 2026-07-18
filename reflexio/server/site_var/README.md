@@ -26,14 +26,14 @@ Per-org feature gating with fail-open defaults. Each flag supports global enable
 ```python
 from reflexio.server.site_var.feature_flags import is_feature_enabled, get_all_feature_flags
 
-is_feature_enabled(org_id, "deduplicator")  # Single flag check
+is_feature_enabled(org_id, "resumable_extraction_agent")  # Single flag check
 get_all_feature_flags(org_id)               # All flags as dict[str, bool]
 ```
 
 **Config format** (`feature_flags.json`):
 ```json
 {
-    "deduplicator": {
+    "resumable_extraction_agent": {
         "enabled": true,
         "enabled_org_ids": []
     }
@@ -42,7 +42,7 @@ get_all_feature_flags(org_id)               # All flags as dict[str, bool]
 
 **Resolution logic**: Enabled if `enabled=True` (global) OR `org_id` in `enabled_org_ids`. Unknown flags default to enabled (fail-open).
 
-**Current flags**: `invitation_only` (global, gates registration), `deduplicator` (gates playbook deduplication).
+**Current flags**: `invitation_only` (global, gates registration), `resumable_extraction_agent`, `lineage_dual_read_diff`.
 
 ## Usage
 

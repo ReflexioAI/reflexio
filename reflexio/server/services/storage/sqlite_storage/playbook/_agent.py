@@ -281,6 +281,7 @@ class AgentPlaybookStoreMixin:
         query: str | None = None,
         start_time: int | None = None,
         end_time: int | None = None,
+        offset: int = 0,
     ) -> list[AgentPlaybook]:
         sql = "SELECT * FROM agent_playbooks WHERE 1=1"
         params: list[Any] = []
@@ -326,8 +327,8 @@ class AgentPlaybookStoreMixin:
             sql += f" AND {tag_frag}"
             params.extend(tag_params)
 
-        sql += " ORDER BY created_at DESC LIMIT ?"
-        params.append(limit)
+        sql += " ORDER BY created_at DESC, agent_playbook_id DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
         rows = self._fetchall(sql, params)
         return [_row_to_agent_playbook(r) for r in rows]
 

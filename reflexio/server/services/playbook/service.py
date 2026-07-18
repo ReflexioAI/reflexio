@@ -315,42 +315,35 @@ class PlaybookGenerationService(
                 all_playbooks.extend(result)
         all_playbooks = dedupe_and_drop_empty(all_playbooks)
 
-        # Deduplicate against existing entries in DB when deduplicator is enabled
-        existing_ids_to_delete: list[int] = []
-        merge_groups: list[tuple[int, list[int]]] = []
-        from reflexio.server.site_var.feature_flags import is_deduplicator_enabled
+        # Deduplicate against existing entries in DB
+        from reflexio.server.services.playbook.components.consolidator import (
+            PlaybookConsolidator,
+        )
 
-        if is_deduplicator_enabled(self.org_id):
-            from reflexio.server.services.playbook.components.consolidator import (
-                PlaybookConsolidator,
-            )
+        playbook_config = self._configured_playbook_config()
+        dedup_config = playbook_config.deduplication_config if playbook_config else None
 
-            playbook_config = self._configured_playbook_config()
-            dedup_config = (
-                playbook_config.deduplication_config if playbook_config else None
-            )
-
-            consolidator = PlaybookConsolidator(
-                request_context=self.request_context,
-                llm_client=self.client,
-                dedup_config=dedup_config,
-            )
-            (
-                deduplicated_playbooks,
-                existing_ids_to_delete,
-                merge_groups,
-            ) = consolidator.deduplicate(
-                [all_playbooks],
-                generation_request_id,
-                self.service_config.agent_version,  # type: ignore[reportOptionalMemberAccess]
-                user_id=self.service_config.user_id,  # type: ignore[reportOptionalMemberAccess]
-            )
-            logger.info(
-                "User playbook entries after deduplication: %d",
-                len(deduplicated_playbooks),
-            )
-            if deduplicated_playbooks:
-                all_playbooks = deduplicated_playbooks
+        consolidator = PlaybookConsolidator(
+            request_context=self.request_context,
+            llm_client=self.client,
+            dedup_config=dedup_config,
+        )
+        (
+            deduplicated_playbooks,
+            existing_ids_to_delete,
+            merge_groups,
+        ) = consolidator.deduplicate(
+            [all_playbooks],
+            generation_request_id,
+            self.service_config.agent_version,  # type: ignore[reportOptionalMemberAccess]
+            user_id=self.service_config.user_id,  # type: ignore[reportOptionalMemberAccess]
+        )
+        logger.info(
+            "User playbook entries after deduplication: %d",
+            len(deduplicated_playbooks),
+        )
+        if deduplicated_playbooks:
+            all_playbooks = deduplicated_playbooks
 
         # Set status and source for all entries
         for playbook in all_playbooks:
