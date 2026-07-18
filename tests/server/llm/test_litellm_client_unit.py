@@ -78,6 +78,10 @@ class SingleListResponse(BaseModel):
     items: list[SampleResponse] = Field(default_factory=list)
 
 
+class OptionalListResponse(BaseModel):
+    items: list[SampleResponse] | None = None
+
+
 class MultiFieldListResponse(BaseModel):
     items: list[SampleResponse] = Field(default_factory=list)
     source: str
@@ -1074,11 +1078,20 @@ class TestMaybeParseStructuredOutput:
         assert len(result.items) == 1
         assert result.items[0].answer == "ok"
 
-    def test_top_level_list_wrapped_for_bare_list_schema(self, client):
+    def test_top_level_list_wrapped_for_optional_list_schema(self, client):
         content = json.dumps([{"answer": "ok", "score": 5}])
         result = client._maybe_parse_structured_output(
-            content, BareListResponse, True
+            content, OptionalListResponse, True
         )
+
+        assert isinstance(result, OptionalListResponse)
+        assert result.items is not None
+        assert len(result.items) == 1
+        assert result.items[0].answer == "ok"
+
+    def test_top_level_list_wrapped_for_bare_list_schema(self, client):
+        content = json.dumps([{"answer": "ok", "score": 5}])
+        result = client._maybe_parse_structured_output(content, BareListResponse, True)
 
         assert isinstance(result, BareListResponse)
         assert result.items == [{"answer": "ok", "score": 5}]
@@ -1086,9 +1099,7 @@ class TestMaybeParseStructuredOutput:
     def test_top_level_list_not_wrapped_for_multi_field_schema(self, client):
         content = json.dumps([{"answer": "ok", "score": 5}])
         with pytest.raises(StructuredOutputParseError):
-            client._maybe_parse_structured_output(
-                content, MultiFieldListResponse, True
-            )
+            client._maybe_parse_structured_output(content, MultiFieldListResponse, True)
 
     def test_json_in_markdown_code_block(self, client):
         content = '```json\n{"answer": "ok", "score": 5}\n```'
