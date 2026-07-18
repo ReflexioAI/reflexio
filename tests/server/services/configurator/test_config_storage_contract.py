@@ -8,6 +8,7 @@ backends later.
 
 from __future__ import annotations
 
+import json
 import tempfile
 from collections.abc import Generator
 from pathlib import Path
@@ -80,6 +81,47 @@ class TestConfigStorageContract:
         assert isinstance(loaded, Config)
         assert loaded.storage_config == default.storage_config
         assert loaded.window_size == default.window_size
+
+    def test_load_ignores_retired_fields_without_resetting_user_values(
+        self, tmp_path: Path
+    ) -> None:
+        """Schema deletions drop only retired fields from stored config."""
+        local_storage = LocalFileConfigStorage(
+            org_id="legacy-config-org", base_dir=str(tmp_path)
+        )
+        config_path = Path(local_storage.config_file)
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(
+            json.dumps(
+                {
+                    "storage_config": {"db_path": None},
+                    "agent_context_prompt": "preserve this",
+                    "window_size": 23,
+                    "stride_size": 8,
+                    "profile_extractor_config": {
+                        "extraction_definition_prompt": "preserve nested value",
+                        "retired_nested_field": True,
+                    },
+                    "retired_after_deployment": {"enabled": True},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        loaded = local_storage.load_config()
+
+        assert loaded.agent_context_prompt == "preserve this"
+        assert loaded.window_size == 23
+        assert loaded.profile_extractor_config is not None
+        assert (
+            loaded.profile_extractor_config.extraction_definition_prompt
+            == "preserve nested value"
+        )
+        assert loaded.enable_document_expansion is False
+        assert "retired_after_deployment" not in loaded.model_dump()
+        assert (
+            "retired_nested_field" not in loaded.profile_extractor_config.model_dump()
+        )
 
     def test_get_version_returns_none_or_tuple(
         self, config_storage: ConfigStorage

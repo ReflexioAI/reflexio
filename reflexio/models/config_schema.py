@@ -983,3 +983,18 @@ class Config(BaseModel):
     @batch_interval.setter
     def batch_interval(self, value: int) -> None:
         self.stride_size = value
+
+
+def validate_stored_config(data: dict[str, Any]) -> Config:
+    """Validate persisted config with schema-evolution read compatibility.
+
+    Persisted JSON can contain fields that were valid when it was written but
+    have since been deleted. Ignore only those unknown fields while retaining
+    normal validation for recognized values. Missing fields continue to use
+    their current schema defaults.
+
+    API writes intentionally construct ``Config`` directly and therefore keep
+    the model's strict ``extra="forbid"`` behavior.
+    """
+    normalized = normalize_legacy_config_shape(data)
+    return Config.model_validate(normalized, extra="ignore")
