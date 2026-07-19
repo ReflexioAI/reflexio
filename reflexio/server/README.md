@@ -118,7 +118,10 @@ Key files:
 - `litellm_client.py`: Stable import surface, client config/credential resolution, and `LiteLLMClient` facade
 - `_litellm_text_generation.py`, `_litellm_embedding.py`, `_litellm_structured_output.py`: Completion/tool-call, embedding, and structured-output mixins
 - `_litellm_json_extraction.py`, `_litellm_subprocess.py`, `_provider_concurrency.py`, `_litellm_types.py`: JSON parsing, hard-timeout subprocess snapshots/workers, per-provider fail-open concurrency caps, and shared public types/errors
-- `providers/`: Optional local/provider adapters (`claude-code/`, OpenClaw, local embedding, Nomic embedding); registration is opt-in via environment/config
+- `embedding_service.py`: OpenAI-compatible local/internal embedding daemon with `/v1/embeddings`, `/v1/rerank`, `/health`, micro-batching, and single-active-model warmup
+- `providers/embedding_service_provider.py`: Routing boundary for `REFLEXIO_EMBEDDING_PROVIDER` (`cloud`, `local_service`, `internal_service`, `inprocess`, `off`), service URL/timeouts, local daemon probing, and request splitting
+- `rerank/cross_encoder_reranker.py`: Cross-encoder rerank helper; uses in-process scoring by default or delegates to `REFLEXIO_RERANK_SERVICE_URL`
+- `providers/`: Optional local/provider adapters (`claude-code/`, OpenClaw, local embedding, Nomic embedding, embedding service); registration is opt-in via environment/config
 - `openai_client.py`: OpenAI implementation (legacy, do not use directly)
 - `claude_client.py`: Claude implementation (legacy, do not use directly)
 - `llm_utils.py`: Helper functions for Pydantic model conversion

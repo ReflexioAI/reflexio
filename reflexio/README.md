@@ -132,7 +132,7 @@ client (Python SDK)
 - **`api_endpoints/`**: Request handling, `RequestContext` (bundles storage/config/prompts), auth
 - **`routes/`**: Domain route modules (`system.py`, `interactions.py`, `profiles.py`, `playbooks.py`, `search.py`, `provenance.py`, `evaluation.py`, `braintrust.py`, `config.py`) included into `api.py`'s `core_router`
 - **`db/`**: Auth & config storage only (SQLite) - NOT for profiles/interactions
-- **`llm/`**: Unified LiteLLM client, provider adapters, local rerank helpers, structured-output repair, and fail-open per-provider concurrency caps
+- **`llm/`**: Unified LiteLLM client, provider adapters, local/internal embedding service routing, cross-encoder rerank service support, structured-output repair, and fail-open per-provider concurrency caps
 - **`prompt/`**: Versioned prompt templates in `prompt_bank/`
 - **`services/`**: Core business logic
   - `generation_service.py` - Orchestrator (runs profile/playbook/success services)
