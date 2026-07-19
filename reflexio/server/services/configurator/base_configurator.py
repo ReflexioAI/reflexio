@@ -36,7 +36,6 @@ class PreparedConfigWrite:
     config: Config
     payload: dict[str, Any]
     partial: bool
-    changed: bool
 
 
 class BaseConfigurator(ABC):
@@ -113,12 +112,10 @@ class BaseConfigurator(ABC):
         current = self.config.model_dump(mode="python")
         candidate = {**current, **payload} if partial else payload
         validated = Config.model_validate(candidate)
-        canonical = validated.model_dump(mode="json")
         return PreparedConfigWrite(
             config=validated,
             payload=dict(payload),
             partial=partial,
-            changed=canonical != self.config.model_dump(mode="json"),
         )
 
     def commit_config_write(self, prepared: PreparedConfigWrite) -> bool:

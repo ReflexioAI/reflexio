@@ -222,6 +222,12 @@ class GetProfileStatisticsResponse(BaseModel):
     msg: str | None = None
 
 
+# Sentinel message for a successful config write that persisted no change.
+# HTTP routes key cache invalidation off this exact value, so producers and
+# consumers must share the constant instead of retyping the string.
+CONFIG_UNCHANGED_MESSAGE = "Configuration unchanged"
+
+
 class SetConfigResponse(BaseModel):
     success: bool
     msg: str | None = None

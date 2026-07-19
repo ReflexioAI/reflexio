@@ -215,6 +215,18 @@ class TestConfigStorageContract:
             ):
                 storage.save_config(storage.get_default_config())
 
+    def test_first_load_under_held_lock_returns_default_config(self, tmp_path) -> None:
+        """A concurrent first-load must serve defaults, not raise a conflict."""
+        storage = LocalFileConfigStorage(org_id="fresh-org", base_dir=str(tmp_path))
+        lock_path = Path(storage.config_file).with_suffix(".json.lock")
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with lock_path.open("a+b") as lock_file:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            loaded = storage.load_config()
+
+        assert loaded == storage.get_default_config()
+
     def test_schema_cleanup_conflict_returns_valid_stored_config(
         self, tmp_path
     ) -> None:

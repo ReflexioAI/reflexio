@@ -15,6 +15,7 @@ from fastapi import (
 )
 
 from reflexio.models.api_schema.retriever_schema import (
+    CONFIG_UNCHANGED_MESSAGE,
     SetConfigResponse,
 )
 from reflexio.models.api_schema.service_schemas import (
@@ -112,7 +113,7 @@ def set_config(
         raise _config_write_conflict() from exc
 
     # Invalidate cache on successful config change to ensure fresh instance next request
-    if response.success and response.msg != "Configuration unchanged":
+    if response.success and response.msg != CONFIG_UNCHANGED_MESSAGE:
         reflexio_cache.invalidate_reflexio_cache(org_id=org_id)
 
     return response
@@ -189,7 +190,7 @@ def update_config(
         response = reflexio.set_config(prepared)
     except ConfigWriteConflict as exc:
         raise _config_write_conflict() from exc
-    if response.success and response.msg != "Configuration unchanged":
+    if response.success and response.msg != CONFIG_UNCHANGED_MESSAGE:
         reflexio_cache.invalidate_reflexio_cache(org_id=org_id)
     return response
 

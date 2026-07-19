@@ -47,7 +47,6 @@ def _prepare_config_write(
             config=config,
             payload=raw,
             partial=partial,
-            changed=config.model_dump(mode="json") != existing.model_dump(mode="json"),
         )
 
     return prepare

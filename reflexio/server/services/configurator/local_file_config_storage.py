@@ -80,7 +80,17 @@ class LocalFileConfigStorage(ConfigStorage):
         """
         if not Path(self.config_file).exists():
             config = self.get_default_config()
-            self.save_config(config=config)
+            try:
+                self.save_config(config=config)
+            except ConfigWriteConflict:
+                # A concurrent first load is already creating the file; a read
+                # must not fail on that, so serve defaults and let the other
+                # writer persist them.
+                logger.warning(
+                    "Skipped writing default config for org %s: another "
+                    "writer holds the config lock.",
+                    self.org_id,
+                )
             return config
 
         try:

@@ -49,7 +49,6 @@ def _make_config_mixin(*, storage_configured: bool = True) -> ConfigMixin:
             config=parsed,
             payload=payload,
             partial=partial,
-            changed=True,
         )
 
     configurator.prepare_config_write.side_effect = prepare
@@ -225,7 +224,6 @@ class TestSetConfig:
             config=Config(storage_config=None, window_size=23),
             payload={"storage_config": None, "window_size": 23},
             partial=True,
-            changed=True,
         )
         _get_configurator(
             mixin

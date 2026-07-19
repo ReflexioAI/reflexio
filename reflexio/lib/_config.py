@@ -1,7 +1,10 @@
 from typing import Any
 
 from reflexio.lib._base import ReflexioBase
-from reflexio.models.api_schema.retriever_schema import SetConfigResponse
+from reflexio.models.api_schema.retriever_schema import (
+    CONFIG_UNCHANGED_MESSAGE,
+    SetConfigResponse,
+)
 from reflexio.models.config_schema import Config, StorageConfigManagedSupabase
 from reflexio.server.services.configurator.base_configurator import PreparedConfigWrite
 from reflexio.server.services.configurator.config_storage import ConfigWriteConflict
@@ -78,7 +81,7 @@ class ConfigMixin(ReflexioBase):
                 msg=(
                     "Configuration set successfully"
                     if changed
-                    else "Configuration unchanged"
+                    else CONFIG_UNCHANGED_MESSAGE
                 ),
             )
         except ConfigWriteConflict:
