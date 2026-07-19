@@ -39,6 +39,12 @@ from reflexio.cli.env_loader import load_reflexio_env  # noqa: E402
 
 load_reflexio_env()
 
+# The loader intentionally imports provider credentials from the developer
+# environment, but it can also reintroduce local service-routing variables from
+# an enterprise checkout. Keep those routing choices out of OSS tests.
+for _var in _OSS_TEST_POLLUTING_ENV_VARS:
+    os.environ.pop(_var, None)
+
 # Redirect `~/.reflexio` for the entire test session so tests that call
 # `reflexio.cli.paths.reflexio_home()` (e.g. via `LocalFileConfigStorage`'s
 # default `base_dir`) don't pick up the developer's existing
@@ -78,10 +84,14 @@ def pytest_unconfigure(config):
 
 @pytest.fixture(autouse=True)
 def _reset_runtime_services() -> Iterator[None]:
-    """Clear the process-global service registry before and after each test."""
+    """Clear process-global services and local routing before and after each test."""
+    for var in _OSS_TEST_POLLUTING_ENV_VARS:
+        os.environ.pop(var, None)
     reset_services()
     yield
     reset_services()
+    for var in _OSS_TEST_POLLUTING_ENV_VARS:
+        os.environ.pop(var, None)
 
 
 @pytest.fixture
