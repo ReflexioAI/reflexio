@@ -233,6 +233,7 @@ class TestConfigStorageContract:
         storage = LocalFileConfigStorage(org_id="read-locked", base_dir=str(tmp_path))
         payload = storage.get_default_config().model_dump(mode="json")
         payload["retired_field"] = "ignored"
+        payload["agent_context_prompt"] = "user value survives"
         config_path = Path(storage.config_file)
         config_path.parent.mkdir(parents=True, exist_ok=True)
         config_path.write_text(json.dumps(payload), encoding="utf-8")
@@ -243,7 +244,37 @@ class TestConfigStorageContract:
             loaded = storage.load_config()
 
         assert loaded.storage_config == storage.get_default_config().storage_config
+        assert loaded.agent_context_prompt == "user value survives"
         assert json.loads(config_path.read_text())["retired_field"] == "ignored"
+
+    def test_schema_cleanup_preserves_concurrent_newer_write(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """The cleanup rewrite must normalize the latest payload, not the
+        pre-lock snapshot, so a write completing between the read and the
+        lock is cleaned rather than silently overwritten."""
+        storage = LocalFileConfigStorage(org_id="cleanup-race", base_dir=str(tmp_path))
+        stale = storage.get_default_config().model_dump(mode="json")
+        stale["retired_field"] = "drop me"
+        config_path = Path(storage.config_file)
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(json.dumps(stale), encoding="utf-8")
+
+        newer = dict(stale)
+        newer["agent_context_prompt"] = "written after the pre-lock read"
+        monkeypatch.setattr(
+            storage,
+            "_read_payload_unlocked",
+            lambda _path: dict(newer),
+        )
+
+        loaded = storage.load_config()
+
+        persisted = json.loads(config_path.read_text(encoding="utf-8"))
+        assert persisted["agent_context_prompt"] == "written after the pre-lock read"
+        assert "retired_field" not in persisted
+        # The returned config still reflects the payload this reader saw.
+        assert loaded.agent_context_prompt is None
 
     def test_sequential_partial_commits_reload_latest_payload(self, tmp_path) -> None:
         configurator = DefaultConfigurator(

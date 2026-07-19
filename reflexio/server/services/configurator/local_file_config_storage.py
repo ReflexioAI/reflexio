@@ -121,9 +121,29 @@ class LocalFileConfigStorage(ConfigStorage):
                     data["storage_config"] = self._default_storage_config().model_dump()
                 config = validate_stored_config(data)
                 if config.model_dump(mode="json") != original_payload:
+                    # Re-run the same normalization against the latest payload
+                    # under the write lock instead of persisting the pre-lock
+                    # snapshot, so a writer that completed after our read is
+                    # normalized rather than silently overwritten.
+                    def normalize_stored_payload(
+                        current: dict[str, Any],
+                    ) -> dict[str, Any]:
+                        normalized = dict(current)
+                        storage_cfg = normalized.get("storage_config")
+                        if (
+                            isinstance(storage_cfg, dict)
+                            and storage_cfg.get("type") == "disk"
+                        ):
+                            normalized["storage_config"] = (
+                                self._default_storage_config().model_dump()
+                            )
+                        return validate_stored_config(normalized).model_dump(
+                            mode="json"
+                        )
+
                     try:
-                        self.save_config(config=config)
-                    except (OSError, ConfigWriteConflict):
+                        self.update_config_payload(normalize_stored_payload)
+                    except (OSError, ValueError, ConfigWriteConflict):
                         logger.exception(
                             "Loaded config from %s after normalizing its stored "
                             "schema, but could not rewrite the file; cleanup will "
