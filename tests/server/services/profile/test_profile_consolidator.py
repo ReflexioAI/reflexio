@@ -27,14 +27,20 @@ from reflexio.models.api_schema.service_schemas import (
     ProfileTimeToLive,
     UserProfile,
 )
-from reflexio.server.llm.litellm_client import LiteLLMClient
+from reflexio.server.llm.litellm_client import (
+    LiteLLMClient,
+    LiteLLMClientError,
+    StructuredOutputRepairError,
+)
 from reflexio.server.services.deduplication_utils import parse_item_id
 from reflexio.server.services.profile.components.consolidator import (
     ProfileConsolidator,
     ProfileDeduplicationOutput,
     ProfileDeletionDirective,
     ProfileDuplicateGroup,
+    _dedup_failure_kind,
     _format_profile_timestamp,
+    validate_profile_dedup_output,
 )
 
 # ===============================
@@ -1458,6 +1464,414 @@ class TestRetrieveExistingProfilesStatusFilter:
         assert len(existing) == 1
         assert existing[0].profile_id == "p-existing-1"
         assert existing[0].status == Status.PENDING
+
+
+# ===============================
+# Test: Supersede-without-replacement invariant
+# ===============================
+
+
+def _make_existing(content: str, profile_id: str) -> UserProfile:
+    """Build an EXISTING-side profile for group-resolution tests."""
+    return UserProfile(
+        profile_id=profile_id,
+        user_id="test_user",
+        content=content,
+        last_modified_timestamp=int(datetime.now(UTC).timestamp()),
+        generated_from_request_id="req_existing",
+        profile_time_to_live=ProfileTimeToLive.ONE_MONTH,
+        source="extractor_a",
+    )
+
+
+class TestSupersedeAlwaysHasReplacement:
+    """
+    Contract tests for the core dedup invariant: a duplicate group either
+    writes a merged replacement profile or marks nothing for deletion.
+
+    Regression guard for the bug where a group's EXISTING members were queued
+    for supersede (and its NEW members marked handled) *before* the merge
+    template was resolved, so an unresolvable group deleted stored profiles
+    with no replacement written and stranded the NEW facts too.
+    """
+
+    @pytest.fixture
+    def existing_profiles(self):
+        return [
+            _make_existing("User uses dark theme in the IDE", "p-existing-0"),
+            _make_existing("User codes in Python daily", "p-existing-1"),
+        ]
+
+    @staticmethod
+    def _consolidator(mock_request_context, mock_llm_client):
+        return ProfileConsolidator(
+            request_context=mock_request_context,
+            llm_client=mock_llm_client,
+        )
+
+    @pytest.mark.parametrize(
+        ("item_ids", "expect_supersede"),
+        [
+            # EXISTING-only group: legal per the prompt ("ANY mix of NEW and
+            # EXISTING"). Collapses into a merged replacement.
+            (["EXISTING-0", "EXISTING-1"], True),
+            # Out-of-range NEW falls back to the EXISTING member as template.
+            (["NEW-7", "EXISTING-0"], True),
+            # Nothing resolvable: must not supersede anything.
+            (["NEW-7", "EXISTING-9"], False),
+            (["garbage", "also-bad"], False),
+            # Mixed group: unchanged behavior.
+            (["NEW-0", "EXISTING-0"], True),
+        ],
+    )
+    def test_group_never_supersedes_without_writing_a_replacement(
+        self,
+        mock_request_context,
+        mock_llm_client,
+        mock_site_var_manager,
+        sample_profiles,
+        existing_profiles,
+        item_ids,
+        expect_supersede,
+    ):
+        dedup_output = ProfileDeduplicationOutput(
+            duplicate_groups=[
+                ProfileDuplicateGroup(
+                    item_ids=item_ids,
+                    merged_content="MERGED",
+                    merged_time_to_live="one_month",
+                )
+            ],
+        )
+
+        result_profiles, delete_ids, superseded = self._consolidator(
+            mock_request_context, mock_llm_client
+        )._build_deduplicated_results(
+            new_profiles=sample_profiles,
+            existing_profiles=existing_profiles,
+            dedup_output=dedup_output,
+            user_id="test_user",
+            request_id="test_request",
+        )
+
+        merged = [p for p in result_profiles if p.content == "MERGED"]
+
+        # The invariant: superseding anything requires a written replacement.
+        if delete_ids:
+            assert merged, (
+                f"group {item_ids} superseded {delete_ids} without writing a "
+                "replacement profile"
+            )
+        assert len(delete_ids) == len(superseded)
+        assert bool(delete_ids) is expect_supersede
+
+        # No NEW profile may be silently dropped, whatever happened to the group.
+        assert len(result_profiles) >= len(sample_profiles) - len(item_ids)
+        for idx, profile in enumerate(sample_profiles):
+            consumed_by_group = f"NEW-{idx}" in item_ids
+            if not consumed_by_group:
+                assert profile in result_profiles, (
+                    f"NEW-{idx} was not part of group {item_ids} but went missing"
+                )
+
+    def test_existing_only_group_carries_metadata_into_the_merge(
+        self,
+        mock_request_context,
+        mock_llm_client,
+        mock_site_var_manager,
+        existing_profiles,
+    ):
+        """An EXISTING-only merge must not drop custom_features/extractor_names."""
+        existing_profiles[0].custom_features = {"theme": "dark"}
+        existing_profiles[0].extractor_names = ["extractor_a"]
+        existing_profiles[1].extractor_names = ["extractor_b"]
+
+        dedup_output = ProfileDeduplicationOutput(
+            duplicate_groups=[
+                ProfileDuplicateGroup(
+                    item_ids=["EXISTING-0", "EXISTING-1"],
+                    merged_content="MERGED",
+                    merged_time_to_live="one_year",
+                )
+            ],
+        )
+
+        result_profiles, delete_ids, _ = self._consolidator(
+            mock_request_context, mock_llm_client
+        )._build_deduplicated_results(
+            new_profiles=[],
+            existing_profiles=existing_profiles,
+            dedup_output=dedup_output,
+            user_id="test_user",
+            request_id="test_request",
+        )
+
+        assert len(result_profiles) == 1
+        merged = result_profiles[0]
+        assert merged.content == "MERGED"
+        assert merged.custom_features == {"theme": "dark"}
+        assert merged.extractor_names == ["extractor_a", "extractor_b"]
+        assert merged.profile_time_to_live == ProfileTimeToLive.ONE_YEAR
+        # Both originals superseded, one replacement written.
+        assert set(delete_ids) == {"p-existing-0", "p-existing-1"}
+
+    def test_deletion_directives_still_supersede_without_replacement(
+        self,
+        mock_request_context,
+        mock_llm_client,
+        mock_site_var_manager,
+        existing_profiles,
+    ):
+        """
+        The invariant is scoped to duplicate_groups. A deletion directive is
+        an intentional erase-with-no-replacement and must stay that way.
+        """
+        directive = UserProfile(
+            profile_id=str(uuid.uuid4()),
+            user_id="test_user",
+            content="Requested removal of dark theme preference",
+            last_modified_timestamp=int(datetime.now(UTC).timestamp()),
+            generated_from_request_id="req_1",
+            profile_time_to_live=ProfileTimeToLive.ONE_MONTH,
+            source="extractor_a",
+        )
+        dedup_output = ProfileDeduplicationOutput(
+            deletions=[
+                ProfileDeletionDirective(
+                    new_id="NEW-0",
+                    existing_ids=["EXISTING-0"],
+                    reasoning="meta-request to forget",
+                )
+            ],
+        )
+
+        result_profiles, delete_ids, superseded = self._consolidator(
+            mock_request_context, mock_llm_client
+        )._build_deduplicated_results(
+            new_profiles=[directive],
+            existing_profiles=existing_profiles,
+            dedup_output=dedup_output,
+            user_id="test_user",
+            request_id="test_request",
+        )
+
+        assert delete_ids == ["p-existing-0"]
+        assert len(superseded) == 1
+        assert result_profiles == []
+
+
+# ===============================
+# Test: Dedup output validator (repair-ladder feedback)
+# ===============================
+
+
+class TestValidateProfileDedupOutput:
+    """
+    Tests for the semantic validator fed to the structured-output repair
+    ladder. These cover the failure class the ladder can actually correct:
+    output that parses but references unusable ids.
+    """
+
+    @staticmethod
+    def _validate(output, new_count=3, existing_count=2):
+        return validate_profile_dedup_output(
+            output,
+            new_profile_count=new_count,
+            existing_profile_count=existing_count,
+        )
+
+    def test_well_formed_output_passes(self):
+        output = ProfileDeduplicationOutput(
+            duplicate_groups=[
+                ProfileDuplicateGroup(
+                    item_ids=["NEW-0", "EXISTING-1"],
+                    merged_content="merged",
+                    merged_time_to_live="one_month",
+                )
+            ],
+            unique_ids=["NEW-1", "NEW-2"],
+        )
+        assert self._validate(output) == []
+
+    def test_out_of_range_ids_are_reported(self):
+        output = ProfileDeduplicationOutput(
+            duplicate_groups=[
+                ProfileDuplicateGroup(
+                    item_ids=["NEW-7", "EXISTING-9"],
+                    merged_content="merged",
+                    merged_time_to_live="one_month",
+                )
+            ],
+            unique_ids=["NEW-0", "NEW-1", "NEW-2"],
+        )
+        errors = self._validate(output)
+        assert any("NEW-7" in e and "out of range" in e for e in errors)
+        assert any("EXISTING-9" in e and "out of range" in e for e in errors)
+
+    def test_unparseable_id_is_reported(self):
+        output = ProfileDeduplicationOutput(unique_ids=["NEW-0", "NEW-1", "banana"])
+        errors = self._validate(output)
+        assert any("banana" in e for e in errors)
+
+    def test_missing_new_coverage_is_reported(self):
+        """The prompt's own invariant: every NEW profile referenced exactly once."""
+        output = ProfileDeduplicationOutput(unique_ids=["NEW-0"])
+        errors = self._validate(output)
+        assert any("NEW-1" in e and "Missing" in e for e in errors)
+        assert any("NEW-2" in e and "Missing" in e for e in errors)
+
+    def test_duplicate_new_coverage_is_reported(self):
+        output = ProfileDeduplicationOutput(
+            duplicate_groups=[
+                ProfileDuplicateGroup(
+                    item_ids=["NEW-0", "NEW-1"],
+                    merged_content="merged",
+                    merged_time_to_live="one_month",
+                )
+            ],
+            unique_ids=["NEW-0", "NEW-2"],
+        )
+        errors = self._validate(output)
+        assert any("more than once" in e and "NEW-0" in e for e in errors)
+
+    def test_deletion_directive_ids_are_range_checked(self):
+        output = ProfileDeduplicationOutput(
+            unique_ids=["NEW-1", "NEW-2"],
+            deletions=[
+                ProfileDeletionDirective(
+                    new_id="NEW-0",
+                    existing_ids=["EXISTING-4"],
+                    reasoning="forget",
+                )
+            ],
+        )
+        errors = self._validate(output)
+        assert any("EXISTING-4" in e and "out of range" in e for e in errors)
+
+    def test_wrong_prefix_is_reported(self):
+        """unique_ids must be NEW ids — an EXISTING id there is a real error."""
+        output = ProfileDeduplicationOutput(
+            unique_ids=["NEW-0", "NEW-1", "NEW-2", "EXISTING-0"]
+        )
+        errors = self._validate(output)
+        assert any("EXISTING-0" in e and "must be an NEW-<n> id" in e for e in errors)
+
+
+# ===============================
+# Test: Failure instrumentation and repair-ladder wiring
+# ===============================
+
+
+class TestDedupFailureHandling:
+    """Tests for the observability and degradation behavior of deduplicate()."""
+
+    @pytest.fixture
+    def consolidator(
+        self, mock_request_context, mock_llm_client, mock_site_var_manager
+    ):
+        mock_request_context.org_id = "org-test"
+        return ProfileConsolidator(
+            request_context=mock_request_context,
+            llm_client=mock_llm_client,
+        )
+
+    def test_validator_is_passed_to_the_client(self, consolidator, sample_profiles):
+        """The dedup call must opt into the corrective repair ladder."""
+        consolidator.client.generate_chat_response.return_value = (
+            ProfileDeduplicationOutput(unique_ids=["NEW-0", "NEW-1", "NEW-2"])
+        )
+        consolidator.deduplicate(sample_profiles, "test_user", "req-1")
+
+        kwargs = consolidator.client.generate_chat_response.call_args.kwargs
+        assert callable(kwargs["structured_output_validator"])
+
+    def test_total_failure_is_reported_and_degrades_to_undeduped(
+        self, consolidator, sample_profiles
+    ):
+        consolidator.client.generate_chat_response.side_effect = LiteLLMClientError(
+            "Connection timed out after 120.0 seconds"
+        )
+
+        with patch(
+            "reflexio.server.services.profile.components.consolidator.capture_anomaly"
+        ) as mock_capture:
+            profiles, delete_ids, superseded = consolidator.deduplicate(
+                sample_profiles, "test_user", "req-1"
+            )
+
+        assert len(profiles) == len(sample_profiles)
+        assert delete_ids == []
+        assert superseded == []
+        mock_capture.assert_called_once()
+        assert mock_capture.call_args.args[0] == "profile.dedup.failed"
+        assert mock_capture.call_args.kwargs["failure_kind"] == "timeout"
+        assert mock_capture.call_args.kwargs["new_profile_count"] == 3
+
+    def test_exhausted_ladder_degrades_to_first_parsed_attempt(
+        self, consolidator, sample_profiles
+    ):
+        """
+        When the ladder exhausts but an attempt parsed, that attempt is used
+        rather than throwing away all dedup work.
+        """
+        partial = ProfileDeduplicationOutput(
+            duplicate_groups=[
+                ProfileDuplicateGroup(
+                    item_ids=["NEW-0", "NEW-1"],
+                    merged_content="MERGED",
+                    merged_time_to_live="one_month",
+                )
+            ],
+            # NEW-2 deliberately uncovered — the semantic error the validator
+            # rejected this attempt for.
+        )
+
+        def _call(**kwargs):
+            kwargs["structured_output_validator"](partial)
+            raise StructuredOutputRepairError(
+                "Structured output repair exhausted",
+                failure_kind="semantic",
+                model="minimax/MiniMax-M3",
+            )
+
+        consolidator.client.generate_chat_response.side_effect = _call
+
+        with patch(
+            "reflexio.server.services.profile.components.consolidator.capture_anomaly"
+        ) as mock_capture:
+            profiles, _, _ = consolidator.deduplicate(
+                sample_profiles, "test_user", "req-1"
+            )
+
+        # The merge was applied, and the uncovered NEW-2 still survived via the
+        # safety fallback — nothing was lost.
+        contents = {p.content for p in profiles}
+        assert "MERGED" in contents
+        assert sample_profiles[2].content in contents
+        assert (
+            mock_capture.call_args.args[0] == "profile.dedup.degraded_to_first_attempt"
+        )
+        assert mock_capture.call_args.kwargs["failure_kind"] == "repair_semantic"
+
+
+class TestDedupFailureKind:
+    """Tests for the anomaly failure-class tag."""
+
+    def test_repair_error_carries_its_failure_kind(self):
+        exc = StructuredOutputRepairError(
+            "exhausted", failure_kind="parse", model="minimax/MiniMax-M3"
+        )
+        assert _dedup_failure_kind(exc) == "repair_parse"
+
+    def test_timeout_is_detected_from_the_message(self):
+        exc = LiteLLMClientError("Connection timed out after 120.0 seconds")
+        assert _dedup_failure_kind(exc) == "timeout"
+
+    def test_other_client_errors_are_grouped(self):
+        assert _dedup_failure_kind(LiteLLMClientError("boom")) == "llm_client_error"
+
+    def test_unexpected_errors_use_their_type_name(self):
+        assert _dedup_failure_kind(ValueError("boom")) == "ValueError"
 
 
 if __name__ == "__main__":

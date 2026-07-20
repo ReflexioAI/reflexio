@@ -6,6 +6,7 @@ and against existing profiles in the database using hybrid search and LLM.
 import logging
 import os
 import uuid
+from collections import Counter
 from datetime import UTC, datetime
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -14,7 +15,11 @@ from reflexio.models.api_schema.retriever_schema import SearchUserProfileRequest
 from reflexio.models.api_schema.service_schemas import Status, UserProfile
 from reflexio.models.structured_output import StrictStructuredOutput
 from reflexio.server.api_endpoints.request_context import RequestContext
-from reflexio.server.llm.litellm_client import LiteLLMClient
+from reflexio.server.llm.litellm_client import (
+    LiteLLMClient,
+    LiteLLMClientError,
+    StructuredOutputRepairError,
+)
 from reflexio.server.services.deduplication_utils import (
     BaseDeduplicator,
     format_dedup_timestamp,
@@ -25,6 +30,7 @@ from reflexio.server.services.profile.profile_generation_service_utils import (
     ProfileTimeToLive,
     calculate_expiration_timestamp,
 )
+from reflexio.server.tracing import capture_anomaly
 
 logger = logging.getLogger(__name__)
 
@@ -163,6 +169,131 @@ class ProfileDeduplicationOutput(StrictStructuredOutput):
         extra="allow",
         json_schema_extra={"additionalProperties": False},
     )
+
+
+def _dedup_failure_kind(exc: BaseException) -> str:
+    """
+    Classify a deduplication failure for anomaly tagging.
+
+    Args:
+        exc (BaseException): The exception that aborted the dedup call.
+
+    Returns:
+        str: A coarse, low-cardinality failure class suitable as a Sentry tag.
+    """
+    if isinstance(exc, StructuredOutputRepairError):
+        return f"repair_{exc.failure_kind}"
+    if "timeout" in type(exc).__name__.lower() or "timed out" in str(exc).lower():
+        return "timeout"
+    if isinstance(exc, LiteLLMClientError):
+        return "llm_client_error"
+    return type(exc).__name__
+
+
+def _check_item_id(
+    item_id: str,
+    *,
+    field: str,
+    expected_prefix: str | None,
+    new_profile_count: int,
+    existing_profile_count: int,
+) -> str | None:
+    """
+    Validate a single NEW-/EXISTING- item id emitted by the dedup LLM.
+
+    Args:
+        item_id (str): The raw id as returned by the model.
+        field (str): Schema field the id came from, used in the error message.
+        expected_prefix (str | None): Required prefix, or None to allow either.
+        new_profile_count (int): Number of NEW profiles in the prompt.
+        existing_profile_count (int): Number of EXISTING profiles in the prompt.
+
+    Returns:
+        str | None: An error message, or None when the id is usable.
+    """
+    parsed = parse_item_id(item_id)
+    if parsed is None:
+        return f"{field}: '{item_id}' is not a valid NEW-<n> or EXISTING-<n> id."
+    prefix, idx = parsed
+    if expected_prefix is not None and prefix != expected_prefix:
+        return f"{field}: '{item_id}' must be an {expected_prefix}-<n> id."
+    limit = new_profile_count if prefix == "NEW" else existing_profile_count
+    if not (0 <= idx < limit):
+        return (
+            f"{field}: '{item_id}' is out of range — only {limit} "
+            f"{prefix} profiles were provided."
+        )
+    return None
+
+
+def validate_profile_dedup_output(
+    output: ProfileDeduplicationOutput,
+    *,
+    new_profile_count: int,
+    existing_profile_count: int,
+) -> list[str]:
+    """
+    Check dedup output for unusable ids and NEW-coverage violations.
+
+    Enforces the invariant the prompt itself states: every NEW profile appears
+    exactly once across duplicate_groups, unique_ids, and deletions. Errors are
+    fed back to the model through the structured-output repair ladder, so they
+    are phrased for the model rather than for a log reader.
+
+    Args:
+        output (ProfileDeduplicationOutput): Parsed LLM output to check.
+        new_profile_count (int): Number of NEW profiles in the prompt.
+        existing_profile_count (int): Number of EXISTING profiles in the prompt.
+
+    Returns:
+        list[str]: Human-readable errors; empty when the output is usable.
+    """
+    errors: list[str] = []
+    new_id_uses: Counter[int] = Counter()
+
+    def _check(item_id: str, field: str, expected_prefix: str | None) -> None:
+        error = _check_item_id(
+            item_id,
+            field=field,
+            expected_prefix=expected_prefix,
+            new_profile_count=new_profile_count,
+            existing_profile_count=existing_profile_count,
+        )
+        if error is not None:
+            errors.append(error)
+            return
+        parsed = parse_item_id(item_id)
+        if parsed is not None and parsed[0] == "NEW":
+            new_id_uses[parsed[1]] += 1
+
+    for group in output.duplicate_groups:
+        if not group.item_ids:
+            errors.append("duplicate_groups: a group has an empty item_ids list.")
+        for item_id in group.item_ids:
+            _check(item_id, "duplicate_groups.item_ids", None)
+
+    for unique_id in output.unique_ids:
+        _check(unique_id, "unique_ids", "NEW")
+
+    for deletion in output.deletions:
+        _check(deletion.new_id, "deletions.new_id", "NEW")
+        for existing_id in deletion.existing_ids:
+            _check(existing_id, "deletions.existing_ids", "EXISTING")
+
+    missing = [i for i in range(new_profile_count) if new_id_uses[i] == 0]
+    if missing:
+        errors.append(
+            "Every NEW profile must be referenced exactly once. Missing: "
+            + ", ".join(f"NEW-{i}" for i in missing)
+            + "."
+        )
+    duplicated = sorted(idx for idx, count in new_id_uses.items() if count > 1)
+    if duplicated:
+        errors.append(
+            "Every NEW profile must be referenced exactly once. Referenced more "
+            "than once: " + ", ".join(f"NEW-{i}" for i in duplicated) + "."
+        )
+    return errors
 
 
 class ProfileConsolidator(BaseDeduplicator):
@@ -404,6 +535,32 @@ class ProfileConsolidator(BaseDeduplicator):
 
         output_schema_class = self._get_output_schema_class()
 
+        # Retain the first attempt that parsed, so an exhausted repair ladder
+        # degrades to it instead of throwing away all dedup work.
+        first_parsed_output: ProfileDeduplicationOutput | None = None
+
+        def _validate_output(output: BaseModel) -> list[str]:
+            nonlocal first_parsed_output
+            if not isinstance(output, ProfileDeduplicationOutput):
+                return [f"Unexpected output type: {type(output).__name__}."]
+            if first_parsed_output is None:
+                first_parsed_output = output
+            errors = validate_profile_dedup_output(
+                output,
+                new_profile_count=len(new_profiles),
+                existing_profile_count=len(existing_profiles),
+            )
+            if not errors:
+                return []
+            return [
+                *errors,
+                "Return a corrected JSON object with the same schema. Use only "
+                "NEW-<n> ids in range 0..<new_profile_count-1> and EXISTING-<n> "
+                "ids in range 0..<existing_profile_count-1>, and reference every "
+                "NEW profile exactly once across duplicate_groups, unique_ids, "
+                "and deletions.",
+            ]
+
         try:
             from reflexio.server.services.service_utils import (
                 log_llm_messages,
@@ -418,6 +575,7 @@ class ProfileConsolidator(BaseDeduplicator):
                 messages=[{"role": "user", "content": prompt}],
                 model=self.model_name,
                 response_format=output_schema_class,
+                structured_output_validator=_validate_output,
             )
 
             log_model_response(logger, "Deduplication response", response)
@@ -426,6 +584,12 @@ class ProfileConsolidator(BaseDeduplicator):
                 logger.warning(
                     "Unexpected response type from deduplication LLM: %s",
                     type(response),
+                )
+                capture_anomaly(
+                    "profile.dedup.bad_response_type",
+                    org_id=self.request_context.org_id,
+                    user_id=user_id,
+                    response_type=type(response).__name__,
                 )
                 return _strip_deletion_markers(new_profiles), [], []
 
@@ -439,7 +603,38 @@ class ProfileConsolidator(BaseDeduplicator):
                 "Failed to identify duplicates (%s); keeping profiles un-deduped",
                 str(e),
             )
-            return _strip_deletion_markers(new_profiles), [], []
+            if first_parsed_output is None:
+                # Nothing usable came back at all. Tag the failure so the rate of
+                # un-deduped writes is measurable — this path silently persists
+                # duplicates and drops any pending forget request.
+                capture_anomaly(
+                    "profile.dedup.failed",
+                    org_id=self.request_context.org_id,
+                    user_id=user_id,
+                    failure_kind=_dedup_failure_kind(e),
+                    new_profile_count=len(new_profiles),
+                    existing_profile_count=len(existing_profiles),
+                )
+                return _strip_deletion_markers(new_profiles), [], []
+            # The ladder exhausted, but an earlier attempt parsed. Prefer it over
+            # discarding the dedup entirely. It may still carry the semantic
+            # errors the validator rejected it for (out-of-range ids, NEW
+            # profiles referenced zero or twice), which is safe only because
+            # _build_deduplicated_results defends against exactly those: it
+            # drops out-of-range indices, skips a group it cannot resolve
+            # without marking anything, and re-adds any unreferenced NEW
+            # profile via the safety fallback.
+            logger.warning(
+                "Falling back to the first parsed deduplication attempt after "
+                "repair exhausted"
+            )
+            capture_anomaly(
+                "profile.dedup.degraded_to_first_attempt",
+                org_id=self.request_context.org_id,
+                user_id=user_id,
+                failure_kind=_dedup_failure_kind(e),
+            )
+            dedup_output = first_parsed_output
 
         if not dedup_output.duplicate_groups and not dedup_output.deletions:
             logger.info("No duplicate or deletion actions for request %s", request_id)
@@ -539,7 +734,46 @@ class ProfileConsolidator(BaseDeduplicator):
                 )
                 continue
 
-            # Mark NEW indices as handled only after the overlap check passes.
+            # Resolve the merge template BEFORE marking anything. A group either
+            # writes a merged replacement profile or touches nothing at all:
+            # marking first and bailing on a missing template supersedes the
+            # EXISTING rows with no replacement written, and strands the NEW
+            # facts too (handled_new_indices suppresses the safety fallback
+            # below), so both sides of the group are lost.
+            group_new_profiles = [
+                new_profiles[i] for i in group_new_indices if 0 <= i < len(new_profiles)
+            ]
+            group_existing_profiles = [
+                existing_profiles[i]
+                for i in group_existing_indices
+                if 0 <= i < len(existing_profiles)
+            ]
+
+            # Prefer a NEW member so a merge carrying freshly extracted facts
+            # inherits their metadata. An EXISTING-only group is legal per the
+            # prompt ("a duplicate group can contain ANY mix of NEW and
+            # EXISTING items"), and collapsing it is how duplicates that
+            # accumulated in the DB during past dedup failures get cleaned up.
+            template_profile: UserProfile | None = next(
+                iter(group_new_profiles or group_existing_profiles), None
+            )
+
+            if template_profile is None:
+                # Every id in the group was unparseable or out of range.
+                logger.warning(
+                    "Skipping duplicate group %s: no in-range NEW or EXISTING "
+                    "member to use as a merge template",
+                    group.item_ids,
+                )
+                capture_anomaly(
+                    "profile.dedup.group_unresolvable",
+                    org_id=self.request_context.org_id,
+                    user_id=user_id,
+                )
+                continue
+
+            # Past this point the group is committed to producing a merged
+            # profile, so it is safe to consume its members.
             for idx in group_new_indices:
                 handled_new_indices.add(idx)
 
@@ -553,25 +787,13 @@ class ProfileConsolidator(BaseDeduplicator):
                     superseded_profiles,
                 )
 
-            # Get template from first NEW profile in group (for metadata)
-            template_profile: UserProfile | None = None
-            if group_new_indices:
-                first_new_idx = group_new_indices[0]
-                if 0 <= first_new_idx < len(new_profiles):
-                    template_profile = new_profiles[first_new_idx]
-
-            if template_profile is None:
-                logger.warning("Could not find template profile for group, skipping")
-                continue
-
-            # Merge custom_features from all NEW profiles in group
-            group_new_profiles = [
-                new_profiles[i] for i in group_new_indices if 0 <= i < len(new_profiles)
-            ]
-            merged_custom_features = self._merge_custom_features(group_new_profiles)
-
-            # Merge extractor_names from all NEW profiles in group
-            merged_extractor_names = self._merge_extractor_names(group_new_profiles)
+            # Merge metadata from the NEW members, falling back to the EXISTING
+            # members for an EXISTING-only group so custom_features and
+            # extractor_names are carried into the merged profile rather than
+            # dropped. Mixed groups keep their previous NEW-only behavior.
+            metadata_sources = group_new_profiles or group_existing_profiles
+            merged_custom_features = self._merge_custom_features(metadata_sources)
+            merged_extractor_names = self._merge_extractor_names(metadata_sources)
 
             # Determine TTL
             try:
