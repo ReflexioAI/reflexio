@@ -1,11 +1,15 @@
 """Per-provider, per-instance concurrency cap for remote LLM calls.
 
-A bounded, fail-open semaphore keyed by LLM provider. Acquired in the PARENT
-process around a provider call so N tasks don't fan into a provider-429 storm.
-On saturation it fails OPEN (proceeds without a permit) after a bounded wait,
-never blocking unboundedly — that would re-open the hung-provider stall class
-(Sentry PYTHON-FASTAPI-62) through the limiter. Part of Scalability Workstream C
-(design §5). 429 recovery stays with the fallback ladder (Decision A).
+A bounded semaphore keyed by LLM provider. Acquired in the PARENT process
+around a provider call so N tasks don't fan into a provider-429 storm.
+By default, on saturation it fails OPEN (proceeds without a permit) after a
+bounded wait, never blocking unboundedly — that would re-open the hung-provider
+stall class (Sentry PYTHON-FASTAPI-62) through the limiter. Providers listed in
+``REFLEXIO_LLM_FAIL_CLOSED_PROVIDERS`` instead fail CLOSED — they raise
+``ProviderCapSaturatedError`` on saturation to protect a fixed-quota
+subscription (e.g. the Z.ai GLM coding plan used as a fallback), which the
+fallback walk treats as an advance-worthy rung failure. Part of Scalability
+Workstream C (design §5). 429 recovery stays with the fallback ladder (Decision A).
 """
 
 import logging
@@ -94,7 +98,12 @@ def _get_semaphore(provider: str) -> threading.BoundedSemaphore:
 
 @contextmanager
 def provider_slot(model: str) -> Iterator[None]:
-    """Cap concurrent in-flight calls to ``model``'s provider (fail-open)."""
+    """Cap concurrent in-flight calls to ``model``'s provider.
+
+    Fails OPEN on saturation by default; fails CLOSED (raises
+    ``ProviderCapSaturatedError``) for providers in
+    ``REFLEXIO_LLM_FAIL_CLOSED_PROVIDERS``.
+    """
     provider = _provider_key(model)
     if provider is None:
         yield  # unknown provider → do not cap

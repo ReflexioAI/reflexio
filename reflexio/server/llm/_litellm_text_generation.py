@@ -675,11 +675,12 @@ class TextGenerationMixin:
         terminate the in-flight provider request instead of waiting indefinitely.
 
         ``hard_timeout`` is the wall-clock kill bound for the whole subprocess.
-        Because LiteLLM walks ``[primary, *fallbacks]`` inside this one call
-        (copying ``timeout`` unchanged into each rung), the caller sizes
-        ``hard_timeout`` to cover the entire fallback ladder, not a single
-        attempt — otherwise the subprocess would be killed before LiteLLM ever
-        reaches a fallback (the root cause of Sentry PYTHON-FASTAPI-62).
+        This call dispatches exactly ONE rung (``fallbacks`` is never passed to
+        LiteLLM — the reflexio-owned walk advances between rungs itself), so the
+        caller sizes ``hard_timeout`` to a single attempt on one rung, not the
+        whole ladder. A hung primary is killed at its own bound and the walk
+        then starts the next rung fresh — preserving the Sentry PYTHON-FASTAPI-62
+        property (a hung primary must not block the fallback) per rung.
         """
         provider_timeout = params.get("timeout", self.config.timeout)
         # timeout_seconds + grace_seconds below only classify test doubles in
