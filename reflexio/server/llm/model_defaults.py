@@ -510,8 +510,25 @@ def validate_llm_availability(
     for model in fallbacks:
         if model.startswith("local/"):
             continue
-        provider = model.split("/", 1)[0] if "/" in model else ""
-        if provider and provider not in providers:
+        provider = model.split("/", 1)[0].lower() if "/" in model else ""
+        if not provider:
+            continue
+        if provider not in _ENV_TO_PROVIDER.values():
+            # A provider reflexio doesn't key-validate at boot (bedrock,
+            # vertex_ai, azure, groq, ollama, together_ai, ...) authenticates
+            # via non-``<PROVIDER>_API_KEY`` means (IAM role, service
+            # account, etc.). Refusing to boot here would be a backward-
+            # compat break — these fallbacks booted fine before per-rung
+            # boot validation existed and only failed at request time.
+            logger.warning(
+                "Configured fallback model %r names provider %r, which "
+                "reflexio cannot validate credentials for at boot; any "
+                "misconfiguration will surface at request time instead.",
+                model,
+                provider,
+            )
+            continue
+        if provider not in providers:
             raise RuntimeError(
                 f"Configured fallback model {model!r} needs provider {provider!r}, "
                 f"but no key for it is available. Set the provider's API key or "

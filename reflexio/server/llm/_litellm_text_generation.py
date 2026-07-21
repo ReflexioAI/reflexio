@@ -576,6 +576,13 @@ class TextGenerationMixin:
         completion route (Sentry PYTHON-FASTAPI-CV) and self-referential entries
         would just retry the same broken endpoint, so both are filtered here.
 
+        A configured custom endpoint is a single-model hard pin (every rung's
+        ``_resolve_primary_model`` call re-pins to ``ce.model`` regardless of
+        what the rung was), so fallback is meaningless there: short-circuit to
+        a single-rung ladder rather than dispatching the same call N times
+        under N different "fallback" labels and logging a false
+        ``served_model`` on success.
+
         Args:
             **kwargs: The original per-call kwargs (``model``, ``model_role``,
                 and optionally ``fallback_models``).
@@ -583,13 +590,20 @@ class TextGenerationMixin:
         Returns:
             list[str]: The ordered, deduped rung list beginning with the primary.
         """
+        primary = self._resolve_primary_model(
+            kwargs.get("model"), kwargs.get("model_role")
+        )
+        ce = (
+            self.config.api_key_config.custom_endpoint
+            if self.config.api_key_config
+            else None
+        )
+        if ce and ce.api_key and ce.api_base:
+            return [primary]
         if "fallback_models" in kwargs:
             fallback_raw = kwargs.get("fallback_models") or []
         else:
             fallback_raw = list(self.config.fallback_models)
-        primary = self._resolve_primary_model(
-            kwargs.get("model"), kwargs.get("model_role")
-        )
         ladder: list[str] = [primary]
         for m in fallback_raw:
             if m and m != primary and not m.startswith("local/") and m not in ladder:

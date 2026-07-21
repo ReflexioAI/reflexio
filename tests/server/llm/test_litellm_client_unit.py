@@ -3538,6 +3538,41 @@ class TestOwnedFallbackWalk:
             client.generate_chat_response(self._messages())
         assert not any("event=llm_fallback_used" in r.message for r in caplog.records)
 
+    def test_custom_endpoint_short_circuits_ladder_to_single_rung(
+        self, monkeypatch, caplog
+    ):
+        """A custom endpoint is a single-model pin — fallback_models must not
+        re-pin every rung to the SAME ce.model (wasted rung timeouts) nor let
+        the success branch log a false ``served_model`` for a rung that never
+        actually ran."""
+        api_key_config = APIKeyConfig(
+            custom_endpoint=CustomEndpointConfig(
+                model="ce-model",
+                api_key="ce-key",
+                api_base="https://example.com/v1",  # type: ignore[arg-type]
+            )
+        )
+        client = LiteLLMClient(
+            LiteLLMConfig(
+                model="minimax/MiniMax-M3",
+                fallback_models=["zai/glm-5.2"],
+                api_key_config=api_key_config,
+            )
+        )
+        assert client._resolve_ladder(fallback_models=["zai/glm-5.2"]) == ["ce-model"]
+
+        calls = []
+
+        def _fake(**params):
+            calls.append(params["model"])
+            return _make_completion_response("ok")
+
+        monkeypatch.setattr("litellm.completion", _fake)
+        with caplog.at_level(logging.INFO):
+            client.generate_chat_response(self._messages())
+        assert calls == ["ce-model"]
+        assert not any("event=llm_fallback_used" in r.message for r in caplog.records)
+
 
 # ===================================================================
 # Fallback observability: Sentry tags + structured log line
