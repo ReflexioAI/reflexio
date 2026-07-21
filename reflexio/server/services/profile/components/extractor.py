@@ -295,7 +295,11 @@ class ProfileExtractor:
                 not isinstance(profile_content, dict)
                 or "content" not in profile_content
             ):
-                logger.warning("Invalid profile content: %s", profile_content)
+                logger.warning(
+                    "Invalid profile content: expected a dict with a 'content' key, got %s "
+                    "(content omitted from logs)",
+                    type(profile_content).__name__,
+                )
                 continue
 
             # Get all custom features by excluding content and time_to_live

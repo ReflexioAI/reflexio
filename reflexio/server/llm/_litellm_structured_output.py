@@ -250,13 +250,14 @@ class StructuredOutputMixin:
                     return _validate_structured_payload(response_format, repaired)
                 except Exception as e:
                     model = self.config.model
-                    snippet = (
-                        content[:200]
-                        if isinstance(content, str)
-                        else repr(content)[:200]
-                    )
+                    # Do NOT embed the raw model output in the exception message:
+                    # this exception is logged at ERROR and rides to Sentry/CloudWatch
+                    # via the logging bridge, so a content snippet would leak Customer
+                    # Content there. Log only the length; the raw text stays on
+                    # `raw_content` for in-process repair (not serialized to logs).
+                    content_len = len(content) if isinstance(content, str) else -1
                     raise StructuredOutputParseError(
                         f"Structured output parse failed for model={model!r}: {e}. "
-                        f"Content snippet: {snippet!r}",
+                        f"Content length: {content_len} chars (content omitted from logs).",
                         raw_content=content if isinstance(content, str) else None,
                     ) from e
