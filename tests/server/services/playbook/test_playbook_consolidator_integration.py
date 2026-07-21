@@ -944,16 +944,16 @@ def _build_real_client_consolidator(
 
     Returns:
         PlaybookConsolidator: Consolidator whose ``client`` is a real
-            ``LiteLLMClient``; ``model_name`` is fixed to ``"gpt-test"`` via
-            the same ``SiteVarManager`` patch used by the file's shared
-            fixture so the apply path is comparable.
+            ``LiteLLMClient`` and whose request model matches the supplied
+            config so structured-output fallback compatibility is exercised
+            against the intended primary model.
     """
     client = LiteLLMClient(config)
     with patch(
         "reflexio.server.services.deduplication_utils.SiteVarManager"
     ) as mock_svm:
         mock_svm.return_value.get_site_var.return_value = {
-            "default_generation_model_name": "gpt-test"
+            "default_generation_model_name": config.model
         }
         return PlaybookConsolidator(request_context=request_context, llm_client=client)
 
