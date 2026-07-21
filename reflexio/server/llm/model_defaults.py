@@ -487,21 +487,33 @@ def validate_llm_availability(
             "embedding model selects this provider)",
             embedding_provider,
         )
-        return
-
-    from reflexio.server.llm.providers.local_embedding_provider import (
-        is_chromadb_importable,
-    )
-
-    if is_chromadb_importable():
-        logger.info(
-            "Local MiniLM embedding fallback available: %s "
-            "(no cloud embedding provider configured)",
-            _LOCAL_EMBEDDING_PROVIDER,
+    else:
+        from reflexio.server.llm.providers.local_embedding_provider import (
+            is_chromadb_importable,
         )
-        return
-    raise RuntimeError(
-        "No embedding-capable provider configured and chromadb is not "
-        "importable. Set OPENAI_API_KEY or GEMINI_API_KEY, or "
-        "`pip install chromadb`."
-    )
+
+        if is_chromadb_importable():
+            logger.info(
+                "Local MiniLM embedding fallback available: %s "
+                "(no cloud embedding provider configured)",
+                _LOCAL_EMBEDDING_PROVIDER,
+            )
+        else:
+            raise RuntimeError(
+                "No embedding-capable provider configured and chromadb is not "
+                "importable. Set OPENAI_API_KEY or GEMINI_API_KEY, or "
+                "`pip install chromadb`."
+            )
+
+    fallback_raw = os.environ.get("REFLEXIO_LLM_FALLBACK_MODELS", "")
+    fallbacks = [m.strip() for m in fallback_raw.split(",") if m.strip()]
+    for model in fallbacks:
+        if model.startswith("local/"):
+            continue
+        provider = model.split("/", 1)[0] if "/" in model else ""
+        if provider and provider not in providers:
+            raise RuntimeError(
+                f"Configured fallback model {model!r} needs provider {provider!r}, "
+                f"but no key for it is available. Set the provider's API key or "
+                f"remove it from REFLEXIO_LLM_FALLBACK_MODELS."
+            )

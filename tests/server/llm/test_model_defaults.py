@@ -360,6 +360,16 @@ class TestValidateLlmAvailability:
             validate_llm_availability()
 
 
+def test_configured_fallback_without_provider_key_raises(monkeypatch):
+    from reflexio.server.llm import model_defaults as md
+
+    monkeypatch.setenv("MINIMAX_API_KEY", "x")  # primary provider present
+    monkeypatch.setenv("REFLEXIO_LLM_FALLBACK_MODELS", "zai/glm-5.2")
+    monkeypatch.delenv("ZAI_API_KEY", raising=False)  # fallback key MISSING
+    with pytest.raises(RuntimeError, match="fallback model.*zai"):
+        md.validate_llm_availability()
+
+
 # ---------------------------------------------------------------------------
 # All providers have defaults defined
 # ---------------------------------------------------------------------------
