@@ -81,6 +81,8 @@ _MODEL_TIMEOUT_FLOOR_SECONDS: dict[str, int] = {
     "minimax/MiniMax-M3": 120,
 }
 
+_ZAI_CODING_API_BASE = "https://api.z.ai/api/coding/paas/v4"
+
 
 # Upstream-provider errors that are EXPECTED and transient. By the time one of
 # these reaches the request handler the fallback ladder is already exhausted,
@@ -195,9 +197,18 @@ class TextGenerationMixin:
             self, *, response_format: Any, model: str, strict_response_format: bool
         ) -> Any: ...
 
+        @classmethod
+        def _structured_output_strategy(
+            cls, *, model: str, strict_response_format: bool
+        ) -> str: ...
+
+        def _prompt_schema_directive(
+            self, *, response_format: type[BaseModel], tools_available: bool
+        ) -> str: ...
+
         def _maybe_parse_structured_output(
             self,
-            content: str,
+            content: Any,
             response_format: Any,
             parse_structured_output: bool,
         ) -> "str | BaseModel": ...
@@ -422,6 +433,13 @@ class TextGenerationMixin:
             if m != actual_model and not m.startswith("local/")
         ]
 
+        self._validate_structured_fallback_strategies(
+            response_format=response_format,
+            strict_response_format=strict_response_format,
+            primary_model=actual_model,
+            fallback_models=fallback_models,
+        )
+
         temperature = kwargs.pop("temperature", self.config.temperature)
         if self._is_temperature_restricted_model(actual_model):
             params["temperature"] = 1.0
@@ -462,12 +480,18 @@ class TextGenerationMixin:
             params["max_tokens"] = max_tokens
         if self.config.top_p != 1.0:
             params["top_p"] = self.config.top_p
-        if response_format:
-            params["response_format"] = self._provider_response_format(
-                response_format=response_format,
-                model=actual_model,
-                strict_response_format=strict_response_format,
-            )
+        allowed_openai_params = list(kwargs.pop("allowed_openai_params", None) or [])
+        self._apply_structured_output_transport(
+            params=params,
+            messages=messages,
+            response_format=response_format,
+            model=actual_model,
+            strict_response_format=strict_response_format,
+            tools_available=tools is not None,
+            allowed_openai_params=allowed_openai_params,
+        )
+        if allowed_openai_params:
+            params["allowed_openai_params"] = allowed_openai_params
         if tools is not None:
             params["tools"] = tools
         if tool_choice is not None:
@@ -485,6 +509,8 @@ class TextGenerationMixin:
             params["api_key"] = api_key
         if api_base:
             params["api_base"] = api_base
+        elif actual_model.lower().startswith("zai/"):
+            params["api_base"] = _ZAI_CODING_API_BASE
         if api_version:
             params["api_version"] = api_version
 
@@ -507,6 +533,92 @@ class TextGenerationMixin:
             max_retries,
             fallback_models,
         )
+
+    @staticmethod
+    def _inject_system_instruction(
+        messages: list[dict[str, Any]], instruction: str
+    ) -> list[dict[str, Any]]:
+        """Return a copied message list with ``instruction`` in the system turn."""
+        final_messages = [dict(message) for message in messages]
+        if final_messages and final_messages[0].get("role") == "system":
+            existing = final_messages[0].get("content")
+            final_messages[0]["content"] = (
+                f"{existing}\n\n{instruction}" if existing else instruction
+            )
+        else:
+            final_messages.insert(0, {"role": "system", "content": instruction})
+        return final_messages
+
+    def _validate_structured_fallback_strategies(
+        self,
+        *,
+        response_format: Any,
+        strict_response_format: bool,
+        primary_model: str,
+        fallback_models: list[str],
+    ) -> None:
+        """Reject fallback ladders that cannot safely reuse the primary request."""
+        if not response_format or not is_pydantic_model(response_format):
+            return
+        primary_strategy = self._structured_output_strategy(
+            model=primary_model,
+            strict_response_format=strict_response_format,
+        )
+        incompatible_fallbacks = [
+            model
+            for model in fallback_models
+            if self._structured_output_strategy(
+                model=model,
+                strict_response_format=strict_response_format,
+            )
+            != primary_strategy
+        ]
+        if incompatible_fallbacks:
+            raise ValueError(
+                "Structured-output fallback models must use the same transport "
+                f"strategy as {primary_model!r} ({primary_strategy}); incompatible "
+                f"fallbacks: {incompatible_fallbacks!r}"
+            )
+
+    def _apply_structured_output_transport(
+        self,
+        *,
+        params: dict[str, Any],
+        messages: list[dict[str, Any]],
+        response_format: Any,
+        model: str,
+        strict_response_format: bool,
+        tools_available: bool,
+        allowed_openai_params: list[str],
+    ) -> None:
+        """Apply the provider-facing format while retaining local Pydantic parsing."""
+        if not response_format:
+            return
+        strategy = (
+            self._structured_output_strategy(
+                model=model,
+                strict_response_format=strict_response_format,
+            )
+            if is_pydantic_model(response_format)
+            else "pydantic_passthrough"
+        )
+        if strategy != "prompt_json_object":
+            params["response_format"] = self._provider_response_format(
+                response_format=response_format,
+                model=model,
+                strict_response_format=strict_response_format,
+            )
+            return
+
+        directive = self._prompt_schema_directive(
+            response_format=response_format,
+            tools_available=tools_available,
+        )
+        params["messages"] = self._inject_system_instruction(messages, directive)
+        if not tools_available:
+            params["response_format"] = {"type": "json_object"}
+            if "response_format" not in allowed_openai_params:
+                allowed_openai_params.append("response_format")
 
     def _compute_cost_usd(self, response: Any, model: str | None) -> float | None:
         """Compute call cost in USD via the litellm price table.

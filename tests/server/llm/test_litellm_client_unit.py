@@ -1053,9 +1053,12 @@ class TestMaybeParseStructuredOutput:
         )
         assert isinstance(result, str)
 
-    def test_none_content_returns_none(self, client):
-        result = client._maybe_parse_structured_output(None, SampleResponse, True)
-        assert result is None
+    def test_none_content_raises_parse_error(self, client):
+        with pytest.raises(
+            StructuredOutputParseError,
+            match="Structured output response content was empty",
+        ):
+            client._maybe_parse_structured_output(None, SampleResponse, True)
 
     def test_already_pydantic_model_returned_as_is(self, client):
         obj = SampleResponse(answer="ok", score=5)
@@ -1269,6 +1272,150 @@ class TestStrictStructuredOutputRequest:
 
         assert params["response_format"] is SampleResponse
         assert parser_schema is SampleResponse
+
+    def test_zai_uses_coding_endpoint_and_prompt_backed_json_mode(self):
+        client = _build_client(LiteLLMConfig(model="zai/glm-5.2"))
+        messages = [{"role": "user", "content": "test"}]
+
+        params, parser_schema, parse_structured, _, _ = client._build_completion_params(
+            messages,
+            response_format=SampleResponse,
+        )
+
+        assert params["api_base"] == "https://api.z.ai/api/coding/paas/v4"
+        assert params["response_format"] == {"type": "json_object"}
+        assert "response_format" in params["allowed_openai_params"]
+        assert params["messages"][0]["role"] == "system"
+        instruction = params["messages"][0]["content"]
+        assert "Return ONLY a JSON object" in instruction
+        assert '"answer"' in instruction
+        assert '"score"' in instruction
+        assert messages == [{"role": "user", "content": "test"}]
+        assert parser_schema is SampleResponse
+        assert parse_structured is True
+
+    def test_zai_tool_turn_leaves_tools_free_and_constrains_only_terminus(self):
+        client = _build_client(LiteLLMConfig(model="zai/glm-5.2"))
+        messages = [
+            {"role": "system", "content": "Use tools when needed."},
+            {"role": "user", "content": "test"},
+        ]
+        tool_specs = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "lookup",
+                    "description": "Look something up.",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ]
+
+        params, parser_schema, _, _, _ = client._build_completion_params(
+            messages,
+            response_format=SampleResponse,
+            tools=tool_specs,
+        )
+
+        assert "response_format" not in params
+        assert params["tools"] == tool_specs
+        system_content = params["messages"][0]["content"]
+        assert system_content.startswith("Use tools when needed.")
+        assert (
+            "When you are not calling a tool and are ready to finish" in system_content
+        )
+        assert messages[0]["content"] == "Use tools when needed."
+        assert parser_schema is SampleResponse
+
+    def test_zai_preserves_explicit_api_base_and_allowed_params(self):
+        client = _build_client(LiteLLMConfig(model="zai/glm-5.2"))
+
+        params, _, _, _, _ = client._build_completion_params(
+            [{"role": "user", "content": "test"}],
+            response_format=SampleResponse,
+            api_base="https://example.test/v4",
+            allowed_openai_params=["seed"],
+        )
+
+        assert params["api_base"] == "https://example.test/v4"
+        assert params["allowed_openai_params"] == ["seed", "response_format"]
+
+    def test_zai_custom_endpoint_takes_precedence_over_builtin_default(self):
+        api_key_config = APIKeyConfig(
+            custom_endpoint=CustomEndpointConfig(
+                model="zai/glm-5.2",
+                api_key="custom-key",
+                api_base="https://example.com/v1",  # type: ignore[arg-type]
+            )
+        )
+        client = _build_client(
+            LiteLLMConfig(
+                model="zai/glm-5.2",
+                api_key_config=api_key_config,
+            )
+        )
+
+        params, _, _, _, _ = client._build_completion_params(
+            [{"role": "user", "content": "test"}]
+        )
+
+        assert params["api_base"] == "https://example.com/v1"
+
+    def test_zai_strict_response_format_false_preserves_passthrough(self):
+        client = _build_client(LiteLLMConfig(model="zai/glm-5.2"))
+        messages = [{"role": "user", "content": "test"}]
+
+        params, _, _, _, _ = client._build_completion_params(
+            messages,
+            response_format=SampleResponse,
+            strict_response_format=False,
+        )
+
+        assert params["response_format"] is SampleResponse
+        assert params["messages"] == messages
+
+    def test_structured_fallback_rejects_mixed_transport_strategies(self):
+        client = _build_client(
+            LiteLLMConfig(
+                model="zai/glm-5.2",
+                fallback_models=["openai/gpt-4o-mini"],
+            )
+        )
+
+        with pytest.raises(ValueError, match="same transport strategy"):
+            client._build_completion_params(
+                [{"role": "user", "content": "test"}],
+                response_format=SampleResponse,
+            )
+
+    def test_structured_fallback_allows_same_prompt_transport(self):
+        client = _build_client(
+            LiteLLMConfig(
+                model="zai/glm-5.2",
+                fallback_models=["zai/glm-4.5"],
+            )
+        )
+
+        _, _, _, _, fallbacks = client._build_completion_params(
+            [{"role": "user", "content": "test"}],
+            response_format=SampleResponse,
+        )
+
+        assert fallbacks == ["zai/glm-4.5"]
+
+    def test_text_fallback_does_not_require_matching_transport(self):
+        client = _build_client(
+            LiteLLMConfig(
+                model="zai/glm-5.2",
+                fallback_models=["openai/gpt-4o-mini"],
+            )
+        )
+
+        _, _, _, _, fallbacks = client._build_completion_params(
+            [{"role": "user", "content": "test"}]
+        )
+
+        assert fallbacks == ["openai/gpt-4o-mini"]
 
     def test_openai_compatible_underreported_provider_uses_strict_schema(self):
         # Regression for Sentry PYTHON-FASTAPI-9J: minimax reports
