@@ -18,10 +18,12 @@ Coverage (Task 9):
     with an UNROUTABLE MiniMax key, so the reflexio-owned walk MUST advance to
     GLM. Asserts publish succeeds, rows exist, and the
     ``event=llm_fallback_used ... served_model=zai/glm-5.2 reason=transport_error``
-    signal fired.
-  * ``test_blank_fallback_key_boot_check_raises`` (run #3b) — cheap, deterministic,
-    no real calls: with the GLM fallback configured but its provider key absent,
-    the Task-4 boot check ``validate_llm_availability`` raises ``RuntimeError``.
+    signal was emitted (at least once).
+
+Run #3b (a configured GLM fallback with no provider key failing the Task-4 boot
+check ``validate_llm_availability``) is deliberately NOT in this file — it makes
+no real API call, so it belongs in the unit tier and is already covered by
+``tests/server/llm/test_model_defaults.py::test_configured_fallback_without_provider_key_raises``.
 
 The faithful path is mandatory: the primary is forced through the site var, the
 fallback through the env var, both resolved by ``resolve_model_name``, and the
@@ -48,7 +50,6 @@ from reflexio.models.config_schema import (
     ProfileExtractorConfig,
     StorageConfigSQLite,
 )
-from reflexio.server.llm.model_defaults import validate_llm_availability
 from reflexio.server.services.configurator.configurator import DefaultConfigurator
 from reflexio.server.services.storage.storage_base import BaseStorage
 from reflexio.server.services.tagging.tagging_scheduler import drain_tagging
@@ -213,9 +214,10 @@ def test_minimax_to_glm_fallback(
 
     Primary ``minimax/MiniMax-M3`` (site var) with an unroutable key +
     ``REFLEXIO_LLM_FALLBACK_MODELS=zai/glm-5.2``. The MiniMax rung fails transport
-    on every generation call, so the reflexio-owned walk advances to GLM, which
-    actually serves the request. This is the only real-API exercise of the
-    rewritten per-rung fallback code path.
+    (unroutable key), so the reflexio-owned walk advances to GLM, which actually
+    serves the request. This is the only real-API exercise of the rewritten
+    per-rung fallback code path. The test asserts the fallback signal was
+    emitted (at least once), not that it fired on every generation call.
 
     The fallback ladder lives on the generation client's ``LiteLLMConfig``, whose
     ``fallback_models`` is read from ``REFLEXIO_LLM_FALLBACK_MODELS`` at client
@@ -254,18 +256,3 @@ def test_minimax_to_glm_fallback(
     assert f"primary_model={_MINIMAX_MODEL}" in joined, joined
     assert f"served_model={_GLM_MODEL}" in joined, joined
     assert "reason=transport_error" in joined, joined
-
-
-def test_blank_fallback_key_boot_check_raises(monkeypatch: pytest.MonkeyPatch):
-    """Run #3b: a configured GLM fallback with no provider key fails the boot check.
-
-    Cheap and deterministic — no real API calls. Clearing ``ZAI_API_KEY`` while
-    ``REFLEXIO_LLM_FALLBACK_MODELS=zai/glm-5.2`` is configured must make the
-    Task-4 startup guard ``validate_llm_availability`` raise ``RuntimeError``
-    rather than boot into a silent transport failure at first use.
-    """
-    monkeypatch.delenv("ZAI_API_KEY", raising=False)
-    monkeypatch.setenv("REFLEXIO_LLM_FALLBACK_MODELS", _GLM_MODEL)
-
-    with pytest.raises(RuntimeError):
-        validate_llm_availability()
