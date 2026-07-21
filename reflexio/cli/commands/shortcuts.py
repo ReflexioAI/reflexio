@@ -188,7 +188,10 @@ def register_shortcuts(app: typer.Typer) -> None:
         ctx: typer.Context,
         query: Annotated[str, typer.Argument(help="Search query text")],
         top_k: Annotated[int, typer.Option("--top-k", help="Max results per type")] = 5,
-        threshold: Annotated[float, typer.Option(help="Similarity threshold")] = 0.4,
+        threshold: Annotated[
+            float | None,
+            typer.Option(help="Similarity threshold (defaults by embedding model)"),
+        ] = None,
         user_id: Annotated[
             str | None, typer.Option("--user-id", help="Filter by user ID")
         ] = None,

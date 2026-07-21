@@ -16,6 +16,7 @@ from reflexio.models.api_schema.service_schemas import (
 from reflexio.server.llm.providers.embedding_service_provider import (
     EmbeddingUnavailableError,
 )
+from reflexio.server.services.embedding_text import embedding_input
 
 from .._base import (
     SQLiteStorageBase,
@@ -84,7 +85,7 @@ class InteractionStoreMixin:
     def add_user_interaction(self, user_id: str, interaction: Interaction) -> None:  # noqa: ARG002
         # NOTE: distinct from the bulk/backfill derivation
         # (_embed_text_for_interaction). This legacy single-insert path embeds via
-        # the purpose-prefixed _get_embedding ("search_document: ...") and its own
+        # the model-formatted _get_embedding path and its own
         # f-string, so it is intentionally NOT routed through the shared helper —
         # aligning it would silently change stored embedding values (e.g. null ->
         # literal "None"). The real bulk ingest + backfill share the helper.
@@ -221,7 +222,15 @@ class InteractionStoreMixin:
                 ]
                 try:
                     embeddings = self.llm_client.get_embeddings(
-                        texts, self.embedding_model_name, self.embedding_dimensions
+                        [
+                            embedding_input(
+                                text,
+                                model_name=self.embedding_model_name,
+                            )
+                            for text in texts
+                        ],
+                        self.embedding_model_name,
+                        self.embedding_dimensions,
                     )
                 except EmbeddingUnavailableError as exc:
                     logger.warning(
@@ -253,7 +262,15 @@ class InteractionStoreMixin:
         ]
         try:
             embeddings = self.llm_client.get_embeddings(
-                texts, self.embedding_model_name, self.embedding_dimensions
+                [
+                    embedding_input(
+                        text,
+                        model_name=self.embedding_model_name,
+                    )
+                    for text in texts
+                ],
+                self.embedding_model_name,
+                self.embedding_dimensions,
             )
         except EmbeddingUnavailableError as exc:
             logger.warning(
@@ -333,7 +350,15 @@ class InteractionStoreMixin:
         texts = [text for _, text in pairs]
         try:
             embeddings = self.llm_client.get_embeddings(
-                texts, self.embedding_model_name, self.embedding_dimensions
+                [
+                    embedding_input(
+                        text,
+                        model_name=self.embedding_model_name,
+                    )
+                    for text in texts
+                ],
+                self.embedding_model_name,
+                self.embedding_dimensions,
             )
         except EmbeddingUnavailableError as exc:
             logger.warning(

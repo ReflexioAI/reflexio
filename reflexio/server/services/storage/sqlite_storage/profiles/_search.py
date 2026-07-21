@@ -19,6 +19,7 @@ from reflexio.models.api_schema.service_schemas import (
     UserProfile,
 )
 from reflexio.models.config_schema import SearchMode
+from reflexio.server.services.embedding_text import resolve_retrieval_threshold
 
 from .._base import (
     SQLiteStorageBase,
@@ -41,6 +42,7 @@ class ProfileSearchMixin:
 
     # Type hints for instance attributes/methods provided by SQLiteStorageBase via MRO
     _fetchall: Any
+    embedding_model_name: str
 
     # ------------------------------------------------------------------
     # Search — Interactions & Profiles
@@ -56,6 +58,10 @@ class ProfileSearchMixin:
         has_query = bool(req.query)
         match_count = req.most_recent_k or 10
         mode = _effective_search_mode(req.search_mode, query_embedding, req.query)
+        threshold = resolve_retrieval_threshold(
+            req.threshold,
+            model_name=self.embedding_model_name,
+        )
 
         conditions: list[str] = ["i.user_id = ?"]
         params: list[str | int | float] = [req.user_id]
@@ -85,7 +91,12 @@ class ProfileSearchMixin:
                       ORDER BY i.created_at DESC
                       LIMIT ?"""
             rows = self._fetchall(sql, (*params, vector_limit))
-            rows = _vector_rank_rows(rows, query_embedding, match_count)
+            rows = _vector_rank_rows(
+                rows,
+                query_embedding,
+                match_count,
+                threshold=threshold,
+            )
         elif has_query:
             # FTS search (with optional HYBRID re-ranking)
             fts_query = _sanitize_fts_query(req.query)  # type: ignore[arg-type]
@@ -106,7 +117,12 @@ class ProfileSearchMixin:
                               ORDER BY i.created_at DESC
                               LIMIT ?"""
                 vec_candidates = self._fetchall(vec_sql, (*params, vec_limit))
-                vec_rows = _vector_rank_rows(vec_candidates, query_embedding, overfetch)
+                vec_rows = _vector_rank_rows(
+                    vec_candidates,
+                    query_embedding,
+                    overfetch,
+                    threshold=threshold,
+                )
                 rows = _true_rrf_merge(
                     fts_rows,
                     vec_rows,
@@ -147,6 +163,10 @@ class ProfileSearchMixin:
         current_ts = _epoch_now()
         has_query = bool(req.query)
         mode = _effective_search_mode(req.search_mode, query_embedding, req.query)
+        threshold = resolve_retrieval_threshold(
+            req.threshold,
+            model_name=self.embedding_model_name,
+        )
         has_embedding = query_embedding is not None
         logger.info(
             "Profile search: requested_mode=%s, effective_mode=%s, has_query=%s, has_embedding=%s, user_id=%s",
@@ -197,7 +217,12 @@ class ProfileSearchMixin:
             logger.info(
                 "VECTOR search: %d candidates fetched, ranking by embedding", len(rows)
             )
-            rows = _vector_rank_rows(rows, query_embedding, match_count)
+            rows = _vector_rank_rows(
+                rows,
+                query_embedding,
+                match_count,
+                threshold=threshold,
+            )
         elif has_query:
             fts_query = _sanitize_fts_query(req.query)  # type: ignore[arg-type]
             sql = f"""SELECT p.* FROM profiles p
@@ -218,7 +243,12 @@ class ProfileSearchMixin:
                               ORDER BY p.last_modified_timestamp DESC
                               LIMIT ?"""
                 vec_candidates = self._fetchall(vec_sql, (*params, vec_limit))
-                vec_rows = _vector_rank_rows(vec_candidates, query_embedding, overfetch)
+                vec_rows = _vector_rank_rows(
+                    vec_candidates,
+                    query_embedding,
+                    overfetch,
+                    threshold=threshold,
+                )
                 rows = _true_rrf_merge(
                     fts_rows,
                     vec_rows,
@@ -241,7 +271,12 @@ class ProfileSearchMixin:
                 "HYBRID (no query text) search: %d candidates, ranking by embedding",
                 len(rows),
             )
-            rows = _vector_rank_rows(rows, query_embedding, match_count)
+            rows = _vector_rank_rows(
+                rows,
+                query_embedding,
+                match_count,
+                threshold=threshold,
+            )
         else:
             if req.generated_from_request_id:
                 conditions.append("p.generated_from_request_id = ?")

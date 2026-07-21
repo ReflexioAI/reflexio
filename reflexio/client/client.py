@@ -534,6 +534,7 @@ class ReflexioClient:
         end_time: datetime | None = None,
         top_k: int | None = None,
         most_recent_k: int | None = None,
+        threshold: float | None = None,
         search_mode: SearchMode | None = None,
     ) -> SearchInteractionsViewResponse:
         """Search for user interactions.
@@ -547,6 +548,8 @@ class ReflexioClient:
             end_time (Optional[datetime]): Filter by end time
             top_k (Optional[int]): Maximum number of results to return
             most_recent_k (Optional[int]): Return most recent k interactions
+            threshold (Optional[float]): Similarity threshold. When omitted,
+                the embedding model's default is used.
 
         Returns:
             SearchInteractionsViewResponse: Response containing matching interactions
@@ -561,6 +564,7 @@ class ReflexioClient:
             end_time=end_time,
             top_k=top_k,
             most_recent_k=most_recent_k,
+            threshold=threshold,
             search_mode=search_mode,
         )
         response = self._make_request(
@@ -602,7 +606,8 @@ class ReflexioClient:
             custom_feature (Optional[str]): Filter by custom feature
             extractor_name (Optional[str]): Deprecated compatibility field. Accepted but ignored.
             tags (Optional[list[str]]): Match profiles having any of these tags.
-            threshold (Optional[float]): Similarity threshold (default: 0.7)
+            threshold (Optional[float]): Similarity threshold. When omitted,
+                the embedding model's default is used.
             enable_reformulation (Optional[bool]): Enable LLM query reformulation (default: False)
 
         Returns:
@@ -763,7 +768,8 @@ class ReflexioClient:
             status_filter (Optional[list[Optional[Status]]]): Filter by status (None for CURRENT, PENDING, ARCHIVED)
             tags (Optional[list[str]]): Match playbooks having any of these tags.
             top_k (Optional[int]): Maximum number of results to return (default: 10)
-            threshold (Optional[float]): Similarity threshold for vector search (default: 0.4)
+            threshold (Optional[float]): Similarity threshold for vector search.
+                When omitted, the embedding model's default is used.
             enable_reformulation (Optional[bool]): Enable LLM query reformulation (default: False)
 
         Returns:
@@ -820,7 +826,8 @@ class ReflexioClient:
             playbook_status_filter (Optional[PlaybookStatus]): Filter by playbook status (PENDING, APPROVED, REJECTED)
             tags (Optional[list[str]]): Match playbooks having any of these tags.
             top_k (Optional[int]): Maximum number of results to return (default: 10)
-            threshold (Optional[float]): Similarity threshold for vector search (default: 0.4)
+            threshold (Optional[float]): Similarity threshold for vector search.
+                When omitted, the embedding model's default is used.
             enable_reformulation (Optional[bool]): Enable LLM query reformulation (default: False)
 
         Returns:
@@ -2524,7 +2531,8 @@ class ReflexioClient:
             request (Optional[UnifiedSearchRequest]): The search request object (alternative to kwargs)
             query (str): Search query text
             top_k (Optional[int]): Maximum results per entity type (default: 5)
-            threshold (Optional[float]): Similarity threshold for vector search (default: 0.45)
+            threshold (Optional[float]): Similarity threshold for vector search.
+                When omitted, the embedding model's default is used.
             agent_version (Optional[str]): Filter by agent version (agent_playbooks, user_playbooks)
             playbook_name (Optional[str]): Filter by playbook name (agent_playbooks, user_playbooks)
             user_id (Optional[str]): Filter by user ID (profiles, user_playbooks)

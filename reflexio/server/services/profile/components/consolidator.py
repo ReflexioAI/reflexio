@@ -46,6 +46,12 @@ _format_profile_timestamp = format_dedup_timestamp
 # are never persisted as facts.
 _DELETION_MARKER_PREFIX = "Requested removal of"
 
+# Deduplication search is bounded candidate generation for a second-stage LLM,
+# not user-facing retrieval. Keep its threshold independent from the active
+# embedding model's retrieval default so Nomic's stricter default does not hide
+# plausible duplicates before the consolidator can inspect them.
+_DEDUP_CANDIDATE_SEARCH_THRESHOLD = 0.4
+
 
 def _strip_deletion_markers(
     profiles: list[UserProfile],
@@ -466,7 +472,7 @@ class ProfileConsolidator(BaseDeduplicator):
                         query=query_text,
                         user_id=user_id,
                         top_k=10,
-                        threshold=0.4,
+                        threshold=_DEDUP_CANDIDATE_SEARCH_THRESHOLD,
                     ),
                     status_filter=search_status_filter,
                     query_embedding=embeddings[i],

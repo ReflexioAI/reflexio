@@ -4,7 +4,11 @@ from reflexio.models.api_schema.service_schemas import (
     AgentSuccessEvaluationResult,
     UserProfile,
 )
-from reflexio.server.services.embedding_text import embedding_input, embedding_text
+from reflexio.server.services.embedding_text import (
+    embedding_input,
+    embedding_text,
+    resolve_retrieval_threshold,
+)
 
 
 def test_user_profile_embedding_text_omits_empty_custom_features() -> None:
@@ -62,11 +66,53 @@ def test_agent_success_embedding_text_omits_missing_failure_fields() -> None:
     )
 
 
-def test_embedding_input_applies_asymmetric_prefixes() -> None:
-    assert embedding_input("hello") == "search_document: hello"
-    assert embedding_input("hello", purpose="query") == "search_query: hello"
+def test_embedding_input_applies_nomic_asymmetric_prefixes() -> None:
+    model = "local/nomic-embed-text-v1.5"
+    assert embedding_input("hello", model_name=model) == "search_document: hello"
+    assert (
+        embedding_input("hello", model_name=model, purpose="query")
+        == "search_query: hello"
+    )
+
+
+@pytest.mark.parametrize(
+    "model_name",
+    ["local/minilm-l6-v2", "text-embedding-3-small", "unknown-model"],
+)
+def test_embedding_input_leaves_non_nomic_models_unprefixed(model_name: str) -> None:
+    assert embedding_input("hello", model_name=model_name) == "hello"
+    assert embedding_input("hello", model_name=model_name, purpose="query") == "hello"
+
+
+@pytest.mark.parametrize(
+    ("model_name", "expected"),
+    [
+        ("local/minilm-l6-v2", 0.30),
+        ("local/nomic-embed-text-v1.5", 0.70),
+        ("local/nomic-embed-v1.5", 0.70),
+        ("unknown-model", 0.45),
+    ],
+)
+def test_retrieval_threshold_defaults_by_model(
+    model_name: str, expected: float
+) -> None:
+    assert resolve_retrieval_threshold(None, model_name=model_name) == expected
+
+
+def test_explicit_retrieval_threshold_wins_including_zero() -> None:
+    assert (
+        resolve_retrieval_threshold(
+            0.0,
+            model_name="local/nomic-embed-text-v1.5",
+        )
+        == 0.0
+    )
 
 
 def test_embedding_input_rejects_unknown_purpose() -> None:
     with pytest.raises(ValueError, match="Unknown embedding purpose"):
-        embedding_input("hello", purpose="documnt")  # type: ignore[arg-type]
+        embedding_input(
+            "hello",
+            model_name="local/minilm-l6-v2",
+            purpose="documnt",  # type: ignore[arg-type]
+        )

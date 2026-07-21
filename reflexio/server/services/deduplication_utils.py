@@ -55,7 +55,7 @@ def resolve_dedup_query_embeddings(
             logger.info(
                 "%s dedup query embeddings: source=storage model=%s",
                 entity_label,
-                getattr(storage, "embedding_model_name", "unknown"),
+                storage.embedding_model_name,
             )
             embeddings = [
                 cast(
@@ -75,7 +75,11 @@ def resolve_dedup_query_embeddings(
             embeddings = list(
                 client.get_embeddings(
                     [
-                        embedding_input(query_text, purpose="query")
+                        embedding_input(
+                            query_text,
+                            model_name=embedding_model_name,
+                            purpose="query",
+                        )
                         for query_text in query_texts
                     ],
                     model=embedding_model_name,

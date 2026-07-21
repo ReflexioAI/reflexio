@@ -369,11 +369,14 @@ class APIKeyConfig(BaseModel):
 class DeduplicationConfig(BaseModel):
     """Configuration for playbook deduplication search parameters.
 
-    Controls the hybrid search behavior when looking for existing playbooks
-    to deduplicate against.
+    Controls bounded candidate generation when looking for existing playbooks
+    to deduplicate against. The candidate threshold is intentionally independent
+    from the embedding model's user-facing retrieval default because an LLM
+    performs the final duplicate decision.
 
     Args:
-        search_threshold: Minimum similarity score for search results (0.0-1.0).
+        search_threshold: Minimum similarity score for deduplication candidates
+            (0.0-1.0), independent from user-facing retrieval defaults.
         search_top_k: Maximum number of existing playbooks to retrieve per new playbook.
         max_unified_content_chars: Soft cap on a unified playbook's content length.
     """
@@ -382,7 +385,11 @@ class DeduplicationConfig(BaseModel):
         default=0.4,
         ge=0.0,
         le=1.0,
-        description="Minimum similarity score for deduplication search results.",
+        description=(
+            "Minimum similarity score for deduplication candidates. This is a "
+            "dedup-specific override, independent from the embedding model's "
+            "user-facing retrieval default."
+        ),
     )
     search_top_k: int = Field(
         default=5,

@@ -1375,6 +1375,10 @@ class TestRetrieveExistingProfilesStatusFilter:
         assert mock_request_context.storage.search_user_profile.call_count == 1
         call_kwargs = mock_request_context.storage.search_user_profile.call_args.kwargs
         assert call_kwargs["status_filter"] == [None]
+        search_request = (
+            mock_request_context.storage.search_user_profile.call_args.args[0]
+        )
+        assert search_request.threshold == 0.4
 
     def test_rerun_mode_searches_pending_profiles_only(
         self, mock_request_context, mock_llm_client, mock_site_var_manager
@@ -1427,7 +1431,7 @@ class TestRetrieveExistingProfilesStatusFilter:
         )
 
         mock_llm_client.get_embeddings.assert_called_once_with(
-            ["search_query: User likes dark mode"],
+            ["User likes dark mode"],
             model="local/test-embedding-model",
             dimensions=768,
         )

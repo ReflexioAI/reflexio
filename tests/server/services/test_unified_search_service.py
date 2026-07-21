@@ -34,6 +34,7 @@ from reflexio.server.services.unified_search_service import (
 def _mock_storage(embedding=None):
     """Create a mock storage with configurable embedding."""
     storage = MagicMock()
+    storage.embedding_model_name = "local/minilm-l6-v2"
     storage._get_embedding.return_value = embedding or [0.1] * 1536
     # Storage search methods return empty lists by default
     storage.search_user_profile.return_value = []
@@ -44,6 +45,19 @@ def _mock_storage(embedding=None):
 
 class TestRunUnifiedSearch(unittest.TestCase):
     """Tests for the top-level run_unified_search function."""
+
+    def test_storage_must_declare_embedding_model_name(self):
+        storage = _mock_storage()
+        del storage.embedding_model_name
+
+        with self.assertRaisesRegex(AttributeError, "embedding_model_name"):
+            run_unified_search(
+                request=UnifiedSearchRequest(query="test query"),
+                org_id="test-org",
+                storage=storage,
+                llm_client=MagicMock(),
+                prompt_manager=MagicMock(),
+            )
 
     def test_empty_query_rejected_by_validation(self):
         """Empty query is now rejected at the Pydantic validation level."""
@@ -307,6 +321,7 @@ class TestRunUnifiedSearch(unittest.TestCase):
         class _PgLikeStorage:
             supports_embedding = False
             supports_unified_hybrid_search = False
+            embedding_model_name = "local/minilm-l6-v2"
 
             def unified_hybrid_search_scored(self, **_kwargs):
                 return ([], [], [])

@@ -21,6 +21,7 @@ def _agent_playbook(playbook_id: int, content: str) -> AgentPlaybook:
 class _CombinedStorage:
     """Fake storage advertising the combined Phase B capability."""
 
+    embedding_model_name = "local/minilm-l6-v2"
     supports_embedding = True
     supports_unified_hybrid_search = True
 
@@ -55,6 +56,7 @@ class _CombinedStorage:
 
 
 class _MissingCombinedMethodStorage:
+    embedding_model_name = "local/minilm-l6-v2"
     supports_embedding = True
     supports_unified_hybrid_search = True
 

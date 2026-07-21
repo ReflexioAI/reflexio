@@ -35,6 +35,7 @@ class _FakeStorage:
     # run_unified_search reads storage.supports_embedding before _run_phase_a runs,
     # so the stub must expose it even though the phases are monkeypatched.
     supports_embedding = False
+    embedding_model_name = "local/minilm-l6-v2"
 
 
 def test_floor_applied_per_arm(monkeypatch):

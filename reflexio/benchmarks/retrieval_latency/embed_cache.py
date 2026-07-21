@@ -35,6 +35,7 @@ from typing import Any, Literal
 
 from reflexio.models.config_schema import EMBEDDING_DIMENSIONS
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
+from reflexio.server.services.embedding_text import embedding_input
 
 logger = logging.getLogger(__name__)
 
@@ -45,10 +46,6 @@ DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
 DEFAULT_EMBEDDING_DIMS = EMBEDDING_DIMENSIONS
 
 _CACHE_DIR = Path.home() / ".cache" / "reflexio-benchmarks"
-_DOCUMENT_PREFIX = "search_document: "
-_QUERY_PREFIX = "search_query: "
-
-
 EmbeddingPurpose = Literal["document", "query"]
 
 EmbeddingFn = Callable[[str, EmbeddingPurpose], list[float]]
@@ -132,20 +129,24 @@ class QueryEmbedCache:
         subsequent runs skip the network entirely.
 
         Args:
-            queries (Iterable[str]): Raw query strings (no prefix). The
-                ``search_query:`` prefix is applied internally.
+            queries (Iterable[str]): Raw query strings. Model-specific input
+                formatting is applied internally.
 
         Raises:
             RuntimeError: If the embedder cannot be reached and the cache is
                 not already populated for every query.
         """
         missing: list[str] = []
-        missing_prefixed: list[str] = []
+        missing_inputs: list[str] = []
         for q in queries:
-            prefixed = _QUERY_PREFIX + q
-            if _hash_key(prefixed) not in self._data:
+            formatted = embedding_input(
+                q,
+                model_name=self.model,
+                purpose="query",
+            )
+            if _hash_key(formatted) not in self._data:
                 missing.append(q)
-                missing_prefixed.append(prefixed)
+                missing_inputs.append(formatted)
         if not missing:
             return
 
@@ -156,9 +157,7 @@ class QueryEmbedCache:
         )
         client = LiteLLMClient(LiteLLMConfig(model=self.model))
         try:
-            vectors = client.get_embeddings(
-                missing_prefixed, self.model, self.dimensions
-            )
+            vectors = client.get_embeddings(missing_inputs, self.model, self.dimensions)
         except Exception as err:  # noqa: BLE001
             raise RuntimeError(
                 f"Failed to populate query embed cache for model {self.model}: "
@@ -166,13 +165,13 @@ class QueryEmbedCache:
                 "and re-run."
             ) from err
 
-        for prefixed, vec in zip(missing_prefixed, vectors, strict=True):
+        for formatted, vec in zip(missing_inputs, vectors, strict=True):
             if len(vec) != self.dimensions:
                 raise RuntimeError(
                     f"Embed cache got vector of length {len(vec)}, expected "
                     f"{self.dimensions} for model {self.model}"
                 )
-            self._data[_hash_key(prefixed)] = list(vec)
+            self._data[_hash_key(formatted)] = list(vec)
 
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._path.write_text(json.dumps(self._data))
@@ -191,8 +190,12 @@ class QueryEmbedCache:
         Raises:
             KeyError: If the text is not in the cache.
         """
-        prefix = _DOCUMENT_PREFIX if purpose == "document" else _QUERY_PREFIX
-        key = _hash_key(prefix + text)
+        formatted = embedding_input(
+            text,
+            model_name=self.model,
+            purpose=purpose,
+        )
+        key = _hash_key(formatted)
         try:
             return self._data[key]
         except KeyError as err:

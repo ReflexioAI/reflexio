@@ -42,6 +42,7 @@ from reflexio.models.config_schema import (
 )
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.prompt.prompt_manager import PromptManager
+from reflexio.server.services.embedding_text import resolve_retrieval_threshold
 from reflexio.server.services.pre_retrieval import QueryReformulator
 from reflexio.server.services.retrieval.recency import (
     RecencyConfig,
@@ -144,7 +145,10 @@ def run_unified_search(
         return UnifiedSearchResponse(success=True, msg="No query provided")
 
     top_k = request.top_k if request.top_k is not None else 5
-    threshold = request.threshold if request.threshold is not None else 0.45
+    threshold = resolve_retrieval_threshold(
+        request.threshold,
+        model_name=storage.embedding_model_name,
+    )
 
     floor_cfg = retrieval_floor or RetrievalFloorConfig()
     floor_on = floor_cfg.enabled
@@ -856,7 +860,7 @@ def _get_cached_query_embedding(
     query: str,
 ) -> list[float]:
     """Return a cached query embedding when available."""
-    model_name = str(getattr(storage, "embedding_model_name", "unknown"))
+    model_name = storage.embedding_model_name
     dimensions = int(getattr(storage, "embedding_dimensions", 0) or 0)
     normalized_query = " ".join(query.casefold().split())
     key = (model_name, dimensions, normalized_query, "query")
