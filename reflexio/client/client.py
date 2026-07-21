@@ -2095,11 +2095,7 @@ class ReflexioClient:
             # The API stores operation timestamps at second precision. Accept a
             # one-second skew so a just-submitted operation that starts near the
             # client timestamp boundary is not treated as stale forever.
-            if (
-                op
-                and min_started_at is not None
-                and op.started_at < min_started_at - 1
-            ):
+            if op and min_started_at is not None and op.started_at < min_started_at - 1:
                 op = None
             if op and op.status in (
                 OperationStatus.COMPLETED,
