@@ -589,3 +589,18 @@ class TestMinimaxOnlyEnvRegression:
         monkeypatch.setattr(lep.importlib.util, "find_spec", lambda _name: object())
         result = resolve_model_name(ModelRole.EMBEDDING)
         assert result == "local/minilm-l6-v2"
+
+
+# ---------------------------------------------------------------------------
+# zai provider defaults (glm-5.2 is the live-verified flagship, #792)
+# ---------------------------------------------------------------------------
+
+
+def test_zai_defaults_to_glm_5_2():
+    from reflexio.server.llm.model_defaults import _PROVIDER_DEFAULTS
+
+    z = _PROVIDER_DEFAULTS["zai"]
+    assert z.generation == "zai/glm-5.2"
+    assert z.evaluation == "zai/glm-5.2"
+    assert z.should_run == "zai/glm-5.2"
+    assert z.pre_retrieval == "zai/glm-5.2"

@@ -258,10 +258,10 @@ _PROVIDER_DEFAULTS: dict[str, ProviderDefaults] = {
         embedding=None,
     ),
     "zai": ProviderDefaults(
-        generation="zai/glm-5.1",
-        evaluation="zai/glm-5.1",
-        should_run="zai/glm-5.1",
-        pre_retrieval="zai/glm-5.1",
+        generation="zai/glm-5.2",
+        evaluation="zai/glm-5.2",
+        should_run="zai/glm-5.2",
+        pre_retrieval="zai/glm-5.2",
         embedding=None,
     ),
 }
