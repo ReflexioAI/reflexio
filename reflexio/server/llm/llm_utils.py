@@ -1,4 +1,5 @@
 import inspect
+import json
 import logging
 import os
 import sys
@@ -177,6 +178,26 @@ def assert_provider_safe_schema(schema: dict[str, Any], *, name: str = "") -> No
     if "pytest" in sys.modules:
         raise ValueError(msg)
     logger.warning(msg)
+
+
+def prompt_schema_instruction(schema: dict[str, Any], *, tools_available: bool) -> str:
+    """Render a provider-neutral JSON-schema instruction for prompt fallback.
+
+    Some OpenAI-compatible providers accept JSON mode but not the richer
+    ``json_schema`` response format. Keep tool turns unconstrained, then require
+    the terminal response to match the same schema that Reflexio validates
+    locally.
+    """
+    action = (
+        "When you are not calling a tool and are ready to finish, return ONLY a "
+        "JSON object"
+        if tools_available
+        else "Return ONLY a JSON object"
+    )
+    return (
+        f"{action} that matches this JSON Schema. Do not include markdown fences "
+        f"or any text outside the JSON object.\n\n{json.dumps(schema, indent=2)}"
+    )
 
 
 def strict_response_format_for_model(

@@ -844,6 +844,19 @@ class TestSupportsToolCallingOverrides:
         )
         assert tools_mod.supports_tool_calling("minimax/abab6.5-chat") is False
 
+    def test_litellm_false_glm_5_2_overrides_to_true(self, monkeypatch):
+        """GLM-5.2 completed three live dependent multi-turn tool sequences."""
+        from reflexio.server.llm import tools as tools_mod
+
+        monkeypatch.setattr(
+            "litellm.supports_function_calling",
+            lambda model: False,  # noqa: ARG005
+        )
+
+        assert tools_mod.supports_tool_calling("zai/glm-5.2") is True
+        assert tools_mod.supports_tool_calling("zai/glm-5.2-preview") is False
+        assert tools_mod.supports_tool_calling("zai/glm-5.1") is False
+
     def test_litellm_raises_returns_true(self, monkeypatch):
         """Existing behavior: any litellm exception → optimistically assume True."""
         from reflexio.server.llm import tools as tools_mod

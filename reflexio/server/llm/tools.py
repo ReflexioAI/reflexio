@@ -193,12 +193,23 @@ class ToolLoopResult(BaseModel):
 
 # Models we know support function calling per vendor docs but that litellm's
 # model_cost registry hasn't catalogued yet. When litellm returns False
-# (without raising) for a model whose name starts with one of these prefixes,
+# (without raising) for one of the exact models or model-family prefixes below,
 # treat that as a registry gap rather than an actual capability gap.
 #
 # Each entry must be justified by (a) the vendor docs and (b) a confirmed
 # round-trip tool call against the live API. Update this list when litellm
 # upstreams the registration so the override becomes redundant.
+_TOOL_CALLING_EXACT_OVERRIDES: frozenset[str] = frozenset(
+    {
+        # https://docs.z.ai/guides/tools/function-calling documents the
+        # OpenAI-compatible tools protocol. Verified against the coding endpoint
+        # with three consecutive dependent sequences: get_weather tool call, tool
+        # result, convert_temperature tool call, tool result, structured terminus.
+        # LiteLLM 1.82.2 still reports supports_function_calling=False.
+        "zai/glm-5.2",
+    }
+)
+
 _TOOL_CALLING_OVERRIDES: tuple[str, ...] = (
     # https://platform.minimax.io/docs/guides/text-m2-function-call says
     # MiniMax-M2.7 supports tool use + interleaved thinking via OpenAI-compatible
@@ -228,22 +239,24 @@ def supports_tool_calling(model: str) -> bool:
     Wrapped so tests can monkeypatch the probe without touching litellm.
     On any internal error we optimistically assume support — cheaper to
     attempt a real call than to wrongly fall back. When litellm returns
-    False (without raising) for a model in :data:`_TOOL_CALLING_OVERRIDES`,
-    we override to True — see the constant for the rationale.
+    False (without raising) for a model in the exact or prefix overrides, we
+    override to True — see the constants for the rationale.
 
     Args:
         model (str): Fully-qualified model name.
 
     Returns:
         bool: True if litellm advertises function-calling for ``model``,
-            or the model name matches a known-good override prefix.
+            or the model name matches a known-good override.
     """
     try:
         import litellm
 
         if bool(litellm.supports_function_calling(model=model)):
             return True
-        if any(model.startswith(prefix) for prefix in _TOOL_CALLING_OVERRIDES):
+        if model in _TOOL_CALLING_EXACT_OVERRIDES or any(
+            model.startswith(prefix) for prefix in _TOOL_CALLING_OVERRIDES
+        ):
             logger.debug(
                 "litellm.supports_function_calling returned False for %s; "
                 "applying override (see _TOOL_CALLING_OVERRIDES)",

@@ -34,6 +34,7 @@ from reflexio.server.llm._litellm_types import StructuredOutputParseError
 from reflexio.server.llm.llm_utils import (
     assert_provider_safe_schema,
     is_pydantic_model,
+    prompt_schema_instruction,
     strict_response_format_for_model,
 )
 
@@ -91,6 +92,7 @@ class StructuredOutputMixin:
     # (Sentry PYTHON-FASTAPI-9J). Listing the provider here forces our own
     # normalized strict schema (``oneOf`` folded into ``anyOf``) to be sent.
     _JSON_SCHEMA_PROVIDER_ALLOWLIST: frozenset[str] = frozenset({"minimax"})
+    _PROMPT_SCHEMA_PROVIDER_ALLOWLIST: frozenset[str] = frozenset({"zai"})
 
     # Base-owned attribute read for the parse-failure error message (init'd in
     # the facade ``__init__``). Annotation-only; NEVER assign here.
@@ -126,6 +128,27 @@ class StructuredOutputMixin:
             return True
         return cls._provider_for_model(model) in cls._JSON_SCHEMA_PROVIDER_ALLOWLIST
 
+    @classmethod
+    def _structured_output_strategy(
+        cls, *, model: str, strict_response_format: bool
+    ) -> str:
+        """Return the provider transport used for a Pydantic response schema."""
+        if not strict_response_format:
+            return "pydantic_passthrough"
+        if cls._provider_for_model(model) in cls._PROMPT_SCHEMA_PROVIDER_ALLOWLIST:
+            return "prompt_json_object"
+        if cls._accepts_json_schema_response_format(model):
+            return "native_json_schema"
+        return "pydantic_passthrough"
+
+    def _prompt_schema_directive(
+        self, *, response_format: type[BaseModel], tools_available: bool
+    ) -> str:
+        """Build and guard the schema instruction used by prompt-only providers."""
+        schema = response_format.model_json_schema()
+        assert_provider_safe_schema(schema, name=response_format.__name__)
+        return prompt_schema_instruction(schema, tools_available=tools_available)
+
     def _provider_response_format(
         self,
         *,
@@ -155,13 +178,18 @@ class StructuredOutputMixin:
         schema = response_format.model_json_schema()
         assert_provider_safe_schema(schema, name=response_format.__name__)
 
-        if strict_response_format and self._accepts_json_schema_response_format(model):
+        if (
+            self._structured_output_strategy(
+                model=model, strict_response_format=strict_response_format
+            )
+            == "native_json_schema"
+        ):
             return strict_response_format_for_model(response_format, schema=schema)
         return response_format
 
     def _maybe_parse_structured_output(
         self,
-        content: str,
+        content: Any,
         response_format: Any,
         parse_structured_output: bool,
     ) -> str | BaseModel:
@@ -180,7 +208,10 @@ class StructuredOutputMixin:
             return content
 
         if content is None:
-            return content
+            raise StructuredOutputParseError(
+                "Structured output response content was empty",
+                raw_content=None,
+            )
 
         # If content is already a Pydantic model (some providers return parsed)
         if isinstance(content, BaseModel):
