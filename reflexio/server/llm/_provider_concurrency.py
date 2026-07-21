@@ -15,6 +15,7 @@ from contextlib import contextmanager
 
 import litellm
 
+from reflexio.server.env_utils import env_str
 from reflexio.server.llm.llm_utils import positive_int_env
 
 logger = logging.getLogger(__name__)
@@ -27,6 +28,48 @@ REFLEXIO_LLM_PROVIDER_MAX_CONCURRENCY = positive_int_env(
 # to never park a request thread near the ~hard-timeout ceiling. Module constant
 # (not an env var) to keep C3 to a single knob.
 _ACQUIRE_TIMEOUT_SECONDS = 30.0
+
+
+class ProviderCapSaturatedError(Exception):
+    """Raised when a fail-closed provider's concurrency cap is saturated.
+
+    Unlike the fail-open default, providers in ``REFLEXIO_LLM_FAIL_CLOSED_PROVIDERS``
+    (e.g. a fixed-quota Z.ai coding-plan fallback) raise this instead of
+    proceeding without a permit, so a mass-fallback event degrades rather than
+    exhausting the subscription. The fallback walker treats it as an
+    advance-worthy rung failure.
+    """
+
+
+def _parse_fail_closed() -> frozenset[str]:
+    raw = env_str("REFLEXIO_LLM_FAIL_CLOSED_PROVIDERS", "")
+    return frozenset(p.strip() for p in raw.split(",") if p.strip())
+
+
+def _parse_per_provider_cap() -> dict[str, int]:
+    # Format: "zai=2,openai=16"
+    raw = env_str("REFLEXIO_LLM_PROVIDER_MAX_CONCURRENCY_OVERRIDES", "")
+    out: dict[str, int] = {}
+    for pair in raw.split(","):
+        if "=" not in pair:
+            continue
+        provider, _, value = pair.partition("=")
+        try:
+            n = int(value.strip())
+        except ValueError:
+            continue
+        if provider.strip() and n > 0:
+            out[provider.strip()] = n
+    return out
+
+
+_fail_closed_providers: frozenset[str] = _parse_fail_closed()
+_per_provider_cap: dict[str, int] = _parse_per_provider_cap()
+
+
+def _max_concurrency_for_provider(provider: str) -> int:
+    return _per_provider_cap.get(provider, REFLEXIO_LLM_PROVIDER_MAX_CONCURRENCY)
+
 
 _semaphores: dict[str, threading.BoundedSemaphore] = {}
 _registry_lock = threading.Lock()
@@ -44,7 +87,7 @@ def _get_semaphore(provider: str) -> threading.BoundedSemaphore:
     with _registry_lock:
         sem = _semaphores.get(provider)
         if sem is None:
-            sem = threading.BoundedSemaphore(REFLEXIO_LLM_PROVIDER_MAX_CONCURRENCY)
+            sem = threading.BoundedSemaphore(_max_concurrency_for_provider(provider))
             _semaphores[provider] = sem
         return sem
 
@@ -59,11 +102,23 @@ def provider_slot(model: str) -> Iterator[None]:
     sem = _get_semaphore(provider)
     acquired = sem.acquire(timeout=_ACQUIRE_TIMEOUT_SECONDS)
     if not acquired:
+        cap = _max_concurrency_for_provider(provider)
+        if provider in _fail_closed_providers:
+            logger.warning(
+                "event=llm_provider_cap_saturated provider=%s cap=%d "
+                "timeout=%.1fs — FAIL-CLOSED (raising to protect quota)",
+                provider,
+                cap,
+                _ACQUIRE_TIMEOUT_SECONDS,
+            )
+            raise ProviderCapSaturatedError(
+                f"provider {provider} concurrency cap {cap} saturated"
+            )
         logger.warning(
             "event=llm_provider_cap_saturated provider=%s cap=%d "
             "timeout=%.1fs — proceeding without permit (fail-open)",
             provider,
-            REFLEXIO_LLM_PROVIDER_MAX_CONCURRENCY,
+            cap,
             _ACQUIRE_TIMEOUT_SECONDS,
         )
         yield
