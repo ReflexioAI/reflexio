@@ -19,6 +19,7 @@ from reflexio.models.api_schema.service_schemas import (
     Status,
 )
 from reflexio.models.config_schema import SearchMode, SearchOptions
+from reflexio.server.services.embedding_text import resolve_retrieval_threshold
 from reflexio.server.services.storage.lifecycle_filters import (
     validate_include_inactive,
 )
@@ -81,6 +82,7 @@ class AgentPlaybookStoreMixin:
     _lock: Any
     conn: sqlite3.Connection
     org_id: str
+    embedding_model_name: str
     _execute: Any
     _fetchone: Any
     _fetchall: Any
@@ -902,6 +904,10 @@ class AgentPlaybookStoreMixin:
         mode = _effective_search_mode(
             request.search_mode, query_embedding, request.query
         )
+        threshold = resolve_retrieval_threshold(
+            request.threshold,
+            model_name=self.embedding_model_name,
+        )
         rrf_k = options.rrf_k if options else 60
         vector_weight = options.vector_weight if options else 1.0
         fts_weight = options.fts_weight if options else 1.0
@@ -955,7 +961,12 @@ class AgentPlaybookStoreMixin:
                       {base_where}
                       ORDER BY ap.created_at DESC"""
             rows = self._fetchall(sql, params)
-            rows = _vector_rank_rows(rows, query_embedding, match_count)
+            rows = _vector_rank_rows(
+                rows,
+                query_embedding,
+                match_count,
+                threshold=threshold,
+            )
             return [_row_to_agent_playbook(r) for r in rows]
 
         if query:
@@ -975,7 +986,12 @@ class AgentPlaybookStoreMixin:
                               ORDER BY ap.created_at DESC
                               LIMIT ?"""
                 vec_candidates = self._fetchall(vec_sql, [*params, vec_limit])
-                vec_rows = _vector_rank_rows(vec_candidates, query_embedding, overfetch)
+                vec_rows = _vector_rank_rows(
+                    vec_candidates,
+                    query_embedding,
+                    overfetch,
+                    threshold=threshold,
+                )
                 rows = _true_rrf_merge(
                     fts_rows,
                     vec_rows,
@@ -995,7 +1011,12 @@ class AgentPlaybookStoreMixin:
                       {base_where}
                       ORDER BY ap.created_at DESC"""
             rows = self._fetchall(sql, params)
-            rows = _vector_rank_rows(rows, query_embedding, match_count)
+            rows = _vector_rank_rows(
+                rows,
+                query_embedding,
+                match_count,
+                threshold=threshold,
+            )
             return [_row_to_agent_playbook(r) for r in rows]
 
         # No query text, no embedding -- recency fallback

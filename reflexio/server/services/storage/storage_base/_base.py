@@ -40,6 +40,12 @@ class BaseStorageCore(ABC):  # noqa: B024
     # Capability flag — backends that implement `_get_embedding` set this to True.
     supports_embedding: ClassVar[bool] = False
 
+    # Concrete backends resolve and assign this during initialization. Unified
+    # search requires the exact model name to select its retrieval policy; a
+    # backend that omits it is incomplete and should fail rather than silently
+    # falling back to another model's threshold.
+    embedding_model_name: str
+
     # Capability flag — backends that can serve every unified-search arm in a
     # single database round trip expose a `unified_hybrid_search` method and
     # set this to True (see reflexio.server.services.unified_search_service).

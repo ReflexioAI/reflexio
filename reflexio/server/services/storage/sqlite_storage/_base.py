@@ -51,6 +51,7 @@ from reflexio.server.llm.model_defaults import (
 from reflexio.server.llm.providers.embedding_service_provider import (
     EmbeddingUnavailableError,
 )
+from reflexio.server.services.embedding_text import embedding_input
 from reflexio.server.services.storage.error import (
     StorageError,
     require_non_empty_session_id,
@@ -182,6 +183,8 @@ def _vector_rank_rows(
     rows: Sequence[Any],
     query_embedding: list[float],
     match_count: int,
+    *,
+    threshold: float,
 ) -> list[Any]:
     """Rank rows by cosine similarity to the query embedding.
 
@@ -189,6 +192,7 @@ def _vector_rank_rows(
         rows: Candidate rows with stored embeddings.
         query_embedding: The query's embedding vector.
         match_count: Number of results to return.
+        threshold: Strict minimum cosine similarity for the vector arm.
 
     Returns:
         Top ``match_count`` rows sorted by cosine similarity descending.
@@ -212,13 +216,18 @@ def _vector_rank_rows(
     # per vector search call (~200 bytes).
     if scored:
         top = [round(s, 3) for _, s in scored[:10]]
+        passing = [(row, score) for row, score in scored if score > threshold]
         logger.info(
-            "vector_rank: candidates=%d match_count=%d top_scores=%s",
+            "vector_rank: candidates=%d passing=%d threshold=%.3f "
+            "match_count=%d top_scores=%s",
             len(scored),
+            len(passing),
+            threshold,
             match_count,
             top,
         )
-    return [row for row, _ in scored[:match_count]]
+        return [row for row, _ in passing[:match_count]]
+    return []
 
 
 def _true_rrf_merge(
@@ -1673,21 +1682,25 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
     def _get_embedding(
         self, text: str, purpose: Literal["document", "query"] = "document"
     ) -> list[float]:
-        """Generate an embedding with a purpose-specific prefix.
+        """Generate an embedding with model-specific input formatting.
 
         Args:
             text: The text to embed.
             purpose: Either ``"document"`` (stored embeddings) or ``"query"``
-                (search-time embeddings).  The prefix improves asymmetric
-                retrieval quality for models that support it.
+                (search-time embeddings).
 
         Returns:
             The embedding vector as a list of floats.
         """
-        prefix = "search_document: " if purpose == "document" else "search_query: "
         try:
             return self.llm_client.get_embedding(
-                prefix + text, self.embedding_model_name, self.embedding_dimensions
+                embedding_input(
+                    text,
+                    model_name=self.embedding_model_name,
+                    purpose=purpose,
+                ),
+                self.embedding_model_name,
+                self.embedding_dimensions,
             )
         except EmbeddingUnavailableError as exc:
             logger.warning(

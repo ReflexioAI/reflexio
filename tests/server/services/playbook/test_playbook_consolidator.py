@@ -282,7 +282,7 @@ class TestRetrieveExistingPlaybooks:
         mock_consolidator._retrieve_existing_playbooks([new_fb])
 
         mock_consolidator.client.get_embeddings.assert_called_once_with(
-            ["search_query: user asks about billing"],
+            ["user asks about billing"],
             model="local/test-embedding-model",
             dimensions=768,
         )

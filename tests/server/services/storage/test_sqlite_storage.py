@@ -17,7 +17,7 @@ from reflexio.models.api_schema.service_schemas import (
     UserPlaybook,
     UserProfile,
 )
-from reflexio.models.config_schema import SearchMode, SearchOptions
+from reflexio.models.config_schema import LLMConfig, SearchMode, SearchOptions
 from reflexio.server.llm.providers.embedding_service_provider import (
     EmbeddingUnavailableError,
 )
@@ -407,7 +407,12 @@ class TestVectorRankRowsLogging:
             "INFO",
             logger="reflexio.server.services.storage.sqlite_storage._base",
         ):
-            _vector_rank_rows(rows, [1.0, 0.0, 0.0], match_count=2)
+            _vector_rank_rows(
+                rows,
+                [1.0, 0.0, 0.0],
+                match_count=2,
+                threshold=0.0,
+            )
         msgs = [r.getMessage() for r in caplog.records]
         assert any("vector_rank:" in m for m in msgs)
         # The log line must include candidate count and the ranked scores.
@@ -422,8 +427,26 @@ class TestVectorRankRowsLogging:
             "INFO",
             logger="reflexio.server.services.storage.sqlite_storage._base",
         ):
-            _vector_rank_rows([], [1.0, 0.0, 0.0], match_count=5)
+            _vector_rank_rows(
+                [],
+                [1.0, 0.0, 0.0],
+                match_count=5,
+                threshold=0.0,
+            )
         assert not any("vector_rank:" in r.getMessage() for r in caplog.records)
+
+    def test_strictly_filters_scores_at_or_below_threshold(self) -> None:
+        above = self._row([1.0, 0.0])
+        equal = self._row([0.0, 1.0])
+
+        results = _vector_rank_rows(
+            [equal, above],
+            [1.0, 0.0],
+            match_count=2,
+            threshold=0.0,
+        )
+
+        assert results == [above]
 
     def test_top_scores_truncated_to_10(self, caplog) -> None:
         """Long candidate lists must not flood the log."""
@@ -432,7 +455,12 @@ class TestVectorRankRowsLogging:
             "INFO",
             logger="reflexio.server.services.storage.sqlite_storage._base",
         ):
-            _vector_rank_rows(rows, [1.0, 0.0] + [0.0] * 510, match_count=3)
+            _vector_rank_rows(
+                rows,
+                [1.0, 0.0] + [0.0] * 510,
+                match_count=3,
+                threshold=0.0,
+            )
         line = next(
             r.getMessage() for r in caplog.records if "vector_rank:" in r.getMessage()
         )
@@ -974,8 +1002,8 @@ def test_hybrid_surfaces_semantic_only_user_playbook(storage):
 # ---------------------------------------------------------------------------
 
 
-def test_embedding_prefix_applied():
-    """_get_embedding should prefix text with 'search_document:' or 'search_query:' based on purpose."""
+def test_embedding_input_formatting_is_model_specific():
+    """MiniLM stays raw while Nomic receives its asymmetric task prefixes."""
     captured_texts = []
 
     def mock_llm_get_embedding(text, model, dimensions):
@@ -992,16 +1020,24 @@ def test_embedding_prefix_applied():
         with patch.object(SQLiteStorage, "_try_load_sqlite_vec", return_value=False):
             s = SQLiteStorage(org_id="0", db_path=f"{temp_dir}/reflexio.db")
 
-        # Document purpose
+        # MiniLM owns no input prefix.
         s._get_embedding("hello world", purpose="document")
-        assert captured_texts[-1] == "search_document: hello world"
-
-        # Query purpose
+        assert captured_texts[-1] == "hello world"
         s._get_embedding("hello world", purpose="query")
-        assert captured_texts[-1] == "search_query: hello world"
+        assert captured_texts[-1] == "hello world"
 
-        # Default purpose is document
-        s._get_embedding("hello world")
+        with patch.object(SQLiteStorage, "_try_load_sqlite_vec", return_value=False):
+            nomic = SQLiteStorage(
+                org_id="0",
+                db_path=f"{temp_dir}/nomic.db",
+                llm_config=LLMConfig(
+                    embedding_model_name="local/nomic-embed-text-v1.5"
+                ),
+            )
+
+        nomic._get_embedding("hello world", purpose="query")
+        assert captured_texts[-1] == "search_query: hello world"
+        nomic._get_embedding("hello world")
         assert captured_texts[-1] == "search_document: hello world"
 
 
