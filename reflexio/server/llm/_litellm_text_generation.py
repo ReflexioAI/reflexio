@@ -48,7 +48,10 @@ from reflexio.server.llm._litellm_types import (
     StructuredOutputRepairError,
     ToolCallingChatResponse,
 )
-from reflexio.server.llm._provider_concurrency import provider_slot
+from reflexio.server.llm._provider_concurrency import (
+    ProviderCapSaturatedError,
+    provider_slot,
+)
 from reflexio.server.llm.image_utils import (
     SUPPORTED_IMAGE_MIME_TYPES,
     ImageEncodingError,
@@ -108,6 +111,14 @@ _MAX_REPAIR_ERRORS = 8
 _MAX_REPAIR_ERROR_CHARS = 4000
 _MAX_REPAIR_ECHO_CHARS = 4000
 
+# Worst-case cumulative wall-clock budget for a full ladder walk. Each rung now
+# owns a per-single-attempt hard timeout, so the walk's worst case is the SUM of
+# the per-rung hard timeouts (a slow rung no longer shares one ladder-wide
+# budget). If that projected sum exceeds the upstream request budget the walk
+# logs a one-line warning so an over-long ladder is visible before it eats a
+# request slot. Advisory only — never fatal.
+_LADDER_WALL_CLOCK_BUDGET_SECONDS = 600.0
+
 StructuredOutputValidator = Callable[[BaseModel], Sequence[str]]
 
 
@@ -129,31 +140,24 @@ def _is_expected_transient_llm_error(exc: BaseException) -> bool:
     return type(exc).__name__ in _TRANSIENT_LLM_ERROR_NAMES
 
 
-def _same_observed_model(primary_model: Any, served_model: Any) -> bool:
-    """Return True when the served model is the primary model modulo provider-prefix drift.
+def _rung_reason(error: Exception | None) -> str:
+    """Classify why the ladder advanced past a rung, for the fallback signal.
 
-    Some providers echo back the bare model name (e.g. ``MiniMax-M3``) even when
-    LiteLLM was called through the provider-prefixed name (``minimax/MiniMax-M3``).
-    Treat those as the same model so fallback observability does not misreport the
-    primary as a fallback. The match is anchored on a ``/`` boundary in either
-    direction, so ``gpt-4`` never matches ``gpt-40``.
+    Distinguishes a broken-but-reachable primary (``parse_exhausted``) from an
+    outage (``transport_error``) or a saturated fail-closed provider cap
+    (``cap_saturated``) so alerting can page differently on each.
 
     Args:
-        primary_model: The originally requested model name (may be ``None``).
-        served_model: The model LiteLLM reports as having served the call (may be ``None``).
+        error: The failure that caused the previous rung to be abandoned.
 
     Returns:
-        bool: True if the names are equal or differ only by a provider prefix.
+        str: ``"parse_exhausted"``, ``"cap_saturated"``, or ``"transport_error"``.
     """
-    if not primary_model or not served_model:
-        return False
-    primary = str(primary_model)
-    served = str(served_model)
-    return (
-        primary == served
-        or primary.endswith(f"/{served}")
-        or served.endswith(f"/{primary}")
-    )
+    if isinstance(error, StructuredOutputParseError | StructuredOutputRepairError):
+        return "parse_exhausted"
+    if isinstance(error, ProviderCapSaturatedError):
+        return "cap_saturated"
+    return "transport_error"
 
 
 class TextGenerationMixin:
@@ -393,25 +397,12 @@ class TextGenerationMixin:
         # An explicit ``model=None`` means "use the config default" — callers
         # like the eval judges forward an optional model straight through, and
         # a literal None would crash on ``.lower()`` during key resolution.
-        actual_model = kwargs.pop("model", None) or self.config.model
-
-        # model_role takes priority over the default model but falls through
-        # to the custom_endpoint override below (highest priority).
-        if model_role is not None:
-            actual_model = resolve_model_name(
-                role=model_role,
-                site_var_value=None,
-                config_override=None,
-                api_key_config=self.config.api_key_config,
-            )
-
-        ce = (
-            self.config.api_key_config.custom_endpoint
-            if self.config.api_key_config
-            else None
+        # ``_resolve_primary_model`` applies the same model_role /
+        # custom_endpoint precedence the fallback ladder resolution uses, so the
+        # two never drift.
+        actual_model = self._resolve_primary_model(
+            kwargs.pop("model", None), model_role
         )
-        if ce and ce.api_key and ce.api_base:
-            actual_model = ce.model
 
         params: dict[str, Any] = {
             "model": actual_model,
@@ -432,13 +423,6 @@ class TextGenerationMixin:
             for m in fallback_models_raw
             if m != actual_model and not m.startswith("local/")
         ]
-
-        self._validate_structured_fallback_strategies(
-            response_format=response_format,
-            strict_response_format=strict_response_format,
-            primary_model=actual_model,
-            fallback_models=fallback_models,
-        )
 
         temperature = kwargs.pop("temperature", self.config.temperature)
         if self._is_temperature_restricted_model(actual_model):
@@ -549,36 +533,68 @@ class TextGenerationMixin:
             final_messages.insert(0, {"role": "system", "content": instruction})
         return final_messages
 
-    def _validate_structured_fallback_strategies(
-        self,
-        *,
-        response_format: Any,
-        strict_response_format: bool,
-        primary_model: str,
-        fallback_models: list[str],
-    ) -> None:
-        """Reject fallback ladders that cannot safely reuse the primary request."""
-        if not response_format or not is_pydantic_model(response_format):
-            return
-        primary_strategy = self._structured_output_strategy(
-            model=primary_model,
-            strict_response_format=strict_response_format,
+    def _resolve_primary_model(
+        self, model: str | None, model_role: ModelRole | None
+    ) -> str:
+        """Resolve the primary model name honoring model_role + custom_endpoint.
+
+        Applies the same precedence used by ``_build_completion_params`` so the
+        ladder walker and the per-rung param builder never disagree on which
+        model is the primary: an explicit ``model`` (or the config default),
+        overridden by ``model_role`` resolution, overridden in turn by a
+        configured custom endpoint (the highest-priority hard pin).
+
+        Args:
+            model: Explicit per-call model, or ``None`` for the config default.
+            model_role: Optional role whose resolution overrides ``model``.
+
+        Returns:
+            str: The resolved primary model name.
+        """
+        actual_model = model or self.config.model
+        if model_role is not None:
+            actual_model = resolve_model_name(
+                role=model_role,
+                site_var_value=None,
+                config_override=None,
+                api_key_config=self.config.api_key_config,
+            )
+        ce = (
+            self.config.api_key_config.custom_endpoint
+            if self.config.api_key_config
+            else None
         )
-        incompatible_fallbacks = [
-            model
-            for model in fallback_models
-            if self._structured_output_strategy(
-                model=model,
-                strict_response_format=strict_response_format,
-            )
-            != primary_strategy
-        ]
-        if incompatible_fallbacks:
-            raise ValueError(
-                "Structured-output fallback models must use the same transport "
-                f"strategy as {primary_model!r} ({primary_strategy}); incompatible "
-                f"fallbacks: {incompatible_fallbacks!r}"
-            )
+        if ce and ce.api_key and ce.api_base:
+            actual_model = ce.model
+        return actual_model
+
+    def _resolve_ladder(self, **kwargs: Any) -> list[str]:
+        """Return ``[primary, *fallbacks]`` deduped, self-refs and local/* dropped.
+
+        The reflexio-owned walk consumes this once and then rebuilds transport
+        params per rung; ``local/*`` in-process embedding models have no litellm
+        completion route (Sentry PYTHON-FASTAPI-CV) and self-referential entries
+        would just retry the same broken endpoint, so both are filtered here.
+
+        Args:
+            **kwargs: The original per-call kwargs (``model``, ``model_role``,
+                and optionally ``fallback_models``).
+
+        Returns:
+            list[str]: The ordered, deduped rung list beginning with the primary.
+        """
+        if "fallback_models" in kwargs:
+            fallback_raw = kwargs.get("fallback_models") or []
+        else:
+            fallback_raw = list(self.config.fallback_models)
+        primary = self._resolve_primary_model(
+            kwargs.get("model"), kwargs.get("model_role")
+        )
+        ladder: list[str] = [primary]
+        for m in fallback_raw:
+            if m and m != primary and not m.startswith("local/") and m not in ladder:
+                ladder.append(m)
+        return ladder
 
     def _apply_structured_output_transport(
         self,
@@ -835,48 +851,42 @@ class TextGenerationMixin:
             cost_suffix,
         )
 
-    def _emit_fallback_observability(
-        self, response: Any, params: dict[str, Any]
+    def _emit_fallback_signal(
+        self, primary_model: str, served_model: str, *, reason: str
     ) -> None:
-        """Surface fallback-routing info to logs and Sentry when applicable.
+        """Record that a fallback rung served the request (authoritative, loop-driven).
 
-        LiteLLM rewrites ``response.model`` to the model that actually served
-        the call, so we detect a fallback by comparing it against the model
-        we asked for. The check is best-effort: any exception inside this
-        helper is swallowed so observability never breaks the request.
+        The reflexio-owned walk knows exactly which rung served the call, so this
+        replaces the old response-model-diffing heuristic (which never fired once
+        fallbacks left litellm). Preserves the pre-existing wire format —
+        ``event=llm_fallback_used`` plus the ``llm.fallback_used`` /
+        ``llm.primary_model`` / ``llm.fallback_model`` Sentry tags — so dashboards
+        and alerts keep working; adds ``llm.fallback_reason`` so alerting can page
+        on a broken-but-reachable primary (``parse_exhausted``) differently from an
+        outage (``transport_error`` / ``cap_saturated``).
 
         Args:
-            response: The litellm completion response object.
-            params: The params dict that was passed to ``litellm.completion`` —
-                used to read the originally requested primary model name.
+            primary_model: The originally requested primary model (ladder head).
+            served_model: The fallback rung that actually served the request.
+            reason: Why the ladder advanced past the primary (see ``_rung_reason``).
         """
+        self.logger.info(
+            "event=llm_fallback_used primary_model=%s served_model=%s reason=%s",
+            primary_model,
+            served_model,
+            reason,
+        )
         try:
-            primary_model = params.get("model")
-            hidden = getattr(response, "_hidden_params", {}) or {}
-            served_model = (
-                hidden.get("model_id")
-                or hidden.get("model")
-                or getattr(response, "model", None)
-            )
-
-            if not served_model or _same_observed_model(primary_model, served_model):
-                return
-
-            self.logger.info(
-                "event=llm_fallback_used primary_model=%s served_model=%s",
-                primary_model,
-                served_model,
-            )
-
             # Local import keeps sentry out of module-init paths the tests
             # exercise without a Sentry SDK installed. sentry_sdk is an
             # enterprise-only dependency; OSS callers run without it and the
-            # ImportError is intentionally absorbed by the outer except.
+            # ImportError is intentionally absorbed by the except.
             import sentry_sdk  # type: ignore[import-not-found]
 
             sentry_sdk.set_tag("llm.fallback_used", "true")
             sentry_sdk.set_tag("llm.primary_model", str(primary_model))
             sentry_sdk.set_tag("llm.fallback_model", str(served_model))
+            sentry_sdk.set_tag("llm.fallback_reason", reason)
         except Exception:  # noqa: BLE001 — observability must not break the call
             return
 
@@ -884,17 +894,20 @@ class TextGenerationMixin:
         self, messages: list[dict[str, Any]], **kwargs: Any
     ) -> str | BaseModel | ToolCallingChatResponse:
         """
-        Make a request to the LLM, delegating cross-model fallback to litellm.
+        Make a request to the LLM via a reflexio-owned per-rung fallback walk.
 
-        Fallback is handed to ``litellm.completion`` via the native ``fallbacks``
-        kwarg, but ``num_retries`` is forced to 0: same-model retry of a *hung*
-        primary is what made the fallback unreachable and produced the 490s in
-        Sentry PYTHON-FASTAPI-62 (see the body comment). So the primary is tried
-        once, then each fallback once. The subprocess hard timeout is sized to
-        cover that whole ladder. The one retry we still own at the client level
-        is a single ``StructuredOutputParseError`` retry: LiteLLM cannot detect a
-        post-hoc Pydantic re-validation failure because it sees a successful
-        HTTP response.
+        Fallback is NOT delegated to ``litellm.completion`` — the ``fallbacks``
+        kwarg is never passed. Instead the client walks ``[primary, *fallbacks]``
+        one rung at a time (``_resolve_ladder``), rebuilding transport params per
+        rung so each provider gets its own structured-output strategy, api_base,
+        and a per-single-attempt hard timeout. ``num_retries`` is forced to 0 on
+        every rung: same-model retry of a *hung* primary is what made the fallback
+        unreachable and produced the 490s in Sentry PYTHON-FASTAPI-62. Each rung is
+        entered at most once per logical request; within a rung the primary keeps
+        exactly one same-model parse-retry (plain path) or one same-model
+        corrective repair turn (validator path). A rung reached via the repair
+        path receives the ORIGINAL prompt, never the prior rung's repair
+        conversation.
 
         Args:
             messages: List of messages to send.
@@ -906,59 +919,45 @@ class TextGenerationMixin:
             ToolCallingChatResponse when the request was in tool-calling mode.
 
         Raises:
-            LiteLLMClientError: If the request fails after all retries and
-                fallbacks have been exhausted by litellm.
+            LiteLLMClientError: If every rung of the ladder fails.
+            StructuredOutputRepairError: If the final rung's validator/repair
+                budget is exhausted (typed so callers can keep the latest parse).
         """
         structured_output_validator: StructuredOutputValidator | None = kwargs.pop(
             "structured_output_validator", None
         )
         original_kwargs = dict(kwargs)
 
-        def _prepare_turn(
-            turn_messages: list[dict[str, Any]], turn_kwargs: dict[str, Any]
-        ) -> tuple[dict[str, Any], Any, bool, list[str], float]:
-            (
-                params,
-                response_format,
-                parse_structured_output,
-                _max_retries,
-                fallbacks,
-            ) = self._build_completion_params(turn_messages, **dict(turn_kwargs))
-
-            # Hand the fallback ladder to litellm, but DISABLE same-model retries.
-            # litellm walks [primary, *fallbacks] inside one litellm.completion call,
-            # copying ``timeout`` unchanged into each rung. With num_retries>=1 it
-            # retries a *hung* primary num_retries+1 times before ever reaching a
-            # fallback (root cause of Sentry PYTHON-FASTAPI-62).
-            params["num_retries"] = 0
-            if fallbacks:
-                params["fallbacks"] = fallbacks
-
-            # Size the hard (wall-clock) timeout to cover the WHOLE ladder. litellm
-            # copies one ``timeout`` into every rung, so the subprocess must cover
-            # primary + fallbacks plus one grace buffer before being killed.
-            per_attempt_timeout = self._coerce_timeout_seconds(params)
-            hard_timeout = (
-                1 + len(fallbacks)
-            ) * per_attempt_timeout + self._hard_timeout_grace_seconds()
-            return (
-                params,
-                response_format,
-                parse_structured_output,
-                fallbacks,
-                hard_timeout,
-            )
-
-        params, response_format, parse_structured_output, fallbacks, hard_timeout = (
-            _prepare_turn(messages, original_kwargs)
-        )
         if structured_output_validator is not None and (
-            response_format is None or not parse_structured_output
+            original_kwargs.get("response_format") is None
+            or not original_kwargs.get("parse_structured_output", True)
         ):
             raise ValueError(
                 "structured_output_validator requires response_format and "
                 "parse_structured_output=True"
             )
+
+        def _prepare_turn(
+            turn_messages: list[dict[str, Any]], turn_kwargs: dict[str, Any]
+        ) -> tuple[dict[str, Any], Any, bool, float]:
+            """Build single-rung completion params (never any ``fallbacks``).
+
+            ``num_retries`` is forced to 0 and the hard (wall-clock) timeout is
+            sized to a SINGLE attempt on this rung plus one grace buffer — the
+            walk, not litellm, owns advancing to the next rung.
+            """
+            (
+                params,
+                response_format,
+                parse_structured_output,
+                _max_retries,
+                _fallbacks,
+            ) = self._build_completion_params(turn_messages, **dict(turn_kwargs))
+            params["num_retries"] = 0
+            params.pop("fallbacks", None)  # owned walk: never delegate to litellm
+            per_attempt = self._coerce_timeout_seconds(params)
+            hard_timeout = per_attempt + self._hard_timeout_grace_seconds()
+            return params, response_format, parse_structured_output, hard_timeout
 
         def _is_refusal(response: Any, message: Any) -> bool:
             refusal = getattr(message, "refusal", None)
@@ -976,18 +975,16 @@ class TextGenerationMixin:
             turn_params: dict[str, Any],
             turn_response_format: Any,
             turn_parse_structured_output: bool,
-            turn_fallbacks: list[str],
             turn_hard_timeout: float,
             *,
             detect_refusal: bool,
         ) -> _StructuredAttempt:
             request_start = time.perf_counter()
             self.logger.info(
-                "event=llm_request_start model=%s timeout=%s has_response_format=%s num_retries=0 fallbacks=%s hard_timeout=%.3f",
+                "event=llm_request_start model=%s timeout=%s has_response_format=%s num_retries=0 hard_timeout=%.3f",
                 turn_params.get("model"),
                 turn_params.get("timeout"),
                 turn_response_format is not None,
-                turn_fallbacks,
                 turn_hard_timeout,
             )
             try:
@@ -995,7 +992,6 @@ class TextGenerationMixin:
                     response = self._completion_with_hard_timeout(
                         turn_params, turn_hard_timeout
                     )
-                self._emit_fallback_observability(response, turn_params)
                 message = response.choices[0].message  # type: ignore[reportAttributeAccessIssue]
                 content = message.content
                 finish_reason = response.choices[0].finish_reason  # type: ignore[reportAttributeAccessIssue]
@@ -1072,7 +1068,14 @@ class TextGenerationMixin:
                     finish_reason=finish_reason,
                     model=str(turn_params.get("model")),
                 )
-            except (StructuredOutputParseError, StructuredOutputRepairError):
+            except (
+                StructuredOutputParseError,
+                StructuredOutputRepairError,
+                ProviderCapSaturatedError,
+            ):
+                # Advance-worthy rung failures owned by the walk: parse/repair
+                # exhaustion and a saturated fail-closed provider cap must reach
+                # the walker UNWRAPPED so it can classify the reason and advance.
                 raise
             except Exception as e:
                 log = (
@@ -1189,31 +1192,59 @@ class TextGenerationMixin:
                 validation_errors=tuple(errors),
             )
 
-        def _repair_target_kwargs() -> list[dict[str, Any]]:
-            # One same-model corrective turn, then (when a fallback ladder is
-            # configured) one final escalation turn to the first eligible
-            # fallback model with the rest of the ladder behind it.
-            targets = [dict(original_kwargs)]
-            if fallbacks:
-                escalation_kwargs = dict(original_kwargs)
-                escalation_kwargs["model"] = fallbacks[0]
-                escalation_kwargs["fallback_models"] = fallbacks[1:]
-                targets.append(escalation_kwargs)
-            return targets
-
-        def _attempt_repair(
-            first_error: StructuredOutputParseError | None,
-            first_attempt: _StructuredAttempt | None,
+        def _run_rung_plain(
+            rung_messages: list[dict[str, Any]], rung_kwargs: dict[str, Any]
         ) -> str | BaseModel | ToolCallingChatResponse:
-            schema_name = getattr(response_format, "__name__", "structured output")
-            if first_error is not None:
+            """Serve one rung with no validator: initial call + one same-model parse-retry.
+
+            Raises ``StructuredOutputParseError`` when both attempts return a
+            malformed body (the walk catches it and advances), or
+            ``LiteLLMClientError`` / ``ProviderCapSaturatedError`` on transport
+            failure (likewise advance-worthy).
+            """
+            params, rf, parse_so, hard_timeout = _prepare_turn(
+                rung_messages, rung_kwargs
+            )
+            try:
+                return _call_and_parse(
+                    params, rf, parse_so, hard_timeout, detect_refusal=False
+                ).value
+            except StructuredOutputParseError:
+                self.logger.warning(
+                    "event=llm_parse_retry model=%s — malformed structured output, "
+                    "retrying once on the same model",
+                    params.get("model"),
+                )
+                return _call_and_parse(
+                    params, rf, parse_so, hard_timeout, detect_refusal=False
+                ).value
+
+        def _run_rung_validated(
+            rung_messages: list[dict[str, Any]], rung_kwargs: dict[str, Any]
+        ) -> str | BaseModel | ToolCallingChatResponse:
+            """Serve one rung with the validator: initial call + one same-model repair turn.
+
+            The corrective turn is built from ``rung_messages`` (this rung's
+            ORIGINAL prompt, never a prior rung's repair conversation). Raises
+            ``StructuredOutputRepairError`` when this rung's own repair budget is
+            exhausted (the walk catches it and advances).
+            """
+            params, rf, parse_so, hard_timeout = _prepare_turn(
+                rung_messages, rung_kwargs
+            )
+            schema_name = getattr(rf, "__name__", "structured output")
+            latest_parsed_output: BaseModel | None
+            try:
+                first_attempt = _call_and_parse(
+                    params, rf, parse_so, hard_timeout, detect_refusal=True
+                )
+            except StructuredOutputParseError as exc:
                 failure_kind = "parse"
-                errors: tuple[str, ...] = (str(first_error),)
-                raw_content = first_error.raw_content
-                finish_reason = first_error.finish_reason
+                errors: tuple[str, ...] = (str(exc),)
+                raw_content = exc.raw_content
+                finish_reason = exc.finish_reason
                 latest_parsed_output = None
             else:
-                assert first_attempt is not None  # noqa: S101
                 valid, errors, failure_kind = _validate_attempt(first_attempt)
                 if valid:
                     return first_attempt.value
@@ -1221,78 +1252,63 @@ class TextGenerationMixin:
                 finish_reason = first_attempt.finish_reason
                 latest_parsed_output = first_attempt.parsed_output
 
-            # Each turn echoes the PREVIOUS attempt's output and errors, so
-            # raw_content / finish_reason / errors roll forward per iteration.
-            prior_params = params
-            repair_attempt: _StructuredAttempt | None = None
-            for target_kwargs in _repair_target_kwargs():
-                repair_base = _repair_messages(
-                    messages,
-                    raw_content=raw_content,
-                    finish_reason=finish_reason,
-                    turn_params=prior_params,
-                    schema_name=schema_name,
-                    errors=errors,
-                )
-                (
+            repair_base = _repair_messages(
+                rung_messages,
+                raw_content=raw_content,
+                finish_reason=finish_reason,
+                turn_params=params,
+                schema_name=schema_name,
+                errors=errors,
+            )
+            repair_params, repair_rf, repair_parse, repair_timeout = _prepare_turn(
+                repair_base, rung_kwargs
+            )
+            self.logger.warning(
+                "event=llm_structured_repair_attempted model=%s repair_target_model=%s schema=%s failure_kind=%s",
+                params.get("model"),
+                repair_params.get("model"),
+                schema_name,
+                failure_kind,
+            )
+            try:
+                repair_attempt = _call_and_parse(
                     repair_params,
-                    repair_response_format,
+                    repair_rf,
                     repair_parse,
-                    repair_fallbacks,
                     repair_timeout,
-                ) = _prepare_turn(repair_base, target_kwargs)
-                self.logger.warning(
-                    "event=llm_structured_repair_attempted model=%s repair_target_model=%s schema=%s failure_kind=%s",
-                    params.get("model"),
-                    repair_params.get("model"),
-                    schema_name,
-                    failure_kind,
+                    detect_refusal=True,
                 )
-                try:
-                    repair_attempt = _call_and_parse(
-                        repair_params,
-                        repair_response_format,
-                        repair_parse,
-                        repair_fallbacks,
-                        repair_timeout,
-                        detect_refusal=True,
-                    )
-                except StructuredOutputParseError as exc:
-                    repair_attempt = _StructuredAttempt(
-                        value="",
-                        raw_content=exc.raw_content,
-                        parsed_output=None,
-                        finish_reason=exc.finish_reason,
-                        model=str(repair_params.get("model")),
-                    )
-                    errors = (str(exc),)
-                    failure_kind = "parse"
-                else:
-                    valid, errors, failure_kind = _validate_attempt(repair_attempt)
-                    if valid:
-                        self.logger.info(
-                            "event=llm_structured_repair_succeeded model=%s repair_target_model=%s schema=%s",
-                            params.get("model"),
-                            repair_params.get("model"),
-                            schema_name,
-                        )
-                        return repair_attempt.value
-                raw_content = repair_attempt.raw_content
-                finish_reason = repair_attempt.finish_reason
-                latest_parsed_output = (
-                    repair_attempt.parsed_output or latest_parsed_output
+            except StructuredOutputParseError as exc:
+                repair_attempt = _StructuredAttempt(
+                    value="",
+                    raw_content=exc.raw_content,
+                    parsed_output=None,
+                    finish_reason=exc.finish_reason,
+                    model=str(repair_params.get("model")),
                 )
-                prior_params = repair_params
+                errors = (str(exc),)
+                failure_kind = "parse"
+            else:
+                valid, errors, failure_kind = _validate_attempt(repair_attempt)
+                if valid:
+                    self.logger.info(
+                        "event=llm_structured_repair_succeeded model=%s repair_target_model=%s schema=%s",
+                        params.get("model"),
+                        repair_params.get("model"),
+                        schema_name,
+                    )
+                    return repair_attempt.value
 
-            assert repair_attempt is not None  # noqa: S101 — loop runs at least once
+            # Within-rung roll-forward: keep the most recent output that parsed
+            # (e.g. a semantic-fail before a final parse-fail) on the typed error.
+            repair_attempt.parsed_output = (
+                repair_attempt.parsed_output or latest_parsed_output
+            )
             self.logger.warning(
                 "event=llm_structured_repair_exhausted model=%s schema=%s failure_kind=%s",
                 repair_attempt.model,
                 schema_name,
                 failure_kind,
-            )
-            repair_attempt.parsed_output = (
-                repair_attempt.parsed_output or latest_parsed_output
             )
             raise _repair_error(
                 failure_kind=failure_kind,
@@ -1301,58 +1317,69 @@ class TextGenerationMixin:
                 model=repair_attempt.model,
             )
 
-        if structured_output_validator is None:
-            request_start = time.perf_counter()
-            try:
-                try:
-                    return _call_and_parse(
-                        params,
-                        response_format,
-                        parse_structured_output,
-                        fallbacks,
-                        hard_timeout,
-                        detect_refusal=False,
-                    ).value
-                except StructuredOutputParseError:
-                    self.logger.warning(
-                        "event=llm_parse_retry model=%s — primary returned malformed structured output, retrying once",
-                        params.get("model"),
-                    )
-                    return _call_and_parse(
-                        params,
-                        response_format,
-                        parse_structured_output,
-                        fallbacks,
-                        hard_timeout,
-                        detect_refusal=False,
-                    ).value
-            except LiteLLMClientError:
-                raise
-            except StructuredOutputParseError as exc:
-                # A parse failure happens after litellm saw a 200, so no turn
-                # logged a request-end failure — emit it here or log-based
-                # failure metrics miss this class entirely.
-                self.logger.error(
-                    "event=llm_request_end model=%s elapsed_seconds=%.3f success=False error_type=%s error=%s",
-                    params.get("model"),
-                    time.perf_counter() - request_start,
-                    type(exc).__name__,
-                    exc,
-                )
-                raise LiteLLMClientError(f"API call failed: {exc}") from exc
-
-        try:
-            first_attempt = _call_and_parse(
-                params,
-                response_format,
-                parse_structured_output,
-                fallbacks,
-                hard_timeout,
-                detect_refusal=True,
+        # Reflexio-owned per-rung walk. Each rung is entered at most once; the
+        # walk (never litellm) owns cross-rung advancement.
+        ladder = self._resolve_ladder(**original_kwargs)
+        grace = self._hard_timeout_grace_seconds()
+        projected = sum(
+            self._effective_timeout_for_model(rung) + grace for rung in ladder
+        )
+        if projected > _LADDER_WALL_CLOCK_BUDGET_SECONDS:
+            self.logger.warning(
+                "event=llm_ladder_budget_exceeded projected_seconds=%.1f budget_seconds=%.1f "
+                "ladder=%s — cumulative per-rung hard timeouts may exceed the upstream "
+                "request budget",
+                projected,
+                _LADDER_WALL_CLOCK_BUDGET_SECONDS,
+                ladder,
             )
-        except StructuredOutputParseError as exc:
-            return _attempt_repair(exc, None)
-        return _attempt_repair(None, first_attempt)
+
+        last_error: Exception | None = None
+        for index, rung in enumerate(ladder):
+            rung_kwargs = {**original_kwargs, "model": rung, "fallback_models": []}
+            # ``model_role`` is already resolved into ``ladder``; leaving it in
+            # per-rung kwargs would make every rung re-resolve to the same role
+            # model and defeat the walk.
+            rung_kwargs.pop("model_role", None)
+            is_last = index == len(ladder) - 1
+            try:
+                if structured_output_validator is None:
+                    value = _run_rung_plain(messages, rung_kwargs)
+                else:
+                    value = _run_rung_validated(messages, rung_kwargs)
+            except (
+                LiteLLMClientError,
+                ProviderCapSaturatedError,
+                StructuredOutputParseError,
+            ) as exc:
+                last_error = exc
+                if not is_last:
+                    continue
+                # Final rung failed. Preserve the typed repair error (callers keep
+                # the latest parse) and already-wrapped client errors as-is; wrap a
+                # raw plain-path parse exhaustion (litellm saw a 200, so no turn
+                # logged a request-end failure) and a cap-saturation.
+                if isinstance(exc, StructuredOutputRepairError | LiteLLMClientError):
+                    raise
+                if isinstance(exc, StructuredOutputParseError):
+                    self.logger.error(
+                        "event=llm_request_end model=%s success=False error_type=%s error=%s",
+                        rung,
+                        type(exc).__name__,
+                        exc,
+                    )
+                raise LiteLLMClientError(f"API call failed: {exc}") from exc
+            else:
+                if index > 0:
+                    self._emit_fallback_signal(
+                        ladder[0], rung, reason=_rung_reason(last_error)
+                    )
+                return value
+
+        # A non-empty ladder always returns or raises above; guard the empty case.
+        raise LiteLLMClientError(  # pragma: no cover
+            f"All fallback rungs failed; last: {last_error}"
+        )
 
     def _apply_prompt_caching(
         self, messages: list[dict[str, Any]], model: str
