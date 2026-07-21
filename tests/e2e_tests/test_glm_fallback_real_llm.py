@@ -35,7 +35,7 @@ from __future__ import annotations
 
 import logging
 import os
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from contextlib import contextmanager
 from unittest.mock import patch
 
@@ -181,19 +181,29 @@ def _assert_rows_produced(storage: BaseStorage) -> None:
 
 @skip_low_priority
 def test_glm_as_primary_pipeline(
-    reflexio_instance: Reflexio,
+    sqlite_storage_config: StorageConfigSQLite,
+    test_org_id: str,
     sample_interaction_requests: list[InteractionData],
-    cleanup_after_test: Callable[[], None],
+    monkeypatch: pytest.MonkeyPatch,
 ):
-    """Run #1: GLM-5.2 as the sole generation model drives the full publish pipeline."""
+    """Run #1: GLM-5.2 as the sole generation model drives the full publish pipeline.
+
+    Builds a fresh instance (mirroring run #2) AFTER clearing any stray
+    ``REFLEXIO_LLM_FALLBACK_MODELS`` from the environment, so the client's
+    ``LiteLLMConfig.fallback_models`` (read at construction time) is provably
+    empty. That way a real publish through GLM proves GLM-as-primary is the only
+    path — not a pass smuggled in via an unrelated fallback provider.
+    """
     _require_glm_key()
-    storage = reflexio_instance.request_context.storage
-    assert storage is not None
+
+    # Clear any stray fallback ladder BEFORE the client is built.
+    monkeypatch.delenv("REFLEXIO_LLM_FALLBACK_MODELS", raising=False)
 
     with _force_generation_model(_GLM_MODEL):
-        _publish_priya(
-            reflexio_instance, "glm_primary_user", sample_interaction_requests
-        )
+        instance = _build_instance(sqlite_storage_config, test_org_id)
+        storage = instance.request_context.storage
+        assert storage is not None
+        _publish_priya(instance, "glm_primary_user", sample_interaction_requests)
         # Drain background tagging while the site-var patch is still active so the
         # tagging pass also resolves to GLM (the callback constructs its client
         # lazily and reads the site var at run time).

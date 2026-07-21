@@ -38,6 +38,7 @@ def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "CLAUDE_SMART_CLI_PATH",
         "CLAUDE_SMART_CLI_TIMEOUT",
         "CLAUDE_SMART_USE_LOCAL_EMBEDDING",
+        "REFLEXIO_LLM_FALLBACK_MODELS",
     ]:
         monkeypatch.delenv(key, raising=False)
 
@@ -366,7 +367,7 @@ def test_configured_fallback_without_provider_key_raises(monkeypatch):
     monkeypatch.setenv("MINIMAX_API_KEY", "x")  # primary provider present
     monkeypatch.setenv("REFLEXIO_LLM_FALLBACK_MODELS", "zai/glm-5.2")
     monkeypatch.delenv("ZAI_API_KEY", raising=False)  # fallback key MISSING
-    with pytest.raises(RuntimeError, match="fallback model.*zai"):
+    with pytest.raises(RuntimeError, match=r"fallback model.*zai"):
         md.validate_llm_availability()
 
 
@@ -396,7 +397,7 @@ def test_configured_fallback_provider_case_insensitive(monkeypatch):
     monkeypatch.setenv("MINIMAX_API_KEY", "x")  # primary provider present
     monkeypatch.setenv("REFLEXIO_LLM_FALLBACK_MODELS", "ZAI/glm-5.2")
     monkeypatch.delenv("ZAI_API_KEY", raising=False)  # fallback key MISSING
-    with pytest.raises(RuntimeError, match="fallback model.*ZAI"):
+    with pytest.raises(RuntimeError, match=r"fallback model.*ZAI"):
         md.validate_llm_availability()
 
 

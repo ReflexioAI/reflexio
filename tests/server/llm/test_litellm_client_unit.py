@@ -3425,7 +3425,7 @@ class TestOwnedFallbackWalk:
             )
 
         monkeypatch.setattr("litellm.completion", _fake)
-        with pytest.raises(LiteLLMClientError, match="zai/glm-5.2"):
+        with pytest.raises(LiteLLMClientError, match=r"zai/glm-5\.2"):
             client.generate_chat_response(self._messages())
 
     def test_parse_exhausted_primary_advances_to_fallback(self, monkeypatch):
