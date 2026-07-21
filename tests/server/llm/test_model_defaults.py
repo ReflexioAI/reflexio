@@ -38,6 +38,7 @@ def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "CLAUDE_SMART_CLI_PATH",
         "CLAUDE_SMART_CLI_TIMEOUT",
         "CLAUDE_SMART_USE_LOCAL_EMBEDDING",
+        "REFLEXIO_LLM_FALLBACK_MODELS",
     ]:
         monkeypatch.delenv(key, raising=False)
 
@@ -360,6 +361,46 @@ class TestValidateLlmAvailability:
             validate_llm_availability()
 
 
+def test_configured_fallback_without_provider_key_raises(monkeypatch):
+    from reflexio.server.llm import model_defaults as md
+
+    monkeypatch.setenv("MINIMAX_API_KEY", "x")  # primary provider present
+    monkeypatch.setenv("REFLEXIO_LLM_FALLBACK_MODELS", "zai/glm-5.2")
+    monkeypatch.delenv("ZAI_API_KEY", raising=False)  # fallback key MISSING
+    with pytest.raises(RuntimeError, match=r"fallback model.*zai"):
+        md.validate_llm_availability()
+
+
+def test_configured_fallback_unknown_provider_warns_not_raises(monkeypatch, caplog):
+    """A fallback naming a provider reflexio cannot validate at boot (outside
+    ``_ENV_TO_PROVIDER`` — e.g. bedrock, vertex_ai, azure, groq, ollama,
+    together_ai, all authenticated via non-``<PROVIDER>_API_KEY`` means) must
+    not crash the server: it warns and lets the failure surface at request
+    time instead, preserving pre-PR boot behavior for these providers."""
+    import logging
+
+    from reflexio.server.llm import model_defaults as md
+
+    monkeypatch.setenv("MINIMAX_API_KEY", "x")  # primary provider present
+    monkeypatch.setenv("REFLEXIO_LLM_FALLBACK_MODELS", "bedrock/anthropic.claude-v2")
+    with caplog.at_level(logging.WARNING):
+        md.validate_llm_availability()  # should not raise
+    assert any("bedrock" in r.message.lower() for r in caplog.records)
+
+
+def test_configured_fallback_provider_case_insensitive(monkeypatch):
+    """An upper/mixed-case provider prefix (e.g. ``ZAI/glm-5.2``) must resolve
+    to the same known provider as its lowercase form, not be treated as an
+    unknown provider that skips the fallback-key check."""
+    from reflexio.server.llm import model_defaults as md
+
+    monkeypatch.setenv("MINIMAX_API_KEY", "x")  # primary provider present
+    monkeypatch.setenv("REFLEXIO_LLM_FALLBACK_MODELS", "ZAI/glm-5.2")
+    monkeypatch.delenv("ZAI_API_KEY", raising=False)  # fallback key MISSING
+    with pytest.raises(RuntimeError, match=r"fallback model.*ZAI"):
+        md.validate_llm_availability()
+
+
 # ---------------------------------------------------------------------------
 # All providers have defaults defined
 # ---------------------------------------------------------------------------
@@ -579,3 +620,18 @@ class TestMinimaxOnlyEnvRegression:
         monkeypatch.setattr(lep.importlib.util, "find_spec", lambda _name: object())
         result = resolve_model_name(ModelRole.EMBEDDING)
         assert result == "local/minilm-l6-v2"
+
+
+# ---------------------------------------------------------------------------
+# zai provider defaults (glm-5.2 is the live-verified flagship, #792)
+# ---------------------------------------------------------------------------
+
+
+def test_zai_defaults_to_glm_5_2():
+    from reflexio.server.llm.model_defaults import _PROVIDER_DEFAULTS
+
+    z = _PROVIDER_DEFAULTS["zai"]
+    assert z.generation == "zai/glm-5.2"
+    assert z.evaluation == "zai/glm-5.2"
+    assert z.should_run == "zai/glm-5.2"
+    assert z.pre_retrieval == "zai/glm-5.2"

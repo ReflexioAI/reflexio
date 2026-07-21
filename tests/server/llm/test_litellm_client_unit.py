@@ -40,6 +40,7 @@ from reflexio.models.config_schema import (
     OpenAIConfig as CommonsOpenAIConfig,
 )
 from reflexio.models.structured_output import find_schema_keyword
+from reflexio.server.llm._provider_concurrency import ProviderCapSaturatedError
 from reflexio.server.llm.litellm_client import (
     LiteLLMClient,
     LiteLLMClientError,
@@ -1374,49 +1375,6 @@ class TestStrictStructuredOutputRequest:
         assert params["response_format"] is SampleResponse
         assert params["messages"] == messages
 
-    def test_structured_fallback_rejects_mixed_transport_strategies(self):
-        client = _build_client(
-            LiteLLMConfig(
-                model="zai/glm-5.2",
-                fallback_models=["openai/gpt-4o-mini"],
-            )
-        )
-
-        with pytest.raises(ValueError, match="same transport strategy"):
-            client._build_completion_params(
-                [{"role": "user", "content": "test"}],
-                response_format=SampleResponse,
-            )
-
-    def test_structured_fallback_allows_same_prompt_transport(self):
-        client = _build_client(
-            LiteLLMConfig(
-                model="zai/glm-5.2",
-                fallback_models=["zai/glm-4.5"],
-            )
-        )
-
-        _, _, _, _, fallbacks = client._build_completion_params(
-            [{"role": "user", "content": "test"}],
-            response_format=SampleResponse,
-        )
-
-        assert fallbacks == ["zai/glm-4.5"]
-
-    def test_text_fallback_does_not_require_matching_transport(self):
-        client = _build_client(
-            LiteLLMConfig(
-                model="zai/glm-5.2",
-                fallback_models=["openai/gpt-4o-mini"],
-            )
-        )
-
-        _, _, _, _, fallbacks = client._build_completion_params(
-            [{"role": "user", "content": "test"}]
-        )
-
-        assert fallbacks == ["openai/gpt-4o-mini"]
-
     def test_openai_compatible_underreported_provider_uses_strict_schema(self):
         # Regression for Sentry PYTHON-FASTAPI-9J: minimax reports
         # supports_response_schema=False, but it is an OpenAI-compatible endpoint
@@ -1815,12 +1773,16 @@ class TestStructuredOutputRepair:
         assert "score must be 42" in repair_messages[2]["content"]
         assert original_messages == [{"role": "user", "content": "test"}]
 
-    def test_validator_escalates_once_to_first_eligible_fallback(self):
+    def test_validator_advances_to_fallback_rung_with_original_prompt(self):
+        """The owned walk advances to the fallback rung after the primary rung's
+        same-model repair budget is exhausted. The fallback rung is a FRESH task:
+        it receives the ORIGINAL prompt, never the primary's repair conversation,
+        and no ``fallbacks`` kwarg is ever handed to litellm."""
         calls: list[dict[str, Any]] = []
         responses = [
-            '{"answer": "bad", "score": 1}',
-            '{"answer": "still bad", "score": 2}',
-            '{"answer": "ok", "score": 42}',
+            '{"answer": "bad", "score": 1}',  # primary: semantic fail
+            '{"answer": "still bad", "score": 2}',  # primary repair: semantic fail
+            '{"answer": "ok", "score": 42}',  # fallback-a: valid
         ]
 
         def fake_completion(**kwargs):
@@ -1831,8 +1793,8 @@ class TestStructuredOutputRepair:
             LiteLLMConfig(
                 model="primary-model",
                 fallback_models=[
-                    "local/embedder",
-                    "primary-model",
+                    "local/embedder",  # dropped: no litellm completion route
+                    "primary-model",  # dropped: self-reference
                     "fallback-a",
                     "fallback-b",
                 ],
@@ -1848,13 +1810,18 @@ class TestStructuredOutputRepair:
 
         assert isinstance(result, SampleResponse)
         assert result.score == 42
+        # primary rung (initial + one same-model repair), then advance to fallback-a.
         assert [call["model"] for call in calls] == [
             "primary-model",
             "primary-model",
             "fallback-a",
         ]
-        assert calls[2]["fallbacks"] == ["fallback-b"]
-        assert '"score":2' in calls[2]["messages"][1]["content"].replace(" ", "")
+        # No fallbacks delegated to litellm on any rung — the walk owns advancement.
+        assert all("fallbacks" not in call for call in calls)
+        # The fallback rung gets the ORIGINAL prompt, not the [user, assistant,
+        # user] repair conversation from the primary rung.
+        assert [m["role"] for m in calls[2]["messages"]] == ["user"]
+        assert calls[2]["messages"][0]["content"] == "test"
 
     def test_validator_exhaustion_raises_typed_error_with_latest_response(self):
         responses = [
@@ -2063,21 +2030,18 @@ class TestStructuredOutputRepair:
         assert len(calls) == 2
 
     def test_exhaustion_keeps_latest_parsed_output_after_final_parse_failure(self):
-        """When the final attempt fails to PARSE, the error's parsed_output is
-        the most recent attempt that parsed (the mid-ladder repair), not the
-        first attempt's parse."""
+        """Within a single rung: when the corrective turn fails to PARSE, the typed
+        error's parsed_output rolls forward to the most recent attempt that DID
+        parse (the initial semantic-fail), not None."""
         responses = [
-            '{"answer": "first", "score": 1}',  # parses, semantic failure
-            '{"answer": "repair", "score": 2}',  # parses, semantic failure
-            '{"answer": "esc", "sco',  # escalation: parse failure
+            '{"answer": "first", "score": 2}',  # initial: parses, semantic failure
+            '{"answer": "esc", "sco',  # repair turn: parse failure
         ]
 
         def fake_completion(**kwargs):
             return self._make_mock_response(responses.pop(0))
 
-        client = _build_client(
-            LiteLLMConfig(model="primary-model", fallback_models=["fallback-a"])
-        )
+        client = _build_client(LiteLLMConfig(model="primary-model"))
 
         with (
             patch("litellm.completion", side_effect=fake_completion),
@@ -2943,11 +2907,9 @@ class TestBuildCompletionParamsEdgeCases:
         )
         client = LiteLLMClient(config)
 
-        _, _, _, _, fallbacks = client._build_completion_params(
-            [{"role": "user", "content": "hi"}],
-        )
-        assert "local/nomic-embed-text-v1.5" not in fallbacks
-        assert fallbacks == ["gpt-5-mini"]
+        ladder = client._resolve_ladder()
+        assert "local/nomic-embed-text-v1.5" not in ladder
+        assert ladder == ["gpt-4o", "gpt-5-mini"]
 
 
 class TestConfigDefaults:
@@ -3051,24 +3013,30 @@ class TestLitellmIntegration:
         client.generate_chat_response(self._messages())
         assert captured.get("num_retries") == 0
 
-    def test_passes_fallbacks_from_config(self, monkeypatch):
-        # Config-explicit fallback (opt-in at construction)
+    def test_config_fallback_used_when_primary_fails(self, monkeypatch):
+        """Config-explicit fallback (opt-in at construction): the owned walk
+        advances to it when the primary fails, and NEVER hands ``fallbacks`` to
+        litellm."""
         client = LiteLLMClient(
             LiteLLMConfig(model="minimax/MiniMax-M3", fallback_models=["gpt-5.4-mini"])
         )
-        captured: dict[str, Any] = {}
+        calls: list[dict[str, Any]] = []
 
         def _fake(**params):
-            captured.update(params)
+            calls.append(params)
+            if params["model"] == "minimax/MiniMax-M3":
+                raise APIConnectionError(message="x", llm_provider="minimax", model="m")
             return _make_completion_response("ok")
 
         monkeypatch.setattr("litellm.completion", _fake)
         client.generate_chat_response(self._messages())
-        assert captured.get("fallbacks") == ["gpt-5.4-mini"]
+        assert [c["model"] for c in calls] == ["minimax/MiniMax-M3", "gpt-5.4-mini"]
+        assert all("fallbacks" not in c for c in calls)
 
     def test_no_fallbacks_when_env_var_unset(self, monkeypatch):
-        """Local reflexio / claude-smart safety check: with no env var and
-        no explicit construction arg, no fallback is passed."""
+        """Local reflexio / claude-smart safety check: with no env var and no
+        explicit construction arg, the primary serves alone and no ``fallbacks``
+        kwarg is ever passed."""
         monkeypatch.delenv("REFLEXIO_LLM_FALLBACK_MODELS", raising=False)
         client = LiteLLMClient(LiteLLMConfig(model="claude-code/claude-sonnet-4-6"))
         captured: dict[str, Any] = {}
@@ -3082,53 +3050,54 @@ class TestLitellmIntegration:
         assert "fallbacks" not in captured
 
     def test_env_var_enables_fallback_globally(self, monkeypatch):
-        """Production-style: set the env var and every LiteLLMClient picks it
-        up, no per-caller code changes."""
+        """Production-style: set the env var and every LiteLLMClient picks it up.
+        The owned walk uses it (advances on primary failure) without a
+        ``fallbacks`` kwarg."""
         monkeypatch.setenv("REFLEXIO_LLM_FALLBACK_MODELS", "gpt-5.4-mini")
         client = LiteLLMClient(LiteLLMConfig(model="minimax/MiniMax-M3"))
-        captured: dict[str, Any] = {}
+        calls: list[dict[str, Any]] = []
 
         def _fake(**params):
-            captured.update(params)
+            calls.append(params)
+            if params["model"] == "minimax/MiniMax-M3":
+                raise APIConnectionError(message="x", llm_provider="minimax", model="m")
             return _make_completion_response("ok")
 
         monkeypatch.setattr("litellm.completion", _fake)
         client.generate_chat_response(self._messages())
-        assert captured.get("fallbacks") == ["gpt-5.4-mini"]
+        assert [c["model"] for c in calls] == ["minimax/MiniMax-M3", "gpt-5.4-mini"]
+        assert all("fallbacks" not in c for c in calls)
 
     def test_per_call_override_wins_over_config(self, monkeypatch):
         client = LiteLLMClient(LiteLLMConfig(model="x", max_retries=3))
-        captured: dict[str, Any] = {}
+        calls: list[dict[str, Any]] = []
 
         def _fake(**params):
-            captured.update(params)
+            calls.append(params)
+            if params["model"] == "x":
+                raise APIConnectionError(message="x", llm_provider="x", model="x")
             return _make_completion_response("ok")
 
         monkeypatch.setattr("litellm.completion", _fake)
         client.generate_chat_response(
             self._messages(), max_retries=7, fallback_models=["gpt-5.4-mini"]
         )
-        # The per-call fallback override wins; num_retries is forced to 0 on the
-        # completion path regardless of the max_retries override.
-        assert captured.get("num_retries") == 0
-        assert captured.get("fallbacks") == ["gpt-5.4-mini"]
+        # The per-call fallback override drives the walk; num_retries is forced to
+        # 0 on every rung regardless of the max_retries override, and no
+        # ``fallbacks`` kwarg is delegated to litellm.
+        assert [c["model"] for c in calls] == ["x", "gpt-5.4-mini"]
+        assert all(c.get("num_retries") == 0 for c in calls)
+        assert all("fallbacks" not in c for c in calls)
 
     def test_fallback_self_reference_deduped(self, monkeypatch):
-        """If primary equals a fallback entry, that entry is dropped."""
+        """If primary equals a fallback entry, that entry is dropped from the
+        resolved ladder."""
         client = LiteLLMClient(
             LiteLLMConfig(
                 model="gpt-5.4-mini", fallback_models=["gpt-5.4-mini", "gpt-5-nano"]
             )
         )
-        captured: dict[str, Any] = {}
-
-        def _fake(**params):
-            captured.update(params)
-            return _make_completion_response("ok")
-
-        monkeypatch.setattr("litellm.completion", _fake)
-        client.generate_chat_response(self._messages())
-        assert captured.get("fallbacks") == ["gpt-5-nano"]
+        assert client._resolve_ladder() == ["gpt-5.4-mini", "gpt-5-nano"]
 
     def test_empty_fallbacks_omits_kwarg(self, monkeypatch):
         client = LiteLLMClient(LiteLLMConfig(model="x", fallback_models=[]))
@@ -3140,8 +3109,7 @@ class TestLitellmIntegration:
 
         monkeypatch.setattr("litellm.completion", _fake)
         client.generate_chat_response(self._messages())
-        # Per LiteLLM docs, omitting `fallbacks` is the documented "no
-        # fallback" signal; passing [] is undefined behavior.
+        # The owned walk never delegates a fallback chain to litellm.
         assert "fallbacks" not in captured
 
     def test_completion_has_client_side_hard_timeout(self, monkeypatch):
@@ -3251,10 +3219,10 @@ class TestLitellmIntegration:
             client.generate_chat_response(self._messages())
         assert len(attempts) == 1
 
-    def test_hard_timeout_sized_to_full_ladder(self, monkeypatch):
-        """The fix: the hard timeout passed to the subprocess covers the WHOLE
-        ladder (one slice per model), num_retries is 0, and the fallback list is
-        forwarded — together these make the fallback reachable on a hung primary.
+    def test_hard_timeout_is_per_rung_single_attempt(self, monkeypatch):
+        """Each rung now owns a per-SINGLE-ATTEMPT hard timeout (not the old
+        ladder-wide ``(1 + len(fallbacks)) * per_attempt``). num_retries is 0 and
+        no ``fallbacks`` kwarg is delegated — the walk advances between rungs.
         """
         monkeypatch.setenv("REFLEXIO_LLM_HARD_TIMEOUT_GRACE_SECONDS", "5")
         client = LiteLLMClient(
@@ -3272,26 +3240,21 @@ class TestLitellmIntegration:
         monkeypatch.setattr(client, "_completion_with_hard_timeout", _capture)
         client.generate_chat_response(self._messages())
 
-        # MiniMax-M3 floor is 120s; litellm copies that timeout to each rung, so
-        # two rungs (primary + one fallback) → 2 * 120 + 5 grace.
+        # MiniMax-M3 floor is 120s; the primary rung's hard timeout is a SINGLE
+        # attempt plus one grace buffer — it does NOT scale with fallback count.
         assert captured["timeout"] == 120
         assert captured["num_retries"] == 0
-        assert captured["fallbacks"] == ["gpt-5-mini"]
-        assert captured["hard_timeout"] == pytest.approx(2 * 120 + 5)
+        assert captured["fallbacks"] is None
+        assert captured["hard_timeout"] == pytest.approx(120 + 5)
 
-    @pytest.mark.parametrize(
-        "fallback_models, expected_rungs",
-        [([], 1), (["a"], 2), (["a", "b"], 3)],
-    )
-    def test_hard_timeout_scales_with_rung_count(
-        self, monkeypatch, fallback_models, expected_rungs
+    @pytest.mark.parametrize("fallback_models", [[], ["a"], ["a", "b"]])
+    def test_hard_timeout_does_not_scale_with_rung_count(
+        self, monkeypatch, fallback_models
     ):
-        """hard_timeout == (1 + len(fallbacks)) * per_attempt + ONE grace.
-
-        Pinning n=0/1/2 catches the ``1 + len(...)`` off-by-one and that grace is
-        added once (not per rung) — at n=1 alone, several wrong formulas collapse
-        to the same number, so a single case proves nothing.
-        """
+        """The per-rung hard timeout is constant regardless of how many fallbacks
+        follow — each rung is bounded to its own single attempt + one grace. A
+        hung primary is abandoned after one attempt-worth of time, then the walk
+        advances (the PYTHON-FASTAPI-62 fix, now client-owned)."""
         monkeypatch.setenv("REFLEXIO_LLM_HARD_TIMEOUT_GRACE_SECONDS", "5")
         client = LiteLLMClient(
             LiteLLMConfig(model="x", timeout=30, fallback_models=fallback_models)
@@ -3305,30 +3268,24 @@ class TestLitellmIntegration:
         monkeypatch.setattr(client, "_completion_with_hard_timeout", _capture)
         client.generate_chat_response(self._messages())
 
-        assert captured["hard_timeout"] == pytest.approx(expected_rungs * 30 + 5)
+        # Only the primary rung runs (it succeeds); its bound is 30 + 5 grace,
+        # independent of the fallback count.
+        assert captured["hard_timeout"] == pytest.approx(30 + 5)
 
     def test_fallback_response_returned_when_primary_fails(self, monkeypatch):
         """End-to-end: when the primary fails and a fallback is configured, the
-        fallback's response is what _make_request returns.
-
-        The fake stands in for litellm's native fallback dispatch (which our code
-        ENABLES by forwarding ``fallbacks`` and ``num_retries=0``): it serves the
-        fallback whenever the primary is invoked with a non-empty ``fallbacks``
-        list, and otherwise fails. If a regression dropped the ``fallbacks``
-        kwarg, the fake would raise instead and this test would fail — so it
-        guards the headline "fallback is reachable" behavior, not just plumbing
-        values.
-        """
+        fallback rung's response is what _make_request returns — via the owned
+        walk, with no ``fallbacks`` kwarg handed to litellm."""
         client = LiteLLMClient(
             LiteLLMConfig(model="minimax/MiniMax-M3", fallback_models=["gpt-5-mini"])
         )
 
         def _fake(**params):
-            if params["model"] == "minimax/MiniMax-M3" and params.get("fallbacks"):
-                return _make_completion_response("from-fallback")
-            raise APIConnectionError(
-                "primary down", llm_provider="minimax", model=params["model"]
-            )
+            if params["model"] == "minimax/MiniMax-M3":
+                raise APIConnectionError(
+                    message="primary down", llm_provider="minimax", model="m"
+                )
+            return _make_completion_response("from-fallback")
 
         monkeypatch.setattr("litellm.completion", _fake)
         result = client.generate_chat_response(self._messages())
@@ -3395,21 +3352,245 @@ class TestLitellmIntegration:
 
 
 # ===================================================================
+# Reflexio-owned per-rung fallback walk (L1 contract)
+# ===================================================================
+
+
+class TestOwnedFallbackWalk:
+    """Contract for the reflexio-owned ladder walk: no ``fallbacks`` ever reaches
+    litellm, each rung rebuilds its own transport, parse-exhaustion advances, the
+    provider slot is acquired per rung, and a loop-driven fallback signal fires
+    with a reason."""
+
+    def _messages(self):
+        return [{"role": "user", "content": "hi"}]
+
+    def test_no_fallbacks_kwarg_ever_passed_to_litellm(self, monkeypatch):
+        client = LiteLLMClient(
+            LiteLLMConfig(model="minimax/MiniMax-M3", fallback_models=["zai/glm-5.2"])
+        )
+        seen = []
+
+        def _fake(**params):
+            seen.append(params)
+            return _make_completion_response("ok")
+
+        monkeypatch.setattr("litellm.completion", _fake)
+        client.generate_chat_response(self._messages())
+        assert all("fallbacks" not in p for p in seen)
+
+    def test_mixed_ladder_no_longer_raises_and_each_rung_gets_own_transport(
+        self, monkeypatch
+    ):
+        # minimax (native json_schema) primary FAILS → zai (prompt-backed) serves.
+        client = LiteLLMClient(
+            LiteLLMConfig(model="minimax/MiniMax-M3", fallback_models=["zai/glm-5.2"])
+        )
+        calls = []
+
+        def _fake(**params):
+            calls.append(params)
+            if params["model"] == "minimax/MiniMax-M3":
+                raise APIConnectionError(
+                    message="boom", llm_provider="minimax", model="MiniMax-M3"
+                )
+            return _make_completion_response('{"value": "ok"}')
+
+        monkeypatch.setattr("litellm.completion", _fake)
+
+        class Out(BaseModel):
+            value: str
+
+        client.generate_chat_response(self._messages(), response_format=Out)
+        assert [c["model"] for c in calls] == ["minimax/MiniMax-M3", "zai/glm-5.2"]
+        # minimax rung got a strict json_schema response_format; zai rung did NOT
+        assert calls[0].get("response_format") is not None
+        assert calls[1].get("response_format") in (None, {"type": "json_object"})
+        # zai rung got the schema directive injected into the system message
+        assert any(
+            m["role"] == "system" and "value" in m.get("content", "")
+            for m in calls[1]["messages"]
+        )
+
+    def test_all_rungs_fail_raises_last_error(self, monkeypatch):
+        client = LiteLLMClient(
+            LiteLLMConfig(model="minimax/MiniMax-M3", fallback_models=["zai/glm-5.2"])
+        )
+
+        def _fake(**params):
+            raise APIConnectionError(
+                message=f"down:{params['model']}",
+                llm_provider="x",
+                model=params["model"],
+            )
+
+        monkeypatch.setattr("litellm.completion", _fake)
+        with pytest.raises(LiteLLMClientError, match=r"zai/glm-5\.2"):
+            client.generate_chat_response(self._messages())
+
+    def test_parse_exhausted_primary_advances_to_fallback(self, monkeypatch):
+        # primary returns HTTP 200 with malformed JSON on BOTH its attempts
+        # (initial + one same-model parse-retry), then advances to the fallback.
+        client = LiteLLMClient(
+            LiteLLMConfig(model="minimax/MiniMax-M3", fallback_models=["zai/glm-5.2"])
+        )
+        calls = []
+
+        def _fake(**params):
+            calls.append(params["model"])
+            if params["model"] == "minimax/MiniMax-M3":
+                return _make_completion_response("not json")
+            return _make_completion_response('{"value": "ok"}')
+
+        monkeypatch.setattr("litellm.completion", _fake)
+
+        class Out(BaseModel):
+            value: str
+
+        result = client.generate_chat_response(self._messages(), response_format=Out)
+        assert result.value == "ok"
+        # exactly: primary + one same-model parse-retry, then one fallback try
+        assert calls == ["minimax/MiniMax-M3", "minimax/MiniMax-M3", "zai/glm-5.2"]
+
+    def test_provider_slot_acquired_per_rung(self, monkeypatch):
+        client = LiteLLMClient(
+            LiteLLMConfig(model="minimax/MiniMax-M3", fallback_models=["zai/glm-5.2"])
+        )
+        slots = []
+        import reflexio.server.llm._litellm_text_generation as tg
+
+        real_slot = tg.provider_slot
+
+        from contextlib import contextmanager
+
+        @contextmanager
+        def _spy(model):
+            slots.append(model)
+            with real_slot(model):
+                yield
+
+        monkeypatch.setattr(tg, "provider_slot", _spy)
+
+        def _fake(**params):
+            if params["model"] == "minimax/MiniMax-M3":
+                raise APIConnectionError(
+                    message="boom", llm_provider="minimax", model="m"
+                )
+            return _make_completion_response("ok")
+
+        monkeypatch.setattr("litellm.completion", _fake)
+        client.generate_chat_response(self._messages())
+        assert slots == ["minimax/MiniMax-M3", "zai/glm-5.2"]
+
+    def test_cap_saturation_is_advance_worthy(self, monkeypatch):
+        """A fail-closed provider-cap saturation on a rung is caught by the walk
+        as advance-worthy (part of the error taxonomy), not surfaced raw."""
+        client = LiteLLMClient(
+            LiteLLMConfig(model="minimax/MiniMax-M3", fallback_models=["zai/glm-5.2"])
+        )
+        from contextlib import contextmanager
+
+        import reflexio.server.llm._litellm_text_generation as tg
+
+        @contextmanager
+        def _cap_primary(model):
+            if model == "minimax/MiniMax-M3":
+                raise ProviderCapSaturatedError("cap saturated")
+            yield
+
+        monkeypatch.setattr(tg, "provider_slot", _cap_primary)
+        calls = []
+
+        def _fake(**params):
+            calls.append(params["model"])
+            return _make_completion_response("ok")
+
+        monkeypatch.setattr("litellm.completion", _fake)
+        result = client.generate_chat_response(self._messages())
+        assert result == "ok"
+        # primary never reached litellm (cap saturated); fallback served.
+        assert calls == ["zai/glm-5.2"]
+
+    def test_fallback_signal_fires_with_reason(self, monkeypatch, caplog):
+        client = LiteLLMClient(
+            LiteLLMConfig(model="minimax/MiniMax-M3", fallback_models=["zai/glm-5.2"])
+        )
+
+        def _fake(**params):
+            if params["model"] == "minimax/MiniMax-M3":
+                raise APIConnectionError(message="x", llm_provider="minimax", model="m")
+            return _make_completion_response("ok")
+
+        monkeypatch.setattr("litellm.completion", _fake)
+        with caplog.at_level(logging.INFO):
+            client.generate_chat_response(self._messages())
+        assert any("event=llm_fallback_used" in r.message for r in caplog.records)
+        assert any("served_model=zai/glm-5.2" in r.message for r in caplog.records)
+
+    def test_no_fallback_signal_when_primary_serves(self, monkeypatch, caplog):
+        client = LiteLLMClient(
+            LiteLLMConfig(model="minimax/MiniMax-M3", fallback_models=["zai/glm-5.2"])
+        )
+        monkeypatch.setattr(
+            "litellm.completion", lambda **_p: _make_completion_response("ok")
+        )
+        with caplog.at_level(logging.INFO):
+            client.generate_chat_response(self._messages())
+        assert not any("event=llm_fallback_used" in r.message for r in caplog.records)
+
+    def test_custom_endpoint_short_circuits_ladder_to_single_rung(
+        self, monkeypatch, caplog
+    ):
+        """A custom endpoint is a single-model pin — fallback_models must not
+        re-pin every rung to the SAME ce.model (wasted rung timeouts) nor let
+        the success branch log a false ``served_model`` for a rung that never
+        actually ran."""
+        api_key_config = APIKeyConfig(
+            custom_endpoint=CustomEndpointConfig(
+                model="ce-model",
+                api_key="ce-key",
+                api_base="https://example.com/v1",  # type: ignore[arg-type]
+            )
+        )
+        client = LiteLLMClient(
+            LiteLLMConfig(
+                model="minimax/MiniMax-M3",
+                fallback_models=["zai/glm-5.2"],
+                api_key_config=api_key_config,
+            )
+        )
+        assert client._resolve_ladder(fallback_models=["zai/glm-5.2"]) == ["ce-model"]
+
+        calls = []
+
+        def _fake(**params):
+            calls.append(params["model"])
+            return _make_completion_response("ok")
+
+        monkeypatch.setattr("litellm.completion", _fake)
+        with caplog.at_level(logging.INFO):
+            client.generate_chat_response(self._messages())
+        assert calls == ["ce-model"]
+        assert not any("event=llm_fallback_used" in r.message for r in caplog.records)
+
+
+# ===================================================================
 # Fallback observability: Sentry tags + structured log line
 # ===================================================================
 
 
 class TestFallbackObservability:
-    """Verify Sentry tags fire when litellm served the request via a
-    fallback model, and stay silent when the primary served. The detection
-    mechanism reads ``response.model`` / ``response._hidden_params`` and
-    compares against the requested primary.
+    """Verify Sentry tags fire when a fallback RUNG served the request, and stay
+    silent when the primary served. Detection is now authoritative and
+    loop-driven: the owned walk knows exactly which rung served, so it calls
+    ``_emit_fallback_signal`` with the primary, the served rung, and a reason —
+    no more response-model diffing.
 
-    ``sentry_sdk`` is an enterprise-only dependency and is not installed
-    in the OSS test env. ``_emit_fallback_observability`` performs a local
-    ``import sentry_sdk`` inside its ``try`` block, so we inject a fake
-    module into ``sys.modules`` to capture the ``set_tag`` calls without
-    pulling in the real SDK.
+    ``sentry_sdk`` is an enterprise-only dependency and is not installed in the
+    OSS test env. ``_emit_fallback_signal`` performs a local ``import
+    sentry_sdk`` inside its ``try`` block, so we inject a fake module into
+    ``sys.modules`` to capture the ``set_tag`` calls without pulling in the real
+    SDK.
     """
 
     @staticmethod
@@ -3425,18 +3606,18 @@ class TestFallbackObservability:
         monkeypatch.setitem(sys.modules, "sentry_sdk", fake)
         return tags
 
-    def test_sentry_tag_set_when_response_indicates_fallback(self, monkeypatch):
+    def test_sentry_tag_set_when_fallback_serves(self, monkeypatch):
         tags = self._install_fake_sentry(monkeypatch)
-        client = LiteLLMClient(LiteLLMConfig(model="minimax/MiniMax-M3"))
+        client = LiteLLMClient(
+            LiteLLMConfig(model="minimax/MiniMax-M3", fallback_models=["gpt-5.4-mini"])
+        )
 
-        # Forge a litellm response where the served model differs from the
-        # requested primary — i.e. a fallback served the request.
-        response = _make_completion_response("ok")
-        response._hidden_params = {"model_id": "gpt-5.4-mini"}
-        response.model = "gpt-5.4-mini"
+        def _fake(**params):
+            if params["model"] == "minimax/MiniMax-M3":
+                raise APIConnectionError(message="x", llm_provider="minimax", model="m")
+            return _make_completion_response("ok")
 
-        monkeypatch.setattr("litellm.completion", lambda **_p: response)
-
+        monkeypatch.setattr("litellm.completion", _fake)
         client.generate_chat_response([{"role": "user", "content": "hi"}])
 
         assert tags.get("llm.fallback_used") == "true"
@@ -3445,36 +3626,36 @@ class TestFallbackObservability:
 
     def test_sentry_tag_not_set_when_primary_served(self, monkeypatch):
         tags = self._install_fake_sentry(monkeypatch)
-        client = LiteLLMClient(LiteLLMConfig(model="minimax/MiniMax-M3"))
+        client = LiteLLMClient(
+            LiteLLMConfig(model="minimax/MiniMax-M3", fallback_models=["gpt-5.4-mini"])
+        )
 
-        # Forge a response where the served model matches the primary —
-        # no fallback occurred.
-        response = _make_completion_response("ok")
-        response._hidden_params = {"model_id": "minimax/MiniMax-M3"}
-        response.model = "minimax/MiniMax-M3"
-
-        monkeypatch.setattr("litellm.completion", lambda **_p: response)
-
+        # The primary serves on the first rung — no fallback occurred.
+        monkeypatch.setattr(
+            "litellm.completion", lambda **_p: _make_completion_response("ok")
+        )
         client.generate_chat_response([{"role": "user", "content": "hi"}])
 
         assert "llm.fallback_used" not in tags
 
-    def test_sentry_tag_not_set_when_provider_strips_prefix(self, monkeypatch):
+    def test_sentry_reason_tag_reflects_failure_class(self, monkeypatch):
+        """The new ``llm.fallback_reason`` tag distinguishes an outage from a
+        broken-but-reachable primary. A transport error on the primary tags the
+        fallback with ``transport_error``."""
         tags = self._install_fake_sentry(monkeypatch)
-        client = LiteLLMClient(LiteLLMConfig(model="minimax/MiniMax-M3"))
+        client = LiteLLMClient(
+            LiteLLMConfig(model="minimax/MiniMax-M3", fallback_models=["gpt-5.4-mini"])
+        )
 
-        # MiniMax returns the bare model name even when LiteLLM was called
-        # through the provider-prefixed name. That is still the primary model,
-        # not a fallback.
-        response = _make_completion_response("ok")
-        response._hidden_params = {"model_id": "MiniMax-M3"}
-        response.model = "MiniMax-M3"
+        def _fake(**params):
+            if params["model"] == "minimax/MiniMax-M3":
+                raise APIConnectionError(message="x", llm_provider="minimax", model="m")
+            return _make_completion_response("ok")
 
-        monkeypatch.setattr("litellm.completion", lambda **_p: response)
-
+        monkeypatch.setattr("litellm.completion", _fake)
         client.generate_chat_response([{"role": "user", "content": "hi"}])
 
-        assert "llm.fallback_used" not in tags
+        assert tags.get("llm.fallback_reason") == "transport_error"
 
 
 class TestEmbeddingRetries:

@@ -1,5 +1,7 @@
 import time
 
+import pytest
+
 import reflexio.server.llm._provider_concurrency as pc
 
 
@@ -78,3 +80,44 @@ def test_fail_open_emits_log(monkeypatch, caplog):
         for r in caplog.records
     )
     pc._semaphores.clear()
+
+
+def _reset_registry():
+    with pc._registry_lock:
+        pc._semaphores.clear()
+
+
+def test_fail_open_provider_proceeds_on_saturation(monkeypatch, caplog):
+    _reset_registry()
+    monkeypatch.setattr(pc, "REFLEXIO_LLM_PROVIDER_MAX_CONCURRENCY", 1)
+    monkeypatch.setattr(pc, "_ACQUIRE_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(pc, "_fail_closed_providers", frozenset())
+    monkeypatch.setattr(pc, "_per_provider_cap", {})
+    monkeypatch.setattr(pc, "_provider_key", lambda _m: "openai")
+    # Holds the only permit, then a second acquire saturates → fail-open
+    # (proceeds, no raise).
+    with pc.provider_slot("openai/gpt-4o"), pc.provider_slot("openai/gpt-4o"):
+        pass
+
+
+def test_fail_closed_provider_raises_on_saturation(monkeypatch):
+    _reset_registry()
+    monkeypatch.setattr(pc, "REFLEXIO_LLM_PROVIDER_MAX_CONCURRENCY", 1)
+    monkeypatch.setattr(pc, "_ACQUIRE_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(pc, "_fail_closed_providers", frozenset({"zai"}))
+    monkeypatch.setattr(pc, "_per_provider_cap", {})
+    monkeypatch.setattr(pc, "_provider_key", lambda _m: "zai")
+    with (
+        pc.provider_slot("zai/glm-5.2"),
+        pytest.raises(pc.ProviderCapSaturatedError),
+        pc.provider_slot("zai/glm-5.2"),
+    ):
+        pass
+
+
+def test_per_provider_cap_override(monkeypatch):
+    _reset_registry()
+    monkeypatch.setattr(pc, "REFLEXIO_LLM_PROVIDER_MAX_CONCURRENCY", 8)
+    monkeypatch.setattr(pc, "_per_provider_cap", {"zai": 2})
+    assert pc._max_concurrency_for_provider("zai") == 2
+    assert pc._max_concurrency_for_provider("openai") == 8

@@ -38,11 +38,17 @@ class LiteLLMConfig:
             backward compatibility; remove in a follow-up sweep.
         top_p: Top-p sampling parameter.
         api_key_config: Optional API key configuration from Config (overrides env vars).
-        fallback_models: Models LiteLLM tries in order after the primary's single
-            transport attempt. Passed to litellm's fallbacks param within each
-            generation turn. For opted-in structured-output repair, the first
-            eligible network entry is also used as the final repair escalation
-            model after same-model repair fails.
+        fallback_models: Models reflexio walks in order, one rung at a time,
+            after the primary's single attempt fails. NOT passed to litellm's
+            fallbacks param — the client owns the walk (`[primary, *fallbacks]`)
+            and rebuilds request params (structured-output strategy, api_base,
+            per-rung timeout) for each rung, so entries may mix providers and
+            transports freely; a native-JSON-schema primary can fall back to a
+            prompt-backed provider. `num_retries` is forced to 0 on every rung
+            so a hung primary can't be retried before the fallback advances
+            (PYTHON-FASTAPI-62). For opted-in structured-output repair, the
+            first eligible network entry is also used as the final repair
+            escalation model after same-model repair fails.
             Default is an empty list (no fallback) so local reflexio and the
             claude-smart integration are never silently routed to an unintended
             provider. Production opts in via the env var
