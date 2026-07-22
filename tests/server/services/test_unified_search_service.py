@@ -26,6 +26,7 @@ from reflexio.server.services.pre_retrieval import ReformulationResult
 from reflexio.server.services.retrieval.recency import RecencyConfig, ScoredItem
 from reflexio.server.services.storage.storage_base import BaseStorage
 from reflexio.server.services.unified_search_service import (
+    _run_phase_b,
     _search_agent_playbooks_via_storage,
     run_unified_search,
 )
@@ -493,6 +494,35 @@ def _leg_search_modes(storage):
         "agent_playbooks": storage.search_agent_playbooks.call_args.args[0].search_mode,
         "user_playbooks": storage.search_user_playbooks.call_args.args[0].search_mode,
     }
+
+
+def test_phase_b_passes_tag_filter_to_every_fanout_leg() -> None:
+    storage = _fanout_storage()
+
+    _run_phase_b(
+        request=UnifiedSearchRequest(
+            query="billing", user_id="user-1", tags=["billing", "support"]
+        ),
+        org_id="test-org",
+        storage=storage,
+        embedding=[0.1] * 1536,
+        query="billing",
+        top_k=5,
+        threshold=0.3,
+    )
+
+    assert storage.search_user_profile.call_args.args[0].tags == [
+        "billing",
+        "support",
+    ]
+    assert storage.search_agent_playbooks.call_args.args[0].tags == [
+        "billing",
+        "support",
+    ]
+    assert storage.search_user_playbooks.call_args.args[0].tags == [
+        "billing",
+        "support",
+    ]
 
 
 class TestEmbeddingFailureDegradesToFTS(unittest.TestCase):
