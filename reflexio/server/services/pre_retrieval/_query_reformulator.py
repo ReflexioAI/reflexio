@@ -199,13 +199,19 @@ class QueryReformulator:
         log_model_response(logger, "Query reformulation model response", result)
 
         if not isinstance(result, ReformulationResult):
-            logger.warning("LLM returned non-structured reformulation: %r", result)
+            # Log the type only — `result` may contain the user's query text, which
+            # must not reach logs/Sentry/CloudWatch as Customer Content.
+            logger.warning(
+                "LLM returned non-structured reformulation (type %s)",
+                type(result).__name__,
+            )
             return ReformulationResult(standalone_query=query)
 
         extracted = self._extract_reformulated_query(result.standalone_query)
         if not extracted:
             logger.warning(
-                "LLM returned invalid reformulation: %s", result.standalone_query
+                "LLM returned invalid reformulation (length %d; content omitted)",
+                len(result.standalone_query or ""),
             )
             return ReformulationResult(standalone_query=query)
         return result.model_copy(update={"standalone_query": extracted})

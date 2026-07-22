@@ -228,7 +228,12 @@ class ProfileExtractor:
                 f"Profile extraction failed for user {self.service_config.user_id}"
             ) from e
 
-        logger.info("Generated raw profiles: %s", raw_profiles)
+        # Log only the count — the raw profile dicts are extracted Customer
+        # Content, and INFO records become Sentry breadcrumbs (LoggingIntegration
+        # level=INFO), whose bodies before_send does not scrub.
+        logger.info(
+            "Generated raw profiles: count=%d", len(raw_profiles) if raw_profiles else 0
+        )
         source_interaction_ids = [
             interaction.interaction_id
             for request_model in request_interaction_data_models
@@ -295,7 +300,11 @@ class ProfileExtractor:
                 not isinstance(profile_content, dict)
                 or "content" not in profile_content
             ):
-                logger.warning("Invalid profile content: %s", profile_content)
+                logger.warning(
+                    "Invalid profile content: expected a dict with a 'content' key, got %s "
+                    "(content omitted from logs)",
+                    type(profile_content).__name__,
+                )
                 continue
 
             # Get all custom features by excluding content and time_to_live

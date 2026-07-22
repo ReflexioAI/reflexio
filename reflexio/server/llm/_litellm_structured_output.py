@@ -248,15 +248,31 @@ class StructuredOutputMixin:
 
                     repaired = repair_json(json_str, return_objects=True)
                     return _validate_structured_payload(response_format, repaired)
+                except StructuredOutputParseError:
+                    # Already a sanitized, content-free diagnostic raised
+                    # deliberately above (e.g. the truncation check). Its message
+                    # carries no Customer Content and IS used to steer the repair
+                    # turn, so propagate it unchanged rather than re-wrapping it
+                    # (which would drop the specific reason).
+                    raise
                 except Exception as e:
                     model = self.config.model
-                    snippet = (
-                        content[:200]
-                        if isinstance(content, str)
-                        else repr(content)[:200]
-                    )
+                    # Do NOT embed the raw model output in the exception message:
+                    # this exception is logged at ERROR and rides to Sentry/CloudWatch
+                    # via the logging bridge, so a content snippet would leak Customer
+                    # Content there. Log only the length; the raw text stays on
+                    # `raw_content` for in-process repair (not serialized to logs).
+                    content_len = len(content) if isinstance(content, str) else -1
+                    # Use the inner exception's TYPE, not str(e): a json/pydantic
+                    # error's message often echoes the offending input (Customer
+                    # Content). This exception's str() is logged downstream at
+                    # ERROR (error=%s) and wrapped into LiteLLMClientError, both
+                    # of which ride to Sentry/CloudWatch — so the message must
+                    # stay content-free. The raw text remains on raw_content for
+                    # in-process repair (never serialized to logs).
                     raise StructuredOutputParseError(
-                        f"Structured output parse failed for model={model!r}: {e}. "
-                        f"Content snippet: {snippet!r}",
+                        f"Structured output parse failed for model={model!r}: "
+                        f"{type(e).__name__}. Content length: {content_len} chars "
+                        f"(content omitted from logs).",
                         raw_content=content if isinstance(content, str) else None,
                     ) from e
