@@ -2508,6 +2508,7 @@ class ReflexioClient:
         agent_version: str | None = None,
         playbook_name: str | None = None,
         user_id: str | None = None,
+        tags: list[str] | None = None,
         entity_types: list[str] | None = None,
         agent_playbook_status_filter: list[PlaybookStatus | str] | None = None,
         enable_reformulation: bool | None = None,
@@ -2532,6 +2533,7 @@ class ReflexioClient:
             agent_version (Optional[str]): Filter by agent version (agent_playbooks, user_playbooks)
             playbook_name (Optional[str]): Filter by playbook name (agent_playbooks, user_playbooks)
             user_id (Optional[str]): Filter by user ID (profiles, user_playbooks)
+            tags (Optional[list[str]]): Match entities having any requested tag.
             entity_types (Optional[list[str]]): Entity types to search. Valid values:
                 "profiles", "user_playbooks", "agent_playbooks".
             agent_playbook_status_filter (Optional[list[Union[PlaybookStatus, str]]]):
@@ -2562,6 +2564,7 @@ class ReflexioClient:
             agent_version=agent_version,
             playbook_name=playbook_name,
             user_id=user_id,
+            tags=tags,
             entity_types=entity_types,
             agent_playbook_status_filter=agent_playbook_status_filter,
             enable_reformulation=enable_reformulation,

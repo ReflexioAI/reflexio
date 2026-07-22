@@ -749,6 +749,7 @@ class UnifiedSearchRequest(BaseModel):
         agent_version (str, optional): Filter by agent version (agent_playbooks, user_playbooks)
         playbook_name (str, optional): Filter by playbook name (agent_playbooks, user_playbooks)
         user_id (str, optional): Filter by user ID (profiles, user_playbooks)
+        tags (list[str], optional): Match entities having any requested tag.
         entity_types (list[str], optional): Entity types to search. When omitted,
             searches profiles, user_playbooks, and agent_playbooks.
         agent_playbook_status_filter (list[PlaybookStatus], optional): Approval
@@ -765,6 +766,7 @@ class UnifiedSearchRequest(BaseModel):
     agent_version: str | None = None
     playbook_name: str | None = None
     user_id: str | None = None
+    tags: list[str] | None = None
     entity_types: list[UnifiedSearchEntityType] | None = None
     agent_playbook_status_filter: list[PlaybookStatus] | None = None
     conversation_history: list[ConversationTurn] | None = None

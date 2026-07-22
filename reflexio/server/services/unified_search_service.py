@@ -496,6 +496,7 @@ def _run_phase_b(
                     search_mode,
                     start_time,
                     end_time,
+                    tags=request.tags,
                 )
                 if "profiles" in entity_types
                 else None
@@ -514,6 +515,7 @@ def _run_phase_b(
                     options,
                     start_time,
                     end_time,
+                    tags=request.tags,
                 )
                 if "agent_playbooks" in entity_types
                 else None
@@ -524,6 +526,7 @@ def _run_phase_b(
                     user_id=request.user_id,
                     agent_version=request.agent_version,
                     playbook_name=request.playbook_name,
+                    tags=request.tags,
                     status_filter=None,
                     threshold=threshold,
                     top_k=top_k,
@@ -630,6 +633,7 @@ def _run_phase_b_single_rpc(
         user_id=request.user_id,
         agent_version=request.agent_version,
         playbook_name=request.playbook_name,
+        tags=request.tags,
         agent_playbook_statuses=statuses,
         search_mode=search_mode,
         include_profiles="profiles" in entity_types and bool(request.user_id),
@@ -896,6 +900,7 @@ def _search_agent_playbooks_via_storage(
     options: SearchOptions,
     start_time: datetime | None = None,
     end_time: datetime | None = None,
+    tags: list[str] | None = None,
 ) -> list[AgentPlaybook]:
     """Search agent playbooks, restricted to one or more approval statuses.
 
@@ -904,7 +909,8 @@ def _search_agent_playbooks_via_storage(
     genuinely want REJECTED playbooks must opt in by passing the full list.
     ``start_time``/``end_time`` bound ``created_at`` (query-derived time
     windows from reformulation temporal signals; unset when the query names
-    no window).
+    no window). ``tags`` matches playbooks having any requested tag (OR
+    semantics); None or an empty list disables tag filtering.
     """
     with profile_step(
         "search.branch.agent_playbooks",
@@ -920,6 +926,7 @@ def _search_agent_playbooks_via_storage(
             query=query,
             agent_version=agent_version,
             playbook_name=playbook_name,
+            tags=tags,
             status_filter=[None],
             playbook_status_filter=statuses,
             threshold=threshold,
@@ -951,6 +958,7 @@ def _search_profiles_via_storage(
     search_mode: SearchMode,
     start_time: datetime | None = None,
     end_time: datetime | None = None,
+    tags: list[str] | None = None,
 ) -> list[UserProfile]:
     """Search profiles via storage.search_user_profile, returning [] on error or missing user_id.
 
@@ -960,6 +968,7 @@ def _search_profiles_via_storage(
         top_k (int): Maximum results
         threshold (float): Minimum match threshold
         user_id (Optional[str]): User ID filter (required for profile search)
+        tags (Optional[list[str]]): Match profiles having any requested tag
         embedding (Optional[list[float]]): Pre-computed query embedding, or None for text-only search
         search_mode (SearchMode): Search mode (hybrid/vector/fts)
         start_time (Optional[datetime]): Lower bound on last_modified_timestamp
@@ -985,6 +994,7 @@ def _search_profiles_via_storage(
                     query=query,
                     top_k=top_k,
                     threshold=threshold,
+                    tags=tags,
                     search_mode=search_mode,
                     start_time=start_time,
                     end_time=end_time,

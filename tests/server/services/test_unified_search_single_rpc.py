@@ -33,10 +33,19 @@ class _CombinedStorage:
         self.result = result
         self.raise_on_combined = raise_on_combined
         self.combined_calls: list[dict[str, Any]] = []
+        self.scored_calls: list[dict[str, Any]] = []
         self.fanout_calls: list[str] = []
 
     def unified_hybrid_search(self, **kwargs: Any):
         self.combined_calls.append(kwargs)
+        if self.raise_on_combined:
+            raise RuntimeError("function public.unified_hybrid_search does not exist")
+        return self.result
+
+    # Selected instead of ``unified_hybrid_search`` when recency is on, since
+    # recency needs the per-row ``combined_score`` sidecars.
+    def unified_hybrid_search_scored(self, **kwargs: Any):
+        self.scored_calls.append(kwargs)
         if self.raise_on_combined:
             raise RuntimeError("function public.unified_hybrid_search does not exist")
         return self.result
@@ -76,15 +85,22 @@ class _MissingCombinedMethodStorage:
         return []
 
 
-def _run_phase_b(storage: _CombinedStorage, *, user_id: str | None = "u"):
+def _run_phase_b(
+    storage: _CombinedStorage,
+    *,
+    user_id: str | None = "u",
+    tags: list[str] | None = None,
+    recency_on: bool = False,
+):
     return uss._run_phase_b(
-        request=UnifiedSearchRequest(query="q", user_id=user_id, top_k=5),
+        request=UnifiedSearchRequest(query="q", user_id=user_id, tags=tags, top_k=5),
         org_id="o",
         storage=cast(BaseStorage, storage),
         embedding=[0.1, 0.2],
         query="q",
         top_k=5,
         threshold=0.3,
+        recency_on=recency_on,
     )
 
 
@@ -124,6 +140,26 @@ def test_single_rpc_skips_profiles_without_user_id(monkeypatch):
     _run_phase_b(storage, user_id=None)
 
     assert storage.combined_calls[0]["include_profiles"] is False
+
+
+def test_single_rpc_passes_tag_filter(monkeypatch):
+    monkeypatch.delenv("REFLEXIO_UNIFIED_SEARCH_SINGLE_RPC", raising=False)
+    storage = _CombinedStorage()
+
+    _run_phase_b(storage, tags=["billing", "support"])
+
+    assert storage.combined_calls[0]["tags"] == ["billing", "support"]
+
+
+def test_single_rpc_passes_tag_filter_on_scored_path(monkeypatch):
+    """Recency routes to ``unified_hybrid_search_scored``; tags must survive."""
+    monkeypatch.delenv("REFLEXIO_UNIFIED_SEARCH_SINGLE_RPC", raising=False)
+    storage = _CombinedStorage()
+
+    _run_phase_b(storage, tags=["billing", "support"], recency_on=True)
+
+    assert storage.combined_calls == []
+    assert storage.scored_calls[0]["tags"] == ["billing", "support"]
 
 
 def test_single_rpc_failure_falls_back_to_fanout(monkeypatch):
