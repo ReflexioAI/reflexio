@@ -153,11 +153,13 @@ class DocumentExpander:
                             expansions[key.strip()] = synonyms
                 return expansions
         except json.JSONDecodeError:
-            # Log length only — `text` is raw model output and must not reach
-            # logs/Sentry/CloudWatch as Customer Content.
+            # Log the raw output length only — the model output is Customer
+            # Content and must not reach logs/Sentry/CloudWatch. `text` is the
+            # normalized (stripped, fence-extracted) buffer, so report `output`
+            # to reflect the true response size.
             logger.warning(
                 "Failed to parse expansion JSON (length %d; content omitted)",
-                len(text or ""),
+                len(output),
             )
 
         return {}
