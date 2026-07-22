@@ -198,6 +198,16 @@ def register_shortcuts(app: typer.Typer) -> None:
         agent_version: Annotated[
             str | None, typer.Option("--agent-version", help="Filter by agent version")
         ] = None,
+        tags: Annotated[
+            list[str] | None,
+            typer.Option(
+                "--tag",
+                help=(
+                    "Match entities having any of these tags (OR semantics). "
+                    "Repeatable. Omit to disable tag filtering."
+                ),
+            ),
+        ] = None,
     ) -> None:
         """Unified semantic search across profiles and playbooks."""
         client = get_client(ctx)
@@ -209,6 +219,7 @@ def register_shortcuts(app: typer.Typer) -> None:
             threshold=threshold,
             user_id=user_id,
             agent_version=agent_version,
+            tags=tags,
         )
 
         if json_mode:
