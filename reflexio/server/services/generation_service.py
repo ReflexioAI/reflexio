@@ -1071,7 +1071,9 @@ class GenerationService:
         """
         session_id = new_request.session_id
         run_agent_success, run_retrieved_learning = self._sampled_evaluation_families(
-            user_id=user_id, session_id=session_id
+            user_id=user_id,
+            session_id=session_id,
+            evaluation_only=new_request.evaluation_only,
         )
         if not (run_agent_success or run_retrieved_learning):
             logger.info(
@@ -1166,7 +1168,7 @@ class GenerationService:
         )
 
     def _sampled_evaluation_families(
-        self, *, user_id: str, session_id: str
+        self, *, user_id: str, session_id: str, evaluation_only: bool
     ) -> tuple[bool, bool]:
         """Which judge families this session is sampled for.
 
@@ -1186,7 +1188,9 @@ class GenerationService:
             "session_id": session_id,
         }
         return (
-            samples_agent_success(agent_success_config, **scope),
+            samples_agent_success(
+                agent_success_config, evaluation_only=evaluation_only, **scope
+            ),
             samples_retrieved_learning(agent_success_config, **scope),
         )
 

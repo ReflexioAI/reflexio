@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import TypedDict
+
 from reflexio.models.config_schema import AgentSuccessConfig
 from reflexio.server.services.agent_success_evaluation.sampling import (
     samples_agent_success,
@@ -9,13 +11,29 @@ from reflexio.server.services.agent_success_evaluation.sampling import (
     stable_group_sampling_fraction,
 )
 
-SCOPE = {"org_id": "org-1", "user_id": "user-1", "session_id": "sess-1"}
+
+class SamplingScope(TypedDict):
+    org_id: str
+    user_id: str
+    session_id: str
 
 
-def _config(sampling_rate: float, retrieved: float | None = None) -> AgentSuccessConfig:
+SCOPE: SamplingScope = {
+    "org_id": "org-1",
+    "user_id": "user-1",
+    "session_id": "sess-1",
+}
+
+
+def _config(
+    sampling_rate: float,
+    retrieved: float | None = None,
+    evaluation_only: float | None = None,
+) -> AgentSuccessConfig:
     return AgentSuccessConfig(
         success_definition_prompt="Did the agent succeed?",
         sampling_rate=sampling_rate,
+        evaluation_only_sampling_rate=evaluation_only,
         retrieved_learning_sampling_rate=retrieved,
     )
 
@@ -33,6 +51,52 @@ def test_the_field_default_is_none_when_never_supplied() -> None:
     config = AgentSuccessConfig(success_definition_prompt="Did the agent succeed?")
 
     assert config.retrieved_learning_sampling_rate is None
+
+
+def test_evaluation_only_sampling_rate_default_is_none() -> None:
+    config = AgentSuccessConfig(success_definition_prompt="Did the agent succeed?")
+
+    assert config.evaluation_only_sampling_rate is None
+
+
+def test_evaluation_only_without_override_inherits_current_success_rate() -> None:
+    for rate in (0.0, 0.05, 1.0):
+        config = AgentSuccessConfig(
+            success_definition_prompt="Did the agent succeed?",
+            sampling_rate=rate,
+        )
+
+        assert samples_agent_success(
+            config, evaluation_only=True, **SCOPE
+        ) == samples_agent_success(config, **SCOPE)
+
+
+def test_evaluation_only_override_changes_only_evaluation_only_sampling() -> None:
+    config = _config(0.0, retrieved=0.0, evaluation_only=1.0)
+
+    assert samples_agent_success(config, **SCOPE) is False
+    assert samples_agent_success(config, evaluation_only=True, **SCOPE) is True
+    assert samples_retrieved_learning(config, **SCOPE) is False
+
+
+def test_denser_evaluation_only_override_preserves_nested_session_samples() -> None:
+    config = _config(0.1, evaluation_only=0.9)
+    ordinary_sampled = 0
+    both_sampled = 0
+
+    for n in range(500):
+        scope: SamplingScope = {
+            "org_id": "org-1",
+            "user_id": "u",
+            "session_id": f"s-{n}",
+        }
+        if samples_agent_success(config, **scope):
+            ordinary_sampled += 1
+            if samples_agent_success(config, evaluation_only=True, **scope):
+                both_sampled += 1
+
+    assert ordinary_sampled > 0
+    assert both_sampled == ordinary_sampled
 
 
 def test_an_org_that_never_opted_in_keeps_its_previous_behavior() -> None:
@@ -91,7 +155,11 @@ def test_a_denser_retrieved_rate_is_a_superset_of_the_agent_success_sample() -> 
     sampled_success = 0
     both = 0
     for n in range(500):
-        scope = {"org_id": "org-1", "user_id": "u", "session_id": f"s-{n}"}
+        scope: SamplingScope = {
+            "org_id": "org-1",
+            "user_id": "u",
+            "session_id": f"s-{n}",
+        }
         if samples_agent_success(config, **scope):
             sampled_success += 1
             if samples_retrieved_learning(config, **scope):

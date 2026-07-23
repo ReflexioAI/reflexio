@@ -99,7 +99,7 @@ def test_schedules_with_correct_key_when_session_id_present(
     assert callable(callback)
 
 
-def test_evaluation_only_does_not_bypass_sampling_rate(
+def test_evaluation_only_without_override_inherits_sampling_rate(
     service: GenerationService, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A 0% sample rate skips scheduling even for evaluation-only requests."""
@@ -292,20 +292,28 @@ def test_learning_stall_path_calls_post_publish_helper(
 
 
 def _set_rates(
-    service: GenerationService, *, success: float, retrieved: float | None
+    service: GenerationService,
+    *,
+    success: float,
+    retrieved: float | None,
+    evaluation_only: float | None = None,
 ) -> None:
     cast(Any, service.configurator.get_config).return_value = Config(
         storage_config=StorageConfigSQLite(),
         agent_success_config=AgentSuccessConfig(
             success_definition_prompt="Evaluate whether the agent succeeded.",
             sampling_rate=success,
+            evaluation_only_sampling_rate=evaluation_only,
             retrieved_learning_sampling_rate=retrieved,
         ),
     )
 
 
 def _schedule_and_capture(
-    service: GenerationService, monkeypatch: pytest.MonkeyPatch
+    service: GenerationService,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    evaluation_only: bool = False,
 ) -> MagicMock:
     """Schedule, then run the queued callback with run_group_evaluation stubbed."""
     scheduler = MagicMock()
@@ -319,7 +327,7 @@ def _schedule_and_capture(
     )
 
     service._schedule_group_evaluation_if_needed(
-        new_request=MagicMock(session_id="sess_split"),
+        new_request=MagicMock(session_id="sess_split", evaluation_only=evaluation_only),
         user_id="user_test",
         agent_version="v_test",
         source=None,
@@ -358,6 +366,29 @@ def test_success_only_sampling_skips_the_retrieved_learning_judge(
     kwargs = runner.call_args.kwargs
     assert kwargs["run_agent_success"] is True
     assert kwargs["run_retrieved_learning"] is False
+
+
+def test_evaluation_only_override_runs_only_success_judge(
+    service: GenerationService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _set_rates(service, success=0.0, retrieved=0.0, evaluation_only=1.0)
+
+    runner = _schedule_and_capture(service, monkeypatch, evaluation_only=True)
+
+    runner.assert_called_once()
+    kwargs = runner.call_args.kwargs
+    assert kwargs["run_agent_success"] is True
+    assert kwargs["run_retrieved_learning"] is False
+
+
+def test_evaluation_only_override_does_not_change_regular_sampling(
+    service: GenerationService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _set_rates(service, success=0.0, retrieved=0.0, evaluation_only=1.0)
+
+    runner = _schedule_and_capture(service, monkeypatch, evaluation_only=False)
+
+    runner.assert_not_called()
 
 
 def test_neither_family_sampled_does_not_schedule_at_all(
