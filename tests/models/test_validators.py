@@ -494,6 +494,24 @@ class TestNumericConstraints:
                 sampling_rate=1.5,
             )
 
+    @pytest.mark.parametrize("rate", [-0.1, 1.1])
+    def test_evaluation_only_sampling_rate_range(self, rate: float):
+        """evaluation_only_sampling_rate must be 0.0-1.0 when set."""
+        with pytest.raises(ValidationError):
+            AgentSuccessConfig(
+                success_definition_prompt="Check success",
+                evaluation_only_sampling_rate=rate,
+            )
+
+    @pytest.mark.parametrize("rate", [0.0, 1.0])
+    def test_evaluation_only_sampling_rate_accepts_bounds(self, rate: float):
+        config = AgentSuccessConfig(
+            success_definition_prompt="Check success",
+            evaluation_only_sampling_rate=rate,
+        )
+
+        assert config.evaluation_only_sampling_rate == rate
+
     def test_period_stats_non_negative(self):
         """PeriodStats counts must be >= 0."""
         with pytest.raises(ValidationError):

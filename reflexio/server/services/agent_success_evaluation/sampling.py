@@ -46,12 +46,19 @@ def samples_agent_success(
     org_id: str,
     user_id: str,
     session_id: str,
+    evaluation_only: bool = False,
 ) -> bool:
     """Whether this session is sampled for the session-success judge."""
     if agent_success_config is None:
         return False
+    rate = agent_success_config.sampling_rate
+    if (
+        evaluation_only
+        and agent_success_config.evaluation_only_sampling_rate is not None
+    ):
+        rate = agent_success_config.evaluation_only_sampling_rate
     return _samples(
-        float(agent_success_config.sampling_rate),
+        float(rate),
         stable_group_sampling_fraction(org_id, user_id, session_id),
     )
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable, Iterator
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -73,7 +74,9 @@ def test_evaluation_only_publish_waits_and_batches_followup_session_requests(
         agent_success_config=AgentSuccessConfig(
             evaluation_name="overall_success",
             success_definition_prompt="agent completes the requested task",
-            sampling_rate=1.0,
+            sampling_rate=0.0,
+            evaluation_only_sampling_rate=1.0,
+            retrieved_learning_sampling_rate=0.0,
         ),
     )
     instance = Reflexio(
@@ -88,6 +91,7 @@ def test_evaluation_only_publish_waits_and_batches_followup_session_requests(
     agent_version = "agent_eval_only_delay"
     observed_request_model_counts: list[int] = []
     original_run = AgentSuccessEvaluationService.run
+    retrieved_learning_run = MagicMock()
 
     def recording_run(
         self: AgentSuccessEvaluationService,
@@ -99,6 +103,9 @@ def test_evaluation_only_publish_waits_and_batches_followup_session_requests(
         return original_run(self, request)
 
     monkeypatch.setattr(AgentSuccessEvaluationService, "run", recording_run)
+    monkeypatch.setattr(
+        runner, "_run_retrieved_learning_evaluation", retrieved_learning_run
+    )
 
     with patched_litellm():
         first = instance.publish_interaction(
@@ -132,6 +139,18 @@ def test_evaluation_only_publish_waits_and_batches_followup_session_requests(
         )
         assert second.success is True
 
+        ordinary_session_id = "session_ordinary"
+        ordinary = instance.publish_interaction(
+            {
+                "user_id": user_id,
+                "interaction_data_list": _interaction_pair("ordinary issue"),
+                "source": "integration",
+                "agent_version": agent_version,
+                "session_id": ordinary_session_id,
+            }
+        )
+        assert ordinary.success is True
+
         # This passes the first publish's original fire time but is still before
         # the second publish's rescheduled fire time.
         time.sleep(0.65)
@@ -150,8 +169,15 @@ def test_evaluation_only_publish_waits_and_batches_followup_session_requests(
             assert results[0].session_id == session_id
 
         _wait_until(assert_evaluated_once)
+        time.sleep(0.4)
+
+        results = storage.get_agent_success_evaluation_results(
+            agent_version=agent_version, limit=10
+        )
+        assert [result.session_id for result in results] == [session_id]
 
     stored_requests = storage.get_requests_by_session(user_id, session_id)
     assert len(stored_requests) == 2
     assert all(request.evaluation_only is True for request in stored_requests)
     assert observed_request_model_counts == [2]
+    retrieved_learning_run.assert_not_called()

@@ -32,6 +32,7 @@ def test_agent_success_evaluation_defaults_on_at_five_percent():
     assert c.agent_success_config is not None
     assert c.agent_success_config.sampling_rate == DEFAULT_AGENT_SUCCESS_SAMPLING_RATE
     assert c.agent_success_config.sampling_rate == 0.05
+    assert c.agent_success_config.evaluation_only_sampling_rate is None
     assert (
         c.agent_success_config.success_definition_prompt
         == DEFAULT_AGENT_SUCCESS_DEFINITION_PROMPT

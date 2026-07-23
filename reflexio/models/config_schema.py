@@ -520,6 +520,15 @@ class AgentSuccessConfig(_ExtractorWindowOverrideCompatMixin, BaseModel):
         le=1.0,
         description="Fraction of sessions to evaluate automatically.",
     )
+    evaluation_only_sampling_rate: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Fraction of evaluation-only sessions to evaluate automatically."
+            " None inherits sampling_rate."
+        ),
+    )
     retrieved_learning_sampling_rate: float | None = Field(
         default=None,
         ge=0.0,
