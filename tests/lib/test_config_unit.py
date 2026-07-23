@@ -241,6 +241,26 @@ class TestSetConfig:
 
         assert response.success is True
 
+    def test_set_config_uses_exact_config_returned_by_normalizer(self):
+        """A typed normalization result is persisted without reconstruction."""
+        mixin = _make_config_mixin()
+        payload = {"storage_config": {"db_path": "/var/data/test.db"}}
+        normalized = Config(
+            storage_config=StorageConfigSQLite(db_path="/var/data/test.db")
+        )
+        configurator = _get_configurator(mixin)
+        configurator.normalize_config_payload.return_value = normalized
+        configurator.get_current_storage_configuration.return_value = (
+            normalized.storage_config
+        )
+
+        response = mixin.set_config(payload)
+
+        assert response.success is True
+        configurator.normalize_config_payload.assert_called_once_with(payload)
+        configurator.set_config.assert_called_once_with(normalized)
+        assert configurator.set_config.call_args.args[0] is normalized
+
     def test_set_config_exception(self):
         """Returns failure on unexpected exception."""
         mixin = _make_config_mixin()

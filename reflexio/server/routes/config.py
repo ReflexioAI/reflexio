@@ -94,8 +94,6 @@ def set_config(
     configurator = reflexio.request_context.configurator
     try:
         normalized_config = configurator.normalize_config_payload(config)
-        if not isinstance(normalized_config, dict):
-            normalized_config = config
         Config.model_validate(normalized_config)
     except ValidationError as exc:
         raise HTTPException(

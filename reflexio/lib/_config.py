@@ -18,8 +18,12 @@ class ConfigMixin(ReflexioBase):
         try:
             configurator = self.request_context.configurator
             if isinstance(config, dict):
-                config = configurator.normalize_config_payload(config)
-                config = Config(**config)
+                normalized = configurator.normalize_config_payload(config)
+                config = (
+                    normalized
+                    if isinstance(normalized, Config)
+                    else Config(**normalized)
+                )
 
             # Validate storage connection before setting config.
             # If no storage_config provided, or the caller round-tripped the

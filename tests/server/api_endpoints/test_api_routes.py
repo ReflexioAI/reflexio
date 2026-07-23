@@ -417,9 +417,34 @@ class TestUpdateUserProfileRoute:
 class TestSetConfigRoute:
     """Tests for POST /api/set_config (full replacement semantics)."""
 
+    def test_passes_exact_config_returned_by_normalizer(
+        self, client, patched_reflexio, mock_reflexio
+    ):
+        payload = {
+            "storage_config": {
+                "db_path": str(Path(tempfile.gettempdir()) / "set-config.db")
+            }
+        }
+        normalized = Config.model_validate(payload)
+        configurator = mock_reflexio.request_context.configurator
+        configurator.normalize_config_payload.return_value = normalized
+        mock_reflexio.set_config.return_value = SetConfigResponse(
+            success=True, msg="Configuration set successfully"
+        )
+
+        response = client.post("/api/set_config", json=payload)
+
+        assert response.status_code == 200, response.text
+        configurator.normalize_config_payload.assert_called_once_with(payload)
+        mock_reflexio.set_config.assert_called_once_with(normalized)
+        assert mock_reflexio.set_config.call_args.args[0] is normalized
+
     def test_unknown_field_returns_422_before_set_config(
         self, client, patched_reflexio, mock_reflexio
     ):
+        configurator = mock_reflexio.request_context.configurator
+        configurator.normalize_config_payload.side_effect = lambda payload: payload
+
         response = client.post(
             "/api/set_config",
             json={

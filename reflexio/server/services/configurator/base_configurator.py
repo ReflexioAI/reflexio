@@ -78,7 +78,9 @@ class BaseConfigurator(ABC):
         """Return config serialized for API responses."""
         return self.config.model_dump(mode="json")
 
-    def normalize_config_payload(self, config: dict[str, Any]) -> dict[str, Any]:
+    def normalize_config_payload(
+        self, config: dict[str, Any]
+    ) -> Config | dict[str, Any]:
         """Normalize raw API config payloads before Pydantic validation."""
         return config
 
