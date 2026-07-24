@@ -413,6 +413,7 @@ def test_publish_persists_the_retrieved_learning_sampling_decision(
     expected_schedule_count: int,
 ) -> None:
     _set_rates(service, success=0.0, retrieved=retrieved_rate)
+    storage = cast(MagicMock, service.storage)
     scheduler = MagicMock()
     monkeypatch.setattr(
         "reflexio.server.services.generation_service.GroupEvaluationScheduler.get_instance",
@@ -431,7 +432,7 @@ def test_publish_persists_the_retrieved_learning_sampling_decision(
         source=None,
     )
 
-    service.storage.record_retrieved_learning_sampling_decision.assert_called_once_with(
+    storage.record_retrieved_learning_sampling_decision.assert_called_once_with(
         user_id="user_test",
         session_id="session-sampling-decision",
         request_id="request-sampling-decision",
@@ -444,8 +445,9 @@ def test_sampling_decision_persistence_failure_does_not_break_publish_scheduling
     service: GenerationService, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _set_rates(service, success=0.0, retrieved=1.0)
-    service.storage.record_retrieved_learning_sampling_decision.side_effect = (
-        RuntimeError("sampling persistence unavailable")
+    storage = cast(MagicMock, service.storage)
+    storage.record_retrieved_learning_sampling_decision.side_effect = RuntimeError(
+        "sampling persistence unavailable"
     )
     scheduler = MagicMock()
     monkeypatch.setattr(
@@ -465,7 +467,7 @@ def test_sampling_decision_persistence_failure_does_not_break_publish_scheduling
         source=None,
     )
 
-    service.storage.record_retrieved_learning_sampling_decision.assert_called_once()
+    storage.record_retrieved_learning_sampling_decision.assert_called_once()
     scheduler.schedule.assert_called_once()
 
 
