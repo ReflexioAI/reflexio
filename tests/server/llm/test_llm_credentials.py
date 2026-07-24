@@ -10,6 +10,7 @@ from reflexio.server.llm.model_defaults import _ENV_TO_PROVIDER
 from reflexio.test_support.llm_credentials import (
     _PLACEHOLDER_KEY,
     ensure_provider_credential,
+    real_provider_key,
 )
 
 
@@ -41,3 +42,19 @@ def test_fills_when_only_an_embedding_provider_is_available(
     )
     ensure_provider_credential()
     assert os.environ["OPENAI_API_KEY"] == _PLACEHOLDER_KEY
+
+
+def test_placeholder_does_not_read_as_a_real_credential() -> None:
+    """The floor must not silently un-skip the ``requires_credentials`` tier."""
+    ensure_provider_credential()
+    # Detection still sees it — that is what keeps model resolution working.
+    assert os.environ["OPENAI_API_KEY"] == _PLACEHOLDER_KEY
+    assert real_provider_key("OPENAI_API_KEY") is None
+
+
+def test_real_provider_key_returns_a_configured_credential(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-real")
+    assert real_provider_key("OPENAI_API_KEY") == "sk-real"
+    assert real_provider_key("ANTHROPIC_API_KEY") is None

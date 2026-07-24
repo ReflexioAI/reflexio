@@ -29,6 +29,7 @@ from reflexio.server.llm.litellm_client import (
     _sanitize_json_string,
     create_litellm_client,
 )
+from reflexio.test_support.llm_credentials import real_provider_key
 from tests.server.test_utils import skip_in_precommit, skip_low_priority
 
 # Skip all tests if neither API key is set
@@ -36,7 +37,8 @@ pytestmark = [
     pytest.mark.integration,
     pytest.mark.requires_credentials,
     pytest.mark.skipif(
-        not os.getenv("OPENAI_API_KEY") and not os.getenv("ANTHROPIC_API_KEY"),
+        not real_provider_key("OPENAI_API_KEY")
+        and not real_provider_key("ANTHROPIC_API_KEY"),
         reason="Neither OPENAI_API_KEY nor ANTHROPIC_API_KEY environment variable is set",
     ),
 ]
@@ -113,7 +115,7 @@ class ColorAnalysis(BaseModel):
 @pytest.fixture
 def openai_client() -> LiteLLMClient:
     """Create an OpenAI-based LiteLLM client."""
-    if not os.getenv("OPENAI_API_KEY"):
+    if not real_provider_key("OPENAI_API_KEY"):
         pytest.skip("OPENAI_API_KEY not set")
     # GPT-5 models use reasoning tokens internally, so we need more max_tokens
     return create_litellm_client(
@@ -127,7 +129,7 @@ def openai_client() -> LiteLLMClient:
 @pytest.fixture
 def claude_client() -> LiteLLMClient:
     """Create a Claude-based LiteLLM client."""
-    if not os.getenv("ANTHROPIC_API_KEY"):
+    if not real_provider_key("ANTHROPIC_API_KEY"):
         pytest.skip("ANTHROPIC_API_KEY not set")
     return create_litellm_client(
         model=_get_claude_test_model(),
@@ -488,7 +490,9 @@ class TestLiteLLMClientModelSwitching:
     @skip_low_priority
     def test_switch_from_openai_to_claude(self):
         """Test that we can create clients for different providers."""
-        if not os.getenv("OPENAI_API_KEY") or not os.getenv("ANTHROPIC_API_KEY"):
+        if not real_provider_key("OPENAI_API_KEY") or not real_provider_key(
+            "ANTHROPIC_API_KEY"
+        ):
             pytest.skip("Both OPENAI_API_KEY and ANTHROPIC_API_KEY required")
 
         # Create OpenAI client (GPT-5 needs more tokens due to reasoning)
@@ -762,7 +766,7 @@ class TestLiteLLMClientAPIKeyOverride:
     @skip_low_priority
     def test_generate_response_with_api_key_override_openai(self):
         """Test generating response using OpenAI API key from config override."""
-        openai_key = os.getenv("OPENAI_API_KEY")
+        openai_key = real_provider_key("OPENAI_API_KEY")
         if not openai_key:
             pytest.skip("OPENAI_API_KEY not set")
 
@@ -785,7 +789,7 @@ class TestLiteLLMClientAPIKeyOverride:
     @skip_low_priority
     def test_generate_response_with_api_key_override_anthropic(self):
         """Test generating response using Anthropic API key from config override."""
-        anthropic_key = os.getenv("ANTHROPIC_API_KEY")
+        anthropic_key = real_provider_key("ANTHROPIC_API_KEY")
         if not anthropic_key:
             pytest.skip("ANTHROPIC_API_KEY not set")
 
@@ -808,7 +812,7 @@ class TestLiteLLMClientAPIKeyOverride:
     @skip_low_priority
     def test_embeddings_with_api_key_override(self):
         """Test embedding generation with API key override."""
-        openai_key = os.getenv("OPENAI_API_KEY")
+        openai_key = real_provider_key("OPENAI_API_KEY")
         if not openai_key:
             pytest.skip("OPENAI_API_KEY not set")
 
@@ -828,7 +832,7 @@ class TestLiteLLMClientAPIKeyOverride:
     @skip_low_priority
     def test_structured_output_with_api_key_override(self):
         """Test structured output with API key override."""
-        openai_key = os.getenv("OPENAI_API_KEY")
+        openai_key = real_provider_key("OPENAI_API_KEY")
         if not openai_key:
             pytest.skip("OPENAI_API_KEY not set")
 
@@ -876,7 +880,7 @@ class TestLiteLLMClientAPIKeyOverride:
     @skip_low_priority
     def test_chat_response_with_api_key_override(self):
         """Test multi-turn chat response with API key override."""
-        openai_key = os.getenv("OPENAI_API_KEY")
+        openai_key = real_provider_key("OPENAI_API_KEY")
         if not openai_key:
             pytest.skip("OPENAI_API_KEY not set")
 
@@ -903,7 +907,7 @@ class TestLiteLLMClientAPIKeyOverride:
     @skip_low_priority
     def test_image_analysis_with_api_key_override(self, test_image_bytes: bytes):
         """Test image analysis with API key override."""
-        openai_key = os.getenv("OPENAI_API_KEY")
+        openai_key = real_provider_key("OPENAI_API_KEY")
         if not openai_key:
             pytest.skip("OPENAI_API_KEY not set")
 
