@@ -1,6 +1,7 @@
 """Abstract user playbook CRUD + search declarations."""
 
 from abc import abstractmethod
+from typing import TYPE_CHECKING
 
 from reflexio.models.api_schema.common import BlockingIssue
 from reflexio.models.api_schema.domain import Status, UserPlaybook
@@ -8,9 +9,42 @@ from reflexio.models.api_schema.domain.entities import LineageContext
 from reflexio.models.api_schema.retriever_schema import SearchUserPlaybookRequest
 from reflexio.models.config_schema import SearchOptions
 
+if TYPE_CHECKING:
+    from reflexio.server.services.playbook.publication import (
+        PublicationClaim,
+        PublicationRequest,
+        PublicationResult,
+    )
+
 
 class UserPlaybookStoreMixin:
     """Abstract user playbook CRUD + search methods."""
+
+    @abstractmethod
+    def claim_user_playbook_publication(
+        self, *, job_id: int, owner: str, worker_fence: int
+    ) -> "PublicationClaim":
+        """Claim a publication attempt under the current optimizer worker fence."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def stage_user_playbook_publication(self, request: "PublicationRequest") -> None:
+        """Persist one immutable successor payload outside visible playbook tables."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def commit_user_playbook_publication(
+        self, request: "PublicationRequest"
+    ) -> "PublicationResult":
+        """Atomically commit a staged successor or an incumbent-changed result."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def load_user_playbook_publication_result(
+        self, job_id: int
+    ) -> "PublicationResult | None":
+        """Load the immutable terminal publication result for a job."""
+        raise NotImplementedError
 
     @abstractmethod
     def save_user_playbooks(

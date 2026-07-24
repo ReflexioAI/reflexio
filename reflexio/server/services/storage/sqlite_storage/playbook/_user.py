@@ -4,6 +4,7 @@ import json
 import sqlite3
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from hashlib import sha256
 from typing import Any
 
 from reflexio.models.api_schema.common import BlockingIssue
@@ -12,6 +13,12 @@ from reflexio.models.api_schema.retriever_schema import SearchUserPlaybookReques
 from reflexio.models.api_schema.service_schemas import Status, UserPlaybook
 from reflexio.models.config_schema import SearchMode, SearchOptions
 from reflexio.server.services.embedding_text import resolve_retrieval_threshold
+from reflexio.server.services.playbook.publication import (
+    PublicationClaim,
+    PublicationRequest,
+    PublicationResult,
+)
+from reflexio.server.services.storage.error import StorageError
 from reflexio.server.services.storage.lifecycle_filters import (
     validate_include_inactive,
 )
@@ -59,6 +66,64 @@ def _emit_supersede_user_playbook(
     )
 
 
+def _publication_staging_payload(request: PublicationRequest) -> dict[str, object]:
+    return {
+        "attempt_key": request.attempt_key,
+        "claim_owner": request.publication_claim.owner,
+        "content_digest": request.projection.content_digest,
+        "incumbent_user_playbook_id": request.incumbent_user_playbook_id,
+        "job_id": request.job_id,
+        "optimizer_kind": request.optimizer_kind,
+        "projection_digest": request.projection.digest,
+        "projection_json": request.projection.canonical_json,
+        "proof_digest": request.decision_proof.digest,
+        "proof_json": request.decision_proof.canonical_json,
+        "publication_fence": request.publication_claim.fence,
+        "request_id": request.request_id,
+        "revised_content": request.revised_content,
+        "subject_epochs_json": request.subject_epochs_json,
+        "worker_fence": request.worker_fence,
+    }
+
+
+def _publication_staging_digest(request: PublicationRequest) -> str:
+    canonical = json.dumps(
+        _publication_staging_payload(request),
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return sha256(canonical.encode("utf-8")).hexdigest()
+
+
+_STAGING_CONFLICT_FIELDS = (
+    ("optimizer_kind", "optimizer kind"),
+    ("job_id", "job id"),
+    ("attempt_key", "attempt key"),
+    ("claim_owner", "publication owner"),
+    ("worker_fence", "worker fence"),
+    ("publication_fence", "publication fence"),
+    ("incumbent_user_playbook_id", "incumbent"),
+    ("revised_content", "revised content"),
+    ("content_digest", "content digest"),
+    ("projection_digest", "projection digest"),
+    ("projection_json", "projection bytes"),
+    ("proof_digest", "proof digest"),
+    ("proof_json", "proof bytes"),
+    ("subject_epochs_json", "subject epochs"),
+    ("request_id", "request identity"),
+)
+
+
+def _assert_staging_matches(row: sqlite3.Row, request: PublicationRequest) -> None:
+    expected = _publication_staging_payload(request)
+    for field, label in _STAGING_CONFLICT_FIELDS:
+        if row[field] != expected[field]:
+            raise StorageError(f"staged publication conflicts on {label}")
+    if row["staging_digest"] != _publication_staging_digest(request):
+        raise StorageError("staged publication conflicts on staging digest")
+
+
 class UserPlaybookStoreMixin:
     """Mixin providing user playbook CRUD + search for SQLite storage."""
 
@@ -79,6 +144,496 @@ class UserPlaybookStoreMixin:
     _assert_subject_writable_locked: Any
     _own_transaction: Any
     commit_scope: Any
+    _has_sqlite_vec: bool
+
+    def _publication_job_locked(
+        self,
+        request: PublicationRequest,
+    ) -> sqlite3.Row:
+        row = self.conn.execute(
+            "SELECT * FROM playbook_optimization_jobs WHERE job_id = ?",
+            (request.job_id,),
+        ).fetchone()
+        if row is None:
+            raise StorageError("publication optimizer job does not exist")
+        if row["optimizer_kind"] != request.optimizer_kind:
+            raise StorageError("publication optimizer kind changed")
+        if row["target_kind"] != "user_playbook":
+            raise StorageError("publication target is not a user playbook")
+        if row["target_id"] != request.incumbent_user_playbook_id:
+            raise StorageError("publication incumbent changed in optimizer job")
+        if row["attempt_key"] != request.attempt_key:
+            raise StorageError("publication attempt identity changed")
+        if row["status"] not in {"pending", "running"}:
+            raise StorageError("publication optimizer job is terminal")
+        if row["stage"] != "publishing":
+            raise StorageError("publication optimizer job is not at publishing stage")
+        if row["lease_owner"] != request.publication_claim.owner:
+            raise StorageError("publication worker owner changed")
+        if row["lease_fence"] != request.worker_fence:
+            raise StorageError("publication worker fence changed")
+        if row["candidate_content_digest"] != request.projection.content_digest:
+            raise StorageError("publication content digest changed")
+        if row["search_projection_digest"] != request.projection.digest:
+            raise StorageError("publication projection digest changed")
+        try:
+            metadata = json.loads(row["metadata_json"] or "{}")
+        except json.JSONDecodeError as exc:
+            raise StorageError("publication optimizer metadata is invalid") from exc
+        if metadata.get("publication_proof_digest") != request.decision_proof.digest:
+            raise StorageError("publication proof digest changed")
+        return row
+
+    def _publication_claim_locked(
+        self,
+        request: PublicationRequest,
+    ) -> sqlite3.Row:
+        row = self.conn.execute(
+            """SELECT * FROM user_playbook_publication_claims
+               WHERE optimizer_kind = ? AND job_id = ?""",
+            (request.optimizer_kind, request.job_id),
+        ).fetchone()
+        if row is None:
+            raise StorageError("publication claim does not exist")
+        if row["owner"] != request.publication_claim.owner:
+            raise StorageError("publication claim owner changed")
+        if row["publication_fence"] != request.publication_claim.fence:
+            raise StorageError("publication fence changed")
+        if row["worker_fence"] != request.worker_fence:
+            raise StorageError("publication worker fence changed")
+        if row["consumed"]:
+            raise StorageError("publication claim was already consumed")
+        return row
+
+    @SQLiteStorageBase.handle_exceptions
+    def claim_user_playbook_publication(
+        self, *, job_id: int, owner: str, worker_fence: int
+    ) -> PublicationClaim:
+        if job_id <= 0 or worker_fence <= 0 or not owner.strip():
+            raise ValueError("publication claim identity is invalid")
+        now = _epoch_now()
+        with self._lock:
+            self.conn.execute("BEGIN IMMEDIATE")
+            try:
+                job = self.conn.execute(
+                    "SELECT * FROM playbook_optimization_jobs WHERE job_id = ?",
+                    (job_id,),
+                ).fetchone()
+                if job is None:
+                    raise StorageError("publication optimizer job does not exist")
+                if job["optimizer_kind"] not in {"gepa", "offline_tuner_replay"}:
+                    raise StorageError("publication optimizer kind is not publishable")
+                if job["target_kind"] != "user_playbook":
+                    raise StorageError("publication target is not a user playbook")
+                if job["status"] not in {"pending", "running"}:
+                    raise StorageError("publication optimizer job is terminal")
+                if job["stage"] != "publishing":
+                    raise StorageError(
+                        "publication optimizer job is not at publishing stage"
+                    )
+                if job["lease_owner"] != owner:
+                    raise StorageError("publication worker owner changed")
+                if job["lease_fence"] != worker_fence:
+                    raise StorageError("publication worker fence changed")
+                existing = self.conn.execute(
+                    """SELECT * FROM user_playbook_publication_claims
+                       WHERE optimizer_kind = ? AND job_id = ?""",
+                    (job["optimizer_kind"], job_id),
+                ).fetchone()
+                if existing is not None:
+                    if existing["consumed"]:
+                        raise StorageError("publication claim was already consumed")
+                    if (
+                        existing["owner"] == owner
+                        and existing["worker_fence"] == worker_fence
+                    ):
+                        fence = int(existing["publication_fence"])
+                    else:
+                        fence = int(existing["publication_fence"]) + 1
+                        self.conn.execute(
+                            """UPDATE user_playbook_publication_claims
+                               SET owner = ?, publication_fence = ?, worker_fence = ?,
+                                   updated_at = ?
+                               WHERE optimizer_kind = ? AND job_id = ?""",
+                            (
+                                owner,
+                                fence,
+                                worker_fence,
+                                now,
+                                job["optimizer_kind"],
+                                job_id,
+                            ),
+                        )
+                else:
+                    fence = 1
+                    self.conn.execute(
+                        """INSERT INTO user_playbook_publication_claims
+                           (optimizer_kind, job_id, owner, publication_fence,
+                            worker_fence, consumed, updated_at)
+                           VALUES (?, ?, ?, ?, ?, 0, ?)""",
+                        (
+                            job["optimizer_kind"],
+                            job_id,
+                            owner,
+                            fence,
+                            worker_fence,
+                            now,
+                        ),
+                    )
+                self.conn.commit()
+            except Exception:
+                self.conn.rollback()
+                raise
+        return PublicationClaim(job_id=job_id, owner=owner, fence=fence)
+
+    @SQLiteStorageBase.handle_exceptions
+    def stage_user_playbook_publication(self, request: PublicationRequest) -> None:
+        request.__post_init__()
+        now = _epoch_now()
+        with self._lock:
+            self.conn.execute("BEGIN IMMEDIATE")
+            try:
+                existing = self.conn.execute(
+                    """SELECT * FROM user_playbook_publication_staging
+                       WHERE optimizer_kind = ? AND job_id = ?""",
+                    (request.optimizer_kind, request.job_id),
+                ).fetchone()
+                terminal = self.conn.execute(
+                    """SELECT staging_digest FROM user_playbook_publication_results
+                       WHERE optimizer_kind = ? AND job_id = ?""",
+                    (request.optimizer_kind, request.job_id),
+                ).fetchone()
+                if terminal is not None:
+                    if existing is None:
+                        raise StorageError(
+                            "committed publication lost its staging record"
+                        )
+                    _assert_staging_matches(existing, request)
+                    if terminal["staging_digest"] != existing["staging_digest"]:
+                        raise StorageError(
+                            "committed publication staging digest changed"
+                        )
+                    self.conn.commit()
+                    return
+                if existing is not None:
+                    _assert_staging_matches(existing, request)
+                    self._publication_job_locked(request)
+                    self._publication_claim_locked(request)
+                    self.conn.commit()
+                    return
+                self._publication_job_locked(request)
+                self._publication_claim_locked(request)
+                self.conn.execute(
+                    """INSERT INTO user_playbook_publication_staging
+                       (optimizer_kind, job_id, attempt_key, claim_owner,
+                        publication_fence, worker_fence, incumbent_user_playbook_id,
+                        revised_content, content_digest, projection_json,
+                        projection_digest, proof_json, proof_digest,
+                        subject_epochs_json, request_id, staging_digest, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        request.optimizer_kind,
+                        request.job_id,
+                        request.attempt_key,
+                        request.publication_claim.owner,
+                        request.publication_claim.fence,
+                        request.worker_fence,
+                        request.incumbent_user_playbook_id,
+                        request.revised_content,
+                        request.projection.content_digest,
+                        request.projection.canonical_json,
+                        request.projection.digest,
+                        request.decision_proof.canonical_json,
+                        request.decision_proof.digest,
+                        request.subject_epochs_json,
+                        request.request_id,
+                        _publication_staging_digest(request),
+                        now,
+                    ),
+                )
+                self.conn.commit()
+            except Exception:
+                self.conn.rollback()
+                raise
+
+    def _finish_publication_locked(
+        self,
+        request: PublicationRequest,
+        *,
+        outcome: str,
+        successor_id: int | None,
+        staging_digest: str,
+        now: int,
+    ) -> None:
+        self.conn.execute(
+            """INSERT INTO user_playbook_publication_results
+               (optimizer_kind, job_id, outcome, successor_user_playbook_id,
+                staging_digest, created_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (
+                request.optimizer_kind,
+                request.job_id,
+                outcome,
+                successor_id,
+                staging_digest,
+                now,
+            ),
+        )
+        consumed = self.conn.execute(
+            """UPDATE user_playbook_publication_claims
+               SET consumed = 1, updated_at = ?
+               WHERE optimizer_kind = ? AND job_id = ? AND owner = ?
+                 AND publication_fence = ? AND worker_fence = ? AND consumed = 0""",
+            (
+                now,
+                request.optimizer_kind,
+                request.job_id,
+                request.publication_claim.owner,
+                request.publication_claim.fence,
+                request.worker_fence,
+            ),
+        )
+        if consumed.rowcount != 1:
+            raise StorageError("publication claim consumption lost its fence")
+        job_stage = "applied" if outcome == "applied" else "abstained"
+        job_status = "completed" if outcome == "applied" else "skipped"
+        updated = self.conn.execute(
+            """UPDATE playbook_optimization_jobs
+               SET stage = ?, terminal_outcome = ?, status = ?,
+                   successor_target_id = ?, lease_owner = NULL,
+                   lease_expires_at = NULL, updated_at = ?
+               WHERE job_id = ? AND optimizer_kind = ? AND attempt_key = ?
+                 AND target_kind = 'user_playbook' AND target_id = ?
+                 AND status IN ('pending', 'running') AND stage = 'publishing'
+                 AND lease_owner = ? AND lease_fence = ?""",
+            (
+                job_stage,
+                outcome,
+                job_status,
+                successor_id,
+                now,
+                request.job_id,
+                request.optimizer_kind,
+                request.attempt_key,
+                request.incumbent_user_playbook_id,
+                request.publication_claim.owner,
+                request.worker_fence,
+            ),
+        )
+        if updated.rowcount != 1:
+            raise StorageError("publication optimizer job transition lost its fence")
+
+    @SQLiteStorageBase.handle_exceptions
+    def commit_user_playbook_publication(
+        self, request: PublicationRequest
+    ) -> PublicationResult:
+        request.__post_init__()
+        now = _epoch_now()
+        with self._lock:
+            self.conn.execute("BEGIN IMMEDIATE")
+            try:
+                terminal = self.conn.execute(
+                    """SELECT * FROM user_playbook_publication_results
+                       WHERE optimizer_kind = ? AND job_id = ?""",
+                    (request.optimizer_kind, request.job_id),
+                ).fetchone()
+                staged = self.conn.execute(
+                    """SELECT * FROM user_playbook_publication_staging
+                       WHERE optimizer_kind = ? AND job_id = ?""",
+                    (request.optimizer_kind, request.job_id),
+                ).fetchone()
+                if staged is None:
+                    raise StorageError("publication successor is not staged")
+                _assert_staging_matches(staged, request)
+                if terminal is not None:
+                    if terminal["staging_digest"] != staged["staging_digest"]:
+                        raise StorageError(
+                            "committed publication staging digest changed"
+                        )
+                    result = PublicationResult(
+                        job_id=request.job_id,
+                        outcome=terminal["outcome"],
+                        successor_user_playbook_id=terminal[
+                            "successor_user_playbook_id"
+                        ],
+                    )
+                    self.conn.commit()
+                    return result
+                self._publication_job_locked(request)
+                self._publication_claim_locked(request)
+                incumbent = self.conn.execute(
+                    """SELECT * FROM user_playbooks
+                       WHERE user_playbook_id = ?""",
+                    (request.incumbent_user_playbook_id,),
+                ).fetchone()
+                if incumbent is None:
+                    raise StorageError("publication incumbent does not exist")
+                subject_ref = self._subject_ref_from_user_playbook_row(incumbent)
+                self._assert_subject_writable_locked(subject_ref)
+                epochs = json.loads(request.subject_epochs_json)["subjects"]
+                for item in epochs:
+                    if not isinstance(item, dict):
+                        raise StorageError("publication subject epochs are invalid")
+                    epoch_ref = item.get("ref", item.get("subject_ref"))
+                    epoch = item.get("epoch", item.get("erasure_epoch"))
+                    if (
+                        not isinstance(epoch_ref, str)
+                        or not epoch_ref
+                        or (type(epoch) is not int or epoch < 0)
+                    ):
+                        raise StorageError("publication subject epochs are invalid")
+                    self._assert_subject_writable_locked(epoch_ref)
+                if incumbent["status"] is not None:
+                    self._finish_publication_locked(
+                        request,
+                        outcome="incumbent_changed",
+                        successor_id=None,
+                        staging_digest=staged["staging_digest"],
+                        now=now,
+                    )
+                    self.conn.execute(
+                        """INSERT INTO playbook_optimization_events
+                           (job_id, event_type, payload_json, created_at)
+                           VALUES (?, 'publication_incumbent_changed', ?, ?)""",
+                        (
+                            request.job_id,
+                            json.dumps(
+                                {
+                                    "outcome": "incumbent_changed",
+                                    "request_id": request.request_id,
+                                },
+                                separators=(",", ":"),
+                                sort_keys=True,
+                            ),
+                            now,
+                        ),
+                    )
+                    self.conn.commit()
+                    return PublicationResult(
+                        job_id=request.job_id,
+                        outcome="incumbent_changed",
+                        successor_user_playbook_id=None,
+                    )
+                embedding = [float(value) for value in request.projection.embedding]
+                created_at = _epoch_to_iso(now)
+                inserted = self.conn.execute(
+                    """INSERT INTO user_playbooks
+                       (user_id, playbook_name, created_at, request_id, agent_version,
+                        content, trigger, rationale, blocking_issue,
+                        source_interaction_ids, status, source, embedding,
+                        expanded_terms, source_span, notes, reader_angle, tags,
+                        merged_into, superseded_by, governance_subject_ref)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?,
+                               NULL, NULL, ?)""",
+                    (
+                        incumbent["user_id"],
+                        incumbent["playbook_name"],
+                        created_at,
+                        request.request_id,
+                        incumbent["agent_version"],
+                        request.revised_content,
+                        request.projection.trigger,
+                        incumbent["rationale"],
+                        incumbent["blocking_issue"],
+                        incumbent["source_interaction_ids"],
+                        request.optimizer_kind,
+                        json.dumps(embedding, separators=(",", ":")),
+                        " ".join(request.projection.expanded_terms),
+                        incumbent["source_span"],
+                        incumbent["notes"],
+                        incumbent["reader_angle"],
+                        incumbent["tags"],
+                        subject_ref,
+                    ),
+                )
+                successor_id = inserted.lastrowid
+                if successor_id is None:
+                    raise StorageError("publication successor insert returned no id")
+                self.conn.execute(
+                    "INSERT INTO user_playbooks_fts(rowid, search_text) VALUES (?, ?)",
+                    (successor_id, request.projection.lexical_document),
+                )
+                if self._has_sqlite_vec:
+                    self.conn.execute(
+                        "INSERT INTO user_playbooks_vec(rowid, embedding) VALUES (?, ?)",
+                        (successor_id, json.dumps(embedding)),
+                    )
+                superseded = self.conn.execute(
+                    """UPDATE user_playbooks
+                       SET status = ?, superseded_by = ?, retired_at = ?
+                       WHERE user_playbook_id = ? AND status IS NULL""",
+                    (
+                        Status.SUPERSEDED.value,
+                        successor_id,
+                        now,
+                        request.incumbent_user_playbook_id,
+                    ),
+                )
+                if superseded.rowcount != 1:
+                    raise StorageError("publication incumbent changed during commit")
+                _append_event_stmt(
+                    self.conn,
+                    org_id=self.org_id,
+                    entity_type="user_playbook",
+                    entity_id=str(successor_id),
+                    op="revise",
+                    prov="wasRevisionOf",
+                    source_ids=[str(request.incumbent_user_playbook_id)],
+                    actor=request.optimizer_kind,
+                    request_id=request.request_id,
+                    reason="atomic optimizer publication",
+                    created_at=now,
+                )
+                event_payload = json.dumps(
+                    {
+                        "outcome": "applied",
+                        "proof_digest": request.decision_proof.digest,
+                        "projection_digest": request.projection.digest,
+                        "request_id": request.request_id,
+                        "successor_user_playbook_id": successor_id,
+                    },
+                    separators=(",", ":"),
+                    sort_keys=True,
+                )
+                self.conn.execute(
+                    """INSERT INTO playbook_optimization_events
+                       (job_id, event_type, payload_json, created_at)
+                       VALUES (?, 'publication_applied', ?, ?)""",
+                    (request.job_id, event_payload, now),
+                )
+                self._finish_publication_locked(
+                    request,
+                    outcome="applied",
+                    successor_id=successor_id,
+                    staging_digest=staged["staging_digest"],
+                    now=now,
+                )
+                self.conn.commit()
+                return PublicationResult(
+                    job_id=request.job_id,
+                    outcome="applied",
+                    successor_user_playbook_id=successor_id,
+                )
+            except Exception:
+                self.conn.rollback()
+                raise
+
+    @SQLiteStorageBase.handle_exceptions
+    def load_user_playbook_publication_result(
+        self, job_id: int
+    ) -> PublicationResult | None:
+        row = self._fetchone(
+            """SELECT job_id, outcome, successor_user_playbook_id
+               FROM user_playbook_publication_results WHERE job_id = ?""",
+            (job_id,),
+        )
+        if row is None:
+            return None
+        return PublicationResult(
+            job_id=row["job_id"],
+            outcome=row["outcome"],
+            successor_user_playbook_id=row["successor_user_playbook_id"],
+        )
 
     def _subject_ref_from_user_playbook_row(self, row: sqlite3.Row) -> str:
         subject_ref = row["governance_subject_ref"]

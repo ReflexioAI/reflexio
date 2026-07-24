@@ -2498,6 +2498,54 @@ CREATE TABLE IF NOT EXISTS playbook_optimization_events (
 );
 CREATE INDEX IF NOT EXISTS idx_poev_job ON playbook_optimization_events(job_id);
 
+CREATE TABLE IF NOT EXISTS user_playbook_publication_claims (
+    optimizer_kind TEXT NOT NULL,
+    job_id INTEGER NOT NULL,
+    owner TEXT NOT NULL,
+    publication_fence INTEGER NOT NULL CHECK (publication_fence >= 1),
+    worker_fence INTEGER NOT NULL CHECK (worker_fence >= 1),
+    consumed INTEGER NOT NULL DEFAULT 0 CHECK (consumed IN (0, 1)),
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (optimizer_kind, job_id),
+    FOREIGN KEY (job_id) REFERENCES playbook_optimization_jobs(job_id)
+        ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS user_playbook_publication_staging (
+    optimizer_kind TEXT NOT NULL,
+    job_id INTEGER NOT NULL,
+    attempt_key TEXT NOT NULL,
+    claim_owner TEXT NOT NULL,
+    publication_fence INTEGER NOT NULL,
+    worker_fence INTEGER NOT NULL,
+    incumbent_user_playbook_id INTEGER NOT NULL,
+    revised_content TEXT NOT NULL,
+    content_digest TEXT NOT NULL,
+    projection_json TEXT NOT NULL,
+    projection_digest TEXT NOT NULL,
+    proof_json TEXT NOT NULL,
+    proof_digest TEXT NOT NULL,
+    subject_epochs_json TEXT NOT NULL,
+    request_id TEXT NOT NULL,
+    staging_digest TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (optimizer_kind, job_id),
+    FOREIGN KEY (job_id) REFERENCES playbook_optimization_jobs(job_id)
+        ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS user_playbook_publication_results (
+    optimizer_kind TEXT NOT NULL,
+    job_id INTEGER NOT NULL,
+    outcome TEXT NOT NULL CHECK (outcome IN ('applied', 'incumbent_changed')),
+    successor_user_playbook_id INTEGER,
+    staging_digest TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (optimizer_kind, job_id),
+    FOREIGN KEY (job_id) REFERENCES playbook_optimization_jobs(job_id)
+        ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS _operation_state (
     service_name TEXT PRIMARY KEY,
     operation_state TEXT NOT NULL DEFAULT '{}',
