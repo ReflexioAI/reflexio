@@ -1080,6 +1080,22 @@ class GenerationService:
             session_id=session_id,
             evaluation_only=new_request.evaluation_only,
         )
+        if self.storage is not None:
+            try:
+                self.storage.record_retrieved_learning_sampling_decision(
+                    user_id=user_id,
+                    session_id=session_id,
+                    request_id=new_request.request_id,
+                    sampled=run_retrieved_learning,
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to persist retrieved-learning sampling decision for "
+                    "request=%s session=%s user=%s",
+                    new_request.request_id,
+                    session_id,
+                    user_id,
+                )
         if not (run_agent_success or run_retrieved_learning):
             logger.info(
                 "Skipping group evaluation scheduling for unsampled session=%s user=%s",

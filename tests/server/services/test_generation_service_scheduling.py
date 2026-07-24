@@ -401,6 +401,74 @@ def test_neither_family_sampled_does_not_schedule_at_all(
     runner.assert_not_called()
 
 
+@pytest.mark.parametrize(
+    ("retrieved_rate", "expected_sampled", "expected_schedule_count"),
+    [(1.0, True, 1), (0.0, False, 0)],
+)
+def test_publish_persists_the_retrieved_learning_sampling_decision(
+    service: GenerationService,
+    monkeypatch: pytest.MonkeyPatch,
+    retrieved_rate: float,
+    expected_sampled: bool,
+    expected_schedule_count: int,
+) -> None:
+    _set_rates(service, success=0.0, retrieved=retrieved_rate)
+    scheduler = MagicMock()
+    monkeypatch.setattr(
+        "reflexio.server.services.generation_service.GroupEvaluationScheduler.get_instance",
+        lambda: scheduler,
+    )
+
+    service._schedule_post_publish_evaluations(
+        new_request=Request(
+            request_id="request-sampling-decision",
+            user_id="user_test",
+            session_id="session-sampling-decision",
+        ),
+        interactions=[],
+        user_id="user_test",
+        agent_version="v_test",
+        source=None,
+    )
+
+    service.storage.record_retrieved_learning_sampling_decision.assert_called_once_with(
+        user_id="user_test",
+        session_id="session-sampling-decision",
+        request_id="request-sampling-decision",
+        sampled=expected_sampled,
+    )
+    assert scheduler.schedule.call_count == expected_schedule_count
+
+
+def test_sampling_decision_persistence_failure_does_not_break_publish_scheduling(
+    service: GenerationService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _set_rates(service, success=0.0, retrieved=1.0)
+    service.storage.record_retrieved_learning_sampling_decision.side_effect = (
+        RuntimeError("sampling persistence unavailable")
+    )
+    scheduler = MagicMock()
+    monkeypatch.setattr(
+        "reflexio.server.services.generation_service.GroupEvaluationScheduler.get_instance",
+        lambda: scheduler,
+    )
+
+    service._schedule_post_publish_evaluations(
+        new_request=Request(
+            request_id="request-sampling-failure",
+            user_id="user_test",
+            session_id="session-sampling-failure",
+        ),
+        interactions=[],
+        user_id="user_test",
+        agent_version="v_test",
+        source=None,
+    )
+
+    service.storage.record_retrieved_learning_sampling_decision.assert_called_once()
+    scheduler.schedule.assert_called_once()
+
+
 def test_unset_retrieved_rate_inherits_success_rate(
     service: GenerationService, monkeypatch: pytest.MonkeyPatch
 ) -> None:
