@@ -7,6 +7,7 @@ import dataclasses
 import hashlib
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -57,6 +58,11 @@ def find_pids_on_port(port: int) -> list[int]:
     Returns:
         list[int]: Sorted, de-duplicated PIDs holding a socket bound to the port
     """
+    return _pids_from_lsof(port) or _pids_from_ss(port)
+
+
+def _pids_from_lsof(port: int) -> list[int]:
+    """Find port holders via ``lsof`` (the only option on macOS)."""
     try:
         result = subprocess.run(
             ["lsof", "-nP", "-Fpn", f"-iTCP:{port}"],
@@ -79,6 +85,41 @@ def find_pids_on_port(port: int) -> list[int]:
             name = line[1:]
             if "->" not in name and name.endswith(suffix):
                 pids.add(current_pid)
+    return sorted(pids)
+
+
+def _pids_from_ss(port: int) -> list[int]:
+    """Find port holders via ``ss`` — the Linux half of the CLOSED-socket case.
+
+    On Linux ``lsof -iTCP:<port>`` reports nothing for a socket that is bound
+    but never ``listen()``ed, even though the kernel still rejects a competing
+    bind with EADDRINUSE. ``ss`` shows it as ``UNCONN``, so without this the
+    orphaned-worker case ``find_pids_on_port`` exists to diagnose is invisible
+    on exactly the platform the servers run on. Absent on macOS, where ``lsof``
+    already covers it.
+    """
+    try:
+        result = subprocess.run(
+            ["ss", "-tanpH", "sport", "=", f":{port}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        return []
+    if result.returncode != 0:
+        return []
+
+    pids: set[int] = set()
+    for line in result.stdout.splitlines():
+        fields = line.split()
+        # State Recv-Q Send-Q Local:Port Peer:Port users:((...)). A concrete
+        # peer means the row is a connection that merely happens to use this
+        # port as its source, not a holder of it — same exclusion as the
+        # ``->`` check on the lsof path.
+        if len(fields) < 5 or not fields[4].endswith(":*"):
+            continue
+        pids.update(int(pid) for pid in re.findall(r"pid=(\d+)", line))
     return sorted(pids)
 
 

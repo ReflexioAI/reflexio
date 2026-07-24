@@ -61,7 +61,17 @@ from reflexio.server.extensions import reset_services  # noqa: E402
 
 _test_server.LOCAL_STORAGE_PATH = os.environ["LOCAL_STORAGE_PATH"]
 
+from reflexio.test_support.llm_credentials import (  # noqa: E402
+    ensure_provider_credential,
+)
 from reflexio.test_support.llm_mock import cleanup_llm_mock, configure_llm_mock
+
+# Service constructors resolve a default model eagerly, so a machine with no
+# provider key errors out at fixture setup instead of running the suite. Runs
+# after `load_reflexio_env()` and after the `reflexio.server` import (which
+# pulls in litellm, whose import-time dotenv walk-up can also supply keys), so
+# every credential source has had its chance before we decide to fill the gap.
+ensure_provider_credential()
 
 
 def pytest_configure(config):
