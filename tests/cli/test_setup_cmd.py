@@ -747,6 +747,13 @@ class TestEnsureUserEnvForSetup:
     (e.g. a worktree root or unrelated project).
     """
 
+    @pytest.fixture(autouse=True)
+    def _no_env_file_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """``user_env_file()`` honors ``REFLEXIO_ENV_FILE`` ahead of the
+        module constants these tests patch, so a developer (or a CI job) that
+        exports it would redirect the write out from under the assertions."""
+        monkeypatch.delenv("REFLEXIO_ENV_FILE", raising=False)
+
     def test_setup_init_writes_to_user_home_not_cwd(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
