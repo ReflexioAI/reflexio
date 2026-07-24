@@ -5,9 +5,11 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections.abc import Generator
+from hashlib import sha256
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from reflexio.models.api_schema import service_schemas as schemas
 from reflexio.server.services.storage.error import StorageError
@@ -52,14 +54,20 @@ def _replay_job(
 def _artifact(
     *,
     job_id: int,
-    digest: str,
+    digest: str | None = None,
     content_json: str = '{"eligible_ids":[1,2]}',
 ):
+    canonical = json.dumps(
+        json.loads(content_json),
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
     return schemas.PlaybookOptimizationArtifact(
         job_id=job_id,
         artifact_kind="expected_population_manifest",
         content_json=content_json,
-        content_digest=digest,
+        content_digest=digest or sha256(canonical.encode()).hexdigest(),
     )
 
 
@@ -225,26 +233,109 @@ def test_terminal_stage_records_outcome_and_releases_lease(
     assert row["lease_expires_at"] is None
 
 
-def test_artifact_upsert_is_idempotent_only_for_matching_digest(
+def test_stale_lease_fence_cannot_write_singleton_artifact(
     storage: BaseStorage,
 ) -> None:
     job = storage.create_or_get_playbook_optimization_job(_replay_job("d1", "a1"))
+    claim = storage.claim_playbook_optimization_job(
+        job_id=job.job_id,
+        owner="worker-a",
+        lease_seconds=60,
+        now=4_000,
+    )
+    reclaimed = storage.reclaim_playbook_optimization_job(
+        job_id=job.job_id,
+        owner="worker-b",
+        lease_seconds=60,
+        now=claim.expires_at + 1,
+    )
+
+    with pytest.raises(StorageError, match="lease is no longer current"):
+        storage.upsert_playbook_optimization_artifact(
+            _artifact(job_id=job.job_id),
+            fence=claim.fence,
+            now=claim.expires_at + 1,
+        )
+
+    saved = storage.upsert_playbook_optimization_artifact(
+        _artifact(job_id=job.job_id),
+        fence=reclaimed.fence,
+        now=claim.expires_at + 1,
+    )
+    assert saved.job_id == job.job_id
+
+
+def test_artifact_upsert_canonicalizes_equivalent_json_and_requires_digest_and_content(
+    storage: BaseStorage,
+) -> None:
+    job = storage.create_or_get_playbook_optimization_job(_replay_job("d1", "a1"))
+    claim = storage.claim_playbook_optimization_job(
+        job_id=job.job_id,
+        owner="worker-a",
+        lease_seconds=60,
+        now=5_000,
+    )
     first = storage.upsert_playbook_optimization_artifact(
-        _artifact(job_id=job.job_id, digest="a" * 64)
+        _artifact(
+            job_id=job.job_id,
+            content_json='{"eligible_ids":[1,2],"meta":{"b":2,"a":1}}',
+        ),
+        fence=claim.fence,
+        now=5_001,
     )
     second = storage.upsert_playbook_optimization_artifact(
-        _artifact(job_id=job.job_id, digest="a" * 64)
+        _artifact(
+            job_id=job.job_id,
+            content_json='{ "meta" : { "a" : 1, "b" : 2 }, "eligible_ids" : [1,2] }',
+        ),
+        fence=claim.fence,
+        now=5_001,
     )
 
     assert second.artifact_id == first.artifact_id
-    assert second.content_json == first.content_json
+    assert second.content_json == '{"eligible_ids":[1,2],"meta":{"a":1,"b":2}}'
+
+    with pytest.raises(StorageError, match="artifact digest conflict"):
+        storage.upsert_playbook_optimization_artifact(
+            _artifact(
+                job_id=job.job_id,
+                digest="b" * 64,
+                content_json='{"eligible_ids":[1,2],"meta":{"b":2,"a":1}}',
+            ),
+            fence=claim.fence,
+            now=5_001,
+        )
+    with pytest.raises(StorageError, match="artifact content conflict"):
+        storage.upsert_playbook_optimization_artifact(
+            _artifact(
+                job_id=job.job_id,
+                digest=first.content_digest,
+                content_json='{"eligible_ids":[3]}',
+            ),
+            fence=claim.fence,
+            now=5_001,
+        )
     with pytest.raises(StorageError, match="artifact digest conflict"):
         storage.upsert_playbook_optimization_artifact(
             _artifact(
                 job_id=job.job_id,
                 digest="b" * 64,
                 content_json='{"eligible_ids":[3]}',
-            )
+            ),
+            fence=claim.fence,
+            now=5_001,
+        )
+
+
+def test_artifact_model_rejects_malformed_json() -> None:
+    with pytest.raises(
+        ValidationError, match="artifact content_json must be valid JSON"
+    ):
+        schemas.PlaybookOptimizationArtifact(
+            job_id=1,
+            artifact_kind="expected_population_manifest",
+            content_json="{",
+            content_digest="a" * 64,
         )
 
 
@@ -363,3 +454,29 @@ def test_legacy_optimizer_rows_are_classified_mutually_exclusively(
     assert rows[3]["status"] == "skipped"
     assert rows[4]["status"] == "completed"
     assert rows[5]["status"] == "skipped"
+
+
+@pytest.mark.parametrize(
+    ("column", "invalid_value"),
+    [
+        ("optimizer_kind", "not-an-optimizer"),
+        ("stage", "not-a-stage"),
+        ("terminal_outcome", "not-an-outcome"),
+    ],
+)
+def test_upgraded_legacy_optimizer_schema_rejects_invalid_durable_values(
+    tmp_path: Path,
+    column: str,
+    invalid_value: str,
+) -> None:
+    db_path = tmp_path / "legacy.db"
+    _create_legacy_optimizer_schema(db_path)
+    store = SQLiteStorage(org_id="legacy-constraints", db_path=str(db_path))
+    try:
+        with pytest.raises(sqlite3.IntegrityError):
+            store.conn.execute(
+                f"UPDATE playbook_optimization_jobs SET {column} = ? WHERE job_id = 2",  # noqa: S608
+                (invalid_value,),
+            )
+    finally:
+        store.conn.close()

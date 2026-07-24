@@ -4,6 +4,7 @@ import sqlite3
 import time
 from typing import Any
 
+from reflexio.models.api_schema.domain.entities import canonicalize_artifact_json
 from reflexio.models.api_schema.service_schemas import (
     OptimizationArtifactKind,
     OptimizationJobClaim,
@@ -451,13 +452,29 @@ class OptimizationJobStoreMixin:
 
     @SQLiteStorageBase.handle_exceptions
     def upsert_playbook_optimization_artifact(
-        self, artifact: PlaybookOptimizationArtifact
+        self,
+        artifact: PlaybookOptimizationArtifact,
+        fence: int,
+        *,
+        now: int | None = None,
     ) -> PlaybookOptimizationArtifact:
+        artifact_content_json = canonicalize_artifact_json(artifact.content_json)
+        written_at = self._lease_now(now)
         with self._lock:
             owns_transaction = self._own_transaction()
             if owns_transaction:
                 self.conn.execute("BEGIN IMMEDIATE")
             try:
+                lease = self.conn.execute(
+                    """SELECT job_id FROM playbook_optimization_jobs
+                       WHERE job_id = ?
+                         AND status IN ('pending', 'running')
+                         AND lease_fence = ?
+                         AND lease_expires_at > ?""",
+                    (artifact.job_id, fence, written_at),
+                ).fetchone()
+                if lease is None:
+                    raise ValueError("optimizer job lease is no longer current")
                 existing = self.conn.execute(
                     """SELECT * FROM playbook_optimization_artifacts
                        WHERE job_id = ? AND artifact_kind = ?""",
@@ -466,6 +483,8 @@ class OptimizationJobStoreMixin:
                 if existing is not None:
                     if existing["content_digest"] != artifact.content_digest:
                         raise ValueError("optimizer artifact digest conflict")
+                    if existing["content_json"] != artifact_content_json:
+                        raise ValueError("optimizer artifact content conflict")
                     result = _row_to_playbook_optimization_artifact(existing)
                 else:
                     cur = self.conn.execute(
@@ -476,7 +495,7 @@ class OptimizationJobStoreMixin:
                         (
                             artifact.job_id,
                             artifact.artifact_kind,
-                            artifact.content_json,
+                            artifact_content_json,
                             artifact.content_digest,
                             artifact.created_at,
                             artifact.updated_at,

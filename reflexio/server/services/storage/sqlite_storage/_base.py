@@ -787,6 +787,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         self._migrate_lineage_event_table()
         self._migrate_playbook_optimization_candidate_metadata()
         self._classify_legacy_playbook_optimization_jobs()
+        self._enforce_playbook_optimization_job_constraints()
         self._migrate_retire_profile_change_logs()
         self._migrate_retire_playbook_aggregation_change_logs()
         init_stall_state_table(self.conn)
@@ -1394,6 +1395,116 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                     'optimizer_legacy_unknown'
                 )
               AND status IN ('pending', 'running')
+            """
+        )
+        self.conn.commit()
+
+    def _enforce_playbook_optimization_job_constraints(self) -> None:
+        """Rebuild upgraded optimizer tables so legacy values receive fresh checks."""
+        table_sql_row = self.conn.execute(
+            """SELECT sql FROM sqlite_master
+               WHERE type = 'table' AND name = 'playbook_optimization_jobs'"""
+        ).fetchone()
+        if table_sql_row is None:
+            return
+        table_sql = table_sql_row["sql"]
+        required_checks = (
+            "CHECK (optimizer_kind IN",
+            "CHECK (stage IS NULL OR stage IN",
+            "CHECK (terminal_outcome IS NULL OR terminal_outcome IN",
+        )
+        if all(check in table_sql for check in required_checks):
+            return
+        self.conn.executescript(
+            """
+            CREATE TABLE playbook_optimization_jobs_new (
+                job_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                optimizer_kind TEXT NOT NULL DEFAULT 'optimizer_legacy_unknown'
+                    CHECK (optimizer_kind IN (
+                        'gepa',
+                        'offline_tuner_replay',
+                        'offline_tuner_legacy',
+                        'optimizer_legacy_unknown'
+                    )),
+                target_kind TEXT NOT NULL,
+                target_id INTEGER NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                best_candidate_id INTEGER,
+                successor_target_id INTEGER,
+                decision_reason TEXT NOT NULL DEFAULT '',
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                discovery_key TEXT,
+                attempt_key TEXT,
+                lease_owner TEXT,
+                lease_fence INTEGER NOT NULL DEFAULT 0 CHECK (lease_fence >= 0),
+                lease_expires_at INTEGER,
+                stage TEXT CHECK (stage IS NULL OR stage IN (
+                    'evidence_frozen',
+                    'candidate_generated',
+                    'replay_running',
+                    'replay_evaluated',
+                    'publishing',
+                    'applied',
+                    'abstained',
+                    'failed'
+                )),
+                terminal_outcome TEXT CHECK (terminal_outcome IS NULL OR terminal_outcome IN (
+                    'applied',
+                    'insufficient_negative_evidence',
+                    'insufficient_positive_evidence',
+                    'insufficient_coverage',
+                    'replay_unsupported',
+                    'deployment_unsupported',
+                    'incomplete_replay_scope',
+                    'insufficient_replay_cases',
+                    'replay_inconclusive',
+                    'candidate_regressed',
+                    'candidate_did_not_improve',
+                    'incumbent_changed',
+                    'generation_failed',
+                    'replay_failed',
+                    'publication_failed'
+                )),
+                expected_population_manifest_digest TEXT,
+                generation_selection_manifest_digest TEXT,
+                replay_manifest_digest TEXT,
+                candidate_content_digest TEXT,
+                search_projection_digest TEXT,
+                publication_scope_digest TEXT,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+            INSERT INTO playbook_optimization_jobs_new (
+                job_id, optimizer_kind, target_kind, target_id, status,
+                best_candidate_id, successor_target_id, decision_reason,
+                metadata_json, discovery_key, attempt_key, lease_owner,
+                lease_fence, lease_expires_at, stage, terminal_outcome,
+                expected_population_manifest_digest,
+                generation_selection_manifest_digest, replay_manifest_digest,
+                candidate_content_digest, search_projection_digest,
+                publication_scope_digest, created_at, updated_at
+            ) SELECT
+                job_id, optimizer_kind, target_kind, target_id, status,
+                best_candidate_id, successor_target_id, decision_reason,
+                metadata_json, discovery_key, attempt_key, lease_owner,
+                lease_fence, lease_expires_at, stage, terminal_outcome,
+                expected_population_manifest_digest,
+                generation_selection_manifest_digest, replay_manifest_digest,
+                candidate_content_digest, search_projection_digest,
+                publication_scope_digest, created_at, updated_at
+            FROM playbook_optimization_jobs;
+            DROP TABLE playbook_optimization_jobs;
+            ALTER TABLE playbook_optimization_jobs_new
+                RENAME TO playbook_optimization_jobs;
+            CREATE INDEX idx_poj_target
+                ON playbook_optimization_jobs(target_kind, target_id);
+            CREATE INDEX idx_poj_status ON playbook_optimization_jobs(status);
+            CREATE UNIQUE INDEX uq_poj_active_discovery
+                ON playbook_optimization_jobs(optimizer_kind, discovery_key)
+                WHERE status IN ('pending', 'running') AND discovery_key IS NOT NULL;
+            CREATE UNIQUE INDEX uq_poj_active_attempt
+                ON playbook_optimization_jobs(optimizer_kind, attempt_key)
+                WHERE status IN ('pending', 'running') AND attempt_key IS NOT NULL;
             """
         )
         self.conn.commit()

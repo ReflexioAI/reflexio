@@ -88,9 +88,13 @@ class OptimizationJobStoreMixin:
 
     @abstractmethod
     def upsert_playbook_optimization_artifact(
-        self, artifact: PlaybookOptimizationArtifact
+        self,
+        artifact: PlaybookOptimizationArtifact,
+        fence: int,
+        *,
+        now: int | None = None,
     ) -> PlaybookOptimizationArtifact:
-        """Insert a singleton artifact or return it when its digest matches."""
+        """Write a singleton artifact only under the current lease fence."""
         raise NotImplementedError
 
     @abstractmethod

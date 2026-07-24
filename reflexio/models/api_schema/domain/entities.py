@@ -151,6 +151,27 @@ __all__ = [
     "LearningStatusResponse",
 ]
 
+
+def canonicalize_artifact_json(content_json: str) -> str:
+    """Validate and serialize durable artifact content in one stable form."""
+    try:
+        value = json.loads(
+            content_json,
+            parse_constant=lambda constant: (_ for _ in ()).throw(
+                ValueError(f"invalid JSON constant: {constant}")
+            ),
+        )
+        return json.dumps(
+            value,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+            allow_nan=False,
+        )
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise ValueError("artifact content_json must be valid JSON") from exc
+
+
 # ===============================
 # Data Models
 # ===============================
@@ -470,6 +491,11 @@ class PlaybookOptimizationArtifact(BaseModel):
     content_digest: Sha256Digest
     created_at: int = Field(default_factory=lambda: int(datetime.now(UTC).timestamp()))
     updated_at: int = Field(default_factory=lambda: int(datetime.now(UTC).timestamp()))
+
+    @field_validator("content_json")
+    @classmethod
+    def canonicalize_content_json(cls, value: str) -> str:
+        return canonicalize_artifact_json(value)
 
     @field_validator("content_digest")
     @classmethod
