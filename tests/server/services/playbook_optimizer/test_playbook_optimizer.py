@@ -210,7 +210,9 @@ def test_local_script_assistant_times_out(tmp_path):
 def test_adapter_calls_assistant_with_same_seed_and_different_content(tmp_path):
     storage = _sqlite_storage(tmp_path)
     job = storage.create_playbook_optimization_job(
-        PlaybookOptimizationJob(target_kind="agent_playbook", target_id=1)
+        PlaybookOptimizationJob(
+            optimizer_kind="gepa", target_kind="agent_playbook", target_id=1
+        )
     )
     incumbent = AgentPlaybook(
         agent_playbook_id=1,
@@ -272,7 +274,9 @@ def test_adapter_calls_assistant_with_same_seed_and_different_content(tmp_path):
 def test_adapter_cache_distinguishes_windows_with_same_playbook_id(tmp_path):
     storage = _sqlite_storage(tmp_path)
     job = storage.create_playbook_optimization_job(
-        PlaybookOptimizationJob(target_kind="agent_playbook", target_id=1)
+        PlaybookOptimizationJob(
+            optimizer_kind="gepa", target_kind="agent_playbook", target_id=1
+        )
     )
     incumbent = AgentPlaybook(
         agent_playbook_id=1,
@@ -359,7 +363,9 @@ def test_adapter_cache_distinguishes_windows_with_same_playbook_id(tmp_path):
 def test_adapter_does_not_cache_aborted_evaluations(tmp_path):
     storage = _sqlite_storage(tmp_path)
     job = storage.create_playbook_optimization_job(
-        PlaybookOptimizationJob(target_kind="agent_playbook", target_id=1)
+        PlaybookOptimizationJob(
+            optimizer_kind="gepa", target_kind="agent_playbook", target_id=1
+        )
     )
     incumbent = AgentPlaybook(
         agent_playbook_id=1,
@@ -1173,7 +1179,9 @@ def test_sqlite_persists_source_mapping_and_winner_candidate(tmp_path):
     assert storage.get_source_user_playbook_ids_for_agent_playbook(10) == [id1, id2]
 
     job = storage.create_playbook_optimization_job(
-        PlaybookOptimizationJob(target_kind="agent_playbook", target_id=10)
+        PlaybookOptimizationJob(
+            optimizer_kind="gepa", target_kind="agent_playbook", target_id=10
+        )
     )
     candidate = storage.insert_playbook_optimization_candidate(
         PlaybookOptimizationCandidate(
@@ -1196,7 +1204,9 @@ def test_sqlite_persists_source_mapping_and_winner_candidate(tmp_path):
 def test_sqlite_persists_candidate_metadata_json(tmp_path):
     storage = _sqlite_storage(tmp_path)
     job = storage.create_playbook_optimization_job(
-        PlaybookOptimizationJob(target_kind="user_playbook", target_id=10)
+        PlaybookOptimizationJob(
+            optimizer_kind="gepa", target_kind="user_playbook", target_id=10
+        )
     )
     metadata_json = json.dumps(
         {
@@ -1380,7 +1390,9 @@ def test_optimizer_successor_preserves_source_window_snapshots(tmp_path):
 def test_commit_thresholds_only_count_winner_candidate(tmp_path):
     storage = _sqlite_storage(tmp_path)
     job = storage.create_playbook_optimization_job(
-        PlaybookOptimizationJob(target_kind="agent_playbook", target_id=10)
+        PlaybookOptimizationJob(
+            optimizer_kind="gepa", target_kind="agent_playbook", target_id=10
+        )
     )
     losing_candidate = storage.insert_playbook_optimization_candidate(
         PlaybookOptimizationCandidate(job_id=job.job_id, content="losing")

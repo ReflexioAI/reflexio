@@ -143,6 +143,7 @@ class PlaybookOptimizer:
 
         job = self.storage.create_playbook_optimization_job(
             PlaybookOptimizationJob(
+                optimizer_kind="gepa",
                 target_kind=target.kind,
                 target_id=target.target_id,
                 status="running",

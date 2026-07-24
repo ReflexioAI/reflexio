@@ -107,7 +107,13 @@ __all__ = [
     "AgentPlaybookUpdateEntry",
     "PlaybookAggregationChangeLog",
     "PlaybookAggregationChangeLogResponse",
+    "OptimizerKind",
+    "OptimizationJobStage",
+    "OptimizationTerminalOutcome",
+    "OptimizationArtifactKind",
+    "OptimizationJobClaim",
     "PlaybookOptimizationJob",
+    "PlaybookOptimizationArtifact",
     "PlaybookOptimizationCandidate",
     "PlaybookOptimizationEvaluation",
     "PlaybookOptimizationEvent",
@@ -348,6 +354,62 @@ class AgentPlaybook(BaseModel):
     superseded_by: int | None = None
 
 
+OptimizerKind = Literal[
+    "gepa",
+    "offline_tuner_replay",
+    "offline_tuner_legacy",
+    "optimizer_legacy_unknown",
+]
+
+OptimizationJobStage = Literal[
+    "evidence_frozen",
+    "candidate_generated",
+    "replay_running",
+    "replay_evaluated",
+    "publishing",
+    "applied",
+    "abstained",
+    "failed",
+]
+
+OptimizationTerminalOutcome = Literal[
+    "applied",
+    "insufficient_negative_evidence",
+    "insufficient_positive_evidence",
+    "insufficient_coverage",
+    "replay_unsupported",
+    "deployment_unsupported",
+    "incomplete_replay_scope",
+    "insufficient_replay_cases",
+    "replay_inconclusive",
+    "candidate_regressed",
+    "candidate_did_not_improve",
+    "incumbent_changed",
+    "generation_failed",
+    "replay_failed",
+    "publication_failed",
+]
+
+OptimizationArtifactKind = Literal[
+    "expected_population_manifest",
+    "generation_selection",
+    "replay_manifest",
+    "candidate",
+    "candidate_search_projection",
+]
+
+Sha256Digest = str
+
+
+class OptimizationJobClaim(BaseModel):
+    """One renewable optimizer lease identified by a monotonic fence."""
+
+    job_id: int
+    owner: str
+    fence: int = Field(ge=1)
+    expires_at: int
+
+
 class PlaybookOptimizationJob(BaseModel):
     """One end-to-end optimizer run for a single playbook target.
 
@@ -357,6 +419,7 @@ class PlaybookOptimizationJob(BaseModel):
     """
 
     job_id: int = 0
+    optimizer_kind: OptimizerKind = "optimizer_legacy_unknown"
     target_kind: Literal["agent_playbook", "user_playbook"]
     target_id: int
     status: Literal["pending", "running", "completed", "skipped", "failed"] = "pending"
@@ -364,8 +427,56 @@ class PlaybookOptimizationJob(BaseModel):
     successor_target_id: int | None = None
     decision_reason: str = ""
     metadata_json: str = "{}"
+    discovery_key: str | None = None
+    attempt_key: str | None = None
+    lease_owner: str | None = None
+    lease_fence: int = Field(default=0, ge=0)
+    lease_expires_at: int | None = None
+    stage: OptimizationJobStage | None = None
+    terminal_outcome: OptimizationTerminalOutcome | None = None
+    expected_population_manifest_digest: Sha256Digest | None = None
+    generation_selection_manifest_digest: Sha256Digest | None = None
+    replay_manifest_digest: Sha256Digest | None = None
+    candidate_content_digest: Sha256Digest | None = None
+    search_projection_digest: Sha256Digest | None = None
+    publication_scope_digest: Sha256Digest | None = None
     created_at: int = Field(default_factory=lambda: int(datetime.now(UTC).timestamp()))
     updated_at: int = Field(default_factory=lambda: int(datetime.now(UTC).timestamp()))
+
+    @field_validator(
+        "expected_population_manifest_digest",
+        "generation_selection_manifest_digest",
+        "replay_manifest_digest",
+        "candidate_content_digest",
+        "search_projection_digest",
+        "publication_scope_digest",
+    )
+    @classmethod
+    def validate_sha256_digest(cls, value: str | None) -> str | None:
+        if value is not None and (
+            len(value) != 64 or any(char not in "0123456789abcdef" for char in value)
+        ):
+            raise ValueError("optimizer proof digests must be lowercase SHA-256 hex")
+        return value
+
+
+class PlaybookOptimizationArtifact(BaseModel):
+    """One typed, content-bearing singleton artifact owned by an optimizer job."""
+
+    artifact_id: int = 0
+    job_id: int
+    artifact_kind: OptimizationArtifactKind
+    content_json: str
+    content_digest: Sha256Digest
+    created_at: int = Field(default_factory=lambda: int(datetime.now(UTC).timestamp()))
+    updated_at: int = Field(default_factory=lambda: int(datetime.now(UTC).timestamp()))
+
+    @field_validator("content_digest")
+    @classmethod
+    def validate_content_digest(cls, value: str) -> str:
+        if len(value) != 64 or any(char not in "0123456789abcdef" for char in value):
+            raise ValueError("artifact digest must be lowercase SHA-256 hex")
+        return value
 
 
 class PlaybookOptimizationCandidate(BaseModel):

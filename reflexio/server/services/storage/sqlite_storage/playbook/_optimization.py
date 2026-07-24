@@ -1,14 +1,113 @@
 """Playbook optimization job store methods for SQLite storage."""
 
 import sqlite3
+import time
 from typing import Any
 
 from reflexio.models.api_schema.service_schemas import (
+    OptimizationArtifactKind,
+    OptimizationJobClaim,
+    OptimizationJobStage,
+    OptimizationTerminalOutcome,
+    PlaybookOptimizationArtifact,
     PlaybookOptimizationCandidate,
     PlaybookOptimizationEvaluation,
     PlaybookOptimizationEvent,
     PlaybookOptimizationJob,
 )
+
+_FAILURE_OUTCOMES = {"generation_failed", "replay_failed", "publication_failed"}
+_STAGE_PREDECESSORS: dict[str, str] = {
+    "candidate_generated": "evidence_frozen",
+    "replay_running": "candidate_generated",
+    "replay_evaluated": "replay_running",
+    "publishing": "replay_evaluated",
+    "applied": "publishing",
+}
+
+
+def _row_to_playbook_optimization_job(row: sqlite3.Row) -> PlaybookOptimizationJob:
+    return PlaybookOptimizationJob(
+        job_id=row["job_id"],
+        optimizer_kind=row["optimizer_kind"],
+        target_kind=row["target_kind"],
+        target_id=row["target_id"],
+        status=row["status"],
+        best_candidate_id=row["best_candidate_id"],
+        successor_target_id=row["successor_target_id"],
+        decision_reason=row["decision_reason"],
+        metadata_json=row["metadata_json"] or "{}",
+        discovery_key=row["discovery_key"],
+        attempt_key=row["attempt_key"],
+        lease_owner=row["lease_owner"],
+        lease_fence=row["lease_fence"],
+        lease_expires_at=row["lease_expires_at"],
+        stage=row["stage"],
+        terminal_outcome=row["terminal_outcome"],
+        expected_population_manifest_digest=row["expected_population_manifest_digest"],
+        generation_selection_manifest_digest=row[
+            "generation_selection_manifest_digest"
+        ],
+        replay_manifest_digest=row["replay_manifest_digest"],
+        candidate_content_digest=row["candidate_content_digest"],
+        search_projection_digest=row["search_projection_digest"],
+        publication_scope_digest=row["publication_scope_digest"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
+def _row_to_playbook_optimization_artifact(
+    row: sqlite3.Row,
+) -> PlaybookOptimizationArtifact:
+    return PlaybookOptimizationArtifact(
+        artifact_id=row["artifact_id"],
+        job_id=row["job_id"],
+        artifact_kind=row["artifact_kind"],
+        content_json=row["content_json"],
+        content_digest=row["content_digest"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
+def _job_insert_values(job: PlaybookOptimizationJob) -> tuple[Any, ...]:
+    return (
+        job.optimizer_kind,
+        job.target_kind,
+        job.target_id,
+        job.status,
+        job.best_candidate_id,
+        job.successor_target_id,
+        job.decision_reason,
+        job.metadata_json,
+        job.discovery_key,
+        job.attempt_key,
+        job.lease_owner,
+        job.lease_fence,
+        job.lease_expires_at,
+        job.stage,
+        job.terminal_outcome,
+        job.expected_population_manifest_digest,
+        job.generation_selection_manifest_digest,
+        job.replay_manifest_digest,
+        job.candidate_content_digest,
+        job.search_projection_digest,
+        job.publication_scope_digest,
+        job.created_at,
+        job.updated_at,
+    )
+
+
+_JOB_INSERT_SQL = """INSERT INTO playbook_optimization_jobs
+    (optimizer_kind, target_kind, target_id, status, best_candidate_id,
+     successor_target_id, decision_reason, metadata_json, discovery_key,
+     attempt_key, lease_owner, lease_fence, lease_expires_at, stage,
+     terminal_outcome, expected_population_manifest_digest,
+     generation_selection_manifest_digest, replay_manifest_digest,
+     candidate_content_digest, search_projection_digest,
+     publication_scope_digest, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
 
 from .._base import (
     SQLiteStorageBase,
@@ -62,7 +161,9 @@ class OptimizationJobStoreMixin:
     _lock: Any
     conn: sqlite3.Connection
     _execute: Any
+    _fetchone: Any
     _fetchall: Any
+    _own_transaction: Any
 
     # ------------------------------------------------------------------
     # Playbook optimizer methods
@@ -73,27 +174,342 @@ class OptimizationJobStoreMixin:
         self, job: PlaybookOptimizationJob
     ) -> PlaybookOptimizationJob:
         with self._lock:
-            cur = self.conn.execute(
-                """INSERT INTO playbook_optimization_jobs
-                   (target_kind, target_id, status, best_candidate_id,
-                    successor_target_id, decision_reason, metadata_json,
-                    created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    job.target_kind,
-                    job.target_id,
-                    job.status,
-                    job.best_candidate_id,
-                    job.successor_target_id,
-                    job.decision_reason,
-                    job.metadata_json,
-                    job.created_at,
-                    job.updated_at,
-                ),
-            )
+            cur = self.conn.execute(_JOB_INSERT_SQL, _job_insert_values(job))
             job.job_id = cur.lastrowid or 0
             self.conn.commit()
         return job
+
+    @SQLiteStorageBase.handle_exceptions
+    def create_or_get_playbook_optimization_job(
+        self, job: PlaybookOptimizationJob
+    ) -> PlaybookOptimizationJob:
+        if job.discovery_key is None and job.attempt_key is None:
+            raise ValueError(
+                "durable optimizer jobs require a discovery or attempt key"
+            )
+        with self._lock:
+            owns_transaction = self._own_transaction()
+            if owns_transaction:
+                self.conn.execute("BEGIN IMMEDIATE")
+            try:
+                by_discovery = None
+                if job.discovery_key is not None:
+                    by_discovery = self.conn.execute(
+                        """SELECT * FROM playbook_optimization_jobs
+                           WHERE optimizer_kind = ? AND discovery_key = ?
+                             AND status IN ('pending', 'running')""",
+                        (job.optimizer_kind, job.discovery_key),
+                    ).fetchone()
+                by_attempt = None
+                if job.attempt_key is not None:
+                    by_attempt = self.conn.execute(
+                        """SELECT * FROM playbook_optimization_jobs
+                           WHERE optimizer_kind = ? AND attempt_key = ?
+                             AND status IN ('pending', 'running')""",
+                        (job.optimizer_kind, job.attempt_key),
+                    ).fetchone()
+                if (
+                    by_discovery is not None
+                    and by_attempt is not None
+                    and by_discovery["job_id"] != by_attempt["job_id"]
+                ):
+                    raise ValueError("conflicting immutable optimizer job identity")
+                existing = by_discovery or by_attempt
+                if existing is not None:
+                    if (
+                        existing["target_kind"] != job.target_kind
+                        or existing["target_id"] != job.target_id
+                        or (
+                            by_discovery is not None
+                            and existing["attempt_key"] != job.attempt_key
+                        )
+                    ):
+                        raise ValueError("conflicting immutable optimizer job identity")
+                    result = _row_to_playbook_optimization_job(existing)
+                else:
+                    cur = self.conn.execute(_JOB_INSERT_SQL, _job_insert_values(job))
+                    row = self.conn.execute(
+                        "SELECT * FROM playbook_optimization_jobs WHERE job_id = ?",
+                        (cur.lastrowid,),
+                    ).fetchone()
+                    if row is None:
+                        raise RuntimeError("optimizer job insert returned no row")
+                    result = _row_to_playbook_optimization_job(row)
+                if owns_transaction:
+                    self.conn.commit()
+                return result
+            except Exception:
+                if owns_transaction:
+                    self.conn.rollback()
+                raise
+
+    @staticmethod
+    def _lease_now(now: int | None) -> int:
+        return int(time.time()) if now is None else now
+
+    @SQLiteStorageBase.handle_exceptions
+    def claim_playbook_optimization_job(
+        self,
+        job_id: int,
+        owner: str,
+        lease_seconds: int,
+        *,
+        now: int | None = None,
+    ) -> OptimizationJobClaim:
+        if lease_seconds <= 0:
+            raise ValueError("lease_seconds must be positive")
+        claimed_at = self._lease_now(now)
+        with self._lock:
+            row = self.conn.execute(
+                """UPDATE playbook_optimization_jobs
+                   SET lease_owner = ?,
+                       lease_fence = lease_fence + 1,
+                       lease_expires_at = ?,
+                       status = 'running',
+                       updated_at = ?
+                   WHERE job_id = ?
+                     AND status IN ('pending', 'running')
+                     AND lease_owner IS NULL
+                   RETURNING job_id, lease_owner, lease_fence, lease_expires_at""",
+                (owner, claimed_at + lease_seconds, claimed_at, job_id),
+            ).fetchone()
+            if row is None:
+                raise RuntimeError("optimizer job is not available to claim")
+            if self._own_transaction():
+                self.conn.commit()
+        return OptimizationJobClaim(
+            job_id=row["job_id"],
+            owner=row["lease_owner"],
+            fence=row["lease_fence"],
+            expires_at=row["lease_expires_at"],
+        )
+
+    @SQLiteStorageBase.handle_exceptions
+    def reclaim_playbook_optimization_job(
+        self,
+        job_id: int,
+        owner: str,
+        lease_seconds: int = 60,
+        *,
+        now: int | None = None,
+    ) -> OptimizationJobClaim:
+        if lease_seconds <= 0:
+            raise ValueError("lease_seconds must be positive")
+        reclaimed_at = self._lease_now(now)
+        with self._lock:
+            row = self.conn.execute(
+                """UPDATE playbook_optimization_jobs
+                   SET lease_owner = ?,
+                       lease_fence = lease_fence + 1,
+                       lease_expires_at = ?,
+                       status = 'running',
+                       updated_at = ?
+                   WHERE job_id = ?
+                     AND status IN ('pending', 'running')
+                     AND lease_owner IS NOT NULL
+                     AND lease_expires_at IS NOT NULL
+                     AND lease_expires_at <= ?
+                   RETURNING job_id, lease_owner, lease_fence, lease_expires_at""",
+                (
+                    owner,
+                    reclaimed_at + lease_seconds,
+                    reclaimed_at,
+                    job_id,
+                    reclaimed_at,
+                ),
+            ).fetchone()
+            if row is None:
+                raise RuntimeError("optimizer job lease is not expired")
+            if self._own_transaction():
+                self.conn.commit()
+        return OptimizationJobClaim(
+            job_id=row["job_id"],
+            owner=row["lease_owner"],
+            fence=row["lease_fence"],
+            expires_at=row["lease_expires_at"],
+        )
+
+    @SQLiteStorageBase.handle_exceptions
+    def renew_playbook_optimization_job_lease(
+        self,
+        job_id: int,
+        owner: str,
+        fence: int,
+        lease_seconds: int,
+        *,
+        now: int | None = None,
+    ) -> OptimizationJobClaim:
+        if lease_seconds <= 0:
+            raise ValueError("lease_seconds must be positive")
+        renewed_at = self._lease_now(now)
+        with self._lock:
+            row = self.conn.execute(
+                """UPDATE playbook_optimization_jobs
+                   SET lease_expires_at = ?, updated_at = ?
+                   WHERE job_id = ?
+                     AND status IN ('pending', 'running')
+                     AND lease_owner = ?
+                     AND lease_fence = ?
+                     AND lease_expires_at > ?
+                   RETURNING job_id, lease_owner, lease_fence, lease_expires_at""",
+                (
+                    renewed_at + lease_seconds,
+                    renewed_at,
+                    job_id,
+                    owner,
+                    fence,
+                    renewed_at,
+                ),
+            ).fetchone()
+            if row is None:
+                raise RuntimeError("optimizer job lease is no longer current")
+            if self._own_transaction():
+                self.conn.commit()
+        return OptimizationJobClaim(
+            job_id=row["job_id"],
+            owner=row["lease_owner"],
+            fence=row["lease_fence"],
+            expires_at=row["lease_expires_at"],
+        )
+
+    @SQLiteStorageBase.handle_exceptions
+    def advance_playbook_optimization_stage(
+        self,
+        job_id: int,
+        fence: int,
+        stage: OptimizationJobStage,
+        *,
+        terminal_outcome: OptimizationTerminalOutcome | None = None,
+        now: int | None = None,
+    ) -> bool:
+        advanced_at = self._lease_now(now)
+        predecessor = _STAGE_PREDECESSORS.get(stage)
+        terminal_status: str | None = None
+        if stage == "applied":
+            if terminal_outcome not in (None, "applied"):
+                return False
+            terminal_outcome = "applied"
+            terminal_status = "completed"
+        elif stage == "failed":
+            if terminal_outcome not in _FAILURE_OUTCOMES:
+                return False
+            terminal_status = "failed"
+        elif stage == "abstained":
+            if terminal_outcome is None or terminal_outcome in {
+                "applied",
+                *_FAILURE_OUTCOMES,
+            }:
+                return False
+            terminal_status = "skipped"
+        elif predecessor is None or terminal_outcome is not None:
+            return False
+        with self._lock:
+            if terminal_status is None:
+                cur = self.conn.execute(
+                    """UPDATE playbook_optimization_jobs
+                       SET stage = ?, updated_at = ?
+                       WHERE job_id = ?
+                         AND status IN ('pending', 'running')
+                         AND lease_fence = ?
+                         AND lease_expires_at > ?
+                         AND stage = ?""",
+                    (stage, advanced_at, job_id, fence, advanced_at, predecessor),
+                )
+            else:
+                cur = self.conn.execute(
+                    """UPDATE playbook_optimization_jobs
+                       SET stage = ?,
+                           terminal_outcome = ?,
+                           status = ?,
+                           lease_owner = NULL,
+                           lease_expires_at = NULL,
+                           updated_at = ?
+                       WHERE job_id = ?
+                         AND status IN ('pending', 'running')
+                         AND lease_fence = ?
+                         AND lease_expires_at > ?
+                         AND stage IN (
+                             'evidence_frozen',
+                             'candidate_generated',
+                             'replay_running',
+                             'replay_evaluated',
+                             'publishing'
+                         )""",
+                    (
+                        stage,
+                        terminal_outcome,
+                        terminal_status,
+                        advanced_at,
+                        job_id,
+                        fence,
+                        advanced_at,
+                    ),
+                )
+            if self._own_transaction():
+                self.conn.commit()
+            return cur.rowcount == 1
+
+    @SQLiteStorageBase.handle_exceptions
+    def upsert_playbook_optimization_artifact(
+        self, artifact: PlaybookOptimizationArtifact
+    ) -> PlaybookOptimizationArtifact:
+        with self._lock:
+            owns_transaction = self._own_transaction()
+            if owns_transaction:
+                self.conn.execute("BEGIN IMMEDIATE")
+            try:
+                existing = self.conn.execute(
+                    """SELECT * FROM playbook_optimization_artifacts
+                       WHERE job_id = ? AND artifact_kind = ?""",
+                    (artifact.job_id, artifact.artifact_kind),
+                ).fetchone()
+                if existing is not None:
+                    if existing["content_digest"] != artifact.content_digest:
+                        raise ValueError("optimizer artifact digest conflict")
+                    result = _row_to_playbook_optimization_artifact(existing)
+                else:
+                    cur = self.conn.execute(
+                        """INSERT INTO playbook_optimization_artifacts
+                           (job_id, artifact_kind, content_json, content_digest,
+                            created_at, updated_at)
+                           VALUES (?, ?, ?, ?, ?, ?)""",
+                        (
+                            artifact.job_id,
+                            artifact.artifact_kind,
+                            artifact.content_json,
+                            artifact.content_digest,
+                            artifact.created_at,
+                            artifact.updated_at,
+                        ),
+                    )
+                    row = self.conn.execute(
+                        """SELECT * FROM playbook_optimization_artifacts
+                           WHERE artifact_id = ?""",
+                        (cur.lastrowid,),
+                    ).fetchone()
+                    if row is None:
+                        raise RuntimeError("optimizer artifact insert returned no row")
+                    result = _row_to_playbook_optimization_artifact(row)
+                if owns_transaction:
+                    self.conn.commit()
+                return result
+            except Exception:
+                if owns_transaction:
+                    self.conn.rollback()
+                raise
+
+    @SQLiteStorageBase.handle_exceptions
+    def get_playbook_optimization_artifact(
+        self,
+        job_id: int,
+        artifact_kind: OptimizationArtifactKind,
+    ) -> PlaybookOptimizationArtifact | None:
+        row = self._fetchone(
+            """SELECT * FROM playbook_optimization_artifacts
+               WHERE job_id = ? AND artifact_kind = ?""",
+            (job_id, artifact_kind),
+        )
+        return None if row is None else _row_to_playbook_optimization_artifact(row)
 
     @SQLiteStorageBase.handle_exceptions
     def update_playbook_optimization_job(

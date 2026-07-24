@@ -759,6 +759,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         # absent), so running it before _DDL is safe on fresh databases too.
         self._migrate_eval_result_user_id()
         self._migrate_retrieved_learning_interaction_identity()
+        self._migrate_playbook_optimization_job_columns()
         with self._lock:
             cur = self.conn.cursor()
             cur.executescript(_DDL)
@@ -785,6 +786,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         self._migrate_retired_at()
         self._migrate_lineage_event_table()
         self._migrate_playbook_optimization_candidate_metadata()
+        self._classify_legacy_playbook_optimization_jobs()
         self._migrate_retire_profile_change_logs()
         self._migrate_retire_playbook_aggregation_change_logs()
         init_stall_state_table(self.conn)
@@ -1266,6 +1268,134 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             logger.info(
                 "Added metadata_json column to playbook_optimization_candidates"
             )
+        self.conn.commit()
+
+    def _migrate_playbook_optimization_job_columns(self) -> None:
+        """Add durable optimizer identity, lease, stage, and digest columns."""
+        existing_cols = {
+            row["name"]
+            for row in self.conn.execute(
+                "PRAGMA table_info(playbook_optimization_jobs)"
+            ).fetchall()
+        }
+        if not existing_cols:
+            return
+        columns = {
+            "optimizer_kind": "TEXT",
+            "discovery_key": "TEXT",
+            "attempt_key": "TEXT",
+            "lease_owner": "TEXT",
+            "lease_fence": "INTEGER NOT NULL DEFAULT 0",
+            "lease_expires_at": "INTEGER",
+            "stage": "TEXT",
+            "terminal_outcome": "TEXT",
+            "expected_population_manifest_digest": "TEXT",
+            "generation_selection_manifest_digest": "TEXT",
+            "replay_manifest_digest": "TEXT",
+            "candidate_content_digest": "TEXT",
+            "search_projection_digest": "TEXT",
+            "publication_scope_digest": "TEXT",
+        }
+        for column, definition in columns.items():
+            if column not in existing_cols:
+                self.conn.execute(
+                    f"ALTER TABLE playbook_optimization_jobs "
+                    f"ADD COLUMN {column} {definition}"  # noqa: S608
+                )
+        self.conn.commit()
+
+    def _classify_legacy_playbook_optimization_jobs(self) -> None:
+        """Classify legacy optimizer history without choosing ambiguous rule order."""
+        columns = {
+            row["name"]
+            for row in self.conn.execute(
+                "PRAGMA table_info(playbook_optimization_jobs)"
+            ).fetchall()
+        }
+        if "optimizer_kind" not in columns:
+            return
+        self.conn.execute(
+            """
+            WITH signatures AS (
+                SELECT
+                    jobs.job_id,
+                    (
+                        EXISTS (
+                            SELECT 1
+                            FROM playbook_optimization_events AS events
+                            WHERE events.job_id = jobs.job_id
+                              AND events.event_type LIKE 'offline_tuner_%'
+                        )
+                        OR (
+                            json_valid(jobs.metadata_json)
+                            AND json_type(jobs.metadata_json, '$.offline_tuner')
+                                IS NOT NULL
+                        )
+                        OR EXISTS (
+                            SELECT 1
+                            FROM playbook_optimization_candidates AS candidates
+                            WHERE candidates.job_id = jobs.job_id
+                              AND json_valid(candidates.metadata_json)
+                              AND (
+                                  json_type(
+                                      candidates.metadata_json,
+                                      '$.offline_tuner_metrics'
+                                  ) IS NOT NULL
+                                  OR json_type(
+                                      candidates.metadata_json,
+                                      '$.rollback_baseline'
+                                  ) IS NOT NULL
+                                  OR json_type(
+                                      candidates.metadata_json,
+                                      '$.frozen_selection_set'
+                                  ) IS NOT NULL
+                                  OR json_type(
+                                      candidates.metadata_json,
+                                      '$.proposed_edit'
+                                  ) IS NOT NULL
+                              )
+                        )
+                    ) AS tuner_signature,
+                    (
+                        json_valid(jobs.metadata_json)
+                        AND json_type(jobs.metadata_json, '$.source_window_count')
+                            IS NOT NULL
+                        AND json_type(jobs.metadata_json, '$.train_window_count')
+                            IS NOT NULL
+                        AND json_type(
+                            jobs.metadata_json,
+                            '$.validation_window_count'
+                        ) IS NOT NULL
+                    ) AS gepa_signature
+                FROM playbook_optimization_jobs AS jobs
+                WHERE jobs.optimizer_kind IS NULL
+            )
+            UPDATE playbook_optimization_jobs
+            SET optimizer_kind = CASE
+                WHEN tuner_signature AND NOT gepa_signature
+                    THEN 'offline_tuner_legacy'
+                WHEN gepa_signature AND NOT tuner_signature THEN 'gepa'
+                ELSE 'optimizer_legacy_unknown'
+            END
+            FROM signatures
+            WHERE playbook_optimization_jobs.job_id = signatures.job_id
+            """
+        )
+        self.conn.execute(
+            """
+            UPDATE playbook_optimization_jobs
+            SET status = 'skipped',
+                decision_reason = 'retired_by_replay_redesign',
+                lease_owner = NULL,
+                lease_expires_at = NULL,
+                updated_at = CAST(strftime('%s', 'now') AS INTEGER)
+            WHERE optimizer_kind IN (
+                    'offline_tuner_legacy',
+                    'optimizer_legacy_unknown'
+                )
+              AND status IN ('pending', 'running')
+            """
+        )
         self.conn.commit()
 
     def _migrate_retire_profile_change_logs(self) -> None:
@@ -2130,6 +2260,13 @@ CREATE INDEX IF NOT EXISTS idx_apsup_user ON agent_playbook_source_user_playbook
 
 CREATE TABLE IF NOT EXISTS playbook_optimization_jobs (
     job_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    optimizer_kind TEXT NOT NULL DEFAULT 'optimizer_legacy_unknown'
+        CHECK (optimizer_kind IN (
+            'gepa',
+            'offline_tuner_replay',
+            'offline_tuner_legacy',
+            'optimizer_legacy_unknown'
+        )),
     target_kind TEXT NOT NULL,
     target_id INTEGER NOT NULL,
     status TEXT NOT NULL DEFAULT 'pending',
@@ -2137,11 +2274,76 @@ CREATE TABLE IF NOT EXISTS playbook_optimization_jobs (
     successor_target_id INTEGER,
     decision_reason TEXT NOT NULL DEFAULT '',
     metadata_json TEXT NOT NULL DEFAULT '{}',
+    discovery_key TEXT,
+    attempt_key TEXT,
+    lease_owner TEXT,
+    lease_fence INTEGER NOT NULL DEFAULT 0 CHECK (lease_fence >= 0),
+    lease_expires_at INTEGER,
+    stage TEXT CHECK (stage IS NULL OR stage IN (
+        'evidence_frozen',
+        'candidate_generated',
+        'replay_running',
+        'replay_evaluated',
+        'publishing',
+        'applied',
+        'abstained',
+        'failed'
+    )),
+    terminal_outcome TEXT CHECK (terminal_outcome IS NULL OR terminal_outcome IN (
+        'applied',
+        'insufficient_negative_evidence',
+        'insufficient_positive_evidence',
+        'insufficient_coverage',
+        'replay_unsupported',
+        'deployment_unsupported',
+        'incomplete_replay_scope',
+        'insufficient_replay_cases',
+        'replay_inconclusive',
+        'candidate_regressed',
+        'candidate_did_not_improve',
+        'incumbent_changed',
+        'generation_failed',
+        'replay_failed',
+        'publication_failed'
+    )),
+    expected_population_manifest_digest TEXT,
+    generation_selection_manifest_digest TEXT,
+    replay_manifest_digest TEXT,
+    candidate_content_digest TEXT,
+    search_projection_digest TEXT,
+    publication_scope_digest TEXT,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_poj_target ON playbook_optimization_jobs(target_kind, target_id);
 CREATE INDEX IF NOT EXISTS idx_poj_status ON playbook_optimization_jobs(status);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_poj_active_discovery
+    ON playbook_optimization_jobs(optimizer_kind, discovery_key)
+    WHERE status IN ('pending', 'running') AND discovery_key IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_poj_active_attempt
+    ON playbook_optimization_jobs(optimizer_kind, attempt_key)
+    WHERE status IN ('pending', 'running') AND attempt_key IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS playbook_optimization_artifacts (
+    artifact_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id INTEGER NOT NULL,
+    artifact_kind TEXT NOT NULL CHECK (artifact_kind IN (
+        'expected_population_manifest',
+        'generation_selection',
+        'replay_manifest',
+        'candidate',
+        'candidate_search_projection'
+    )),
+    content_json TEXT NOT NULL,
+    content_digest TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    UNIQUE (job_id, artifact_kind),
+    FOREIGN KEY (job_id) REFERENCES playbook_optimization_jobs(job_id)
+        ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_poa_job
+    ON playbook_optimization_artifacts(job_id);
 
 CREATE TABLE IF NOT EXISTS playbook_optimization_candidates (
     candidate_id INTEGER PRIMARY KEY AUTOINCREMENT,

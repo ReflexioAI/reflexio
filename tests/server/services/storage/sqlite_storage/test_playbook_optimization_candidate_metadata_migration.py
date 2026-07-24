@@ -55,7 +55,9 @@ def test_migration_adds_candidate_metadata_column_and_persists_metadata(
     assert "metadata_json" in _candidate_columns(db_path)
 
     job = storage.create_playbook_optimization_job(
-        PlaybookOptimizationJob(target_kind="user_playbook", target_id=10)
+        PlaybookOptimizationJob(
+            optimizer_kind="gepa", target_kind="user_playbook", target_id=10
+        )
     )
     metadata_json = json.dumps(
         {

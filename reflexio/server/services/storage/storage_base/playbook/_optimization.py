@@ -3,6 +3,11 @@
 from abc import abstractmethod
 
 from reflexio.models.api_schema.domain import (
+    OptimizationArtifactKind,
+    OptimizationJobClaim,
+    OptimizationJobStage,
+    OptimizationTerminalOutcome,
+    PlaybookOptimizationArtifact,
     PlaybookOptimizationCandidate,
     PlaybookOptimizationEvaluation,
     PlaybookOptimizationEvent,
@@ -22,6 +27,79 @@ class OptimizationJobStoreMixin:
         self, job: PlaybookOptimizationJob
     ) -> PlaybookOptimizationJob:
         """Persist a playbook optimization job and return it with id populated."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def create_or_get_playbook_optimization_job(
+        self, job: PlaybookOptimizationJob
+    ) -> PlaybookOptimizationJob:
+        """Atomically insert or return the active job with the same replay identity."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def claim_playbook_optimization_job(
+        self,
+        job_id: int,
+        owner: str,
+        lease_seconds: int,
+        *,
+        now: int | None = None,
+    ) -> OptimizationJobClaim:
+        """Claim an unleased active optimizer job and issue a new fence."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def reclaim_playbook_optimization_job(
+        self,
+        job_id: int,
+        owner: str,
+        lease_seconds: int = 60,
+        *,
+        now: int | None = None,
+    ) -> OptimizationJobClaim:
+        """Reclaim an expired active optimizer job and issue a newer fence."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def renew_playbook_optimization_job_lease(
+        self,
+        job_id: int,
+        owner: str,
+        fence: int,
+        lease_seconds: int,
+        *,
+        now: int | None = None,
+    ) -> OptimizationJobClaim:
+        """Extend a current, unexpired optimizer lease without changing its fence."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def advance_playbook_optimization_stage(
+        self,
+        job_id: int,
+        fence: int,
+        stage: OptimizationJobStage,
+        *,
+        terminal_outcome: OptimizationTerminalOutcome | None = None,
+        now: int | None = None,
+    ) -> bool:
+        """Advance the linear replay stage only for the current unexpired fence."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def upsert_playbook_optimization_artifact(
+        self, artifact: PlaybookOptimizationArtifact
+    ) -> PlaybookOptimizationArtifact:
+        """Insert a singleton artifact or return it when its digest matches."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_playbook_optimization_artifact(
+        self,
+        job_id: int,
+        artifact_kind: OptimizationArtifactKind,
+    ) -> PlaybookOptimizationArtifact | None:
+        """Return one typed singleton artifact when present."""
         raise NotImplementedError
 
     @abstractmethod
