@@ -71,7 +71,14 @@ class OptimizationJobStoreMixin:
         *,
         now: int | None = None,
     ) -> PlaybookOptimizationJob | None:
-        """Atomically reclaim and return one expired GEPA user publication job."""
+        """Recover one unconsumed GEPA user publication job.
+
+        Outcomes are part of the storage contract:
+        return the reclaimed job when an expired publishing lease is fenced to
+        the new owner, return ``None`` when no unconsumed publishing job exists,
+        and raise ``OptimizationJobLeaseLiveError`` when a matching job exists
+        but its optimizer lease is still live.
+        """
         raise NotImplementedError
 
     @abstractmethod

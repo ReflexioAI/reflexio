@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.metadata
 import inspect
 import json
 import logging
@@ -44,6 +45,8 @@ from .gepa_publication import (
     GEPAUserPlaybookDecisionVerifier,
     build_gepa_decision_proof,
     build_gepa_search_projection,
+    gepa_adoption_authority_from_config,
+    gepa_winner_adoption_result,
     parse_gepa_decision_proof,
     parse_gepa_search_projection,
 )
@@ -171,6 +174,7 @@ class PlaybookOptimizer:
             config=config,
             assistant=assistant,
             llm_client=self.llm_client,
+            include_publication_authority=target.kind == "user_playbook",
         )
 
         job = self.storage.create_playbook_optimization_job(
@@ -471,24 +475,18 @@ class PlaybookOptimizer:
         if best_score < config.min_commit_score:
             return False
         evaluations = self.storage.list_playbook_optimization_evaluations(job_id)
-        validation_keys = {_window_eval_key(window) for window in validation_windows}
-        winning_windows = {
-            _evaluation_key(
-                evaluation.scenario_user_playbook_id,
-                evaluation.source_interaction_ids,
-            )
-            for evaluation in evaluations
-            if evaluation.candidate_id == candidate_id
-            and _evaluation_key(
-                evaluation.scenario_user_playbook_id,
-                evaluation.source_interaction_ids,
-            )
-            in validation_keys
-            and evaluation.verdict == "candidate"
-            and evaluation.score >= config.min_commit_score
-            and evaluation.likert >= config.min_commit_likert
-        }
-        return len(winning_windows) >= config.min_commit_windows
+        authority = gepa_adoption_authority_from_config(
+            config=config,
+            validation_windows=validation_windows,
+            adoption_enabled=True,
+        )
+        adoption = gepa_winner_adoption_result(
+            winner_candidate_id=candidate_id,
+            aggregate_score=best_score,
+            evaluations=evaluations,
+            authority=authority,
+        )
+        return bool(adoption["passes"])
 
     def _has_aborted_evaluations(self, job_id: int) -> bool:
         evaluations = self.storage.list_playbook_optimization_evaluations(job_id)
@@ -525,11 +523,12 @@ class PlaybookOptimizer:
             incumbent_id
         )
         evaluations = self.storage.list_playbook_optimization_evaluations(job.job_id)
+        durable_metadata = json.loads(job.metadata_json)
         proof = build_gepa_decision_proof(
             job=job,
             winner=winner,
             evaluations=evaluations,
-            metadata=result_metadata,
+            metadata=durable_metadata,
             subject_epochs_json=subject_epochs_json,
             projection_digest=projection.digest,
         )
@@ -953,15 +952,9 @@ def _split_metadata(
     config: PlaybookOptimizerConfig,
     assistant: AssistantCallable,
     llm_client: LiteLLMClient,
+    include_publication_authority: bool,
 ) -> dict[str, Any]:
-    return {
-        GEPA_PUBLICATION_AUTHORITY_METADATA_KEY: _gepa_publication_authority(
-            config=config,
-            train_windows=train_windows,
-            validation_windows=validation_windows,
-            assistant=assistant,
-            llm_client=llm_client,
-        ),
+    metadata = {
         "source_window_count": len(windows),
         "train_window_count": len(train_windows),
         "train_windows": [
@@ -983,6 +976,15 @@ def _split_metadata(
             for window in validation_windows
         ],
     }
+    if include_publication_authority:
+        metadata[GEPA_PUBLICATION_AUTHORITY_METADATA_KEY] = _gepa_publication_authority(
+            config=config,
+            train_windows=train_windows,
+            validation_windows=validation_windows,
+            assistant=assistant,
+            llm_client=llm_client,
+        )
+    return metadata
 
 
 def _gepa_publication_authority(
@@ -994,19 +996,43 @@ def _gepa_publication_authority(
     llm_client: LiteLLMClient,
 ) -> dict[str, Any]:
     judge_model_id = config.reflection_model or llm_client.config.model
+    adoption_authority = gepa_adoption_authority_from_config(
+        config=config,
+        validation_windows=validation_windows,
+    )
+    adoption_authority["validation_manifest"]["digest"] = _window_manifest_digest(
+        validation_windows
+    )
     return {
-        "adoption_policy": {
-            "auto_update_user_playbooks": config.auto_update_user_playbooks,
-            "min_commit_likert": config.min_commit_likert,
-            "min_commit_score": _decimal_string(config.min_commit_score),
-            "min_commit_windows": config.min_commit_windows,
-        },
+        **adoption_authority,
         "backend_identity": _assistant_backend_identity(config, assistant),
+        "budget_settings": {
+            "max_metric_calls": config.max_metric_calls,
+            "max_turns": config.max_turns,
+            "reflection_minibatch_size": config.reflection_minibatch_size,
+        },
         "evaluator_identity": {
             "judge_class": _code_identity(PairwiseJudge),
             "judge_code_digest": _code_digest(PairwiseJudge),
             "judge_model_id": judge_model_id,
             "judge_prompt_id": PLAYBOOK_OPTIMIZER_JUDGE_PROMPT_ID,
+        },
+        "gepa_algorithm": {
+            "batch_sampler": "epoch_shuffled",
+            "cache_evaluation": True,
+            "candidate_selection_strategy": "pareto",
+            "display_progress_bar": False,
+            "frontier_type": "instance",
+            "raise_on_exception": False,
+        },
+        "gepa_engine_identity": _gepa_engine_identity(),
+        "merge_settings": {
+            "max_merge_invocations": config.max_merge_invocations,
+            "use_merge": config.use_merge,
+        },
+        "model_identity": {
+            "default_lm": llm_client.config.model,
+            "reflection_lm": judge_model_id,
         },
         "optimizer_identity": {
             "adapter_class": _code_identity(ReflexioPlaybookGEPAAdapter),
@@ -1014,21 +1040,38 @@ def _gepa_publication_authority(
             "rollout_class": _code_identity(MultiTurnRollout),
             "rollout_code_digest": _code_digest(MultiTurnRollout),
         },
+        "split_settings": {
+            "max_validation_windows": config.max_validation_windows,
+        },
+        "stop_settings": {
+            "early_stop_score": _decimal_string(config.early_stop_score),
+            "stopper_class": "gepa.utils.stop_condition.ScoreThresholdStopper",
+        },
         "train_manifest": {
             "digest": _window_manifest_digest(train_windows),
             "windows": [_window_manifest_item(window) for window in train_windows],
         },
-        "validation_manifest": {
-            "digest": _window_manifest_digest(validation_windows),
-            "windows": [
-                {
-                    **_window_manifest_item(window),
-                    "min_commit_likert": config.min_commit_likert,
-                    "min_commit_score": _decimal_string(config.min_commit_score),
-                }
-                for window in validation_windows
-            ],
-        },
+    }
+
+
+def _gepa_engine_identity() -> dict[str, Any]:
+    try:
+        package_version = importlib.metadata.version("gepa")
+    except importlib.metadata.PackageNotFoundError:
+        package_version = "unknown"
+    try:
+        from gepa.api import optimize as gepa_optimize
+
+        optimize_code_digest = _code_digest(gepa_optimize)
+        optimize_identity = _code_identity(gepa_optimize)
+    except Exception:  # noqa: BLE001
+        optimize_code_digest = _text_digest("gepa.api.optimize")
+        optimize_identity = "gepa.api.optimize"
+    return {
+        "optimize_callable": optimize_identity,
+        "optimize_code_digest": optimize_code_digest,
+        "package_name": "gepa",
+        "package_version": package_version,
     }
 
 
@@ -1081,11 +1124,11 @@ def _text_digest(value: str) -> str:
     return sha256(value.encode("utf-8")).hexdigest()
 
 
-def _code_identity(value: type[Any]) -> str:
+def _code_identity(value: Any) -> str:
     return f"{value.__module__}.{value.__qualname__}"
 
 
-def _code_digest(value: type[Any]) -> str:
+def _code_digest(value: Any) -> str:
     try:
         source = inspect.getsource(value)
     except (OSError, TypeError):
@@ -1094,7 +1137,7 @@ def _code_digest(value: type[Any]) -> str:
 
 
 def _decimal_string(value: float) -> str:
-    return format(float(value), ".15g")
+    return repr(float(value))
 
 
 def _is_executable_file(path: str) -> bool:
@@ -1112,9 +1155,3 @@ def _result_metadata(result: Any, split_metadata: dict[str, Any]) -> dict[str, A
 
 def _window_eval_key(window: ScenarioWindow) -> tuple[int | None, tuple[int, ...]]:
     return window.user_playbook_id, tuple(window.source_interaction_ids)
-
-
-def _evaluation_key(
-    scenario_user_playbook_id: int | None, source_interaction_ids: list[int]
-) -> tuple[int | None, tuple[int, ...]]:
-    return scenario_user_playbook_id, tuple(source_interaction_ids)

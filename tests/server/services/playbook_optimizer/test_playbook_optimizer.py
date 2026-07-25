@@ -4,6 +4,7 @@ import json
 import sys
 import threading
 import time
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import Mock, patch
@@ -37,6 +38,9 @@ from reflexio.server.services.playbook_optimizer.assistant_webhook import (
 from reflexio.server.services.playbook_optimizer.gepa_adapter import (
     PLAYBOOK_CONTENT_COMPONENT,
     ReflexioPlaybookGEPAAdapter,
+)
+from reflexio.server.services.playbook_optimizer.gepa_publication import (
+    GEPA_PUBLICATION_AUTHORITY_METADATA_KEY,
 )
 from reflexio.server.services.playbook_optimizer.judge import JudgeOutput
 from reflexio.server.services.playbook_optimizer.models import (
@@ -723,6 +727,80 @@ def test_agent_playbook_optimizer_successor_does_not_trigger_aggregation(tmp_pat
 
     assert successor_id is not None
     trigger.assert_not_called()
+
+
+def test_agent_optimizer_local_backend_does_not_build_user_publication_authority(
+    tmp_path,
+):
+    storage = _sqlite_storage(tmp_path)
+    config = Config(
+        storage_config=StorageConfigSQLite(db_path=str(tmp_path / "reflexio.db")),
+        playbook_optimizer_config=PlaybookOptimizerConfig(
+            enabled=True,
+            optimize_agent_playbooks=True,
+            auto_update_pending_agent_playbooks=True,
+            assistant_script_path=sys.executable,
+            min_commit_windows=1,
+            min_commit_score=0.1,
+            min_commit_likert=1,
+        ),
+    )
+    optimizer = _optimizer_for_test(storage, config)
+    [agent_playbook] = storage.save_agent_playbooks(
+        [
+            AgentPlaybook(
+                playbook_name="support",
+                agent_version="v1",
+                content="old",
+                trigger="when old",
+                playbook_status=PlaybookStatus.PENDING,
+            )
+        ]
+    )
+    window = _scenario_window(agent_playbook.agent_playbook_id)
+    optimizer._resolve_windows = Mock(return_value=[window])  # type: ignore[method-assign]
+
+    def fake_run_gepa(config, seed_content, train_windows, validation_windows, adapter):  # noqa: ARG001
+        candidate = adapter._ensure_candidate("candidate content")  # noqa: SLF001
+        storage.insert_playbook_optimization_evaluation(
+            PlaybookOptimizationEvaluation(
+                job_id=adapter.job_id,
+                candidate_id=candidate.candidate_id,
+                target_kind="agent_playbook",
+                target_id=agent_playbook.agent_playbook_id,
+                scenario_user_playbook_id=window.user_playbook_id,
+                source_interaction_ids=window.source_interaction_ids,
+                score=0.9,
+                verdict="candidate",
+                likert=5,
+            )
+        )
+        return SimpleNamespace(
+            best_candidate={PLAYBOOK_CONTENT_COMPONENT: "candidate content"},
+            val_aggregate_scores=[0.9],
+            best_idx=0,
+            to_dict=lambda: {"best_idx": 0},
+        )
+
+    optimizer._run_gepa = fake_run_gepa  # type: ignore[method-assign]
+    with patch.object(
+        Path,
+        "read_bytes",
+        side_effect=PermissionError("publication hashing must not read agent backend"),
+    ):
+        result = optimizer.optimize(
+            PlaybookOptimizationTarget(
+                kind="agent_playbook", target_id=agent_playbook.agent_playbook_id
+            )
+        )
+
+    assert result == "completed"
+    job = storage.conn.execute(
+        "SELECT metadata_json FROM playbook_optimization_jobs"
+    ).fetchone()
+    assert GEPA_PUBLICATION_AUTHORITY_METADATA_KEY not in json.loads(
+        job["metadata_json"]
+    )
 
 
 def test_optimizer_runs_single_window_when_commit_threshold_is_one(tmp_path):

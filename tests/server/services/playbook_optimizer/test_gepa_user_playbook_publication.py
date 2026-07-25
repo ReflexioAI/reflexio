@@ -11,6 +11,7 @@ import pytest
 
 from reflexio.models.api_schema.domain import (
     Interaction,
+    PlaybookOptimizationCandidate,
     PlaybookOptimizationEvaluation,
     UserPlaybook,
 )
@@ -27,6 +28,8 @@ from reflexio.server.services.playbook_optimizer.gepa_publication import (
     GEPA_PROJECTOR_CODE_DIGEST,
     GEPA_PROJECTOR_ID,
     GEPA_PROJECTOR_VERSION,
+    GEPA_PUBLICATION_AUTHORITY_METADATA_KEY,
+    _gepa_adoption_result_from_snapshot,
 )
 from reflexio.server.services.playbook_optimizer.models import ScenarioWindow
 from reflexio.server.services.playbook_optimizer.optimizer import (
@@ -138,6 +141,71 @@ def _install_winning_gepa(
     optimizer._run_gepa = fake_run_gepa  # type: ignore[method-assign]
 
 
+def _candidate(
+    *,
+    aggregate_score: float = 0.9,
+) -> PlaybookOptimizationCandidate:
+    return PlaybookOptimizationCandidate(
+        candidate_id=11,
+        job_id=7,
+        content="new guidance",
+        aggregate_score=aggregate_score,
+        is_winner=True,
+    )
+
+
+def _evaluation(
+    *,
+    evaluation_id: int,
+    candidate_id: int = 11,
+    scenario_user_playbook_id: int = 101,
+    source_interaction_ids: list[int] | None = None,
+    score: float = 0.9,
+    likert: int = 5,
+) -> PlaybookOptimizationEvaluation:
+    return PlaybookOptimizationEvaluation(
+        evaluation_id=evaluation_id,
+        job_id=7,
+        candidate_id=candidate_id,
+        target_kind="user_playbook",
+        target_id=101,
+        scenario_user_playbook_id=scenario_user_playbook_id,
+        source_interaction_ids=source_interaction_ids or [1001],
+        score=score,
+        verdict="candidate",
+        likert=likert,
+    )
+
+
+def _authority(
+    *,
+    min_commit_windows: int,
+    min_commit_score: str = "0.5",
+    min_commit_likert: int = 4,
+    windows: list[dict[str, object]] | None = None,
+) -> dict[str, object]:
+    return {
+        "adoption_policy": {
+            "auto_update_user_playbooks": True,
+            "min_commit_likert": min_commit_likert,
+            "min_commit_score": min_commit_score,
+            "min_commit_windows": min_commit_windows,
+        },
+        "validation_manifest": {
+            "digest": "a" * 64,
+            "windows": windows
+            or [
+                {
+                    "scenario_user_playbook_id": 101,
+                    "source_interaction_ids": [1001],
+                    "min_commit_likert": min_commit_likert,
+                    "min_commit_score": min_commit_score,
+                }
+            ],
+        },
+    }
+
+
 def _incumbent(storage: SQLiteStorage) -> UserPlaybook:
     incumbent = UserPlaybook(
         user_id="u1",
@@ -149,6 +217,185 @@ def _incumbent(storage: SQLiteStorage) -> UserPlaybook:
     )
     storage.save_user_playbooks([incumbent])
     return incumbent
+
+
+def test_gepa_adoption_counts_duplicate_validation_window_once():
+    adoption = _gepa_adoption_result_from_snapshot(
+        winner=_candidate(),
+        evaluations=[
+            _evaluation(evaluation_id=1),
+            _evaluation(evaluation_id=2),
+        ],
+        authority=_authority(min_commit_windows=2),
+    )
+
+    assert adoption["passes"] is False
+
+
+def test_gepa_adoption_counts_distinct_validation_windows():
+    adoption = _gepa_adoption_result_from_snapshot(
+        winner=_candidate(),
+        evaluations=[
+            _evaluation(evaluation_id=1, scenario_user_playbook_id=101),
+            _evaluation(
+                evaluation_id=2,
+                scenario_user_playbook_id=102,
+                source_interaction_ids=[1002],
+            ),
+        ],
+        authority=_authority(
+            min_commit_windows=2,
+            windows=[
+                {
+                    "scenario_user_playbook_id": 101,
+                    "source_interaction_ids": [1001],
+                    "min_commit_likert": 4,
+                    "min_commit_score": "0.5",
+                },
+                {
+                    "scenario_user_playbook_id": 102,
+                    "source_interaction_ids": [1002],
+                    "min_commit_likert": 4,
+                    "min_commit_score": "0.5",
+                },
+            ],
+        ),
+    )
+
+    assert adoption["passes"] is True
+
+
+def test_gepa_adoption_uses_per_window_frozen_thresholds():
+    adoption = _gepa_adoption_result_from_snapshot(
+        winner=_candidate(),
+        evaluations=[
+            _evaluation(evaluation_id=1, scenario_user_playbook_id=101, score=0.6),
+            _evaluation(
+                evaluation_id=2,
+                scenario_user_playbook_id=102,
+                source_interaction_ids=[1002],
+                score=0.6,
+            ),
+        ],
+        authority=_authority(
+            min_commit_windows=2,
+            windows=[
+                {
+                    "scenario_user_playbook_id": 101,
+                    "source_interaction_ids": [1001],
+                    "min_commit_likert": 4,
+                    "min_commit_score": "0.5",
+                },
+                {
+                    "scenario_user_playbook_id": 102,
+                    "source_interaction_ids": [1002],
+                    "min_commit_likert": 4,
+                    "min_commit_score": "0.9",
+                },
+            ],
+        ),
+    )
+
+    assert adoption["passes"] is False
+
+
+def test_gepa_authority_uses_round_trippable_float_thresholds(tmp_path):
+    storage = _storage(tmp_path)
+    incumbent = _incumbent(storage)
+    config = _optimizer_config(tmp_path)
+    threshold = 0.1 + 0.2
+    config.playbook_optimizer_config.min_commit_score = threshold
+    optimizer = _optimizer_with_config(storage, config)
+    _install_winning_gepa(optimizer, storage, _window(incumbent.user_playbook_id))
+
+    status = optimizer.optimize(
+        PlaybookOptimizationTarget(
+            kind="user_playbook", target_id=incumbent.user_playbook_id
+        )
+    )
+
+    assert status == "completed"
+    job = storage.conn.execute(
+        "SELECT metadata_json FROM playbook_optimization_jobs"
+    ).fetchone()
+    authority = json.loads(job["metadata_json"])[
+        GEPA_PUBLICATION_AUTHORITY_METADATA_KEY
+    ]
+    assert authority["adoption_policy"]["min_commit_score"] == repr(threshold)
+    assert authority["validation_manifest"]["windows"][0]["min_commit_score"] == repr(
+        threshold
+    )
+
+
+def test_gepa_user_job_creation_freezes_complete_sanitized_authority(tmp_path):
+    storage = _storage(tmp_path)
+    incumbent = _incumbent(storage)
+    config = _optimizer_config(tmp_path)
+    config.playbook_optimizer_config.max_metric_calls = 37
+    config.playbook_optimizer_config.max_turns = 6
+    config.playbook_optimizer_config.early_stop_score = 0.1 + 0.2
+    config.playbook_optimizer_config.reflection_minibatch_size = 3
+    config.playbook_optimizer_config.max_validation_windows = 1
+    config.playbook_optimizer_config.use_merge = False
+    config.playbook_optimizer_config.max_merge_invocations = 0
+    config.playbook_optimizer_config.reflection_model = "judge-model"
+    config.playbook_optimizer_config.webhook_auth_header = "Bearer secret"
+    optimizer = _optimizer_with_config(storage, config)
+    _install_winning_gepa(optimizer, storage, _window(incumbent.user_playbook_id))
+
+    assert (
+        optimizer.optimize(
+            PlaybookOptimizationTarget(
+                kind="user_playbook", target_id=incumbent.user_playbook_id
+            )
+        )
+        == "completed"
+    )
+
+    row = storage.conn.execute(
+        "SELECT metadata_json FROM playbook_optimization_jobs"
+    ).fetchone()
+    authority = json.loads(row["metadata_json"])[
+        GEPA_PUBLICATION_AUTHORITY_METADATA_KEY
+    ]
+    assert authority["budget_settings"] == {
+        "max_metric_calls": 37,
+        "max_turns": 6,
+        "reflection_minibatch_size": 3,
+    }
+    assert authority["split_settings"] == {"max_validation_windows": 1}
+    assert authority["merge_settings"] == {
+        "max_merge_invocations": 0,
+        "use_merge": False,
+    }
+    assert authority["stop_settings"] == {
+        "early_stop_score": repr(0.1 + 0.2),
+        "stopper_class": "gepa.utils.stop_condition.ScoreThresholdStopper",
+    }
+    assert authority["gepa_algorithm"] == {
+        "batch_sampler": "epoch_shuffled",
+        "cache_evaluation": True,
+        "candidate_selection_strategy": "pareto",
+        "display_progress_bar": False,
+        "frontier_type": "instance",
+        "raise_on_exception": False,
+    }
+    assert authority["model_identity"] == {
+        "default_lm": "fake-model",
+        "reflection_lm": "judge-model",
+    }
+    assert authority["gepa_engine_identity"]["package_name"] == "gepa"
+    assert isinstance(authority["gepa_engine_identity"]["package_version"], str)
+    assert len(authority["gepa_engine_identity"]["optimize_code_digest"]) == 64
+    assert authority["backend_identity"]["backend_kind"] == "webhook"
+    assert authority["backend_identity"]["webhook_auth_configured"] is True
+    assert (
+        authority["backend_identity"]["webhook_url_digest"]
+        == sha256(b"https://assistant.example.test/rollout").hexdigest()
+    )
+    serialized = json.dumps(authority, sort_keys=True)
+    assert "https://assistant.example.test/rollout" not in serialized
+    assert "Bearer secret" not in serialized
 
 
 def test_gepa_user_winner_publishes_exact_projection_then_triggers_aggregation(

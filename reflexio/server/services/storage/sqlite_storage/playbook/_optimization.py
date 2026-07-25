@@ -120,7 +120,69 @@ _JOB_INSERT_SQL = """INSERT INTO playbook_optimization_jobs
      generation_selection_manifest_digest, replay_manifest_digest,
      candidate_content_digest, search_projection_digest,
      publication_scope_digest, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
+
+
+def _gepa_publication_authority_from_metadata(metadata_json: str | None) -> dict:
+    try:
+        metadata = json.loads(metadata_json or "{}")
+    except json.JSONDecodeError as exc:
+        raise StorageError("GEPA durable publication authority is invalid") from exc
+    authority = metadata.get("gepa_publication_authority")
+    if not isinstance(authority, dict):
+        raise StorageError("GEPA durable publication authority is missing")
+    return authority
+
+
+def _validate_gepa_publication_prepare_metadata(
+    *,
+    lease_seconds: int,
+    candidate_content_digest: str,
+    search_projection_digest: str,
+    publication_proof_digest: str,
+    projection_json: str,
+    decision_proof_json: str,
+    subject_epochs_json: str,
+    metadata_json: str,
+) -> dict[str, Any]:
+    if lease_seconds <= 0:
+        raise ValueError("lease_seconds must be positive")
+    digests = (
+        candidate_content_digest,
+        search_projection_digest,
+        publication_proof_digest,
+    )
+    if any(
+        len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest)
+        for digest in digests
+    ):
+        raise ValueError("GEPA publication digests must be lowercase SHA-256")
+    try:
+        metadata = json.loads(metadata_json)
+        json.loads(subject_epochs_json)
+    except json.JSONDecodeError as exc:
+        raise ValueError("GEPA publication metadata must be valid JSON") from exc
+    if not isinstance(metadata, dict):
+        raise ValueError("GEPA publication metadata must be an object")
+    if sha256(projection_json.encode("utf-8")).hexdigest() != search_projection_digest:
+        raise ValueError("GEPA projection digest does not match canonical JSON")
+    if sha256(decision_proof_json.encode("utf-8")).hexdigest() != (
+        publication_proof_digest
+    ):
+        raise ValueError("GEPA proof digest does not match canonical JSON")
+    try:
+        if canonical_json_bytes(json.loads(projection_json)).decode() != (
+            projection_json
+        ):
+            raise ValueError("projection JSON is not canonical")
+        if canonical_json_bytes(json.loads(decision_proof_json)).decode() != (
+            decision_proof_json
+        ):
+            raise ValueError("proof JSON is not canonical")
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise ValueError("GEPA publication bytes must be canonical JSON") from exc
+    return metadata
+
 
 from .._base import (
     SQLiteStorageBase,
@@ -219,44 +281,17 @@ class OptimizationJobStoreMixin:
         subject_epochs_json: str,
         metadata_json: str,
     ) -> PlaybookOptimizationJob:
-        if lease_seconds <= 0:
-            raise ValueError("lease_seconds must be positive")
-        digests = (
-            candidate_content_digest,
-            search_projection_digest,
-            publication_proof_digest,
+        metadata = _validate_gepa_publication_prepare_metadata(
+            lease_seconds=lease_seconds,
+            candidate_content_digest=candidate_content_digest,
+            search_projection_digest=search_projection_digest,
+            publication_proof_digest=publication_proof_digest,
+            projection_json=projection_json,
+            decision_proof_json=decision_proof_json,
+            subject_epochs_json=subject_epochs_json,
+            metadata_json=metadata_json,
         )
-        if any(
-            len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest)
-            for digest in digests
-        ):
-            raise ValueError("GEPA publication digests must be lowercase SHA-256")
-        try:
-            metadata = json.loads(metadata_json)
-            subject_epochs = json.loads(subject_epochs_json)
-        except json.JSONDecodeError as exc:
-            raise ValueError("GEPA publication metadata must be valid JSON") from exc
-        if not isinstance(metadata, dict):
-            raise ValueError("GEPA publication metadata must be an object")
-        if sha256(projection_json.encode("utf-8")).hexdigest() != (
-            search_projection_digest
-        ):
-            raise ValueError("GEPA projection digest does not match canonical JSON")
-        if sha256(decision_proof_json.encode("utf-8")).hexdigest() != (
-            publication_proof_digest
-        ):
-            raise ValueError("GEPA proof digest does not match canonical JSON")
-        try:
-            if canonical_json_bytes(json.loads(projection_json)).decode() != (
-                projection_json
-            ):
-                raise ValueError("projection JSON is not canonical")
-            if canonical_json_bytes(json.loads(decision_proof_json)).decode() != (
-                decision_proof_json
-            ):
-                raise ValueError("proof JSON is not canonical")
-        except (TypeError, ValueError, json.JSONDecodeError) as exc:
-            raise ValueError("GEPA publication bytes must be canonical JSON") from exc
+        subject_epochs = json.loads(subject_epochs_json)
 
         prepared_at = self._lease_now(None)
         with self._lock:
@@ -282,6 +317,12 @@ class OptimizationJobStoreMixin:
                     raise StorageError("GEPA publication job is not prepareable")
                 if not job["attempt_key"]:
                     raise StorageError("GEPA publication attempt identity is missing")
+                durable_authority = _gepa_publication_authority_from_metadata(
+                    job["metadata_json"]
+                )
+                incoming_authority = metadata.get("gepa_publication_authority")
+                if incoming_authority != durable_authority:
+                    raise StorageError("GEPA publication authority changed")
                 candidate = self.conn.execute(
                     """SELECT * FROM playbook_optimization_candidates
                        WHERE candidate_id = ? AND job_id = ?""",
@@ -299,6 +340,7 @@ class OptimizationJobStoreMixin:
                 if expected_subject_epochs != subject_epochs_json:
                     raise StorageError("GEPA publication subject vector changed")
 
+                metadata["gepa_publication_authority"] = durable_authority
                 metadata["publication_proof_digest"] = publication_proof_digest
                 metadata[PUBLICATION_PROOF_JSON_METADATA_KEY] = decision_proof_json
                 metadata[PUBLICATION_PROJECTION_JSON_METADATA_KEY] = projection_json

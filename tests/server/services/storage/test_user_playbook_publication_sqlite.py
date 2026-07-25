@@ -8,7 +8,11 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from reflexio.models.api_schema.domain import PlaybookOptimizationJob, UserPlaybook
+from reflexio.models.api_schema.domain import (
+    PlaybookOptimizationCandidate,
+    PlaybookOptimizationJob,
+    UserPlaybook,
+)
 from reflexio.models.api_schema.domain.enums import Status
 from reflexio.models.api_schema.retriever_schema import SearchUserPlaybookRequest
 from reflexio.server.services.governance.config import (
@@ -21,6 +25,9 @@ from reflexio.server.services.playbook.publication import (
     PublicationRequest,
     PublicationSearchProjection,
     UserPlaybookPublicationService,
+)
+from reflexio.server.services.playbook_optimizer.gepa_publication import (
+    GEPA_PUBLICATION_AUTHORITY_METADATA_KEY,
 )
 from reflexio.server.services.storage.error import StorageError
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
@@ -190,6 +197,76 @@ def _seed(storage: SQLiteStorage) -> tuple[UserPlaybook, PlaybookOptimizationJob
         )
     )
     return incumbent, job
+
+
+def test_prepare_gepa_publication_rejects_authority_substitution_before_metadata_overwrite(
+    tmp_path: Path,
+) -> None:
+    storage = _store(tmp_path)
+    incumbent = _incumbent()
+    storage.save_user_playbooks([incumbent])
+    durable_authority = {
+        "adoption_policy": {"min_commit_score": "0.75"},
+        "validation_manifest": {"windows": []},
+    }
+    substituted_authority = {
+        "adoption_policy": {"min_commit_score": "0.25"},
+        "validation_manifest": {"windows": []},
+    }
+    job = storage.create_playbook_optimization_job(
+        PlaybookOptimizationJob(
+            optimizer_kind="gepa",
+            target_kind="user_playbook",
+            target_id=incumbent.user_playbook_id,
+            status="running",
+            metadata_json=_canonical(
+                {GEPA_PUBLICATION_AUTHORITY_METADATA_KEY: durable_authority}
+            ),
+            attempt_key="attempt-prepare",
+        )
+    )
+    candidate = storage.insert_playbook_optimization_candidate(
+        PlaybookOptimizationCandidate(
+            job_id=job.job_id,
+            content="new content",
+            aggregate_score=0.9,
+            is_winner=True,
+        )
+    )
+    projection = _projection("new content")
+    proof = _proof("substituted-proof")
+    incoming_metadata = _canonical(
+        {
+            GEPA_PUBLICATION_AUTHORITY_METADATA_KEY: substituted_authority,
+            "best_idx": 0,
+        }
+    )
+
+    with pytest.raises(StorageError, match="authority"):
+        storage.prepare_gepa_user_playbook_publication(
+            job_id=job.job_id,
+            owner="worker-a",
+            lease_seconds=60,
+            winner_candidate_id=candidate.candidate_id,
+            candidate_content_digest=projection.candidate_content_digest,
+            search_projection_digest=projection.digest,
+            publication_proof_digest=proof.digest,
+            projection_json=projection.canonical_json,
+            decision_proof_json=proof.canonical_json,
+            subject_epochs_json=storage.get_user_playbook_publication_subject_epochs(
+                incumbent.user_playbook_id
+            ),
+            metadata_json=incoming_metadata,
+        )
+
+    row = storage.conn.execute(
+        "SELECT metadata_json, stage FROM playbook_optimization_jobs WHERE job_id = ?",
+        (job.job_id,),
+    ).fetchone()
+    assert json.loads(row["metadata_json"])[
+        GEPA_PUBLICATION_AUTHORITY_METADATA_KEY
+    ] == (durable_authority)
+    assert row["stage"] is None
 
 
 def _subject_ref() -> str:

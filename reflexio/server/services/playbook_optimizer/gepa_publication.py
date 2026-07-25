@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
 from decimal import Decimal
 from hashlib import sha256
 from typing import Any
@@ -36,16 +35,43 @@ _PROOF_SCHEMA_VERSION = "gepa-user-playbook-decision-v1"
 _PROJECTION_SCHEMA_VERSION = "offline-tuner-candidate-search-projection-v1"
 GEPA_PUBLICATION_AUTHORITY_METADATA_KEY = "gepa_publication_authority"
 
-AdoptionCheck = Callable[
-    [int, int, list[ScenarioWindow], float, PlaybookOptimizerConfig], bool
-]
-
 
 def _decimal(value: float) -> str:
     decimal = Decimal(str(value))
     if not decimal.is_finite():
         raise ValueError("GEPA publication decimals must be finite")
     return "0" if decimal == 0 else format(decimal.normalize(), "f")
+
+
+def gepa_adoption_authority_from_config(
+    *,
+    config: PlaybookOptimizerConfig,
+    validation_windows: list[ScenarioWindow],
+    adoption_enabled: bool | None = None,
+) -> dict[str, Any]:
+    return {
+        "adoption_policy": {
+            "auto_update_user_playbooks": (
+                config.auto_update_user_playbooks
+                if adoption_enabled is None
+                else adoption_enabled
+            ),
+            "min_commit_likert": config.min_commit_likert,
+            "min_commit_score": repr(float(config.min_commit_score)),
+            "min_commit_windows": config.min_commit_windows,
+        },
+        "validation_manifest": {
+            "windows": [
+                {
+                    "scenario_user_playbook_id": window.user_playbook_id,
+                    "source_interaction_ids": list(window.source_interaction_ids),
+                    "min_commit_likert": config.min_commit_likert,
+                    "min_commit_score": repr(float(config.min_commit_score)),
+                }
+                for window in validation_windows
+            ],
+        },
+    }
 
 
 def build_gepa_search_projection(
@@ -193,25 +219,24 @@ def build_gepa_decision_proof(
     )
 
 
-def _validation_windows(metadata: dict[str, Any]) -> list[ScenarioWindow]:
-    records = metadata.get("validation_windows")
-    if not isinstance(records, list) or not records:
-        raise ValueError("GEPA durable validation windows are missing")
-    try:
-        return [
-            ScenarioWindow(
-                user_playbook_id=record["scenario_user_playbook_id"],
-                source_interaction_ids=record["source_interaction_ids"],
-            )
-            for record in records
-        ]
-    except (KeyError, TypeError) as exc:
-        raise ValueError("GEPA durable validation windows are invalid") from exc
-
-
 def _gepa_adoption_result_from_snapshot(
     *,
     winner: PlaybookOptimizationCandidate,
+    evaluations: list[PlaybookOptimizationEvaluation],
+    authority: dict[str, Any],
+) -> dict[str, Any]:
+    return gepa_winner_adoption_result(
+        winner_candidate_id=winner.candidate_id,
+        aggregate_score=winner.aggregate_score,
+        evaluations=evaluations,
+        authority=authority,
+    )
+
+
+def gepa_winner_adoption_result(
+    *,
+    winner_candidate_id: int,
+    aggregate_score: float | None,
     evaluations: list[PlaybookOptimizationEvaluation],
     authority: dict[str, Any],
 ) -> dict[str, Any]:
@@ -222,8 +247,6 @@ def _gepa_adoption_result_from_snapshot(
     windows = validation_manifest.get("windows")
     if not isinstance(windows, list) or not windows:
         raise ValueError("GEPA validation manifest is missing")
-    min_score = float(policy["min_commit_score"])
-    min_likert = int(policy["min_commit_likert"])
     min_windows = int(policy["min_commit_windows"])
     window_thresholds = {
         _window_key(
@@ -231,13 +254,14 @@ def _gepa_adoption_result_from_snapshot(
             item.get("source_interaction_ids"),
         ): {
             "min_commit_likert": int(item["min_commit_likert"]),
-            "min_commit_score": _decimal(float(item["min_commit_score"])),
+            "min_commit_score": str(item["min_commit_score"]),
         }
         for item in windows
     }
+    passed_window_keys: set[tuple[int | None, tuple[int, ...]]] = set()
     winning_windows = []
     for evaluation in evaluations:
-        if evaluation.candidate_id != winner.candidate_id:
+        if evaluation.candidate_id != winner_candidate_id:
             continue
         key = _window_key(
             evaluation.scenario_user_playbook_id,
@@ -246,11 +270,15 @@ def _gepa_adoption_result_from_snapshot(
         thresholds = window_thresholds.get(key)
         if thresholds is None:
             continue
+        min_score = float(thresholds["min_commit_score"])
+        min_likert = int(thresholds["min_commit_likert"])
         passed = (
             evaluation.verdict == "candidate"
             and evaluation.score >= min_score
             and evaluation.likert >= min_likert
         )
+        if passed:
+            passed_window_keys.add(key)
         winning_windows.append(
             {
                 "evaluation_id": evaluation.evaluation_id,
@@ -264,17 +292,18 @@ def _gepa_adoption_result_from_snapshot(
                 },
             }
         )
-    aggregate_score = winner.aggregate_score
+    policy_min_score = float(policy["min_commit_score"])
     passes = (
         bool(policy.get("auto_update_user_playbooks"))
         and aggregate_score is not None
-        and aggregate_score >= min_score
-        and sum(1 for item in winning_windows if item["passed"]) >= min_windows
+        and aggregate_score >= policy_min_score
+        and len(passed_window_keys) >= min_windows
     )
     return {
         "aggregate_score": _decimal(aggregate_score or 0.0),
         "min_commit_windows": min_windows,
         "passes": passes,
+        "passed_window_count": len(passed_window_keys),
         "winning_windows": winning_windows,
     }
 
