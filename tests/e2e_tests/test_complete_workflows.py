@@ -91,7 +91,7 @@ def test_complete_workflow_end_to_end(
 
     # Step 2: Search interactions
     search_interaction_response = reflexio_instance.search_interactions(
-        SearchInteractionRequest(user_id=user_id, query="Sarah", top_k=5)
+        SearchInteractionRequest(user_id=user_id, query="Priya", top_k=5)
     )
     assert search_interaction_response.success is True
     assert len(search_interaction_response.interactions) > 0
@@ -744,7 +744,7 @@ def test_full_workflow_with_all_features(
 
     # Search interactions
     search_interaction_response = reflexio_instance.search_interactions(
-        SearchInteractionRequest(user_id=user_id, query="Sarah", top_k=5)
+        SearchInteractionRequest(user_id=user_id, query="Priya", top_k=5)
     )
     assert search_interaction_response.success is True
     assert len(search_interaction_response.interactions) > 0
