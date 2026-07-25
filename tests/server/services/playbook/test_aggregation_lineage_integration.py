@@ -21,11 +21,15 @@ from __future__ import annotations
 
 import os
 import tempfile
+from collections.abc import Generator
+from contextlib import contextmanager
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from reflexio.lib._agent_playbook import reconstruct_playbook_aggregation_change_log
+from reflexio.models.api_schema.domain.entities import LineageContext
 from reflexio.models.api_schema.service_schemas import (
     AgentPlaybook,
     PlaybookStatus,
@@ -33,11 +37,13 @@ from reflexio.models.api_schema.service_schemas import (
 )
 from reflexio.models.config_schema import PlaybookAggregatorConfig, PlaybookConfig
 from reflexio.server.api_endpoints.request_context import RequestContext
+from reflexio.server.llm._litellm_types import ModelProvenance
 from reflexio.server.services.playbook.components.aggregator import PlaybookAggregator
 from reflexio.server.services.playbook.playbook_service_utils import (
     PlaybookAggregatorRequest,
 )
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
+from reflexio.server.services.storage.storage_base import AGGREGATE_REASON_PREFIX
 
 pytestmark = pytest.mark.integration
 
@@ -195,7 +201,7 @@ def test_aggregation_emits_aggregate_lineage_event(
     assert evt.request_id != "", "request_id must be non-empty"
 
 
-def test_aggregation_uses_durable_operation_key_for_logical_effects(
+def test_non_managed_aggregation_preserves_lineage_operation_key_deduplication(
     sqlite_storage: SQLiteStorage,
     request_context: RequestContext,
     aggregator: PlaybookAggregator,
@@ -230,6 +236,13 @@ def test_aggregation_uses_durable_operation_key_for_logical_effects(
                 operation_key="42",
             )
         )
+        retry = aggregator.run(
+            PlaybookAggregatorRequest(
+                agent_version="v0",
+                rerun=True,
+                operation_key="42",
+            )
+        )
 
     saved = sqlite_storage.get_agent_playbooks()
     assert len(saved) == 1
@@ -239,11 +252,13 @@ def test_aggregation_uses_durable_operation_key_for_logical_effects(
     )
     assert [event.request_id for event in events if event.op == "aggregate"] == ["42"]
 
+    assert retry["skipped"] == "operation already applied"
+    assert len(sqlite_storage.get_agent_playbooks()) == 1
 
-def test_aggregation_operation_key_deduplicates_retry_effects(
+
+def test_managed_aggregation_prepares_then_atomically_completes_all_effects(
     sqlite_storage: SQLiteStorage,
     request_context: RequestContext,
-    aggregator: PlaybookAggregator,
 ) -> None:
     up_a = _seed_user_playbook(sqlite_storage, uid=103, org_id=request_context.org_id)
     up_b = _seed_user_playbook(sqlite_storage, uid=104, org_id=request_context.org_id)
@@ -254,6 +269,62 @@ def test_aggregation_operation_key_deduplicates_retry_effects(
         agent_version="v0",
         content="Retry-safe aggregation.",
         playbook_status=PlaybookStatus.PENDING,
+    )
+
+    class _Coordinator:
+        prepared = False
+        active = False
+        completed_result: dict[str, Any] | None = None
+
+        def prepare(self, playbooks: list[AgentPlaybook]) -> None:
+            assert not self.active
+            assert playbooks == [unsaved]
+            self.prepared = True
+
+        @contextmanager
+        def apply_scope(self) -> Generator[None, None, None]:
+            assert self.prepared
+            self.active = True
+            try:
+                yield
+            finally:
+                self.active = False
+
+        def save_agent_playbook(
+            self,
+            playbook: AgentPlaybook,
+            *,
+            source_ids: list[str],
+            request_id: str,
+            run_mode: str,
+            provenance: ModelProvenance | None,
+        ) -> AgentPlaybook:
+            assert self.active
+            return sqlite_storage.save_agent_playbooks(
+                [playbook],
+                lineage_contexts=[
+                    LineageContext(
+                        op_kind="aggregate",
+                        actor="aggregator",
+                        request_id=request_id,
+                        source_ids=source_ids,
+                        reason=f"{AGGREGATE_REASON_PREFIX}{run_mode}",
+                        model_name=provenance.model_name if provenance else None,
+                        provider=provenance.provider if provenance else None,
+                    )
+                ],
+            )[0]
+
+        def complete(self, result: dict[str, Any]) -> None:
+            assert self.active
+            self.completed_result = result
+
+    coordinator = _Coordinator()
+    aggregator = PlaybookAggregator(
+        llm_client=MagicMock(),
+        request_context=request_context,
+        agent_version="v0",
+        effect_coordinator=coordinator,
     )
 
     with (
@@ -268,16 +339,17 @@ def test_aggregation_operation_key_deduplicates_retry_effects(
             return_value=[(unsaved, cluster_playbooks)],
         ),
     ):
-        request = PlaybookAggregatorRequest(
-            agent_version="v0",
-            rerun=True,
-            operation_key="43",
+        result = aggregator.run(
+            PlaybookAggregatorRequest(
+                agent_version="v0",
+                rerun=True,
+                operation_key="43",
+            )
         )
-        first = aggregator.run(request)
-        retry = aggregator.run(request)
 
-    assert first["playbooks_generated"] == 1
-    assert retry["skipped"] == "operation already applied"
+    assert result["playbooks_generated"] == 1
+    assert coordinator.completed_result == result
+    assert coordinator.active is False
     assert len(sqlite_storage.get_agent_playbooks()) == 1
     assert len(sqlite_storage.get_lineage_events(request_id="43")) == 1
 
