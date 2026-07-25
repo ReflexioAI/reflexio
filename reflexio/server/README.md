@@ -424,13 +424,14 @@ Key files:
 - `agent_success_evaluation_constants.py`: Output schema (`AgentSuccessEvaluationOutput`)
 - `agent_success_evaluation_utils.py`: Message construction utilities
 - `scheduler.py`: `GroupEvaluationScheduler` singleton - min-heap priority queue with daemon thread, defers evaluation until 10 min after last request in session
+- `sampling.py`: deterministic per-session sampling for the session-success and retrieved-learning judge families; the publish scheduler samples once and passes explicit booleans to the runner
 - `runner.py`: `run_group_evaluation()` - fetches all requests/interactions for a session, builds `RequestInteractionDataModel` list, runs `service.py`, then the retrieved-learning phase; returns `GroupEvaluationOutcome` (per-family statuses)
 - `components/retrieved_learning_evaluator.py`: `RetrievedLearningEvaluator` - per-learning relevance/impact judges over `Interaction.retrieved_learnings`; results replace the session's `retrieved_learning_evaluation` snapshot atomically (generation + session-fingerprint fenced, see `services/storage/storage_base/retrieved_learning_state.py`)
 - `services/storage/storage_base/evaluation_state_keys.py`: single source of truth for the three evaluation `_operation_state` key formats (agent-success marker, grade-on-demand cache, retrieved-learning state) shared by producers and governance erasure
 
 **Flow**: Interactions → `agent_success_evaluation/scheduler.py` → `agent_success_evaluation/runner.py` → `agent_success_evaluation/service.py` → `agent_success_evaluation/components/evaluator.py` → `AgentSuccessEvaluationResult` → Storage
 
-**Session-Level Evaluation**: Evaluator treats one user's `request_interaction_data_models` in a session as a single conversation. Sampling rate checked once per session (not per-request). Results are keyed by `(user_id, session_id, evaluation_name)` so reused session IDs across users do not clobber each other.
+**Session-Level Evaluation**: Evaluator treats one user's `request_interaction_data_models` in a session as a single conversation. Sampling is checked once per session (not per-request): `sampling_rate` controls session-success, `evaluation_only_sampling_rate` can override evaluation-only publishes, and `retrieved_learning_sampling_rate` lets retrieved-learning judges run at a separate density while inheriting `sampling_rate` when unset. Results are keyed by `(user_id, session_id, evaluation_name)` so reused session IDs across users do not clobber each other.
 
 **Tool Context**: Reads `tool_can_use` from root `Config` level (shared with playbook extraction).
 
