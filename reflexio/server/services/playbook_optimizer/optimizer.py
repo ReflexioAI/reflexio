@@ -50,8 +50,13 @@ from .gepa_publication import (
     parse_gepa_decision_proof,
     parse_gepa_search_projection,
 )
-from .judge import PLAYBOOK_OPTIMIZER_JUDGE_PROMPT_ID, PairwiseJudge
-from .models import ScenarioWindow
+from .judge import (
+    PAIRWISE_JUDGE_MAX_RETRIES,
+    PAIRWISE_JUDGE_TIMEOUT_SECONDS,
+    PLAYBOOK_OPTIMIZER_JUDGE_PROMPT_ID,
+    PairwiseJudge,
+)
+from .models import JudgeOutput, ScenarioWindow
 from .rollout import MultiTurnRollout
 from .scenario_resolver import ScenarioResolver
 
@@ -174,6 +179,11 @@ class PlaybookOptimizer:
             config=config,
             assistant=assistant,
             llm_client=self.llm_client,
+            prompt_manager=(
+                getattr(self.request_context, "prompt_manager", None)
+                if target.kind == "user_playbook"
+                else None
+            ),
             include_publication_authority=target.kind == "user_playbook",
         )
 
@@ -952,6 +962,7 @@ def _split_metadata(
     config: PlaybookOptimizerConfig,
     assistant: AssistantCallable,
     llm_client: LiteLLMClient,
+    prompt_manager: Any,
     include_publication_authority: bool,
 ) -> dict[str, Any]:
     metadata = {
@@ -983,6 +994,7 @@ def _split_metadata(
             validation_windows=validation_windows,
             assistant=assistant,
             llm_client=llm_client,
+            prompt_manager=prompt_manager,
         )
     return metadata
 
@@ -994,6 +1006,7 @@ def _gepa_publication_authority(
     validation_windows: list[ScenarioWindow],
     assistant: AssistantCallable,
     llm_client: LiteLLMClient,
+    prompt_manager: Any,
 ) -> dict[str, Any]:
     judge_model_id = config.reflection_model or llm_client.config.model
     adoption_authority = gepa_adoption_authority_from_config(
@@ -1016,6 +1029,11 @@ def _gepa_publication_authority(
             "judge_code_digest": _code_digest(PairwiseJudge),
             "judge_model_id": judge_model_id,
             "judge_prompt_id": PLAYBOOK_OPTIMIZER_JUDGE_PROMPT_ID,
+            **_gepa_evaluator_identity(
+                prompt_manager=prompt_manager,
+                llm_client=llm_client,
+                judge_model_id=judge_model_id,
+            ),
         },
         "gepa_algorithm": {
             "batch_sampler": "epoch_shuffled",
@@ -1090,6 +1108,9 @@ def _assistant_backend_identity(
         identity["backend_kind"] = "webhook"
         identity["webhook_auth_configured"] = bool(config.webhook_auth_header)
         identity["webhook_url_digest"] = _text_digest(config.webhook_url)
+        identity["webhook_auth_scheme"] = _webhook_auth_scheme(
+            config.webhook_auth_header
+        )
     elif config.assistant_script_path:
         identity["backend_kind"] = "local_script"
         identity["script_args_digest"] = _json_digest(config.assistant_script_args)
@@ -1099,6 +1120,89 @@ def _assistant_backend_identity(
     else:
         identity["backend_kind"] = "none"
     return identity
+
+
+def _gepa_evaluator_identity(
+    *,
+    prompt_manager: Any,
+    llm_client: LiteLLMClient,
+    judge_model_id: str,
+) -> dict[str, Any]:
+    """Freeze the exact evaluator surface used by USER-playbook GEPA jobs."""
+    client_type = type(llm_client)
+    client = cast(Any, llm_client)
+    ladder = client._resolve_ladder(model=judge_model_id)
+    grace_seconds = client._hard_timeout_grace_seconds()
+    request_implementation = client_type._make_request
+    return {
+        "judge_prompt_identity": prompt_manager.get_prompt_template_identity(
+            PLAYBOOK_OPTIMIZER_JUDGE_PROMPT_ID
+        ),
+        "llm_client_class": _code_identity(client_type),
+        "llm_client_code_digest": _code_digest(client_type),
+        "judge_output_schema_class": _code_identity(JudgeOutput),
+        "judge_output_schema_code_digest": _code_digest(JudgeOutput),
+        "judge_output_schema_digest": _json_digest(JudgeOutput.model_json_schema()),
+        "judge_generation_settings": {
+            "requested_model": judge_model_id,
+            "resolved_primary_model": ladder[0],
+            "fallback_model_order": ladder[1:],
+            "resolved_model_ladder": ladder,
+            "retry_behavior": {
+                "pairwise_judge_max_retries": PAIRWISE_JUDGE_MAX_RETRIES,
+                "request_implementation": _code_identity(request_implementation),
+                "request_code_digest": _code_digest(request_implementation),
+            },
+            "rungs": [
+                _gepa_judge_rung(llm_client, model, grace_seconds) for model in ladder
+            ],
+        },
+    }
+
+
+def _gepa_judge_rung(
+    llm_client: LiteLLMClient,
+    model: str,
+    grace_seconds: float,
+) -> dict[str, Any]:
+    client = cast(Any, llm_client)
+    params, _response_format, parse_structured_output, _max_retries, _fallbacks = (
+        client._build_completion_params(
+            [{"role": "user", "content": ""}],
+            model=model,
+            response_format=JudgeOutput,
+            timeout=PAIRWISE_JUDGE_TIMEOUT_SECONDS,
+            max_retries=PAIRWISE_JUDGE_MAX_RETRIES,
+            fallback_models=[],
+        )
+    )
+    resolved_model = str(params["model"])
+    timeout_seconds = client._coerce_timeout_seconds(params)
+    api_base = params.get("api_base")
+    return {
+        "model": resolved_model,
+        "temperature": _decimal_string(params["temperature"]),
+        "top_p": _decimal_string(params.get("top_p", 1.0)),
+        "max_tokens": params.get("max_tokens"),
+        "timeout_seconds": _decimal_string(timeout_seconds),
+        "hard_timeout_grace_seconds": _decimal_string(grace_seconds),
+        "hard_timeout_seconds": _decimal_string(timeout_seconds + grace_seconds),
+        "provider_kind": client._provider_for_model(resolved_model) or "unconfigured",
+        "api_base_digest": _text_digest(str(api_base)) if api_base else None,
+        "api_version": params.get("api_version"),
+        "structured_output_strategy": client._structured_output_strategy(
+            model=resolved_model,
+            strict_response_format=True,
+        ),
+        "parse_structured_output": parse_structured_output,
+    }
+
+
+def _webhook_auth_scheme(value: str | None) -> str | None:
+    if not value:
+        return None
+    scheme, separator, _credential = value.strip().partition(" ")
+    return scheme if separator and scheme else None
 
 
 def _window_manifest_item(window: ScenarioWindow) -> dict[str, Any]:

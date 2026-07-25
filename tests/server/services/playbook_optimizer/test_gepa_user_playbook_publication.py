@@ -17,10 +17,15 @@ from reflexio.models.api_schema.domain import (
 )
 from reflexio.models.api_schema.domain.enums import Status
 from reflexio.models.config_schema import (
+    APIKeyConfig,
+    AzureOpenAIConfig,
     Config,
+    OpenAIConfig,
     PlaybookOptimizerConfig,
     StorageConfigSQLite,
 )
+from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
+from reflexio.server.prompt.prompt_manager import PromptManager
 from reflexio.server.services.playbook_optimizer.gepa_adapter import (
     PLAYBOOK_CONTENT_COMPONENT,
 )
@@ -30,6 +35,9 @@ from reflexio.server.services.playbook_optimizer.gepa_publication import (
     GEPA_PROJECTOR_VERSION,
     GEPA_PUBLICATION_AUTHORITY_METADATA_KEY,
     _gepa_adoption_result_from_snapshot,
+)
+from reflexio.server.services.playbook_optimizer.judge import (
+    PLAYBOOK_OPTIMIZER_JUDGE_PROMPT_ID,
 )
 from reflexio.server.services.playbook_optimizer.models import ScenarioWindow
 from reflexio.server.services.playbook_optimizer.optimizer import (
@@ -54,13 +62,7 @@ def _storage(tmp_path) -> SQLiteStorage:
 
 def _optimizer(storage: SQLiteStorage, tmp_path) -> PlaybookOptimizer:
     config = _optimizer_config(tmp_path)
-    context = SimpleNamespace(
-        org_id=storage.org_id,
-        storage=storage,
-        configurator=SimpleNamespace(get_config=lambda: config),
-    )
-    llm_client = SimpleNamespace(config=SimpleNamespace(model="fake-model"))
-    return PlaybookOptimizer(cast(Any, context), cast(Any, llm_client))
+    return _optimizer_with_config(storage, config)
 
 
 def _optimizer_config(tmp_path) -> Config:
@@ -78,13 +80,20 @@ def _optimizer_config(tmp_path) -> Config:
     )
 
 
-def _optimizer_with_config(storage: SQLiteStorage, config: Config) -> PlaybookOptimizer:
+def _optimizer_with_config(
+    storage: SQLiteStorage,
+    config: Config,
+    *,
+    llm_client: LiteLLMClient | None = None,
+    prompt_manager: PromptManager | None = None,
+) -> PlaybookOptimizer:
     context = SimpleNamespace(
         org_id=storage.org_id,
         storage=storage,
         configurator=SimpleNamespace(get_config=lambda: config),
+        prompt_manager=prompt_manager or PromptManager(),
     )
-    llm_client = SimpleNamespace(config=SimpleNamespace(model="fake-model"))
+    llm_client = llm_client or LiteLLMClient(LiteLLMConfig(model="fake-model"))
     return PlaybookOptimizer(cast(Any, context), cast(Any, llm_client))
 
 
@@ -217,6 +226,85 @@ def _incumbent(storage: SQLiteStorage) -> UserPlaybook:
     )
     storage.save_user_playbooks([incumbent])
     return incumbent
+
+
+def _completed_user_authority(
+    tmp_path,
+    *,
+    config: Config | None = None,
+    llm_client: LiteLLMClient | None = None,
+    prompt_manager: PromptManager | None = None,
+) -> dict[str, Any]:
+    storage = _storage(tmp_path)
+    incumbent = _incumbent(storage)
+    optimizer = _optimizer_with_config(
+        storage,
+        config or _optimizer_config(tmp_path),
+        llm_client=llm_client,
+        prompt_manager=prompt_manager,
+    )
+    _install_winning_gepa(optimizer, storage, _window(incumbent.user_playbook_id))
+    assert (
+        optimizer.optimize(
+            PlaybookOptimizationTarget(
+                kind="user_playbook", target_id=incumbent.user_playbook_id
+            )
+        )
+        == "completed"
+    )
+    row = storage.conn.execute(
+        "SELECT metadata_json FROM playbook_optimization_jobs"
+    ).fetchone()
+    return json.loads(row["metadata_json"])[GEPA_PUBLICATION_AUTHORITY_METADATA_KEY]
+
+
+def _canonical_authority(authority: dict[str, Any]) -> str:
+    return json.dumps(authority, sort_keys=True, separators=(",", ":"))
+
+
+def _azure_client(
+    *,
+    endpoint: str = "https://azure-one.example.test/",
+    api_version: str = "2024-02-15-preview",
+    api_key: str = "azure-secret-one",
+    model: str = "azure/judge-deployment",
+    temperature: float = 0.2,
+    top_p: float = 0.7,
+    max_tokens: int | None = 300,
+    fallback_models: list[str] | None = None,
+) -> LiteLLMClient:
+    return LiteLLMClient(
+        LiteLLMConfig(
+            model=model,
+            temperature=temperature,
+            top_p=top_p,
+            max_tokens=max_tokens,
+            fallback_models=fallback_models or ["azure/fallback-a"],
+            api_key_config=APIKeyConfig(
+                openai=OpenAIConfig(
+                    azure_config=AzureOpenAIConfig(
+                        api_key=api_key,
+                        endpoint=cast(Any, endpoint),
+                        api_version=api_version,
+                    )
+                )
+            ),
+        )
+    )
+
+
+def _base_judge_config(tmp_path) -> Config:
+    config = _optimizer_config(tmp_path)
+    config.playbook_optimizer_config.reflection_model = "azure/judge-deployment"
+    return config
+
+
+def _judge_authority(tmp_path, **kwargs: Any) -> dict[str, Any]:
+    config = kwargs.pop("config", _base_judge_config(tmp_path))
+    client = kwargs.pop("llm_client", _azure_client())
+    return _completed_user_authority(
+        tmp_path, config=config, llm_client=client, **kwargs
+    )
 
 
 def test_gepa_adoption_counts_duplicate_validation_window_once():
@@ -389,6 +477,7 @@ def test_gepa_user_job_creation_freezes_complete_sanitized_authority(tmp_path):
     assert len(authority["gepa_engine_identity"]["optimize_code_digest"]) == 64
     assert authority["backend_identity"]["backend_kind"] == "webhook"
     assert authority["backend_identity"]["webhook_auth_configured"] is True
+    assert authority["backend_identity"]["webhook_auth_scheme"] == "Bearer"
     assert (
         authority["backend_identity"]["webhook_url_digest"]
         == sha256(b"https://assistant.example.test/rollout").hexdigest()
@@ -396,6 +485,242 @@ def test_gepa_user_job_creation_freezes_complete_sanitized_authority(tmp_path):
     serialized = json.dumps(authority, sort_keys=True)
     assert "https://assistant.example.test/rollout" not in serialized
     assert "Bearer secret" not in serialized
+
+
+# ---------------------------------------------------------------------------
+# Evaluator authority matrix
+# ---------------------------------------------------------------------------
+
+
+def test_gepa_user_authority_freezes_prompt_and_schema_identity(tmp_path):
+    authority = _completed_user_authority(tmp_path)
+    evaluator = authority["evaluator_identity"]
+    prompt = evaluator["judge_prompt_identity"]
+
+    assert prompt["prompt_id"] == PLAYBOOK_OPTIMIZER_JUDGE_PROMPT_ID
+    assert prompt["active_version"] == "1.2.0"
+    assert len(prompt["template_content_digest"]) == 64
+    assert evaluator["llm_client_class"].endswith(".LiteLLMClient")
+    assert len(evaluator["llm_client_code_digest"]) == 64
+    assert evaluator["judge_output_schema_class"].endswith(".JudgeOutput")
+    assert len(evaluator["judge_output_schema_code_digest"]) == 64
+    assert len(evaluator["judge_output_schema_digest"]) == 64
+    assert "Help with a refund" not in _canonical_authority(authority)
+
+
+def test_gepa_user_authority_freezes_generation_ladder_and_retry_contract(tmp_path):
+    config = _optimizer_config(tmp_path)
+    config.playbook_optimizer_config.reflection_model = "gpt-5-mini"
+    authority = _completed_user_authority(
+        tmp_path,
+        config=config,
+        llm_client=LiteLLMClient(
+            LiteLLMConfig(
+                model="base-model",
+                temperature=0.23,
+                top_p=0.74,
+                max_tokens=None,
+                fallback_models=[
+                    "minimax/MiniMax-M3",
+                    "local/embedding-only",
+                    "fallback-b",
+                    "minimax/MiniMax-M3",
+                ],
+            )
+        ),
+    )
+    generation = authority["evaluator_identity"]["judge_generation_settings"]
+
+    assert generation["resolved_primary_model"] == "gpt-5-mini"
+    assert generation["fallback_model_order"] == [
+        "minimax/MiniMax-M3",
+        "fallback-b",
+    ]
+    assert generation["resolved_model_ladder"] == [
+        "gpt-5-mini",
+        "minimax/MiniMax-M3",
+        "fallback-b",
+    ]
+    assert generation["retry_behavior"]["pairwise_judge_max_retries"] == 1
+    assert len(generation["retry_behavior"]["request_code_digest"]) == 64
+    assert [rung["model"] for rung in generation["rungs"]] == generation[
+        "resolved_model_ladder"
+    ]
+    assert all(rung["timeout_seconds"] == "120.0" for rung in generation["rungs"])
+    assert all(rung["hard_timeout_seconds"] == "125.0" for rung in generation["rungs"])
+    assert generation["rungs"][0]["temperature"] == "1.0"
+    assert generation["rungs"][1]["max_tokens"] == 8192
+    assert generation["rungs"][0]["structured_output_strategy"]
+    assert generation["rungs"][0]["parse_structured_output"] is True
+
+
+@pytest.mark.parametrize(
+    ("name", "config_updates", "client"),
+    [
+        (
+            "model",
+            {"reflection_model": "judge-model-v2"},
+            LiteLLMConfig(
+                model="judge-model",
+                temperature=0.2,
+                top_p=0.7,
+                max_tokens=300,
+                fallback_models=["fallback-a", "fallback-b"],
+            ),
+        ),
+        (
+            "temperature",
+            {},
+            LiteLLMConfig(
+                model="judge-model",
+                temperature=0.4,
+                top_p=0.7,
+                max_tokens=300,
+                fallback_models=["fallback-a", "fallback-b"],
+            ),
+        ),
+        (
+            "top_p",
+            {},
+            LiteLLMConfig(
+                model="judge-model",
+                temperature=0.2,
+                top_p=0.9,
+                max_tokens=300,
+                fallback_models=["fallback-a", "fallback-b"],
+            ),
+        ),
+        (
+            "max_tokens",
+            {},
+            LiteLLMConfig(
+                model="judge-model",
+                temperature=0.2,
+                top_p=0.7,
+                max_tokens=500,
+                fallback_models=["fallback-a", "fallback-b"],
+            ),
+        ),
+        (
+            "fallback_order",
+            {},
+            LiteLLMConfig(
+                model="judge-model",
+                temperature=0.2,
+                top_p=0.7,
+                max_tokens=300,
+                fallback_models=["fallback-b", "fallback-a"],
+            ),
+        ),
+    ],
+)
+def test_gepa_user_authority_changes_for_generation_settings(
+    tmp_path, name, config_updates, client
+):
+    base_config = _optimizer_config(tmp_path / "base")
+    base_config.playbook_optimizer_config.reflection_model = "judge-model"
+    base = _canonical_authority(
+        _completed_user_authority(
+            tmp_path / "base",
+            config=base_config,
+            llm_client=LiteLLMClient(
+                LiteLLMConfig(
+                    model="judge-model",
+                    temperature=0.2,
+                    top_p=0.7,
+                    max_tokens=300,
+                    fallback_models=["fallback-a", "fallback-b"],
+                )
+            ),
+        )
+    )
+    variant_config = _optimizer_config(tmp_path / name)
+    variant_config.playbook_optimizer_config.reflection_model = "judge-model"
+    for key, value in config_updates.items():
+        setattr(variant_config.playbook_optimizer_config, key, value)
+    changed = _canonical_authority(
+        _completed_user_authority(
+            tmp_path / name,
+            config=variant_config,
+            llm_client=LiteLLMClient(client),
+        )
+    )
+    assert changed != base
+
+
+@pytest.mark.parametrize(
+    ("name", "client"),
+    [
+        ("provider", LiteLLMClient(LiteLLMConfig(model="gpt-4o-mini"))),
+        ("endpoint", _azure_client(endpoint="https://azure-two.example.test/")),
+        ("api_version", _azure_client(api_version="2025-01-01-preview")),
+    ],
+)
+def test_gepa_user_authority_changes_for_independent_provider_identity(
+    tmp_path, name, client
+):
+    base = _canonical_authority(
+        _judge_authority(tmp_path / "base", llm_client=_azure_client())
+    )
+    changed = _canonical_authority(_judge_authority(tmp_path / name, llm_client=client))
+    assert changed != base
+
+
+def test_gepa_user_authority_freezes_non_secret_provider_identity(tmp_path):
+    endpoint = "https://azure-one.example.test/"
+    authority = _judge_authority(tmp_path, llm_client=_azure_client(endpoint=endpoint))
+    rung = authority["evaluator_identity"]["judge_generation_settings"]["rungs"][0]
+    assert rung["provider_kind"] == "azure"
+    assert rung["api_base_digest"] == sha256(endpoint.encode()).hexdigest()
+    assert rung["api_version"] == "2024-02-15-preview"
+    assert endpoint not in _canonical_authority(authority)
+
+
+def test_gepa_user_authority_excludes_credentials_but_binds_webhook_scheme(
+    tmp_path,
+):
+    config_a = _base_judge_config(tmp_path / "a")
+    config_a.playbook_optimizer_config.webhook_auth_header = "Bearer alpha-secret"
+    config_b = _base_judge_config(tmp_path / "b")
+    config_b.playbook_optimizer_config.webhook_auth_header = "Bearer beta-secret"
+    a = _judge_authority(
+        tmp_path / "a",
+        config=config_a,
+        llm_client=_azure_client(api_key="azure-secret-one"),
+    )
+    b = _judge_authority(
+        tmp_path / "b",
+        config=config_b,
+        llm_client=_azure_client(api_key="azure-secret-two"),
+    )
+
+    assert _canonical_authority(a) == _canonical_authority(b)
+    assert a["backend_identity"]["webhook_auth_configured"] is True
+    assert a["backend_identity"]["webhook_auth_scheme"] == "Bearer"
+    serialized = _canonical_authority(a)
+    for forbidden in (
+        "alpha-secret",
+        "beta-secret",
+        "azure-secret-one",
+        "azure-secret-two",
+        "https://assistant.example.test/rollout",
+        "credential",
+        "fingerprint",
+        "verifier",
+    ):
+        assert forbidden not in serialized
+
+
+@pytest.mark.parametrize("scheme", ["Signature", None])
+def test_gepa_user_authority_binds_webhook_auth_scheme(tmp_path, scheme):
+    config = _base_judge_config(tmp_path)
+    config.playbook_optimizer_config.webhook_auth_header = (
+        f"{scheme} secret" if scheme else None
+    )
+    authority = _judge_authority(tmp_path, config=config)
+    backend = authority["backend_identity"]
+    assert backend["webhook_auth_configured"] is bool(scheme)
+    assert backend["webhook_auth_scheme"] == scheme
 
 
 def test_gepa_user_winner_publishes_exact_projection_then_triggers_aggregation(

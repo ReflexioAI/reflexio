@@ -13,6 +13,8 @@ from .models import JudgeOutput, RolloutTrace, ScenarioWindow
 logger = logging.getLogger(__name__)
 
 PLAYBOOK_OPTIMIZER_JUDGE_PROMPT_ID = "playbook_optimizer_judge"
+PAIRWISE_JUDGE_TIMEOUT_SECONDS = 120
+PAIRWISE_JUDGE_MAX_RETRIES = 1
 
 
 class PairwiseJudge:
@@ -70,8 +72,8 @@ class PairwiseJudge:
             messages=[{"role": "user", "content": prompt}],
             model=self.model_name,
             response_format=JudgeOutput,
-            timeout=120,
-            max_retries=1,
+            timeout=PAIRWISE_JUDGE_TIMEOUT_SECONDS,
+            max_retries=PAIRWISE_JUDGE_MAX_RETRIES,
         )
         log_model_response(logger, "Playbook optimizer judge response", response)
         if isinstance(response, JudgeOutput):

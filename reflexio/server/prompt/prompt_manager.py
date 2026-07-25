@@ -5,6 +5,7 @@ Prompt management using file system prompt bank with markdown frontmatter files.
 import logging
 import re
 from collections.abc import Sequence
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
@@ -179,6 +180,27 @@ class PromptManager:
         if self.version_override and prompt_id in self.version_override:
             return self.version_override[prompt_id]
         return self._find_active_version(prompt_id)
+
+    def get_prompt_template_identity(self, prompt_id: str) -> dict[str, str]:
+        """Return identity for the active unrendered prompt template.
+
+        This deliberately hashes ``Prompt.content`` before any variable
+        rendering so callers can bind prompt behavior without persisting
+        user/session inputs.
+        """
+        active_version = self.get_active_version(prompt_id)
+        if active_version is None:
+            raise ValueError(f"Prompt {prompt_id} has no active version")
+        prompt = self._get_prompt(prompt_id, active_version)
+        if prompt is None:
+            raise ValueError(f"Prompt {prompt_id} v{active_version} not found")
+        return {
+            "active_version": active_version,
+            "prompt_id": prompt_id,
+            "template_content_digest": sha256(
+                prompt.content.encode("utf-8")
+            ).hexdigest(),
+        }
 
     def get_all_prompt_ids(self) -> list[str]:
         """
