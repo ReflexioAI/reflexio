@@ -11,6 +11,10 @@ import pytest
 from reflexio.models.api_schema.domain import PlaybookOptimizationJob, UserPlaybook
 from reflexio.models.api_schema.domain.enums import Status
 from reflexio.models.api_schema.retriever_schema import SearchUserPlaybookRequest
+from reflexio.server.services.governance.config import (
+    get_governance_ref_secret,
+    governance_subject_ref,
+)
 from reflexio.server.services.playbook.publication import (
     DecisionProofEnvelope,
     PublicationClaim,
@@ -22,6 +26,8 @@ from reflexio.server.services.storage.error import StorageError
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 
 pytestmark = pytest.mark.integration
+
+_ORG_ID = "publication-sqlite"
 
 
 def _canonical(payload: dict[str, object]) -> str:
@@ -36,9 +42,7 @@ def _digest(value: str) -> str:
 
 def _store(tmp_path: Path) -> SQLiteStorage:
     with patch.object(SQLiteStorage, "_get_embedding", return_value=[9.0] * 512):
-        store = SQLiteStorage(
-            org_id="publication-sqlite", db_path=str(tmp_path / "r.db")
-        )
+        store = SQLiteStorage(org_id=_ORG_ID, db_path=str(tmp_path / "r.db"))
     store._get_embedding = Mock(return_value=[9.0] * 512)  # noqa: SLF001
     store.llm_client.get_embeddings = Mock(return_value=[[9.0] * 512])
     return store
@@ -67,6 +71,7 @@ def _job(
     projection_digest: str,
     content_digest: str,
     proof_digest: str,
+    subject_epochs_json: str,
     stage: str | None = "publishing",
 ) -> PlaybookOptimizationJob:
     return PlaybookOptimizationJob(
@@ -74,7 +79,12 @@ def _job(
         target_kind="user_playbook",
         target_id=target_id,
         status="running",
-        metadata_json=_canonical({"publication_proof_digest": proof_digest}),
+        metadata_json=_canonical(
+            {
+                "publication_proof_digest": proof_digest,
+                "publication_subject_epochs": json.loads(subject_epochs_json),
+            }
+        ),
         attempt_key=attempt_key,
         lease_owner="worker-a",
         lease_fence=worker_fence,
@@ -87,21 +97,27 @@ def _job(
 def _projection(content: str = "new content") -> PublicationSearchProjection:
     embedding = ["0.25"] * 512
     payload = {
-        "content_digest": _digest(content),
+        "candidate_content_digest": _digest(content),
         "embedding": embedding,
         "embedding_model_id": "test-embedding-v1",
         "expanded_terms": ["exact-expanded", "projection-token"],
         "lexical_document": "exact lexical projection-token",
-        "schema_version": "publication-search-projection-v1",
-        "trigger": "refund trigger",
+        "preserved_trigger": "refund trigger",
+        "projector_code_digest": "a" * 64,
+        "projector_id": "reflexio.search.user-playbook",
+        "projector_version": "1",
+        "schema_version": "offline-tuner-candidate-search-projection-v1",
     }
     canonical = _canonical(payload)
     return PublicationSearchProjection(
-        schema_version="publication-search-projection-v1",
+        schema_version="offline-tuner-candidate-search-projection-v1",
         canonical_json=canonical,
         digest=_digest(canonical),
-        content_digest=_digest(content),
-        trigger="refund trigger",
+        projector_id="reflexio.search.user-playbook",
+        projector_version="1",
+        projector_code_digest="a" * 64,
+        candidate_content_digest=_digest(content),
+        preserved_trigger="refund trigger",
         embedding_model_id="test-embedding-v1",
         embedding=tuple(embedding),
         expanded_terms=("exact-expanded", "projection-token"),
@@ -111,7 +127,7 @@ def _projection(content: str = "new content") -> PublicationSearchProjection:
 
 def _proof(source: str = "playbook_optimizer") -> DecisionProofEnvelope:
     payload = {
-        "adoption": {"min_commit_windows": 1, "score": 0.91},
+        "adoption": {"min_commit_windows": 1, "score": "0.91"},
         "decision": "apply",
         "optimizer_kind": "gepa",
         "schema_version": "gepa-publication-proof-v1",
@@ -149,8 +165,7 @@ def _request(
         revised_content=content,
         projection=projection or _projection(content),
         decision_proof=proof or _proof(),
-        subject_epochs_json=subject_epochs_json
-        or _canonical({"subjects": [{"epoch": 0, "ref": "user:u1"}]}),
+        subject_epochs_json=subject_epochs_json or _subject_epochs_json(),
         request_id=request_id,
     )
 
@@ -164,23 +179,50 @@ def _seed(storage: SQLiteStorage) -> tuple[UserPlaybook, PlaybookOptimizationJob
         _job(
             target_id=incumbent.user_playbook_id,
             projection_digest=projection.digest,
-            content_digest=projection.content_digest,
+            content_digest=projection.candidate_content_digest,
             proof_digest=proof.digest,
+            subject_epochs_json=_subject_epochs_json(),
         )
     )
     return incumbent, job
 
 
+def _subject_ref() -> str:
+    return governance_subject_ref(_ORG_ID, "u1", get_governance_ref_secret())
+
+
+def _subject_epochs_json(*, epoch: int = 0, subject_ref: str | None = None) -> str:
+    return _canonical(
+        {"subjects": [{"epoch": epoch, "ref": subject_ref or _subject_ref()}]}
+    )
+
+
+class _AcceptingVerifier:
+    def verify(self, request: PublicationRequest) -> None:
+        assert request.optimizer_kind == "gepa"
+
+
+def _service(storage: SQLiteStorage) -> UserPlaybookPublicationService:
+    return UserPlaybookPublicationService(storage, verifier=_AcceptingVerifier())
+
+
 def test_stage_is_hidden_from_user_playbook_reads_and_search(tmp_path: Path) -> None:
     storage = _store(tmp_path)
     incumbent, job = _seed(storage)
-    service = UserPlaybookPublicationService(storage)
+    service = _service(storage)
     claim = service.claim(job_id=job.job_id, owner="worker-a", worker_fence=5)
     request = _request(
         job_id=job.job_id, incumbent_id=incumbent.user_playbook_id, claim=claim
     )
 
     service.stage(request)
+    staged = storage.conn.execute(
+        "SELECT * FROM user_playbook_publication_staging WHERE job_id = ?",
+        (job.job_id,),
+    ).fetchone()
+    assert staged["projection_json"] == request.projection.canonical_json
+    assert staged["projection_digest"] == request.projection.digest
+    assert staged["content_digest"] == request.projection.candidate_content_digest
 
     assert storage.get_user_playbooks(query="new content") == []
     assert (
@@ -202,7 +244,7 @@ def test_publish_commits_exact_staged_projection_and_terminal_result(
 ) -> None:
     storage = _store(tmp_path)
     incumbent, job = _seed(storage)
-    service = UserPlaybookPublicationService(storage)
+    service = _service(storage)
     claim = service.claim(job_id=job.job_id, owner="worker-a", worker_fence=5)
     request = _request(
         job_id=job.job_id, incumbent_id=incumbent.user_playbook_id, claim=claim
@@ -244,7 +286,7 @@ def test_publish_lost_incumbent_cas_returns_incumbent_changed_without_orphan(
     storage = _store(tmp_path)
     incumbent, job = _seed(storage)
     storage.archive_user_playbook_by_id("u1", incumbent.user_playbook_id)
-    service = UserPlaybookPublicationService(storage)
+    service = _service(storage)
     claim = service.claim(job_id=job.job_id, owner="worker-a", worker_fence=5)
     request = _request(
         job_id=job.job_id, incumbent_id=incumbent.user_playbook_id, claim=claim
@@ -277,7 +319,7 @@ def test_publish_rejects_changed_identity_fences_and_digests(
 ) -> None:
     storage = _store(tmp_path)
     incumbent, job = _seed(storage)
-    service = UserPlaybookPublicationService(storage)
+    service = _service(storage)
     claim = service.claim(job_id=job.job_id, owner="worker-a", worker_fence=5)
     request = _request(
         job_id=job.job_id, incumbent_id=incumbent.user_playbook_id, claim=claim
@@ -319,21 +361,27 @@ def test_publish_rejects_changed_identity_fences_and_digests(
     else:
         embedding = ["0.5"] * 512
         payload = {
-            "content_digest": _digest("new content"),
+            "candidate_content_digest": _digest("new content"),
             "embedding": embedding,
             "embedding_model_id": "test-embedding-v1",
             "expanded_terms": ["changed-expanded"],
             "lexical_document": "changed lexical document",
-            "schema_version": "publication-search-projection-v1",
-            "trigger": "refund trigger",
+            "preserved_trigger": "refund trigger",
+            "projector_code_digest": "a" * 64,
+            "projector_id": "reflexio.search.user-playbook",
+            "projector_version": "1",
+            "schema_version": "offline-tuner-candidate-search-projection-v1",
         }
         canonical = _canonical(payload)
         projection = PublicationSearchProjection(
-            schema_version="publication-search-projection-v1",
+            schema_version="offline-tuner-candidate-search-projection-v1",
             canonical_json=canonical,
             digest=_digest(canonical),
-            content_digest=_digest("new content"),
-            trigger="refund trigger",
+            projector_id="reflexio.search.user-playbook",
+            projector_version="1",
+            projector_code_digest="a" * 64,
+            candidate_content_digest=_digest("new content"),
+            preserved_trigger="refund trigger",
             embedding_model_id="test-embedding-v1",
             embedding=tuple(embedding),
             expanded_terms=("changed-expanded",),
@@ -361,7 +409,7 @@ def test_stage_idempotent_for_identical_request_and_rejects_conflict(
 ) -> None:
     storage = _store(tmp_path)
     incumbent, job = _seed(storage)
-    service = UserPlaybookPublicationService(storage)
+    service = _service(storage)
     claim = service.claim(job_id=job.job_id, owner="worker-a", worker_fence=5)
     request = _request(
         job_id=job.job_id, incumbent_id=incumbent.user_playbook_id, claim=claim
@@ -383,7 +431,7 @@ def test_stage_idempotent_for_identical_request_and_rejects_conflict(
 def test_committed_response_loss_retry_returns_same_successor(tmp_path: Path) -> None:
     storage = _store(tmp_path)
     incumbent, job = _seed(storage)
-    service = UserPlaybookPublicationService(storage)
+    service = _service(storage)
     claim = service.claim(job_id=job.job_id, owner="worker-a", worker_fence=5)
     request = _request(
         job_id=job.job_id, incumbent_id=incumbent.user_playbook_id, claim=claim
@@ -412,8 +460,8 @@ def test_committed_response_loss_retry_returns_same_successor(tmp_path: Path) ->
 def test_two_concurrent_publishers_have_one_successor(tmp_path: Path) -> None:
     storage = _store(tmp_path)
     incumbent, job = _seed(storage)
-    first_service = UserPlaybookPublicationService(storage)
-    second_service = UserPlaybookPublicationService(_store(tmp_path))
+    first_service = _service(storage)
+    second_service = _service(_store(tmp_path))
     first_claim = first_service.claim(
         job_id=job.job_id, owner="worker-a", worker_fence=5
     )
@@ -450,7 +498,7 @@ def test_erasure_barrier_added_after_staging_rejects_publication(
 ) -> None:
     storage = _store(tmp_path)
     incumbent, job = _seed(storage)
-    service = UserPlaybookPublicationService(storage)
+    service = _service(storage)
     claim = service.claim(job_id=job.job_id, owner="worker-a", worker_fence=5)
     request = _request(
         job_id=job.job_id, incumbent_id=incumbent.user_playbook_id, claim=claim
@@ -494,7 +542,7 @@ def test_publish_rejects_changed_durable_job_identity(
 ) -> None:
     storage = _store(tmp_path)
     incumbent, job = _seed(storage)
-    service = UserPlaybookPublicationService(storage)
+    service = _service(storage)
     claim = service.claim(job_id=job.job_id, owner="worker-a", worker_fence=5)
     request = _request(
         job_id=job.job_id, incumbent_id=incumbent.user_playbook_id, claim=claim
@@ -522,7 +570,7 @@ def test_failure_inside_atomic_commit_rolls_back_every_visible_effect(
 ) -> None:
     storage = _store(tmp_path)
     incumbent, job = _seed(storage)
-    service = UserPlaybookPublicationService(storage)
+    service = _service(storage)
     claim = service.claim(job_id=job.job_id, owner="worker-a", worker_fence=5)
     request = _request(
         job_id=job.job_id, incumbent_id=incumbent.user_playbook_id, claim=claim
@@ -571,7 +619,7 @@ def test_verifier_rejection_happens_before_hidden_staging(tmp_path: Path) -> Non
     verifier = Mock()
     verifier.verify.side_effect = ValueError("proof rejected")
     service = UserPlaybookPublicationService(storage, verifier=verifier)
-    claim = service.claim(job_id=job.job_id, owner="worker-a", worker_fence=5)
+    claim = PublicationClaim(job_id=job.job_id, owner="worker-a", fence=1)
     request = _request(
         job_id=job.job_id, incumbent_id=incumbent.user_playbook_id, claim=claim
     )
@@ -585,3 +633,221 @@ def test_verifier_rejection_happens_before_hidden_staging(tmp_path: Path) -> Non
         ).fetchone()["count"]
         == 0
     )
+    assert (
+        storage.conn.execute(
+            "SELECT COUNT(*) AS count FROM user_playbook_publication_claims"
+        ).fetchone()["count"]
+        == 0
+    )
+    assert (
+        storage.conn.execute(
+            "SELECT COUNT(*) AS count FROM user_playbook_publication_results"
+        ).fetchone()["count"]
+        == 0
+    )
+
+
+def test_reclaimed_worker_refreshes_stage_binding_and_old_worker_is_rejected(
+    tmp_path: Path,
+) -> None:
+    storage = _store(tmp_path)
+    incumbent, job = _seed(storage)
+    service = _service(storage)
+    old_claim = service.claim(job_id=job.job_id, owner="worker-a", worker_fence=5)
+    old_request = _request(
+        job_id=job.job_id,
+        incumbent_id=incumbent.user_playbook_id,
+        claim=old_claim,
+    )
+    service.stage(old_request)
+
+    storage.conn.execute(
+        "UPDATE playbook_optimization_jobs SET lease_owner = ?, lease_fence = ? WHERE job_id = ?",
+        ("worker-b", 6, job.job_id),
+    )
+    storage.conn.commit()
+    new_claim = service.claim(job_id=job.job_id, owner="worker-b", worker_fence=6)
+    new_request = _request(
+        job_id=job.job_id,
+        incumbent_id=incumbent.user_playbook_id,
+        claim=new_claim,
+        worker_fence=6,
+    )
+
+    service.stage(new_request)
+    staged = storage.conn.execute(
+        "SELECT * FROM user_playbook_publication_staging WHERE job_id = ?",
+        (job.job_id,),
+    ).fetchone()
+    assert staged["claim_owner"] == "worker-b"
+    assert staged["worker_fence"] == 6
+    assert staged["publication_fence"] == new_claim.fence
+
+    with pytest.raises(StorageError, match="worker owner|worker fence|publication"):
+        service.publish(old_request)
+
+    result = service.publish(new_request)
+    assert result.outcome == "applied"
+
+
+def test_reclaimed_worker_cannot_change_immutable_staging_identity(
+    tmp_path: Path,
+) -> None:
+    storage = _store(tmp_path)
+    incumbent, job = _seed(storage)
+    service = _service(storage)
+    old_claim = service.claim(job_id=job.job_id, owner="worker-a", worker_fence=5)
+    service.stage(
+        _request(
+            job_id=job.job_id,
+            incumbent_id=incumbent.user_playbook_id,
+            claim=old_claim,
+        )
+    )
+    storage.conn.execute(
+        "UPDATE playbook_optimization_jobs SET lease_owner = ?, lease_fence = ? WHERE job_id = ?",
+        ("worker-b", 6, job.job_id),
+    )
+    storage.conn.commit()
+    new_claim = service.claim(job_id=job.job_id, owner="worker-b", worker_fence=6)
+
+    with pytest.raises(StorageError, match="request identity"):
+        service.stage(
+            _request(
+                job_id=job.job_id,
+                incumbent_id=incumbent.user_playbook_id,
+                claim=new_claim,
+                worker_fence=6,
+                request_id="changed-request",
+            )
+        )
+
+
+def test_publication_requires_incumbent_in_frozen_subject_vector(
+    tmp_path: Path,
+) -> None:
+    storage = _store(tmp_path)
+    incumbent, job = _seed(storage)
+    frozen = _subject_epochs_json(subject_ref="subject:other")
+    storage.conn.execute(
+        "UPDATE playbook_optimization_jobs SET metadata_json = ? WHERE job_id = ?",
+        (
+            _canonical(
+                {
+                    "publication_proof_digest": _proof().digest,
+                    "publication_subject_epochs": json.loads(frozen),
+                }
+            ),
+            job.job_id,
+        ),
+    )
+    storage.conn.commit()
+    service = _service(storage)
+    claim = service.claim(job_id=job.job_id, owner="worker-a", worker_fence=5)
+
+    with pytest.raises(StorageError, match="incumbent governance subject"):
+        service.stage(
+            _request(
+                job_id=job.job_id,
+                incumbent_id=incumbent.user_playbook_id,
+                claim=claim,
+                subject_epochs_json=frozen,
+            )
+        )
+
+
+def test_publication_rejects_request_subject_vector_different_from_job(
+    tmp_path: Path,
+) -> None:
+    storage = _store(tmp_path)
+    incumbent, job = _seed(storage)
+    service = _service(storage)
+    claim = service.claim(job_id=job.job_id, owner="worker-a", worker_fence=5)
+
+    with pytest.raises(StorageError, match="subject epochs vector"):
+        service.stage(
+            _request(
+                job_id=job.job_id,
+                incumbent_id=incumbent.user_playbook_id,
+                claim=claim,
+                subject_epochs_json=_subject_epochs_json(epoch=1),
+            )
+        )
+
+
+def test_publication_rechecks_frozen_subject_vector_at_commit(tmp_path: Path) -> None:
+    storage = _store(tmp_path)
+    incumbent, job = _seed(storage)
+    service = _service(storage)
+    claim = service.claim(job_id=job.job_id, owner="worker-a", worker_fence=5)
+    request = _request(
+        job_id=job.job_id,
+        incumbent_id=incumbent.user_playbook_id,
+        claim=claim,
+    )
+    service.stage(request)
+    storage.conn.execute(
+        "UPDATE playbook_optimization_jobs SET metadata_json = ? WHERE job_id = ?",
+        (
+            _canonical(
+                {
+                    "publication_proof_digest": request.decision_proof.digest,
+                    "publication_subject_epochs": json.loads(
+                        _subject_epochs_json(epoch=1)
+                    ),
+                }
+            ),
+            job.job_id,
+        ),
+    )
+    storage.conn.commit()
+
+    with pytest.raises(StorageError, match="subject epochs vector"):
+        storage.commit_user_playbook_publication(request)
+
+
+def test_publication_checks_erasure_barrier_for_every_frozen_subject(
+    tmp_path: Path,
+) -> None:
+    storage = _store(tmp_path)
+    incumbent, job = _seed(storage)
+    frozen = _canonical(
+        {
+            "subjects": [
+                {"epoch": 0, "ref": _subject_ref()},
+                {"epoch": 2, "ref": "subject:auxiliary"},
+            ]
+        }
+    )
+    storage.conn.execute(
+        "UPDATE playbook_optimization_jobs SET metadata_json = ? WHERE job_id = ?",
+        (
+            _canonical(
+                {
+                    "publication_proof_digest": _proof().digest,
+                    "publication_subject_epochs": json.loads(frozen),
+                }
+            ),
+            job.job_id,
+        ),
+    )
+    storage.conn.commit()
+    service = _service(storage)
+    claim = service.claim(job_id=job.job_id, owner="worker-a", worker_fence=5)
+    request = _request(
+        job_id=job.job_id,
+        incumbent_id=incumbent.user_playbook_id,
+        claim=claim,
+        subject_epochs_json=frozen,
+    )
+    service.stage(request)
+    storage.conn.execute(
+        """INSERT INTO subject_write_barriers
+           (org_id, subject_ref, purge_id, status, created_at, updated_at)
+           VALUES (?, 'subject:auxiliary', 'purge-aux', 'erased', 1, 1)""",
+        (storage.org_id,),
+    )
+    storage.conn.commit()
+
+    with pytest.raises(StorageError, match="blocked by erasure barrier"):
+        service.publish(request)

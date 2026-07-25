@@ -14,6 +14,7 @@ from reflexio.models.api_schema.service_schemas import Status, UserPlaybook
 from reflexio.models.config_schema import SearchMode, SearchOptions
 from reflexio.server.services.embedding_text import resolve_retrieval_threshold
 from reflexio.server.services.playbook.publication import (
+    PUBLICATION_SUBJECT_EPOCHS_METADATA_KEY,
     PublicationClaim,
     PublicationRequest,
     PublicationResult,
@@ -70,7 +71,7 @@ def _publication_staging_payload(request: PublicationRequest) -> dict[str, objec
     return {
         "attempt_key": request.attempt_key,
         "claim_owner": request.publication_claim.owner,
-        "content_digest": request.projection.content_digest,
+        "content_digest": request.projection.candidate_content_digest,
         "incumbent_user_playbook_id": request.incumbent_user_playbook_id,
         "job_id": request.job_id,
         "optimizer_kind": request.optimizer_kind,
@@ -87,8 +88,11 @@ def _publication_staging_payload(request: PublicationRequest) -> dict[str, objec
 
 
 def _publication_staging_digest(request: PublicationRequest) -> str:
+    payload = _publication_staging_payload(request)
+    for mutable_field in ("claim_owner", "worker_fence", "publication_fence"):
+        del payload[mutable_field]
     canonical = json.dumps(
-        _publication_staging_payload(request),
+        payload,
         ensure_ascii=False,
         separators=(",", ":"),
         sort_keys=True,
@@ -100,9 +104,6 @@ _STAGING_CONFLICT_FIELDS = (
     ("optimizer_kind", "optimizer kind"),
     ("job_id", "job id"),
     ("attempt_key", "attempt key"),
-    ("claim_owner", "publication owner"),
-    ("worker_fence", "worker fence"),
-    ("publication_fence", "publication fence"),
     ("incumbent_user_playbook_id", "incumbent"),
     ("revised_content", "revised content"),
     ("content_digest", "content digest"),
@@ -114,6 +115,12 @@ _STAGING_CONFLICT_FIELDS = (
     ("request_id", "request identity"),
 )
 
+_STAGING_BINDING_FIELDS = (
+    ("claim_owner", "publication owner"),
+    ("worker_fence", "worker fence"),
+    ("publication_fence", "publication fence"),
+)
+
 
 def _assert_staging_matches(row: sqlite3.Row, request: PublicationRequest) -> None:
     expected = _publication_staging_payload(request)
@@ -122,6 +129,15 @@ def _assert_staging_matches(row: sqlite3.Row, request: PublicationRequest) -> No
             raise StorageError(f"staged publication conflicts on {label}")
     if row["staging_digest"] != _publication_staging_digest(request):
         raise StorageError("staged publication conflicts on staging digest")
+
+
+def _assert_staging_binding_matches(
+    row: sqlite3.Row, request: PublicationRequest
+) -> None:
+    expected = _publication_staging_payload(request)
+    for field, label in _STAGING_BINDING_FIELDS:
+        if row[field] != expected[field]:
+            raise StorageError(f"staged publication conflicts on {label}")
 
 
 class UserPlaybookStoreMixin:
@@ -172,7 +188,10 @@ class UserPlaybookStoreMixin:
             raise StorageError("publication worker owner changed")
         if row["lease_fence"] != request.worker_fence:
             raise StorageError("publication worker fence changed")
-        if row["candidate_content_digest"] != request.projection.content_digest:
+        if (
+            row["candidate_content_digest"]
+            != request.projection.candidate_content_digest
+        ):
             raise StorageError("publication content digest changed")
         if row["search_projection_digest"] != request.projection.digest:
             raise StorageError("publication projection digest changed")
@@ -182,7 +201,37 @@ class UserPlaybookStoreMixin:
             raise StorageError("publication optimizer metadata is invalid") from exc
         if metadata.get("publication_proof_digest") != request.decision_proof.digest:
             raise StorageError("publication proof digest changed")
+        try:
+            request_subject_epochs = json.loads(request.subject_epochs_json)
+        except json.JSONDecodeError as exc:
+            raise StorageError("publication subject epoch vector is invalid") from exc
+        if (
+            metadata.get(PUBLICATION_SUBJECT_EPOCHS_METADATA_KEY)
+            != request_subject_epochs
+        ):
+            raise StorageError("publication subject epochs vector changed")
         return row
+
+    def _publication_incumbent_and_subjects_locked(
+        self,
+        request: PublicationRequest,
+    ) -> sqlite3.Row:
+        incumbent = self.conn.execute(
+            "SELECT * FROM user_playbooks WHERE user_playbook_id = ?",
+            (request.incumbent_user_playbook_id,),
+        ).fetchone()
+        if incumbent is None:
+            raise StorageError("publication incumbent does not exist")
+        incumbent_subject_ref = self._subject_ref_from_user_playbook_row(incumbent)
+        subjects = json.loads(request.subject_epochs_json)["subjects"]
+        subject_refs = tuple(str(item["ref"]) for item in subjects)
+        if incumbent_subject_ref not in subject_refs:
+            raise StorageError(
+                "publication incumbent governance subject is absent from frozen vector"
+            )
+        for subject_ref in subject_refs:
+            self._assert_subject_writable_locked(subject_ref)
+        return incumbent
 
     def _publication_claim_locked(
         self,
@@ -319,10 +368,24 @@ class UserPlaybookStoreMixin:
                     _assert_staging_matches(existing, request)
                     self._publication_job_locked(request)
                     self._publication_claim_locked(request)
+                    self._publication_incumbent_and_subjects_locked(request)
+                    self.conn.execute(
+                        """UPDATE user_playbook_publication_staging
+                           SET claim_owner = ?, publication_fence = ?, worker_fence = ?
+                           WHERE optimizer_kind = ? AND job_id = ?""",
+                        (
+                            request.publication_claim.owner,
+                            request.publication_claim.fence,
+                            request.worker_fence,
+                            request.optimizer_kind,
+                            request.job_id,
+                        ),
+                    )
                     self.conn.commit()
                     return
                 self._publication_job_locked(request)
                 self._publication_claim_locked(request)
+                self._publication_incumbent_and_subjects_locked(request)
                 self.conn.execute(
                     """INSERT INTO user_playbook_publication_staging
                        (optimizer_kind, job_id, attempt_key, claim_owner,
@@ -340,7 +403,7 @@ class UserPlaybookStoreMixin:
                         request.worker_fence,
                         request.incumbent_user_playbook_id,
                         request.revised_content,
-                        request.projection.content_digest,
+                        request.projection.candidate_content_digest,
                         request.projection.canonical_json,
                         request.projection.digest,
                         request.decision_proof.canonical_json,
@@ -459,30 +522,11 @@ class UserPlaybookStoreMixin:
                     )
                     self.conn.commit()
                     return result
+                _assert_staging_binding_matches(staged, request)
                 self._publication_job_locked(request)
                 self._publication_claim_locked(request)
-                incumbent = self.conn.execute(
-                    """SELECT * FROM user_playbooks
-                       WHERE user_playbook_id = ?""",
-                    (request.incumbent_user_playbook_id,),
-                ).fetchone()
-                if incumbent is None:
-                    raise StorageError("publication incumbent does not exist")
+                incumbent = self._publication_incumbent_and_subjects_locked(request)
                 subject_ref = self._subject_ref_from_user_playbook_row(incumbent)
-                self._assert_subject_writable_locked(subject_ref)
-                epochs = json.loads(request.subject_epochs_json)["subjects"]
-                for item in epochs:
-                    if not isinstance(item, dict):
-                        raise StorageError("publication subject epochs are invalid")
-                    epoch_ref = item.get("ref", item.get("subject_ref"))
-                    epoch = item.get("epoch", item.get("erasure_epoch"))
-                    if (
-                        not isinstance(epoch_ref, str)
-                        or not epoch_ref
-                        or (type(epoch) is not int or epoch < 0)
-                    ):
-                        raise StorageError("publication subject epochs are invalid")
-                    self._assert_subject_writable_locked(epoch_ref)
                 if incumbent["status"] is not None:
                     self._finish_publication_locked(
                         request,
@@ -532,7 +576,7 @@ class UserPlaybookStoreMixin:
                         request.request_id,
                         incumbent["agent_version"],
                         request.revised_content,
-                        request.projection.trigger,
+                        request.projection.preserved_trigger,
                         incumbent["rationale"],
                         incumbent["blocking_issue"],
                         incumbent["source_interaction_ids"],

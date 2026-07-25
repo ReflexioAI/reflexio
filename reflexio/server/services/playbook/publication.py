@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import json
-import math
+import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from hashlib import sha256
 from typing import Literal, Protocol
@@ -14,6 +15,9 @@ PublicationOutcome = Literal["applied", "incumbent_changed"]
 PublishableOptimizerKind = Literal["gepa", "offline_tuner_replay"]
 
 _PUBLISHABLE_OPTIMIZERS = frozenset({"gepa", "offline_tuner_replay"})
+_PROJECTION_SCHEMA_VERSION = "offline-tuner-candidate-search-projection-v1"
+_CANONICAL_DECIMAL = re.compile(r"-?(?:0|[1-9][0-9]*)(?:\.[0-9]*[1-9])?\Z")
+PUBLICATION_SUBJECT_EPOCHS_METADATA_KEY = "publication_subject_epochs"
 
 
 def _require_text(name: str, value: object) -> str:
@@ -32,6 +36,50 @@ def _require_digest(name: str, value: object) -> str:
     return value
 
 
+def canonical_json_bytes(payload: object) -> bytes:
+    """Encode integer/string-only JSON values using RFC 8785 ordering."""
+    return _canonical_json(payload).encode("utf-8")
+
+
+def _canonical_json(value: object) -> str:
+    if value is None:
+        return "null"
+    if value is True:
+        return "true"
+    if value is False:
+        return "false"
+    if isinstance(value, str):
+        _reject_surrogates(value)
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    if isinstance(value, int):
+        if not -(2**53) < value < 2**53:
+            raise ValueError(
+                "RFC 8785 integers must be exactly representable by IEEE 754"
+            )
+        return str(value)
+    if isinstance(value, tuple | list):
+        return "[" + ",".join(_canonical_json(item) for item in value) + "]"
+    if isinstance(value, Mapping):
+        if not all(isinstance(key, str) for key in value):
+            raise TypeError("RFC 8785 object keys must be strings")
+        for key in value:
+            _reject_surrogates(key)
+        keys = sorted(value, key=lambda key: key.encode("utf-16be"))
+        return (
+            "{"
+            + ",".join(
+                f"{_canonical_json(key)}:{_canonical_json(value[key])}" for key in keys
+            )
+            + "}"
+        )
+    raise TypeError(f"Unsupported RFC 8785 value: {type(value).__name__}")
+
+
+def _reject_surrogates(value: str) -> None:
+    if any(0xD800 <= ord(char) <= 0xDFFF for char in value):
+        raise ValueError("RFC 8785 strings cannot contain surrogate code points")
+
+
 def _canonical_payload(name: str, value: str) -> object:
     try:
         payload = json.loads(
@@ -40,14 +88,8 @@ def _canonical_payload(name: str, value: str) -> object:
                 ValueError(f"invalid JSON constant: {constant}")
             ),
         )
-        canonical = json.dumps(
-            payload,
-            ensure_ascii=False,
-            separators=(",", ":"),
-            sort_keys=True,
-            allow_nan=False,
-        )
-    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        canonical = canonical_json_bytes(payload).decode("utf-8")
+    except (TypeError, ValueError, json.JSONDecodeError, UnicodeError) as exc:
         raise ValueError(f"{name} must be canonical JSON") from exc
     if canonical != value:
         raise ValueError(f"{name} must use canonical JSON bytes")
@@ -107,23 +149,35 @@ class PublicationSearchProjection:
     schema_version: str
     canonical_json: str
     digest: str
-    content_digest: str
-    trigger: str | None
+    projector_id: str
+    projector_version: str
+    projector_code_digest: str
+    candidate_content_digest: str
+    preserved_trigger: str | None
     embedding_model_id: str
     embedding: tuple[str, ...]
     expanded_terms: tuple[str, ...]
     lexical_document: str
 
     def __post_init__(self) -> None:
-        _require_text("search projection schema_version", self.schema_version)
+        if self.schema_version != _PROJECTION_SCHEMA_VERSION:
+            raise ValueError("search projection schema is unsupported")
         _require_digest("search projection digest", self.digest)
-        _require_digest("search projection content_digest", self.content_digest)
+        _require_text("search projection projector_id", self.projector_id)
+        _require_text("search projection projector_version", self.projector_version)
+        _require_digest(
+            "search projection projector_code_digest", self.projector_code_digest
+        )
+        _require_digest(
+            "search projection candidate_content_digest",
+            self.candidate_content_digest,
+        )
         _require_text("search projection embedding_model_id", self.embedding_model_id)
         _require_text("search projection lexical_document", self.lexical_document)
-        if self.trigger is not None and not isinstance(self.trigger, str):
-            raise ValueError("search projection trigger must be text or None")
-        if not isinstance(self.embedding, tuple):
-            raise ValueError("search projection embedding must be a tuple")
+        if self.preserved_trigger is not None:
+            _require_text("search projection preserved_trigger", self.preserved_trigger)
+        if not isinstance(self.embedding, tuple) or not self.embedding:
+            raise ValueError("search projection embedding must be a non-empty tuple")
         if not isinstance(self.expanded_terms, tuple) or any(
             not isinstance(term, str) or not term.strip()
             for term in self.expanded_terms
@@ -132,31 +186,30 @@ class PublicationSearchProjection:
                 "search projection expanded_terms must contain non-empty text"
             )
         for coordinate in self.embedding:
-            if not isinstance(coordinate, str) or not coordinate:
+            if (
+                not isinstance(coordinate, str)
+                or coordinate == "-0"
+                or _CANONICAL_DECIMAL.fullmatch(coordinate) is None
+            ):
                 raise ValueError(
-                    "search projection embedding must contain decimal strings"
+                    "search projection embedding must contain canonical decimals"
                 )
-            try:
-                numeric = float(coordinate)
-            except ValueError as exc:
-                raise ValueError(
-                    "search projection embedding must contain decimal strings"
-                ) from exc
-            if not math.isfinite(numeric):
-                raise ValueError("search projection embedding must be finite")
         payload = _canonical_payload(
             "search projection canonical_json", self.canonical_json
         )
         if sha256(self.canonical_json.encode("utf-8")).hexdigest() != self.digest:
             raise ValueError("search projection digest does not match canonical JSON")
         expected = {
-            "content_digest": self.content_digest,
+            "candidate_content_digest": self.candidate_content_digest,
             "embedding": list(self.embedding),
             "embedding_model_id": self.embedding_model_id,
             "expanded_terms": list(self.expanded_terms),
             "lexical_document": self.lexical_document,
+            "preserved_trigger": self.preserved_trigger,
+            "projector_code_digest": self.projector_code_digest,
+            "projector_id": self.projector_id,
+            "projector_version": self.projector_version,
             "schema_version": self.schema_version,
-            "trigger": self.trigger,
         }
         if payload != expected:
             raise ValueError("search projection fields do not match canonical JSON")
@@ -195,18 +248,25 @@ class PublicationRequest:
         if self.decision_proof.optimizer_kind != self.optimizer_kind:
             raise ValueError("decision proof optimizer_kind must match request")
         if sha256(self.revised_content.encode("utf-8")).hexdigest() != (
-            self.projection.content_digest
+            self.projection.candidate_content_digest
         ):
             raise ValueError("revised content digest must match search projection")
         epochs = _canonical_payload("subject_epochs_json", self.subject_epochs_json)
-        if not isinstance(epochs, dict) or not isinstance(epochs.get("subjects"), list):
-            raise ValueError("subject_epochs_json must contain a subjects list")
+        if (
+            not isinstance(epochs, dict)
+            or set(epochs) != {"subjects"}
+            or not isinstance(epochs.get("subjects"), list)
+            or not epochs["subjects"]
+        ):
+            raise ValueError("subject epochs must contain a non-empty subjects list")
         subject_refs: set[str] = set()
         for item in epochs["subjects"]:
             if not isinstance(item, dict):
                 raise ValueError("subject epochs must contain objects")
-            subject_ref = item.get("ref", item.get("subject_ref"))
-            epoch = item.get("epoch", item.get("erasure_epoch"))
+            if set(item) != {"ref", "epoch"}:
+                raise ValueError("subject epochs must use ref and epoch fields")
+            subject_ref = item["ref"]
+            epoch = item["epoch"]
             if (
                 not isinstance(subject_ref, str)
                 or not subject_ref
@@ -264,24 +324,18 @@ class UserPlaybookPublicationStore(Protocol):
     ) -> PublicationResult | None: ...
 
 
-class _EnvelopeVerifier:
-    def verify(self, request: PublicationRequest) -> None:
-        # Dataclass construction already validates canonical bytes and field binding.
-        request.__post_init__()
-        request.decision_proof.__post_init__()
-        request.projection.__post_init__()
-
-
 class UserPlaybookPublicationService:
     """Coordinates proof verification with durable staging and atomic commit."""
 
     def __init__(
         self,
         storage: UserPlaybookPublicationStore,
-        verifier: PublicationDecisionVerifier | None = None,
+        verifier: PublicationDecisionVerifier,
     ) -> None:
+        if not callable(getattr(verifier, "verify", None)):
+            raise TypeError("verifier must implement PublicationDecisionVerifier")
         self._storage = storage
-        self._verifier = verifier or _EnvelopeVerifier()
+        self._verifier = verifier
 
     def claim(self, *, job_id: int, owner: str, worker_fence: int) -> PublicationClaim:
         return self._storage.claim_user_playbook_publication(
@@ -319,7 +373,9 @@ __all__ = [
     "PublicationRequest",
     "PublicationResult",
     "PublicationSearchProjection",
+    "PUBLICATION_SUBJECT_EPOCHS_METADATA_KEY",
     "UserPlaybookPublicationService",
     "UserPlaybookPublicationStore",
+    "canonical_json_bytes",
     "publish_user_playbook_successor",
 ]

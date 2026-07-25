@@ -10,6 +10,8 @@ from reflexio.server.services.playbook.publication import (
     PublicationClaim,
     PublicationRequest,
     PublicationSearchProjection,
+    UserPlaybookPublicationService,
+    canonical_json_bytes,
 )
 
 
@@ -26,21 +28,27 @@ def _digest(value: str) -> str:
 def _projection() -> PublicationSearchProjection:
     canonical = _canonical(
         {
-            "content_digest": _digest("new content"),
+            "candidate_content_digest": _digest("new content"),
             "embedding": ["0.125", "0.5"],
             "embedding_model_id": "test-embedding-v1",
             "expanded_terms": ["refund", "escalation"],
             "lexical_document": "refund escalation exact projection",
-            "schema_version": "publication-search-projection-v1",
-            "trigger": "refund",
+            "preserved_trigger": "refund",
+            "projector_code_digest": "a" * 64,
+            "projector_id": "reflexio.search.user-playbook",
+            "projector_version": "1",
+            "schema_version": "offline-tuner-candidate-search-projection-v1",
         }
     )
     return PublicationSearchProjection(
-        schema_version="publication-search-projection-v1",
+        schema_version="offline-tuner-candidate-search-projection-v1",
         canonical_json=canonical,
         digest=_digest(canonical),
-        content_digest=_digest("new content"),
-        trigger="refund",
+        projector_id="reflexio.search.user-playbook",
+        projector_version="1",
+        projector_code_digest="a" * 64,
+        candidate_content_digest=_digest("new content"),
+        preserved_trigger="refund",
         embedding_model_id="test-embedding-v1",
         embedding=("0.125", "0.5"),
         expanded_terms=("refund", "escalation"),
@@ -140,8 +148,11 @@ def test_publication_envelopes_bind_their_declared_fields() -> None:
             schema_version=projection.schema_version,
             canonical_json=projection.canonical_json,
             digest=projection.digest,
-            content_digest=projection.content_digest,
-            trigger=projection.trigger,
+            projector_id=projection.projector_id,
+            projector_version=projection.projector_version,
+            projector_code_digest=projection.projector_code_digest,
+            candidate_content_digest=projection.candidate_content_digest,
+            preserved_trigger=projection.preserved_trigger,
             embedding_model_id=projection.embedding_model_id,
             embedding=projection.embedding,
             expanded_terms=("changed",),
@@ -229,10 +240,13 @@ def test_publication_request_rejects_wrong_claim_kind_and_non_apply_decision() -
 @pytest.mark.parametrize(
     "subjects",
     [
+        [],
         ["not-an-object"],
         [{"epoch": -1, "ref": "subject:a"}],
         [{"epoch": 0, "ref": ""}],
         [{"epoch": 0, "ref": "subject:a"}, {"epoch": 1, "ref": "subject:a"}],
+        [{"epoch": 0, "subject_ref": "subject:a"}],
+        [{"epoch": 0, "ref": "subject:a", "unexpected": True}],
     ],
 )
 def test_publication_request_rejects_invalid_subject_epoch_vectors(
@@ -251,4 +265,79 @@ def test_publication_request_rejects_invalid_subject_epoch_vectors(
             decision_proof=_proof(),
             subject_epochs_json=_canonical({"subjects": subjects}),
             request_id="request-7",
+        )
+
+
+def test_publication_projection_accepts_exact_task6_bytes_and_digest() -> None:
+    canonical = (
+        '{"candidate_content_digest":"fe32608c9ef5b6cf7e3f946480253ff76f24f4ec0678f3d0f07f9844cbff9601",'
+        '"embedding":["0.25","-1","0"],"embedding_model_id":"test-embedding-v1",'
+        '"expanded_terms":["refund","escalation"],'
+        '"lexical_document":"refund escalation exact projection",'
+        '"preserved_trigger":"refund",'
+        '"projector_code_digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",'
+        '"projector_id":"reflexio.search.user-playbook","projector_version":"1",'
+        '"schema_version":"offline-tuner-candidate-search-projection-v1"}'
+    )
+
+    projection = PublicationSearchProjection(
+        schema_version="offline-tuner-candidate-search-projection-v1",
+        canonical_json=canonical,
+        digest="f092c63fec1376c1e20089086427092613c4f63f16dab317f44eb8f71622b338",
+        projector_id="reflexio.search.user-playbook",
+        projector_version="1",
+        projector_code_digest="a" * 64,
+        candidate_content_digest=_digest("new content"),
+        preserved_trigger="refund",
+        embedding_model_id="test-embedding-v1",
+        embedding=("0.25", "-1", "0"),
+        expanded_terms=("refund", "escalation"),
+        lexical_document="refund escalation exact projection",
+    )
+
+    assert projection.canonical_json.encode() == canonical.encode()
+    assert (
+        projection.digest
+        == "f092c63fec1376c1e20089086427092613c4f63f16dab317f44eb8f71622b338"
+    )
+
+
+@pytest.mark.parametrize("value", [-0.0, 0.0, 1.5])
+def test_rfc8785_encoder_rejects_all_floats(value: float) -> None:
+    with pytest.raises(TypeError, match="Unsupported RFC 8785 value: float"):
+        canonical_json_bytes({"value": value})
+
+
+@pytest.mark.parametrize("value", [-(2**53), 2**53])
+def test_rfc8785_encoder_rejects_inexact_integer_bounds(value: int) -> None:
+    with pytest.raises(ValueError, match="exactly representable"):
+        canonical_json_bytes({"value": value})
+
+
+@pytest.mark.parametrize("value", [-(2**53) + 1, 2**53 - 1])
+def test_rfc8785_encoder_accepts_exact_integer_bounds(value: int) -> None:
+    assert canonical_json_bytes({"value": value})
+
+
+def test_rfc8785_encoder_rejects_surrogates_and_uses_utf16_key_order() -> None:
+    with pytest.raises(ValueError, match="surrogate"):
+        canonical_json_bytes({"value": "\ud800"})
+
+    assert canonical_json_bytes({"\ue000": "bmp", "\U00010000": "astral"}) == (
+        '{"\U00010000":"astral","\ue000":"bmp"}'.encode()
+    )
+
+
+def test_publication_service_requires_explicit_verifier() -> None:
+    with pytest.raises(TypeError):
+        UserPlaybookPublicationService(object())  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="PublicationDecisionVerifier"):
+        UserPlaybookPublicationService(
+            object(),  # type: ignore[arg-type]
+            verifier=None,  # type: ignore[arg-type]
+        )
+    with pytest.raises(TypeError, match="PublicationDecisionVerifier"):
+        UserPlaybookPublicationService(
+            object(),  # type: ignore[arg-type]
+            verifier=object(),  # type: ignore[arg-type]
         )
