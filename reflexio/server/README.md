@@ -187,23 +187,6 @@ Key components:
 
 Access: `SiteVarManager().get_site_var(key)` for raw values, `feature_flags.is_feature_enabled(org_id, name)` for flag checks
 
-## Scripts
-
-**Directory**: `scripts/`
-
-| File | Purpose |
-|------|---------|
-| `manage_invitation_codes.py` | CLI to generate and list invitation codes |
-| `show_raw_feedback_with_interactions.py` | Debug script to display user playbook alongside interaction context |
-
-**Usage**:
-```shell
-python -m reflexio.server.scripts.manage_invitation_codes generate --count 5
-python -m reflexio.server.scripts.manage_invitation_codes generate --count 3 --expires-in-days 30
-python -m reflexio.server.scripts.manage_invitation_codes list
-python -m reflexio.server.scripts.manage_invitation_codes list --show-used
-```
-
 ## Services
 
 **Directory**: `services/`
