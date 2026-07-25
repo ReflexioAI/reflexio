@@ -1,7 +1,4 @@
 {
-    "invitation_only": {
-        "enabled": true
-    },
     "resumable_extraction_agent": {
         "enabled": true,
         "enabled_org_ids": []

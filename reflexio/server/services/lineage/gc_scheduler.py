@@ -98,7 +98,7 @@ def set_leader_gate(gate: LeaderGate | None) -> None:
     _leader_gate_hook = gate
 
 
-# Global sweeps run once per tick (for GLOBAL tables like invitation_codes),
+# Global sweeps run once per tick (for GLOBAL, non-tenant-scoped tables),
 # gated on expiry_reclamation.enabled. Each fn takes `now` (unix epoch) and
 # returns a deleted-row count. Enterprise registers its sweeps here at startup;
 # empty (OSS default) keeps behavior byte-for-byte identical to before.

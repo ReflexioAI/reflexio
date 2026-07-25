@@ -10,7 +10,6 @@ Description: FastAPI backend server that processes user interactions to generate
 - [LLM Client](#llm-client)
 - [Prompts](#prompts)
 - [Site Variables](#site-variables)
-- [Scripts](#scripts)
 - [Services](#services)
   - [Orchestrator](#orchestrator)
   - [Base Infrastructure](#base-infrastructure)
@@ -97,7 +96,7 @@ Description: FastAPI backend server that processes user interactions to generate
 - **Operations/admin**: `GET /api/get_operation_status`, `POST /api/cancel_operation`, `POST /api/admin/cache/invalidate`, `DELETE /api/delete_interaction`, `DELETE /api/delete_request`, `DELETE /api/delete_session`, `DELETE /api/delete_requests_by_ids`, `DELETE /api/delete_all_interactions`, `POST /api/clear_user_data`
 - **Human clarification/stall state**: `GET /api/pending_tool_calls`, `GET /api/pending_tool_calls/{pending_tool_call_id}`, `POST /api/pending_tool_calls/{pending_tool_call_id}/resolve`, `PATCH /api/pending_tool_calls/{pending_tool_call_id}/answer`, `POST /api/pending_tool_calls/{pending_tool_call_id}/not_applicable`, `POST /api/pending_tool_calls/{pending_tool_call_id}/cancel`, `GET /api/stall_state`, `POST /api/stall_state/notified`
 
-**Authentication Pattern**: The open-source app uses `default_get_org_id` and `DEFAULT_ORG_ID` for local/no-auth starts. The enterprise extension wraps `create_app()` with authenticated org resolution, login/OAuth/account/share/waitlist routers, admin checks, Sentry tracing, and usage metrics.
+**Authentication Pattern**: The open-source app uses `default_get_org_id` and `DEFAULT_ORG_ID` for local/no-auth starts. The enterprise extension wraps `create_app()` with authenticated org resolution, login/OAuth/account/share routers, admin checks, Sentry tracing, and usage metrics.
 
 **Pattern**: Core route handlers call `Reflexio` through `get_reflexio(org_id)`; endpoint helper files should not instantiate `Reflexio` directly.
 
@@ -183,26 +182,9 @@ Key components:
 | `site_var_manager.py` | SiteVarManager (singleton) - loads JSON/TXT configs |
 | `feature_flags.py` | Per-org feature gating (`is_feature_enabled()`, `get_all_feature_flags()`) |
 
-**Feature Flags**: Config in `site_var_sources/feature_flags.json`. Each flag has global `enabled` toggle and per-org `enabled_org_ids` allowlist. Unknown flags default to enabled (fail-open). Currently gates: `invitation_only` (global flag, gates registration to require invitation codes), `deduplicator` (gates playbook deduplication).
+**Feature Flags**: Config in `site_var_sources/feature_flags.json`. Each flag has global `enabled` toggle and per-org `enabled_org_ids` allowlist. Unknown flags default to enabled (fail-open). Current flags: `resumable_extraction_agent`, `lineage_dual_read_diff`.
 
 Access: `SiteVarManager().get_site_var(key)` for raw values, `feature_flags.is_feature_enabled(org_id, name)` for flag checks
-
-## Scripts
-
-**Directory**: `scripts/`
-
-| File | Purpose |
-|------|---------|
-| `manage_invitation_codes.py` | CLI to generate and list invitation codes |
-| `show_raw_feedback_with_interactions.py` | Debug script to display user playbook alongside interaction context |
-
-**Usage**:
-```shell
-python -m reflexio.server.scripts.manage_invitation_codes generate --count 5
-python -m reflexio.server.scripts.manage_invitation_codes generate --count 3 --expires-in-days 30
-python -m reflexio.server.scripts.manage_invitation_codes list
-python -m reflexio.server.scripts.manage_invitation_codes list --show-used
-```
 
 ## Services
 

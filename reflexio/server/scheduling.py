@@ -2,7 +2,7 @@
 
 Reflexio runs a family of background daemons — extraction resume, lineage GC,
 and (in the enterprise layer) billing ship / lease / period-close / integrity /
-audit / offline-tuner / governance-retention / invitation-reclamation. Every one
+audit / offline-tuner / governance-retention. Every one
 of them hand-rolled the SAME thread mechanics: a :class:`threading.Event`
 stop-signal, a daemon :class:`threading.Thread` running a ``while not
 stop.is_set()`` loop, and a ``.join(timeout)`` graceful stop.

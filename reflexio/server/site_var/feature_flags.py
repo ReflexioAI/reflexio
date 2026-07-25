@@ -76,20 +76,6 @@ def get_all_feature_flags(org_id: str) -> dict[str, bool]:
     return result
 
 
-def is_invitation_only_enabled() -> bool:
-    """
-    Check if invitation-only registration mode is enabled globally.
-
-    Returns:
-        bool: True if invitation-only mode is enabled
-    """
-    config = _get_feature_flags_config()
-    invitation_config = config.get("invitation_only")
-    if invitation_config is None:
-        return False
-    return invitation_config.get("enabled", False)
-
-
 def _is_fail_closed_flag_enabled(org_id: str, feature_key: str) -> bool:
     """
     Shared fail-closed helper: returns False if key absent or config malformed.
