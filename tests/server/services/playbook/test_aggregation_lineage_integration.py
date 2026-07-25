@@ -195,6 +195,93 @@ def test_aggregation_emits_aggregate_lineage_event(
     assert evt.request_id != "", "request_id must be non-empty"
 
 
+def test_aggregation_uses_durable_operation_key_for_logical_effects(
+    sqlite_storage: SQLiteStorage,
+    request_context: RequestContext,
+    aggregator: PlaybookAggregator,
+) -> None:
+    up_a = _seed_user_playbook(sqlite_storage, uid=101, org_id=request_context.org_id)
+    up_b = _seed_user_playbook(sqlite_storage, uid=102, org_id=request_context.org_id)
+    cluster_playbooks = [up_a, up_b]
+    unsaved = AgentPlaybook(
+        agent_playbook_id=0,
+        playbook_name="default",
+        agent_version="v0",
+        content="Durably keyed aggregation.",
+        playbook_status=PlaybookStatus.PENDING,
+    )
+
+    with (
+        patch.object(
+            PlaybookAggregator,
+            "get_clusters",
+            return_value={0: cluster_playbooks},
+        ),
+        patch.object(
+            PlaybookAggregator,
+            "_generate_playbooks_with_source_clusters",
+            return_value=[(unsaved, cluster_playbooks)],
+        ),
+    ):
+        aggregator.run(
+            PlaybookAggregatorRequest(
+                agent_version="v0",
+                rerun=True,
+                operation_key="42",
+            )
+        )
+
+    saved = sqlite_storage.get_agent_playbooks()
+    assert len(saved) == 1
+    events = sqlite_storage.get_lineage_events(
+        entity_type="agent_playbook",
+        entity_id=str(saved[0].agent_playbook_id),
+    )
+    assert [event.request_id for event in events if event.op == "aggregate"] == ["42"]
+
+
+def test_aggregation_operation_key_deduplicates_retry_effects(
+    sqlite_storage: SQLiteStorage,
+    request_context: RequestContext,
+    aggregator: PlaybookAggregator,
+) -> None:
+    up_a = _seed_user_playbook(sqlite_storage, uid=103, org_id=request_context.org_id)
+    up_b = _seed_user_playbook(sqlite_storage, uid=104, org_id=request_context.org_id)
+    cluster_playbooks = [up_a, up_b]
+    unsaved = AgentPlaybook(
+        agent_playbook_id=0,
+        playbook_name="default",
+        agent_version="v0",
+        content="Retry-safe aggregation.",
+        playbook_status=PlaybookStatus.PENDING,
+    )
+
+    with (
+        patch.object(
+            PlaybookAggregator,
+            "get_clusters",
+            return_value={0: cluster_playbooks},
+        ),
+        patch.object(
+            PlaybookAggregator,
+            "_generate_playbooks_with_source_clusters",
+            return_value=[(unsaved, cluster_playbooks)],
+        ),
+    ):
+        request = PlaybookAggregatorRequest(
+            agent_version="v0",
+            rerun=True,
+            operation_key="43",
+        )
+        first = aggregator.run(request)
+        retry = aggregator.run(request)
+
+    assert first["playbooks_generated"] == 1
+    assert retry["skipped"] == "operation already applied"
+    assert len(sqlite_storage.get_agent_playbooks()) == 1
+    assert len(sqlite_storage.get_lineage_events(request_id="43")) == 1
+
+
 def test_aggregate_save_failure_aborts_and_restores(
     sqlite_storage: SQLiteStorage,
     request_context: RequestContext,

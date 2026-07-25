@@ -266,12 +266,27 @@ class PlaybookAggregator:
         """
         aggregation_start = time.perf_counter()
         # Stable id for this aggregation run — groups all lineage events produced below.
-        _run_id = str(uuid.uuid4())
+        _run_id = playbook_aggregator_request.operation_key or str(uuid.uuid4())
         _empty_stats = {
             "clusters_found": 0,
             "user_playbooks_processed": 0,
             "playbooks_generated": 0,
         }
+
+        if playbook_aggregator_request.operation_key and any(
+            event.op == "aggregate"
+            for event in self.storage.get_lineage_events(  # type: ignore[reportOptionalMemberAccess]
+                request_id=playbook_aggregator_request.operation_key
+            )
+        ):
+            logger.info(
+                "Skipping aggregation operation %s because its effects already exist",
+                playbook_aggregator_request.operation_key,
+            )
+            return {
+                **_empty_stats,
+                "skipped": "operation already applied",
+            }
 
         # Singleton aggregation: one playbook kind per org. The name is a fixed
         # constant used only for bookmark/archive scoping and telemetry — it is
