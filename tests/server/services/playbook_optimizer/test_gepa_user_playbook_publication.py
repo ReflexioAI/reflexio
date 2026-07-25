@@ -494,7 +494,7 @@ def test_gepa_user_job_creation_freezes_complete_sanitized_authority(tmp_path):
 
 def test_gepa_user_authority_freezes_prompt_and_schema_identity(tmp_path):
     authority = _completed_user_authority(tmp_path)
-    evaluator = authority["evaluator_identity"]
+    evaluator = authority["evaluator_identity"]["pairwise_judge_request_plan"]
     prompt = evaluator["judge_prompt_identity"]
 
     assert prompt["prompt_id"] == PLAYBOOK_OPTIMIZER_JUDGE_PROMPT_ID
@@ -529,7 +529,8 @@ def test_gepa_user_authority_freezes_generation_ladder_and_retry_contract(tmp_pa
             )
         ),
     )
-    generation = authority["evaluator_identity"]["judge_generation_settings"]
+    evaluator = authority["evaluator_identity"]["pairwise_judge_request_plan"]
+    generation = evaluator["judge_generation_settings"]
 
     assert generation["resolved_primary_model"] == "gpt-5-mini"
     assert generation["fallback_model_order"] == [
@@ -541,8 +542,15 @@ def test_gepa_user_authority_freezes_generation_ladder_and_retry_contract(tmp_pa
         "minimax/MiniMax-M3",
         "fallback-b",
     ]
-    assert generation["retry_behavior"]["pairwise_judge_max_retries"] == 1
-    assert len(generation["retry_behavior"]["request_code_digest"]) == 64
+    assert generation["pairwise_judge_max_retries"] == 1
+    assert (
+        len(
+            evaluator["implementation_callables"]["llm_client._make_request"][
+                "code_digest"
+            ]
+        )
+        == 64
+    )
     assert [rung["model"] for rung in generation["rungs"]] == generation[
         "resolved_model_ladder"
     ]
@@ -669,11 +677,21 @@ def test_gepa_user_authority_changes_for_independent_provider_identity(
 def test_gepa_user_authority_freezes_non_secret_provider_identity(tmp_path):
     endpoint = "https://azure-one.example.test/"
     authority = _judge_authority(tmp_path, llm_client=_azure_client(endpoint=endpoint))
-    rung = authority["evaluator_identity"]["judge_generation_settings"]["rungs"][0]
+    plan = authority["evaluator_identity"]["pairwise_judge_request_plan"]
+    rung = plan["judge_generation_settings"]["rungs"][0]
     assert rung["provider_kind"] == "azure"
     assert rung["api_base_digest"] == sha256(endpoint.encode()).hexdigest()
     assert rung["api_version"] == "2024-02-15-preview"
     assert endpoint not in _canonical_authority(authority)
+
+
+def test_gepa_user_authority_changes_with_effective_request_seed(tmp_path, monkeypatch):
+    monkeypatch.setenv("REFLEXIO_LLM_SEED", "42")
+    first = _canonical_authority(_judge_authority(tmp_path / "first"))
+    monkeypatch.setenv("REFLEXIO_LLM_SEED", "43")
+    second = _canonical_authority(_judge_authority(tmp_path / "second"))
+
+    assert first != second
 
 
 def test_gepa_user_authority_excludes_credentials_but_binds_webhook_scheme(
@@ -1177,7 +1195,7 @@ def test_gepa_publication_uses_frozen_adoption_policy_when_live_config_drifts(
             """UPDATE playbook_optimization_jobs
                SET metadata_json = json_set(
                    metadata_json,
-                   '$.gepa_publication_authority.evaluator_identity.judge_model_id',
+                   '$.gepa_publication_authority.evaluator_identity.pairwise_judge_request_plan.judge_model_id',
                    'tampered-model'
                )""",
             (),
@@ -1653,7 +1671,10 @@ def test_gepa_local_script_identity_binds_script_content_and_code_digests(tmp_pa
     assert "script_path_digest" not in backend_identity
     assert "adapter_code_digest" in authority["optimizer_identity"]
     assert "rollout_code_digest" in authority["optimizer_identity"]
-    assert "judge_code_digest" in authority["evaluator_identity"]
+    assert (
+        "judge_code_digest"
+        in authority["evaluator_identity"]["pairwise_judge_request_plan"]
+    )
 
 
 def test_sqlite_storage_uses_shared_publication_metadata_key_constants():

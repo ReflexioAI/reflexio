@@ -50,13 +50,8 @@ from .gepa_publication import (
     parse_gepa_decision_proof,
     parse_gepa_search_projection,
 )
-from .judge import (
-    PAIRWISE_JUDGE_MAX_RETRIES,
-    PAIRWISE_JUDGE_TIMEOUT_SECONDS,
-    PLAYBOOK_OPTIMIZER_JUDGE_PROMPT_ID,
-    PairwiseJudge,
-)
-from .models import JudgeOutput, ScenarioWindow
+from .judge import PairwiseJudge, build_pairwise_judge_request_plan
+from .models import ScenarioWindow
 from .rollout import MultiTurnRollout
 from .scenario_resolver import ScenarioResolver
 
@@ -186,6 +181,13 @@ class PlaybookOptimizer:
             ),
             include_publication_authority=target.kind == "user_playbook",
         )
+        frozen_judge_plan = (
+            split_metadata[GEPA_PUBLICATION_AUTHORITY_METADATA_KEY][
+                "evaluator_identity"
+            ]["pairwise_judge_request_plan"]
+            if target.kind == "user_playbook"
+            else None
+        )
 
         job = self.storage.create_playbook_optimization_job(
             PlaybookOptimizationJob(
@@ -226,6 +228,7 @@ class PlaybookOptimizer:
                 self.request_context,
                 self.llm_client,
                 config.reflection_model,
+                frozen_request_plan=frozen_judge_plan,
             ),
             max_turns=config.max_turns,
         )
@@ -1025,14 +1028,10 @@ def _gepa_publication_authority(
             "reflection_minibatch_size": config.reflection_minibatch_size,
         },
         "evaluator_identity": {
-            "judge_class": _code_identity(PairwiseJudge),
-            "judge_code_digest": _code_digest(PairwiseJudge),
-            "judge_model_id": judge_model_id,
-            "judge_prompt_id": PLAYBOOK_OPTIMIZER_JUDGE_PROMPT_ID,
-            **_gepa_evaluator_identity(
+            "pairwise_judge_request_plan": build_pairwise_judge_request_plan(
                 prompt_manager=prompt_manager,
                 llm_client=llm_client,
-                judge_model_id=judge_model_id,
+                model_name=judge_model_id,
             ),
         },
         "gepa_algorithm": {
@@ -1120,82 +1119,6 @@ def _assistant_backend_identity(
     else:
         identity["backend_kind"] = "none"
     return identity
-
-
-def _gepa_evaluator_identity(
-    *,
-    prompt_manager: Any,
-    llm_client: LiteLLMClient,
-    judge_model_id: str,
-) -> dict[str, Any]:
-    """Freeze the exact evaluator surface used by USER-playbook GEPA jobs."""
-    client_type = type(llm_client)
-    client = cast(Any, llm_client)
-    ladder = client._resolve_ladder(model=judge_model_id)
-    grace_seconds = client._hard_timeout_grace_seconds()
-    request_implementation = client_type._make_request
-    return {
-        "judge_prompt_identity": prompt_manager.get_prompt_template_identity(
-            PLAYBOOK_OPTIMIZER_JUDGE_PROMPT_ID
-        ),
-        "llm_client_class": _code_identity(client_type),
-        "llm_client_code_digest": _code_digest(client_type),
-        "judge_output_schema_class": _code_identity(JudgeOutput),
-        "judge_output_schema_code_digest": _code_digest(JudgeOutput),
-        "judge_output_schema_digest": _json_digest(JudgeOutput.model_json_schema()),
-        "judge_generation_settings": {
-            "requested_model": judge_model_id,
-            "resolved_primary_model": ladder[0],
-            "fallback_model_order": ladder[1:],
-            "resolved_model_ladder": ladder,
-            "retry_behavior": {
-                "pairwise_judge_max_retries": PAIRWISE_JUDGE_MAX_RETRIES,
-                "request_implementation": _code_identity(request_implementation),
-                "request_code_digest": _code_digest(request_implementation),
-            },
-            "rungs": [
-                _gepa_judge_rung(llm_client, model, grace_seconds) for model in ladder
-            ],
-        },
-    }
-
-
-def _gepa_judge_rung(
-    llm_client: LiteLLMClient,
-    model: str,
-    grace_seconds: float,
-) -> dict[str, Any]:
-    client = cast(Any, llm_client)
-    params, _response_format, parse_structured_output, _max_retries, _fallbacks = (
-        client._build_completion_params(
-            [{"role": "user", "content": ""}],
-            model=model,
-            response_format=JudgeOutput,
-            timeout=PAIRWISE_JUDGE_TIMEOUT_SECONDS,
-            max_retries=PAIRWISE_JUDGE_MAX_RETRIES,
-            fallback_models=[],
-        )
-    )
-    resolved_model = str(params["model"])
-    timeout_seconds = client._coerce_timeout_seconds(params)
-    api_base = params.get("api_base")
-    return {
-        "model": resolved_model,
-        "temperature": _decimal_string(params["temperature"]),
-        "top_p": _decimal_string(params.get("top_p", 1.0)),
-        "max_tokens": params.get("max_tokens"),
-        "timeout_seconds": _decimal_string(timeout_seconds),
-        "hard_timeout_grace_seconds": _decimal_string(grace_seconds),
-        "hard_timeout_seconds": _decimal_string(timeout_seconds + grace_seconds),
-        "provider_kind": client._provider_for_model(resolved_model) or "unconfigured",
-        "api_base_digest": _text_digest(str(api_base)) if api_base else None,
-        "api_version": params.get("api_version"),
-        "structured_output_strategy": client._structured_output_strategy(
-            model=resolved_model,
-            strict_response_format=True,
-        ),
-        "parse_structured_output": parse_structured_output,
-    }
 
 
 def _webhook_auth_scheme(value: str | None) -> str | None:
