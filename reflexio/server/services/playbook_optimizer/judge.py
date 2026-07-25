@@ -76,7 +76,7 @@ _PROVIDER_PARAM_KEYS = frozenset(
 )
 
 
-class FrozenEvaluatorPlanDriftError(RuntimeError):
+class FrozenEvaluatorPlanDriftError(text_generation_module.ProviderRequestGuardError):
     """Raised before evaluation when live judge inputs differ from the frozen plan."""
 
 
@@ -119,23 +119,7 @@ def build_pairwise_judge_request_plan(
     requested_model = model_name or llm_client.config.model
     ladder = client._resolve_ladder(model=requested_model)
     grace_seconds = client._hard_timeout_grace_seconds()
-    callables = {
-        f"llm_client.{name}": _bound_callable_identity(client, name)
-        for name in _LLM_IMPLEMENTATION_METHODS
-    }
-    callables.update(
-        {
-            f"prompt_manager.{name}": _bound_callable_identity(prompt_manager, name)
-            for name in _PROMPT_IMPLEMENTATION_METHODS
-        }
-    )
-    callables.update(
-        {
-            "judge.PairwiseJudge.judge": _callable_identity(PairwiseJudge.judge),
-            **_judge_helper_identities(),
-            **_implementation_helper_identities(),
-        }
-    )
+    callables = _pairwise_judge_implementation_identities(prompt_manager, llm_client)
     return {
         "judge_class": _type_identity(PairwiseJudge),
         "judge_code_digest": _code_digest(PairwiseJudge),
@@ -238,6 +222,11 @@ class PairwiseJudge:
             if frozen_request_plan is not None
             else None
         )
+        self._provider_request_guard = (
+            self._enforce_frozen_request_plan_at_provider
+            if frozen_request_plan is not None
+            else None
+        )
 
     def judge(
         self,
@@ -255,7 +244,9 @@ class PairwiseJudge:
                 likert=3,
                 rationale="Candidate content is identical to incumbent content.",
             )
-        frozen_plan = self._verify_frozen_request_plan()
+        frozen_plan = self._frozen_request_plan()
+        if frozen_plan is not None:
+            self._assert_frozen_implementation_identities(frozen_plan)
         variables = {
             "source_window_json": _json(
                 [interaction.model_dump() for interaction in window.interactions]
@@ -275,12 +266,14 @@ class PairwiseJudge:
                 variables,
                 frozen_plan["judge_prompt_identity"],
             )
+            self._assert_frozen_implementation_identities(frozen_plan)
         response = self.llm_client.generate_chat_response(
             messages=[{"role": "user", "content": prompt}],
             model=self.model_name,
             response_format=JudgeOutput,
             timeout=PAIRWISE_JUDGE_TIMEOUT_SECONDS,
             max_retries=PAIRWISE_JUDGE_MAX_RETRIES,
+            provider_request_guard=self._provider_request_guard,
         )
         log_model_response(logger, "Playbook optimizer judge response", response)
         if isinstance(response, JudgeOutput):
@@ -292,32 +285,77 @@ class PairwiseJudge:
             rationale=f"Judge response was not parsed: {type(response).__name__}",
         )
 
-    def _verify_frozen_request_plan(self) -> dict[str, Any] | None:
+    def _frozen_request_plan(self) -> dict[str, Any] | None:
         if self._frozen_request_plan_json is None:
             return None
-        frozen = json.loads(self._frozen_request_plan_json)
-        frozen_callables = frozen["implementation_callables"]
-        current_helpers = _judge_helper_identities()
-        if any(
-            frozen_callables.get(name) != identity
-            for name, identity in current_helpers.items()
+        return json.loads(self._frozen_request_plan_json)
+
+    def _assert_frozen_implementation_identities(
+        self, frozen_plan: Mapping[str, Any]
+    ) -> None:
+        current = _pairwise_judge_implementation_identities(
+            self.request_context.prompt_manager,
+            self.llm_client,
+        )
+        if current != frozen_plan["implementation_callables"]:
+            raise FrozenEvaluatorPlanDriftError(
+                "PairwiseJudge evaluator implementation drifted after job creation"
+            )
+
+    def _enforce_frozen_request_plan_at_provider(
+        self,
+        params: dict[str, Any],
+        hard_timeout: float,
+        ladder: tuple[str, ...],
+        parse_structured_output: bool,
+    ) -> None:
+        frozen = self._frozen_request_plan()
+        if frozen is None:  # pragma: no cover - guard is installed only when frozen
+            return
+        self._assert_frozen_implementation_identities(frozen)
+        if (
+            self.request_context.prompt_manager.get_prompt_template_identity(
+                PLAYBOOK_OPTIMIZER_JUDGE_PROMPT_ID
+            )
+            != frozen["judge_prompt_identity"]
         ):
             raise FrozenEvaluatorPlanDriftError(
-                "PairwiseJudge evaluator helper drifted after job creation"
+                "PairwiseJudge prompt drifted after job creation"
             )
-        current = build_pairwise_judge_request_plan(
-            prompt_manager=self.request_context.prompt_manager,
-            llm_client=self.llm_client,
-            model_name=self.model_name,
+
+        generation = frozen["judge_generation_settings"]
+        if list(ladder) != generation["resolved_model_ladder"]:
+            raise FrozenEvaluatorPlanDriftError(
+                "PairwiseJudge model ladder drifted after job creation"
+            )
+        model = str(params["model"])
+        expected_rung = next(
+            (rung for rung in generation["rungs"] if rung["model"] == model),
+            None,
+        )
+        if expected_rung is None:
+            raise FrozenEvaluatorPlanDriftError(
+                "PairwiseJudge provider rung drifted after job creation"
+            )
+        provider_params = sanitize_pairwise_judge_provider_params(params)
+        timeout_seconds = float(provider_params["timeout"])
+        grace_seconds = max(0.0, hard_timeout - timeout_seconds)
+        provider_kind = (
+            cast(Any, self.llm_client)._provider_for_model(model) or "unconfigured"
         )
         if (
-            canonicalize_pairwise_judge_request_plan(current)
-            != self._frozen_request_plan_json
+            provider_params != expected_rung["provider_params"]
+            or _decimal_string(hard_timeout) != expected_rung["hard_timeout_seconds"]
+            or parse_structured_output != expected_rung["parse_structured_output"]
+            or provider_kind != expected_rung["provider_kind"]
+            or cast(Any, self.llm_client)._should_process_isolate_completion(
+                timeout_seconds, grace_seconds
+            )
+            != expected_rung["process_isolation"]
         ):
             raise FrozenEvaluatorPlanDriftError(
-                "PairwiseJudge evaluator plan drifted after job creation"
+                "PairwiseJudge provider request drifted after job creation"
             )
-        return frozen
 
 
 def _bound_callable_identity(owner: Any, name: str) -> dict[str, Any]:
@@ -325,6 +363,41 @@ def _bound_callable_identity(owner: Any, name: str) -> dict[str, Any]:
         **_callable_identity(getattr(owner, name)),
         "instance_override": name in vars(owner),
     }
+
+
+def _pairwise_judge_implementation_identities(
+    prompt_manager: PromptManager,
+    llm_client: LiteLLMClient,
+) -> dict[str, dict[str, Any]]:
+    client = cast(Any, llm_client)
+    callables = {
+        f"llm_client.{name}": _bound_callable_identity(client, name)
+        for name in _LLM_IMPLEMENTATION_METHODS
+    }
+    callables.update(
+        {
+            f"prompt_manager.{name}": _bound_callable_identity(prompt_manager, name)
+            for name in _PROMPT_IMPLEMENTATION_METHODS
+        }
+    )
+    callables.update(
+        {
+            "judge.PairwiseJudge.judge": _callable_identity(PairwiseJudge.judge),
+            "judge.PairwiseJudge._assert_frozen_implementation_identities": (
+                _callable_identity(
+                    PairwiseJudge._assert_frozen_implementation_identities
+                )
+            ),
+            "judge.PairwiseJudge._enforce_frozen_request_plan_at_provider": (
+                _callable_identity(
+                    PairwiseJudge._enforce_frozen_request_plan_at_provider
+                )
+            ),
+            **_judge_helper_identities(),
+            **_implementation_helper_identities(),
+        }
+    )
+    return callables
 
 
 def _implementation_helper_identities() -> dict[str, dict[str, str]]:
@@ -372,6 +445,9 @@ def _judge_helper_identities() -> dict[str, dict[str, str]]:
         ),
         "judge.sanitize_pairwise_judge_provider_params": (
             sanitize_pairwise_judge_provider_params
+        ),
+        "judge._pairwise_judge_implementation_identities": (
+            _pairwise_judge_implementation_identities
         ),
         "judge._pairwise_judge_rung": _pairwise_judge_rung,
         "judge._response_format_identity": _response_format_identity,

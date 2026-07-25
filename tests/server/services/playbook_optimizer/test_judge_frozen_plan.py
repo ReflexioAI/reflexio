@@ -79,7 +79,7 @@ def test_pairwise_judge_rejects_frozen_plan_drift_before_provider_execution(
     prompt_manager = PromptManager()
     client = LiteLLMClient(LiteLLMConfig(model="azure/judge-deployment"))
     provider = Mock()
-    cast(Any, client).generate_chat_response = provider
+    cast(Any, client)._completion_with_hard_timeout = provider
     frozen_plan = _freeze(prompt_manager, client)
     judge = PairwiseJudge(
         cast(Any, SimpleNamespace(prompt_manager=prompt_manager)),
@@ -133,6 +133,18 @@ def test_pairwise_judge_provider_params_match_frozen_sanitized_plan(monkeypatch)
         )
     )
     captured: dict[str, Any] = {}
+    compared: dict[str, Any] = {}
+    sanitize = judge_module.sanitize_pairwise_judge_provider_params
+
+    def recording_sanitize(params: Any) -> dict[str, Any]:
+        compared["params"] = params
+        return sanitize(params)
+
+    monkeypatch.setattr(
+        judge_module,
+        "sanitize_pairwise_judge_provider_params",
+        recording_sanitize,
+    )
 
     def completion(params: dict[str, Any], hard_timeout: float) -> Any:
         captured["params"] = params
@@ -174,12 +186,39 @@ def test_pairwise_judge_provider_params_match_frozen_sanitized_plan(monkeypatch)
 
     rung = frozen_plan["judge_generation_settings"]["rungs"][0]
     assert result.verdict == "candidate"
-    assert (
-        judge_module.sanitize_pairwise_judge_provider_params(captured["params"])
-        == rung["provider_params"]
-    )
+    assert compared["params"] is captured["params"]
+    assert sanitize(captured["params"]) == rung["provider_params"]
     assert captured["hard_timeout"] == float(rung["hard_timeout_seconds"])
     serialized = json.dumps(frozen_plan, sort_keys=True)
     assert rung["provider_params"]["seed"] == 47
     assert secret not in serialized
     assert endpoint not in serialized
+
+
+def test_pairwise_judge_rejects_drift_during_prompt_render_before_provider(
+    monkeypatch,
+):
+    monkeypatch.setenv("REFLEXIO_LLM_SEED", "42")
+    prompt_manager = PromptManager()
+    client = LiteLLMClient(LiteLLMConfig(model="azure/judge-deployment"))
+    provider = Mock()
+    cast(Any, client)._completion_with_hard_timeout = provider
+    render = prompt_manager.render_prompt_from_identity
+
+    def mutating_render(*args: Any, **kwargs: Any) -> str:
+        rendered = render(*args, **kwargs)
+        client.config.top_p = 0.25
+        return rendered
+
+    cast(Any, prompt_manager).render_prompt_from_identity = mutating_render
+    frozen_plan = _freeze(prompt_manager, client)
+    judge = PairwiseJudge(
+        cast(Any, SimpleNamespace(prompt_manager=prompt_manager)),
+        client,
+        "azure/judge-deployment",
+        frozen_request_plan=frozen_plan,
+    )
+
+    with pytest.raises(judge_module.FrozenEvaluatorPlanDriftError):
+        judge.judge(**_inputs())
+    provider.assert_not_called()

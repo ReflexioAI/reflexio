@@ -176,6 +176,16 @@ def _rung_reason(error: Exception | None) -> str:
     return "transport_error"
 
 
+class ProviderRequestGuardError(RuntimeError):
+    """Raised when a caller rejects built params at the provider boundary."""
+
+
+ProviderRequestGuard = Callable[
+    [dict[str, Any], float, tuple[str, ...], bool],
+    None,
+]
+
+
 class TextGenerationMixin:
     """Chat/response generation, completion-param build, hard-timeout, cost, multimodal.
 
@@ -309,6 +319,7 @@ class TextGenerationMixin:
         max_retries: int | None = None,
         fallback_models: list[str] | None = None,
         structured_output_validator: StructuredOutputValidator | None = None,
+        provider_request_guard: ProviderRequestGuard | None = None,
         **kwargs: Any,
     ) -> str | BaseModel | ToolCallingChatResponse:
         """
@@ -333,6 +344,8 @@ class TextGenerationMixin:
             structured_output_validator: Optional semantic validator for parsed
                 structured output. Passing one opts the call into the corrective
                 repair ladder for parse, blank, and semantic failures.
+            provider_request_guard: Optional internal guard invoked on the exact
+                built params immediately before each provider attempt.
             **kwargs: Additional parameters including:
                 - response_format: Pydantic BaseModel class for structured output
                 - parse_structured_output: Whether to parse structured output (default True)
@@ -411,6 +424,8 @@ class TextGenerationMixin:
             kwargs["fallback_models"] = fallback_models
         if structured_output_validator is not None:
             kwargs["structured_output_validator"] = structured_output_validator
+        if provider_request_guard is not None:
+            kwargs["provider_request_guard"] = provider_request_guard
 
         return self._make_request(final_messages, **kwargs)
 
@@ -1038,6 +1053,9 @@ class TextGenerationMixin:
         structured_output_validator: StructuredOutputValidator | None = kwargs.pop(
             "structured_output_validator", None
         )
+        provider_request_guard: ProviderRequestGuard | None = kwargs.pop(
+            "provider_request_guard", None
+        )
         original_kwargs = dict(kwargs)
 
         def _finish(
@@ -1107,6 +1125,13 @@ class TextGenerationMixin:
             )
             try:
                 with provider_slot(turn_params["model"]):
+                    if provider_request_guard is not None:
+                        provider_request_guard(
+                            turn_params,
+                            turn_hard_timeout,
+                            tuple(ladder),
+                            turn_parse_structured_output,
+                        )
                     response = self._completion_with_hard_timeout(
                         turn_params, turn_hard_timeout
                     )
@@ -1191,6 +1216,8 @@ class TextGenerationMixin:
                     model=str(turn_params.get("model")),
                     provenance=provenance,
                 )
+            except ProviderRequestGuardError:
+                raise
             except (
                 StructuredOutputParseError,
                 StructuredOutputRepairError,
