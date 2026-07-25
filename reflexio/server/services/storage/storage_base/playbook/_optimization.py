@@ -30,6 +30,30 @@ class OptimizationJobStoreMixin:
         raise NotImplementedError
 
     @abstractmethod
+    def get_playbook_optimization_job(
+        self, job_id: int
+    ) -> PlaybookOptimizationJob | None:
+        """Load one optimizer job by its durable identity."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def prepare_gepa_user_playbook_publication(
+        self,
+        *,
+        job_id: int,
+        owner: str,
+        fence: int,
+        winner_candidate_id: int,
+        candidate_content_digest: str,
+        search_projection_digest: str,
+        publication_proof_digest: str,
+        subject_epochs_json: str,
+        metadata_json: str,
+    ) -> PlaybookOptimizationJob:
+        """Fence and persist GEPA publication authority before staging."""
+        raise NotImplementedError
+
+    @abstractmethod
     def create_or_get_playbook_optimization_job(
         self, job: PlaybookOptimizationJob
     ) -> PlaybookOptimizationJob:

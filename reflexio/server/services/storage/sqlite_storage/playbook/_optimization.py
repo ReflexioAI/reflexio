@@ -1,7 +1,9 @@
 """Playbook optimization job store methods for SQLite storage."""
 
+import json
 import sqlite3
 import time
+from hashlib import sha256
 from typing import Any
 
 from reflexio.models.api_schema.domain.entities import canonicalize_artifact_json
@@ -16,6 +18,10 @@ from reflexio.models.api_schema.service_schemas import (
     PlaybookOptimizationEvent,
     PlaybookOptimizationJob,
 )
+from reflexio.server.services.playbook.publication import (
+    PUBLICATION_SUBJECT_EPOCHS_METADATA_KEY,
+)
+from reflexio.server.services.storage.error import StorageError
 
 _FAILURE_OUTCOMES = {"generation_failed", "replay_failed", "publication_failed"}
 _STAGE_PREDECESSORS: dict[str, str] = {
@@ -165,6 +171,7 @@ class OptimizationJobStoreMixin:
     _fetchone: Any
     _fetchall: Any
     _own_transaction: Any
+    get_user_playbook_publication_subject_epochs: Any
 
     # ------------------------------------------------------------------
     # Playbook optimizer methods
@@ -179,6 +186,134 @@ class OptimizationJobStoreMixin:
             job.job_id = cur.lastrowid or 0
             self.conn.commit()
         return job
+
+    @SQLiteStorageBase.handle_exceptions
+    def get_playbook_optimization_job(
+        self, job_id: int
+    ) -> PlaybookOptimizationJob | None:
+        row = self._fetchone(
+            "SELECT * FROM playbook_optimization_jobs WHERE job_id = ?",
+            (job_id,),
+        )
+        return None if row is None else _row_to_playbook_optimization_job(row)
+
+    @SQLiteStorageBase.handle_exceptions
+    def prepare_gepa_user_playbook_publication(
+        self,
+        *,
+        job_id: int,
+        owner: str,
+        fence: int,
+        winner_candidate_id: int,
+        candidate_content_digest: str,
+        search_projection_digest: str,
+        publication_proof_digest: str,
+        subject_epochs_json: str,
+        metadata_json: str,
+    ) -> PlaybookOptimizationJob:
+        digests = (
+            candidate_content_digest,
+            search_projection_digest,
+            publication_proof_digest,
+        )
+        if any(
+            len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest)
+            for digest in digests
+        ):
+            raise ValueError("GEPA publication digests must be lowercase SHA-256")
+        try:
+            metadata = json.loads(metadata_json)
+            subject_epochs = json.loads(subject_epochs_json)
+        except json.JSONDecodeError as exc:
+            raise ValueError("GEPA publication metadata must be valid JSON") from exc
+        if not isinstance(metadata, dict):
+            raise ValueError("GEPA publication metadata must be an object")
+
+        prepared_at = self._lease_now(None)
+        with self._lock:
+            self.conn.execute("BEGIN IMMEDIATE")
+            try:
+                job = self.conn.execute(
+                    "SELECT * FROM playbook_optimization_jobs WHERE job_id = ?",
+                    (job_id,),
+                ).fetchone()
+                if job is None:
+                    raise StorageError("GEPA publication job does not exist")
+                if (
+                    job["optimizer_kind"] != "gepa"
+                    or job["target_kind"] != "user_playbook"
+                ):
+                    raise StorageError("GEPA publication job identity changed")
+                if (
+                    job["status"] != "running"
+                    or job["lease_owner"] != owner
+                    or job["lease_fence"] != fence
+                    or job["lease_expires_at"] is None
+                    or job["lease_expires_at"] <= prepared_at
+                ):
+                    raise StorageError("GEPA publication worker fence is stale")
+                if not job["attempt_key"]:
+                    raise StorageError("GEPA publication attempt identity is missing")
+                candidate = self.conn.execute(
+                    """SELECT * FROM playbook_optimization_candidates
+                       WHERE candidate_id = ? AND job_id = ?""",
+                    (winner_candidate_id, job_id),
+                ).fetchone()
+                if candidate is None or not candidate["is_winner"]:
+                    raise StorageError("GEPA publication winner changed")
+                if sha256(candidate["content"].encode("utf-8")).hexdigest() != (
+                    candidate_content_digest
+                ):
+                    raise StorageError("GEPA publication winner content changed")
+                expected_subject_epochs = (
+                    self.get_user_playbook_publication_subject_epochs(job["target_id"])
+                )
+                if expected_subject_epochs != subject_epochs_json:
+                    raise StorageError("GEPA publication subject vector changed")
+
+                metadata["publication_proof_digest"] = publication_proof_digest
+                metadata[PUBLICATION_SUBJECT_EPOCHS_METADATA_KEY] = subject_epochs
+                durable_metadata_json = json.dumps(
+                    metadata,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                )
+                updated = self.conn.execute(
+                    """UPDATE playbook_optimization_jobs
+                       SET best_candidate_id = ?, stage = 'publishing',
+                           candidate_content_digest = ?, search_projection_digest = ?,
+                           metadata_json = ?, decision_reason = 'publishing',
+                           updated_at = ?
+                       WHERE job_id = ? AND optimizer_kind = 'gepa'
+                         AND target_kind = 'user_playbook' AND status = 'running'
+                         AND lease_owner = ? AND lease_fence = ?
+                         AND lease_expires_at > ?""",
+                    (
+                        winner_candidate_id,
+                        candidate_content_digest,
+                        search_projection_digest,
+                        durable_metadata_json,
+                        prepared_at,
+                        job_id,
+                        owner,
+                        fence,
+                        prepared_at,
+                    ),
+                )
+                if updated.rowcount != 1:
+                    raise StorageError("GEPA publication preparation lost its fence")
+                row = self.conn.execute(
+                    "SELECT * FROM playbook_optimization_jobs WHERE job_id = ?",
+                    (job_id,),
+                ).fetchone()
+                if row is None:
+                    raise StorageError("GEPA publication job disappeared")
+                self.conn.commit()
+                return _row_to_playbook_optimization_job(row)
+            except Exception:
+                self.conn.rollback()
+                raise
 
     @SQLiteStorageBase.handle_exceptions
     def create_or_get_playbook_optimization_job(

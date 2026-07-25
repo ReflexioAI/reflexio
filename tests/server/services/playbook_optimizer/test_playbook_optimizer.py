@@ -48,7 +48,6 @@ from reflexio.server.services.playbook_optimizer.models import (
 from reflexio.server.services.playbook_optimizer.optimizer import (
     PlaybookOptimizationRunStatus,
     PlaybookOptimizer,
-    _agent_like_playbook,
     _split_train_validation_windows,
 )
 from reflexio.server.services.playbook_optimizer.rollout import MultiTurnRollout
@@ -686,64 +685,6 @@ def test_optimizer_skips_when_winner_cannot_be_adopted(
     assert jobs == []
 
 
-def test_user_playbook_optimizer_successor_triggers_aggregation_with_successor_version(
-    tmp_path,
-):
-    storage = _sqlite_storage(tmp_path)
-    config = Config(
-        storage_config=StorageConfigSQLite(db_path=str(tmp_path / "reflexio.db")),
-        playbook_optimizer_config=PlaybookOptimizerConfig(
-            auto_update_user_playbooks=True
-        ),
-    )
-    optimizer = _optimizer_for_test(storage, config)
-    user_playbook = UserPlaybook(
-        user_playbook_id=0,
-        user_id="u1",
-        agent_version="v-incumbent",
-        request_id="req-1",
-        content="old",
-        trigger="when old",
-    )
-    storage.save_user_playbooks([user_playbook])
-    target = PlaybookOptimizationTarget(
-        kind="user_playbook", target_id=user_playbook.user_playbook_id
-    )
-    original_supersede_record = storage.supersede_record
-
-    def supersede_and_update_successor(*args, **kwargs):
-        ok = original_supersede_record(*args, **kwargs)
-        if ok:
-            storage.conn.execute(
-                "UPDATE user_playbooks SET agent_version = ? WHERE user_playbook_id = ?",
-                ("v-successor", int(kwargs["successor_id"])),
-            )
-            storage.conn.commit()
-        return ok
-
-    with (
-        patch.object(
-            storage, "supersede_record", side_effect=supersede_and_update_successor
-        ),
-        patch(
-            "reflexio.server.services.playbook_optimizer.optimizer."
-            "maybe_trigger_user_playbook_aggregation",
-        ) as trigger,
-    ):
-        successor_id = optimizer._commit_if_allowed(  # noqa: SLF001
-            target,
-            _agent_like_playbook(user_playbook),
-            "new",
-            config.playbook_optimizer_config,
-            "run-1",
-        )
-
-    assert successor_id is not None
-    trigger.assert_called_once()
-    assert trigger.call_args.kwargs["agent_version"] == "v-successor"
-    assert trigger.call_args.kwargs["reason"] == "playbook_optimizer"
-
-
 def test_agent_playbook_optimizer_successor_does_not_trigger_aggregation(tmp_path):
     storage = _sqlite_storage(tmp_path)
     config = Config(
@@ -775,53 +716,6 @@ def test_agent_playbook_optimizer_successor_does_not_trigger_aggregation(tmp_pat
         successor_id = optimizer._commit_if_allowed(  # noqa: SLF001
             target,
             agent_playbook,
-            "new",
-            config.playbook_optimizer_config,
-            "run-1",
-        )
-
-    assert successor_id is not None
-    trigger.assert_not_called()
-
-
-def test_user_playbook_optimizer_successor_reload_failure_does_not_fail_commit(
-    tmp_path,
-):
-    storage = _sqlite_storage(tmp_path)
-    config = Config(
-        storage_config=StorageConfigSQLite(db_path=str(tmp_path / "reflexio.db")),
-        playbook_optimizer_config=PlaybookOptimizerConfig(
-            auto_update_user_playbooks=True
-        ),
-    )
-    optimizer = _optimizer_for_test(storage, config)
-    user_playbook = UserPlaybook(
-        user_playbook_id=0,
-        user_id="u1",
-        agent_version="v1",
-        request_id="req-1",
-        content="old",
-        trigger="when old",
-    )
-    storage.save_user_playbooks([user_playbook])
-    target = PlaybookOptimizationTarget(
-        kind="user_playbook", target_id=user_playbook.user_playbook_id
-    )
-
-    with (
-        patch.object(
-            storage,
-            "get_user_playbook_by_id",
-            side_effect=[user_playbook, RuntimeError("reload failed")],
-        ),
-        patch(
-            "reflexio.server.services.playbook_optimizer.optimizer."
-            "maybe_trigger_user_playbook_aggregation",
-        ) as trigger,
-    ):
-        successor_id = optimizer._commit_if_allowed(  # noqa: SLF001
-            target,
-            _agent_like_playbook(user_playbook),
             "new",
             config.playbook_optimizer_config,
             "run-1",

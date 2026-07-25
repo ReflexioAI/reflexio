@@ -18,6 +18,7 @@ from reflexio.server.services.playbook.publication import (
     PublicationClaim,
     PublicationRequest,
     PublicationResult,
+    canonical_json_bytes,
 )
 from reflexio.server.services.storage.error import StorageError
 from reflexio.server.services.storage.lifecycle_filters import (
@@ -167,6 +168,22 @@ class UserPlaybookStoreMixin:
     _own_transaction: Any
     commit_scope: Any
     _has_sqlite_vec: bool
+
+    @SQLiteStorageBase.handle_exceptions
+    def get_user_playbook_publication_subject_epochs(
+        self, user_playbook_id: int
+    ) -> str:
+        with self._lock:
+            row = self.conn.execute(
+                "SELECT * FROM user_playbooks WHERE user_playbook_id = ?",
+                (user_playbook_id,),
+            ).fetchone()
+            if row is None:
+                raise StorageError("publication incumbent does not exist")
+            subject_ref = self._subject_ref_from_user_playbook_row(row)
+        return canonical_json_bytes(
+            {"subjects": [{"epoch": 0, "ref": subject_ref}]}
+        ).decode("utf-8")
 
     def _publication_job_locked(
         self,

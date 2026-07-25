@@ -21,6 +21,13 @@ class UserPlaybookStoreMixin:
     """Abstract user playbook CRUD + search methods."""
 
     @abstractmethod
+    def get_user_playbook_publication_subject_epochs(
+        self, user_playbook_id: int
+    ) -> str:
+        """Return the canonical durable subject vector for one incumbent."""
+        raise NotImplementedError
+
+    @abstractmethod
     def claim_user_playbook_publication(
         self, *, job_id: int, owner: str, worker_fence: int
     ) -> "PublicationClaim":
