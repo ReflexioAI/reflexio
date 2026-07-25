@@ -140,6 +140,12 @@ def _assert_staging_binding_matches(
             raise StorageError(f"staged publication conflicts on {label}")
 
 
+def _assert_publication_lease_live(row: sqlite3.Row, *, now: int) -> None:
+    lease_expires_at = row["lease_expires_at"]
+    if lease_expires_at is None or lease_expires_at <= now:
+        raise StorageError("publication optimizer job lease expired")
+
+
 class UserPlaybookStoreMixin:
     """Mixin providing user playbook CRUD + search for SQLite storage."""
 
@@ -165,6 +171,8 @@ class UserPlaybookStoreMixin:
     def _publication_job_locked(
         self,
         request: PublicationRequest,
+        *,
+        now: int,
     ) -> sqlite3.Row:
         row = self.conn.execute(
             "SELECT * FROM playbook_optimization_jobs WHERE job_id = ?",
@@ -188,6 +196,7 @@ class UserPlaybookStoreMixin:
             raise StorageError("publication worker owner changed")
         if row["lease_fence"] != request.worker_fence:
             raise StorageError("publication worker fence changed")
+        _assert_publication_lease_live(row, now=now)
         if (
             row["candidate_content_digest"]
             != request.projection.candidate_content_digest
@@ -260,10 +269,10 @@ class UserPlaybookStoreMixin:
     ) -> PublicationClaim:
         if job_id <= 0 or worker_fence <= 0 or not owner.strip():
             raise ValueError("publication claim identity is invalid")
-        now = _epoch_now()
         with self._lock:
             self.conn.execute("BEGIN IMMEDIATE")
             try:
+                now = _epoch_now()
                 job = self.conn.execute(
                     "SELECT * FROM playbook_optimization_jobs WHERE job_id = ?",
                     (job_id,),
@@ -284,6 +293,7 @@ class UserPlaybookStoreMixin:
                     raise StorageError("publication worker owner changed")
                 if job["lease_fence"] != worker_fence:
                     raise StorageError("publication worker fence changed")
+                _assert_publication_lease_live(job, now=now)
                 existing = self.conn.execute(
                     """SELECT * FROM user_playbook_publication_claims
                        WHERE optimizer_kind = ? AND job_id = ?""",
@@ -338,10 +348,10 @@ class UserPlaybookStoreMixin:
     @SQLiteStorageBase.handle_exceptions
     def stage_user_playbook_publication(self, request: PublicationRequest) -> None:
         request.__post_init__()
-        now = _epoch_now()
         with self._lock:
             self.conn.execute("BEGIN IMMEDIATE")
             try:
+                now = _epoch_now()
                 existing = self.conn.execute(
                     """SELECT * FROM user_playbook_publication_staging
                        WHERE optimizer_kind = ? AND job_id = ?""",
@@ -366,7 +376,7 @@ class UserPlaybookStoreMixin:
                     return
                 if existing is not None:
                     _assert_staging_matches(existing, request)
-                    self._publication_job_locked(request)
+                    self._publication_job_locked(request, now=now)
                     self._publication_claim_locked(request)
                     self._publication_incumbent_and_subjects_locked(request)
                     self.conn.execute(
@@ -383,7 +393,7 @@ class UserPlaybookStoreMixin:
                     )
                     self.conn.commit()
                     return
-                self._publication_job_locked(request)
+                self._publication_job_locked(request, now=now)
                 self._publication_claim_locked(request)
                 self._publication_incumbent_and_subjects_locked(request)
                 self.conn.execute(
@@ -468,7 +478,8 @@ class UserPlaybookStoreMixin:
                WHERE job_id = ? AND optimizer_kind = ? AND attempt_key = ?
                  AND target_kind = 'user_playbook' AND target_id = ?
                  AND status IN ('pending', 'running') AND stage = 'publishing'
-                 AND lease_owner = ? AND lease_fence = ?""",
+                 AND lease_owner = ? AND lease_fence = ?
+                 AND lease_expires_at > ?""",
             (
                 job_stage,
                 outcome,
@@ -481,6 +492,7 @@ class UserPlaybookStoreMixin:
                 request.incumbent_user_playbook_id,
                 request.publication_claim.owner,
                 request.worker_fence,
+                now,
             ),
         )
         if updated.rowcount != 1:
@@ -491,10 +503,10 @@ class UserPlaybookStoreMixin:
         self, request: PublicationRequest
     ) -> PublicationResult:
         request.__post_init__()
-        now = _epoch_now()
         with self._lock:
             self.conn.execute("BEGIN IMMEDIATE")
             try:
+                now = _epoch_now()
                 terminal = self.conn.execute(
                     """SELECT * FROM user_playbook_publication_results
                        WHERE optimizer_kind = ? AND job_id = ?""",
@@ -523,7 +535,7 @@ class UserPlaybookStoreMixin:
                     self.conn.commit()
                     return result
                 _assert_staging_binding_matches(staged, request)
-                self._publication_job_locked(request)
+                self._publication_job_locked(request, now=now)
                 self._publication_claim_locked(request)
                 incumbent = self._publication_incumbent_and_subjects_locked(request)
                 subject_ref = self._subject_ref_from_user_playbook_row(incumbent)

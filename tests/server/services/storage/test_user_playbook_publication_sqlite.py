@@ -28,6 +28,10 @@ from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 pytestmark = pytest.mark.integration
 
 _ORG_ID = "publication-sqlite"
+_LIVE_LEASE_EXPIRY = 4_000_000_000
+_EPOCH_NOW_PATCH = (
+    "reflexio.server.services.storage.sqlite_storage.playbook._user._epoch_now"
+)
 
 
 def _canonical(payload: dict[str, object]) -> str:
@@ -88,6 +92,7 @@ def _job(
         attempt_key=attempt_key,
         lease_owner="worker-a",
         lease_fence=worker_fence,
+        lease_expires_at=_LIVE_LEASE_EXPIRY,
         stage=stage,  # type: ignore[arg-type]
         candidate_content_digest=content_digest,
         search_projection_digest=projection_digest,
@@ -428,19 +433,157 @@ def test_stage_idempotent_for_identical_request_and_rejects_conflict(
         )
 
 
-def test_committed_response_loss_retry_returns_same_successor(tmp_path: Path) -> None:
+def test_publication_claim_rejects_lease_expired_before_claim_without_mutation(
+    tmp_path: Path,
+) -> None:
     storage = _store(tmp_path)
     incumbent, job = _seed(storage)
+    storage.conn.execute(
+        "UPDATE playbook_optimization_jobs SET lease_expires_at = ? WHERE job_id = ?",
+        (100, job.job_id),
+    )
+    storage.conn.commit()
+    changes_before = storage.conn.total_changes
+
+    with (
+        patch(_EPOCH_NOW_PATCH, return_value=101),
+        pytest.raises(StorageError, match="lease expired"),
+    ):
+        _service(storage).claim(job_id=job.job_id, owner="worker-a", worker_fence=5)
+
+    assert storage.conn.total_changes == changes_before
+    assert (
+        storage.conn.execute(
+            "SELECT COUNT(*) AS count FROM user_playbook_publication_claims"
+        ).fetchone()["count"]
+        == 0
+    )
+    assert incumbent.status is None
+
+
+def test_publication_stage_rejects_lease_expired_after_claim_without_mutation(
+    tmp_path: Path,
+) -> None:
+    storage = _store(tmp_path)
+    incumbent, job = _seed(storage)
+    storage.conn.execute(
+        "UPDATE playbook_optimization_jobs SET lease_expires_at = ? WHERE job_id = ?",
+        (101, job.job_id),
+    )
+    storage.conn.commit()
     service = _service(storage)
-    claim = service.claim(job_id=job.job_id, owner="worker-a", worker_fence=5)
+    with patch(_EPOCH_NOW_PATCH, return_value=100):
+        claim = service.claim(job_id=job.job_id, owner="worker-a", worker_fence=5)
     request = _request(
         job_id=job.job_id, incumbent_id=incumbent.user_playbook_id, claim=claim
     )
+    changes_before = storage.conn.total_changes
 
-    first = service.publish(request)
-    retry = service.publish(request)
+    with (
+        patch(_EPOCH_NOW_PATCH, return_value=102),
+        pytest.raises(StorageError, match="lease expired"),
+    ):
+        service.stage(request)
+
+    assert storage.conn.total_changes == changes_before
+    assert (
+        storage.conn.execute(
+            "SELECT COUNT(*) AS count FROM user_playbook_publication_staging"
+        ).fetchone()["count"]
+        == 0
+    )
+
+
+def test_publication_commit_rejects_lease_expired_after_stage_without_mutation(
+    tmp_path: Path,
+) -> None:
+    storage = _store(tmp_path)
+    incumbent, job = _seed(storage)
+    storage.conn.execute(
+        "UPDATE playbook_optimization_jobs SET lease_expires_at = ? WHERE job_id = ?",
+        (101, job.job_id),
+    )
+    storage.conn.commit()
+    service = _service(storage)
+    with patch(_EPOCH_NOW_PATCH, return_value=100):
+        claim = service.claim(job_id=job.job_id, owner="worker-a", worker_fence=5)
+        request = _request(
+            job_id=job.job_id,
+            incumbent_id=incumbent.user_playbook_id,
+            claim=claim,
+        )
+        service.stage(request)
+    changes_before = storage.conn.total_changes
+
+    with (
+        patch(_EPOCH_NOW_PATCH, return_value=102),
+        pytest.raises(StorageError, match="lease expired"),
+    ):
+        storage.commit_user_playbook_publication(request)
+
+    assert storage.conn.total_changes == changes_before
+    assert service.load_committed(job.job_id) is None
+    assert (
+        storage.conn.execute(
+            "SELECT COUNT(*) AS count FROM user_playbooks WHERE content = 'new content'"
+        ).fetchone()["count"]
+        == 0
+    )
+    claim_row = storage.conn.execute(
+        "SELECT consumed FROM user_playbook_publication_claims WHERE job_id = ?",
+        (job.job_id,),
+    ).fetchone()
+    assert claim_row["consumed"] == 0
+
+
+def test_publication_lease_is_expired_at_exact_epoch_boundary(
+    tmp_path: Path,
+) -> None:
+    storage = _store(tmp_path)
+    _, job = _seed(storage)
+    storage.conn.execute(
+        "UPDATE playbook_optimization_jobs SET lease_expires_at = ? WHERE job_id = ?",
+        (100, job.job_id),
+    )
+    storage.conn.commit()
+    changes_before = storage.conn.total_changes
+
+    with (
+        patch(_EPOCH_NOW_PATCH, return_value=100),
+        pytest.raises(StorageError, match="lease expired"),
+    ):
+        _service(storage).claim(job_id=job.job_id, owner="worker-a", worker_fence=5)
+
+    assert storage.conn.total_changes == changes_before
+
+
+def test_committed_response_loss_retry_returns_same_successor_after_lease_expiry(
+    tmp_path: Path,
+) -> None:
+    storage = _store(tmp_path)
+    incumbent, job = _seed(storage)
+    service = _service(storage)
+    storage.conn.execute(
+        "UPDATE playbook_optimization_jobs SET lease_expires_at = ? WHERE job_id = ?",
+        (101, job.job_id),
+    )
+    storage.conn.commit()
+
+    with patch(_EPOCH_NOW_PATCH, return_value=100):
+        claim = service.claim(job_id=job.job_id, owner="worker-a", worker_fence=5)
+        request = _request(
+            job_id=job.job_id,
+            incumbent_id=incumbent.user_playbook_id,
+            claim=claim,
+        )
+        first = service.publish(request)
+    changes_before = storage.conn.total_changes
+
+    with patch(_EPOCH_NOW_PATCH, return_value=102):
+        retry = service.publish(request)
 
     assert retry == first
+    assert storage.conn.total_changes == changes_before
     assert (
         storage.conn.execute(
             "SELECT COUNT(*) AS count FROM user_playbooks WHERE content = 'new content'"
