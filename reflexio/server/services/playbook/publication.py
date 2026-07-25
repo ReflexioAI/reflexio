@@ -18,6 +18,8 @@ _PUBLISHABLE_OPTIMIZERS = frozenset({"gepa", "offline_tuner_replay"})
 _PROJECTION_SCHEMA_VERSION = "offline-tuner-candidate-search-projection-v1"
 _CANONICAL_DECIMAL = re.compile(r"-?(?:0|[1-9][0-9]*)(?:\.[0-9]*[1-9])?\Z")
 PUBLICATION_SUBJECT_EPOCHS_METADATA_KEY = "publication_subject_epochs"
+PUBLICATION_PROOF_JSON_METADATA_KEY = "publication_proof_json"
+PUBLICATION_PROJECTION_JSON_METADATA_KEY = "publication_projection_json"
 
 
 def _require_text(name: str, value: object) -> str:

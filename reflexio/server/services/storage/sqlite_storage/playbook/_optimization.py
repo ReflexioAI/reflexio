@@ -19,9 +19,15 @@ from reflexio.models.api_schema.service_schemas import (
     PlaybookOptimizationJob,
 )
 from reflexio.server.services.playbook.publication import (
+    PUBLICATION_PROJECTION_JSON_METADATA_KEY,
+    PUBLICATION_PROOF_JSON_METADATA_KEY,
     PUBLICATION_SUBJECT_EPOCHS_METADATA_KEY,
+    canonical_json_bytes,
 )
-from reflexio.server.services.storage.error import StorageError
+from reflexio.server.services.storage.error import (
+    OptimizationJobLeaseLiveError,
+    StorageError,
+)
 
 _FAILURE_OUTCOMES = {"generation_failed", "replay_failed", "publication_failed"}
 _STAGE_PREDECESSORS: dict[str, str] = {
@@ -203,14 +209,18 @@ class OptimizationJobStoreMixin:
         *,
         job_id: int,
         owner: str,
-        fence: int,
+        lease_seconds: int,
         winner_candidate_id: int,
         candidate_content_digest: str,
         search_projection_digest: str,
         publication_proof_digest: str,
+        projection_json: str,
+        decision_proof_json: str,
         subject_epochs_json: str,
         metadata_json: str,
     ) -> PlaybookOptimizationJob:
+        if lease_seconds <= 0:
+            raise ValueError("lease_seconds must be positive")
         digests = (
             candidate_content_digest,
             search_projection_digest,
@@ -228,6 +238,25 @@ class OptimizationJobStoreMixin:
             raise ValueError("GEPA publication metadata must be valid JSON") from exc
         if not isinstance(metadata, dict):
             raise ValueError("GEPA publication metadata must be an object")
+        if sha256(projection_json.encode("utf-8")).hexdigest() != (
+            search_projection_digest
+        ):
+            raise ValueError("GEPA projection digest does not match canonical JSON")
+        if sha256(decision_proof_json.encode("utf-8")).hexdigest() != (
+            publication_proof_digest
+        ):
+            raise ValueError("GEPA proof digest does not match canonical JSON")
+        try:
+            if canonical_json_bytes(json.loads(projection_json)).decode() != (
+                projection_json
+            ):
+                raise ValueError("projection JSON is not canonical")
+            if canonical_json_bytes(json.loads(decision_proof_json)).decode() != (
+                decision_proof_json
+            ):
+                raise ValueError("proof JSON is not canonical")
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise ValueError("GEPA publication bytes must be canonical JSON") from exc
 
         prepared_at = self._lease_now(None)
         with self._lock:
@@ -246,12 +275,11 @@ class OptimizationJobStoreMixin:
                     raise StorageError("GEPA publication job identity changed")
                 if (
                     job["status"] != "running"
-                    or job["lease_owner"] != owner
-                    or job["lease_fence"] != fence
-                    or job["lease_expires_at"] is None
-                    or job["lease_expires_at"] <= prepared_at
+                    or job["stage"] is not None
+                    or job["lease_owner"] is not None
+                    or job["lease_expires_at"] is not None
                 ):
-                    raise StorageError("GEPA publication worker fence is stale")
+                    raise StorageError("GEPA publication job is not prepareable")
                 if not job["attempt_key"]:
                     raise StorageError("GEPA publication attempt identity is missing")
                 candidate = self.conn.execute(
@@ -272,6 +300,8 @@ class OptimizationJobStoreMixin:
                     raise StorageError("GEPA publication subject vector changed")
 
                 metadata["publication_proof_digest"] = publication_proof_digest
+                metadata[PUBLICATION_PROOF_JSON_METADATA_KEY] = decision_proof_json
+                metadata[PUBLICATION_PROJECTION_JSON_METADATA_KEY] = projection_json
                 metadata[PUBLICATION_SUBJECT_EPOCHS_METADATA_KEY] = subject_epochs
                 durable_metadata_json = json.dumps(
                     metadata,
@@ -284,21 +314,22 @@ class OptimizationJobStoreMixin:
                        SET best_candidate_id = ?, stage = 'publishing',
                            candidate_content_digest = ?, search_projection_digest = ?,
                            metadata_json = ?, decision_reason = 'publishing',
+                           lease_owner = ?, lease_fence = lease_fence + 1,
+                           lease_expires_at = ?,
                            updated_at = ?
                        WHERE job_id = ? AND optimizer_kind = 'gepa'
                          AND target_kind = 'user_playbook' AND status = 'running'
-                         AND lease_owner = ? AND lease_fence = ?
-                         AND lease_expires_at > ?""",
+                         AND stage IS NULL AND lease_owner IS NULL
+                         AND lease_expires_at IS NULL""",
                     (
                         winner_candidate_id,
                         candidate_content_digest,
                         search_projection_digest,
                         durable_metadata_json,
+                        owner,
+                        prepared_at + lease_seconds,
                         prepared_at,
                         job_id,
-                        owner,
-                        fence,
-                        prepared_at,
                     ),
                 )
                 if updated.rowcount != 1:
@@ -309,6 +340,102 @@ class OptimizationJobStoreMixin:
                 ).fetchone()
                 if row is None:
                     raise StorageError("GEPA publication job disappeared")
+                self.conn.commit()
+                return _row_to_playbook_optimization_job(row)
+            except Exception:
+                self.conn.rollback()
+                raise
+
+    @SQLiteStorageBase.handle_exceptions
+    def get_unconsumed_gepa_user_playbook_publishing_job(
+        self, target_id: int
+    ) -> PlaybookOptimizationJob | None:
+        row = self._fetchone(
+            """SELECT job.*
+               FROM playbook_optimization_jobs AS job
+               LEFT JOIN user_playbook_publication_results AS result
+                 ON result.optimizer_kind = job.optimizer_kind
+                AND result.job_id = job.job_id
+               WHERE job.optimizer_kind = 'gepa'
+                 AND job.target_kind = 'user_playbook'
+                 AND job.target_id = ?
+                 AND job.status = 'running'
+                 AND job.stage = 'publishing'
+                 AND result.job_id IS NULL
+               ORDER BY job.job_id ASC
+               LIMIT 1""",
+            (target_id,),
+        )
+        return None if row is None else _row_to_playbook_optimization_job(row)
+
+    @SQLiteStorageBase.handle_exceptions
+    def reclaim_gepa_user_playbook_publishing_job(
+        self,
+        target_id: int,
+        owner: str,
+        lease_seconds: int,
+        *,
+        now: int | None = None,
+    ) -> PlaybookOptimizationJob | None:
+        if lease_seconds <= 0:
+            raise ValueError("lease_seconds must be positive")
+        if not owner.strip():
+            raise ValueError("owner must be non-empty")
+        reclaimed_at = self._lease_now(now)
+        with self._lock:
+            self.conn.execute("BEGIN IMMEDIATE")
+            try:
+                existing = self.conn.execute(
+                    """SELECT job.*
+                       FROM playbook_optimization_jobs AS job
+                       LEFT JOIN user_playbook_publication_results AS result
+                         ON result.optimizer_kind = job.optimizer_kind
+                        AND result.job_id = job.job_id
+                       WHERE job.optimizer_kind = 'gepa'
+                         AND job.target_kind = 'user_playbook'
+                         AND job.target_id = ?
+                         AND job.status = 'running'
+                         AND job.stage = 'publishing'
+                         AND result.job_id IS NULL
+                       ORDER BY job.job_id ASC
+                       LIMIT 1""",
+                    (target_id,),
+                ).fetchone()
+                if existing is None:
+                    self.conn.commit()
+                    return None
+                if (
+                    existing["lease_expires_at"] is None
+                    or existing["lease_expires_at"] > reclaimed_at
+                ):
+                    raise OptimizationJobLeaseLiveError(
+                        "GEPA publication optimizer job lease is live"
+                    )
+                row = self.conn.execute(
+                    """UPDATE playbook_optimization_jobs
+                       SET lease_owner = ?,
+                           lease_fence = lease_fence + 1,
+                           lease_expires_at = ?,
+                           updated_at = ?
+                       WHERE job_id = ?
+                         AND optimizer_kind = 'gepa'
+                         AND target_kind = 'user_playbook'
+                         AND status = 'running'
+                         AND stage = 'publishing'
+                         AND lease_expires_at <= ?
+                       RETURNING *""",
+                    (
+                        owner,
+                        reclaimed_at + lease_seconds,
+                        reclaimed_at,
+                        existing["job_id"],
+                        reclaimed_at,
+                    ),
+                ).fetchone()
+                if row is None:
+                    raise OptimizationJobLeaseLiveError(
+                        "GEPA publication optimizer job lease is live"
+                    )
                 self.conn.commit()
                 return _row_to_playbook_optimization_job(row)
             except Exception:

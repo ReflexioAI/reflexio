@@ -16,6 +16,8 @@ from reflexio.models.api_schema.domain import (
 )
 from reflexio.models.config_schema import PlaybookOptimizerConfig
 from reflexio.server.services.playbook.publication import (
+    PUBLICATION_PROJECTION_JSON_METADATA_KEY,
+    PUBLICATION_PROOF_JSON_METADATA_KEY,
     PUBLICATION_SUBJECT_EPOCHS_METADATA_KEY,
     DecisionProofEnvelope,
     PublicationRequest,
@@ -32,6 +34,7 @@ GEPA_PROJECTOR_CODE_DIGEST = (
 )
 _PROOF_SCHEMA_VERSION = "gepa-user-playbook-decision-v1"
 _PROJECTION_SCHEMA_VERSION = "offline-tuner-candidate-search-projection-v1"
+GEPA_PUBLICATION_AUTHORITY_METADATA_KEY = "gepa_publication_authority"
 
 AdoptionCheck = Callable[
     [int, int, list[ScenarioWindow], float, PlaybookOptimizerConfig], bool
@@ -106,41 +109,43 @@ def _proof_payload(
     job: PlaybookOptimizationJob,
     winner: PlaybookOptimizationCandidate,
     evaluations: list[PlaybookOptimizationEvaluation],
-    config: PlaybookOptimizerConfig,
     metadata: dict[str, Any],
     subject_epochs_json: str,
     projection_digest: str,
 ) -> dict[str, Any]:
-    winner_evaluations = sorted(
-        (item for item in evaluations if item.candidate_id == winner.candidate_id),
-        key=lambda item: item.evaluation_id,
-    )
+    authority = metadata.get(GEPA_PUBLICATION_AUTHORITY_METADATA_KEY)
+    if not isinstance(authority, dict):
+        raise ValueError("GEPA publication authority snapshot is missing")
+    all_evaluations = sorted(evaluations, key=lambda item: item.evaluation_id)
     return {
-        "adoption_rules": {
-            "auto_update_user_playbooks": config.auto_update_user_playbooks,
-            "min_commit_likert": config.min_commit_likert,
-            "min_commit_score": _decimal(config.min_commit_score),
-            "min_commit_windows": config.min_commit_windows,
-        },
+        "adoption_authority": authority,
         "candidate": {
             "aggregate_score": _decimal(winner.aggregate_score or 0.0),
             "candidate_id": winner.candidate_id,
+            "candidate_index": winner.candidate_index,
             "content_digest": sha256(winner.content.encode()).hexdigest(),
+            "metadata_json": winner.metadata_json,
+            "parent_candidate_ids": list(winner.parent_candidate_ids),
         },
         "decision": "apply",
         "evaluations": [
             {
                 "candidate_id": item.candidate_id,
+                "candidate_rollout_json": item.candidate_rollout_json,
+                "created_at": item.created_at,
                 "evaluation_id": item.evaluation_id,
+                "incumbent_rollout_json": item.incumbent_rollout_json,
                 "likert": item.likert,
+                "rationale": item.rationale,
                 "scenario_user_playbook_id": item.scenario_user_playbook_id,
                 "score": _decimal(item.score),
                 "source_interaction_ids": item.source_interaction_ids,
                 "target_id": item.target_id,
                 "target_kind": item.target_kind,
+                "asi_json": item.asi_json,
                 "verdict": item.verdict,
             }
-            for item in winner_evaluations
+            for item in all_evaluations
         ],
         "job": {
             "attempt_key": job.attempt_key,
@@ -152,7 +157,11 @@ def _proof_payload(
         "projection_digest": projection_digest,
         "schema_version": _PROOF_SCHEMA_VERSION,
         "subject_epochs": json.loads(subject_epochs_json),
-        "validation_windows": metadata["validation_windows"],
+        "winning_adoption": _gepa_adoption_result_from_snapshot(
+            winner=winner,
+            evaluations=evaluations,
+            authority=authority,
+        ),
     }
 
 
@@ -161,7 +170,6 @@ def build_gepa_decision_proof(
     job: PlaybookOptimizationJob,
     winner: PlaybookOptimizationCandidate,
     evaluations: list[PlaybookOptimizationEvaluation],
-    config: PlaybookOptimizerConfig,
     metadata: dict[str, Any],
     subject_epochs_json: str,
     projection_digest: str,
@@ -171,7 +179,6 @@ def build_gepa_decision_proof(
             job=job,
             winner=winner,
             evaluations=evaluations,
-            config=config,
             metadata=metadata,
             subject_epochs_json=subject_epochs_json,
             projection_digest=projection_digest,
@@ -202,19 +209,132 @@ def _validation_windows(metadata: dict[str, Any]) -> list[ScenarioWindow]:
         raise ValueError("GEPA durable validation windows are invalid") from exc
 
 
+def _gepa_adoption_result_from_snapshot(
+    *,
+    winner: PlaybookOptimizationCandidate,
+    evaluations: list[PlaybookOptimizationEvaluation],
+    authority: dict[str, Any],
+) -> dict[str, Any]:
+    policy = authority.get("adoption_policy")
+    validation_manifest = authority.get("validation_manifest")
+    if not isinstance(policy, dict) or not isinstance(validation_manifest, dict):
+        raise ValueError("GEPA adoption authority snapshot is invalid")
+    windows = validation_manifest.get("windows")
+    if not isinstance(windows, list) or not windows:
+        raise ValueError("GEPA validation manifest is missing")
+    min_score = float(policy["min_commit_score"])
+    min_likert = int(policy["min_commit_likert"])
+    min_windows = int(policy["min_commit_windows"])
+    window_thresholds = {
+        _window_key(
+            item.get("scenario_user_playbook_id"),
+            item.get("source_interaction_ids"),
+        ): {
+            "min_commit_likert": int(item["min_commit_likert"]),
+            "min_commit_score": _decimal(float(item["min_commit_score"])),
+        }
+        for item in windows
+    }
+    winning_windows = []
+    for evaluation in evaluations:
+        if evaluation.candidate_id != winner.candidate_id:
+            continue
+        key = _window_key(
+            evaluation.scenario_user_playbook_id,
+            evaluation.source_interaction_ids,
+        )
+        thresholds = window_thresholds.get(key)
+        if thresholds is None:
+            continue
+        passed = (
+            evaluation.verdict == "candidate"
+            and evaluation.score >= min_score
+            and evaluation.likert >= min_likert
+        )
+        winning_windows.append(
+            {
+                "evaluation_id": evaluation.evaluation_id,
+                "likert": evaluation.likert,
+                "passed": passed,
+                "score": _decimal(evaluation.score),
+                "thresholds": thresholds,
+                "window": {
+                    "scenario_user_playbook_id": evaluation.scenario_user_playbook_id,
+                    "source_interaction_ids": list(evaluation.source_interaction_ids),
+                },
+            }
+        )
+    aggregate_score = winner.aggregate_score
+    passes = (
+        bool(policy.get("auto_update_user_playbooks"))
+        and aggregate_score is not None
+        and aggregate_score >= min_score
+        and sum(1 for item in winning_windows if item["passed"]) >= min_windows
+    )
+    return {
+        "aggregate_score": _decimal(aggregate_score or 0.0),
+        "min_commit_windows": min_windows,
+        "passes": passes,
+        "winning_windows": winning_windows,
+    }
+
+
+def _window_key(
+    scenario_user_playbook_id: object,
+    source_interaction_ids: object,
+) -> tuple[int | None, tuple[int, ...]]:
+    if scenario_user_playbook_id is not None and not isinstance(
+        scenario_user_playbook_id, int
+    ):
+        raise ValueError("GEPA validation window playbook id is invalid")
+    if not isinstance(source_interaction_ids, list):
+        raise ValueError("GEPA validation window source ids are invalid")
+    return scenario_user_playbook_id, tuple(
+        int(item) for item in source_interaction_ids
+    )
+
+
+def parse_gepa_search_projection(canonical_json: str) -> PublicationSearchProjection:
+    payload = json.loads(canonical_json)
+    if not isinstance(payload, dict):
+        raise ValueError("GEPA search projection payload is invalid")
+    return PublicationSearchProjection(
+        schema_version=payload["schema_version"],
+        canonical_json=canonical_json,
+        digest=sha256(canonical_json.encode()).hexdigest(),
+        projector_id=payload["projector_id"],
+        projector_version=payload["projector_version"],
+        projector_code_digest=payload["projector_code_digest"],
+        candidate_content_digest=payload["candidate_content_digest"],
+        preserved_trigger=payload["preserved_trigger"],
+        embedding_model_id=payload["embedding_model_id"],
+        embedding=tuple(payload["embedding"]),
+        expanded_terms=tuple(payload["expanded_terms"]),
+        lexical_document=payload["lexical_document"],
+    )
+
+
+def parse_gepa_decision_proof(canonical_json: str) -> DecisionProofEnvelope:
+    payload = json.loads(canonical_json)
+    if not isinstance(payload, dict):
+        raise ValueError("GEPA decision proof payload is invalid")
+    return DecisionProofEnvelope(
+        optimizer_kind=payload["optimizer_kind"],
+        schema_version=payload["schema_version"],
+        canonical_json=canonical_json,
+        digest=sha256(canonical_json.encode()).hexdigest(),
+        decision=payload["decision"],
+    )
+
+
 class GEPAUserPlaybookDecisionVerifier:
     """Rebuild GEPA adoption authority exclusively from durable records."""
 
     def __init__(
         self,
         storage: Any,
-        *,
-        config_provider: Callable[[], PlaybookOptimizerConfig],
-        adoption_check: AdoptionCheck,
     ) -> None:
         self._storage = storage
-        self._config_provider = config_provider
-        self._adoption_check = adoption_check
 
     def verify(self, request: PublicationRequest) -> None:
         job = self._storage.get_playbook_optimization_job(request.job_id)
@@ -239,18 +359,15 @@ class GEPAUserPlaybookDecisionVerifier:
         if any(item.verdict == "aborted" for item in evaluations):
             raise ValueError("GEPA evaluation aborted")
         metadata = json.loads(job.metadata_json)
-        config = self._config_provider()
-        if (
-            not config.auto_update_user_playbooks
-            or winner.aggregate_score is None
-            or not self._adoption_check(
-                job.job_id,
-                winner.candidate_id,
-                _validation_windows(metadata),
-                winner.aggregate_score,
-                config,
-            )
-        ):
+        authority = metadata.get(GEPA_PUBLICATION_AUTHORITY_METADATA_KEY)
+        if not isinstance(authority, dict):
+            raise ValueError("GEPA durable authority snapshot is missing")
+        adoption = _gepa_adoption_result_from_snapshot(
+            winner=winner,
+            evaluations=evaluations,
+            authority=authority,
+        )
+        if not adoption["passes"]:
             raise ValueError("GEPA durable winner fails adoption rules")
         if any(
             item.target_kind != "user_playbook" or item.target_id != job.target_id
@@ -272,23 +389,37 @@ class GEPAUserPlaybookDecisionVerifier:
             or job.candidate_content_digest
             != request.projection.candidate_content_digest
             or job.search_projection_digest != request.projection.digest
+            or metadata.get(PUBLICATION_PROJECTION_JSON_METADATA_KEY)
+            != request.projection.canonical_json
         ):
             raise ValueError("GEPA publication binding changed")
+        stored_proof_json = metadata.get(PUBLICATION_PROOF_JSON_METADATA_KEY)
+        if not isinstance(stored_proof_json, str):
+            raise ValueError("GEPA durable decision proof is missing")
+        if parse_gepa_decision_proof(stored_proof_json) != request.decision_proof:
+            raise ValueError("GEPA durable decision proof changed")
         proof_metadata = {
             key: value
             for key, value in metadata.items()
             if key
-            not in {"publication_proof_digest", PUBLICATION_SUBJECT_EPOCHS_METADATA_KEY}
+            not in {
+                "publication_proof_digest",
+                PUBLICATION_PROOF_JSON_METADATA_KEY,
+                PUBLICATION_PROJECTION_JSON_METADATA_KEY,
+                PUBLICATION_SUBJECT_EPOCHS_METADATA_KEY,
+            }
         }
-        expected = build_gepa_decision_proof(
-            job=job,
-            winner=winner,
-            evaluations=evaluations,
-            config=config,
-            metadata=proof_metadata,
-            subject_epochs_json=subject_epochs,
-            projection_digest=request.projection.digest,
-        )
+        try:
+            expected = build_gepa_decision_proof(
+                job=job,
+                winner=winner,
+                evaluations=evaluations,
+                metadata=proof_metadata,
+                subject_epochs_json=subject_epochs,
+                projection_digest=request.projection.digest,
+            )
+        except (TypeError, ValueError) as exc:
+            raise ValueError("GEPA durable decision proof changed") from exc
         if (
             expected != request.decision_proof
             or metadata.get("publication_proof_digest") != expected.digest

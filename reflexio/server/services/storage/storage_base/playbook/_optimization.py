@@ -42,15 +42,36 @@ class OptimizationJobStoreMixin:
         *,
         job_id: int,
         owner: str,
-        fence: int,
+        lease_seconds: int,
         winner_candidate_id: int,
         candidate_content_digest: str,
         search_projection_digest: str,
         publication_proof_digest: str,
+        projection_json: str,
+        decision_proof_json: str,
         subject_epochs_json: str,
         metadata_json: str,
     ) -> PlaybookOptimizationJob:
         """Fence and persist GEPA publication authority before staging."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_unconsumed_gepa_user_playbook_publishing_job(
+        self, target_id: int
+    ) -> PlaybookOptimizationJob | None:
+        """Load an active GEPA user publication job with no terminal result."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def reclaim_gepa_user_playbook_publishing_job(
+        self,
+        target_id: int,
+        owner: str,
+        lease_seconds: int,
+        *,
+        now: int | None = None,
+    ) -> PlaybookOptimizationJob | None:
+        """Atomically reclaim and return one expired GEPA user publication job."""
         raise NotImplementedError
 
     @abstractmethod
