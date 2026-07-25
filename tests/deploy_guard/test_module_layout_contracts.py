@@ -194,7 +194,6 @@ _LAYOUT_CONTRACTS = {
             "service.py",
             "playbook_service_utils.py",
             "playbook_service_constants.py",
-            "playbook_edit_apply.py",
             "components/__init__.py",
             "components/extractor.py",
             "components/consolidator.py",
