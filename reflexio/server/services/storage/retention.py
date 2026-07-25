@@ -22,6 +22,22 @@ class RetentionTarget:
     priority_statuses: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True, slots=True)
+class OptimizationRetentionClass:
+    """Fixed owner for one optimization artifact lifetime."""
+
+    artifact_class: str
+    owner: str
+
+
+OPTIMIZATION_RETENTION_CLASSES: tuple[OptimizationRetentionClass, ...] = (
+    OptimizationRetentionClass("event", "governance_audit"),
+    OptimizationRetentionClass("source_reference", "existing_source_retention"),
+    OptimizationRetentionClass("staging", "lease_stale_claim"),
+    OptimizationRetentionClass("terminal", "lineage_tombstone_grace"),
+)
+
+
 RETENTION_TARGETS: tuple[RetentionTarget, ...] = (
     RetentionTarget(
         "profiles",

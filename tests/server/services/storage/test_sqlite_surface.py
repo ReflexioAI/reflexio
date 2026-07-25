@@ -14,7 +14,11 @@ from reflexio.server.services.storage.storage_base import BaseStorage
 # BaseStorage ABC — intentional; subclasses opt into retention without the ABC
 # requiring it.
 _RETENTION_MIXIN_METHODS: frozenset[str] = frozenset(
-    {"count_retention_target_rows", "delete_oldest_retention_target_rows"}
+    {
+        "count_retention_target_rows",
+        "delete_oldest_retention_target_rows",
+        "gc_retired_optimization_jobs",
+    }
 )
 
 _HELPER_METHODS: frozenset[str] = frozenset({"close", "handle_exceptions"})
@@ -34,7 +38,7 @@ def test_sqlite_surface_matches_base_abc() -> None:
     """SQLiteStorage public surface == BaseStorage ABC + RetentionMixin allowlist.
 
     Fails if any method is dropped from or added to SQLiteStorage without a
-    matching update to BaseStorage.  The allowlist captures the two retention
+    matching update to BaseStorage.  The allowlist captures the retention
     helpers that are intentionally on SQLiteStorage but not on the ABC.
     """
     sqlite_methods = _public_methods(SQLiteStorage)

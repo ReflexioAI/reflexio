@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from contextlib import suppress
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal, Protocol, TypedDict
 
 from reflexio.models.api_schema.domain.governance import (
     AuditEvent,
@@ -37,11 +37,31 @@ class GovernanceActorContext(TypedDict):
     actor_ref: str | None
 
 
+class SubjectErasureLifecycle(Protocol):
+    """Deployment-specific erasure work that must precede barrier completion."""
+
+    def erase_subject(
+        self,
+        *,
+        storage: Any,
+        subject_ref: str,
+        purge_id: str,
+    ) -> None: ...
+
+
 class GovernanceService:
-    def __init__(self, *, storage: Any, org_id: str, ref_secret: str) -> None:
+    def __init__(
+        self,
+        *,
+        storage: Any,
+        org_id: str,
+        ref_secret: str,
+        subject_erasure_lifecycle: SubjectErasureLifecycle | None = None,
+    ) -> None:
         self.storage = storage
         self.org_id = org_id
         self.ref_secret = ref_secret
+        self.subject_erasure_lifecycle = subject_erasure_lifecycle
 
     def export_user(
         self,
@@ -140,6 +160,13 @@ class GovernanceService:
             if not self._delete_targets_complete(purge_id):
                 self.storage.apply_governance_user_data_delete(purge_id, user_id)
             deleted_counts = self._deleted_counts_from_targets(purge_id)
+
+            if self.subject_erasure_lifecycle is not None:
+                self.subject_erasure_lifecycle.erase_subject(
+                    storage=self.storage,
+                    subject_ref=subref,
+                    purge_id=purge_id,
+                )
 
             rebuilt_agent_playbook_ids: list[int] = []
             completed = self.storage.complete_subject_erasure_barrier_after_empty_check(
