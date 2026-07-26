@@ -50,15 +50,18 @@ def check(
         render_error(err, json_mode=json_mode)
         raise SystemExit(1) from exc
     except requests.HTTPError as exc:
+        response = exc.response
         if json_mode:
             envelope = {
                 "ok": False,
                 "error": {"type": "unhealthy", "message": str(exc), "url": url},
             }
             print(json.dumps(envelope, indent=2), file=sys.stderr)
+        elif response is None:
+            print(f"Error: Server at {url} returned an HTTP error", file=sys.stderr)
         else:
             print(
-                f"Error: Server at {url} returned {exc.response.status_code}",
+                f"Error: Server at {url} returned {response.status_code}",
                 file=sys.stderr,
             )
         raise SystemExit(1) from exc

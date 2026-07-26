@@ -14,8 +14,8 @@ from reflexio.server.services.extractor_config_utils import get_extractor_name
 logger = logging.getLogger(__name__)
 
 
-def get_extractor_window_params[TExtractorConfig](
-    extractor_config: TExtractorConfig,
+def get_extractor_window_params(
+    extractor_config: object,
     global_window_size: int | None,
     global_stride_size: int | None,
 ) -> tuple[int, int]:
@@ -58,8 +58,8 @@ def get_extractor_window_params[TExtractorConfig](
     return window_size, stride_size
 
 
-def get_effective_source_filter[TExtractorConfig](
-    extractor_config: TExtractorConfig,
+def get_effective_source_filter(
+    extractor_config: object,
     triggering_source: str | None,
 ) -> tuple[bool, list[str] | None]:
     """

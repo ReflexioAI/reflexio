@@ -63,8 +63,9 @@ def _classify_http_error(exc: requests.HTTPError) -> CliError:
         )
     if status == 422:
         detail = ""
-        with contextlib.suppress(ValueError, AttributeError):
-            detail = exc.response.json().get("detail", "")
+        if exc.response is not None:
+            with contextlib.suppress(ValueError, AttributeError):
+                detail = exc.response.json().get("detail", "")
         return CliError(
             error_type="validation",
             message=f"Invalid request: {detail or exc}",

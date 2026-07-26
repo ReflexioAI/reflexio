@@ -10,7 +10,10 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterator, Mapping
 from contextlib import AbstractContextManager, contextmanager
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
+
+if TYPE_CHECKING:
+    from sentry_sdk._types import LogLevelStr
 
 logger = logging.getLogger(__name__)
 
@@ -158,7 +161,12 @@ def sentry_tags(**tags: Any) -> Iterator[None]:
             logger.warning("Failed to close Sentry scope: %s", exc)
 
 
-def capture_anomaly(message: str, *, level: str = "warning", **tags: Any) -> None:
+def capture_anomaly(
+    message: str,
+    *,
+    level: LogLevelStr = "warning",
+    **tags: Any,
+) -> None:
     """Report a non-fatal anomaly to Sentry, if the SDK is installed.
 
     For silent-but-noteworthy conditions that return rather than raise — e.g.
