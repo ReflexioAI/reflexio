@@ -14,10 +14,7 @@ if TYPE_CHECKING:
 from reflexio.models.config_schema import SearchMode
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
-from reflexio.server.llm.model_defaults import (
-    ModelRole,
-    resolve_model_name,
-)
+from reflexio.server.llm.model_defaults import ModelRole, resolve_model_name
 from reflexio.server.services.configurator.base_configurator import BaseConfigurator
 from reflexio.server.services.storage.storage_base import BaseStorage
 from reflexio.server.site_var.site_var_manager import SiteVarManager
