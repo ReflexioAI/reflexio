@@ -20,6 +20,7 @@ from reflexio.server.services.playbook.publication import (
     PublicationResult,
     canonical_json_bytes,
     incumbent_user_playbook_semantic_digest,
+    publication_source_for_optimizer,
 )
 from reflexio.server.services.storage.error import StorageError
 from reflexio.server.services.storage.lifecycle_filters import (
@@ -431,7 +432,7 @@ class UserPlaybookStoreMixin:
                         subject_epochs_json, request_id, staging_digest, created_at)
                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
-                        request.optimizer_kind,
+                        publication_source_for_optimizer(request.optimizer_kind),
                         request.job_id,
                         request.attempt_key,
                         request.publication_claim.owner,

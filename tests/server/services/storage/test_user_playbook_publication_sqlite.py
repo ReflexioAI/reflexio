@@ -26,6 +26,7 @@ from reflexio.server.services.playbook.publication import (
     PublicationSearchProjection,
     UserPlaybookPublicationService,
     incumbent_user_playbook_semantic_digest,
+    publication_source_for_optimizer,
 )
 from reflexio.server.services.playbook_optimizer.gepa_publication import (
     GEPA_PUBLICATION_AUTHORITY_METADATA_KEY,
@@ -40,6 +41,16 @@ _LIVE_LEASE_EXPIRY = 4_000_000_000
 _EPOCH_NOW_PATCH = (
     "reflexio.server.services.storage.sqlite_storage.playbook._user._epoch_now"
 )
+
+
+@pytest.mark.parametrize(
+    ("optimizer_kind", "expected_source"),
+    [("gepa", "gepa"), ("offline_tuner_replay", "offline_optimizer")],
+)
+def test_publication_source_is_explicitly_mapped(
+    optimizer_kind: str, expected_source: str
+) -> None:
+    assert publication_source_for_optimizer(optimizer_kind) == expected_source  # type: ignore[arg-type]
 
 
 def _canonical(payload: dict[str, object]) -> str:
@@ -352,6 +363,7 @@ def test_publish_commits_exact_staged_projection_and_terminal_result(
     assert len(successors) == 1
     successor = successors[0]
     assert successor.content == "new content"
+    assert successor.source == "gepa"
     assert successor.embedding == [0.25] * 512
     assert successor.expanded_terms == "exact-expanded projection-token"
     tombstone = storage.get_user_playbook_by_id(

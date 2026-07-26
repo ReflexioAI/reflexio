@@ -13,6 +13,7 @@ from reflexio.models.api_schema.domain.entities import OptimizerKind
 
 PublicationOutcome = Literal["applied", "incumbent_changed"]
 PublishableOptimizerKind = Literal["gepa", "offline_tuner_replay"]
+PublicationSource = Literal["gepa", "offline_optimizer"]
 
 _PUBLISHABLE_OPTIMIZERS = frozenset({"gepa", "offline_tuner_replay"})
 _PROJECTION_SCHEMA_VERSION = "offline-tuner-candidate-search-projection-v1"
@@ -108,6 +109,13 @@ def _canonical_payload(name: str, value: str) -> object:
 def _validate_optimizer(value: object) -> None:
     if value not in _PUBLISHABLE_OPTIMIZERS:
         raise ValueError("optimizer_kind is not publishable")
+
+
+def publication_source_for_optimizer(
+    optimizer_kind: PublishableOptimizerKind,
+) -> PublicationSource:
+    _validate_optimizer(optimizer_kind)
+    return "offline_optimizer" if optimizer_kind == "offline_tuner_replay" else "gepa"
 
 
 def incumbent_user_playbook_semantic_digest(

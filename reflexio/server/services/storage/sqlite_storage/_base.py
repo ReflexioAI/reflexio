@@ -1529,6 +1529,9 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             CREATE UNIQUE INDEX uq_poj_active_attempt
                 ON playbook_optimization_jobs(optimizer_kind, attempt_key)
                 WHERE status IN ('pending', 'running') AND attempt_key IS NOT NULL;
+            CREATE UNIQUE INDEX uq_poj_active_target
+                ON playbook_optimization_jobs(optimizer_kind, target_kind, target_id)
+                WHERE status IN ('pending', 'running');
             """
         )
         self.conn.commit()
@@ -2458,6 +2461,37 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_poj_active_discovery
 CREATE UNIQUE INDEX IF NOT EXISTS uq_poj_active_attempt
     ON playbook_optimization_jobs(optimizer_kind, attempt_key)
     WHERE status IN ('pending', 'running') AND attempt_key IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_poj_active_target
+    ON playbook_optimization_jobs(optimizer_kind, target_kind, target_id)
+    WHERE status IN ('pending', 'running');
+
+CREATE TABLE IF NOT EXISTS case_first_exposure (
+    equivalence_group_id TEXT PRIMARY KEY,
+    first_role TEXT NOT NULL CHECK (first_role IN (
+        'generation', 'improvement', 'preservation', 'safety'
+    )),
+    owner_discovery_key TEXT NOT NULL,
+    content_digest TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS case_exposure_uses (
+    job_id INTEGER NOT NULL,
+    equivalence_group_id TEXT NOT NULL,
+    role TEXT NOT NULL CHECK (role IN (
+        'generation', 'improvement', 'preservation', 'safety'
+    )),
+    ownership TEXT NOT NULL CHECK (ownership IN (
+        'self_generation', 'self_improvement', 'self_preservation',
+        'self_safety', 'foreign'
+    )),
+    content_digest TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (job_id, equivalence_group_id, role),
+    FOREIGN KEY (job_id) REFERENCES playbook_optimization_jobs(job_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_case_exposure_uses_group
+    ON case_exposure_uses(equivalence_group_id);
 
 CREATE TABLE IF NOT EXISTS playbook_optimization_artifacts (
     artifact_id INTEGER PRIMARY KEY AUTOINCREMENT,
