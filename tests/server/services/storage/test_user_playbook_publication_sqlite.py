@@ -24,6 +24,7 @@ from reflexio.server.services.playbook.publication import (
     PublicationClaim,
     PublicationRequest,
     PublicationSearchProjection,
+    PublishableOptimizerKind,
     UserPlaybookPublicationService,
     incumbent_user_playbook_semantic_digest,
     publication_source_for_optimizer,
@@ -96,9 +97,10 @@ def _job(
     proof_digest: str,
     subject_epochs_json: str,
     stage: str | None = "publishing",
+    optimizer_kind: PublishableOptimizerKind = "gepa",
 ) -> PlaybookOptimizationJob:
     return PlaybookOptimizationJob(
-        optimizer_kind="gepa",
+        optimizer_kind=optimizer_kind,
         target_kind="user_playbook",
         target_id=target_id,
         status="running",
@@ -151,17 +153,21 @@ def _projection(
     )
 
 
-def _proof(source: str = "playbook_optimizer") -> DecisionProofEnvelope:
+def _proof(
+    source: str = "playbook_optimizer",
+    *,
+    optimizer_kind: PublishableOptimizerKind = "gepa",
+) -> DecisionProofEnvelope:
     payload = {
         "adoption": {"min_commit_windows": 1, "score": "0.91"},
         "decision": "apply",
-        "optimizer_kind": "gepa",
+        "optimizer_kind": optimizer_kind,
         "schema_version": "gepa-publication-proof-v1",
         "source": source,
     }
     canonical = _canonical(payload)
     return DecisionProofEnvelope(
-        optimizer_kind="gepa",
+        optimizer_kind=optimizer_kind,
         schema_version="gepa-publication-proof-v1",
         canonical_json=canonical,
         digest=_digest(canonical),
@@ -180,9 +186,10 @@ def _request(
     proof: DecisionProofEnvelope | None = None,
     request_id: str = "publish-request-1",
     subject_epochs_json: str | None = None,
+    optimizer_kind: PublishableOptimizerKind = "gepa",
 ) -> PublicationRequest:
     return PublicationRequest(
-        optimizer_kind="gepa",
+        optimizer_kind=optimizer_kind,
         job_id=job_id,
         attempt_key="attempt-1",
         publication_claim=claim,
@@ -195,17 +202,21 @@ def _request(
         ),
         revised_content=content,
         projection=projection or _projection(content),
-        decision_proof=proof or _proof(),
+        decision_proof=proof or _proof(optimizer_kind=optimizer_kind),
         subject_epochs_json=subject_epochs_json or _subject_epochs_json(),
         request_id=request_id,
     )
 
 
-def _seed(storage: SQLiteStorage) -> tuple[UserPlaybook, PlaybookOptimizationJob]:
+def _seed(
+    storage: SQLiteStorage,
+    *,
+    optimizer_kind: PublishableOptimizerKind = "gepa",
+) -> tuple[UserPlaybook, PlaybookOptimizationJob]:
     incumbent = _incumbent()
     storage.save_user_playbooks([incumbent])
     projection = _projection()
-    proof = _proof()
+    proof = _proof(optimizer_kind=optimizer_kind)
     job = storage.create_playbook_optimization_job(
         _job(
             target_id=incumbent.user_playbook_id,
@@ -213,6 +224,7 @@ def _seed(storage: SQLiteStorage) -> tuple[UserPlaybook, PlaybookOptimizationJob
             content_digest=projection.candidate_content_digest,
             proof_digest=proof.digest,
             subject_epochs_json=_subject_epochs_json(),
+            optimizer_kind=optimizer_kind,
         )
     )
     return incumbent, job
@@ -300,7 +312,7 @@ def _subject_epochs_json(*, epoch: int = 0, subject_ref: str | None = None) -> s
 
 class _AcceptingVerifier:
     def verify(self, request: PublicationRequest) -> None:
-        assert request.optimizer_kind == "gepa"
+        assert request.optimizer_kind in {"gepa", "offline_tuner_replay"}
 
 
 def _service(storage: SQLiteStorage) -> UserPlaybookPublicationService:
@@ -380,6 +392,31 @@ def test_publish_commits_exact_staged_projection_and_terminal_result(
     assert fts["search_text"] == "exact lexical projection-token"
     terminal = service.load_committed(job.job_id)
     assert terminal == result
+
+
+def test_offline_tuner_publication_persists_public_source(tmp_path: Path) -> None:
+    storage = _store(tmp_path)
+    incumbent, job = _seed(storage, optimizer_kind="offline_tuner_replay")
+    service = _service(storage)
+    claim = service.claim(job_id=job.job_id, owner="worker-a", worker_fence=5)
+    request = _request(
+        job_id=job.job_id,
+        incumbent_id=incumbent.user_playbook_id,
+        claim=claim,
+        optimizer_kind="offline_tuner_replay",
+    )
+
+    result = service.publish(request)
+
+    assert result.successor_user_playbook_id is not None
+    successor = storage.get_user_playbook_by_id(result.successor_user_playbook_id)
+    assert successor is not None
+    assert successor.source == "offline_optimizer"
+    staging = storage.conn.execute(
+        "SELECT optimizer_kind FROM user_playbook_publication_staging WHERE job_id = ?",
+        (job.job_id,),
+    ).fetchone()
+    assert staging["optimizer_kind"] == "offline_tuner_replay"
 
 
 def test_publish_lost_incumbent_cas_returns_incumbent_changed_without_orphan(

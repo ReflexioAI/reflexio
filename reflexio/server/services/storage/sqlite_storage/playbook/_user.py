@@ -432,7 +432,7 @@ class UserPlaybookStoreMixin:
                         subject_epochs_json, request_id, staging_digest, created_at)
                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
-                        publication_source_for_optimizer(request.optimizer_kind),
+                        request.optimizer_kind,
                         request.job_id,
                         request.attempt_key,
                         request.publication_claim.owner,
@@ -633,7 +633,7 @@ class UserPlaybookStoreMixin:
                         incumbent["rationale"],
                         incumbent["blocking_issue"],
                         incumbent["source_interaction_ids"],
-                        request.optimizer_kind,
+                        publication_source_for_optimizer(request.optimizer_kind),
                         json.dumps(embedding, separators=(",", ":")),
                         " ".join(request.projection.expanded_terms),
                         incumbent["source_span"],
