@@ -786,6 +786,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         self._migrate_retired_at()
         self._migrate_lineage_event_table()
         self._migrate_playbook_optimization_candidate_metadata()
+        self._migrate_user_playbook_publication_staging_columns()
         self._classify_legacy_playbook_optimization_jobs()
         self._enforce_playbook_optimization_job_constraints()
         self._migrate_retire_profile_change_logs()
@@ -1301,6 +1302,29 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             if column not in existing_cols:
                 self.conn.execute(
                     f"ALTER TABLE playbook_optimization_jobs "
+                    f"ADD COLUMN {column} {definition}"  # noqa: S608
+                )
+        self.conn.commit()
+
+    def _migrate_user_playbook_publication_staging_columns(self) -> None:
+        """Add frozen incumbent CAS fields to legacy publication staging."""
+        existing_cols = {
+            row["name"]
+            for row in self.conn.execute(
+                "PRAGMA table_info(user_playbook_publication_staging)"
+            ).fetchall()
+        }
+        if not existing_cols:
+            return
+        columns = {
+            "incumbent_content_digest": "TEXT",
+            "incumbent_trigger": "TEXT",
+            "incumbent_semantic_digest": "TEXT",
+        }
+        for column, definition in columns.items():
+            if column not in existing_cols:
+                self.conn.execute(
+                    "ALTER TABLE user_playbook_publication_staging "
                     f"ADD COLUMN {column} {definition}"  # noqa: S608
                 )
         self.conn.commit()
@@ -2519,6 +2543,9 @@ CREATE TABLE IF NOT EXISTS user_playbook_publication_staging (
     publication_fence INTEGER NOT NULL,
     worker_fence INTEGER NOT NULL,
     incumbent_user_playbook_id INTEGER NOT NULL,
+    incumbent_content_digest TEXT NOT NULL,
+    incumbent_trigger TEXT,
+    incumbent_semantic_digest TEXT NOT NULL,
     revised_content TEXT NOT NULL,
     content_digest TEXT NOT NULL,
     projection_json TEXT NOT NULL,

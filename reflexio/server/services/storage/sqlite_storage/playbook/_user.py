@@ -19,6 +19,7 @@ from reflexio.server.services.playbook.publication import (
     PublicationRequest,
     PublicationResult,
     canonical_json_bytes,
+    incumbent_user_playbook_semantic_digest,
 )
 from reflexio.server.services.storage.error import StorageError
 from reflexio.server.services.storage.lifecycle_filters import (
@@ -74,6 +75,9 @@ def _publication_staging_payload(request: PublicationRequest) -> dict[str, objec
         "claim_owner": request.publication_claim.owner,
         "content_digest": request.projection.candidate_content_digest,
         "incumbent_user_playbook_id": request.incumbent_user_playbook_id,
+        "incumbent_content_digest": request.incumbent_content_digest,
+        "incumbent_trigger": request.incumbent_trigger,
+        "incumbent_semantic_digest": request.incumbent_semantic_digest,
         "job_id": request.job_id,
         "optimizer_kind": request.optimizer_kind,
         "projection_digest": request.projection.digest,
@@ -106,6 +110,9 @@ _STAGING_CONFLICT_FIELDS = (
     ("job_id", "job id"),
     ("attempt_key", "attempt key"),
     ("incumbent_user_playbook_id", "incumbent"),
+    ("incumbent_content_digest", "incumbent content digest"),
+    ("incumbent_trigger", "incumbent trigger"),
+    ("incumbent_semantic_digest", "incumbent semantic digest"),
     ("revised_content", "revised content"),
     ("content_digest", "content digest"),
     ("projection_digest", "projection digest"),
@@ -417,10 +424,12 @@ class UserPlaybookStoreMixin:
                     """INSERT INTO user_playbook_publication_staging
                        (optimizer_kind, job_id, attempt_key, claim_owner,
                         publication_fence, worker_fence, incumbent_user_playbook_id,
+                        incumbent_content_digest, incumbent_trigger,
+                        incumbent_semantic_digest,
                         revised_content, content_digest, projection_json,
                         projection_digest, proof_json, proof_digest,
                         subject_epochs_json, request_id, staging_digest, created_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         request.optimizer_kind,
                         request.job_id,
@@ -429,6 +438,9 @@ class UserPlaybookStoreMixin:
                         request.publication_claim.fence,
                         request.worker_fence,
                         request.incumbent_user_playbook_id,
+                        request.incumbent_content_digest,
+                        request.incumbent_trigger,
+                        request.incumbent_semantic_digest,
                         request.revised_content,
                         request.projection.candidate_content_digest,
                         request.projection.canonical_json,
@@ -556,7 +568,18 @@ class UserPlaybookStoreMixin:
                 self._publication_claim_locked(request)
                 incumbent = self._publication_incumbent_and_subjects_locked(request)
                 subject_ref = self._subject_ref_from_user_playbook_row(incumbent)
-                if incumbent["status"] is not None:
+                live_content_digest = sha256(
+                    incumbent["content"].encode("utf-8")
+                ).hexdigest()
+                live_semantic_digest = incumbent_user_playbook_semantic_digest(
+                    content_digest=live_content_digest,
+                    trigger=incumbent["trigger"],
+                )
+                if (
+                    incumbent["status"] is not None
+                    or live_content_digest != request.incumbent_content_digest
+                    or live_semantic_digest != request.incumbent_semantic_digest
+                ):
                     self._finish_publication_locked(
                         request,
                         outcome="incumbent_changed",
@@ -634,12 +657,15 @@ class UserPlaybookStoreMixin:
                 superseded = self.conn.execute(
                     """UPDATE user_playbooks
                        SET status = ?, superseded_by = ?, retired_at = ?
-                       WHERE user_playbook_id = ? AND status IS NULL""",
+                       WHERE user_playbook_id = ? AND status IS NULL
+                         AND content = ? AND trigger IS ?""",
                     (
                         Status.SUPERSEDED.value,
                         successor_id,
                         now,
                         request.incumbent_user_playbook_id,
+                        incumbent["content"],
+                        request.incumbent_trigger,
                     ),
                 )
                 if superseded.rowcount != 1:

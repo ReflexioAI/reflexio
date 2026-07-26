@@ -28,12 +28,16 @@ from reflexio.server.services.playbook.aggregation_trigger import (
     maybe_trigger_user_playbook_aggregation,
 )
 from reflexio.server.services.playbook.publication import (
+    PUBLICATION_INCUMBENT_CONTENT_DIGEST_METADATA_KEY,
+    PUBLICATION_INCUMBENT_SEMANTIC_DIGEST_METADATA_KEY,
+    PUBLICATION_INCUMBENT_TRIGGER_METADATA_KEY,
     PUBLICATION_PROJECTION_JSON_METADATA_KEY,
     PUBLICATION_PROOF_JSON_METADATA_KEY,
     PUBLICATION_SUBJECT_EPOCHS_METADATA_KEY,
     PublicationRequest,
     PublicationResult,
     UserPlaybookPublicationService,
+    incumbent_user_playbook_semantic_digest,
 )
 from reflexio.server.services.storage.error import OptimizationJobLeaseLiveError
 from reflexio.server.tracing import sentry_tags
@@ -532,6 +536,11 @@ class PlaybookOptimizer:
         projection = build_gepa_search_projection(
             self.storage, incumbent, winner.content
         )
+        incumbent_content_digest = sha256(incumbent.content.encode("utf-8")).hexdigest()
+        incumbent_semantic_digest = incumbent_user_playbook_semantic_digest(
+            content_digest=incumbent_content_digest,
+            trigger=incumbent.trigger,
+        )
         subject_epochs_json = self.storage.get_user_playbook_publication_subject_epochs(
             incumbent_id
         )
@@ -558,7 +567,16 @@ class PlaybookOptimizer:
             decision_proof_json=proof.canonical_json,
             subject_epochs_json=subject_epochs_json,
             metadata_json=json.dumps(
-                result_metadata,
+                {
+                    **result_metadata,
+                    PUBLICATION_INCUMBENT_CONTENT_DIGEST_METADATA_KEY: (
+                        incumbent_content_digest
+                    ),
+                    PUBLICATION_INCUMBENT_TRIGGER_METADATA_KEY: incumbent.trigger,
+                    PUBLICATION_INCUMBENT_SEMANTIC_DIGEST_METADATA_KEY: (
+                        incumbent_semantic_digest
+                    ),
+                },
                 ensure_ascii=False,
                 separators=(",", ":"),
                 sort_keys=True,
@@ -585,6 +603,9 @@ class PlaybookOptimizer:
             publication_claim=publication_claim,
             worker_fence=durable_job.lease_fence,
             incumbent_user_playbook_id=incumbent_id,
+            incumbent_content_digest=incumbent_content_digest,
+            incumbent_trigger=incumbent.trigger,
+            incumbent_semantic_digest=incumbent_semantic_digest,
             revised_content=winner.content,
             projection=projection,
             decision_proof=proof,
@@ -624,10 +645,22 @@ class PlaybookOptimizer:
         projection_json = metadata.get(PUBLICATION_PROJECTION_JSON_METADATA_KEY)
         proof_json = metadata.get(PUBLICATION_PROOF_JSON_METADATA_KEY)
         subject_epochs = metadata.get(PUBLICATION_SUBJECT_EPOCHS_METADATA_KEY)
+        incumbent_content_digest = metadata.get(
+            PUBLICATION_INCUMBENT_CONTENT_DIGEST_METADATA_KEY
+        )
+        incumbent_trigger = metadata.get(PUBLICATION_INCUMBENT_TRIGGER_METADATA_KEY)
+        incumbent_semantic_digest = metadata.get(
+            PUBLICATION_INCUMBENT_SEMANTIC_DIGEST_METADATA_KEY
+        )
         if (
             not isinstance(projection_json, str)
             or not isinstance(proof_json, str)
             or not isinstance(subject_epochs, dict)
+            or not isinstance(incumbent_content_digest, str)
+            or (
+                incumbent_trigger is not None and not isinstance(incumbent_trigger, str)
+            )
+            or not isinstance(incumbent_semantic_digest, str)
         ):
             raise ValueError("GEPA publication durable bytes are missing")
         winner = next(
@@ -660,6 +693,9 @@ class PlaybookOptimizer:
             publication_claim=publication_claim,
             worker_fence=durable_job.lease_fence,
             incumbent_user_playbook_id=target.target_id,
+            incumbent_content_digest=incumbent_content_digest,
+            incumbent_trigger=incumbent_trigger,
+            incumbent_semantic_digest=incumbent_semantic_digest,
             revised_content=winner.content,
             projection=projection,
             decision_proof=proof,

@@ -12,6 +12,7 @@ from reflexio.server.services.playbook.publication import (
     PublicationSearchProjection,
     UserPlaybookPublicationService,
     canonical_json_bytes,
+    incumbent_user_playbook_semantic_digest,
 )
 
 
@@ -82,6 +83,11 @@ def test_publication_models_accept_strict_canonical_payloads() -> None:
         publication_claim=PublicationClaim(job_id=7, owner="worker-a", fence=3),
         worker_fence=11,
         incumbent_user_playbook_id=101,
+        incumbent_content_digest=_digest("old content"),
+        incumbent_trigger="refund",
+        incumbent_semantic_digest=incumbent_user_playbook_semantic_digest(
+            content_digest=_digest("old content"), trigger="refund"
+        ),
         revised_content="new content",
         projection=_projection(),
         decision_proof=_proof(),
@@ -169,6 +175,11 @@ def test_publication_request_binds_content_optimizer_and_canonical_epochs() -> N
         "publication_claim": claim,
         "worker_fence": 11,
         "incumbent_user_playbook_id": 101,
+        "incumbent_content_digest": _digest("old content"),
+        "incumbent_trigger": "refund",
+        "incumbent_semantic_digest": incumbent_user_playbook_semantic_digest(
+            content_digest=_digest("old content"), trigger="refund"
+        ),
         "projection": _projection(),
         "decision_proof": _proof(),
         "request_id": "request-7",
@@ -229,6 +240,11 @@ def test_publication_request_rejects_wrong_claim_kind_and_non_apply_decision() -
             publication_claim=PublicationClaim(job_id=8, owner="worker-a", fence=1),
             worker_fence=11,
             incumbent_user_playbook_id=101,
+            incumbent_content_digest=_digest("old content"),
+            incumbent_trigger="refund",
+            incumbent_semantic_digest=incumbent_user_playbook_semantic_digest(
+                content_digest=_digest("old content"), trigger="refund"
+            ),
             revised_content="new content",
             projection=_projection(),
             decision_proof=_proof(),
@@ -260,6 +276,11 @@ def test_publication_request_rejects_invalid_subject_epoch_vectors(
             publication_claim=PublicationClaim(job_id=7, owner="worker-a", fence=3),
             worker_fence=11,
             incumbent_user_playbook_id=101,
+            incumbent_content_digest=_digest("old content"),
+            incumbent_trigger="refund",
+            incumbent_semantic_digest=incumbent_user_playbook_semantic_digest(
+                content_digest=_digest("old content"), trigger="refund"
+            ),
             revised_content="new content",
             projection=_projection(),
             decision_proof=_proof(),

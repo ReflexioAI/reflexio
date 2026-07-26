@@ -20,6 +20,13 @@ _CANONICAL_DECIMAL = re.compile(r"-?(?:0|[1-9][0-9]*)(?:\.[0-9]*[1-9])?\Z")
 PUBLICATION_SUBJECT_EPOCHS_METADATA_KEY = "publication_subject_epochs"
 PUBLICATION_PROOF_JSON_METADATA_KEY = "publication_proof_json"
 PUBLICATION_PROJECTION_JSON_METADATA_KEY = "publication_projection_json"
+PUBLICATION_INCUMBENT_CONTENT_DIGEST_METADATA_KEY = (
+    "publication_incumbent_content_digest"
+)
+PUBLICATION_INCUMBENT_TRIGGER_METADATA_KEY = "publication_incumbent_trigger"
+PUBLICATION_INCUMBENT_SEMANTIC_DIGEST_METADATA_KEY = (
+    "publication_incumbent_semantic_digest"
+)
 
 
 def _require_text(name: str, value: object) -> str:
@@ -101,6 +108,21 @@ def _canonical_payload(name: str, value: str) -> object:
 def _validate_optimizer(value: object) -> None:
     if value not in _PUBLISHABLE_OPTIMIZERS:
         raise ValueError("optimizer_kind is not publishable")
+
+
+def incumbent_user_playbook_semantic_digest(
+    *, content_digest: str, trigger: str | None
+) -> str:
+    """Bind the behaviorally mutable incumbent fields used by publication."""
+    _require_digest("incumbent content digest", content_digest)
+    if trigger is not None and not isinstance(trigger, str):
+        raise TypeError("incumbent trigger must be a string or null")
+    payload = {
+        "content_digest": content_digest,
+        "schema_version": "user-playbook-incumbent-semantic-v1",
+        "trigger": trigger,
+    }
+    return sha256(canonical_json_bytes(payload)).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -225,6 +247,9 @@ class PublicationRequest:
     publication_claim: PublicationClaim
     worker_fence: int
     incumbent_user_playbook_id: int
+    incumbent_content_digest: str
+    incumbent_trigger: str | None
+    incumbent_semantic_digest: str
     revised_content: str
     projection: PublicationSearchProjection
     decision_proof: DecisionProofEnvelope
@@ -245,6 +270,16 @@ class PublicationRequest:
             or self.incumbent_user_playbook_id <= 0
         ):
             raise ValueError("incumbent_user_playbook_id must be positive")
+        _require_digest("incumbent content digest", self.incumbent_content_digest)
+        _require_digest("incumbent semantic digest", self.incumbent_semantic_digest)
+        expected_semantic_digest = incumbent_user_playbook_semantic_digest(
+            content_digest=self.incumbent_content_digest,
+            trigger=self.incumbent_trigger,
+        )
+        if self.incumbent_semantic_digest != expected_semantic_digest:
+            raise ValueError("incumbent semantic digest does not match frozen fields")
+        if self.projection.preserved_trigger != self.incumbent_trigger:
+            raise ValueError("search projection must preserve incumbent trigger")
         _require_text("revised_content", self.revised_content)
         _require_text("publication request_id", self.request_id)
         if self.decision_proof.optimizer_kind != self.optimizer_kind:
@@ -375,9 +410,13 @@ __all__ = [
     "PublicationRequest",
     "PublicationResult",
     "PublicationSearchProjection",
+    "PUBLICATION_INCUMBENT_CONTENT_DIGEST_METADATA_KEY",
+    "PUBLICATION_INCUMBENT_SEMANTIC_DIGEST_METADATA_KEY",
+    "PUBLICATION_INCUMBENT_TRIGGER_METADATA_KEY",
     "PUBLICATION_SUBJECT_EPOCHS_METADATA_KEY",
     "UserPlaybookPublicationService",
     "UserPlaybookPublicationStore",
     "canonical_json_bytes",
+    "incumbent_user_playbook_semantic_digest",
     "publish_user_playbook_successor",
 ]

@@ -15,6 +15,9 @@ from reflexio.models.api_schema.domain import (
 )
 from reflexio.models.config_schema import PlaybookOptimizerConfig
 from reflexio.server.services.playbook.publication import (
+    PUBLICATION_INCUMBENT_CONTENT_DIGEST_METADATA_KEY,
+    PUBLICATION_INCUMBENT_SEMANTIC_DIGEST_METADATA_KEY,
+    PUBLICATION_INCUMBENT_TRIGGER_METADATA_KEY,
     PUBLICATION_PROJECTION_JSON_METADATA_KEY,
     PUBLICATION_PROOF_JSON_METADATA_KEY,
     PUBLICATION_SUBJECT_EPOCHS_METADATA_KEY,
@@ -414,6 +417,15 @@ class GEPAUserPlaybookDecisionVerifier:
             != json.loads(subject_epochs)
             or incumbent is None
             or incumbent.trigger != request.projection.preserved_trigger
+            or sha256(incumbent.content.encode("utf-8")).hexdigest()
+            != request.incumbent_content_digest
+            or incumbent.trigger != request.incumbent_trigger
+            or metadata.get(PUBLICATION_INCUMBENT_CONTENT_DIGEST_METADATA_KEY)
+            != request.incumbent_content_digest
+            or metadata.get(PUBLICATION_INCUMBENT_TRIGGER_METADATA_KEY)
+            != request.incumbent_trigger
+            or metadata.get(PUBLICATION_INCUMBENT_SEMANTIC_DIGEST_METADATA_KEY)
+            != request.incumbent_semantic_digest
             or winner.content != request.revised_content
             or job.candidate_content_digest
             != request.projection.candidate_content_digest
@@ -436,6 +448,9 @@ class GEPAUserPlaybookDecisionVerifier:
                 PUBLICATION_PROOF_JSON_METADATA_KEY,
                 PUBLICATION_PROJECTION_JSON_METADATA_KEY,
                 PUBLICATION_SUBJECT_EPOCHS_METADATA_KEY,
+                PUBLICATION_INCUMBENT_CONTENT_DIGEST_METADATA_KEY,
+                PUBLICATION_INCUMBENT_TRIGGER_METADATA_KEY,
+                PUBLICATION_INCUMBENT_SEMANTIC_DIGEST_METADATA_KEY,
             }
         }
         try:

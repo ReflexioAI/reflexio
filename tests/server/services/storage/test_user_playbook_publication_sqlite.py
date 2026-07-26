@@ -25,6 +25,7 @@ from reflexio.server.services.playbook.publication import (
     PublicationRequest,
     PublicationSearchProjection,
     UserPlaybookPublicationService,
+    incumbent_user_playbook_semantic_digest,
 )
 from reflexio.server.services.playbook_optimizer.gepa_publication import (
     GEPA_PUBLICATION_AUTHORITY_METADATA_KEY,
@@ -106,7 +107,9 @@ def _job(
     )
 
 
-def _projection(content: str = "new content") -> PublicationSearchProjection:
+def _projection(
+    content: str = "new content", *, trigger: str | None = "refund trigger"
+) -> PublicationSearchProjection:
     embedding = ["0.25"] * 512
     payload = {
         "candidate_content_digest": _digest(content),
@@ -114,7 +117,7 @@ def _projection(content: str = "new content") -> PublicationSearchProjection:
         "embedding_model_id": "test-embedding-v1",
         "expanded_terms": ["exact-expanded", "projection-token"],
         "lexical_document": "exact lexical projection-token",
-        "preserved_trigger": "refund trigger",
+        "preserved_trigger": trigger,
         "projector_code_digest": "a" * 64,
         "projector_id": "reflexio.search.user-playbook",
         "projector_version": "1",
@@ -129,7 +132,7 @@ def _projection(content: str = "new content") -> PublicationSearchProjection:
         projector_version="1",
         projector_code_digest="a" * 64,
         candidate_content_digest=_digest(content),
-        preserved_trigger="refund trigger",
+        preserved_trigger=trigger,
         embedding_model_id="test-embedding-v1",
         embedding=tuple(embedding),
         expanded_terms=("exact-expanded", "projection-token"),
@@ -174,6 +177,11 @@ def _request(
         publication_claim=claim,
         worker_fence=worker_fence,
         incumbent_user_playbook_id=incumbent_id,
+        incumbent_content_digest=_digest("old content"),
+        incumbent_trigger="refund trigger",
+        incumbent_semantic_digest=incumbent_user_playbook_semantic_digest(
+            content_digest=_digest("old content"), trigger="refund trigger"
+        ),
         revised_content=content,
         projection=projection or _projection(content),
         decision_proof=proof or _proof(),
@@ -384,6 +392,56 @@ def test_publish_lost_incumbent_cas_returns_incumbent_changed_without_orphan(
         ).fetchone()["count"]
         == 0
     )
+
+
+@pytest.mark.parametrize(
+    ("update"),
+    [
+        {"content": "human-edited content"},
+        {"trigger": "human-edited trigger"},
+    ],
+    ids=["content", "trigger"],
+)
+def test_publish_rejects_in_place_incumbent_semantic_change_after_staging(
+    tmp_path: Path, update: dict[str, str]
+) -> None:
+    storage = _store(tmp_path)
+    incumbent, job = _seed(storage)
+    service = _service(storage)
+    claim = service.claim(job_id=job.job_id, owner="worker-a", worker_fence=5)
+    request = _request(
+        job_id=job.job_id, incumbent_id=incumbent.user_playbook_id, claim=claim
+    )
+    service.stage(request)
+
+    storage.update_user_playbook(incumbent.user_playbook_id, **update)
+    result = service.publish(request)
+
+    assert result.outcome == "incumbent_changed"
+    assert result.successor_user_playbook_id is None
+    assert (
+        storage.conn.execute(
+            "SELECT COUNT(*) AS count FROM user_playbooks WHERE content = 'new content'"
+        ).fetchone()["count"]
+        == 0
+    )
+
+
+def test_publication_request_rejects_projector_trigger_mutation(
+    tmp_path: Path,
+) -> None:
+    storage = _store(tmp_path)
+    incumbent, job = _seed(storage)
+    service = _service(storage)
+    claim = service.claim(job_id=job.job_id, owner="worker-a", worker_fence=5)
+
+    with pytest.raises(ValueError, match="preserve incumbent trigger"):
+        _request(
+            job_id=job.job_id,
+            incumbent_id=incumbent.user_playbook_id,
+            claim=claim,
+            projection=_projection(trigger="malicious trigger"),
+        )
 
 
 @pytest.mark.parametrize(
