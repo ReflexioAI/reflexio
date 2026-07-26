@@ -42,7 +42,7 @@ def test_update_user_playbook_content_emits_revise(tmp_path):
     ev = s.get_lineage_events(
         entity_id=str(pb.user_playbook_id), entity_type="user_playbook"
     )
-    assert [e.op for e in ev] == ["revise"]
+    assert [e.op for e in ev] == ["create", "revise"]
     assert s.get_user_playbook_by_id(pb.user_playbook_id).content == "new guidance"
 
 
@@ -54,7 +54,7 @@ def test_update_user_playbook_metadata_only_emits_status_change(tmp_path):
     ev = s.get_lineage_events(
         entity_id=str(pb.user_playbook_id), entity_type="user_playbook"
     )
-    assert [e.op for e in ev] == ["status_change"]
+    assert [e.op for e in ev] == ["create", "status_change"]
 
 
 def test_update_user_playbook_multiple_edits_each_produce_event(tmp_path):
@@ -67,7 +67,7 @@ def test_update_user_playbook_multiple_edits_each_produce_event(tmp_path):
     ev = s.get_lineage_events(
         entity_id=str(pb.user_playbook_id), entity_type="user_playbook"
     )
-    assert [e.op for e in ev] == ["revise", "revise"]
+    assert [e.op for e in ev] == ["create", "revise", "revise"]
 
 
 def test_update_user_playbook_trigger_change_emits_revise(tmp_path):
@@ -78,7 +78,7 @@ def test_update_user_playbook_trigger_change_emits_revise(tmp_path):
     ev = s.get_lineage_events(
         entity_id=str(pb.user_playbook_id), entity_type="user_playbook"
     )
-    assert [e.op for e in ev] == ["revise"]
+    assert [e.op for e in ev] == ["create", "revise"]
 
 
 def test_read_user_playbook_as_of_for_learning_rejects_post_serve_revise(tmp_path):
@@ -294,7 +294,7 @@ def test_update_agent_playbook_content_emits_revise(tmp_path):
     ev = s.get_lineage_events(
         entity_id=str(saved[0].agent_playbook_id), entity_type="agent_playbook"
     )
-    assert [e.op for e in ev] == ["revise"]
+    assert [e.op for e in ev] == ["create", "revise"]
 
 
 def test_update_agent_playbook_metadata_only_emits_status_change(tmp_path):
@@ -305,7 +305,7 @@ def test_update_agent_playbook_metadata_only_emits_status_change(tmp_path):
     ev = s.get_lineage_events(
         entity_id=str(saved[0].agent_playbook_id), entity_type="agent_playbook"
     )
-    assert [e.op for e in ev] == ["status_change"]
+    assert [e.op for e in ev] == ["create", "status_change"]
 
 
 # ---------------------------------------------------------------------------
@@ -321,7 +321,7 @@ def test_update_agent_playbook_status_always_emits_status_change(tmp_path):
     ev = s.get_lineage_events(
         entity_id=str(saved[0].agent_playbook_id), entity_type="agent_playbook"
     )
-    assert [e.op for e in ev] == ["status_change"]
+    assert [e.op for e in ev] == ["create", "status_change"]
 
 
 # ---------------------------------------------------------------------------
@@ -342,7 +342,7 @@ def test_update_user_profile_emits_revise(tmp_path):
     updated = profile.model_copy(update={"content": "updated content"})
     s.update_user_profile_by_id("u", str(profile.profile_id), updated)
     ev = s.get_lineage_events(entity_id=str(profile.profile_id), entity_type="profile")
-    assert [e.op for e in ev] == ["revise"]
+    assert [e.op for e in ev] == ["create", "revise"]
     fetched = s.get_profile_by_id(str(profile.profile_id))
     assert fetched is not None
     assert fetched.content == "updated content"
@@ -377,11 +377,11 @@ def test_archive_agent_playbooks_by_ids_already_archived_no_event(tmp_path):
     # First archive emits one status_change event.
     s.archive_agent_playbooks_by_ids([apid])
     first = s.get_lineage_events(entity_id=str(apid), entity_type="agent_playbook")
-    assert [e.op for e in first] == ["status_change"]
+    assert [e.op for e in first] == ["create", "status_change"]
     # Re-archiving the already-archived row must emit no further event.
     s.archive_agent_playbooks_by_ids([apid])
     second = s.get_lineage_events(entity_id=str(apid), entity_type="agent_playbook")
-    assert [e.op for e in second] == ["status_change"]
+    assert [e.op for e in second] == ["create", "status_change"]
 
 
 def test_archive_agent_playbooks_by_playbook_name_already_archived_no_event(tmp_path):
@@ -391,10 +391,10 @@ def test_archive_agent_playbooks_by_playbook_name_already_archived_no_event(tmp_
     apid = saved[0].agent_playbook_id
     s.archive_agent_playbooks_by_playbook_name("arch-pb")
     first = s.get_lineage_events(entity_id=str(apid), entity_type="agent_playbook")
-    assert [e.op for e in first] == ["status_change"]
+    assert [e.op for e in first] == ["create", "status_change"]
     s.archive_agent_playbooks_by_playbook_name("arch-pb")
     second = s.get_lineage_events(entity_id=str(apid), entity_type="agent_playbook")
-    assert [e.op for e in second] == ["status_change"]
+    assert [e.op for e in second] == ["create", "status_change"]
 
 
 # ---------------------------------------------------------------------------

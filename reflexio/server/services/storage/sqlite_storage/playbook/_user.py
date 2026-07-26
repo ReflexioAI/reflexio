@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from reflexio.models.api_schema.common import BlockingIssue
+from reflexio.models.api_schema.domain.entities import LineageContext
 from reflexio.models.api_schema.retriever_schema import SearchUserPlaybookRequest
 from reflexio.models.api_schema.service_schemas import Status, UserPlaybook
 from reflexio.models.config_schema import SearchMode, SearchOptions
@@ -77,6 +78,7 @@ class UserPlaybookStoreMixin:
     _subject_ref_for_user_id: Any
     _assert_subject_writable_locked: Any
     _own_transaction: Any
+    commit_scope: Any
 
     def _subject_ref_from_user_playbook_row(self, row: sqlite3.Row) -> str:
         subject_ref = row["governance_subject_ref"]
@@ -134,8 +136,27 @@ class UserPlaybookStoreMixin:
         user_playbooks: list[UserPlaybook],
         *,
         skip_embedding: bool = False,
+        lineage_contexts: list[LineageContext] | None = None,
     ) -> None:
-        for up in user_playbooks:
+        if lineage_contexts is not None and len(lineage_contexts) != len(
+            user_playbooks
+        ):
+            raise ValueError("lineage_contexts must match user_playbooks length")
+        if any(context.op_kind != "create" for context in lineage_contexts or []):
+            raise ValueError(
+                "user playbook create lineage context must use op_kind='create'"
+            )
+        contexts = lineage_contexts or [
+            LineageContext(
+                op_kind="create",
+                actor=up.source or "",
+                source_ids=[str(value) for value in up.source_interaction_ids],
+                request_id=up.request_id,
+            )
+            for up in user_playbooks
+        ]
+        rows: list[tuple[UserPlaybook, LineageContext, str, str]] = []
+        for up, lineage_context in zip(user_playbooks, contexts, strict=True):
             subject_ref = self._subject_ref_for_user_id(up.user_id)
             with self._lock:
                 self._assert_subject_writable_locked(subject_ref)
@@ -145,13 +166,13 @@ class UserPlaybookStoreMixin:
             # out (embedding already set by precompute_user_playbook_embeddings).
             if not skip_embedding:
                 self.precompute_user_playbook_embeddings([up])
+            rows.append(
+                (up, lineage_context, subject_ref, _epoch_to_iso(up.created_at))
+            )
 
-            created_at_iso = _epoch_to_iso(up.created_at)
-            with self._lock:
-                own_txn = self._own_transaction()
-                try:
-                    if own_txn:
-                        self.conn.execute("BEGIN IMMEDIATE")
+        with self.commit_scope():
+            for up, lineage_context, subject_ref, created_at_iso in rows:
+                with self._lock:
                     self._assert_subject_writable_locked(subject_ref)
                     cur = self.conn.execute(
                         """INSERT INTO user_playbooks
@@ -190,13 +211,25 @@ class UserPlaybookStoreMixin:
                     )
                     upid = cur.lastrowid or 0
                     up.user_playbook_id = upid
-                    if own_txn:
-                        self.conn.commit()
-                except Exception:
-                    if own_txn:
-                        self.conn.rollback()
-                    raise
+                    _append_event_stmt(
+                        self.conn,
+                        org_id=self.org_id,
+                        entity_type="user_playbook",
+                        entity_id=str(upid),
+                        op="create",
+                        prov="wasGeneratedBy",
+                        source_ids=lineage_context.source_ids,
+                        actor=lineage_context.actor,
+                        request_id=lineage_context.request_id
+                        or up.request_id
+                        or f"create_{upid}",
+                        reason=lineage_context.reason,
+                        model_name=lineage_context.model_name,
+                        provider=lineage_context.provider,
+                    )
 
+        for up, _lineage_context, _subject_ref, _created_at_iso in rows:
+            upid = up.user_playbook_id
             fts_parts = [up.trigger or "", up.content or ""]
             if up.expanded_terms:
                 fts_parts.append(up.expanded_terms)

@@ -30,6 +30,7 @@ import pytest
 
 from reflexio.models.api_schema.service_schemas import UserPlaybook
 from reflexio.server.api_endpoints.request_context import RequestContext
+from reflexio.server.llm._litellm_types import CompletionResult, ModelProvenance
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 from reflexio.server.services.playbook.components.consolidator import (
     DifferentiateDecision,
@@ -81,7 +82,18 @@ def request_context(sqlite_storage, temp_storage_dir, worker_id):
 @pytest.fixture
 def mock_llm_client():
     """Mock LiteLLM client. ``generate_chat_response`` is set per-test."""
-    return MagicMock(spec=LiteLLMClient)
+    client = MagicMock(spec=LiteLLMClient)
+
+    def _generate_with_provenance(*args, **kwargs):
+        value = client.generate_chat_response(*args, **kwargs)
+        if isinstance(value, CompletionResult):
+            return value
+        return CompletionResult(value, ModelProvenance())
+
+    client.generate_chat_response_with_provenance.side_effect = (
+        _generate_with_provenance
+    )
+    return client
 
 
 @pytest.fixture
@@ -972,9 +984,7 @@ class TestConsolidatorNativeFallbackEndToEnd:
     every rung and NO ``fallbacks`` kwarg ever handed to litellm.
     """
 
-    def test_consolidator_advances_to_fallback_rung(
-        self, request_context, monkeypatch
-    ):
+    def test_consolidator_advances_to_fallback_rung(self, request_context, monkeypatch):
         """Production-style: ``REFLEXIO_LLM_FALLBACK_MODELS`` set globally.
 
         When the primary fails, the owned walk advances to the configured

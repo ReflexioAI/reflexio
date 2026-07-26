@@ -28,6 +28,7 @@ import subprocess  # noqa: S404 — subprocess is the integration point; inputs 
 import tempfile
 import time
 from contextlib import suppress
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -530,8 +531,11 @@ def _run_claude_stream(
     except FileNotFoundError as exc:
         raise ClaudeCodeCLIError(f"claude CLI not found at {cli_path}") from exc
 
-    return parse_stream_json(
-        proc.stdout, exit_code=proc.returncode, stderr_text=proc.stderr
+    return replace(
+        parse_stream_json(
+            proc.stdout, exit_code=proc.returncode, stderr_text=proc.stderr
+        ),
+        cli_binary=_cli_name(),
     )
 
 
@@ -592,6 +596,7 @@ def _run_codex_stream(
         terminal_text=terminal_text,
         stderr_text=proc.stderr,
         raw_lines_parsed=1 if terminal_text else 0,
+        cli_binary="codex",
     )
 
 
@@ -612,6 +617,10 @@ def _build_model_response(
     model: str,
     terminal_text: str,
     elapsed_seconds: float,
+    *,
+    served_model: str | None = None,
+    served_provider: str | None = None,
+    cli_binary: str | None = None,
 ) -> ModelResponse:
     """Wrap the CLI's terminal text in a LiteLLM ``ModelResponse``.
 
@@ -621,9 +630,12 @@ def _build_model_response(
 
     Args:
         model (str): The model string originally requested
-            (e.g. ``claude-code/default``).
+            (e.g. ``claude-code/default``). Populates the public LiteLLM
+            ``ModelResponse.model`` field the same way other providers do.
         terminal_text (str): The terminal ``result`` text from the CLI.
         elapsed_seconds (float): Wall time the subprocess took — for logging only.
+        served_model: Observed served model from stream-json, if any. Stamped on
+            hidden metadata for provenance; not used to overwrite ``model``.
 
     Returns:
         ModelResponse: Shaped to match what callers of ``litellm.completion`` expect.
@@ -639,12 +651,37 @@ def _build_model_response(
         object="chat.completion",
         usage=usage,
     )
+    _set_cli_response_metadata(
+        response,
+        served_model=served_model,
+        served_provider=served_provider,
+        cli_binary=cli_binary,
+    )
     _LOGGER.debug(
         "claude-code provider: model=%s elapsed=%.2fs",
         model,
         elapsed_seconds,
     )
     return response
+
+
+def _set_cli_response_metadata(
+    response: ModelResponse,
+    *,
+    served_model: str | None,
+    served_provider: str | None,
+    cli_binary: str | None,
+) -> None:
+    """Stamp truthful route metadata on a CLI-backed completion response."""
+    hidden = dict(getattr(response, "_hidden_params", {}) or {})
+    hidden["reflexio_provider"] = PROVIDER_KEY
+    if cli_binary:
+        hidden["reflexio_cli_binary"] = cli_binary
+    if served_model:
+        hidden["reflexio_served_model"] = served_model
+    if served_provider:
+        hidden["reflexio_served_provider"] = served_provider
+    response._hidden_params = hidden
 
 
 _TOOL_USE_INSTRUCTION_TEMPLATE = (
@@ -785,6 +822,9 @@ def _build_model_response_with_tool_call(
     terminal_text: str,
     elapsed_seconds: float,
     tool_use: dict[str, Any],
+    served_model: str | None = None,
+    served_provider: str | None = None,
+    cli_binary: str | None = None,
 ) -> ModelResponse:
     """Wrap the CLI terminal text as a ``ModelResponse`` carrying one ``tool_calls`` entry.
 
@@ -794,7 +834,6 @@ def _build_model_response_with_tool_call(
     this — usage is informational, not load-bearing.
 
     Args:
-        model: Model string passed in by LiteLLM.
         terminal_text: The terminal ``result`` text from the CLI (retained
             for signature parity with the plain-text branch; surfaced via
             logging only).
@@ -825,6 +864,12 @@ def _build_model_response_with_tool_call(
         model=model,
         object="chat.completion",
         usage=usage,
+    )
+    _set_cli_response_metadata(
+        response,
+        served_model=served_model,
+        served_provider=served_provider,
+        cli_binary=cli_binary,
     )
     _LOGGER.debug(
         "claude-code provider: tool_call name=%s elapsed=%.2fs",
@@ -1018,6 +1063,9 @@ class ClaudeCodeLLM(CustomLLM):
                         terminal_text=result.terminal_text,
                         elapsed_seconds=elapsed,
                         tool_use=tool_use,
+                        served_model=result.served_model,
+                        served_provider=result.served_provider,
+                        cli_binary=result.cli_binary,
                     )
                 # Log a metadata-only warning (no raw payload) — the model
                 # output can carry user content / source code; deferring the
@@ -1038,6 +1086,9 @@ class ClaudeCodeLLM(CustomLLM):
                 model=model,
                 terminal_text=result.terminal_text,
                 elapsed_seconds=elapsed,
+                served_model=result.served_model,
+                served_provider=result.served_provider,
+                cli_binary=result.cli_binary,
             )
 
         self._record_stall_safely(result)

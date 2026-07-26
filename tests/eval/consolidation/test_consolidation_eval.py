@@ -12,6 +12,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from reflexio.server.llm._litellm_types import CompletionResult, ModelProvenance
 from reflexio.server.services.playbook.components.consolidator import (
     ConsolidationDecision,
     DifferentiateDecision,
@@ -471,8 +472,8 @@ def test_live_provider_returns_canned_decision(tmp_path):
 
     canned = UnifyDecision(new_id="NEW-0", content="x", trigger="t", rationale="r")
     mock = MagicMock()
-    mock.generate_chat_response.return_value = PlaybookConsolidationOutput(
-        decisions=[canned]
+    mock.generate_chat_response_with_provenance.return_value = CompletionResult(
+        PlaybookConsolidationOutput(decisions=[canned]), ModelProvenance()
     )
 
     ctx = RequestContext(org_id="eval-cons-prov", storage_base_dir=str(tmp_path))
@@ -486,7 +487,7 @@ def test_live_provider_returns_canned_decision(tmp_path):
     assert decision == canned
     assert kind_for_decision(decision) == "unify"
     # The provider reached the LLM call (entity build + prompt render succeeded).
-    mock.generate_chat_response.assert_called_once()
+    mock.generate_chat_response_with_provenance.assert_called_once()
 
 
 def test_live_provider_empty_output_maps_to_independent(tmp_path):
@@ -495,7 +496,9 @@ def test_live_provider_empty_output_maps_to_independent(tmp_path):
     from reflexio.server.api_endpoints.request_context import RequestContext
 
     mock = MagicMock()
-    mock.generate_chat_response.return_value = PlaybookConsolidationOutput(decisions=[])
+    mock.generate_chat_response_with_provenance.return_value = CompletionResult(
+        PlaybookConsolidationOutput(decisions=[]), ModelProvenance()
+    )
 
     ctx = RequestContext(org_id="eval-cons-noop", storage_base_dir=str(tmp_path))
     provider = make_consolidation_decision_provider(

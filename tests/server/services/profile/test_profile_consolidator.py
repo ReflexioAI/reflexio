@@ -27,6 +27,7 @@ from reflexio.models.api_schema.service_schemas import (
     ProfileTimeToLive,
     UserProfile,
 )
+from reflexio.server.llm._litellm_types import CompletionResult, ModelProvenance
 from reflexio.server.llm.litellm_client import (
     LiteLLMClient,
     LiteLLMClientError,
@@ -52,6 +53,16 @@ from reflexio.server.services.profile.components.consolidator import (
 def mock_llm_client():
     """Create a mock LLM client."""
     client = MagicMock(spec=LiteLLMClient)
+
+    def _generate_with_provenance(*args, **kwargs):
+        value = client.generate_chat_response(*args, **kwargs)
+        if isinstance(value, CompletionResult):
+            return value
+        return CompletionResult(value=value, provenance=ModelProvenance())
+
+    client.generate_chat_response_with_provenance.side_effect = (
+        _generate_with_provenance
+    )
     client.get_embeddings.return_value = [[0.1] * 10, [0.2] * 10, [0.3] * 10]
     return client
 

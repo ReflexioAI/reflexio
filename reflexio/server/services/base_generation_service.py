@@ -13,6 +13,7 @@ from typing import Any, Generic, TypeVar
 
 from reflexio.models.api_schema.internal_schema import RequestInteractionDataModel
 from reflexio.server.api_endpoints.request_context import RequestContext
+from reflexio.server.llm._litellm_types import ModelProvenance
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.llm.token_accounting import RunTokenTotals
 from reflexio.server.services.base_generation import (
@@ -257,6 +258,7 @@ class BaseGenerationService(
         # Stride-bookmark advance deferred off the extractor (F1); captured in
         # ``_execute_extractor`` and applied in the persist half of the run.
         self._last_bookmark_advance: ExtractorBookmarkAdvance | None = None
+        self._last_model_provenance: ModelProvenance | None = None
         # Window fetched by the should-run gate (_collect_scoped_interactions_for_precheck),
         # stashed so the billing path (_extraction_input_text) can reuse it instead of
         # re-querying storage. None when the gate did not run (bypass paths).
@@ -624,6 +626,7 @@ class BaseGenerationService(
         self._last_extraction_run_ids = []
         self._last_token_totals = None
         self._last_bookmark_advance = None
+        self._last_model_provenance = None
         result = self._execute_extractor(prepared.extractor_config, prepared.identifier)
         generated_count = self._count_generated_results(result)
 

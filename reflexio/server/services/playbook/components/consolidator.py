@@ -18,10 +18,10 @@ from reflexio.models.config_schema import (
 )
 from reflexio.models.structured_output import StrictStructuredOutput
 from reflexio.server.api_endpoints.request_context import RequestContext
+from reflexio.server.llm._litellm_types import ModelProvenance
 from reflexio.server.llm.litellm_client import (
     LiteLLMClient,
     LiteLLMClientError,
-    StructuredOutputRepairError,
 )
 from reflexio.server.services.deduplication_utils import (
     BaseDeduplicator,
@@ -470,6 +470,8 @@ class PlaybookConsolidator(BaseDeduplicator):
         """
         super().__init__(request_context, llm_client)
         self._dedup_config = dedup_config or DeduplicationConfig()
+        self.model_provenance: ModelProvenance | None = None
+        self.consolidated_output_indices: set[int] = set()
 
     def _get_prompt_id(self) -> str:
         """Get the prompt ID for playbook consolidation."""
@@ -738,16 +740,20 @@ class PlaybookConsolidator(BaseDeduplicator):
             return []
 
         try:
-            response = self.client.generate_chat_response(
+            completion = self.client.generate_chat_response_with_provenance(
                 messages=[{"role": "user", "content": prompt}],
                 model=self.model_name,
                 response_format=output_schema_class,
                 structured_output_validator=_validate_output,
             )
-        except (StructuredOutputRepairError, LiteLLMClientError):
+        except LiteLLMClientError as exc:
             if first_parsed_output is not None:
+                self.model_provenance = exc.first_parsed_provenance
                 return first_parsed_output
             raise
+
+        self.model_provenance = completion.provenance
+        response = completion.value
 
         log_model_response(logger, "Consolidation response", response)
 
@@ -795,6 +801,8 @@ class PlaybookConsolidator(BaseDeduplicator):
         generation_request_id = _normalize_generation_request_id(
             generation_request_id, request_id=request_id
         )
+        self.model_provenance = None
+        self.consolidated_output_indices = set()
         if agent_version is None:
             raise TypeError("agent_version is required")
 
@@ -1054,6 +1062,10 @@ class PlaybookConsolidator(BaseDeduplicator):
             # in the final list is the current length of ``new_rows``.
             if merge_source_ids:
                 merge_groups.append((len(new_rows), merge_source_ids))
+            if not isinstance(decision, IndependentDecision):
+                self.consolidated_output_indices.update(
+                    range(len(new_rows), len(new_rows) + len(rows))
+                )
             new_rows.extend(rows)
             handled_new_ids.update(marked_new_ids)
             self._bump_counter(result_counters, decision.kind)

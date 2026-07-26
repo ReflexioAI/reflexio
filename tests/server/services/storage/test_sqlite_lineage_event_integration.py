@@ -31,6 +31,27 @@ def test_append_then_get(tmp_path):
     assert len(rows) == 1 and rows[0].op == "merge" and rows[0].created_at > 0
 
 
+def test_model_provenance_round_trips_and_unknown_stays_null(tmp_path):
+    s = SQLiteStorage(org_id="org-42", db_path=str(tmp_path / "t.db"))
+    s.migrate()
+    s.append_lineage_event(
+        _evt(
+            entity_id="with-model",
+            model_name="claude-sonnet-4-5-20250929",
+            provider="anthropic",
+        )
+    )
+    s.append_lineage_event(_evt(entity_id="unknown-model"))
+
+    with_model = s.get_lineage_events(entity_id="with-model")[0]
+    assert with_model.model_name == "claude-sonnet-4-5-20250929"
+    assert with_model.provider == "anthropic"
+
+    unknown = s.get_lineage_events(entity_id="unknown-model")[0]
+    assert unknown.model_name is None
+    assert unknown.provider is None
+
+
 def test_append_is_idempotent_on_unique_key(tmp_path):
     s = SQLiteStorage(org_id="org-42", db_path=str(tmp_path / "t.db"))
     s.migrate()

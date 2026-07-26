@@ -1220,6 +1220,8 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                     request_id       TEXT NOT NULL DEFAULT '',
                     reason           TEXT NOT NULL DEFAULT '',
                     created_at       INTEGER NOT NULL,
+                    model_name       TEXT,
+                    provider         TEXT,
                     UNIQUE (org_id, entity_type, entity_id, op, request_id)
                 );
                 CREATE INDEX IF NOT EXISTS idx_lineage_entity
@@ -1231,7 +1233,13 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                     "PRAGMA table_info(lineage_event)"
                 ).fetchall()
             }
-            for col in ("from_status", "to_status", "status_namespace"):
+            for col in (
+                "from_status",
+                "to_status",
+                "status_namespace",
+                "model_name",
+                "provider",
+            ):
                 if col not in existing_cols:
                     self.conn.execute(
                         f"ALTER TABLE lineage_event ADD COLUMN {col} TEXT"  # noqa: S608
@@ -2337,6 +2345,8 @@ CREATE TABLE IF NOT EXISTS lineage_event (
     from_status      TEXT,
     to_status        TEXT,
     status_namespace TEXT,
+    model_name       TEXT,
+    provider         TEXT,
     UNIQUE (org_id, entity_type, entity_id, op, request_id)
 );
 CREATE INDEX IF NOT EXISTS idx_lineage_entity ON lineage_event (entity_type, entity_id);

@@ -29,6 +29,14 @@ def _stream_json(result_text: str) -> str:
     )
 
 
+def _stream_json_with_model(result_text: str, model: str) -> str:
+    return (
+        json.dumps({"type": "assistant", "message": {"model": model}})
+        + "\n"
+        + _stream_json(result_text)
+    )
+
+
 @pytest.fixture(autouse=True)
 def _reset_module_state() -> None:
     """Each test starts with fresh registration and warn-once flags."""
@@ -169,12 +177,18 @@ class TestSplitSystemAndDialogue:
 
 class TestClaudeCodeLLMCompletion:
     def _mock_cli(
-        self, monkeypatch: pytest.MonkeyPatch, result_text: str = "ok"
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        result_text: str = "ok",
+        served_model: str | None = None,
     ) -> MagicMock:
         """Mock subprocess.run to return a stream-json NDJSON body with one result event."""
-        mock_run = MagicMock(
-            return_value=_fake_completed_process(_stream_json(result_text))
+        stream = (
+            _stream_json_with_model(result_text, served_model)
+            if served_model
+            else _stream_json(result_text)
         )
+        mock_run = MagicMock(return_value=_fake_completed_process(stream))
         monkeypatch.setattr(ccp.subprocess, "run", mock_run)
         monkeypatch.setattr(ccp, "_resolve_cli_path", lambda: "/usr/local/bin/claude")
         return mock_run
@@ -182,7 +196,11 @@ class TestClaudeCodeLLMCompletion:
     def test_basic_completion_shapes_model_response(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        self._mock_cli(monkeypatch, result_text="hello world")
+        self._mock_cli(
+            monkeypatch,
+            result_text="hello world",
+            served_model="claude-sonnet-5-20260701",
+        )
         llm = ClaudeCodeLLM()
 
         response = llm.completion(
@@ -192,10 +210,73 @@ class TestClaudeCodeLLMCompletion:
 
         assert response.choices[0].message.content == "hello world"  # type: ignore[union-attr]
         assert response.model == "claude-code/default"
+        assert (
+            response._hidden_params["reflexio_served_model"]
+            == "claude-sonnet-5-20260701"
+        )
+        assert response._hidden_params["reflexio_provider"] == "claude-code"
+        assert response._hidden_params["reflexio_cli_binary"] == "claude"
         # stream-json does not surface usage tokens at terminal event.
         assert response.usage.prompt_tokens == 0  # type: ignore[attr-defined]
         assert response.usage.completion_tokens == 0  # type: ignore[attr-defined]
         assert response.usage.total_tokens == 0  # type: ignore[attr-defined]
+
+    def test_completion_forwards_terminal_route_metadata(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        stream = (
+            '{"type":"result","result":"hello","model":"MiniMax-M3",'
+            '"provider":"minimax"}\n'
+        )
+        monkeypatch.setattr(
+            ccp.subprocess,
+            "run",
+            MagicMock(return_value=_fake_completed_process(stream)),
+        )
+        monkeypatch.setattr(ccp, "_resolve_cli_path", lambda: "/usr/local/bin/claude")
+
+        response = ClaudeCodeLLM().completion(
+            model="claude-code/default",
+            messages=[{"role": "user", "content": "ping"}],
+        )
+
+        assert response.model == "claude-code/default"
+        assert response._hidden_params["reflexio_served_model"] == "MiniMax-M3"
+        assert response._hidden_params["reflexio_served_provider"] == "minimax"
+
+    def test_tool_call_response_keeps_served_model_and_binary(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._mock_cli(
+            monkeypatch,
+            result_text='{"tool":"finish","args":{"answer":"done"}}',
+            served_model="claude-sonnet-5-20260701",
+        )
+
+        response = ClaudeCodeLLM().completion(
+            model="claude-code/default",
+            messages=[{"role": "user", "content": "finish"}],
+            optional_params={
+                "tools": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "finish",
+                            "description": "Finish",
+                            "parameters": {"type": "object"},
+                        },
+                    }
+                ]
+            },
+        )
+
+        assert response.model == "claude-code/default"
+        assert (
+            response._hidden_params["reflexio_served_model"]
+            == "claude-sonnet-5-20260701"
+        )
+        assert response._hidden_params["reflexio_provider"] == "claude-code"
+        assert response._hidden_params["reflexio_cli_binary"] == "claude"
 
     def test_uses_stream_json_output_format(
         self, monkeypatch: pytest.MonkeyPatch
@@ -559,6 +640,9 @@ class TestClaudeCodeLLMCompletion:
         assert kwargs["input"] == "Be terse.\n\n## Task\nUser: ping — now"
         assert kwargs["env"]["CLAUDE_SMART_HOST"] == "codex"
         assert response.choices[0].message.content == "codex reply"  # type: ignore[union-attr]
+        assert response.model == "claude-code/default"
+        assert response._hidden_params["reflexio_provider"] == "claude-code"
+        assert response._hidden_params["reflexio_cli_binary"] == "codex"
 
     def test_windows_extensionless_cli_override_prefers_adjacent_cmd(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path

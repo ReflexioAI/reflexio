@@ -13,10 +13,12 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from reflexio.models.api_schema.domain.entities import (
+        LineageContext,
         UserPlaybook,
         UserProfile,
     )
     from reflexio.models.api_schema.service_schemas import Interaction
+    from reflexio.server.llm._litellm_types import ModelProvenance
     from reflexio.server.llm.token_accounting import RunTokenTotals
     from reflexio.server.services.base_generation_service import (
         BaseGenerationService,
@@ -70,6 +72,7 @@ class ProfileWritePlan:
     request_id: str
     new_profiles: list[UserProfile]
     superseded_ids: list[str]
+    lineage_contexts: list[LineageContext] = field(default_factory=list)
 
 
 @dataclass
@@ -115,6 +118,8 @@ class PlaybookWritePlan:
     new_playbooks: list[UserPlaybook]
     superseded_ids: list[int]
     merge_groups: list[tuple[int, list[int]]]
+    lineage_contexts: list[LineageContext] = field(default_factory=list)
+    consolidation_provenance: ModelProvenance | None = None
 
 
 @dataclass

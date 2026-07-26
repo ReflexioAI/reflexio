@@ -29,6 +29,7 @@ from reflexio.models.config_schema import (
     PlaybookConfig,
 )
 from reflexio.server.api_endpoints.request_context import RequestContext
+from reflexio.server.llm._litellm_types import CompletionResult, ModelProvenance
 from reflexio.server.services.playbook.playbook_service_utils import (
     PlaybookGenerationRequest,
     StructuredPlaybookContent,
@@ -183,6 +184,11 @@ def _setup_mock_chat_completion(
 
     service.client.generate_chat_response = MagicMock(
         side_effect=mock_generate_chat_response
+    )
+    service.client.generate_chat_response_with_provenance = MagicMock(
+        side_effect=lambda *args, **kwargs: CompletionResult(
+            mock_generate_chat_response(*args, **kwargs), ModelProvenance()
+        )
     )
 
 
@@ -420,9 +426,20 @@ def test_playbook_message_construction_with_interactions(
             ]
         )
 
-    with patch(
-        "reflexio.server.llm.litellm_client.LiteLLMClient.generate_chat_response",
-        side_effect=mock_generate_chat_response,
+    def mock_generate_with_provenance(*args, **kwargs):
+        return CompletionResult(
+            mock_generate_chat_response(*args, **kwargs), ModelProvenance()
+        )
+
+    with (
+        patch(
+            "reflexio.server.llm.litellm_client.LiteLLMClient.generate_chat_response",
+            side_effect=mock_generate_chat_response,
+        ),
+        patch(
+            "reflexio.server.llm.litellm_client.LiteLLMClient.generate_chat_response_with_provenance",
+            side_effect=mock_generate_with_provenance,
+        ),
     ):
         # Create playbook generation request with new API
         request = PlaybookGenerationRequest(

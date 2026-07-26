@@ -16,11 +16,15 @@ import logging
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
+from typing import TYPE_CHECKING
 
 import litellm
 
 from reflexio.server.env_utils import env_str
 from reflexio.server.llm.llm_utils import positive_int_env
+
+if TYPE_CHECKING:
+    from reflexio.server.llm._litellm_types import ModelProvenance
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +47,15 @@ class ProviderCapSaturatedError(Exception):
     exhausting the subscription. The fallback walker treats it as an
     advance-worthy rung failure.
     """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        first_parsed_provenance: "ModelProvenance | None" = None,
+    ) -> None:
+        super().__init__(message)
+        self.first_parsed_provenance = first_parsed_provenance
 
 
 def _parse_fail_closed() -> frozenset[str]:

@@ -4,7 +4,7 @@ Day-one invariant guards established BEFORE the PlaybookMixin decomposition. The
 pin the CURRENT commit / lineage-event / no-op behavior of the top-risk,
 atomicity-sensitive methods so a "tidying" reorder during the mixin split is caught
 by a failing test. Modeled on the gold standard
-``test_save_agent_playbook_with_aggregate_event_integration.py``.
+``test_save_agent_playbooks_integration.py``.
 
 Methods characterized here (SQLite side):
   - ``supersede_user_playbooks_by_ids`` — soft-delete to SUPERSEDED, per-row

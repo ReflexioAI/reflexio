@@ -366,7 +366,7 @@ def _run_aggregator_with_supersede(
         patch.object(
             PlaybookAggregator,
             "_generate_playbooks_with_source_clusters",
-            return_value=[(new_ap, cluster_playbooks)],
+            return_value=[(new_ap, cluster_playbooks, None)],
         ),
     ):
         aggregator = PlaybookAggregator(
@@ -601,7 +601,7 @@ class TestEmptyRunIdFailLoud:
             patch.object(
                 PlaybookAggregator,
                 "_generate_playbooks_with_source_clusters",
-                return_value=[(new_ap, cluster_playbooks)],
+                return_value=[(new_ap, cluster_playbooks, None)],
             ),
             patch(uuid_path, return_value=_EmptyStrUUID()),
         ):
@@ -611,7 +611,7 @@ class TestEmptyRunIdFailLoud:
                 agent_version="v0",
             )
             # The storage guard raises on empty request_id; outer handler restores + re-raises.
-            with pytest.raises(StorageError, match="non-empty request_id"):
+            with pytest.raises(StorageError, match="requires request_id"):
                 aggregator.run(
                     PlaybookAggregatorRequest(agent_version="v0", rerun=True)
                 )

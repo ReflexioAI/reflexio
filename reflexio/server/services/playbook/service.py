@@ -11,6 +11,7 @@ if TYPE_CHECKING:
     from reflexio.server.services.deferred_learning_plan import GenerationComputePlan
     from reflexio.server.services.storage.storage_base import BaseStorage
 
+from reflexio.models.api_schema.domain.entities import LineageContext
 from reflexio.models.api_schema.internal_schema import RequestInteractionDataModel
 from reflexio.models.api_schema.service_schemas import (
     DowngradeUserPlaybooksResponse,
@@ -23,6 +24,7 @@ from reflexio.models.api_schema.service_schemas import (
     UserPlaybook,
 )
 from reflexio.models.config_schema import PlaybookConfig
+from reflexio.server.llm._litellm_types import ModelProvenance
 from reflexio.server.services.base_generation_service import (
     BaseGenerationService,
     StatusChangeOperation,
@@ -338,6 +340,8 @@ class PlaybookGenerationService(
             self.service_config.agent_version,  # type: ignore[reportOptionalMemberAccess]
             user_id=self.service_config.user_id,  # type: ignore[reportOptionalMemberAccess]
         )
+        consolidation_provenance = consolidator.model_provenance
+        consolidated_output_indices = consolidator.consolidated_output_indices
         logger.info(
             "User playbook entries after deduplication: %d",
             len(deduplicated_playbooks),
@@ -366,6 +370,27 @@ class PlaybookGenerationService(
         # persist half passes skip_embedding=True so no embedding runs in the fence.
         self.storage.precompute_user_playbook_embeddings(all_playbooks)  # type: ignore[reportOptionalMemberAccess]
 
+        lineage_contexts: list[LineageContext] = []
+        for index, _playbook in enumerate(all_playbooks):
+            provenance = (
+                consolidation_provenance
+                if index in consolidated_output_indices
+                else self._last_model_provenance
+            )
+            lineage_contexts.append(
+                LineageContext(
+                    op_kind="create",
+                    actor=(
+                        "consolidator"
+                        if index in consolidated_output_indices
+                        else "extractor"
+                    ),
+                    request_id=generation_request_id,
+                    model_name=provenance.model_name if provenance else None,
+                    provider=provenance.provider if provenance else None,
+                )
+            )
+
         return PlaybookWritePlan(
             request_id=generation_request_id,
             output_pending_status=self.output_pending_status,
@@ -373,6 +398,8 @@ class PlaybookGenerationService(
             new_playbooks=all_playbooks,
             superseded_ids=existing_ids_to_delete,
             merge_groups=merge_groups,
+            lineage_contexts=lineage_contexts,
+            consolidation_provenance=consolidation_provenance,
         )
 
     def _persist_write_plan(self, plan: PlaybookWritePlan) -> None:
@@ -391,13 +418,16 @@ class PlaybookGenerationService(
             return
         try:
             self.storage.save_user_playbooks(  # type: ignore[reportOptionalMemberAccess]
-                plan.new_playbooks, skip_embedding=True
+                plan.new_playbooks,
+                skip_embedding=True,
+                lineage_contexts=plan.lineage_contexts,
             )
             self._apply_consolidation_lineage(
                 plan.new_playbooks,
                 plan.merge_groups,
                 plan.superseded_ids,
                 request_id=plan.request_id,
+                model_provenance=plan.consolidation_provenance,
             )
         except Exception as e:
             logger.error(
@@ -438,7 +468,12 @@ class PlaybookGenerationService(
         if write_plan is not None:
             self._dispatch_playbook_schedulers(write_plan)
 
-    def _finalize_extracted_items(self, all_playbooks: list[UserPlaybook]) -> None:
+    def _finalize_extracted_items(
+        self,
+        all_playbooks: list[UserPlaybook],
+        *,
+        model_provenance: ModelProvenance | None = None,
+    ) -> None:
         """Permanent V3 wrapper: compute→persist→schedulers together (no fence).
 
         Kept for the synchronous resume/manual callers
@@ -448,6 +483,8 @@ class PlaybookGenerationService(
         ``commit_scope`` — then dispatches the same off-thread schedulers, so the
         result is identical to the pre-split monolith.
         """
+        if model_provenance is not None:
+            self._last_model_provenance = model_provenance
         plan = self._resolve_write_plan([all_playbooks])
         if plan is None:
             return
@@ -461,6 +498,7 @@ class PlaybookGenerationService(
         existing_ids_to_delete: list[int],
         *,
         request_id: str,
+        model_provenance: ModelProvenance | None = None,
     ) -> None:
         """Materialize consolidation merges as lineage tombstones.
 
@@ -482,8 +520,6 @@ class PlaybookGenerationService(
                 rather than read off ``self.service_config`` so persist stays
                 decoupled from the mutable service config on the fenced path.
         """
-        from reflexio.models.api_schema.domain.entities import LineageContext
-
         generation_request_id = request_id
         merged_source_ids: set[int] = set()
         for survivor_idx, source_ids in merge_groups:
@@ -499,6 +535,10 @@ class PlaybookGenerationService(
                     source_ids=[str(s) for s in source_ids],
                     reason="dedup-merge",
                     request_id=generation_request_id,
+                    model_name=(
+                        model_provenance.model_name if model_provenance else None
+                    ),
+                    provider=model_provenance.provider if model_provenance else None,
                 ),
             )
 

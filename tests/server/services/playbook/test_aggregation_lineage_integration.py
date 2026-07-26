@@ -10,7 +10,7 @@ Asserts:
 - source_ids contains str(UP-a.user_playbook_id) and str(UP-b.user_playbook_id).
 
 Also includes a regression test verifying that a failure in the atomic
-``save_agent_playbook_with_aggregate_event`` ABORTS the run, restores any
+``save_agent_playbooks`` ABORTS the run, restores any
 archived playbooks, and re-raises — all-or-nothing semantics (C1).
 
 Mirrors the real-SQLite + mocked-cluster fixture style of
@@ -166,7 +166,7 @@ def test_aggregation_emits_aggregate_lineage_event(
         patch.object(
             PlaybookAggregator,
             "_generate_playbooks_with_source_clusters",
-            return_value=[(unsaved_ap, cluster_playbooks)],
+            return_value=[(unsaved_ap, cluster_playbooks, None)],
         ),
     ):
         aggregator.run(PlaybookAggregatorRequest(agent_version="v0", rerun=True))
@@ -201,7 +201,7 @@ def test_aggregate_save_failure_aborts_and_restores(
     aggregator: PlaybookAggregator,
     worker_id: str,
 ):
-    """C1: a failure in save_agent_playbook_with_aggregate_event aborts the run and restores archives.
+    """C1: a failure in save_agent_playbooks aborts the run and restores archives.
 
     The per-playbook save no longer silently skips on failure.  Instead the
     exception propagates to the outer handler which:
@@ -210,7 +210,7 @@ def test_aggregate_save_failure_aborts_and_restores(
     (c) leaves no orphan agent_playbook row (atomic rollback of the INSERT + event).
 
     Setup: seed one archived agent playbook (the old generation) + two user
-    playbooks.  Patch save_agent_playbook_with_aggregate_event to raise.
+    playbooks.  Patch save_agent_playbooks to raise.
     The archived playbook must survive (be restorable) and no new row must appear.
     """
     org_id = request_context.org_id
@@ -248,11 +248,11 @@ def test_aggregate_save_failure_aborts_and_restores(
         patch.object(
             PlaybookAggregator,
             "_generate_playbooks_with_source_clusters",
-            return_value=[(new_ap, cluster_playbooks)],
+            return_value=[(new_ap, cluster_playbooks, None)],
         ),
         patch.object(
             sqlite_storage,
-            "save_agent_playbook_with_aggregate_event",
+            "save_agent_playbooks",
             side_effect=RuntimeError("simulated atomic failure"),
         ),
         pytest.raises(RuntimeError, match="simulated atomic failure"),
@@ -272,7 +272,7 @@ def test_aggregate_save_failure_aborts_and_restores(
         ap.agent_playbook_id for ap in all_aps if ap.agent_playbook_id != old_ap_id
     ]
     assert not new_ids, (
-        "No new agent playbook must be saved when save_agent_playbook_with_aggregate_event fails"
+        "No new agent playbook must be saved when save_agent_playbooks fails"
     )
 
 
@@ -312,7 +312,7 @@ def test_e2e_reconstruct_added_and_run_mode(
     """E2E: run aggregation (full_archive) → reconstruct → assert added + run_mode.
 
     Validates the D1 rewire end-to-end: each saved playbook's aggregate event is
-    emitted atomically via ``save_agent_playbook_with_aggregate_event``, and
+    emitted atomically via ``save_agent_playbooks``, and
     ``reconstruct_playbook_aggregation_change_log`` can reconstruct the run with:
     - correct ``added_agent_playbooks`` (from aggregate events),
     - ``run_mode == "full_archive"`` (reason == "aggregate:full_archive"),
@@ -354,7 +354,7 @@ def test_e2e_reconstruct_added_and_run_mode(
         patch.object(
             PlaybookAggregator,
             "_generate_playbooks_with_source_clusters",
-            return_value=[(new_ap, cluster_playbooks)],
+            return_value=[(new_ap, cluster_playbooks, None)],
         ),
     ):
         aggregator = PlaybookAggregator(
@@ -425,7 +425,7 @@ def test_e2e_reconstruct_incremental_run_mode(
         patch.object(
             PlaybookAggregator,
             "_generate_playbooks_with_source_clusters",
-            return_value=[(ap_run1, cluster_run1)],
+            return_value=[(ap_run1, cluster_run1, None)],
         ),
     ):
         agg1 = PlaybookAggregator(
@@ -455,7 +455,7 @@ def test_e2e_reconstruct_incremental_run_mode(
         patch.object(
             PlaybookAggregator,
             "_generate_playbooks_with_source_clusters",
-            return_value=[(ap_run2, cluster_run2)],
+            return_value=[(ap_run2, cluster_run2, None)],
         ),
     ):
         agg2 = PlaybookAggregator(

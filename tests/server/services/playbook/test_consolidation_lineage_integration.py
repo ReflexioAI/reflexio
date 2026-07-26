@@ -25,10 +25,12 @@ import pytest
 from reflexio.models.api_schema.domain.enums import Status
 from reflexio.models.api_schema.service_schemas import UserPlaybook
 from reflexio.server.api_endpoints.request_context import RequestContext
+from reflexio.server.llm._litellm_types import CompletionResult, ModelProvenance
 from reflexio.server.services.lineage.resolve import resolve_current
 from reflexio.server.services.playbook.components.consolidator import (
     DifferentiateDecision,
     PlaybookConsolidationOutput,
+    PlaybookConsolidator,
     UnifyDecision,
 )
 from reflexio.server.services.playbook.service import (
@@ -173,6 +175,19 @@ def test_consolidation_merge_routes_through_merge_records(
         ]
     )
 
+    observed_provenance = ModelProvenance(
+        model_name="MiniMax-M3",
+        provider="minimax",
+    )
+    real_deduplicate = PlaybookConsolidator.deduplicate
+
+    def _deduplicate_with_observed_provenance(self, *args, **kwargs):
+        result = real_deduplicate(self, *args, **kwargs)
+        # Stamp observed consolidator attribution so the merge event path is
+        # exercised without a live LLM completion.
+        self.model_provenance = observed_provenance
+        return result
+
     with (
         patch.object(
             PlaybookGenerationService,
@@ -186,6 +201,11 @@ def test_consolidation_merge_routes_through_merge_records(
         patch(
             "reflexio.server.services.playbook.components.consolidator.PlaybookConsolidator._consolidation_decisions",
             return_value=decision_output,
+        ),
+        patch.object(
+            PlaybookConsolidator,
+            "deduplicate",
+            _deduplicate_with_observed_provenance,
         ),
         patch.dict("os.environ", {"MOCK_LLM_RESPONSE": "false"}),
     ):
@@ -205,13 +225,15 @@ def test_consolidation_merge_routes_through_merge_records(
     assert tombstone.status == Status.MERGED
     assert tombstone.merged_into == survivor.user_playbook_id
 
-    # A merge lineage event keyed on the survivor exists.
+    # A merge lineage event keyed on the survivor exists, with consolidator model.
     events = sqlite_storage.get_lineage_events(
         entity_type="user_playbook", entity_id=str(survivor.user_playbook_id)
     )
     merge_events = [e for e in events if e.op == "merge"]
     assert len(merge_events) == 1, events
     assert str(old_id) in merge_events[0].source_ids
+    assert merge_events[0].model_name == observed_provenance.model_name
+    assert merge_events[0].provider == observed_provenance.provider
 
     # resolve_current follows merged_into to the live survivor.
     ref = resolve_current(sqlite_storage, "user_playbook", old_id)
@@ -263,9 +285,9 @@ def test_consolidation_repair_persists_only_repaired_multi_new_unify(
     def repaired_consolidation(*, structured_output_validator, **_kwargs):
         assert structured_output_validator(initial_output)
         assert structured_output_validator(repaired_output) == []
-        return repaired_output
+        return CompletionResult(repaired_output, ModelProvenance())
 
-    generation_service.client.generate_chat_response.side_effect = (
+    generation_service.client.generate_chat_response_with_provenance.side_effect = (
         repaired_consolidation
     )
 
@@ -288,7 +310,7 @@ def test_consolidation_repair_persists_only_repaired_multi_new_unify(
     survivor = current[0]
     assert survivor.content == "Always update target groups and security groups."
     assert survivor.source_interaction_ids == [15, 16, 19, 20]
-    generation_service.client.generate_chat_response.assert_called_once()
+    generation_service.client.generate_chat_response_with_provenance.assert_called_once()
 
 
 def test_consolidation_differentiate_tombstones_split_source(

@@ -56,6 +56,7 @@ import pytest
 
 from reflexio.models.api_schema.service_schemas import UserPlaybook
 from reflexio.server.api_endpoints.request_context import RequestContext
+from reflexio.server.llm._litellm_types import CompletionResult, ModelProvenance
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.services.playbook.components.consolidator import (
     DifferentiateDecision,
@@ -246,8 +247,10 @@ def _drive_consolidator(
         tuple[list[UserPlaybook], list[int]]: ``(rows_to_save,
         ids_to_delete)`` as returned by ``deduplicate``.
     """
-    consolidator.client.generate_chat_response.return_value = (  # type: ignore[attr-defined]
-        PlaybookConsolidationOutput(decisions=decisions)
+    consolidator.client.generate_chat_response_with_provenance.return_value = (  # type: ignore[attr-defined]
+        CompletionResult(
+            PlaybookConsolidationOutput(decisions=decisions), ModelProvenance()
+        )
     )
     with (
         patch.object(

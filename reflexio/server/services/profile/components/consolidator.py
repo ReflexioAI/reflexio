@@ -15,6 +15,7 @@ from reflexio.models.api_schema.retriever_schema import SearchUserProfileRequest
 from reflexio.models.api_schema.service_schemas import Status, UserProfile
 from reflexio.models.structured_output import StrictStructuredOutput
 from reflexio.server.api_endpoints.request_context import RequestContext
+from reflexio.server.llm._litellm_types import ModelProvenance
 from reflexio.server.llm.litellm_client import (
     LiteLLMClient,
     LiteLLMClientError,
@@ -333,6 +334,9 @@ class ProfileConsolidator(BaseDeduplicator):
         """
         super().__init__(request_context, llm_client)
         self.output_pending_status = output_pending_status
+        self.model_provenance: ModelProvenance | None = None
+        self.lineage_sources_by_profile_id: dict[str, list[str]] = {}
+        self.consolidated_output_indices: set[int] = set()
 
     def _get_prompt_id(self) -> str:
         """Get the prompt ID for profile deduplication."""
@@ -512,6 +516,10 @@ class ProfileConsolidator(BaseDeduplicator):
         Returns:
             Tuple of (deduplicated profiles, existing profile IDs to delete, superseded existing profiles)
         """
+        self.model_provenance = None
+        self.lineage_sources_by_profile_id = {}
+        self.consolidated_output_indices = set()
+
         # Check if mock mode is enabled
         if os.getenv("MOCK_LLM_RESPONSE", "").lower() == "true":
             logger.info("Mock mode: skipping deduplication")
@@ -577,12 +585,14 @@ class ProfileConsolidator(BaseDeduplicator):
                 logger, "Profile deduplication", [{"role": "user", "content": prompt}]
             )
 
-            response = self.client.generate_chat_response(
+            completion = self.client.generate_chat_response_with_provenance(
                 messages=[{"role": "user", "content": prompt}],
                 model=self.model_name,
                 response_format=output_schema_class,
                 structured_output_validator=_validate_output,
             )
+            self.model_provenance = completion.provenance
+            response = completion.value
 
             log_model_response(logger, "Deduplication response", response)
 
@@ -630,6 +640,9 @@ class ProfileConsolidator(BaseDeduplicator):
             # drops out-of-range indices, skips a group it cannot resolve
             # without marking anything, and re-adds any unreferenced NEW
             # profile via the safety fallback.
+            # Ladder walk stamps first_parsed_provenance across all rungs so this
+            # matches first_parsed_output from the shared validator closure.
+            self.model_provenance = getattr(e, "first_parsed_provenance", None)
             logger.warning(
                 "Falling back to the first parsed deduplication attempt after "
                 "repair exhausted"
@@ -825,7 +838,14 @@ class ProfileConsolidator(BaseDeduplicator):
                 status=template_profile.status,
                 extractor_names=merged_extractor_names,
             )
+            self.consolidated_output_indices.add(len(result_profiles))
             result_profiles.append(merged_profile)
+            self.lineage_sources_by_profile_id[merged_profile.profile_id] = [
+                str(existing_profiles[eidx].profile_id)
+                for eidx in group_existing_indices
+                if 0 <= eidx < len(existing_profiles)
+                and existing_profiles[eidx].profile_id
+            ]
 
         # Add unique NEW profiles
         for uid in dedup_output.unique_ids:

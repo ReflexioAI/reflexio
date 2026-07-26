@@ -5,6 +5,7 @@ from reflexio.models.api_schema.domain import (
     Status,
     UserProfile,
 )
+from reflexio.models.api_schema.domain.entities import LineageContext
 
 
 class ProfileStoreMixin:
@@ -72,12 +73,15 @@ class ProfileStoreMixin:
         user_profiles: list[UserProfile],
         *,
         skip_embedding: bool = False,
+        lineage_contexts: list[LineageContext] | None = None,
     ) -> None:
-        """Add the user profile for a given user id.
+        """Add profiles and their create lineage events atomically.
 
         Args:
             user_id: The owning user id (positional, unused by some backends).
             user_profiles: Profiles to insert.
+            lineage_contexts: Optional per-row create attribution. When omitted,
+                storage derives a context from the row and leaves model/provider null.
             skip_embedding: When ``False`` (default — what every current caller
                 gets), the embedding (and, when document expansion is enabled,
                 ``expanded_terms``) is recomputed unconditionally at write time,

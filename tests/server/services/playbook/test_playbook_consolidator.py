@@ -11,7 +11,11 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from reflexio.models.api_schema.service_schemas import UserPlaybook
-from reflexio.server.llm.litellm_client import StructuredOutputRepairError
+from reflexio.server.llm._litellm_types import CompletionResult, ModelProvenance
+from reflexio.server.llm.litellm_client import (
+    LiteLLMClientError,
+    StructuredOutputRepairError,
+)
 from reflexio.server.services.playbook.components.consolidator import (
     DifferentiateDecision,
     IndependentDecision,
@@ -58,6 +62,16 @@ def mock_consolidator():
 
     mock_llm_client = MagicMock()
 
+    def _generate_with_provenance(*args, **kwargs):
+        value = mock_llm_client.generate_chat_response(*args, **kwargs)
+        if isinstance(value, CompletionResult):
+            return value
+        return CompletionResult(value=value, provenance=ModelProvenance())
+
+    mock_llm_client.generate_chat_response_with_provenance.side_effect = (
+        _generate_with_provenance
+    )
+
     with patch(
         "reflexio.server.services.deduplication_utils.SiteVarManager"
     ) as mock_svm:
@@ -95,6 +109,11 @@ def _unify(
 def _shared_repair_side_effect(*outputs: PlaybookConsolidationOutput):
     """Simulate the shared client validator/repair contract for service tests."""
 
+    provenance = ModelProvenance(
+        model_name="served-model",
+        provider="provider",
+    )
+
     def _side_effect(*, response_format, structured_output_validator, model, **_kwargs):
         assert response_format is PlaybookConsolidationOutput
         first_output = outputs[0]
@@ -112,6 +131,7 @@ def _shared_repair_side_effect(*outputs: PlaybookConsolidationOutput):
                 model=model,
                 parsed_output=repaired_output,
                 validation_errors=tuple(repaired_errors),
+                first_parsed_provenance=provenance,
             )
         raise StructuredOutputRepairError(
             "repair exhausted",
@@ -119,6 +139,7 @@ def _shared_repair_side_effect(*outputs: PlaybookConsolidationOutput):
             model=model,
             parsed_output=first_output,
             validation_errors=tuple(first_errors),
+            first_parsed_provenance=provenance,
         )
 
     return _side_effect
@@ -1180,6 +1201,78 @@ class TestDeduplicateHappyPath:
 class TestConsolidationRepair:
     """Tests for pre-apply validation and the single repair pass."""
 
+    def test_repair_fallback_uses_first_parsed_output_provenance(
+        self, mock_consolidator
+    ):
+        first_output = PlaybookConsolidationOutput(
+            decisions=[IndependentDecision(new_id="NEW-0")]
+        )
+        first_parsed_provenance = ModelProvenance(model_name="served-first-parsed")
+
+        def repair_exhausted(*, structured_output_validator, **_kwargs):
+            structured_output_validator(first_output)
+            raise StructuredOutputRepairError(
+                "repair exhausted",
+                failure_kind="semantic",
+                model="configured-model",
+                first_parsed_provenance=first_parsed_provenance,
+            )
+
+        mock_consolidator.client.generate_chat_response.side_effect = repair_exhausted
+
+        result = mock_consolidator._consolidation_decisions(
+            [_make_user_playbook(0), _make_user_playbook(1)], []
+        )
+
+        assert result is first_output
+        assert mock_consolidator.model_provenance == first_parsed_provenance
+
+    def test_repair_fallback_returns_first_parsed_output_without_provenance(
+        self, mock_consolidator
+    ):
+        first_output = PlaybookConsolidationOutput(
+            decisions=[IndependentDecision(new_id="NEW-0")]
+        )
+
+        def repair_exhausted(*, structured_output_validator, **_kwargs):
+            structured_output_validator(first_output)
+            raise StructuredOutputRepairError(
+                "repair exhausted",
+                failure_kind="semantic",
+                model="configured-model",
+            )
+
+        mock_consolidator.client.generate_chat_response.side_effect = repair_exhausted
+
+        result = mock_consolidator._consolidation_decisions(
+            [_make_user_playbook(0), _make_user_playbook(1)], []
+        )
+
+        assert result is first_output
+        assert mock_consolidator.model_provenance is None
+
+    def test_transport_failure_preserves_first_parsed_output(self, mock_consolidator):
+        first_output = PlaybookConsolidationOutput(
+            decisions=[IndependentDecision(new_id="NEW-0")]
+        )
+        first_parsed_provenance = ModelProvenance(model_name="served-first-parsed")
+
+        def transport_failure(*, structured_output_validator, **_kwargs):
+            structured_output_validator(first_output)
+            raise LiteLLMClientError(
+                "repair transport failed",
+                first_parsed_provenance=first_parsed_provenance,
+            )
+
+        mock_consolidator.client.generate_chat_response.side_effect = transport_failure
+
+        result = mock_consolidator._consolidation_decisions(
+            [_make_user_playbook(0), _make_user_playbook(1)], []
+        )
+
+        assert result is first_output
+        assert mock_consolidator.model_provenance == first_parsed_provenance
+
     def test_under_consumed_output_repairs_to_multi_new_unify(self, mock_consolidator):
         new_0 = _make_user_playbook(
             0, content="alpha beta", source_interaction_ids=[10]
@@ -1278,6 +1371,8 @@ class TestConsolidationRepair:
         ]
         assert delete_ids == []
         assert mock_consolidator.client.generate_chat_response.call_count == 1
+        assert mock_consolidator.model_provenance is not None
+        assert mock_consolidator.model_provenance.model_name == "served-model"
 
     def test_suspicious_same_source_split_triggers_repair(self, mock_consolidator):
         new_0 = _make_user_playbook(

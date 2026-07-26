@@ -30,6 +30,7 @@ from reflexio.models.config_schema import (
     PlaybookConfig,
     PlaybookOptimizerConfig,
 )
+from reflexio.server.llm._litellm_types import CompletionResult, ModelProvenance
 from reflexio.server.services.playbook.aggregation_prompt_processing import (
     AggregationPromptProcessingContext,
     PromptPostprocessResult,
@@ -54,6 +55,14 @@ def _make_aggregator(
 ) -> Any:
     """Build an aggregator with fully mocked dependencies."""
     llm = MagicMock()
+
+    def _generate_with_provenance(*args: Any, **kwargs: Any) -> CompletionResult[Any]:
+        value = llm.generate_chat_response(*args, **kwargs)
+        if isinstance(value, CompletionResult):
+            return value
+        return CompletionResult(value=value, provenance=ModelProvenance())
+
+    llm.generate_chat_response_with_provenance.side_effect = _generate_with_provenance
     ctx = MagicMock()
     ctx.storage = storage or MagicMock()
     ctx.configurator = configurator or MagicMock()
@@ -378,7 +387,7 @@ def test_mock_llm_response_postprocesses_artifacts_before_storage():
         result = agg._generate_playbooks_with_source_clusters(clusters, [])
 
     assert len(result) == 1
-    playbook, _sources = result[0]
+    playbook, _sources, _provenance = result[0]
     assert "<<TOKEN_" not in playbook.content
     assert "<<TOKEN_" not in (playbook.trigger or "")
     assert "a processed artifact" in playbook.content
@@ -406,17 +415,79 @@ def test_artifact_postprocessing_runs_before_response_logging_and_storage():
         result = agg._generate_playbook_from_cluster(cluster, "None")
 
     assert result is not None
-    assert "<<TOKEN_" not in result.content
-    assert "<<TOKEN_" not in (result.trigger or "")
-    assert "<<TOKEN_" not in (result.rationale or "")
-    assert "a processed artifact" in result.content
-    assert "a processed artifact" in (result.trigger or "")
+    playbook, _provenance = result
+    assert "<<TOKEN_" not in playbook.content
+    assert "<<TOKEN_" not in (playbook.trigger or "")
+    assert "<<TOKEN_" not in (playbook.rationale or "")
+    assert "a processed artifact" in playbook.content
+    assert "a processed artifact" in (playbook.trigger or "")
     logged_response = mock_log_model_response.call_args.args[2]
     assert isinstance(logged_response, PlaybookAggregationOutput)
     assert logged_response.playbook is not None
     assert "<<TOKEN_" not in (logged_response.playbook.content or "")
     assert "<<TOKEN_" not in (logged_response.playbook.trigger or "")
     assert "<<TOKEN_" not in (logged_response.playbook.rationale or "")
+
+
+def test_generated_playbook_keeps_its_completion_provenance():
+    agg = _make_aggregator()
+    agg.request_context.prompt_manager.render_prompt.return_value = "prompt"
+    provenance = ModelProvenance(
+        model_name="served-model",
+        provider="provider",
+    )
+    agg.client.generate_chat_response.return_value = CompletionResult(
+        value=PlaybookAggregationOutput(
+            playbook=StructuredPlaybookContent(
+                content="Do the narrow check first.",
+                trigger="When debugging",
+            )
+        ),
+        provenance=provenance,
+    )
+
+    with patch.dict("os.environ", {"MOCK_LLM_RESPONSE": ""}):
+        result = agg._generate_playbooks_with_source_clusters({0: [_raw(rid=1)]}, [])
+
+    [(playbook, source_playbooks, actual_provenance)] = result
+    assert playbook.content == "Do the narrow check first."
+    assert [source.user_playbook_id for source in source_playbooks] == [1]
+    assert actual_provenance == provenance
+
+
+def test_each_generated_playbook_keeps_its_own_completion_provenance():
+    agg = _make_aggregator()
+    agg.request_context.prompt_manager.render_prompt.return_value = "prompt"
+    provenance_a = ModelProvenance(model_name="model-a", provider="provider-a")
+    provenance_b = ModelProvenance(model_name="model-b", provider="provider-b")
+    agg.client.generate_chat_response.side_effect = [
+        CompletionResult(
+            value=PlaybookAggregationOutput(
+                playbook=StructuredPlaybookContent(
+                    content="Use the first rule.", trigger="For the first cluster"
+                )
+            ),
+            provenance=provenance_a,
+        ),
+        CompletionResult(
+            value=PlaybookAggregationOutput(
+                playbook=StructuredPlaybookContent(
+                    content="Use the second rule.", trigger="For the second cluster"
+                )
+            ),
+            provenance=provenance_b,
+        ),
+    ]
+
+    with patch.dict("os.environ", {"MOCK_LLM_RESPONSE": ""}):
+        result = agg._generate_playbooks_with_source_clusters(
+            {0: [_raw(rid=1)], 1: [_raw(rid=2)]}, []
+        )
+
+    assert [provenance for _playbook, _sources, provenance in result] == [
+        provenance_a,
+        provenance_b,
+    ]
 
 
 def test_artifact_postprocessing_runs_before_string_fallback_logging():
@@ -838,9 +909,7 @@ class TestRun:
         agg.storage.count_user_playbooks.return_value = 5
         agg.storage.get_agent_playbooks.return_value = []
         agg.storage.get_user_playbooks.return_value = [_raw(rid=1), _raw(rid=2)]
-        agg.storage.save_agent_playbook_with_aggregate_event.return_value = (
-            _agent_playbook(fid=100)
-        )
+        agg.storage.save_agent_playbooks.return_value = [_agent_playbook(fid=100)]
         return agg
 
     def test_no_config_returns_early(self):
@@ -894,10 +963,8 @@ class TestRun:
         agg = self._make_runnable_aggregator()
         raws = [_raw(rid=1)]
         mock_clust.return_value = {0: raws}
-        mock_gen.return_value = [(_agent_playbook(fid=100), raws)]
-        agg.storage.save_agent_playbook_with_aggregate_event.return_value = (
-            _agent_playbook(fid=100)
-        )
+        mock_gen.return_value = [(_agent_playbook(fid=100), raws, None)]
+        agg.storage.save_agent_playbooks.return_value = [_agent_playbook(fid=100)]
 
         req = PlaybookAggregatorRequest(agent_version="v1", rerun=True)
         agg.run(req)
@@ -919,10 +986,8 @@ class TestRun:
         agg = self._make_runnable_aggregator()
         raws = [_raw(rid=1)]
         mock_clust.return_value = {0: raws}
-        mock_gen.return_value = [(_agent_playbook(fid=100), raws)]
-        agg.storage.save_agent_playbook_with_aggregate_event.return_value = (
-            _agent_playbook(fid=100)
-        )
+        mock_gen.return_value = [(_agent_playbook(fid=100), raws, None)]
+        agg.storage.save_agent_playbooks.return_value = [_agent_playbook(fid=100)]
 
         req = PlaybookAggregatorRequest(agent_version="v1", rerun=True)
         agg.run(req)
@@ -943,10 +1008,8 @@ class TestRun:
         agg = self._make_runnable_aggregator()
         raws = [_raw(rid=1), _raw(rid=2)]
         mock_clust.return_value = {0: raws}
-        mock_gen.return_value = [(_agent_playbook(fid=100), raws)]
-        agg.storage.save_agent_playbook_with_aggregate_event.return_value = (
-            _agent_playbook(fid=100)
-        )
+        mock_gen.return_value = [(_agent_playbook(fid=100), raws, None)]
+        agg.storage.save_agent_playbooks.return_value = [_agent_playbook(fid=100)]
 
         with patch.object(PlaybookAggregator, "_create_state_manager") as mock_csm:
             mgr = MagicMock()
@@ -977,8 +1040,8 @@ class TestRun:
             req = PlaybookAggregatorRequest(agent_version="v1")
             agg.run(req)
 
-        # Should NOT call save_agent_playbook_with_aggregate_event
-        agg.storage.save_agent_playbook_with_aggregate_event.assert_not_called()
+        # Should NOT call save_agent_playbooks
+        agg.storage.save_agent_playbooks.assert_not_called()
 
     @patch.object(PlaybookAggregator, "get_clusters")
     @patch.object(PlaybookAggregator, "_generate_playbooks_with_source_clusters")
@@ -990,10 +1053,8 @@ class TestRun:
         raws_new = [_raw(rid=5), _raw(rid=6)]
         agg.storage.get_user_playbooks.return_value = raws_new
         mock_clust.return_value = {0: raws_new}
-        mock_gen.return_value = [(_agent_playbook(fid=200), raws_new)]
-        agg.storage.save_agent_playbook_with_aggregate_event.return_value = (
-            _agent_playbook(fid=200)
-        )
+        mock_gen.return_value = [(_agent_playbook(fid=200), raws_new, None)]
+        agg.storage.save_agent_playbooks.return_value = [_agent_playbook(fid=200)]
 
         with patch.object(PlaybookAggregator, "_create_state_manager") as mock_csm:
             mgr = MagicMock()
@@ -1050,8 +1111,8 @@ class TestRun:
         mock_clust.return_value = {0: null_cluster, 1: generated_cluster}
         generated = _agent_playbook(fid=200)
         generated.agent_playbook_id = 200
-        mock_gen.return_value = [(generated, generated_cluster)]
-        agg.storage.save_agent_playbook_with_aggregate_event.return_value = generated
+        mock_gen.return_value = [(generated, generated_cluster, None)]
+        agg.storage.save_agent_playbooks.return_value = [generated]
         fp_null_old = PlaybookAggregator._compute_cluster_fingerprint(
             [_raw(rid=1), _raw(rid=2)]
         )
@@ -1100,8 +1161,8 @@ class TestRun:
         mock_clust.return_value = {0: null_cluster, 1: generated_cluster}
         generated = _agent_playbook(fid=200)
         generated.agent_playbook_id = 200
-        mock_gen.return_value = [(generated, generated_cluster)]
-        agg.storage.save_agent_playbook_with_aggregate_event.return_value = generated
+        mock_gen.return_value = [(generated, generated_cluster, None)]
+        agg.storage.save_agent_playbooks.return_value = [generated]
         fp_old = PlaybookAggregator._compute_cluster_fingerprint(
             [_raw(rid=1), _raw(rid=2), _raw(rid=3), _raw(rid=4)]
         )
@@ -1180,8 +1241,8 @@ class TestRun:
         mock_clust.return_value = {0: raws}
         saved = _agent_playbook(fid=100)
         saved.agent_playbook_id = 100
-        mock_gen.return_value = [(saved, raws)]
-        agg.storage.save_agent_playbook_with_aggregate_event.return_value = saved
+        mock_gen.return_value = [(saved, raws, None)]
+        agg.storage.save_agent_playbooks.return_value = [saved]
 
         with patch.object(PlaybookAggregator, "_create_state_manager") as mock_csm:
             mgr = MagicMock()
@@ -1212,10 +1273,8 @@ class TestRun:
         raws_new = [_raw(rid=5), _raw(rid=6)]
         agg.storage.get_user_playbooks.return_value = raws_new
         mock_clust.return_value = {0: raws_new}
-        mock_gen.return_value = [(_agent_playbook(fid=200), raws_new)]
-        agg.storage.save_agent_playbook_with_aggregate_event.return_value = (
-            _agent_playbook(fid=200)
-        )
+        mock_gen.return_value = [(_agent_playbook(fid=200), raws_new, None)]
+        agg.storage.save_agent_playbooks.return_value = [_agent_playbook(fid=200)]
 
         with patch.object(PlaybookAggregator, "_create_state_manager") as mock_csm:
             mgr = MagicMock()
@@ -1246,8 +1305,8 @@ class TestRun:
         # AgentPlaybook with agent_playbook_id=0 (falsy)
         fb_no_id = _agent_playbook(fid=0, content="no id")
         fb_no_id.agent_playbook_id = 0
-        mock_gen.return_value = [(fb_no_id, raws)]
-        agg.storage.save_agent_playbook_with_aggregate_event.return_value = fb_no_id
+        mock_gen.return_value = [(fb_no_id, raws, None)]
+        agg.storage.save_agent_playbooks.return_value = [fb_no_id]
 
         with patch.object(PlaybookAggregator, "_create_state_manager") as mock_csm:
             mgr = MagicMock()
@@ -1328,8 +1387,8 @@ class TestRun:
         fb1.agent_playbook_id = 100
         fb2 = _agent_playbook(fid=200, content="b")
         fb2.agent_playbook_id = 200
-        mock_gen.return_value = [(fb1, raws_a), (fb2, raws_b)]
-        agg.storage.save_agent_playbook_with_aggregate_event.side_effect = [fb1, fb2]
+        mock_gen.return_value = [(fb1, raws_a, None), (fb2, raws_b, None)]
+        agg.storage.save_agent_playbooks.side_effect = [[fb1], [fb2]]
 
         with patch.object(PlaybookAggregator, "_create_state_manager") as mock_csm:
             mgr = MagicMock()
@@ -1365,8 +1424,8 @@ class TestRun:
         mock_clust.return_value = {0: duplicate_cluster, 1: generated_cluster}
         saved = _agent_playbook(fid=200, content="b")
         saved.agent_playbook_id = 200
-        mock_gen.return_value = [(saved, generated_cluster)]
-        agg.storage.save_agent_playbook_with_aggregate_event.return_value = saved
+        mock_gen.return_value = [(saved, generated_cluster, None)]
+        agg.storage.save_agent_playbooks.return_value = [saved]
 
         with patch.object(PlaybookAggregator, "_create_state_manager") as mock_csm:
             mgr = MagicMock()
@@ -1405,10 +1464,8 @@ class TestRun:
         all_raws = raws_unchanged + raws_new
         agg.storage.get_user_playbooks.return_value = all_raws
         mock_clust.return_value = {0: raws_unchanged, 1: raws_new}
-        mock_gen.return_value = [(_agent_playbook(fid=200), raws_new)]
-        agg.storage.save_agent_playbook_with_aggregate_event.return_value = (
-            _agent_playbook(fid=200)
-        )
+        mock_gen.return_value = [(_agent_playbook(fid=200), raws_new, None)]
+        agg.storage.save_agent_playbooks.return_value = [_agent_playbook(fid=200)]
 
         with patch.object(PlaybookAggregator, "_create_state_manager") as mock_csm:
             mgr = MagicMock()
@@ -1765,12 +1822,13 @@ def test_aggregation_preserves_distinct_do_and_avoid_rules():
         result = agg._generate_playbook_from_cluster(cluster, "None")
 
     assert result is not None
+    playbook, _provenance = result
     # Both orientations survive as DISTINCT rules — not merged into one.
-    assert "Announce the deploy in the channel first" in result.content
-    assert "Avoid deploying on Friday afternoons" in result.content
+    assert "Announce the deploy in the channel first" in playbook.content
+    assert "Avoid deploying on Friday afternoons" in playbook.content
     # Two separate bullets => the do-rule and the avoid-rule were not collapsed.
     bullet_lines = [
-        line for line in result.content.splitlines() if line.strip().startswith("-")
+        line for line in playbook.content.splitlines() if line.strip().startswith("-")
     ]
     assert len(bullet_lines) == 2
 
@@ -2138,11 +2196,12 @@ def _make_ordered_aggregator(call_log: list[tuple[str, Any]]) -> Any:
     agg.storage.get_agent_playbooks.return_value = []
     agg.storage.get_user_playbooks.return_value = [_raw(rid=1), _raw(rid=2)]
 
-    def _save(playbook: AgentPlaybook, **_kwargs: Any) -> AgentPlaybook:
+    def _save(playbooks: list[AgentPlaybook], **_kwargs: Any) -> list[AgentPlaybook]:
+        playbook = playbooks[0]
         call_log.append(("save", playbook.agent_playbook_id))
-        return playbook
+        return [playbook]
 
-    agg.storage.save_agent_playbook_with_aggregate_event.side_effect = _save
+    agg.storage.save_agent_playbooks.side_effect = _save
 
     def _set_source_windows(agent_playbook_id: int, _windows: Any) -> None:
         call_log.append(("set_source_windows", agent_playbook_id))
@@ -2180,7 +2239,9 @@ def _make_ordered_aggregator(call_log: list[tuple[str, Any]]) -> Any:
 def _instrument_run(
     call_log: list[tuple[str, Any]],
     clusters: dict[int, list[UserPlaybook]],
-    generated_pairs: list[tuple[AgentPlaybook, list[UserPlaybook]]],
+    generated_pairs: list[
+        tuple[AgentPlaybook, list[UserPlaybook], ModelProvenance | None]
+    ],
     *,
     uuid_side_effect: Any | None = None,
 ):
@@ -2254,7 +2315,7 @@ class TestRunSideEffectOrder:
         pb_a.agent_playbook_id = 100
         pb_b = _agent_playbook(fid=200)
         pb_b.agent_playbook_id = 200
-        generated_pairs = [(pb_a, cluster_a), (pb_b, cluster_b)]
+        generated_pairs = [(pb_a, cluster_a, None), (pb_b, cluster_b, None)]
         return clusters, generated_pairs
 
     def test_archive_between_generate_and_first_save(self):

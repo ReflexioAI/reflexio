@@ -99,6 +99,7 @@ class ProfileExtractor:
         self.agent_context = agent_context
         self._last_resumable_run_id: str | None = None
         self._last_resumable_token_totals: RunTokenTotals | None = None
+        self._last_model_provenance = None
 
         # Get LLM config overrides from configuration
         config = self.request_context.configurator.get_config()
@@ -272,6 +273,7 @@ class ProfileExtractor:
             run_id=self._last_resumable_run_id,
             token_totals=self._last_resumable_token_totals,
             bookmark_advance=bookmark_advance,
+            model_provenance=self._last_model_provenance,
         )
 
     def _convert_raw_to_user_profiles(
@@ -409,6 +411,7 @@ class ProfileExtractor:
         )
         self._last_resumable_run_id = result.run_id
         self._last_resumable_token_totals = sum_trace_tokens(result.trace)
+        self._last_model_provenance = result.model_provenance
         if not isinstance(result.output, StructuredProfilesOutput):
             logger.warning(
                 "Profile extraction did not finish: %s", result.finished_reason

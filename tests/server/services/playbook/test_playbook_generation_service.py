@@ -23,6 +23,7 @@ from reflexio.models.config_schema import (
 )
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.extensions import register_service
+from reflexio.server.llm._litellm_types import ModelProvenance
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 from reflexio.server.services.playbook.aggregation_prompt_processing import (
     AGGREGATION_PROMPT_PROCESSOR,
@@ -628,7 +629,7 @@ def test_error_handling(mock_chat_completion):
             auto_run=False,
         )
 
-        # Mock storage.save_user_playbooks to raise an exception
+        # Mock the lineage-aware save to raise an exception
         with patch.object(
             _storage(playbook_generation_service),
             "save_user_playbooks",
@@ -684,7 +685,8 @@ def test_finalize_drops_empty_and_same_batch_duplicates_with_dedup_flag_off():
                 "reflexio.server.services.playbook.components.consolidator.PlaybookConsolidator",
             ) as mock_dedup_cls,
             patch.object(
-                _storage(playbook_generation_service), "save_user_playbooks"
+                _storage(playbook_generation_service),
+                "save_user_playbooks",
             ) as save_user_playbooks,
             patch.object(
                 playbook_generation_service, "_enqueue_user_playbook_optimization"
@@ -698,7 +700,11 @@ def test_finalize_drops_empty_and_same_batch_duplicates_with_dedup_flag_off():
                 )
             )
             playbook_generation_service._finalize_extracted_items(
-                [first, duplicate, blank]
+                [first, duplicate, blank],
+                model_provenance=ModelProvenance(
+                    model_name="served-model",
+                    provider="provider",
+                ),
             )
 
         save_user_playbooks.assert_called_once()
@@ -706,6 +712,58 @@ def test_finalize_drops_empty_and_same_batch_duplicates_with_dedup_flag_off():
         assert saved_playbooks == [first]
         assert first.status is None
         assert first.source == "test_source"
+        context = save_user_playbooks.call_args.kwargs["lineage_contexts"][0]
+        assert context.op_kind == "create"
+        assert context.model_name == "served-model"
+
+
+def test_finalize_without_provenance_emits_create_with_null_model_fields():
+    """Opaque routes still write create lineage; model fields stay null."""
+    from reflexio.models.api_schema.domain.entities import LineageContext
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        service = PlaybookGenerationService(
+            llm_client=LiteLLMClient(LiteLLMConfig(model="gpt-4o-mini")),
+            request_context=RequestContext(org_id="0", storage_base_dir=temp_dir),
+        )
+        service.service_config = PlaybookGenerationServiceConfig(
+            request_id="legacy-request",
+            agent_version="1.0",
+            user_id="test-user",
+            source="test",
+        )
+        playbook = UserPlaybook(
+            agent_version="1.0",
+            request_id="legacy-request",
+            content="Preserve the old output.",
+            trigger="When resuming a legacy run",
+        )
+
+        with (
+            patch(
+                "reflexio.server.services.playbook.components.consolidator.PlaybookConsolidator",
+            ) as mock_dedup_cls,
+            patch.object(_storage(service), "save_user_playbooks") as save,
+            patch.object(service, "_enqueue_user_playbook_optimization"),
+        ):
+            mock_dedup_cls.return_value.deduplicate.return_value = (
+                [playbook],
+                [],
+                [],
+            )
+            mock_dedup_cls.return_value.model_provenance = None
+            mock_dedup_cls.return_value.consolidated_output_indices = set()
+            service._finalize_extracted_items([playbook], model_provenance=None)
+
+        contexts = save.call_args.kwargs["lineage_contexts"]
+        assert len(contexts) == 1
+        assert contexts[0] == LineageContext(
+            op_kind="create",
+            actor="extractor",
+            request_id="legacy-request",
+            model_name=None,
+            provider=None,
+        )
 
 
 def test_run_manual_regular_no_window_size(mock_chat_completion):
