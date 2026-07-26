@@ -25,6 +25,7 @@ from reflexio.models.config_schema import (
 )
 from reflexio.server.services.configurator.configurator import DefaultConfigurator
 from reflexio.server.services.tagging.tagging_scheduler import drain_tagging
+from reflexio.test_support.llm_mock import patched_litellm
 
 _TEST_DATA_DIR = Path(__file__).resolve().parent.parent / "test_data"
 _SCENARIO_DIR = _TEST_DATA_DIR / "scenarios" / "e2e"
@@ -34,6 +35,13 @@ name, occupation, location, membership tier, order context, communication prefer
 formatting preferences, timeline preferences, and other durable customer-support
 personalization facts from the conversation
 """
+
+
+@pytest.fixture(autouse=True)
+def mock_llm():
+    """Keep the standard E2E tier deterministic and credential-free."""
+    with patched_litellm():
+        yield
 
 
 @pytest.fixture(autouse=True)
