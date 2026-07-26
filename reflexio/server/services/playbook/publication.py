@@ -112,7 +112,7 @@ def _validate_optimizer(value: object) -> None:
 
 
 def publication_source_for_optimizer(
-    optimizer_kind: PublishableOptimizerKind,
+    optimizer_kind: OptimizerKind,
 ) -> PublicationSource:
     _validate_optimizer(optimizer_kind)
     return "offline_optimizer" if optimizer_kind == "offline_tuner_replay" else "gepa"
