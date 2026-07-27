@@ -1,6 +1,7 @@
 """Interaction route handlers (extracted from api.py, Tier3 A2)."""
 
 import logging
+import sys
 import uuid
 from typing import TYPE_CHECKING
 
@@ -15,6 +16,7 @@ from fastapi import (
     Request,
 )
 
+from reflexio.models.api_schema.common import sanitise_for_log
 from reflexio.models.api_schema.retriever_schema import (
     GetInteractionsRequest,
     GetInteractionsViewResponse,
@@ -68,11 +70,23 @@ def publish_user_interaction(
     wait_for_response: bool = False,
     _gate: None = Depends(default_billing_gate("learnings_generated")),  # noqa: B008
 ) -> PublishUserInteractionResponse:
+    # Unrecognised keys are dropped rather than rejected (see InteractionData's
+    # model_config). Tell the caller on the response and record it server-side,
+    # so a mis-keyed field is visible instead of silently losing data. Names
+    # only -- values are caller payload.
+    payload_warnings = payload.payload_warnings()
+    if payload_warnings:
+        logger.warning(
+            "Publish for org %s altered the payload: %s",
+            org_id,
+            "; ".join(payload_warnings),
+        )
+
     if wait_for_response:
         # Sync callers wait for the real result, so preserve bounded backpressure
         # before any storage side effects. The inner service limiter is disabled
         # because this route already owns the publish slot.
-        return _run_limited_api(
+        sync_response = _run_limited_api(
             org_id,
             "publish",
             lambda: publisher_api.add_user_interaction(
@@ -81,6 +95,8 @@ def publish_user_interaction(
                 use_publish_limiter=False,
             ),
         )
+        sync_response.warnings = [*sync_response.warnings, *payload_warnings]
+        return sync_response
 
     # Resolve the request_id BEFORE backgrounding so we can return it to the
     # caller for polling. GenerationService uses a caller-supplied request_id
@@ -89,16 +105,53 @@ def publish_user_interaction(
     # id we hand back here.
     request_id = payload.request_id or str(uuid.uuid4())
     payload.request_id = request_id
+    # request_id is caller-supplied (NonEmptyStr: no length cap, no character
+    # restrictions) and is logged below at ERROR, which Sentry ingests as an
+    # event body. A newline in it would forge a line in a shared multi-tenant
+    # log stream -- the same hazard as the unknown field names.
+    safe_request_id = sanitise_for_log(request_id)
 
     def _publish_task() -> None:
         try:
-            publisher_api.add_user_interaction(
+            response = publisher_api.add_user_interaction(
                 org_id=org_id,
                 request=payload,
                 defer_learning=True,
             )
+            # The caller was already handed 200 "queued" below, so a
+            # ``success=False`` return here is otherwise invisible -- it is not
+            # an exception, so the handler underneath never sees it. Log it, or
+            # a rejected publish looks identical to an accepted one from both
+            # ends. Per-interaction shape problems are already caught as a 422
+            # by PublishUserInteractionRequest's validators; this covers
+            # whatever else add_user_interaction can refuse.
+            #
+            # Deliberately NOT logging ``response.message``: on the storage
+            # path it is ``str(e)`` from a catch-all (lib/_interactions.py), an
+            # unbounded exception string with no content-freeness guarantee,
+            # and Sentry ingests ERROR records as event bodies without
+            # scrubbing them. #377 established that such messages must be
+            # content-free by construction, so log a bounded shape instead.
+            if not response.success:
+                logger.error(
+                    "Background publish rejected for org %s (request_id=%s):"
+                    " %d-char reason withheld (may contain Customer Content)",
+                    org_id,
+                    safe_request_id,
+                    len(response.message or ""),
+                )
         except Exception:
-            logger.exception("Background publish failed for org %s", org_id)
+            # Same content-freeness problem as response.message above: an
+            # exception string (and its traceback locals) has no guarantee of
+            # being free of Customer Content, and Sentry ingests this as an
+            # event body. Log the type, not the message.
+            logger.error(
+                "Background publish failed for org %s (request_id=%s):"
+                " %s (detail withheld, may contain Customer Content)",
+                org_id,
+                safe_request_id,
+                type(sys.exc_info()[1]).__name__,
+            )
 
     # Run in background — caller gets immediate acknowledgement.
     # learning_status="deferred" tells the caller that extraction has not yet
@@ -110,6 +163,7 @@ def publish_user_interaction(
         message="Interaction queued for processing",
         request_id=request_id,
         learning_status="deferred",
+        warnings=payload_warnings,
     )
 
 

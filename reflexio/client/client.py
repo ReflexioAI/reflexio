@@ -464,6 +464,22 @@ class ReflexioClient:
                 In ``wait_for_response=True`` mode the server waits for
                 extraction and the response includes ``request_id``,
                 storage routing, and real profile/playbook deltas.
+
+                ``warnings`` reports anything that was quietly altered:
+                unrecognised interaction fields that were dropped (a key you
+                sent did not bind and its value was discarded — check for a
+                typo), and interactions that carried nothing and were
+                skipped. Indices refer to the list as you passed it. The list
+                is bounded, so on a large batch treat it as a sample.
+
+        Raises:
+            ValueError: If ``session_id`` is missing or blank.
+            pydantic.ValidationError: Raised locally, before any HTTP call, if
+                an interaction carries nothing at all (no content, image,
+                tools, citations, learnings, or non-"none" user_action), if a
+                ``user_action`` has no ``user_action_description``, or if both
+                ``interacted_image_url`` and ``image_encoding`` are set. The
+                message names the offending ``interaction_data_list`` index.
         """
         if session_id is None or not session_id.strip():
             raise ValueError("session_id is required and cannot be empty")
@@ -490,6 +506,14 @@ class ReflexioClient:
         result = self._publish_interaction_sync(
             request, wait_for_response=wait_for_response
         )
+        # Merge the warnings detected locally. Building InteractionData above
+        # already stripped the caller's unknown keys, so ``request.model_dump()``
+        # sends a clean payload and the server never sees them -- it cannot echo
+        # what it was never told. Without this, unrecognised fields are reported
+        # over raw HTTP but are invisible through the SDK, which is the primary
+        # integration path and the one this method's docstring promises.
+        if local_warnings := request.payload_warnings():
+            result.warnings = [*result.warnings, *local_warnings]
         self._cache.invalidate("get_profiles")
         self._cache.invalidate("get_agent_playbooks")
         return result

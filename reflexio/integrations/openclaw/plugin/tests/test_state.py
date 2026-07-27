@@ -261,3 +261,45 @@ def test_to_wire_citations_preserves_explicit_playbook_source_kind() -> None:
         "user_playbook",
         "profile",
     ]
+
+
+class TestWirePayloadContract:
+    """The wire dict must contain only fields the server's model accepts.
+
+    ``unpublished_slice`` used to build the payload with a denylist (drop three
+    known keys, pass the rest through), so buffer bookkeeping such as
+    ``user_id`` rode along. The server ignored it -- until it didn't, at which
+    point the adapter swallowed the error and the publish watermark never
+    advanced, so the same batch retried forever and nothing was published.
+    """
+
+    def test_bookkeeping_keys_never_reach_the_wire(self):
+        _, turns = state.unpublished_slice(
+            [{"ts": 1, "role": "User", "content": "x", "user_id": "proj-a", "id": "r1"}]
+        )
+        assert turns, "expected one wire turn"
+        assert "user_id" not in turns[0]
+        assert "id" not in turns[0]
+        assert turns[0]["content"] == "x"
+
+    def test_allowlist_matches_the_server_model(self):
+        """Pin the literal field set against the real InteractionData."""
+        interaction_data = pytest.importorskip(
+            "reflexio.models.api_schema.domain.entities"
+        ).InteractionData
+        assert set(interaction_data.model_fields) == state._INTERACTION_DATA_FIELDS
+
+    def test_wire_turn_validates_against_the_server_model(self):
+        """Every dict the slicer emits must construct a real InteractionData."""
+        interaction_data = pytest.importorskip(
+            "reflexio.models.api_schema.domain.entities"
+        ).InteractionData
+        _, turns = state.unpublished_slice(
+            [
+                {"ts": 1, "role": "User", "content": "hi", "user_id": "p"},
+                {"ts": 2, "role": "Assistant", "content": "hello", "user_id": "p"},
+            ]
+        )
+        for turn in turns:
+            built = interaction_data(**turn)
+            assert built.unknown_field_names() == []

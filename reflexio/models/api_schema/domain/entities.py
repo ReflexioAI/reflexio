@@ -1,9 +1,15 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any, Literal, Self
+from typing import Any, Final, Literal, Self
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    Field,
+    PrivateAttr,
+    field_validator,
+    model_validator,
+)
 
 from reflexio.defaults import DEFAULT_AGENT_VERSION
 
@@ -11,7 +17,10 @@ from ..common import (
     NEVER_EXPIRES_TIMESTAMP,
     BlockingIssue,
     BlockingIssueKind,
+    CapturesUnknownFields,
     ToolUsed,
+    cap_warning_list,
+    summarise_unknown_names,
 )
 from ..validators import (
     EmbeddingVector,
@@ -136,7 +145,7 @@ __all__ = [
 type CitationKind = Literal["playbook", "profile", "user_playbook", "agent_playbook"]
 
 
-class Citation(BaseModel):
+class Citation(CapturesUnknownFields):
     """A playbook or profile item the agent cited as influential.
 
     Carried inline on an Assistant ``InteractionData`` row to mark
@@ -172,7 +181,7 @@ type RetrievedLearningKind = Literal["profile", "user_playbook", "agent_playbook
 type LearningImpact = Literal["positive", "negative", "neutral"]
 
 
-class RetrievedLearning(BaseModel):
+class RetrievedLearning(CapturesUnknownFields):
     """A learning the caller retrieved and injected into the agent context.
 
     Deliberately minimal — just the identity pair. It does NOT reuse
@@ -685,7 +694,26 @@ class ClearUserDataResponse(BaseModel):
 
 
 # user provided interaction data from the request
-class InteractionData(BaseModel):
+class InteractionData(CapturesUnknownFields):
+    # Every field below has a default, so under Pydantic's default
+    # ``extra="ignore"`` a mis-keyed field (``Content``, ``text``, an extra
+    # nesting level) silently produced a *valid* interaction carrying nothing,
+    # and the publish returned 200. That shipped 50 empty rows to a real org
+    # and generated no learnings, with no error on any layer.
+    #
+    # We capture unknown keys instead of forbidding them. ``extra="forbid"``
+    # was tried and rejected: the first-party plugins build their wire payload
+    # with a *denylist* (drop a few known keys, pass the rest through), so
+    # every turn carries request-level bookkeeping such as ``user_id``. Under
+    # ``forbid`` that raises, the plugin adapter swallows the exception, and
+    # its publish watermark never advances -- so the same batch retries
+    # forever and nothing is ever published. That is a strictly worse silent
+    # data loss than the one this validation exists to prevent, and it would
+    # hit already-installed plugins the moment the server deployed.
+    #
+    # So: accept the request, drop the unknown keys as before, but record
+    # their NAMES (never their values -- see the redaction invariant in #377)
+    # so the caller is told on the response and the server logs it.
     created_at: int = Field(default_factory=lambda: int(datetime.now(UTC).timestamp()))
     role: str = Field(default="User", max_length=1_000)
     content: str = Field(default="", max_length=1_000_000)
@@ -712,9 +740,112 @@ class InteractionData(BaseModel):
     def validate_image_url(cls, v: str) -> str:
         return _validate_image_url(v)
 
+    def reportable_unknown_fields(self) -> list[str]:
+        """Unknown key names worth telling the caller about, nested included.
+
+        Excludes ``_BENIGN_UNKNOWN_KEYS``: request-level identifiers that
+        callers routinely duplicate onto each interaction. They are still
+        stripped, but warning about them would emit one entry per interaction
+        on every publish from a correctly-behaving integration, training
+        operators to ignore the channel before it carries real signal.
+
+        Returns:
+            list[str]: Field paths, e.g. ``["Content", "tools_used[0].status"]``.
+        """
+        names = [n for n in self.unknown_field_names() if n not in _BENIGN_UNKNOWN_KEYS]
+        for attr in ("tools_used", "citations", "retrieved_learnings"):
+            for index, item in enumerate(getattr(self, attr)):
+                names.extend(
+                    f"{attr}[{index}].{nested}" for nested in item.unknown_field_names()
+                )
+        return names
+
+    def carries_content(self) -> bool:
+        """
+        Whether this interaction carries anything worth storing.
+
+        The single source of truth for "is this interaction empty", shared by
+        ``PublishUserInteractionRequest``'s boundary validator and the
+        ``precondition_checks`` defense-in-depth guard so the two cannot drift.
+
+        Every content-bearing field counts, not just ``content``: a
+        tool-call-only agent turn, a shadow/expert-only row, and an image-only
+        turn all carry real information. Note ``user_action`` is compared
+        against ``UserActionType.NONE`` rather than tested for truthiness --
+        ``UserActionType`` is a ``StrEnum`` whose NONE member is the *truthy*
+        string ``"none"``, and a truthiness test there is what silently
+        disabled this check for the entire life of the guard.
+
+        Returns:
+            bool: True if any content-bearing field is populated.
+        """
+        if self.user_action != UserActionType.NONE:
+            return True
+        # Text fields are stripped: "   " is not content. Mirrors the
+        # ``session_id`` guard in ``precondition_checks``, which already
+        # rejects whitespace-only values.
+        return any(
+            value.strip() if isinstance(value, str) else value
+            for value in (getattr(self, name) for name in CONTENT_BEARING_FIELD_NAMES)
+        )
+
+    def shape_error(self) -> str | None:
+        """A contradiction in this interaction the caller must fix, or None.
+
+        These are genuine caller mistakes with no sensible recovery, so they
+        are fatal to the request. Emptiness is deliberately NOT one of them --
+        see ``PublishUserInteractionRequest.validate_interaction_shapes``.
+
+        Both rules used to live only in ``precondition_checks``, which on the
+        default ``wait_for_response=False`` path runs inside a background task
+        whose result is discarded, so neither was ever reportable. Keeping them
+        here lets the request model raise a 422 on both paths while
+        ``precondition_checks`` delegates, so the two cannot diverge.
+
+        Returns:
+            str | None: A caller-facing reason, or None when acceptable.
+        """
+        if self.user_action != UserActionType.NONE and not self.user_action_description:
+            return "user_action requires a user_action_description"
+        if self.interacted_image_url and self.image_encoding:
+            return "interacted_image_url and image_encoding cannot both be set"
+        return None
+
+
+# Every field ``carries_content`` consults, in one place. The prose in the
+# error message is DERIVED from this tuple rather than hand-written beside it,
+# so adding a field to the predicate cannot leave the caller-facing list stale.
+CONTENT_BEARING_FIELD_NAMES: Final = (
+    "content",
+    "shadow_content",
+    "expert_content",
+    "interacted_image_url",
+    "image_encoding",
+    "tools_used",
+    "citations",
+    "retrieved_learnings",
+)
+
+# Request-level identifiers callers routinely duplicate onto each interaction.
+# Still stripped, but not warned about: claude-smart sends ``user_id`` on every
+# turn, so warning would emit one entry per interaction on every correct
+# publish and train operators to ignore the channel.
+_BENIGN_UNKNOWN_KEYS: Final = frozenset({"user_id", "session_id"})
+
+# How many original indices to name when reporting skipped empty rows.
+_MAX_SKIPPED_INDICES: Final = 10
+
+CONTENT_BEARING_FIELDS = (
+    f'{", ".join(CONTENT_BEARING_FIELD_NAMES)}, or a user_action other than "none"'
+)
+
 
 # publish user interaction request
 class PublishUserInteractionRequest(BaseModel):
+    # Set by ``validate_interaction_shapes`` against the caller's original
+    # list, before empty rows are filtered out; read by payload_warnings().
+    _payload_warnings: list[str] = PrivateAttr(default_factory=list)
+
     request_id: NonEmptyStr | None = None
     user_id: NonEmptyStr
     interaction_data_list: list[InteractionData] = Field(min_length=1, max_length=1_000)
@@ -736,6 +867,90 @@ class PublishUserInteractionRequest(BaseModel):
         if self.evaluation_only and not self.session_id:
             raise ValueError("evaluation_only publishes require session_id")
         return self
+
+    @model_validator(mode="after")
+    def validate_interaction_shapes(self) -> Self:
+        """Reject contradictory interactions; drop empty ones.
+
+        Runs during request parsing, so it applies on *both* the synchronous
+        and the ``wait_for_response=False`` background-task path -- unlike
+        ``precondition_checks``, whose ``success=False`` is discarded inside
+        the background task after the caller was told 200 "queued".
+
+        An individual empty interaction is **skipped, not fatal**. Making it
+        fatal was implemented and reverted: both first-party plugins append an
+        empty ``Assistant`` placeholder unconditionally, so one empty row
+        rejected the whole batch -- including the real user turn beside it --
+        and their adapters swallow the error without advancing the publish
+        watermark, retrying the same doomed batch forever. A batch where
+        *every* interaction is empty is still fatal, and that is exactly the
+        incident this validation exists for (50 of 50 rows empty).
+
+        Raises:
+            ValueError: for a contradictory interaction, or an all-empty batch.
+        """
+        for index, interaction in enumerate(self.interaction_data_list):
+            if reason := interaction.shape_error():
+                raise ValueError(f"interaction_data_list[{index}] {reason}")
+
+        # Build the warnings against the ORIGINAL list, BEFORE filtering.
+        # Computing them afterwards silently defeated the whole feature: a
+        # mis-keyed ``content`` produces an *empty* interaction, so the row
+        # carrying the typo is exactly the row that gets skipped -- its
+        # "unrecognised field Content" warning was dropped, leaving the caller
+        # with "skipped 1 empty interaction" and no idea which field was wrong.
+        # It also renumbered every surviving index, so a warning pointed at a
+        # different row than the caller sent.
+        warnings = [
+            f"interaction_data_list[{index}]: ignored unrecognised field(s)"
+            f" {summarise_unknown_names(names)}"
+            for index, interaction in enumerate(self.interaction_data_list)
+            if (names := interaction.reportable_unknown_fields())
+        ]
+
+        skipped = [
+            index
+            for index, interaction in enumerate(self.interaction_data_list)
+            if not interaction.carries_content()
+        ]
+        if len(skipped) == len(self.interaction_data_list):
+            raise ValueError(
+                "every interaction is empty: at least one must set"
+                f' "content" (or any of: {CONTENT_BEARING_FIELDS})'
+            )
+        # Cap the per-interaction warnings, THEN append the batch-level skip
+        # summary, so the cap can never drop it. Capping the combined list
+        # silently swallowed the summary whenever there were >= 20 unknown-field
+        # warnings -- and "25 interactions were dropped" is the single most
+        # important thing the caller needs to know about that batch.
+        self._payload_warnings = cap_warning_list(warnings)
+        if skipped:
+            shown = ", ".join(str(index) for index in skipped[:_MAX_SKIPPED_INDICES])
+            more = len(skipped) - min(len(skipped), _MAX_SKIPPED_INDICES)
+            self._payload_warnings.append(
+                f"skipped {len(skipped)} empty interaction(s) that carried no"
+                f" content, at index(es) {shown}{f', +{more} more' if more else ''}"
+            )
+        self.interaction_data_list = [
+            interaction
+            for interaction in self.interaction_data_list
+            if interaction.carries_content()
+        ]
+        return self
+
+    def payload_warnings(self) -> list[str]:
+        """Caller-facing warnings for anything quietly altered in the payload.
+
+        Covers unrecognised keys that were stripped and empty interactions that
+        were skipped. Indices refer to the payload **as the caller sent it**,
+        not the filtered list. Names only, sanitised and bounded -- values are
+        caller payload (the #377 redaction invariant) and names are equally
+        caller-controlled, so both volume and control characters are handled.
+
+        Returns:
+            list[str]: Bounded warnings, empty when nothing was altered.
+        """
+        return self._payload_warnings
 
     @model_validator(mode="after")
     def validate_retrieved_learnings_total(self) -> Self:

@@ -17,6 +17,26 @@ from openclaw_smart import runtime
 
 _LOGGER = logging.getLogger(__name__)
 
+
+def _log_payload_warnings(result: object) -> None:
+    """Log anything the publish quietly altered. Never raises.
+
+    The publish has already succeeded by the time this runs, and the caller
+    advances its publish watermark on the adapter's return value -- so an
+    exception here would be misread as a publish failure and stall the buffer.
+    Total belt-and-braces on a diagnostic path is the right trade.
+    """
+    try:
+        warnings = getattr(result, "warnings", None) or []
+        if warnings:
+            _LOGGER.warning(
+                "publish_interaction altered the payload: %s",
+                "; ".join(str(warning) for warning in warnings),
+            )
+    except Exception:  # noqa: BLE001 - diagnostics must never break publishing
+        _LOGGER.debug("could not render publish warnings", exc_info=True)
+
+
 _ENV_URL = "REFLEXIO_URL"
 _DEFAULT_URL = "http://localhost:8071/"
 _SEARCH_MODE_HYBRID = "hybrid"  # reflexio.models.config_schema.SearchMode.HYBRID
@@ -80,7 +100,7 @@ class Adapter:
         if client is None:
             return False
         try:
-            client.publish_interaction(
+            result = client.publish_interaction(
                 user_id=project_id,
                 interactions=list(interactions),
                 agent_version=runtime.agent_version(),
@@ -89,10 +109,17 @@ class Adapter:
                 force_extraction=force_extraction,
                 skip_aggregation=skip_aggregation,
             )
-            return True
         except Exception as exc:  # noqa: BLE001
             _LOGGER.warning("publish_interaction failed: %s", exc)
             return False
+
+        # Diagnostics only, and deliberately OUTSIDE the try above: the publish
+        # has already succeeded, and the caller advances its watermark on our
+        # return value. Anything raised while merely reporting warnings would be
+        # caught as a publish failure, stalling the watermark and republishing
+        # the same batch on every later hook.
+        _log_payload_warnings(result)
+        return True
 
     def apply_extraction_defaults(self, *, window_size: int, stride_size: int) -> bool:
         """Push openclaw-smart's preferred extraction defaults to the reflexio server.

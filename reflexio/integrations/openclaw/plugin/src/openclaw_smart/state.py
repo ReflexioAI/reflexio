@@ -36,6 +36,28 @@ _DEFAULT_STATE_DIR = Path.home() / ".openclaw-smart" / "sessions"
 
 _TOOL_DATA_FIELD_MAX_LEN = 256
 
+# Fields the server's ``InteractionData`` accepts. Declared literally rather
+# than imported so this module keeps no runtime dependency on ``reflexio``;
+# ``tests/test_state.py`` pins it against the real model so the two cannot
+# drift. Anything not in here is buffer-internal bookkeeping and must not
+# reach the wire.
+_INTERACTION_DATA_FIELDS = frozenset(
+    {
+        "created_at",
+        "role",
+        "content",
+        "shadow_content",
+        "expert_content",
+        "user_action",
+        "user_action_description",
+        "interacted_image_url",
+        "image_encoding",
+        "tools_used",
+        "citations",
+        "retrieved_learnings",
+    }
+)
+
 _VALID_CITATION_KINDS = frozenset(
     {"playbook", "profile", "user_playbook", "agent_playbook"}
 )
@@ -315,9 +337,13 @@ def unpublished_slice(
             pending_tools.append(tool_entry)
             continue
         if role in {"User", "Assistant"}:
-            turn = {
-                k: v for k, v in rec.items() if k not in {"role", "ts", "cited_items"}
-            }
+            # Allowlist, not denylist. This used to drop three known keys and
+            # pass everything else through, so buffer-internal bookkeeping
+            # (``user_id``, ``id``, ``kind``, ``title``, ...) rode along onto
+            # the wire. The server ignored it, but the denylist rots every time
+            # a hook adds a record key, and a stricter server turns that rot
+            # into a publish failure the adapter swallows silently.
+            turn = {k: v for k, v in rec.items() if k in _INTERACTION_DATA_FIELDS}
             turn["role"] = role
             if role == "Assistant":
                 citations = _to_wire_citations(rec.get("cited_items"))

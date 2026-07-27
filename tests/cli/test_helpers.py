@@ -84,6 +84,34 @@ class TestInteractionsFromPayload:
         result = _interactions_from_payload(payload)
         assert result[0].role == "User"
 
+    def test_misspelled_field_is_recorded_not_silently_dropped(self) -> None:
+        """A typo'd key in a user's JSON file must be traceable.
+
+        ``InteractionData`` defaults every field, so a mis-keyed ``content``
+        used to yield an interaction with ``content=''`` and the CLI cheerfully
+        published empty rows with nothing to debug. Unknown keys are still
+        dropped (forbidding them wedged the first-party plugins), but their
+        names are now recorded so a caller can be told.
+        """
+        payload = {
+            "interactions": [{"role": "user", "content": "hi", "Content": "typo"}]
+        }
+        interactions = _interactions_from_payload(payload)
+        assert interactions[0].unknown_field_names() == ["Content"]
+
+    def test_wholly_miskeyed_interaction_is_flagged_as_empty(self) -> None:
+        """A fully unbound interaction is detectably empty before publish.
+
+        ``_interactions_from_payload`` builds ``InteractionData`` directly, so
+        the request-level validator has not run yet; the client raises on it
+        later when it builds ``PublishUserInteractionRequest``. What matters
+        here is that the parsed object is not mistaken for valid content.
+        """
+        payload = {"interactions": [{"Content": "everything mis-keyed"}]}
+        interaction = _interactions_from_payload(payload)[0]
+        assert interaction.carries_content() is False
+        assert interaction.shape_error() is None  # not contradictory, just empty
+
     def test_tools_used_preserved(self) -> None:
         """Structured tools_used metadata survives the CLI adapter so the
         server renderer can emit `[used tool: ...]` markers for playbook

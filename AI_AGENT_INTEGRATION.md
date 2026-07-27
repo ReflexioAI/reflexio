@@ -241,7 +241,9 @@ Publish request fields:
 | `force_extraction` | No | `False` for normal background publishing. `True` for manual learn-now, tests, or final flushes where you intentionally want extraction to run immediately. | `false` |
 | `wait_for_response` | SDK/query option | `False` on interactive paths. `True` only when the caller is prepared to wait for extraction results. | `false` |
 
-Each interaction row should resemble Reflexio's `InteractionData` shape:
+Each interaction row must use Reflexio's `InteractionData` field names exactly.
+Unknown keys are dropped (and reported in the response's `warnings[]`), so a
+misspelling silently loses that value rather than being coerced:
 
 ```json
 {
@@ -497,8 +499,35 @@ Follow these rules for production agent integrations:
 - Keep hook latency bounded. Use short HTTP timeouts on interactive hooks.
 - Never let Reflexio exceptions fail the user's agent turn.
 - Buffer locally before network calls.
-- Advance publish watermarks only after success.
-- Retry failed publishes later.
+- Advance publish watermarks only after success — but **classify the failure
+  first**. Holding the watermark on a permanently-rejected batch wedges the
+  buffer: the same batch is re-sent forever and nothing is ever published.
+  Advancing on a transient failure loses data. Neither default is safe, so
+  branch on the status:
+
+  | Response | Meaning | Do |
+  |---|---|---|
+  | `5xx`, timeout, connection error | Transient | **Hold** the watermark; retry with backoff |
+  | `408`, `429` | Transient (slow down) | **Hold**; retry with backoff, honour `Retry-After` |
+  | `401`, `403` | Auth/config broken, not the payload | **Hold** and escalate — do not discard; the data is fine |
+  | `400`, `422` | The payload itself is invalid | **Advance** past it; retrying cannot succeed |
+
+  A `422` names the offending `interaction_data_list` index. Prefer
+  dead-lettering just that row and re-sending its valid siblings over
+  discarding the whole batch — the batch is rejected as a unit, so a blind
+  advance drops good interactions alongside the bad one.
+- Retry failed publishes later, using the same classification.
+- Build the wire payload with an **allowlist** of `InteractionData` fields, not
+  by passing your buffer record through minus a few keys. A denylist silently
+  ships your internal bookkeeping and rots every time you add a record key.
+- Every interaction must carry something — `content`, `shadow_content`,
+  `expert_content`, `interacted_image_url`, `image_encoding`, `tools_used`,
+  `citations`, `retrieved_learnings`, or a `user_action` other than `"none"`.
+  A wholly empty interaction is rejected with `422`; drop empty turns before
+  sending rather than letting one poison the batch.
+- Unknown fields are accepted but **dropped**, and named back to you in the
+  response's `warnings[]`. Check that list: a populated one means a field you
+  sent did not bind and that data was silently discarded.
 - Truncate large tool fields before publishing.
 - Do not run extraction synchronously on every turn.
 - Make retrieval query-aware; do not dump all memory into every prompt.

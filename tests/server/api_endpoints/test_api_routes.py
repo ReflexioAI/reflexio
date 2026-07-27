@@ -51,17 +51,18 @@ class TestPublishInteraction:
 
     @staticmethod
     def _publish_payload():
+        # Every key inside interaction_data_list must be a real InteractionData
+        # field. This fixture previously sent user_message/agent_message/
+        # interaction_type -- none of which exist on the model -- so it posted
+        # an interaction that bound to nothing and stored content=''. It still
+        # asserted 200, which is exactly the silent failure this suite now
+        # guards against.
         return {
             "user_id": "user-1",
             "session_id": "sess-1",
             "interaction_data_list": [
-                {
-                    "user_id": "user-1",
-                    "session_id": "sess-1",
-                    "interaction_type": "conversation",
-                    "user_message": "Hello",
-                    "agent_message": "Hi there!",
-                }
+                {"role": "User", "content": "Hello"},
+                {"role": "Agent", "content": "Hi there!"},
             ],
         }
 
@@ -105,6 +106,90 @@ class TestPublishInteraction:
         data = response.json()
         assert data["success"] is True
         assert "queued" in data["message"].lower()
+
+    def test_async_publish_rejects_contentless_interactions(
+        self, client, patched_reflexio
+    ):
+        """A contentless publish must 422 on the async path too.
+
+        This is the regression that matters most: the async path returns 200
+        "queued" before the publisher runs, and discards the publisher's result,
+        so a rejection there is invisible to the caller. Validating on the
+        request model is what makes this path fail loudly. Previously this
+        returned 200 and silently stored rows with content=''.
+        """
+        payload = self._publish_payload()
+        payload["interaction_data_list"] = [{"role": "User"}]
+        response = client.post("/api/publish_interaction", json=payload)
+        assert response.status_code == 422
+        assert "is empty" in response.text
+
+    def test_async_publish_warns_on_unknown_interaction_field(
+        self, client, patched_reflexio
+    ):
+        """A mis-keyed field is accepted but reported, never silently dropped.
+
+        Asserts structurally rather than on a substring of ``response.text``:
+        the whole request body is echoed inside a 422's ``input``, so a
+        substring check like ``"Content" in response.text`` passes even when
+        the unknown-field handling is removed entirely. That false-pass was
+        demonstrated by mutation-testing an earlier revision of this test.
+        """
+        payload = self._publish_payload()
+        payload["interaction_data_list"] = [
+            {"role": "User", "content": "hi", "Content": "typo"}
+        ]
+        response = client.post("/api/publish_interaction", json=payload)
+        assert response.status_code == 200
+        warnings = response.json()["warnings"]
+        assert any("Content" in w for w in warnings), warnings
+        # Names only -- never the value.
+        assert not any("typo" in w for w in warnings), warnings
+
+    def test_async_publish_accepts_plugin_wire_shape(self, client, patched_reflexio):
+        """Regression: a request-level key on an interaction must not break.
+
+        Both first-party plugins build their wire payload with a denylist, so
+        every turn carries ``user_id``. Forbidding unknown keys wedged them
+        into a silent retry loop that never published again.
+        """
+        payload = self._publish_payload()
+        payload["interaction_data_list"] = [
+            {"role": "User", "content": "how do I do X?", "user_id": "proj-a"}
+        ]
+        response = client.post("/api/publish_interaction", json=payload)
+        assert response.status_code == 200
+        assert response.json()["success"] is True
+
+    def test_background_publish_rejection_is_logged(
+        self, client, patched_reflexio, caplog
+    ):
+        """A discarded background ``success=False`` must leave a trace.
+
+        The async path hands the caller 200 "queued" and throws the publisher's
+        return value away, so this log line is the only evidence a rejected
+        publish ever produces. The reason string is deliberately withheld -- it
+        can be an unbounded ``str(e)`` and Sentry ingests ERROR bodies unscrubbed.
+        """
+        import logging
+
+        with (
+            patch(
+                "reflexio.server.api_endpoints.publisher_api.add_user_interaction",
+                return_value=PublishUserInteractionResponse(
+                    success=False, message="CUSTOMER-SECRET-XYZ"
+                ),
+            ),
+            caplog.at_level(
+                logging.ERROR, logger="reflexio.server.routes.interactions"
+            ),
+        ):
+            response = client.post(
+                "/api/publish_interaction", json=self._publish_payload()
+            )
+        assert response.status_code == 200
+        assert "Background publish rejected" in caplog.text
+        assert "CUSTOMER-SECRET-XYZ" not in caplog.text
 
     def test_async_publish_does_not_gate_durable_write_on_limiter(
         self, client, patched_reflexio
