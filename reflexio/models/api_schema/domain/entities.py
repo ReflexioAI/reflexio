@@ -17,7 +17,10 @@ from ..common import (
     NEVER_EXPIRES_TIMESTAMP,
     BlockingIssue,
     BlockingIssueKind,
+    CapturesUnknownFields,
     ToolUsed,
+    cap_warning_list,
+    summarise_unknown_names,
 )
 from ..validators import (
     EmbeddingVector,
@@ -142,7 +145,7 @@ __all__ = [
 type CitationKind = Literal["playbook", "profile", "user_playbook", "agent_playbook"]
 
 
-class Citation(BaseModel):
+class Citation(CapturesUnknownFields):
     """A playbook or profile item the agent cited as influential.
 
     Carried inline on an Assistant ``InteractionData`` row to mark
@@ -178,7 +181,7 @@ type RetrievedLearningKind = Literal["profile", "user_playbook", "agent_playbook
 type LearningImpact = Literal["positive", "negative", "neutral"]
 
 
-class RetrievedLearning(BaseModel):
+class RetrievedLearning(CapturesUnknownFields):
     """A learning the caller retrieved and injected into the agent context.
 
     Deliberately minimal — just the identity pair. It does NOT reuse
@@ -691,7 +694,7 @@ class ClearUserDataResponse(BaseModel):
 
 
 # user provided interaction data from the request
-class InteractionData(BaseModel):
+class InteractionData(CapturesUnknownFields):
     created_at: int = Field(default_factory=lambda: int(datetime.now(UTC).timestamp()))
     role: str = Field(default="User", max_length=1_000)
     content: str = Field(default="", max_length=1_000_000)
@@ -717,6 +720,29 @@ class InteractionData(BaseModel):
     @classmethod
     def validate_image_url(cls, v: str) -> str:
         return _validate_image_url(v)
+
+    def reportable_unknown_fields(self) -> list[str]:
+        """Unknown key names worth telling the caller about, nested included.
+
+        Excludes ``_BENIGN_UNKNOWN_KEYS``. Nested models report as a path, e.g.
+        ``tools_used[0].stat``, because a caller matching only top-level names
+        would not recognise the format otherwise.
+
+        Returns:
+            list[str]: Field paths, empty when nothing unrecognised was sent.
+        """
+        names = [
+            name
+            for name in self.unknown_field_names()
+            if name not in _BENIGN_UNKNOWN_KEYS
+        ]
+        for attribute in ("tools_used", "citations", "retrieved_learnings"):
+            for index, item in enumerate(getattr(self, attribute)):
+                names.extend(
+                    f"{attribute}[{index}].{nested}"
+                    for nested in item.unknown_field_names()
+                )
+        return names
 
     def carries_content(self) -> bool:
         """
@@ -784,6 +810,12 @@ CONTENT_BEARING_FIELD_NAMES: Final = (
     "retrieved_learnings",
 )
 
+# Request-level identifiers callers routinely duplicate onto each interaction.
+# Still stripped, but never warned about: both plugins send `user_id` on every
+# turn, so warning would emit one entry per interaction on every correct publish
+# and train operators to ignore the channel before it carries real signal.
+_BENIGN_UNKNOWN_KEYS: Final = frozenset({"user_id", "session_id"})
+
 # How many original indices to name when reporting skipped empty rows.
 _MAX_SKIPPED_INDICES: Final = 10
 
@@ -796,6 +828,9 @@ CONTENT_BEARING_FIELDS = (
 class PublishUserInteractionRequest(BaseModel):
     # Set by ``validate_interaction_shapes`` against the caller's original
     # list, before empty rows are filtered out; read by the route for logging.
+    # Computed against the caller's ORIGINAL list, before empty rows are
+    # filtered out; read by payload_warnings().
+    _unknown_field_warnings: list[str] = PrivateAttr(default_factory=list)
     _skipped_empty_indices: list[int] = PrivateAttr(default_factory=list)
     _skipped_empty_count: int = PrivateAttr(default=0)
 
@@ -846,6 +881,20 @@ class PublishUserInteractionRequest(BaseModel):
             if reason := interaction.shape_error():
                 raise ValueError(f"interaction_data_list[{index}] {reason}")
 
+        # Built against the ORIGINAL list, BEFORE filtering. Computing them
+        # afterwards defeats the feature in its primary case: a mis-keyed
+        # ``content`` yields an *empty* interaction, so the row carrying the typo
+        # is exactly the row that gets dropped -- its "unrecognised field"
+        # warning vanished, leaving the caller "skipped 1 empty interaction" and
+        # no idea which field was wrong. It also renumbered every surviving
+        # index, so a warning pointed at a different row than was sent.
+        self._unknown_field_warnings = [
+            f"interaction_data_list[{index}]: ignored unrecognised field(s)"
+            f" {summarise_unknown_names(names)}"
+            for index, interaction in enumerate(self.interaction_data_list)
+            if (names := interaction.reportable_unknown_fields())
+        ]
+
         # Indices are computed against the ORIGINAL list, before filtering, so
         # what gets reported matches the payload the caller actually sent.
         skipped = [
@@ -866,6 +915,27 @@ class PublishUserInteractionRequest(BaseModel):
             if interaction.carries_content()
         ]
         return self
+
+    def payload_warnings(self) -> list[str]:
+        """Everything quietly altered in the payload, for the caller.
+
+        Unrecognised keys that were stripped, plus a summary of empty
+        interactions that were skipped. Indices refer to the payload **as the
+        caller sent it**, not the filtered list. Names only, sanitised and
+        bounded: values are caller payload, and the names are equally
+        caller-controlled, so both volume and control characters are handled.
+
+        Returns:
+            list[str]: Bounded warnings; empty when nothing was altered.
+        """
+        # Cap the per-interaction entries, THEN append the batch-level skip
+        # summary, so the cap can never drop it. Capping the combined list
+        # swallowed "N interactions were dropped" whenever there were >= 20
+        # field warnings -- the single most important fact about such a batch.
+        warnings = cap_warning_list(self._unknown_field_warnings)
+        if summary := self.skipped_empty_summary():
+            warnings.append(summary)
+        return warnings
 
     def skipped_empty_summary(self) -> str | None:
         """A log-safe description of empty interactions that were dropped.
