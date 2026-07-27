@@ -3,7 +3,7 @@
 Verifies that:
 - A real extraction emits ``extraction_tokens`` and ``learnings_generated`` events.
 - A should_run-skipped request emits NO billing learning events (but the ops gate
-  event still fires with ``outcome=should_skip``).
+  event still fires, carrying the specific skip reason).
 - AgentSuccessEvaluationService (EMITS_LEARNING_BILLING=False) never emits ②
   Learning events — the gate blocks it regardless of outcome.
 
@@ -174,7 +174,8 @@ def test_real_extraction_emits_tokens_and_learnings(tmp_path):
 def test_should_run_skip_emits_no_learning_billing(tmp_path, monkeypatch):
     """A should_run-gated skip emits NO extraction_tokens / learnings_generated.
 
-    The ops gate event still fires with outcome=should_skip. We:
+    The ops gate event still fires, carrying the specific skip reason
+    (``skip_cheap_<reason>`` here, not the generic ``should_skip``). We:
     - Clear MOCK_LLM_RESPONSE so the pre-extraction gate is not bypassed.
     - Set stride_size=1 and seed a short interaction so the stride check passes
       but the cheap pre-filter rejects the batch (all_user_turns_too_short).
@@ -254,10 +255,20 @@ def test_should_run_skip_emits_no_learning_billing(tmp_path, monkeypatch):
     ]
     assert billing_learning == [], f"unexpected billing events: {billing_learning}"
 
-    # The existing ops event still fires with the skip outcome.
+    # EXACTLY ONE gate event per decision, carrying the specific reason.
+    #
+    # The cheap pre-filter used to record `skip_cheap_<reason>` itself while the
+    # caller also recorded a generic `should_skip`, so one decision produced two
+    # events -- and the second read as an LLM verdict on a path that never
+    # reaches the LLM, double-counting the skip in the very metric this exists
+    # to make trustworthy. Assert the count, not just the presence.
     gate_events = [e for e in events if e.event_name == "generation_gate_evaluated"]
-    assert any(e.outcome == "should_skip" for e in gate_events), (
-        f"expected should_skip gate event, got: {gate_events}"
+    assert len(gate_events) == 1, f"expected exactly one gate event, got: {gate_events}"
+    # The exact reason, not a prefix: this fixture's turns are all under the
+    # minimum length, and a prefix check would pass for any cheap-filter reason
+    # -- including one the fixture never exercises.
+    assert gate_events[0].outcome == "skip_cheap_all_user_turns_too_short", (
+        f"expected the specific cheap-filter reason, got: {gate_events[0].outcome}"
     )
 
 

@@ -760,6 +760,40 @@ class BaseGenerationService(
             user_id=advance.user_id,
         )
 
+    def _record_skip(
+        self, reason: str, *, metadata: dict[str, Any] | None = None
+    ) -> None:
+        """Record that generation was skipped BEFORE the pre-extraction gate ran.
+
+        Emitted on the early-return paths of :meth:`_prepare_generation_run`. Those
+        paths previously logged at ``info``/``warning`` and wrote nothing durable, so
+        "a gate skipped this" was indistinguishable from "extraction ran and found
+        nothing" and from "extraction was never invoked" — all three looked identical
+        from the outside (publish returns success, no ``_agent_runs`` row, no usage
+        event). Diagnosing one such case took several hours and four wrong theories.
+
+        Uses the same ``generation_gate_evaluated`` event name as the gate itself so a
+        single query returns every decision, with ``outcome`` naming which gate fired:
+        ``skip_no_extractor_config`` / ``skip_source_not_enabled`` /
+        ``skip_stride_not_met`` from here, and ``should_run`` / ``should_skip`` from
+        the pre-extraction gate.
+
+        Args:
+            reason (str): Short slug for the gate that skipped, without the ``skip_``
+                prefix (added here so every outcome sorts together).
+            metadata (dict[str, Any] | None): Extra context for the event, e.g. the
+                request source that failed the source filter.
+        """
+        self._record_generation_event(
+            event_name="generation_gate_evaluated",
+            outcome=f"skip_{reason}",
+            count_value=1,
+            metadata={
+                "service": self._get_service_name(),
+                **(metadata or {}),
+            },
+        )
+
     def _prepare_generation_run(
         self, request: TRequest
     ) -> PreparedGenerationRun[TExtractorConfig] | None:
@@ -788,6 +822,7 @@ class BaseGenerationService(
         extractor_config = self._load_extractor_config()
         if extractor_config is None:
             logger.warning("No %s extractor config found", self._get_service_name())
+            self._record_skip("no_extractor_config")
             return None
 
         extractor_config = self._filter_extractor_config_by_service_config(
@@ -802,6 +837,7 @@ class BaseGenerationService(
                 self._get_service_name(),
                 source_display,
             )
+            self._record_skip("source_not_enabled", metadata={"source": source_display})
             return None
 
         extractor_config = self._filter_config_by_stride(extractor_config)
@@ -810,6 +846,7 @@ class BaseGenerationService(
                 "Extractor config did not pass stride_size check for %s",
                 self._get_service_name(),
             )
+            self._record_skip("stride_not_met")
             return None
 
         identifier = getattr(self.service_config, "user_id", None) or getattr(
@@ -818,9 +855,17 @@ class BaseGenerationService(
         extractor_name = get_extractor_name(extractor_config)
 
         should_run = self._should_run_before_extraction(extractor_config)
+        # Exactly ONE event per gate decision. The gate reports a more specific
+        # skip reason when it has one (e.g. the cheap pre-filter, which never
+        # reaches the LLM); recording our generic ``should_skip`` alongside it
+        # would double-count and imply an LLM verdict that never happened.
+        # ``getattr`` because a subclass may override the gate and not set it.
+        specific_outcome = getattr(self, "_last_gate_skip_outcome", None)
         self._record_generation_event(
             event_name="generation_gate_evaluated",
-            outcome="should_run" if should_run else "should_skip",
+            outcome=(
+                "should_run" if should_run else (specific_outcome or "should_skip")
+            ),
             count_value=1,
             metadata={
                 "identifier": identifier,

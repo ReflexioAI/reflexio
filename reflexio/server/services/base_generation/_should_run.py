@@ -59,6 +59,10 @@ class ShouldRunPrecheckMixin(Generic[TExtractorConfig, TGenerationServiceConfig]
     # The Precheck→Billing (INV-3) seam: written by
     # ``_collect_scoped_interactions_for_precheck``, read by ``_extraction_input_text``.
     _last_precheck_sessions: list[Any] | None
+    # The specific reason this gate skipped, when it is more precise than the
+    # caller's generic ``should_skip``. Read via ``getattr`` by the caller, since
+    # a subclass may override the gate entirely and never set it.
+    _last_gate_skip_outcome: str | None
 
     if TYPE_CHECKING:
         # Abstract on the base ABC (stays there per SINK-2); declared here type-only
@@ -88,6 +92,10 @@ class ShouldRunPrecheckMixin(Generic[TExtractorConfig, TGenerationServiceConfig]
         Returns:
             bool: True if extraction should proceed, False to skip
         """
+        # Cleared on every entry: a value left over from an earlier call would
+        # mislabel this decision.
+        self._last_gate_skip_outcome = None
+
         # Skip for non-auto runs (rerun/manual flows always run)
         if not getattr(self.service_config, "auto_run", True):
             return True
@@ -139,6 +147,19 @@ class ShouldRunPrecheckMixin(Generic[TExtractorConfig, TGenerationServiceConfig]
                 reject_reason,
                 getattr(self.service_config, "user_id", None) or "unknown",
             )
+            # Report WHICH heuristic rejected, not just that we skipped: the
+            # caller's bare ``should_skip`` cannot distinguish "the cheap
+            # pre-filter rejected on short/slash-command turns" from "the LLM
+            # gate voted no", and the cheap path never reaches the LLM so there
+            # is no token spend to infer it from either.
+            #
+            # Handed to the caller rather than emitted here, deliberately. The
+            # caller records an outcome for this return unconditionally, so
+            # emitting our own would produce TWO events for one decision -- and
+            # the second would read as an LLM verdict that never happened,
+            # double-counting the skip in exactly the metric this exists to
+            # make trustworthy.
+            self._last_gate_skip_outcome = f"skip_cheap_{reject_reason}"
             return False
 
         # Build prompt via subclass hook
