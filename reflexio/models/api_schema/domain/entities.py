@@ -1,9 +1,15 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any, Literal, Self
+from typing import Any, Final, Literal, Self
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    Field,
+    PrivateAttr,
+    field_validator,
+    model_validator,
+)
 
 from reflexio.defaults import DEFAULT_AGENT_VERSION
 
@@ -712,9 +718,87 @@ class InteractionData(BaseModel):
     def validate_image_url(cls, v: str) -> str:
         return _validate_image_url(v)
 
+    def carries_content(self) -> bool:
+        """
+        Whether this interaction carries anything worth storing.
+
+        The single source of truth for "is this interaction empty", shared by
+        ``PublishUserInteractionRequest``'s boundary validator and the
+        ``precondition_checks`` defense-in-depth guard so the two cannot drift.
+
+        Every content-bearing field counts, not just ``content``: a
+        tool-call-only agent turn, a shadow/expert-only row, and an image-only
+        turn all carry real information. Note ``user_action`` is compared
+        against ``UserActionType.NONE`` rather than tested for truthiness --
+        ``UserActionType`` is a ``StrEnum`` whose NONE member is the *truthy*
+        string ``"none"``, and a truthiness test there is what silently
+        disabled this check for the entire life of the guard.
+
+        Returns:
+            bool: True if any content-bearing field is populated.
+        """
+        if self.user_action != UserActionType.NONE:
+            return True
+        # Text fields are stripped: "   " is not content. Mirrors the
+        # ``session_id`` guard in ``precondition_checks``, which already
+        # rejects whitespace-only values.
+        return any(
+            value.strip() if isinstance(value, str) else value
+            for value in (getattr(self, name) for name in CONTENT_BEARING_FIELD_NAMES)
+        )
+
+    def shape_error(self) -> str | None:
+        """A contradiction in this interaction the caller must fix, or None.
+
+        These are genuine caller mistakes with no sensible recovery, so they
+        are fatal to the request. Emptiness is deliberately NOT one of them --
+        see ``PublishUserInteractionRequest.validate_interaction_shapes``.
+
+        Both rules used to live only in ``precondition_checks``, which on the
+        default ``wait_for_response=False`` path runs inside a background task
+        whose result is discarded, so neither was ever reportable. Keeping them
+        here lets the request model raise a 422 on both paths while
+        ``precondition_checks`` delegates, so the two cannot diverge.
+
+        Returns:
+            str | None: A caller-facing reason, or None when acceptable.
+        """
+        if self.user_action != UserActionType.NONE and not self.user_action_description:
+            return "user_action requires a user_action_description"
+        if self.interacted_image_url and self.image_encoding:
+            return "interacted_image_url and image_encoding cannot both be set"
+        return None
+
+
+# Every field ``carries_content`` consults, in one place. The prose in the
+# error message is DERIVED from this tuple rather than hand-written beside it,
+# so adding a field to the predicate cannot leave the caller-facing list stale.
+CONTENT_BEARING_FIELD_NAMES: Final = (
+    "content",
+    "shadow_content",
+    "expert_content",
+    "interacted_image_url",
+    "image_encoding",
+    "tools_used",
+    "citations",
+    "retrieved_learnings",
+)
+
+# How many original indices to name when reporting skipped empty rows.
+_MAX_SKIPPED_INDICES: Final = 10
+
+CONTENT_BEARING_FIELDS = (
+    f'{", ".join(CONTENT_BEARING_FIELD_NAMES)}, or a user_action other than "none"'
+)
+
 
 # publish user interaction request
 class PublishUserInteractionRequest(BaseModel):
+    # Set by ``validate_interaction_shapes`` against the caller's original
+    # list, before empty rows are filtered out; read by the route for logging.
+    _skipped_empty_indices: list[int] = PrivateAttr(default_factory=list)
+    _skipped_empty_count: int = PrivateAttr(default=0)
+
     request_id: NonEmptyStr | None = None
     user_id: NonEmptyStr
     interaction_data_list: list[InteractionData] = Field(min_length=1, max_length=1_000)
@@ -736,6 +820,72 @@ class PublishUserInteractionRequest(BaseModel):
         if self.evaluation_only and not self.session_id:
             raise ValueError("evaluation_only publishes require session_id")
         return self
+
+    @model_validator(mode="after")
+    def validate_interaction_shapes(self) -> Self:
+        """Reject contradictory interactions; drop empty ones.
+
+        Runs during request parsing, so it applies on *both* the synchronous
+        and the ``wait_for_response=False`` background-task path -- unlike
+        ``precondition_checks``, whose ``success=False`` is discarded inside
+        the background task after the caller was told 200 "queued".
+
+        An individual empty interaction is **skipped, not fatal**. Making it
+        fatal was implemented and reverted: both first-party plugins append an
+        empty ``Assistant`` placeholder unconditionally, so one empty row
+        rejected the whole batch -- including the real user turn beside it --
+        and their adapters swallow the error without advancing the publish
+        watermark, retrying the same doomed batch forever. A batch where
+        *every* interaction is empty is still fatal, and that is exactly the
+        incident this validation exists for (50 of 50 rows empty).
+
+        Raises:
+            ValueError: for a contradictory interaction, or an all-empty batch.
+        """
+        for index, interaction in enumerate(self.interaction_data_list):
+            if reason := interaction.shape_error():
+                raise ValueError(f"interaction_data_list[{index}] {reason}")
+
+        # Indices are computed against the ORIGINAL list, before filtering, so
+        # what gets reported matches the payload the caller actually sent.
+        skipped = [
+            index
+            for index, interaction in enumerate(self.interaction_data_list)
+            if not interaction.carries_content()
+        ]
+        if len(skipped) == len(self.interaction_data_list):
+            raise ValueError(
+                "every interaction is empty: at least one must set"
+                f' "content" (or any of: {CONTENT_BEARING_FIELDS})'
+            )
+        self._skipped_empty_indices = skipped[:_MAX_SKIPPED_INDICES]
+        self._skipped_empty_count = len(skipped)
+        self.interaction_data_list = [
+            interaction
+            for interaction in self.interaction_data_list
+            if interaction.carries_content()
+        ]
+        return self
+
+    def skipped_empty_summary(self) -> str | None:
+        """A log-safe description of empty interactions that were dropped.
+
+        Returns None when nothing was skipped. Indices refer to the payload as
+        the caller sent it, not the filtered list. Bounded, because the count is
+        caller-controlled.
+
+        Returns:
+            str | None: Summary for the server log, or None.
+        """
+        if not self._skipped_empty_count:
+            return None
+        shown = ", ".join(str(index) for index in self._skipped_empty_indices)
+        more = self._skipped_empty_count - len(self._skipped_empty_indices)
+        return (
+            f"skipped {self._skipped_empty_count} empty interaction(s) that"
+            f" carried no content, at index(es) {shown}"
+            f"{f', +{more} more' if more else ''}"
+        )
 
     @model_validator(mode="after")
     def validate_retrieved_learnings_total(self) -> Self:
