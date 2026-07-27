@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from reflexio.defaults import resolve_agent_version
+from reflexio.models.api_schema.common import sanitise_for_log
 from reflexio.models.api_schema.service_schemas import (
     Interaction,
     PublishUserInteractionRequest,
@@ -265,7 +266,7 @@ class GenerationService:
             if not new_interactions:
                 logger.info(
                     "No interactions from the publish user interaction request: %s, get all interactions for the user: %s",
-                    request_id,
+                    sanitise_for_log(request_id),
                     user_id,
                 )
                 return result
@@ -658,7 +659,7 @@ class GenerationService:
                 "durable-learning same-user lock held; leaving job reclaimable "
                 "(user_id=%s request_id=%s)",
                 user_id,
-                request_id,
+                sanitise_for_log(request_id),
             )
             return DeferredLearningPlan(
                 request_id=request_id,
@@ -726,7 +727,9 @@ class GenerationService:
                         request_id=request_id,
                         error_type="timeout",
                     ):
-                        logger.error("%s for request %s", msg, request_id)
+                        logger.error(
+                            "%s for request %s", msg, sanitise_for_log(request_id)
+                        )
                     warnings.append(msg)
                     continue
                 except Exception as e:
@@ -739,7 +742,7 @@ class GenerationService:
                     ):
                         logger.exception(
                             "Generation service failed for request %s",
-                            request_id,
+                            sanitise_for_log(request_id),
                         )
                     warnings.append(msg)
                     continue
@@ -807,7 +810,7 @@ class GenerationService:
                     logger.exception(
                         "Failed to emit profile side effects for deferred "
                         "learning request %s",
-                        plan.request_id,
+                        sanitise_for_log(plan.request_id),
                     )
             if plan.playbook is not None:
                 playbook_service, playbook_plan = plan.playbook
@@ -817,7 +820,7 @@ class GenerationService:
                     logger.exception(
                         "Failed to emit playbook side effects for deferred "
                         "learning request %s",
-                        plan.request_id,
+                        sanitise_for_log(plan.request_id),
                     )
             try:
                 schedule_tagging(
@@ -830,7 +833,7 @@ class GenerationService:
             except Exception:
                 logger.exception(
                     "Failed to schedule tagging for deferred learning request %s",
-                    plan.request_id,
+                    sanitise_for_log(plan.request_id),
                 )
         finally:
             self._release_durable_learning_lock(
@@ -948,7 +951,7 @@ class GenerationService:
                     ):
                         logger.exception(
                             "Generation service failed for request %s",
-                            request_id,
+                            sanitise_for_log(request_id),
                         )
                     result.warnings.append(msg)
         else:
@@ -982,7 +985,9 @@ class GenerationService:
                             request_id=request_id,
                             error_type="timeout",
                         ):
-                            logger.error("%s for request %s", msg, request_id)
+                            logger.error(
+                                "%s for request %s", msg, sanitise_for_log(request_id)
+                            )
                         result.warnings.append(msg)
                     except Exception as e:
                         msg = f"{service_name} failed: {e}"
@@ -994,7 +999,7 @@ class GenerationService:
                         ):
                             logger.exception(
                                 "Generation service failed for request %s",
-                                request_id,
+                                sanitise_for_log(request_id),
                             )
                         result.warnings.append(msg)
             finally:
@@ -1011,7 +1016,7 @@ class GenerationService:
         except Exception:
             logger.exception(
                 "Failed to schedule tagging for publish request %s",
-                request_id,
+                sanitise_for_log(request_id),
             )
 
     def _schedule_post_publish_evaluations(

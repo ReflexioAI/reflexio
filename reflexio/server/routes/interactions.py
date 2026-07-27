@@ -15,6 +15,7 @@ from fastapi import (
     Request,
 )
 
+from reflexio.models.api_schema.common import sanitise_for_log
 from reflexio.models.api_schema.retriever_schema import (
     GetInteractionsRequest,
     GetInteractionsViewResponse,
@@ -68,6 +69,15 @@ def publish_user_interaction(
     wait_for_response: bool = False,
     _gate: None = Depends(default_billing_gate("learnings_generated")),  # noqa: B008
 ) -> PublishUserInteractionResponse:
+    # An empty interaction is dropped rather than failing the batch (plugins
+    # emit empty placeholder turns). Record it server-side so the drop is not
+    # silent; a caller-facing warnings channel is a separate change.
+    # INFO, not WARNING: the surrounding design treats an empty placeholder turn
+    # as normal plugin behaviour, so warning on it would train operators to
+    # ignore the channel.
+    if skipped := payload.skipped_empty_summary():
+        logger.info("Publish for org %s %s", org_id, skipped)
+
     if wait_for_response:
         # Sync callers wait for the real result, so preserve bounded backpressure
         # before any storage side effects. The inner service limiter is disabled
@@ -89,16 +99,64 @@ def publish_user_interaction(
     # id we hand back here.
     request_id = payload.request_id or str(uuid.uuid4())
     payload.request_id = request_id
+    # request_id is caller-supplied (NonEmptyStr: no length cap, no character
+    # restrictions) and is logged below at ERROR, which Sentry ingests as an
+    # event body. A newline in it would forge a line in a shared multi-tenant
+    # log stream -- the same hazard as the unknown field names.
+    safe_request_id = sanitise_for_log(request_id)
 
     def _publish_task() -> None:
         try:
-            publisher_api.add_user_interaction(
+            response = publisher_api.add_user_interaction(
                 org_id=org_id,
                 request=payload,
                 defer_learning=True,
             )
-        except Exception:
-            logger.exception("Background publish failed for org %s", org_id)
+            # The caller was already handed 200 "queued" below, so a
+            # ``success=False`` return here is otherwise invisible -- it is not
+            # an exception, so the handler underneath never sees it. Log it, or
+            # a rejected publish looks identical to an accepted one from both
+            # ends. Per-interaction shape problems are already caught as a 422
+            # by PublishUserInteractionRequest's validators; this covers
+            # whatever else add_user_interaction can refuse.
+            #
+            # Deliberately NOT logging ``response.message``: on the storage
+            # path it is ``str(e)`` from a catch-all (lib/_interactions.py), an
+            # unbounded exception string with no content-freeness guarantee,
+            # and Sentry ingests ERROR records as event bodies without
+            # scrubbing them. #377 established that such messages must be
+            # content-free by construction, so log a bounded shape instead.
+            if not response.success:
+                logger.error(
+                    "Background publish rejected for org %s (request_id=%s):"
+                    " %d-char reason withheld (may contain Customer Content)",
+                    org_id,
+                    safe_request_id,
+                    len(response.message or ""),
+                )
+        except Exception as exc:  # noqa: BLE001 - a background task must never raise past add_task
+            # Same content-freeness problem as response.message above: an
+            # exception string (and its traceback locals) has no guarantee of
+            # being free of Customer Content, and Sentry ingests this as an
+            # event body. Log the type and the raising location -- file:line is
+            # content-free and is the only way to find a background failure --
+            # but never the message.
+            tb = exc.__traceback__
+            while tb is not None and tb.tb_next is not None:
+                tb = tb.tb_next
+            origin = (
+                f"{tb.tb_frame.f_code.co_filename}:{tb.tb_lineno}"
+                if tb is not None
+                else "unknown"
+            )
+            logger.error(
+                "Background publish failed for org %s (request_id=%s): %s at %s"
+                " (message withheld, may contain Customer Content)",
+                org_id,
+                safe_request_id,
+                type(exc).__name__,
+                origin,
+            )
 
     # Run in background — caller gets immediate acknowledgement.
     # learning_status="deferred" tells the caller that extraction has not yet

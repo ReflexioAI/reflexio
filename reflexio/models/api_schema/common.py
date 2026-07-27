@@ -11,10 +11,34 @@ from pydantic import BaseModel, Field
 
 __all__ = [
     "NEVER_EXPIRES_TIMESTAMP",
-    "BlockingIssueKind",
     "BlockingIssue",
+    "BlockingIssueKind",
     "ToolUsed",
+    "sanitise_for_log",
 ]
+
+_MAX_LOG_VALUE_LEN = 64
+
+
+def sanitise_for_log(value: str, max_len: int = _MAX_LOG_VALUE_LEN) -> str:
+    """Make one caller-supplied string safe to put in a log line.
+
+    Strips control characters and bounds the length. A newline in a
+    caller-controlled value forges a line in a shared multi-tenant log stream,
+    and an unbounded value bloats the record. ``request_id`` is a
+    ``NonEmptyStr`` with no length cap and no character restrictions, so it
+    qualifies.
+
+    Args:
+        value (str): The caller-supplied string.
+        max_len (int): Maximum length before truncation.
+
+    Returns:
+        str: Printable, length-bounded text safe for a single log line.
+    """
+    cleaned = "".join(char if char.isprintable() else "?" for char in value)
+    return cleaned if len(cleaned) <= max_len else f"{cleaned[:max_len]}..."
+
 
 # OS-agnostic "never expires" timestamp (January 1, 2100 00:00:00 UTC)
 NEVER_EXPIRES_TIMESTAMP = 4102444800
