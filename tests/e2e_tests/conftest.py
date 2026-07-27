@@ -2,6 +2,7 @@
 
 import csv
 import json
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -38,14 +39,20 @@ personalization facts from the conversation
 
 
 @pytest.fixture(autouse=True)
-def mock_llm():
+def mock_llm(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[None]:
     """Keep the standard E2E tier deterministic and credential-free."""
+    if request.node.get_closest_marker("requires_credentials"):
+        monkeypatch.delenv("MOCK_LLM_RESPONSE", raising=False)
+        yield
+        return
     with patched_litellm():
         yield
 
 
 @pytest.fixture(autouse=True)
-def _zero_group_evaluation_delay():
+def _zero_group_evaluation_delay() -> Iterator[None]:
     """Remove the 600s completion-delay gate in group evaluation for e2e tests.
 
     `run_group_evaluation` skips a session if its latest request is newer than
@@ -62,7 +69,19 @@ def _zero_group_evaluation_delay():
 
 
 @pytest.fixture(autouse=True)
-def _drain_background_tagging_callbacks():
+def _zero_tagging_delay() -> Iterator[None]:
+    """Fire deferred tagging promptly so E2E teardown can drain it deterministically."""
+    with patch(
+        "reflexio.server.services.tagging.tagging_scheduler._EFFECTIVE_DELAY_SECONDS",
+        0,
+    ):
+        yield
+
+
+@pytest.fixture(autouse=True)
+def _drain_background_tagging_callbacks(
+    _zero_tagging_delay: None, mock_llm: None
+) -> Iterator[None]:
     yield
     assert drain_tagging(timeout_seconds=10.0), (
         "background tagging callbacks did not drain before test teardown"
@@ -341,6 +360,9 @@ def _get_playbook_names(instance: Reflexio) -> list[str]:
 
 def _cleanup_storage(instance: Reflexio):
     """Helper function to cleanup storage for an Reflexio instance."""
+    assert drain_tagging(timeout_seconds=10.0), (
+        "background tagging callbacks did not drain before storage cleanup"
+    )
     try:
         storage = instance.request_context.storage
         assert storage is not None
