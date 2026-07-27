@@ -197,6 +197,44 @@ class TestPublishInteraction:
         response = client.post("/api/publish_interaction")
         assert response.status_code == 422
 
+    def test_async_publish_reports_unknown_field_in_warnings(
+        self, client, patched_reflexio
+    ):
+        """A mis-keyed field is accepted but reported, never silently dropped.
+
+        Asserts on the parsed ``warnings`` list rather than a substring of
+        ``response.text``: a 422 echoes the whole request body in ``input``, so a
+        substring check passes even with the feature removed entirely. That
+        false-pass was demonstrated by mutation on an earlier revision.
+        """
+        payload = self._publish_payload()
+        payload["interaction_data_list"] = [
+            {"role": "User", "content": "hi", "Content": "typo"}
+        ]
+        response = client.post("/api/publish_interaction", json=payload)
+        assert response.status_code == 200
+        warnings = response.json()["warnings"]
+        assert any("Content" in warning for warning in warnings), warnings
+        # Names only — never the value.
+        assert not any("typo" in warning for warning in warnings), warnings
+
+    def test_async_publish_reports_skipped_empty_rows(self, client, patched_reflexio):
+        payload = self._publish_payload()
+        payload["interaction_data_list"] = [
+            {"role": "User", "content": "REAL"},
+            {"role": "Agent", "content": ""},
+        ]
+        response = client.post("/api/publish_interaction", json=payload)
+        assert response.status_code == 200
+        assert any(
+            "skipped 1 empty" in warning for warning in response.json()["warnings"]
+        ), response.json()["warnings"]
+
+    def test_clean_publish_reports_no_warnings(self, client, patched_reflexio):
+        response = client.post("/api/publish_interaction", json=self._publish_payload())
+        assert response.status_code == 200
+        assert response.json().get("warnings", []) == []
+
 
 class TestSearchEndpoints:
     """Tests for search endpoints."""

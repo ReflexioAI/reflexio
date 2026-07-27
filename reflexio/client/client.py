@@ -464,6 +464,13 @@ class ReflexioClient:
                 In ``wait_for_response=True`` mode the server waits for
                 extraction and the response includes ``request_id``,
                 storage routing, and real profile/playbook deltas.
+
+                ``warnings`` reports anything quietly altered: unrecognised
+                interaction fields that were stripped (a key you sent did not
+                bind and its value was discarded — check for a typo), and
+                interactions that carried nothing and were skipped. Indices
+                refer to the list as you passed it. The list is bounded, so on
+                a large batch treat it as a sample.
         """
         if session_id is None or not session_id.strip():
             raise ValueError("session_id is required and cannot be empty")
@@ -490,6 +497,14 @@ class ReflexioClient:
         result = self._publish_interaction_sync(
             request, wait_for_response=wait_for_response
         )
+        # Merge the warnings detected locally. Building InteractionData above
+        # already stripped the caller's unknown keys, so request.model_dump()
+        # sends a clean payload and the server never sees them -- it cannot echo
+        # what it was never told. Without this, unrecognised fields are reported
+        # over raw HTTP but invisible through the SDK, which is the primary
+        # integration path and the one this method's docstring promises.
+        if local_warnings := request.payload_warnings():
+            result.warnings = [*result.warnings, *local_warnings]
         self._cache.invalidate("get_profiles")
         self._cache.invalidate("get_agent_playbooks")
         return result
