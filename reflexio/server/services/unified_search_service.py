@@ -17,6 +17,7 @@ from collections import OrderedDict
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeoutError
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
 
@@ -86,6 +87,7 @@ _SEARCH_FANOUT_EXECUTOR = ThreadPoolExecutor(
     max_workers=_SEARCH_FANOUT_MAX_WORKERS,
     thread_name_prefix="reflexio-search",
 )
+_SEARCH_PHASE_B_TIMEOUT_SECONDS = 30.0
 _ENV_SINGLE_RPC = "REFLEXIO_UNIFIED_SEARCH_SINGLE_RPC"
 # Working-pool floor for temporal reordering (freshness collapse / recency
 # sort): matches the RecencyConfig default pool so the fresh version of a
@@ -111,6 +113,16 @@ _embedding_cache_lock = threading.Lock()
 _embedding_cache: OrderedDict[tuple[str, int, str, str], tuple[float, list[float]]] = (
     OrderedDict()
 )
+
+
+@dataclass(frozen=True)
+class _TrackedSearchFuture:
+    """Executor submission metadata used for timing and cancellation."""
+
+    task: str
+    future: Future[Any]
+    submitted_at: float
+    deadline_monotonic: float
 
 
 def run_unified_search(
@@ -431,13 +443,16 @@ def _run_phase_b(
 
     entity_types = set(request.entity_types or _DEFAULT_ENTITY_TYPES)
     allowed_agent_statuses = request.agent_playbook_status_filter
-    try:
-        with profile_step(
-            "search.phase_b",
-            backend=_storage_backend_name(storage),
-            entity_types=sorted(entity_types),
-            top_k=top_k,
-        ) as span:
+    deadline_monotonic = time.monotonic() + _SEARCH_PHASE_B_TIMEOUT_SECONDS
+    tracked_futures: list[_TrackedSearchFuture] = []
+    with profile_step(
+        "search.phase_b",
+        backend=_storage_backend_name(storage),
+        entity_types=sorted(entity_types),
+        top_k=top_k,
+        deadline_seconds=_SEARCH_PHASE_B_TIMEOUT_SECONDS,
+    ) as span:
+        try:
             # Recency needs the per-row ``combined_score``, which only the scored
             # single-RPC method threads back. Backends that don't advertise
             # ``supports_unified_hybrid_search`` (e.g. native Postgres, which still
@@ -469,6 +484,8 @@ def _run_phase_b(
                     allowed_agent_statuses=allowed_agent_statuses,
                     recency_on=recency_on,
                     search_mode=search_mode,
+                    deadline_monotonic=deadline_monotonic,
+                    tracked_futures=tracked_futures,
                 )
                 if combined is not None:
                     profiles, agent_playbooks, user_playbooks = combined
@@ -486,6 +503,8 @@ def _run_phase_b(
             profiles_future = (
                 _submit_with_current_context(
                     _SEARCH_FANOUT_EXECUTOR,
+                    "profiles",
+                    deadline_monotonic,
                     _search_profiles_via_storage,
                     storage,
                     query,
@@ -504,6 +523,8 @@ def _run_phase_b(
             agent_playbooks_future = (
                 _submit_with_current_context(
                     _SEARCH_FANOUT_EXECUTOR,
+                    "agent_playbooks",
+                    deadline_monotonic,
                     _search_agent_playbooks_via_storage,
                     storage,
                     query,
@@ -536,6 +557,8 @@ def _run_phase_b(
                 )
                 user_playbooks_future = _submit_with_current_context(
                     _SEARCH_FANOUT_EXECUTOR,
+                    "user_playbooks",
+                    deadline_monotonic,
                     _search_user_playbooks_via_storage,
                     storage,
                     rf_request,
@@ -544,14 +567,23 @@ def _run_phase_b(
             else:
                 user_playbooks_future = None
 
-            profiles = profiles_future.result(timeout=30) if profiles_future else []
+            tracked_futures.extend(
+                future
+                for future in (
+                    profiles_future,
+                    agent_playbooks_future,
+                    user_playbooks_future,
+                )
+                if future is not None
+            )
+            profiles = _result_with_deadline(profiles_future) if profiles_future else []
             agent_playbooks = (
-                agent_playbooks_future.result(timeout=30)
+                _result_with_deadline(agent_playbooks_future)
                 if agent_playbooks_future
                 else []
             )
             user_playbooks = (
-                user_playbooks_future.result(timeout=30)
+                _result_with_deadline(user_playbooks_future)
                 if user_playbooks_future
                 else []
             )
@@ -563,12 +595,27 @@ def _run_phase_b(
                     "user_playbooks_count": len(user_playbooks),
                 },
             )
-    except FuturesTimeoutError:
-        logger.error("Unified search timed out")
-        return None, None, None
-    except Exception as e:
-        logger.error("Unified search failed: %s", e)
-        return None, None, None
+        except FuturesTimeoutError:
+            cancellation_counts = _cancel_unfinished_futures(tracked_futures)
+            set_span_data(
+                span,
+                {
+                    "timed_out": True,
+                    **cancellation_counts,
+                },
+            )
+            logger.error(
+                "event=unified_search_timeout deadline_seconds=%.1f "
+                "cancelled_queued=%d running=%d completed=%d",
+                _SEARCH_PHASE_B_TIMEOUT_SECONDS,
+                cancellation_counts["cancelled_queued_count"],
+                cancellation_counts["running_count"],
+                cancellation_counts["completed_count"],
+            )
+            return None, None, None
+        except Exception as e:
+            logger.error("Unified search failed: %s", e)
+            return None, None, None
 
     return profiles, agent_playbooks, user_playbooks
 
@@ -590,6 +637,8 @@ def _run_phase_b_single_rpc(
     allowed_agent_statuses: list[PlaybookStatus] | None,
     recency_on: bool = False,
     search_mode: SearchMode = SearchMode.HYBRID,
+    deadline_monotonic: float,
+    tracked_futures: list[_TrackedSearchFuture],
 ) -> tuple[list[Any], list[Any], list[Any]] | None:
     """Run all Phase B arms through one combined storage round trip.
 
@@ -601,8 +650,8 @@ def _run_phase_b_single_rpc(
     Returns:
         The three result lists, or None when the combined call fails so the
         caller can fall back to the per-arm fan-out (e.g. the SQL function
-        is not yet migrated on this deployment). Timeouts propagate like the
-        fan-out path so a hung database is not retried.
+        is not yet migrated on this deployment). The RPC and any fallback
+        share the Phase B deadline; deadline exhaustion propagates to the caller.
     """
     statuses = (
         list(allowed_agent_statuses)
@@ -625,6 +674,8 @@ def _run_phase_b_single_rpc(
 
     future = _submit_with_current_context(
         _SEARCH_FANOUT_EXECUTOR,
+        "unified",
+        deadline_monotonic,
         unified_hybrid_search,
         query=query,
         query_embedding=embedding,
@@ -639,12 +690,16 @@ def _run_phase_b_single_rpc(
         include_profiles="profiles" in entity_types and bool(request.user_id),
         include_agent_playbooks="agent_playbooks" in entity_types,
         include_user_playbooks="user_playbooks" in entity_types,
+        _retry_deadline_monotonic=deadline_monotonic,
     )
+    tracked_futures.append(future)
     try:
-        profiles, agent_playbooks, user_playbooks = future.result(timeout=30)
+        profiles, agent_playbooks, user_playbooks = _result_with_deadline(future)
     except FuturesTimeoutError:
         raise
     except Exception:
+        if _remaining_deadline_seconds(deadline_monotonic) <= 0:
+            raise FuturesTimeoutError from None
         logger.warning(
             "Unified single-RPC search failed; falling back to per-arm fan-out",
             exc_info=True,
@@ -1027,12 +1082,102 @@ def _search_user_playbooks_via_storage(
 
 def _submit_with_current_context(
     executor: ThreadPoolExecutor,
+    task: str,
+    deadline_monotonic: float,
     fn: Callable[..., object],
     *args: object,
     **kwargs: object,
-) -> Future[Any]:
+) -> _TrackedSearchFuture:
+    submitted_at = time.monotonic()
     context = contextvars.copy_context()
-    return executor.submit(context.run, fn, *args, **kwargs)
+
+    def run() -> object:
+        started_at = time.monotonic()
+        queue_wait_ms = (started_at - submitted_at) * 1000
+        deadline_remaining_ms = max(0.0, deadline_monotonic - started_at) * 1000
+        with profile_step(
+            "search.executor.task",
+            task=task,
+            queue_wait_ms=queue_wait_ms,
+            deadline_remaining_ms_at_start=deadline_remaining_ms,
+        ) as span:
+            execution_started_at = time.monotonic()
+            outcome = "success"
+            try:
+                if deadline_remaining_ms <= 0:
+                    outcome = "deadline_expired"
+                    raise FuturesTimeoutError(
+                        f"Search task {task} started after its deadline"
+                    )
+                return fn(*args, **kwargs)
+            except FuturesTimeoutError:
+                if outcome != "deadline_expired":
+                    outcome = "timeout"
+                raise
+            except BaseException:
+                outcome = "failure"
+                raise
+            finally:
+                set_span_data(
+                    span,
+                    {
+                        "execution_ms": (time.monotonic() - execution_started_at)
+                        * 1000,
+                        "outcome": outcome,
+                    },
+                )
+
+    future = executor.submit(context.run, run)
+    return _TrackedSearchFuture(
+        task=task,
+        future=future,
+        submitted_at=submitted_at,
+        deadline_monotonic=deadline_monotonic,
+    )
+
+
+def _remaining_deadline_seconds(deadline_monotonic: float) -> float:
+    return max(0.0, deadline_monotonic - time.monotonic())
+
+
+def _result_with_deadline(tracked_future: _TrackedSearchFuture) -> Any:
+    return tracked_future.future.result(
+        timeout=_remaining_deadline_seconds(tracked_future.deadline_monotonic)
+    )
+
+
+def _cancel_unfinished_futures(
+    tracked_futures: list[_TrackedSearchFuture],
+) -> dict[str, int]:
+    counts = {
+        "cancelled_queued_count": 0,
+        "running_count": 0,
+        "completed_count": 0,
+    }
+    for tracked in tracked_futures:
+        future = tracked.future
+        if future.done():
+            counts["completed_count"] += 1
+            continue
+        if future.cancel():
+            counts["cancelled_queued_count"] += 1
+            queue_wait_ms = (time.monotonic() - tracked.submitted_at) * 1000
+            with profile_step(
+                "search.executor.task",
+                task=tracked.task,
+                queue_wait_ms=queue_wait_ms,
+                deadline_remaining_ms_at_start=None,
+            ) as span:
+                set_span_data(
+                    span,
+                    {"execution_ms": 0.0, "outcome": "cancelled_queued"},
+                )
+            continue
+        if future.done():
+            counts["completed_count"] += 1
+        else:
+            counts["running_count"] += 1
+    return counts
 
 
 def _storage_backend_name(storage: BaseStorage) -> str:

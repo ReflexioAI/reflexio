@@ -1,6 +1,13 @@
 """Phase B single-RPC routing: combined storage call, fallback, kill switch."""
 
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeoutError
+from contextlib import contextmanager
 from typing import Any, cast
+
+import pytest
 
 from reflexio.models.api_schema.retriever_schema import UnifiedSearchRequest
 from reflexio.models.api_schema.service_schemas import (
@@ -10,6 +17,28 @@ from reflexio.models.api_schema.service_schemas import (
 )
 from reflexio.server.services import unified_search_service as uss
 from reflexio.server.services.storage.storage_base import BaseStorage
+from reflexio.server.tracing import configure_tracer
+
+
+class _RecordingSpan:
+    def __init__(self, record: dict[str, Any]) -> None:
+        self.record = record
+
+    def set_data(self, key: str, value: Any) -> None:
+        self.record[key] = value
+
+
+class _RecordingTracer:
+    def __init__(self, records: list[dict[str, Any]]) -> None:
+        self.records = records
+
+    @contextmanager
+    def span(self, name: str, **data: Any):
+        record = {"name": name, **data}
+        try:
+            yield _RecordingSpan(record)
+        finally:
+            self.records.append(record)
 
 
 def _agent_playbook(playbook_id: int, content: str) -> AgentPlaybook:
@@ -177,6 +206,26 @@ def test_single_rpc_failure_falls_back_to_fanout(monkeypatch):
     assert (profiles, agent_playbooks, user_playbooks) == ([], [], [])
 
 
+def test_single_rpc_and_fallback_share_one_deadline(monkeypatch):
+    monkeypatch.delenv("REFLEXIO_UNIFIED_SEARCH_SINGLE_RPC", raising=False)
+    storage = _CombinedStorage(raise_on_combined=True)
+    observed_deadlines: list[float] = []
+    original_remaining = uss._remaining_deadline_seconds
+
+    def record_remaining(deadline_monotonic: float) -> float:
+        observed_deadlines.append(deadline_monotonic)
+        return original_remaining(deadline_monotonic)
+
+    monkeypatch.setattr(uss, "_remaining_deadline_seconds", record_remaining)
+
+    assert _run_phase_b(storage) == ([], [], [])
+    assert len(observed_deadlines) >= 4
+    assert len(set(observed_deadlines)) == 1
+    assert (
+        storage.combined_calls[0]["_retry_deadline_monotonic"] == observed_deadlines[0]
+    )
+
+
 def test_single_rpc_missing_callable_falls_back_to_fanout(monkeypatch):
     monkeypatch.delenv("REFLEXIO_UNIFIED_SEARCH_SINGLE_RPC", raising=False)
     storage = _MissingCombinedMethodStorage()
@@ -211,3 +260,203 @@ def test_single_rpc_kill_switch_disables_combined_path(monkeypatch):
         "agent_playbooks",
         "user_playbooks",
     }
+
+
+def test_cancels_queued_future_but_reports_running_future():
+    executor = ThreadPoolExecutor(max_workers=1)
+    running_started = threading.Event()
+    release_running = threading.Event()
+    queued_called = threading.Event()
+
+    def blocking_task() -> list[Any]:
+        running_started.set()
+        assert release_running.wait(timeout=2)
+        return []
+
+    def queued_task() -> list[Any]:
+        queued_called.set()
+        return []
+
+    deadline = time.monotonic() + 5
+    running = uss._submit_with_current_context(
+        executor, "running", deadline, blocking_task
+    )
+    assert running_started.wait(timeout=1)
+    queued = uss._submit_with_current_context(executor, "queued", deadline, queued_task)
+
+    try:
+        counts = uss._cancel_unfinished_futures([running, queued])
+
+        assert counts == {
+            "cancelled_queued_count": 1,
+            "running_count": 1,
+            "completed_count": 0,
+        }
+        assert queued.future.cancelled()
+        assert not queued_called.is_set()
+    finally:
+        release_running.set()
+        running.future.result(timeout=1)
+        executor.shutdown(wait=True)
+
+
+def test_executor_span_separates_queue_wait_from_execution_time():
+    records: list[dict[str, Any]] = []
+    executor = ThreadPoolExecutor(max_workers=1)
+    running_started = threading.Event()
+    release_running = threading.Event()
+
+    def blocking_task() -> None:
+        running_started.set()
+        assert release_running.wait(timeout=2)
+
+    configure_tracer(_RecordingTracer(records))
+    deadline = time.monotonic() + 5
+    try:
+        running = uss._submit_with_current_context(
+            executor, "running", deadline, blocking_task
+        )
+        assert running_started.wait(timeout=1)
+        queued = uss._submit_with_current_context(
+            executor, "queued", deadline, lambda: "done"
+        )
+        time.sleep(0.01)
+        release_running.set()
+        assert queued.future.result(timeout=1) == "done"
+        running.future.result(timeout=1)
+    finally:
+        release_running.set()
+        executor.shutdown(wait=True)
+        configure_tracer(None)
+
+    queued_record = next(
+        record
+        for record in records
+        if record["name"] == "search.executor.task" and record["task"] == "queued"
+    )
+    assert queued_record["queue_wait_ms"] >= 10
+    assert queued_record["execution_ms"] >= 0
+    assert queued_record["deadline_remaining_ms_at_start"] > 0
+    assert queued_record["outcome"] == "success"
+
+
+@pytest.mark.parametrize(
+    ("exc", "expected_outcome"),
+    [(RuntimeError("failed"), "failure"), (FuturesTimeoutError(), "timeout")],
+)
+def test_executor_span_records_failure_outcomes(
+    exc: BaseException, expected_outcome: str
+):
+    records: list[dict[str, Any]] = []
+    executor = ThreadPoolExecutor(max_workers=1)
+
+    def fail() -> None:
+        raise exc
+
+    configure_tracer(_RecordingTracer(records))
+    try:
+        tracked = uss._submit_with_current_context(
+            executor, "failing", time.monotonic() + 5, fail
+        )
+        with pytest.raises(type(exc)):
+            tracked.future.result(timeout=1)
+    finally:
+        executor.shutdown(wait=True)
+        configure_tracer(None)
+
+    record = next(
+        record for record in records if record["name"] == "search.executor.task"
+    )
+    assert record["outcome"] == expected_outcome
+    assert record["execution_ms"] >= 0
+
+
+def test_executor_task_does_not_call_storage_after_deadline():
+    records: list[dict[str, Any]] = []
+    called = threading.Event()
+    executor = ThreadPoolExecutor(max_workers=1)
+    configure_tracer(_RecordingTracer(records))
+    try:
+        tracked = uss._submit_with_current_context(
+            executor,
+            "expired",
+            time.monotonic() - 1,
+            called.set,
+        )
+        with pytest.raises(FuturesTimeoutError):
+            tracked.future.result(timeout=1)
+    finally:
+        executor.shutdown(wait=True)
+        configure_tracer(None)
+
+    assert not called.is_set()
+    record = next(
+        record for record in records if record["name"] == "search.executor.task"
+    )
+    assert record["deadline_remaining_ms_at_start"] == 0
+    assert record["outcome"] == "deadline_expired"
+
+
+def test_cancelled_queued_task_records_cancellation_outcome():
+    records: list[dict[str, Any]] = []
+    executor = ThreadPoolExecutor(max_workers=1)
+    running_started = threading.Event()
+    release_running = threading.Event()
+
+    def blocking_task() -> None:
+        running_started.set()
+        assert release_running.wait(timeout=2)
+
+    configure_tracer(_RecordingTracer(records))
+    deadline = time.monotonic() + 5
+    try:
+        running = uss._submit_with_current_context(
+            executor, "running", deadline, blocking_task
+        )
+        assert running_started.wait(timeout=1)
+        queued = uss._submit_with_current_context(
+            executor, "queued", deadline, lambda: None
+        )
+
+        counts = uss._cancel_unfinished_futures([running, queued])
+
+        assert counts["cancelled_queued_count"] == 1
+    finally:
+        release_running.set()
+        executor.shutdown(wait=True)
+        configure_tracer(None)
+
+    record = next(
+        record
+        for record in records
+        if record["name"] == "search.executor.task" and record["task"] == "queued"
+    )
+    assert record["deadline_remaining_ms_at_start"] is None
+    assert record["execution_ms"] == 0
+    assert record["outcome"] == "cancelled_queued"
+
+
+def test_phase_b_timeout_records_parent_cancellation_counts(monkeypatch):
+    records: list[dict[str, Any]] = []
+
+    class TimeoutStorage(_CombinedStorage):
+        def search_agent_playbooks(self, *_args: Any, **_kwargs: Any) -> list[Any]:
+            raise FuturesTimeoutError("storage timeout")
+
+    monkeypatch.setenv("REFLEXIO_UNIFIED_SEARCH_SINGLE_RPC", "0")
+    configure_tracer(_RecordingTracer(records))
+    try:
+        assert _run_phase_b(TimeoutStorage()) == (None, None, None)
+    finally:
+        configure_tracer(None)
+
+    phase_record = next(
+        record for record in records if record["name"] == "search.phase_b"
+    )
+    assert phase_record["timed_out"] is True
+    assert (
+        phase_record["cancelled_queued_count"]
+        + phase_record["running_count"]
+        + phase_record["completed_count"]
+        == 3
+    )
