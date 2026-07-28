@@ -94,10 +94,9 @@ def test_supersede_user_playbook_sets_superseded_by_and_revise_event(tmp_path):
     events = storage.get_lineage_events(
         entity_type="user_playbook", entity_id=str(result)
     )
-    assert len(events) == 1
-    assert events[0].op == "revise"
-    assert events[0].actor == "playbook_optimizer"
-    assert str(incumbent_id) in events[0].source_ids
+    assert [event.op for event in events] == ["create", "revise"]
+    assert events[1].actor == "playbook_optimizer"
+    assert str(incumbent_id) in events[1].source_ids
 
 
 def test_supersede_user_playbook_returns_none_for_non_current_incumbent(tmp_path):
@@ -113,6 +112,7 @@ def test_supersede_user_playbook_returns_none_for_non_current_incumbent(tmp_path
         status=Status.ARCHIVED,  # not CURRENT
     )
     storage.save_user_playbooks([incumbent])
+    events_before = storage.get_lineage_events(entity_type="user_playbook")
 
     playbooks_before = storage.conn.execute(
         "SELECT COUNT(*) as cnt FROM user_playbooks"
@@ -134,9 +134,9 @@ def test_supersede_user_playbook_returns_none_for_non_current_incumbent(tmp_path
     ).fetchone()["cnt"]
     assert playbooks_after == playbooks_before, "no orphan row should remain"
 
-    # No lineage events should exist
+    # The failed successor contributes no row or event; the incumbent origin remains.
     events = storage.get_lineage_events(entity_type="user_playbook")
-    assert events == []
+    assert events == events_before
 
 
 # ---------------------------------------------------------------------------
@@ -189,10 +189,9 @@ def test_supersede_agent_playbook_sets_superseded_by_and_revise_event(tmp_path):
     events = storage.get_lineage_events(
         entity_type="agent_playbook", entity_id=str(result)
     )
-    assert len(events) == 1
-    assert events[0].op == "revise"
-    assert events[0].actor == "playbook_optimizer"
-    assert str(incumbent_id) in events[0].source_ids
+    assert [event.op for event in events] == ["create", "revise"]
+    assert events[1].actor == "playbook_optimizer"
+    assert str(incumbent_id) in events[1].source_ids
 
 
 def test_supersede_agent_playbook_returns_none_for_non_current_incumbent(tmp_path):
@@ -210,6 +209,7 @@ def test_supersede_agent_playbook_returns_none_for_non_current_incumbent(tmp_pat
             )
         ]
     )
+    events_before = storage.get_lineage_events(entity_type="agent_playbook")
 
     agent_playbooks_before = storage.conn.execute(
         "SELECT COUNT(*) as cnt FROM agent_playbooks"
@@ -233,7 +233,7 @@ def test_supersede_agent_playbook_returns_none_for_non_current_incumbent(tmp_pat
     )
 
     events = storage.get_lineage_events(entity_type="agent_playbook")
-    assert events == []
+    assert events == events_before
 
 
 # ---------------------------------------------------------------------------
@@ -272,11 +272,10 @@ def test_supersede_user_playbook_revise_event_carries_job_request_id(tmp_path):
     events = storage.get_lineage_events(
         entity_type="user_playbook", entity_id=str(result)
     )
-    assert len(events) == 1
-    assert events[0].op == "revise"
-    assert events[0].request_id == run_id, (
+    assert [event.op for event in events] == ["create", "revise"]
+    assert events[1].request_id == run_id, (
         f"revise event must carry the job-derived run id {run_id!r}, "
-        f"got {events[0].request_id!r}"
+        f"got {events[1].request_id!r}"
     )
 
 
@@ -311,11 +310,10 @@ def test_supersede_agent_playbook_revise_event_carries_job_request_id(tmp_path):
     events = storage.get_lineage_events(
         entity_type="agent_playbook", entity_id=str(result)
     )
-    assert len(events) == 1
-    assert events[0].op == "revise"
-    assert events[0].request_id == run_id, (
+    assert [event.op for event in events] == ["create", "revise"]
+    assert events[1].request_id == run_id, (
         f"revise event must carry the job-derived run id {run_id!r}, "
-        f"got {events[0].request_id!r}"
+        f"got {events[1].request_id!r}"
     )
 
 

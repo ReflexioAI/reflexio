@@ -63,6 +63,9 @@ class ParseResult:
     stderr_text: str = ""
     raw_lines_parsed: int = 0
     raw_lines_failed: int = 0
+    served_model: str | None = None
+    served_provider: str | None = None
+    cli_binary: str | None = None
 
     @property
     def stall_candidate(self) -> str | None:
@@ -95,6 +98,12 @@ def parse_stream_json(
     parsed = 0
     failed = 0
     saw_terminal = False
+    init_model: str | None = None
+    assistant_model: str | None = None
+    assistant_provider: str | None = None
+    usage_model: str | None = None
+    result_model: str | None = None
+    result_provider: str | None = None
     for line in stdout.splitlines():
         if not line.strip():
             continue
@@ -107,6 +116,10 @@ def parse_stream_json(
         if not isinstance(event, dict):
             continue
         match event.get("type"), event.get("subtype"):
+            case ("system", "init"):
+                model = event.get("model")
+                if isinstance(model, str) and model.strip():
+                    init_model = model
             case ("system", "api_retry"):
                 err = event.get("error")
                 if isinstance(err, str):
@@ -116,6 +129,27 @@ def parse_stream_json(
                 if isinstance(text, str):
                     terminal_text = text
                     saw_terminal = True
+                model_usage = event.get("modelUsage")
+                if isinstance(model_usage, dict) and len(model_usage) == 1:
+                    model = next(iter(model_usage))
+                    if isinstance(model, str) and model.strip():
+                        usage_model = model
+                model = event.get("model")
+                if isinstance(model, str) and model.strip():
+                    result_model = model
+                provider = event.get("provider")
+                if isinstance(provider, str) and provider.strip():
+                    result_provider = provider
+            case ("assistant", _):
+                message = event.get("message")
+                model = message.get("model") if isinstance(message, dict) else None
+                if isinstance(model, str) and model.strip():
+                    assistant_model = model
+                provider = (
+                    message.get("provider") if isinstance(message, dict) else None
+                )
+                if isinstance(provider, str) and provider.strip():
+                    assistant_provider = provider
     return ParseResult(
         success=(exit_code == 0 and saw_terminal and bool(terminal_text)),
         terminal_text=terminal_text,
@@ -123,6 +157,8 @@ def parse_stream_json(
         stderr_text=stderr_text,
         raw_lines_parsed=parsed,
         raw_lines_failed=failed,
+        served_model=result_model or assistant_model or init_model or usage_model,
+        served_provider=result_provider or assistant_provider,
     )
 
 

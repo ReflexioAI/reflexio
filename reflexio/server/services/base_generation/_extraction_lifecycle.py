@@ -30,6 +30,7 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 from reflexio.server.api_endpoints.request_context import RequestContext
+from reflexio.server.llm._litellm_types import ModelProvenance
 from reflexio.server.llm.token_accounting import RunTokenTotals
 from reflexio.server.services.deferred_learning_plan import ExtractorBookmarkAdvance
 from reflexio.server.services.extraction.outcome import ExtractionOutcome
@@ -63,6 +64,7 @@ class ExtractionRunLifecycleMixin(Generic[TExtractorConfig, TGenerationServiceCo
     _last_extraction_run_ids: list[str]
     _last_token_totals: RunTokenTotals | None
     _last_bookmark_advance: ExtractorBookmarkAdvance | None
+    _last_model_provenance: ModelProvenance | None
 
     if TYPE_CHECKING:
         # Abstract on the base ABC (stays there per SINK-2); declared here type-only so
@@ -123,6 +125,7 @@ class ExtractionRunLifecycleMixin(Generic[TExtractorConfig, TGenerationServiceCo
                 # later in ``persist_generation`` (durable fence) or in
                 # ``_run_generation``'s persist half for the synchronous path.
                 self._last_bookmark_advance = result.bookmark_advance
+                self._last_model_provenance = result.model_provenance
                 if result.status == "completed" and result.items:
                     return result.items
                 logger.info(

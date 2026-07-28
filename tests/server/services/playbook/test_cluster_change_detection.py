@@ -24,6 +24,7 @@ from reflexio.models.api_schema.service_schemas import (
     UserPlaybook,
 )
 from reflexio.models.config_schema import PlaybookAggregatorConfig
+from reflexio.server.llm._litellm_types import CompletionResult, ModelProvenance
 from reflexio.server.services.playbook.components.aggregator import (
     PlaybookAggregator,
 )
@@ -418,7 +419,9 @@ class TestAggregatorRunWithChangeDetection:
         mock_storage.get_user_playbooks.return_value = user_playbooks
         mock_storage.get_agent_playbooks.return_value = existing_playbooks
         mock_storage.count_user_playbooks.return_value = len(user_playbooks)
-        mock_storage.save_agent_playbooks.return_value = []
+        mock_storage.save_agent_playbooks.side_effect = lambda playbooks, **_kwargs: (
+            playbooks
+        )
 
         # Setup operation state (for fingerprints and bookmarks)
         # Storage returns {"operation_state": {...}} wrapping
@@ -438,7 +441,9 @@ class TestAggregatorRunWithChangeDetection:
             trigger="When something happens",
         )
         mock_response = PlaybookAggregationOutput(playbook=structured)
-        mock_llm_client.generate_chat_response.return_value = mock_response
+        mock_llm_client.generate_chat_response_with_provenance.return_value = (
+            CompletionResult(mock_response, ModelProvenance())
+        )
         mock_llm_client.config = MagicMock()
         mock_llm_client.config.model = "test-model"
 
@@ -461,17 +466,16 @@ class TestAggregatorRunWithChangeDetection:
             operation_state=None,
         )
 
-        # Make save_agent_playbook_with_aggregate_event return playbooks with IDs
+        # Make save_agent_playbooks return playbooks with IDs
         _id_counter = [0]
 
-        def save_with_event_side_effect(playbook, *, source_ids, request_id, run_mode):  # noqa: ANN001, ARG001
+        def save_with_event_side_effect(playbooks, **_kwargs):  # noqa: ANN001
             _id_counter[0] += 1
+            playbook = playbooks[0]
             playbook.agent_playbook_id = _id_counter[0]
-            return playbook
+            return [playbook]
 
-        mock_storage.save_agent_playbook_with_aggregate_event.side_effect = (
-            save_with_event_side_effect
-        )
+        mock_storage.save_agent_playbooks.side_effect = save_with_event_side_effect
 
         request = PlaybookAggregatorRequest(
             agent_version="1.0",
@@ -480,9 +484,9 @@ class TestAggregatorRunWithChangeDetection:
         aggregator.run(request)
 
         # LLM should be called for each cluster (at least 1, up to 2)
-        assert mock_llm_client.generate_chat_response.call_count >= 1
-        # save_agent_playbook_with_aggregate_event should be called
-        mock_storage.save_agent_playbook_with_aggregate_event.assert_called()
+        assert mock_llm_client.generate_chat_response_with_provenance.call_count >= 1
+        # save_agent_playbooks should be called
+        mock_storage.save_agent_playbooks.assert_called()
         # Fingerprints should be stored
         mock_storage.upsert_operation_state.assert_called()
 
@@ -584,14 +588,13 @@ class TestAggregatorRunWithChangeDetection:
 
         _id_counter2 = [200]
 
-        def save_with_event_side_effect2(playbook, *, source_ids, request_id, run_mode):  # noqa: ANN001, ARG001
+        def save_with_event_side_effect2(playbooks, **_kwargs):  # noqa: ANN001
             _id_counter2[0] += 1
+            playbook = playbooks[0]
             playbook.agent_playbook_id = _id_counter2[0]
-            return playbook
+            return [playbook]
 
-        mock_storage.save_agent_playbook_with_aggregate_event.side_effect = (
-            save_with_event_side_effect2
-        )
+        mock_storage.save_agent_playbooks.side_effect = save_with_event_side_effect2
 
         request = PlaybookAggregatorRequest(
             agent_version="1.0",
@@ -600,10 +603,12 @@ class TestAggregatorRunWithChangeDetection:
         aggregator.run(request)
 
         # LLM should be called fewer times than total clusters
-        total_llm_calls = mock_llm_client.generate_chat_response.call_count
+        total_llm_calls = (
+            mock_llm_client.generate_chat_response_with_provenance.call_count
+        )
         assert total_llm_calls >= 1
-        # save_agent_playbook_with_aggregate_event should be called
-        mock_storage.save_agent_playbook_with_aggregate_event.assert_called()
+        # save_agent_playbooks should be called
+        mock_storage.save_agent_playbooks.assert_called()
 
     def test_rerun_bypasses_change_detection(self):
         """rerun=True should call LLM for ALL clusters regardless of fingerprints."""
@@ -640,14 +645,13 @@ class TestAggregatorRunWithChangeDetection:
 
         _id_counter3 = [0]
 
-        def save_with_event_side_effect3(playbook, *, source_ids, request_id, run_mode):  # noqa: ANN001, ARG001
+        def save_with_event_side_effect3(playbooks, **_kwargs):  # noqa: ANN001
             _id_counter3[0] += 1
+            playbook = playbooks[0]
             playbook.agent_playbook_id = _id_counter3[0]
-            return playbook
+            return [playbook]
 
-        mock_storage.save_agent_playbook_with_aggregate_event.side_effect = (
-            save_with_event_side_effect3
-        )
+        mock_storage.save_agent_playbooks.side_effect = save_with_event_side_effect3
 
         request = PlaybookAggregatorRequest(
             agent_version="1.0",
@@ -657,7 +661,9 @@ class TestAggregatorRunWithChangeDetection:
         aggregator.run(request)
 
         # LLM should be called for ALL clusters
-        assert mock_llm_client.generate_chat_response.call_count == len(clusters)
+        assert mock_llm_client.generate_chat_response_with_provenance.call_count == len(
+            clusters
+        )
         # archive_agent_playbooks_by_playbook_name should be called for each
         # full-archive playbook name (one call per name)
         mock_storage.archive_agent_playbooks_by_playbook_name.assert_called()
@@ -742,14 +748,13 @@ class TestAggregatorRunWithChangeDetection:
 
         _id_counter4 = [0]
 
-        def save_with_event_side_effect4(playbook, *, source_ids, request_id, run_mode):  # noqa: ANN001, ARG001
+        def save_with_event_side_effect4(playbooks, **_kwargs):  # noqa: ANN001
             _id_counter4[0] += 1
+            playbook = playbooks[0]
             playbook.agent_playbook_id = _id_counter4[0]
-            return playbook
+            return [playbook]
 
-        mock_storage.save_agent_playbook_with_aggregate_event.side_effect = (
-            save_with_event_side_effect4
-        )
+        mock_storage.save_agent_playbooks.side_effect = save_with_event_side_effect4
 
         request = PlaybookAggregatorRequest(
             agent_version="1.0",
@@ -805,7 +810,9 @@ class TestLLMResponseTypeSafety:
         mock_request_context.configurator = MagicMock()
 
         # LLM returns a raw string instead of PlaybookAggregationOutput
-        mock_llm_client.generate_chat_response.return_value = "unparsed text"
+        mock_llm_client.generate_chat_response_with_provenance.return_value = (
+            CompletionResult("unparsed text", ModelProvenance())
+        )
         mock_llm_client.config = MagicMock()
         mock_llm_client.config.model = "test-model"
 
@@ -841,8 +848,10 @@ class TestLLMResponseTypeSafety:
             content="Be concise when answering questions",
             trigger="When answering questions",
         )
-        mock_llm_client.generate_chat_response.return_value = PlaybookAggregationOutput(
-            playbook=structured
+        mock_llm_client.generate_chat_response_with_provenance.return_value = (
+            CompletionResult(
+                PlaybookAggregationOutput(playbook=structured), ModelProvenance()
+            )
         )
         mock_llm_client.config = MagicMock()
         mock_llm_client.config.model = "test-model"
@@ -867,9 +876,11 @@ class TestLLMResponseTypeSafety:
 
         result = aggregator._generate_playbook_from_cluster(cluster_playbooks, "None")
         assert result is not None
-        assert result.content == "Be concise when answering questions"
-        assert result.trigger == "When answering questions"
-        assert result.playbook_status == PlaybookStatus.PENDING
+        playbook, provenance = result
+        assert playbook.content == "Be concise when answering questions"
+        assert playbook.trigger == "When answering questions"
+        assert playbook.playbook_status == PlaybookStatus.PENDING
+        assert provenance == ModelProvenance()
 
 
 class TestClusteringStability:

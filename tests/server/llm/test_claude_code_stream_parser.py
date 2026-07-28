@@ -22,6 +22,54 @@ def test_clean_stream_returns_success():
     assert result.stall_candidate is None
 
 
+def test_served_model_prefers_last_assistant_event_over_init_and_usage():
+    stream = (
+        '{"type":"system","subtype":"init","model":"claude-init"}\n'
+        '{"type":"assistant","message":{"model":"claude-first"}}\n'
+        '{"type":"assistant","message":{"model":"claude-served"}}\n'
+        '{"type":"result","result":"ok","modelUsage":{"claude-usage":{}}}\n'
+    )
+
+    result = parse_stream_json(stream, exit_code=0)
+
+    assert result.served_model == "claude-served"
+
+
+def test_terminal_route_metadata_is_authoritative():
+    stream = (
+        '{"type":"assistant","message":{"model":"bridge-model","provider":"bridge"}}\n'
+        '{"type":"result","result":"ok","model":"MiniMax-M3","provider":"minimax"}\n'
+    )
+
+    result = parse_stream_json(stream, exit_code=0)
+
+    assert result.served_model == "MiniMax-M3"
+    assert result.served_provider == "minimax"
+
+
+@pytest.mark.parametrize(
+    ("stream", "expected"),
+    [
+        (
+            '{"type":"system","subtype":"init","model":"claude-init"}\n'
+            '{"type":"result","result":"ok"}\n',
+            "claude-init",
+        ),
+        (
+            '{"type":"result","result":"ok","modelUsage":{"claude-usage":{}}}\n',
+            "claude-usage",
+        ),
+        (
+            '{"type":"result","result":"ok",'
+            '"modelUsage":{"claude-a":{},"claude-b":{}}}\n',
+            None,
+        ),
+    ],
+)
+def test_served_model_fallbacks_never_guess(stream, expected):
+    assert parse_stream_json(stream, exit_code=0).served_model == expected
+
+
 def test_billing_error_in_retry_then_stream_failure_classifies_billing():
     stream = (
         '{"type":"system","subtype":"api_retry","error":"billing_error","attempt":1,"max_retries":3}\n'

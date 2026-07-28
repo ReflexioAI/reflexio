@@ -61,6 +61,8 @@ def _append_event_stmt(
     from_status: str | None = None,
     to_status: str | None = None,
     status_namespace: str | None = None,
+    model_name: str | None = None,
+    provider: str | None = None,
 ) -> sqlite3.Cursor:
     """Insert a lineage event row; no-ops on (org_id, entity_type, entity_id, op, request_id) duplicate.
 
@@ -70,8 +72,9 @@ def _append_event_stmt(
         "INSERT OR IGNORE INTO lineage_event "
         "(org_id, entity_type, entity_id, op, prov_relation, source_ids, "
         "actor, request_id, reason, created_at, "
-        "from_status, to_status, status_namespace) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "from_status, to_status, status_namespace, model_name, "
+        "provider) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (
             org_id,
             entity_type,
@@ -86,6 +89,8 @@ def _append_event_stmt(
             from_status,
             to_status,
             status_namespace,
+            model_name,
+            provider,
         ),
     )
 
@@ -158,6 +163,8 @@ class SQLiteLineageMixin:
                 from_status=event.from_status,
                 to_status=event.to_status,
                 status_namespace=event.status_namespace,
+                model_name=event.model_name,
+                provider=event.provider,
             )
             if (
                 cur.rowcount == 0
@@ -234,6 +241,8 @@ class SQLiteLineageMixin:
                 from_status=r["from_status"],
                 to_status=r["to_status"],
                 status_namespace=r["status_namespace"],
+                model_name=r["model_name"],
+                provider=r["provider"],
             )
             for r in rows
         ]
@@ -303,6 +312,8 @@ class SQLiteLineageMixin:
                 actor=context.actor,
                 request_id=context.request_id,
                 reason=context.reason,
+                model_name=context.model_name,
+                provider=context.provider,
             )
             if self._own_transaction():
                 self.conn.commit()
@@ -361,6 +372,8 @@ class SQLiteLineageMixin:
                 actor=context.actor,
                 request_id=context.request_id,
                 reason=context.reason,
+                model_name=context.model_name,
+                provider=context.provider,
             )
             if self._own_transaction():
                 self.conn.commit()

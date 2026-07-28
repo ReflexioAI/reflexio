@@ -182,7 +182,7 @@ def test_aggregation_records_attributed_learnings_generated() -> None:
     """Aggregation emits one entity-backed event per generated playbook.
 
     ``saved_playbook_list`` entries always carry a real ``agent_playbook_id``
-    (``save_agent_playbook_with_aggregate_event`` raises rather than
+    (``save_agent_playbooks`` raises rather than
     returning a partial row) -- aggregator.py is the one caller with a clean,
     always-populated per-record id list, so it uses the entity-backed path
     (Task A3) rather than the count-only fallback.

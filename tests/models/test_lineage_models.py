@@ -44,15 +44,44 @@ def test_lineage_event_is_content_free_and_idempotency_keyed():
         actor="consolidator",
         request_id="req-7",
         reason="dup",
+        model_name="claude-sonnet-4-5-20250929",
+        provider="anthropic",
     )
     assert e.event_id == 0  # storage assigns
     assert not hasattr(e, "content")
+    assert e.model_name == "claude-sonnet-4-5-20250929"
+    assert e.provider == "anthropic"
+
+
+def test_lineage_model_provenance_defaults_to_unknown():
+    event = LineageEvent(
+        org_id="org-42",
+        entity_type="profile",
+        entity_id="p1",
+        op="create",
+    )
+    context = LineageContext(op_kind="create")
+
+    assert event.model_name is None
+    assert event.provider is None
+    assert context.model_name is None
+    assert context.provider is None
+    assert "requested_model" not in event.model_dump()
+    assert "requested_model" not in context.model_dump()
+    assert "credential_label" not in event.model_dump()
+    assert "credential_label" not in context.model_dump()
 
 
 def test_lineage_context_and_record_ref():
     ctx = LineageContext(
-        op_kind="merge", actor="consolidator", source_ids=["UP-1"], reason="dup"
+        op_kind="merge",
+        actor="consolidator",
+        source_ids=["UP-1"],
+        reason="dup",
+        model_name="claude-sonnet-4-5-20250929",
+        provider="anthropic",
     )
     assert ctx.request_id is None or isinstance(ctx.request_id, str)
+    assert ctx.provider == "anthropic"
     ref = RecordRef(id="UP-2", is_purged=False)
     assert ref.id == "UP-2" and ref.is_purged is False

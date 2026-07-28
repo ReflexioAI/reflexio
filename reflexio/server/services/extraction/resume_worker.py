@@ -14,6 +14,7 @@ from reflexio.models.api_schema.internal_schema import RequestInteractionDataMod
 from reflexio.models.api_schema.service_schemas import Interaction, Request
 from reflexio.models.config_schema import PlaybookConfig, ProfileExtractorConfig
 from reflexio.server.api_endpoints.request_context import RequestContext
+from reflexio.server.llm._litellm_types import ModelProvenance
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 from reflexio.server.llm.model_defaults import ModelRole, resolve_model_name
 from reflexio.server.services.extraction.agent_run_records import build_scope_hash
@@ -27,6 +28,7 @@ from reflexio.server.services.extraction.resumable_agent import (
     AgentRunResult,
     ResumableExtractionAgent,
     create_pending_info_tools_for_extractor_kind,
+    decode_committed_output,
 )
 from reflexio.server.services.playbook.components.extractor import PlaybookExtractor
 from reflexio.server.services.playbook.playbook_service_utils import (
@@ -245,7 +247,9 @@ class ExtractionResumeWorker:
                 raise ResumeWorkerError(
                     f"Run {run.id} has no resolved, unconsumed tool calls"
                 )
-            items, pending_tool_call_ids = self._resume_run(run, resolved_calls)
+            items, pending_tool_call_ids, model_provenance = self._resume_run(
+                run, resolved_calls
+            )
         except Exception as exc:
             with sentry_tags(
                 subsystem="extraction",
@@ -272,7 +276,7 @@ class ExtractionResumeWorker:
 
         try:
             self.storage.update_agent_run_status(run.id, AgentRunStatus.FINALIZING)
-            self._finalize_items(run, items)
+            self._finalize_items(run, items, model_provenance=model_provenance)
             self._schedule_finalized_tagging(run)
             self.storage.consume_run_tool_dependencies(run.id)
             finalized_status = (
@@ -315,8 +319,10 @@ class ExtractionResumeWorker:
         config = self.request_context.configurator.get_config()
         pending_config = config.pending_tool_call_config
         try:
-            items, pending_tool_call_ids = self._items_from_committed_output(run)
-            self._finalize_items(run, items)
+            items, pending_tool_call_ids, model_provenance = (
+                self._items_from_committed_output(run)
+            )
+            self._finalize_items(run, items, model_provenance=model_provenance)
             self._schedule_finalized_tagging(run)
             self.storage.consume_run_tool_dependencies(run.id)
             finalized_status = (
@@ -392,7 +398,7 @@ class ExtractionResumeWorker:
         self,
         run: AgentRunRecord,
         resolved_calls: list[PendingToolCallRecord],
-    ) -> tuple[list[Any], list[str]]:
+    ) -> tuple[list[Any], list[str], ModelProvenance | None]:
         request_interaction_data_models = _request_interaction_models_from_ids(
             self.storage,
             run.binding.source_interaction_ids,
@@ -425,7 +431,7 @@ class ExtractionResumeWorker:
         extractor_config: ProfileExtractorConfig | PlaybookConfig,
         request_interaction_data_models: list[RequestInteractionDataModel],
         resolved_calls: list[PendingToolCallRecord],
-    ) -> tuple[list[Any], list[str]]:
+    ) -> tuple[list[Any], list[str], ModelProvenance | None]:
         if not isinstance(extractor_config, ProfileExtractorConfig):
             raise ResumeWorkerError("Expected profile extractor config")
         if run.binding.user_id is None:
@@ -498,6 +504,7 @@ class ExtractionResumeWorker:
                 source_interaction_ids=source_interaction_ids,
             ),
             result.pending_tool_call_ids,
+            result.model_provenance,
         )
 
     def _resume_playbook(
@@ -506,7 +513,7 @@ class ExtractionResumeWorker:
         extractor_config: ProfileExtractorConfig | PlaybookConfig,
         request_interaction_data_models: list[RequestInteractionDataModel],
         resolved_calls: list[PendingToolCallRecord],
-    ) -> tuple[list[Any], list[str]]:
+    ) -> tuple[list[Any], list[str], ModelProvenance | None]:
         if not isinstance(extractor_config, PlaybookConfig):
             raise ResumeWorkerError("Expected playbook extractor config")
 
@@ -587,6 +594,7 @@ class ExtractionResumeWorker:
                 source_interaction_ids=source_interaction_ids,
             ),
             result.pending_tool_call_ids,
+            result.model_provenance,
         )
 
     def _messages_with_prior_knowledge(
@@ -643,7 +651,7 @@ class ExtractionResumeWorker:
     def _items_from_committed_output(
         self,
         run: AgentRunRecord,
-    ) -> tuple[list[Any], list[str]]:
+    ) -> tuple[list[Any], list[str], ModelProvenance | None]:
         if run.committed_output is None:
             raise ResumeWorkerError(
                 f"Run {run.id} cannot retry finalization without committed output"
@@ -655,19 +663,22 @@ class ExtractionResumeWorker:
             fallback_agent_version=run.binding.agent_version,
         )
         extractor_config = _select_current_extractor_config(self.request_context, run)
+        output, model_provenance = decode_committed_output(run.committed_output)
         if run.binding.extractor_kind == "profile":
-            return self._profile_items_from_output(
+            items, pending_ids = self._profile_items_from_output(
                 run,
                 extractor_config,
-                run.committed_output,
+                output,
             )
+            return items, pending_ids, model_provenance
         if run.binding.extractor_kind == "playbook":
-            return self._playbook_items_from_output(
+            items, pending_ids = self._playbook_items_from_output(
                 run,
                 extractor_config,
                 request_interaction_data_models,
-                run.committed_output,
+                output,
             )
+            return items, pending_ids, model_provenance
         raise ResumeWorkerError(
             f"Unsupported extractor kind {run.binding.extractor_kind!r}"
         )
@@ -750,7 +761,13 @@ class ExtractionResumeWorker:
             run.pending_tool_call_ids,
         )
 
-    def _finalize_items(self, run: AgentRunRecord, items: list[Any]) -> None:
+    def _finalize_items(
+        self,
+        run: AgentRunRecord,
+        items: list[Any],
+        *,
+        model_provenance: ModelProvenance | None = None,
+    ) -> None:
         if run.binding.extractor_kind == "profile":
             service = ProfileGenerationService(
                 llm_client=self.client,
@@ -763,7 +780,7 @@ class ExtractionResumeWorker:
                 auto_run=False,
                 force_extraction=True,
             )
-            service._finalize_extracted_items(items)
+            service._finalize_extracted_items(items, model_provenance=model_provenance)
             self._record_finalized_learnings(run, items, entity_type="profile")
             return
         if run.binding.extractor_kind == "playbook":
@@ -779,7 +796,7 @@ class ExtractionResumeWorker:
                 auto_run=False,
                 force_extraction=True,
             )
-            service._finalize_extracted_items(items)
+            service._finalize_extracted_items(items, model_provenance=model_provenance)
             self._record_finalized_learnings(run, items, entity_type="user_playbook")
             return
         raise ResumeWorkerError(

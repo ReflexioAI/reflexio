@@ -42,8 +42,10 @@ from pydantic import BaseModel
 
 from reflexio.server.llm._litellm_subprocess import _litellm_completion_worker
 from reflexio.server.llm._litellm_types import (
+    CompletionResult,
     LiteLLMClientError,
     LLMHardTimeoutError,
+    ModelProvenance,
     StructuredOutputParseError,
     StructuredOutputRepairError,
     ToolCallingChatResponse,
@@ -122,6 +124,19 @@ _LADDER_WALL_CLOCK_BUDGET_SECONDS = 600.0
 StructuredOutputValidator = Callable[[BaseModel], Sequence[str]]
 
 
+def _nonempty_string(value: Any) -> str | None:
+    """Return trustworthy string metadata without coercing mocks or objects."""
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    return value or None
+
+
+def _response_hidden_params(response: Any) -> dict[str, Any]:
+    hidden = getattr(response, "_hidden_params", None)
+    return hidden if isinstance(hidden, dict) else {}
+
+
 @dataclass
 class _StructuredAttempt:
     value: str | BaseModel | ToolCallingChatResponse
@@ -129,6 +144,7 @@ class _StructuredAttempt:
     parsed_output: BaseModel | None
     finish_reason: str | None
     model: str
+    provenance: ModelProvenance | None = None
 
 
 def _is_expected_transient_llm_error(exc: BaseException) -> bool:
@@ -247,7 +263,23 @@ class TextGenerationMixin:
             LiteLLMClientError: If the API call fails after all retries,
                 or if response_format is not a Pydantic BaseModel class.
         """
-        # Validate response_format if provided
+        return self.generate_response_with_provenance(
+            prompt,
+            system_message,
+            images,
+            image_media_type,
+            **kwargs,
+        ).value
+
+    def generate_response_with_provenance(
+        self,
+        prompt: str,
+        system_message: str | None = None,
+        images: list[str | bytes | dict] | None = None,
+        image_media_type: str | None = None,
+        **kwargs: Any,
+    ) -> CompletionResult[str | BaseModel | ToolCallingChatResponse]:
+        """Generate a response paired with observed model provenance."""
         response_format = kwargs.get("response_format")
         if response_format is not None and not is_pydantic_model(response_format):
             raise LiteLLMClientError(
@@ -316,7 +348,32 @@ class TextGenerationMixin:
             LiteLLMClientError: If the API call fails after all retries,
                 or if response_format is not a Pydantic BaseModel class.
         """
-        # Validate response_format if provided
+        return self.generate_chat_response_with_provenance(
+            messages,
+            system_message,
+            tools=tools,
+            tool_choice=tool_choice,
+            model_role=model_role,
+            max_retries=max_retries,
+            fallback_models=fallback_models,
+            structured_output_validator=structured_output_validator,
+            **kwargs,
+        ).value
+
+    def generate_chat_response_with_provenance(
+        self,
+        messages: list[dict[str, Any]],
+        system_message: str | None = None,
+        *,
+        tools: list[Any] | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
+        model_role: ModelRole | None = None,
+        max_retries: int | None = None,
+        fallback_models: list[str] | None = None,
+        structured_output_validator: StructuredOutputValidator | None = None,
+        **kwargs: Any,
+    ) -> CompletionResult[str | BaseModel | ToolCallingChatResponse]:
+        """Generate a chat response paired with observed model provenance."""
         response_format = kwargs.get("response_format")
         if response_format is not None and not is_pydantic_model(response_format):
             raise LiteLLMClientError(
@@ -866,6 +923,46 @@ class TextGenerationMixin:
             cost_suffix,
         )
 
+    def _build_model_provenance(self, response: Any) -> ModelProvenance:
+        """Build attribution only from metadata observed on the response.
+
+        Model name is taken only from fields that represent the served completion,
+        not request-side LiteLLM routing metadata. ``_hidden_params["model"]`` is
+        intentionally ignored: LiteLLM often echoes the requested model there, which
+        would record a configured route as if it had been observed.
+
+        The claude-code LiteLLM route can execute different local host CLIs. Its
+        public ``ModelResponse.model`` is the *requested* route string (same as
+        other providers). Observed model is only the bridge stamp
+        ``reflexio_served_model`` — never ``response.model``, which would launder
+        the requested route as observed when the CLI does not report a served model.
+        """
+        hidden = _response_hidden_params(response)
+        route_provider = _nonempty_string(hidden.get("reflexio_provider"))
+        served_provider = _nonempty_string(hidden.get("reflexio_served_provider"))
+        stamped_served = _nonempty_string(hidden.get("reflexio_served_model"))
+
+        if route_provider == "claude-code":
+            provider = served_provider
+            model_name = stamped_served
+        else:
+            # Prefer an explicit bridge stamp, then the provider response body field.
+            # Do not fall back to request-side hidden model / model_id keys.
+            model_name = stamped_served or _nonempty_string(
+                getattr(response, "model", None)
+            )
+            provider = (
+                served_provider
+                or _nonempty_string(hidden.get("custom_llm_provider"))
+                or _nonempty_string(hidden.get("llm_provider"))
+                or _nonempty_string(hidden.get("provider"))
+            )
+
+        return ModelProvenance(
+            model_name=model_name,
+            provider=provider,
+        )
+
     def _emit_fallback_signal(
         self, primary_model: str, served_model: str, *, reason: str
     ) -> None:
@@ -907,7 +1004,7 @@ class TextGenerationMixin:
 
     def _make_request(  # noqa: C901
         self, messages: list[dict[str, Any]], **kwargs: Any
-    ) -> str | BaseModel | ToolCallingChatResponse:
+    ) -> CompletionResult[str | BaseModel | ToolCallingChatResponse]:
         """
         Make a request to the LLM via a reflexio-owned per-rung fallback walk.
 
@@ -942,6 +1039,12 @@ class TextGenerationMixin:
             "structured_output_validator", None
         )
         original_kwargs = dict(kwargs)
+
+        def _finish(
+            attempt: _StructuredAttempt,
+        ) -> CompletionResult[str | BaseModel | ToolCallingChatResponse]:
+            assert attempt.provenance is not None  # noqa: S101
+            return CompletionResult(attempt.value, attempt.provenance)
 
         if structured_output_validator is not None and (
             original_kwargs.get("response_format") is None
@@ -1007,6 +1110,7 @@ class TextGenerationMixin:
                     response = self._completion_with_hard_timeout(
                         turn_params, turn_hard_timeout
                     )
+                provenance = self._build_model_provenance(response)
                 message = response.choices[0].message  # type: ignore[reportAttributeAccessIssue]
                 content = message.content
                 finish_reason = response.choices[0].finish_reason  # type: ignore[reportAttributeAccessIssue]
@@ -1046,6 +1150,7 @@ class TextGenerationMixin:
                             exc.finish_reason = finish_reason
                             if exc.raw_content is None and isinstance(content, str):
                                 exc.raw_content = content
+                            exc.provenance = provenance
                             raise
                         if isinstance(parsed, BaseModel):
                             parsed_output = parsed
@@ -1063,6 +1168,7 @@ class TextGenerationMixin:
                         parsed_output=parsed_output,
                         finish_reason=finish_reason,
                         model=str(turn_params.get("model")),
+                        provenance=provenance,
                     )
 
                 try:
@@ -1075,6 +1181,7 @@ class TextGenerationMixin:
                     exc.finish_reason = finish_reason
                     if exc.raw_content is None and isinstance(content, str):
                         exc.raw_content = content
+                    exc.provenance = provenance
                     raise
                 return _StructuredAttempt(
                     value=value,
@@ -1082,6 +1189,7 @@ class TextGenerationMixin:
                     parsed_output=value if isinstance(value, BaseModel) else None,
                     finish_reason=finish_reason,
                     model=str(turn_params.get("model")),
+                    provenance=provenance,
                 )
             except (
                 StructuredOutputParseError,
@@ -1197,6 +1305,7 @@ class TextGenerationMixin:
             attempt: _StructuredAttempt | None,
             errors: Sequence[str],
             model: str,
+            first_parsed_provenance: ModelProvenance | None = None,
         ) -> StructuredOutputRepairError:
             return StructuredOutputRepairError(
                 "Structured output repair exhausted",
@@ -1205,11 +1314,12 @@ class TextGenerationMixin:
                 raw_content=attempt.raw_content if attempt else None,
                 parsed_output=attempt.parsed_output if attempt else None,
                 validation_errors=tuple(errors),
+                first_parsed_provenance=first_parsed_provenance,
             )
 
         def _run_rung_plain(
             rung_messages: list[dict[str, Any]], rung_kwargs: dict[str, Any]
-        ) -> str | BaseModel | ToolCallingChatResponse:
+        ) -> CompletionResult[str | BaseModel | ToolCallingChatResponse]:
             """Serve one rung with no validator: initial call + one same-model parse-retry.
 
             Raises ``StructuredOutputParseError`` when both attempts return a
@@ -1221,22 +1331,26 @@ class TextGenerationMixin:
                 rung_messages, rung_kwargs
             )
             try:
-                return _call_and_parse(
-                    params, rf, parse_so, hard_timeout, detect_refusal=False
-                ).value
+                return _finish(
+                    _call_and_parse(
+                        params, rf, parse_so, hard_timeout, detect_refusal=False
+                    )
+                )
             except StructuredOutputParseError:
                 self.logger.warning(
                     "event=llm_parse_retry model=%s — malformed structured output, "
                     "retrying once on the same model",
                     params.get("model"),
                 )
-                return _call_and_parse(
-                    params, rf, parse_so, hard_timeout, detect_refusal=False
-                ).value
+                return _finish(
+                    _call_and_parse(
+                        params, rf, parse_so, hard_timeout, detect_refusal=False
+                    )
+                )
 
         def _run_rung_validated(
             rung_messages: list[dict[str, Any]], rung_kwargs: dict[str, Any]
-        ) -> str | BaseModel | ToolCallingChatResponse:
+        ) -> CompletionResult[str | BaseModel | ToolCallingChatResponse]:
             """Serve one rung with the validator: initial call + one same-model repair turn.
 
             The corrective turn is built from ``rung_messages`` (this rung's
@@ -1249,6 +1363,7 @@ class TextGenerationMixin:
             )
             schema_name = getattr(rf, "__name__", "structured output")
             latest_parsed_output: BaseModel | None
+            first_parsed_provenance: ModelProvenance | None = None
             try:
                 first_attempt = _call_and_parse(
                     params, rf, parse_so, hard_timeout, detect_refusal=True
@@ -1262,10 +1377,12 @@ class TextGenerationMixin:
             else:
                 valid, errors, failure_kind = _validate_attempt(first_attempt)
                 if valid:
-                    return first_attempt.value
+                    return _finish(first_attempt)
                 raw_content = first_attempt.raw_content
                 finish_reason = first_attempt.finish_reason
                 latest_parsed_output = first_attempt.parsed_output
+                if first_attempt.parsed_output is not None:
+                    first_parsed_provenance = first_attempt.provenance
 
             repair_base = _repair_messages(
                 rung_messages,
@@ -1300,9 +1417,15 @@ class TextGenerationMixin:
                     parsed_output=None,
                     finish_reason=exc.finish_reason,
                     model=str(repair_params.get("model")),
+                    provenance=getattr(exc, "provenance", None),
                 )
                 errors = (str(exc),)
                 failure_kind = "parse"
+            except (LiteLLMClientError, ProviderCapSaturatedError) as exc:
+                # Cap saturation is not a LiteLLMClientError subclass; still stamp
+                # first-parsed so the ladder outer handler can salvage attribution.
+                exc.first_parsed_provenance = first_parsed_provenance
+                raise
             else:
                 valid, errors, failure_kind = _validate_attempt(repair_attempt)
                 if valid:
@@ -1312,7 +1435,12 @@ class TextGenerationMixin:
                         repair_params.get("model"),
                         schema_name,
                     )
-                    return repair_attempt.value
+                    return _finish(repair_attempt)
+                if (
+                    repair_attempt.parsed_output is not None
+                    and first_parsed_provenance is None
+                ):
+                    first_parsed_provenance = repair_attempt.provenance
 
             # Within-rung roll-forward: keep the most recent output that parsed
             # (e.g. a semantic-fail before a final parse-fail) on the typed error.
@@ -1330,6 +1458,7 @@ class TextGenerationMixin:
                 attempt=repair_attempt,
                 errors=errors,
                 model=repair_attempt.model,
+                first_parsed_provenance=first_parsed_provenance,
             )
 
         # Reflexio-owned per-rung walk. Each rung is entered at most once; the
@@ -1350,6 +1479,10 @@ class TextGenerationMixin:
             )
 
         last_error: Exception | None = None
+        # First accepted parse across the whole walk — not per-rung. Consolidator
+        # salvage keeps the first parsed *content* via a shared validator closure;
+        # this field must match that content's served model, not the last rung's.
+        ladder_first_parsed_provenance: ModelProvenance | None = None
         for index, rung in enumerate(ladder):
             rung_kwargs = {**original_kwargs, "model": rung, "fallback_models": []}
             # ``model_role`` is already resolved into ``ladder``; leaving it in
@@ -1367,14 +1500,25 @@ class TextGenerationMixin:
                 ProviderCapSaturatedError,
                 StructuredOutputParseError,
             ) as exc:
+                first_parsed = (
+                    exc.provenance
+                    if isinstance(exc, StructuredOutputParseError)
+                    else exc.first_parsed_provenance
+                )
+                if first_parsed is not None and ladder_first_parsed_provenance is None:
+                    ladder_first_parsed_provenance = first_parsed
                 last_error = exc
                 if not is_last:
                     continue
                 # Final rung failed. Preserve the typed repair error (callers keep
                 # the latest parse) and already-wrapped client errors as-is; wrap a
                 # raw plain-path parse exhaustion (litellm saw a 200, so no turn
-                # logged a request-end failure) and a cap-saturation.
+                # logged a request-end failure) and a cap-saturation. Always stamp
+                # ladder-wide first-parsed so consolidator salvage keeps matching
+                # model attribution.
                 if isinstance(exc, StructuredOutputRepairError | LiteLLMClientError):
+                    if ladder_first_parsed_provenance is not None:
+                        exc.first_parsed_provenance = ladder_first_parsed_provenance
                     raise
                 if isinstance(exc, StructuredOutputParseError):
                     self.logger.error(
@@ -1383,7 +1527,11 @@ class TextGenerationMixin:
                         type(exc).__name__,
                         exc,
                     )
-                raise LiteLLMClientError(f"API call failed: {exc}") from exc
+                wrapped = LiteLLMClientError(
+                    f"API call failed: {exc}",
+                    first_parsed_provenance=ladder_first_parsed_provenance,
+                )
+                raise wrapped from exc
             else:
                 if index > 0:
                     self._emit_fallback_signal(
@@ -1393,7 +1541,8 @@ class TextGenerationMixin:
 
         # A non-empty ladder always returns or raises above; guard the empty case.
         raise LiteLLMClientError(  # pragma: no cover
-            f"All fallback rungs failed; last: {last_error}"
+            f"All fallback rungs failed; last: {last_error}",
+            first_parsed_provenance=ladder_first_parsed_provenance,
         )
 
     def _apply_prompt_caching(

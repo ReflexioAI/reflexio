@@ -22,6 +22,7 @@ from reflexio.models.api_schema.service_schemas import (
 )
 from reflexio.models.config_schema import ProfileExtractorConfig
 from reflexio.server.api_endpoints.request_context import RequestContext
+from reflexio.server.llm._litellm_types import ModelProvenance
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 from reflexio.server.services.base_generation_service import StatusChangeOperation
 from reflexio.server.services.profile.profile_generation_service_utils import (
@@ -310,9 +311,15 @@ class TestProcessResults:
 
         service._process_results([[sample_profile]])
 
-        request_context.storage.add_user_profile.assert_called_once_with(
-            "user_1", [sample_profile], skip_embedding=True
-        )
+        call = request_context.storage.add_user_profile.call_args
+        assert call.args[:2] == ("user_1", [sample_profile])
+        assert call.kwargs["skip_embedding"] is True
+        contexts = call.kwargs["lineage_contexts"]
+        assert len(contexts) == 1
+        assert contexts[0] is not None
+        assert contexts[0].op_kind == "create"
+        assert contexts[0].model_name is None
+        assert contexts[0].provider is None
         assert sample_profile.source == "api"
         assert sample_profile.status is None  # CURRENT (not pending)
 
@@ -329,6 +336,58 @@ class TestProcessResults:
         service_pending._process_results([[sample_profile]])
 
         assert sample_profile.status == Status.PENDING
+
+    def test_save_profiles_carries_extractor_model_provenance(
+        self, service, request_context, sample_profile
+    ):
+        self._setup_service_config(service)
+        service._last_model_provenance = ModelProvenance(
+            model_name="served-model",
+            provider="provider",
+        )
+
+        service._process_results([[sample_profile]])
+
+        context = request_context.storage.add_user_profile.call_args.kwargs[
+            "lineage_contexts"
+        ][0]
+        assert context.op_kind == "create"
+        assert context.model_name == "served-model"
+        assert context.provider == "provider"
+
+    def test_merged_profile_uses_consolidator_completion_provenance(
+        self, service, request_context, sample_profile
+    ):
+        self._setup_service_config(service)
+        merged = sample_profile.model_copy(update={"profile_id": "merged-profile"})
+        provenance = ModelProvenance(
+            model_name="dedup-served",
+            provider="dedup-provider",
+        )
+
+        class FakeConsolidator:
+            model_provenance = provenance
+            lineage_sources_by_profile_id = {"merged-profile": ["old-profile"]}
+            consolidated_output_indices = {0}
+
+            def __init__(self, **_kwargs):
+                pass
+
+            def deduplicate(self, *_args):
+                return [merged], ["old-profile"], []
+
+        with patch(
+            "reflexio.server.services.profile.components.consolidator.ProfileConsolidator",
+            FakeConsolidator,
+        ):
+            service._process_results([[sample_profile]])
+
+        context = request_context.storage.add_user_profile.call_args.kwargs[
+            "lineage_contexts"
+        ][0]
+        assert context.actor == "consolidator"
+        assert context.source_ids == ["old-profile"]
+        assert context.model_name == "dedup-served"
 
     def test_save_failure_reraises_without_deleting(
         self, service, request_context, sample_profile
@@ -361,9 +420,15 @@ class TestProcessResults:
 
         service._process_results([[sample_profile]])
 
-        request_context.storage.add_user_profile.assert_called_once_with(
-            "user_1", [sample_profile], skip_embedding=True
-        )
+        call = request_context.storage.add_user_profile.call_args
+        assert call.args[:2] == ("user_1", [sample_profile])
+        assert call.kwargs["skip_embedding"] is True
+        contexts = call.kwargs["lineage_contexts"]
+        assert len(contexts) == 1
+        assert contexts[0] is not None
+        assert contexts[0].op_kind == "create"
+        assert contexts[0].model_name is None
+        assert contexts[0].provider is None
 
 
 # ===============================

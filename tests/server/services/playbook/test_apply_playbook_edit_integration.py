@@ -53,7 +53,7 @@ def test_apply_no_orphan_when_incumbent_already_gone(tmp_path):
     assert all(p.content != "v2" for p in currents)
 
 
-def test_apply_lost_cas_deletes_inserted_successor_and_leaves_no_orphan(tmp_path):
+def test_apply_lost_cas_rolls_back_successor_and_leaves_no_orphan(tmp_path):
     s = SQLiteStorage(org_id="test_org", db_path=str(tmp_path / "t.db"))
     s.migrate()
     inc = UserPlaybook(user_id="u", agent_version="v", request_id="r", content="v1")
@@ -90,4 +90,4 @@ def test_apply_lost_cas_deletes_inserted_successor_and_leaves_no_orphan(tmp_path
     assert len(currents) == 1
     assert currents[0].content == "winner"
     events = s.get_lineage_events(entity_type="user_playbook")
-    assert [e.op for e in events] == ["revise"]
+    assert [e.op for e in events] == ["create", "create", "revise"]

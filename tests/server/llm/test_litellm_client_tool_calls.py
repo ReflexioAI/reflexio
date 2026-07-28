@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from reflexio.server.llm._litellm_types import CompletionResult
 from reflexio.server.llm.litellm_client import (
     LiteLLMClient,
     LiteLLMConfig,
@@ -35,6 +36,8 @@ def _mock_tool_call_response(tool_name: str, args_json: str) -> MagicMock:
     response = MagicMock()
     response.choices = [choice]
     response.usage = MagicMock(prompt_tokens=10, completion_tokens=5, total_tokens=15)
+    response.model = "gpt-4o"
+    response._hidden_params = {"custom_llm_provider": "openai"}
     return response
 
 
@@ -81,7 +84,7 @@ class TestToolCallingExtensions:
         ]
 
         with patch("litellm.completion", return_value=mock_response) as mock_completion:
-            result = client.generate_chat_response(
+            result = client.generate_chat_response_with_provenance(
                 messages=[{"role": "user", "content": "hello"}],
                 tools=tools,
                 tool_choice="auto",
@@ -93,11 +96,14 @@ class TestToolCallingExtensions:
         assert call_kwargs["tool_choice"] == "auto"
 
         # The result must be a ToolCallingChatResponse
-        assert isinstance(result, ToolCallingChatResponse)
-        assert result.tool_calls is not None
-        assert result.tool_calls[0].function.name == "emit_profile"
-        assert result.finish_reason == "tool_calls"
-        assert result.content is None
+        assert isinstance(result, CompletionResult)
+        assert isinstance(result.value, ToolCallingChatResponse)
+        assert result.value.tool_calls is not None
+        assert result.value.tool_calls[0].function.name == "emit_profile"
+        assert result.value.finish_reason == "tool_calls"
+        assert result.value.content is None
+        assert result.provenance.model_name == "gpt-4o"
+        assert result.provenance.provider == "openai"
 
     def test_model_role_resolves_to_extraction_agent_default(
         self, monkeypatch: pytest.MonkeyPatch

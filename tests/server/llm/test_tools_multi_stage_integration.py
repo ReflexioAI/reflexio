@@ -22,6 +22,7 @@ import pytest
 from pydantic import BaseModel, Field
 
 from reflexio.server.llm import tools as tools_mod
+from reflexio.server.llm._litellm_types import CompletionResult, ModelProvenance
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 from reflexio.server.llm.model_defaults import ModelRole
 from reflexio.server.llm.tools import Tool, ToolRegistry, run_tool_loop
@@ -114,10 +115,10 @@ def _scripted_client(
     client = LiteLLMClient(LiteLLMConfig(model="some-non-tool-calling-model"))
     iterator = iter(plans)
 
-    def fake_generate(**_kwargs: object) -> MultiStagePlan:
-        return next(iterator)
+    def fake_generate(**_kwargs: object) -> CompletionResult[MultiStagePlan]:
+        return CompletionResult(next(iterator), ModelProvenance())
 
-    monkeypatch.setattr(client, "generate_chat_response", fake_generate)
+    monkeypatch.setattr(client, "generate_chat_response_with_provenance", fake_generate)
     return client
 
 

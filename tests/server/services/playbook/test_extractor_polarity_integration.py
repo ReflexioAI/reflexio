@@ -27,6 +27,7 @@ from reflexio.models.api_schema.service_schemas import (
 )
 from reflexio.models.config_schema import PlaybookConfig
 from reflexio.server.api_endpoints.request_context import RequestContext
+from reflexio.server.llm._litellm_types import CompletionResult, ModelProvenance
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.services.playbook.components.extractor import PlaybookExtractor
 from reflexio.server.services.playbook.playbook_service_utils import (
@@ -86,6 +87,15 @@ def mock_llm_client():
 
     client = MagicMock(spec=LiteLLMClient)
     client.config = LiteLLMConfig(model="claude-sonnet-4-6")
+
+    def _generate_with_provenance(*args, **kwargs):
+        return CompletionResult(
+            client.generate_chat_response(*args, **kwargs), ModelProvenance()
+        )
+
+    client.generate_chat_response_with_provenance.side_effect = (
+        _generate_with_provenance
+    )
     return client
 
 

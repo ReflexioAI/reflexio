@@ -1,4 +1,4 @@
-"""TDD tests for save_agent_playbook_with_aggregate_event — SQLite atomic write side.
+"""SQLite atomic lineage tests for canonical agent-playbook saves.
 
 Five tests:
   1. Happy path: row inserted + exactly one op=aggregate event with correct
@@ -17,11 +17,25 @@ from unittest.mock import patch
 import pytest
 
 import reflexio.server.services.storage.sqlite_storage.playbook._agent as _agent_playbook_mod
-from reflexio.models.api_schema.domain.entities import AgentPlaybook
+from reflexio.models.api_schema.domain.entities import AgentPlaybook, LineageContext
 from reflexio.server.services.storage.error import StorageError
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 
 pytestmark = pytest.mark.integration
+
+
+def _context(
+    *, source_ids: list[str] | None = None, request_id: str = "run-x"
+) -> LineageContext:
+    return LineageContext(
+        op_kind="aggregate",
+        actor="aggregator",
+        source_ids=source_ids or [],
+        request_id=request_id,
+        reason="aggregate:full_archive",
+        model_name="claude-sonnet-4-5-20250929",
+        provider="anthropic",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -54,18 +68,15 @@ def _make_playbook(
 # ---------------------------------------------------------------------------
 
 
-class TestSaveAgentPlaybookWithAggregateEvent:
+class TestSaveAgentPlaybooksWithAggregateContext:
     def test_happy_path_row_and_event_both_written(self, tmp_path):
         """Row is inserted and exactly one aggregate event exists with correct fields."""
         s = _store(tmp_path)
         pb = _make_playbook()
 
-        result = s.save_agent_playbook_with_aggregate_event(
-            pb,
-            source_ids=["10", "11"],
-            request_id="run-x",
-            run_mode="full_archive",
-        )
+        result = s.save_agent_playbooks(
+            [pb], lineage_contexts=[_context(source_ids=["10", "11"])]
+        )[0]
 
         # Row exists and has a real ID
         assert result.agent_playbook_id > 0
@@ -86,6 +97,7 @@ class TestSaveAgentPlaybookWithAggregateEvent:
         assert ev.request_id == "run-x"
         assert ev.actor == "aggregator"
         assert ev.prov_relation == "wasDerivedFrom"
+        assert ev.model_name == "claude-sonnet-4-5-20250929"
 
     def test_atomicity_rollback_on_event_append_failure(self, tmp_path):
         """If _append_event_stmt raises, the INSERT is rolled back — no orphaned row."""
@@ -104,11 +116,9 @@ class TestSaveAgentPlaybookWithAggregateEvent:
             # handle_exceptions wraps RuntimeError into StorageError
             pytest.raises(StorageError, match="simulated event failure"),
         ):
-            s.save_agent_playbook_with_aggregate_event(
-                pb,
-                source_ids=["1"],
-                request_id="run-fail",
-                run_mode="incremental",
+            s.save_agent_playbooks(
+                [pb],
+                lineage_contexts=[_context(source_ids=["1"], request_id="run-fail")],
             )
 
         # Row count must be unchanged — INSERT rolled back
@@ -127,18 +137,15 @@ class TestSaveAgentPlaybookWithAggregateEvent:
         s = _store(tmp_path)
         pb = _make_playbook(trigger="unique_trigger_xyz", content="some content")
 
-        result = s.save_agent_playbook_with_aggregate_event(
-            pb,
-            source_ids=[],
-            request_id="run-fts",
-            run_mode="incremental",
-        )
+        result = s.save_agent_playbooks(
+            [pb], lineage_contexts=[_context(request_id="run-fts")]
+        )[0]
 
         hits = s.search_agent_playbooks(
             SearchAgentPlaybookRequest(query="unique_trigger_xyz", top_k=10)
         )
         assert any(h.agent_playbook_id == result.agent_playbook_id for h in hits), (
-            "New playbook not found in FTS index after save_agent_playbook_with_aggregate_event"
+            "New playbook not found in FTS index after canonical save"
         )
 
     def test_index_failure_after_commit_does_not_rollback_row(self, tmp_path):
@@ -156,12 +163,12 @@ class TestSaveAgentPlaybookWithAggregateEvent:
             "_index_agent_playbook_fts_vec",
             side_effect=RuntimeError("simulated FTS index failure"),
         ):
-            result = s.save_agent_playbook_with_aggregate_event(
-                pb,
-                source_ids=["42"],
-                request_id="run-idx-fail",
-                run_mode="incremental",
-            )
+            result = s.save_agent_playbooks(
+                [pb],
+                lineage_contexts=[
+                    _context(source_ids=["42"], request_id="run-idx-fail")
+                ],
+            )[0]
 
         # Method returns the saved playbook normally
         assert result is not None
@@ -188,12 +195,10 @@ class TestSaveAgentPlaybookWithAggregateEvent:
         rows_before = len(s.get_agent_playbooks())
 
         # StorageError wraps ValueError via handle_exceptions
-        with pytest.raises((ValueError, StorageError), match="non-empty request_id"):
-            s.save_agent_playbook_with_aggregate_event(
-                pb,
-                source_ids=["1"],
-                request_id="",
-                run_mode="full_archive",
+        with pytest.raises((ValueError, StorageError), match="requires request_id"):
+            s.save_agent_playbooks(
+                [pb],
+                lineage_contexts=[_context(source_ids=["1"], request_id="")],
             )
 
         rows_after = len(s.get_agent_playbooks())

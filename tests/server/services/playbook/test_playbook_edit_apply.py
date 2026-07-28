@@ -120,8 +120,8 @@ def test_apply_expect_current_false_archives():
 def test_apply_expect_current_false_returns_minus1_and_no_orphan():
     """When incumbent is already archived, supersede_record returns False.
 
-    The new code deletes the just-inserted successor so no orphan CURRENT row
-    remains — the -1 return value indicates the lost race, not an orphan.
+    The transaction rolls back the provisional successor and its create event,
+    so the -1 return value indicates the lost race, not an orphan.
     """
     from reflexio.server.services.playbook.playbook_edit_apply import (
         apply_playbook_edit,
@@ -137,6 +137,9 @@ def test_apply_expect_current_false_returns_minus1_and_no_orphan():
 
             # Archive first so supersede_record will return False
             s.archive_user_playbook_by_id(user_id="u1", user_playbook_id=old_id)
+            event_ids_before = {
+                event.event_id for event in s.get_lineage_events(org_id="org_apply_1")
+            }
 
             new = _playbook(content="new")
             new_id = apply_playbook_edit(
@@ -146,13 +149,16 @@ def test_apply_expect_current_false_returns_minus1_and_no_orphan():
                 source="offline_optimizer",
                 request_id="run-abc",
             )
-        # supersede_record returned False → -1, successor cleaned up (no orphan)
+        # supersede_record returned False → -1, transaction rolled back.
         assert new_id == -1
 
         # No orphan: the inserted successor was deleted
         all_pbs = s.get_user_playbooks(user_id="u1")
         current_ids = {p.user_playbook_id for p in all_pbs if p.status is None}
         assert len(current_ids) == 0
+        assert {
+            event.event_id for event in s.get_lineage_events(org_id="org_apply_1")
+        } == event_ids_before
 
 
 def test_apply_raises_on_empty_request_id_before_write():
@@ -249,9 +255,9 @@ def test_apply_lineage_event_carries_operation_run_id():
         events = s.get_lineage_events(
             entity_type="user_playbook", entity_id=str(new_id)
         )
-        assert len(events) == 1
-        assert events[0].op == "revise"
-        assert events[0].request_id == operation_run_id, (
+        assert [event.op for event in events] == ["create", "revise"]
+        revise_event = events[1]
+        assert revise_event.request_id == operation_run_id, (
             f"lineage event must carry the operation run id {operation_run_id!r}, "
             f"not the incumbent's birth request_id {old.request_id!r}"
         )

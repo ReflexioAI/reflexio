@@ -27,6 +27,7 @@ from ._extras import ExtrasMixin
 from ._learning_jobs import LearningJob, LearningJobStatus, LearningJobStoreABC
 from ._lineage import EntityType, LineageEventMixin
 from ._operations import OperationMixin
+from ._playbook import AGGREGATE_REASON_PREFIX
 from ._requests import RequestMixin
 from ._shadow_verdicts import ShadowVerdictsMixin
 from ._share_links import ShareLinkMixin
@@ -289,6 +290,7 @@ __all__ = [
     "PendingToolCallStatus",
     "PendingToolCallUpsertResult",
     "AgentEvaluationResultStoreMixin",
+    "AGGREGATE_REASON_PREFIX",
     "AuditEventStoreMixin",
     "PurgeOperationStoreMixin",
     "SubjectBarrierMixin",

@@ -1,6 +1,5 @@
 """Abstract agent playbook CRUD + search declarations."""
 
-import logging
 from abc import abstractmethod
 
 from reflexio.models.api_schema.common import BlockingIssue
@@ -9,18 +8,11 @@ from reflexio.models.api_schema.domain import (
     PlaybookStatus,
     Status,
 )
-from reflexio.models.api_schema.domain.entities import LineageEvent
+from reflexio.models.api_schema.domain.entities import LineageContext
 from reflexio.models.api_schema.retriever_schema import (
     SearchAgentPlaybookRequest,
 )
 from reflexio.models.config_schema import SearchOptions
-from reflexio.server.tracing import capture_anomaly
-
-from .._playbook import AGGREGATE_REASON_PREFIX
-
-logger = logging.getLogger(__name__)
-
-_AGGREGATE_EVENT_EMIT_ATTEMPTS = 3
 
 
 class AgentPlaybookStoreMixin:
@@ -28,88 +20,22 @@ class AgentPlaybookStoreMixin:
 
     @abstractmethod
     def save_agent_playbooks(
-        self, agent_playbooks: list[AgentPlaybook]
+        self,
+        agent_playbooks: list[AgentPlaybook],
+        *,
+        lineage_contexts: list[LineageContext] | None = None,
     ) -> list[AgentPlaybook]:
-        """Save agent playbooks with embeddings.
+        """Save agent playbooks and their origin lineage events atomically.
 
         Args:
             agent_playbooks (list[AgentPlaybook]): List of agent playbook objects to save
+            lineage_contexts: Optional per-row create or aggregate attribution.
+                When omitted, storage emits a create event with null model/provider.
 
         Returns:
             list[AgentPlaybook]: Saved agent playbooks with agent_playbook_id populated from storage
         """
         raise NotImplementedError
-
-    def save_agent_playbook_with_aggregate_event(
-        self,
-        agent_playbook: AgentPlaybook,
-        *,
-        source_ids: list[str],
-        request_id: str,
-        run_mode: str,
-    ) -> AgentPlaybook:
-        """Persist an agent playbook AND its ``op=aggregate`` lineage event.
-
-        Backends SHOULD override this so the row insert and the event commit in ONE
-        transaction (the event is the sole record of the run->playbook membership for
-        reconstruction). This base default is a non-atomic save-then-emit fallback
-        with bounded retry + loud (level=error) on final failure.
-
-        Args:
-            agent_playbook (AgentPlaybook): The playbook to persist.
-            source_ids (list[str]): IDs of the source entities that produced this playbook.
-            request_id (str): The aggregation run ID (used as the lineage event request_id).
-            run_mode (str): The aggregation run mode (e.g. ``full_archive`` or ``incremental``).
-
-        Returns:
-            AgentPlaybook: The saved playbook with ``agent_playbook_id`` populated.
-
-        Raises:
-            ValueError: If ``request_id`` is empty (would produce an unreconstructable event).
-        """
-        if not request_id or not request_id.strip():
-            raise ValueError(
-                "save_agent_playbook_with_aggregate_event requires a non-empty request_id"
-            )
-        saved = self.save_agent_playbooks([agent_playbook])[0]
-        event = LineageEvent(
-            org_id=self.org_id,  # type: ignore[attr-defined]
-            entity_type="agent_playbook",
-            entity_id=str(saved.agent_playbook_id),
-            op="aggregate",
-            prov_relation="wasDerivedFrom",
-            source_ids=source_ids,
-            actor="aggregator",
-            request_id=request_id,
-            reason=f"{AGGREGATE_REASON_PREFIX}{run_mode}",
-        )
-        # The row is already committed; this default is non-atomic (SQLite overrides it to
-        # make the INSERT + event one transaction). The event is the sole reconstruction signal
-        # for the run, so make the emit durable: bounded retry (idempotent on retrying the
-        # same row's emit — entity_id is a fresh autoincrement per run, so this is NOT
-        # cross-run idempotency), and on final failure fail LOUD at level=error so the gap
-        # is paged + backfillable rather than silently lost. Never raise — the playbook
-        # itself is saved and must not be lost.
-        for attempt in range(_AGGREGATE_EVENT_EMIT_ATTEMPTS):
-            try:
-                self.append_lineage_event(event)  # type: ignore[attr-defined]
-                return saved
-            except Exception:  # noqa: BLE001
-                logger.warning(
-                    "aggregate lineage event append failed (attempt %d/%d) for agent_playbook %s",
-                    attempt + 1,
-                    _AGGREGATE_EVENT_EMIT_ATTEMPTS,
-                    saved.agent_playbook_id,
-                    exc_info=True,
-                )
-        capture_anomaly(
-            "lineage.aggregate.append_failed",
-            level="error",
-            entity_id=str(saved.agent_playbook_id),
-            org_id=self.org_id,  # type: ignore[attr-defined]
-            request_id=request_id,
-        )
-        return saved
 
     @abstractmethod
     def get_agent_playbooks(

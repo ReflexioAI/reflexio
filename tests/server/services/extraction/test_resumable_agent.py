@@ -151,7 +151,7 @@ def test_resumable_agent_finishes_profile_output(
     assert stored is not None
     assert stored.status == AgentRunStatus.AGENT_COMPLETED
     assert stored.max_steps_remaining == 7
-    assert stored.committed_output == {
+    assert stored.committed_output["output"] == {
         "profiles": [
             {
                 "content": "User prefers AWS ECS deployments.",
@@ -161,6 +161,10 @@ def test_resumable_agent_finishes_profile_output(
                 "reader_angle": None,
             }
         ]
+    }
+    assert stored.committed_output["model_provenance"] == {
+        "model_name": None,
+        "provider": None,
     }
 
 
@@ -249,7 +253,9 @@ def test_resumable_agent_finishes_playbook_output(
     assert stored is not None
     assert stored.status == AgentRunStatus.AGENT_COMPLETED
     assert stored.committed_output is not None
-    assert stored.committed_output["playbooks"][0]["trigger"] == "Deploying services"
+    assert stored.committed_output["output"]["playbooks"][0]["trigger"] == (
+        "Deploying services"
+    )
 
 
 def test_resumable_agent_marks_run_failed_on_loop_error(monkeypatch, storage):
@@ -258,7 +264,7 @@ def test_resumable_agent_marks_run_failed_on_loop_error(monkeypatch, storage):
     client = LiteLLMClient(LiteLLMConfig(model="claude-sonnet-4-6"))
     monkeypatch.setattr(
         client,
-        "generate_chat_response",
+        "generate_chat_response_with_provenance",
         MagicMock(side_effect=RuntimeError("provider failed")),
     )
     agent = ResumableExtractionAgent(client=client, storage=storage)
@@ -296,14 +302,14 @@ def test_resumable_agent_uses_auto_tool_choice_with_extra_tools(
     agent = ResumableExtractionAgent(client=client, storage=storage)
 
     captured: dict[str, object] = {}
-    original = client.generate_chat_response
+    original = client.generate_chat_response_with_provenance
 
     def _spy(*args, **kwargs):
         captured["tool_choice"] = kwargs.get("tool_choice")
         captured["response_format"] = kwargs.get("response_format")
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(client, "generate_chat_response", _spy)
+    monkeypatch.setattr(client, "generate_chat_response_with_provenance", _spy)
 
     extra_ctx = PendingToolCallToolContext(
         storage=storage,

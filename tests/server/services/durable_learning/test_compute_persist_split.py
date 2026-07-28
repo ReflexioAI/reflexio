@@ -270,6 +270,7 @@ def test_worker_scope_wraps_only_persist(monkeypatch):
 
         scope_enter = {"v": 0}
         scope_exit = {"v": 0}
+        scope_depth = {"v": 0}
 
         orig_scope = storage.commit_scope
 
@@ -278,14 +279,19 @@ def test_worker_scope_wraps_only_persist(monkeypatch):
 
             class _Tracker:
                 def __enter__(self):
-                    scope_enter["v"] = _t()
-                    return cm.__enter__()
+                    entered = cm.__enter__()
+                    if scope_depth["v"] == 0:
+                        scope_enter["v"] = _t()
+                    scope_depth["v"] += 1
+                    return entered
 
                 def __exit__(self, *exc):
                     try:
                         return cm.__exit__(*exc)
                     finally:
-                        scope_exit["v"] = _t()
+                        scope_depth["v"] -= 1
+                        if scope_depth["v"] == 0:
+                            scope_exit["v"] = _t()
 
             return _Tracker()
 

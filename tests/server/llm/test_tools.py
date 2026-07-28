@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from pydantic import BaseModel
 
+from reflexio.server.llm._litellm_types import CompletionResult, ModelProvenance
 from reflexio.server.llm.litellm_client import (
     LiteLLMClient,
     LiteLLMClientError,
@@ -293,6 +294,44 @@ def test_run_tool_loop_empty_registry_omits_tool_choice_for_structured_finish(
     assert result.structured_output.value == "ok"
 
 
+def test_run_tool_loop_returns_structured_terminus_provenance(monkeypatch):
+    class StructuredFinish(BaseModel):
+        value: str
+
+    provenance = ModelProvenance(
+        model_name="claude-sonnet-5",
+        provider="anthropic",
+    )
+    response = CompletionResult(
+        ToolCallingChatResponse(
+            content='{"value":"ok"}',
+            tool_calls=None,
+            finish_reason="stop",
+            parsed_output=StructuredFinish(value="ok"),
+        ),
+        provenance,
+    )
+    client = LiteLLMClient(LiteLLMConfig(model="claude-code/default"))
+    generate = MagicMock(return_value=response)
+    monkeypatch.setattr(client, "generate_chat_response_with_provenance", generate)
+    monkeypatch.setattr(
+        "reflexio.server.llm.tools.resolve_model_name",
+        lambda **_kwargs: "claude-code/default",
+    )
+
+    result = run_tool_loop(
+        client=client,
+        messages=[{"role": "user", "content": "go"}],
+        registry=ToolRegistry([]),
+        model_role=ModelRole.EXTRACTION_AGENT,
+        response_format=StructuredFinish,
+    )
+
+    assert result.finished_reason == "structured_output"
+    assert result.provenance == provenance
+    assert "provenance" not in result.model_dump()
+
+
 def test_run_tool_loop_records_async_accepted_and_continues(
     monkeypatch,
     tool_call_completion,
@@ -382,15 +421,22 @@ def test_run_tool_loop_sends_plain_dict_tool_calls_in_followup_request(monkeypat
     def fake_generate_chat_response(**kwargs):
         calls.append(deepcopy(kwargs["messages"]))
         tool_calls = [emit_call] if len(calls) == 1 else [finish_call]
-        return ToolCallingChatResponse(
-            content=None,
-            tool_calls=tool_calls,
-            finish_reason="tool_calls",
+        return CompletionResult(
+            value=ToolCallingChatResponse(
+                content=None,
+                tool_calls=tool_calls,
+                finish_reason="tool_calls",
+            ),
+            provenance=ModelProvenance(),
         )
 
     config = LiteLLMConfig(model="claude-sonnet-4-6")
     client = LiteLLMClient(config)
-    monkeypatch.setattr(client, "generate_chat_response", fake_generate_chat_response)
+    monkeypatch.setattr(
+        client,
+        "generate_chat_response_with_provenance",
+        fake_generate_chat_response,
+    )
     ctx = LoopCtx()
 
     result = run_tool_loop(
@@ -461,7 +507,11 @@ def test_run_tool_loop_capability_fallback_uses_response_format(monkeypatch):
         emissions: list[EmitArgs]
 
     fake_parsed = FallbackSchema(emissions=[EmitArgs(value="x"), EmitArgs(value="y")])
-    monkeypatch.setattr(client, "generate_chat_response", lambda **_: fake_parsed)
+    monkeypatch.setattr(
+        client,
+        "generate_chat_response_with_provenance",
+        lambda **_: CompletionResult(value=fake_parsed, provenance=ModelProvenance()),
+    )
 
     ctx = LoopCtx()
     registry = _make_registry(ctx)
@@ -503,7 +553,7 @@ def test_run_tool_loop_returns_error_on_client_exception(
     def boom(**_kwargs):
         raise RuntimeError("simulated provider failure")
 
-    monkeypatch.setattr(client, "generate_chat_response", boom)
+    monkeypatch.setattr(client, "generate_chat_response_with_provenance", boom)
 
     result = run_tool_loop(
         client=client,
@@ -542,7 +592,7 @@ def test_run_tool_loop_logs_llm_client_error_as_warning(
     def boom(**_kwargs):
         raise LiteLLMClientError("API call failed: hard timeout")
 
-    monkeypatch.setattr(client, "generate_chat_response", boom)
+    monkeypatch.setattr(client, "generate_chat_response_with_provenance", boom)
 
     with caplog.at_level(logging.WARNING, logger="reflexio.server.llm.tools"):
         result = run_tool_loop(
@@ -694,7 +744,11 @@ def test_run_tool_loop_log_label_fallback_path_logs_once(monkeypatch):
         patch(
             "reflexio.server.services.service_utils.log_model_response"
         ) as mock_log_resp,
-        patch.object(client, "generate_chat_response", return_value=parsed),
+        patch.object(
+            client,
+            "generate_chat_response_with_provenance",
+            return_value=CompletionResult(value=parsed, provenance=ModelProvenance()),
+        ),
     ):
         run_tool_loop(
             client=client,
@@ -759,8 +813,13 @@ def test_run_tool_loop_captures_usage_on_tool_loop_turn(monkeypatch):
 
     monkeypatch.setattr(
         client,
-        "generate_chat_response",
-        MagicMock(side_effect=[resp_with_usage, resp_finish]),
+        "generate_chat_response_with_provenance",
+        MagicMock(
+            side_effect=[
+                CompletionResult(value=resp_with_usage, provenance=ModelProvenance()),
+                CompletionResult(value=resp_finish, provenance=ModelProvenance()),
+            ]
+        ),
     )
 
     result = run_tool_loop(

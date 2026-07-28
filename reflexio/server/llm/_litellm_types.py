@@ -19,6 +19,22 @@ from pydantic import BaseModel
 from reflexio.models.config_schema import APIKeyConfig
 
 
+@dataclass(frozen=True)
+class ModelProvenance:
+    """Observed model and provider attribution for one completion."""
+
+    model_name: str | None = None
+    provider: str | None = None
+
+
+@dataclass(frozen=True)
+class CompletionResult[T]:
+    """Completion value paired with its non-serializing provenance."""
+
+    value: T
+    provenance: ModelProvenance
+
+
 @dataclass
 class LiteLLMConfig:
     """
@@ -104,7 +120,20 @@ class ToolCallingChatResponse:
 
 
 class LiteLLMClientError(Exception):
-    """Custom exception for LiteLLM client errors."""
+    """Custom exception for LiteLLM client errors.
+
+    ``first_parsed_provenance`` is populated when a later structured-output
+    repair transport failure leaves a parsed response available to a caller.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        first_parsed_provenance: ModelProvenance | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.first_parsed_provenance = first_parsed_provenance
 
 
 class StructuredOutputRepairError(LiteLLMClientError):
@@ -112,9 +141,10 @@ class StructuredOutputRepairError(LiteLLMClientError):
 
     Field pairing caveat: ``raw_content``/``validation_errors`` describe the
     LAST attempt, while ``parsed_output`` falls back to the most recent attempt
-    that parsed at all — when the final attempt failed to parse, these fields
-    describe different attempts. Callers must not assume ``validation_errors``
-    were produced by validating ``parsed_output``.
+    that parsed at all. ``first_parsed_provenance`` is the first parse across the
+    whole multi-rung walk (not merely the final rung), so salvage callers can
+    pair it with the first accepted parsed content from a shared validator
+    closure.
     """
 
     def __init__(
@@ -126,8 +156,9 @@ class StructuredOutputRepairError(LiteLLMClientError):
         raw_content: str | None = None,
         parsed_output: BaseModel | None = None,
         validation_errors: tuple[str, ...] = (),
+        first_parsed_provenance: ModelProvenance | None = None,
     ) -> None:
-        super().__init__(message)
+        super().__init__(message, first_parsed_provenance=first_parsed_provenance)
         self.failure_kind = failure_kind
         self.model = model
         self.raw_content = raw_content
@@ -148,10 +179,12 @@ class StructuredOutputParseError(Exception):
         *,
         raw_content: str | None = None,
         finish_reason: str | None = None,
+        provenance: ModelProvenance | None = None,
     ) -> None:
         super().__init__(message)
         self.raw_content = raw_content
         self.finish_reason = finish_reason
+        self.provenance = provenance
 
 
 class LLMHardTimeoutError(TimeoutError):

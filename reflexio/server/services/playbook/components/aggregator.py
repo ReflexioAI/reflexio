@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     import numpy as np
 
+from reflexio.models.api_schema.domain.entities import LineageContext
 from reflexio.models.api_schema.service_schemas import (
     AgentPlaybook,
     AgentPlaybookSourceWindow,
@@ -21,6 +22,7 @@ from reflexio.models.config_schema import (
     PlaybookAggregatorConfig,
 )
 from reflexio.server.api_endpoints.request_context import RequestContext
+from reflexio.server.llm._litellm_types import ModelProvenance
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.services.operation_state_utils import OperationStateManager
 from reflexio.server.services.playbook.aggregation_prompt_processing import (
@@ -47,6 +49,7 @@ from reflexio.server.services.playbook.playbook_service_utils import (
     ensure_playbook_content,
 )
 from reflexio.server.services.service_utils import log_model_response
+from reflexio.server.services.storage.storage_base import AGGREGATE_REASON_PREFIX
 from reflexio.server.tracing import capture_anomaly, sentry_tags
 from reflexio.server.usage_metrics import record_usage_event
 
@@ -476,7 +479,7 @@ class PlaybookAggregator:
                 existing_playbooks,
                 direction_overlap_threshold=playbook_aggregator_config.direction_overlap_threshold,
             )
-            new_playbooks = [playbook for playbook, _ in generated_pairs]
+            new_playbooks = [playbook for playbook, _, _ in generated_pairs]
 
             previous_fingerprints_for_changed_clusters = {}
             changed_fps_by_previous_fp = {}
@@ -558,19 +561,27 @@ class PlaybookAggregator:
 
             # Save each playbook + its aggregate event atomically, then assign
             # fingerprints and source-windows for the saved row.
-            for playbook, cluster_playbooks in generated_pairs:
+            for playbook, cluster_playbooks, provenance in generated_pairs:
                 run_mode = "full_archive" if full_archive else "incremental"
                 member_ids = [
                     str(fb.user_playbook_id)
                     for fb in cluster_playbooks
                     if fb.user_playbook_id
                 ]
-                saved_fb = self.storage.save_agent_playbook_with_aggregate_event(  # type: ignore[reportOptionalMemberAccess]
-                    playbook,
-                    source_ids=member_ids,
-                    request_id=_run_id,
-                    run_mode=run_mode,
-                )
+                saved_fb = self.storage.save_agent_playbooks(  # type: ignore[reportOptionalMemberAccess]
+                    [playbook],
+                    lineage_contexts=[
+                        LineageContext(
+                            op_kind="aggregate",
+                            actor="aggregator",
+                            request_id=_run_id,
+                            source_ids=member_ids,
+                            reason=f"{AGGREGATE_REASON_PREFIX}{run_mode}",
+                            model_name=provenance.model_name if provenance else None,
+                            provider=provenance.provider if provenance else None,
+                        )
+                    ],
+                )[0]
                 saved_playbook_list.append(saved_fb)
                 if saved_fb and saved_fb.agent_playbook_id:
                     fp_key = self._compute_cluster_fingerprint(cluster_playbooks)
@@ -784,7 +795,7 @@ class PlaybookAggregator:
 
         Prefers one event per learning id (entity-backed) when every saved
         playbook in this run carries a durable ``agent_playbook_id`` — the
-        common case, since ``save_agent_playbook_with_aggregate_event``
+        common case, since ``save_agent_playbooks``
         raises rather than returning a partial row. Falls back to the
         count-based aggregate event when ``learning_ids`` is short of
         ``total_count`` (a falsy/unset id slipped through), mirroring
@@ -939,9 +950,11 @@ class PlaybookAggregator:
         clusters: dict[int, list[UserPlaybook]],
         existing_approved_playbooks: list[AgentPlaybook],
         direction_overlap_threshold: float = 0.6,
-    ) -> list[tuple[AgentPlaybook, list[UserPlaybook]]]:
-        """Generate agent playbooks while preserving their exact source cluster."""
-        new_playbooks: list[tuple[AgentPlaybook, list[UserPlaybook]]] = []
+    ) -> list[tuple[AgentPlaybook, list[UserPlaybook], ModelProvenance | None]]:
+        """Generate playbooks with their exact source cluster and provenance."""
+        new_playbooks: list[
+            tuple[AgentPlaybook, list[UserPlaybook], ModelProvenance | None]
+        ] = []
         approved_playbooks_str = (
             "\n".join([f"- {fb.content}" for fb in existing_approved_playbooks])
             if existing_approved_playbooks
@@ -965,14 +978,15 @@ class PlaybookAggregator:
                     for playbook in cluster_playbooks
                 ]
 
-            playbook = self._generate_playbook_from_cluster(
+            generated = self._generate_playbook_from_cluster(
                 prompt_cluster_playbooks,
                 approved_playbooks_str,
                 direction_overlap_threshold=direction_overlap_threshold,
                 processing_context=processing_context,
             )
-            if playbook is not None:
-                new_playbooks.append((playbook, cluster_playbooks))
+            if generated is not None:
+                playbook, provenance = generated
+                new_playbooks.append((playbook, cluster_playbooks, provenance))
         return new_playbooks
 
     def _enqueue_playbook_optimization(
@@ -1020,7 +1034,7 @@ class PlaybookAggregator:
         existing_approved_playbooks_str: str,
         direction_overlap_threshold: float = 0.6,
         processing_context: AggregationPromptProcessingContext | None = None,
-    ) -> AgentPlaybook | None:
+    ) -> tuple[AgentPlaybook, ModelProvenance | None] | None:
         """
         Generate a playbook from a cluster using structured JSON output.
 
@@ -1030,7 +1044,7 @@ class PlaybookAggregator:
             direction_overlap_threshold: Token overlap threshold for grouping by direction
 
         Returns:
-            AgentPlaybook | None: Generated playbook, or None if no new playbook needed
+            Generated playbook and its provenance, or None if no new playbook is needed
         """
         if not cluster_playbooks:
             return None
@@ -1064,7 +1078,10 @@ class PlaybookAggregator:
             playbook = self._process_aggregation_response(response, cluster_playbooks)
             if playbook is None:
                 return None
-            return playbook.model_copy(update={"playbook_metadata": "mock_generated"})
+            return (
+                playbook.model_copy(update={"playbook_metadata": "mock_generated"}),
+                None,
+            )
 
         # Format raw playbooks for prompt using structured format
         raw_playbooks_str = self._format_structured_cluster_input(
@@ -1089,12 +1106,14 @@ class PlaybookAggregator:
         ]
 
         try:
-            response = self.client.generate_chat_response(
+            completion = self.client.generate_chat_response_with_provenance(
                 messages=messages,
                 model=self.client.config.model,
                 response_format=PlaybookAggregationOutput,
                 parse_structured_output=True,
             )
+            response = completion.value
+            model_provenance = completion.provenance
             if isinstance(response, PlaybookAggregationOutput):
                 response, artifact_count = (
                     self._postproc._postprocess_aggregation_response(
@@ -1120,7 +1139,10 @@ class PlaybookAggregator:
                 )
                 return None
 
-            return self._process_aggregation_response(response, cluster_playbooks)
+            playbook = self._process_aggregation_response(response, cluster_playbooks)
+            if playbook is None:
+                return None
+            return playbook, model_provenance
         except Exception as exc:
             processed_error, artifact_count = (
                 self._postproc._postprocess_aggregation_output(

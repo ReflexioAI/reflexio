@@ -23,6 +23,7 @@ from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.services.playbook.aggregation_trigger import (
     maybe_trigger_user_playbook_aggregation,
 )
+from reflexio.server.services.playbook.playbook_edit_apply import apply_playbook_edit
 from reflexio.server.tracing import sentry_tags
 
 from .assistant_webhook import AssistantCallable, LocalScriptAssistant, WebhookAssistant
@@ -559,8 +560,7 @@ def _supersede_user_playbook(
     incumbent is no longer CURRENT (lost race / already superseded).
 
     Args:
-        storage: A storage instance implementing ``save_user_playbooks``,
-            ``supersede_record``, and ``delete_user_playbooks_by_ids``.
+        storage: A storage instance implementing the canonical atomic edit path.
         incumbent: The current user playbook to replace.
         best_content: Content for the successor playbook.
         source: Provenance label written to the lineage event actor field.
@@ -581,25 +581,24 @@ def _supersede_user_playbook(
     successor = incumbent.model_copy(
         update={"user_playbook_id": 0, "content": best_content, "status": None}
     )
-    storage.save_user_playbooks([successor])
     ctx = LineageContext(
         op_kind="revise",
         actor=source,
         request_id=request_id,
     )
-    ok = storage.supersede_record(
-        entity_type="user_playbook",
-        incumbent_id=str(incumbent.user_playbook_id),
-        successor_id=str(successor.user_playbook_id),
-        context=ctx,
+    successor_id = apply_playbook_edit(
+        storage,
+        incumbent_id=incumbent.user_playbook_id,
+        new_playbook=successor,
+        source=source,
+        request_id=request_id,
+        revise_context=ctx,
     )
-    if not ok:
-        # Lost CAS: remove the never-live successor without auditing it as erasure.
-        storage.delete_user_playbooks_by_ids(
-            [successor.user_playbook_id], emit_hard_delete=False
-        )
-        return None
-    return successor.user_playbook_id
+    return None if successor_id == -1 else successor_id
+
+
+class _LostAgentSupersedeRaceError(Exception):
+    """Internal rollback signal for an agent-playbook successor race."""
 
 
 def _supersede_agent_playbook(
@@ -618,7 +617,7 @@ def _supersede_agent_playbook(
 
     Args:
         storage: A storage instance implementing ``save_agent_playbooks``,
-            ``supersede_record``, and ``delete_agent_playbooks_by_ids``.
+            ``supersede_record``, and ``commit_scope``.
         incumbent: The current agent playbook to replace.
         best_content: Content for the successor playbook.
         source: Provenance label written to the lineage event actor field.
@@ -646,24 +645,26 @@ def _supersede_agent_playbook(
             "playbook_metadata": playbook_metadata,
         }
     )
-    saved = storage.save_agent_playbooks([successor])
-    if not saved or not saved[0].agent_playbook_id:
-        return None
-    successor_id = saved[0].agent_playbook_id
     ctx = LineageContext(
         op_kind="revise",
         actor=source,
         request_id=request_id,
     )
-    ok = storage.supersede_record(
-        entity_type="agent_playbook",
-        incumbent_id=str(incumbent.agent_playbook_id),
-        successor_id=str(successor_id),
-        context=ctx,
-    )
-    if not ok:
-        # Lost CAS: remove the never-live successor without auditing it as erasure.
-        storage.delete_agent_playbooks_by_ids([successor_id], emit_hard_delete=False)
+    try:
+        with storage.commit_scope():
+            saved = storage.save_agent_playbooks([successor])
+            if not saved or not saved[0].agent_playbook_id:
+                raise _LostAgentSupersedeRaceError
+            successor_id = saved[0].agent_playbook_id
+            if not storage.supersede_record(
+                entity_type="agent_playbook",
+                incumbent_id=str(incumbent.agent_playbook_id),
+                successor_id=str(successor_id),
+                context=ctx,
+            ):
+                raise _LostAgentSupersedeRaceError
+    except _LostAgentSupersedeRaceError:
+        successor.agent_playbook_id = 0
         return None
     return successor_id
 

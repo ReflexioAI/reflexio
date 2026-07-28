@@ -11,6 +11,7 @@ if TYPE_CHECKING:
     from reflexio.server.api_endpoints.request_context import RequestContext
     from reflexio.server.llm.litellm_client import LiteLLMClient
 
+from reflexio.models.api_schema.domain.entities import LineageContext
 from reflexio.models.api_schema.internal_schema import RequestInteractionDataModel
 from reflexio.models.api_schema.service_schemas import (
     DowngradeProfilesResponse,
@@ -23,6 +24,7 @@ from reflexio.models.api_schema.service_schemas import (
     UserProfile,
 )
 from reflexio.models.config_schema import ProfileExtractorConfig
+from reflexio.server.llm._litellm_types import ModelProvenance
 from reflexio.server.services.base_generation_service import (
     BaseGenerationService,
     StatusChangeOperation,
@@ -168,6 +170,9 @@ class ProfileGenerationService(
 
         all_new_profiles = [p for result in results if result for p in result]
         existing_ids_to_delete: list[str] = []
+        consolidation_provenance = None
+        consolidation_sources: dict[str, list[str]] = {}
+        consolidated_output_indices: set[int] = set()
 
         # Always run deduplicator when there are new profiles
         if all_new_profiles:
@@ -185,6 +190,9 @@ class ProfileGenerationService(
                     all_new_profiles, user_id, generation_request_id
                 )
             )
+            consolidation_provenance = consolidator.model_provenance
+            consolidation_sources = consolidator.lineage_sources_by_profile_id
+            consolidated_output_indices = consolidator.consolidated_output_indices
             logger.info(
                 "Profile updates after deduplication: %d profiles, %d existing to delete",
                 len(all_new_profiles),
@@ -217,11 +225,34 @@ class ProfileGenerationService(
         if all_new_profiles:
             self.storage.precompute_profile_embeddings(all_new_profiles)  # type: ignore[reportOptionalMemberAccess]
 
+        lineage_contexts: list[LineageContext] = []
+        for index, profile in enumerate(all_new_profiles):
+            provenance = (
+                consolidation_provenance
+                if index in consolidated_output_indices
+                else self._last_model_provenance
+            )
+            lineage_contexts.append(
+                LineageContext(
+                    op_kind="create",
+                    actor=(
+                        "consolidator"
+                        if index in consolidated_output_indices
+                        else "extractor"
+                    ),
+                    request_id=generation_request_id,
+                    source_ids=consolidation_sources.get(profile.profile_id, []),
+                    model_name=provenance.model_name if provenance else None,
+                    provider=provenance.provider if provenance else None,
+                )
+            )
+
         return ProfileWritePlan(
             user_id=user_id,
             request_id=generation_request_id,
             new_profiles=all_new_profiles,
             superseded_ids=existing_ids_to_delete,
+            lineage_contexts=lineage_contexts,
         )
 
     def _persist_write_plan(self, plan: ProfileWritePlan) -> None:
@@ -250,7 +281,10 @@ class ProfileGenerationService(
         if plan.new_profiles:
             try:
                 self.storage.add_user_profile(  # type: ignore[reportOptionalMemberAccess]
-                    user_id, plan.new_profiles, skip_embedding=True
+                    user_id,
+                    plan.new_profiles,
+                    skip_embedding=True,
+                    lineage_contexts=plan.lineage_contexts,
                 )
             except Exception as e:
                 with sentry_tags(
@@ -298,7 +332,12 @@ class ProfileGenerationService(
                 # _apply_consolidation_lineage raises here too.
                 raise
 
-    def _finalize_extracted_items(self, all_new_profiles: list[UserProfile]) -> None:
+    def _finalize_extracted_items(
+        self,
+        all_new_profiles: list[UserProfile],
+        *,
+        model_provenance: ModelProvenance | None = None,
+    ) -> None:
         """Permanent V3 wrapper: compute-then-persist together (no external fence).
 
         Kept for the synchronous resume/manual callers
@@ -307,6 +346,8 @@ class ProfileGenerationService(
         (persist) split the durable worker uses — with no external
         ``commit_scope`` — so the result is identical to the pre-split monolith.
         """
+        if model_provenance is not None:
+            self._last_model_provenance = model_provenance
         plan = self._resolve_write_plan([all_new_profiles])
         if plan is not None:
             self._persist_write_plan(plan)

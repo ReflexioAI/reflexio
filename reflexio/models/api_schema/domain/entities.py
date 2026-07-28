@@ -509,6 +509,11 @@ class LineageEvent(BaseModel):
         request_id (str): Triggering request — part of the idempotency key.
         reason (str): Free-text rationale (no PII).
         created_at (int): Unix epoch seconds (0 = unset; storage stamps it).
+        from_status (str | None): Status before a transition.
+        to_status (str | None): Status after a transition.
+        status_namespace (str | None): Namespace for status values.
+        model_name (str | None): Observed model for a content-shaping operation.
+        provider (str | None): Observed provider for that operation.
     """
 
     event_id: int = 0
@@ -525,6 +530,8 @@ class LineageEvent(BaseModel):
     from_status: str | None = None
     to_status: str | None = None
     status_namespace: str | None = None
+    model_name: str | None = None
+    provider: str | None = None
 
 
 class LineageContext(BaseModel):
@@ -538,6 +545,8 @@ class LineageContext(BaseModel):
     source_ids: list[str] = []
     reason: str = ""
     request_id: str | None = None
+    model_name: str | None = None
+    provider: str | None = None
 
 
 class RecordRef(BaseModel):

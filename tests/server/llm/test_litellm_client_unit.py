@@ -40,6 +40,8 @@ from reflexio.models.config_schema import (
     OpenAIConfig as CommonsOpenAIConfig,
 )
 from reflexio.models.structured_output import find_schema_keyword
+from reflexio.server.llm._litellm_subprocess import _snapshot_completion_response
+from reflexio.server.llm._litellm_types import CompletionResult, ModelProvenance
 from reflexio.server.llm._provider_concurrency import ProviderCapSaturatedError
 from reflexio.server.llm.litellm_client import (
     LiteLLMClient,
@@ -460,6 +462,224 @@ class TestGenerateResponse:
         assert isinstance(result, SampleResponse)
         assert result.answer == "ok"
         assert result.score == 5
+
+    @patch("reflexio.server.llm.litellm_client.litellm.completion")
+    def test_opt_in_result_carries_actual_model_and_provider(self, mock_completion):
+        response = _make_completion_response("hello")
+        response.model = "MiniMax-M3"
+        response._hidden_params = {"custom_llm_provider": "minimax"}
+        mock_completion.return_value = response
+        client = _build_client(
+            LiteLLMConfig(
+                model="minimax/MiniMax-M3",
+                api_key_config=APIKeyConfig(minimax=MiniMaxConfig(api_key="test-key")),
+            )
+        )
+
+        result = client.generate_response_with_provenance("test")
+
+        assert isinstance(result, CompletionResult)
+        assert result.value == "hello"
+        assert result.provenance == ModelProvenance(
+            model_name="MiniMax-M3",
+            provider="minimax",
+        )
+
+    @patch("reflexio.server.llm.litellm_client.litellm.completion")
+    def test_structured_result_provenance_does_not_serialize(self, mock_completion):
+        response = _make_completion_response(json.dumps({"answer": "ok", "score": 5}))
+        response.model = "gpt-5.4-mini"
+        response._hidden_params = {"custom_llm_provider": "openai"}
+        mock_completion.return_value = response
+        client = _build_client(LiteLLMConfig(model="gpt-5.4-mini"))
+
+        result = client.generate_response_with_provenance(
+            "test",
+            response_format=SampleResponse,
+        )
+
+        assert isinstance(result, CompletionResult)
+        assert isinstance(result.value, SampleResponse)
+        assert result.value.model_dump() == {"answer": "ok", "score": 5}
+        assert "provenance" not in result.value.model_dump()
+
+    @patch("reflexio.server.llm.litellm_client.litellm.completion")
+    def test_claude_code_does_not_launder_requested_route_as_observed(
+        self, mock_completion
+    ):
+        """Public ModelResponse.model is the requested route; only the stamp counts."""
+        response = _make_completion_response("hello")
+        response.model = "claude-code/default"
+        response._hidden_params = {
+            "reflexio_provider": "claude-code",
+            "reflexio_cli_binary": "claude",
+        }
+        mock_completion.return_value = response
+        client = _build_client(LiteLLMConfig(model="claude-code/default"))
+
+        result = client.generate_response_with_provenance("test")
+
+        assert isinstance(result, CompletionResult)
+        assert result.provenance == ModelProvenance(
+            model_name=None,
+            provider=None,
+        )
+
+    @patch("reflexio.server.llm.litellm_client.litellm.completion")
+    def test_codex_cli_provenance_keeps_unknown_model(self, mock_completion):
+        response = _make_completion_response("hello")
+        response.model = None
+        response._hidden_params = {
+            "reflexio_provider": "claude-code",
+            "reflexio_cli_binary": "codex",
+        }
+        mock_completion.return_value = response
+        client = _build_client(LiteLLMConfig(model="claude-code/default"))
+
+        result = client.generate_response_with_provenance("test")
+
+        assert isinstance(result, CompletionResult)
+        assert result.provenance == ModelProvenance(
+            model_name=None,
+            provider=None,
+        )
+
+    @patch("reflexio.server.llm.litellm_client.litellm.completion")
+    def test_claude_cli_provenance_keeps_served_model(self, mock_completion):
+        response = _make_completion_response("hello")
+        response.model = "claude-sonnet-5"
+        response._hidden_params = {
+            "reflexio_provider": "claude-code",
+            "reflexio_cli_binary": "claude",
+            "reflexio_served_model": "claude-sonnet-5",
+        }
+        mock_completion.return_value = response
+        client = _build_client(LiteLLMConfig(model="claude-code/default"))
+
+        result = client.generate_response_with_provenance("test")
+
+        assert isinstance(result, CompletionResult)
+        assert result.provenance == ModelProvenance(model_name="claude-sonnet-5")
+
+    @patch("reflexio.server.llm.litellm_client.litellm.completion")
+    def test_model_name_does_not_imply_provider(self, mock_completion):
+        response = _make_completion_response("hello")
+        response.model = "gpt-5.4-mini"
+        response._hidden_params = {}
+        mock_completion.return_value = response
+        client = _build_client(
+            LiteLLMConfig(
+                model="minimax/MiniMax-M3",
+                api_key_config=APIKeyConfig(minimax=MiniMaxConfig(api_key="test-key")),
+            )
+        )
+
+        result = client.generate_response_with_provenance("test")
+
+        assert isinstance(result, CompletionResult)
+        assert result.provenance == ModelProvenance(model_name="gpt-5.4-mini")
+
+    @patch("reflexio.server.llm.litellm_client.litellm.completion")
+    def test_request_side_hidden_model_is_not_treated_as_served(self, mock_completion):
+        """LiteLLM may echo the requested model into _hidden_params['model'].
+
+        Without a response body model or reflexio_served_model stamp, model_name
+        must stay unknown rather than recording the configured route as actual.
+        """
+        response = _make_completion_response("hello")
+        response.model = None
+        response._hidden_params = {
+            "model": "minimax/MiniMax-M3",
+            "model_id": "minimax/MiniMax-M3",
+            "custom_llm_provider": "minimax",
+        }
+        mock_completion.return_value = response
+        client = _build_client(
+            LiteLLMConfig(
+                model="minimax/MiniMax-M3",
+                api_key_config=APIKeyConfig(minimax=MiniMaxConfig(api_key="test-key")),
+            )
+        )
+
+        result = client.generate_response_with_provenance("test")
+
+        assert isinstance(result, CompletionResult)
+        assert result.provenance == ModelProvenance(
+            model_name=None,
+            provider="minimax",
+        )
+
+    @patch("reflexio.server.llm.litellm_client.litellm.completion")
+    def test_network_fallback_uses_actual_provider(self, mock_completion):
+        response = _make_completion_response("hello")
+        response.model = "gpt-5.4-mini"
+        response._hidden_params = {"custom_llm_provider": "openai"}
+        mock_completion.return_value = response
+        client = _build_client(
+            LiteLLMConfig(
+                model="openai/local-model",
+                api_key_config=APIKeyConfig(
+                    custom_endpoint=CustomEndpointConfig(
+                        model="openai/local-model",
+                        api_key="test-key",
+                        api_base="https://example.com/v1",  # type: ignore[arg-type]
+                    )
+                ),
+            )
+        )
+
+        result = client.generate_response_with_provenance("test")
+
+        assert isinstance(result, CompletionResult)
+        provenance = cast(CompletionResult[Any], result).provenance
+        assert provenance.provider == "openai"
+        assert provenance.model_name == "gpt-5.4-mini"
+
+    @patch("reflexio.server.llm.litellm_client.litellm.completion")
+    def test_azure_provenance_uses_actual_provider(self, mock_completion):
+        response = _make_completion_response("hello")
+        response.model = "gpt-5.4-mini"
+        response._hidden_params = {"custom_llm_provider": "azure"}
+        mock_completion.return_value = response
+        client = _build_client(
+            LiteLLMConfig(
+                model="azure/gpt-5.4-mini",
+                api_key_config=APIKeyConfig(
+                    openai=CommonsOpenAIConfig(
+                        azure_config=AzureOpenAIConfig(
+                            api_key="test-key",
+                            endpoint="https://example.openai.azure.com/",  # type: ignore[arg-type]
+                        )
+                    )
+                ),
+            )
+        )
+
+        result = client.generate_response_with_provenance("test")
+
+        assert isinstance(result, CompletionResult)
+        assert cast(CompletionResult[Any], result).provenance.provider == "azure"
+
+    @patch("reflexio.server.llm.litellm_client.litellm.completion")
+    def test_fallback_uses_actual_provider(self, mock_completion):
+        response = _make_completion_response("hello")
+        response.model = "gpt-5.4-mini"
+        response._hidden_params = {"custom_llm_provider": "openai"}
+        mock_completion.return_value = response
+        client = _build_client(
+            LiteLLMConfig(
+                model="minimax/MiniMax-M3",
+                api_key_config=APIKeyConfig(
+                    minimax=MiniMaxConfig(api_key="minimax-key"),
+                    openai=CommonsOpenAIConfig(api_key="openai-key"),
+                ),
+            )
+        )
+
+        result = client.generate_response_with_provenance("test")
+
+        assert isinstance(result, CompletionResult)
+        assert cast(CompletionResult[Any], result).provenance.provider == "openai"
 
     def test_invalid_response_format_raises(self):
         client = _build_client()
@@ -1722,7 +1942,11 @@ class TestStructuredOutputRepair:
     """Tests for opt-in corrective repair of structured output."""
 
     def _make_mock_response(
-        self, content: str, *, finish_reason: str = "stop"
+        self,
+        content: str,
+        *,
+        finish_reason: str = "stop",
+        model: str = "served-model",
     ) -> MagicMock:
         choice = MagicMock()
         choice.message.content = content
@@ -1730,6 +1954,7 @@ class TestStructuredOutputRepair:
         choice.finish_reason = finish_reason
         resp = MagicMock()
         resp.choices = [choice]
+        resp.model = model
         resp.usage = MagicMock(prompt_tokens=10, completion_tokens=5, total_tokens=15)
         resp.usage.prompt_tokens_details = None
         resp.usage.cache_creation_input_tokens = None
@@ -1949,6 +2174,32 @@ class TestStructuredOutputRepair:
         assert repair_messages[1]["content"] == '{"answer": "bad", "sco'
         assert "truncated" in repair_messages[2]["content"]
 
+    def test_repair_error_keeps_initial_parse_failure_provenance(self):
+        responses = [
+            ('{"answer": "bad", "sco', "served-primary"),
+            ('{"answer": "still bad", "score": 1}', "served-repair"),
+        ]
+
+        def fake_completion(**_kwargs):
+            content, model = responses.pop(0)
+            return self._make_mock_response(content, model=model)
+
+        client = _build_client(LiteLLMConfig(model="primary-model"))
+
+        with (
+            patch("litellm.completion", side_effect=fake_completion),
+            pytest.raises(StructuredOutputRepairError) as exc_info,
+        ):
+            client.generate_chat_response(
+                messages=[{"role": "user", "content": "test"}],
+                response_format=SampleResponse,
+                structured_output_validator=self._score_validator,
+            )
+
+        err = exc_info.value
+        assert err.first_parsed_provenance is not None
+        assert err.first_parsed_provenance.model_name == "served-repair"
+
     def test_repair_echo_replaces_length_truncated_output(self):
         calls: list[dict[str, Any]] = []
         responses = [
@@ -2027,6 +2278,8 @@ class TestStructuredOutputRepair:
             )
 
         assert not isinstance(exc_info.value, StructuredOutputRepairError)
+        assert exc_info.value.first_parsed_provenance is not None
+        assert exc_info.value.first_parsed_provenance.model_name == "served-model"
         assert len(calls) == 2
 
     def test_exhaustion_keeps_latest_parsed_output_after_final_parse_failure(self):
@@ -2037,9 +2290,12 @@ class TestStructuredOutputRepair:
             '{"answer": "first", "score": 2}',  # initial: parses, semantic failure
             '{"answer": "esc", "sco',  # repair turn: parse failure
         ]
+        served_models = ["served-primary", "served-repair"]
 
         def fake_completion(**kwargs):
-            return self._make_mock_response(responses.pop(0))
+            return self._make_mock_response(
+                responses.pop(0), model=served_models.pop(0)
+            )
 
         client = _build_client(LiteLLMConfig(model="primary-model"))
 
@@ -2058,6 +2314,88 @@ class TestStructuredOutputRepair:
         assert err.raw_content == '{"answer": "esc", "sco'
         assert isinstance(err.parsed_output, SampleResponse)
         assert err.parsed_output.score == 2
+        assert err.first_parsed_provenance is not None
+        assert err.first_parsed_provenance.model_name == "served-primary"
+
+    def test_ladder_preserves_first_parsed_provenance_across_rungs(self):
+        """Salvage attribution must match the first parse of the whole walk.
+
+        A shared validator closure keeps the first parsed *content* across rungs.
+        Without ladder-wide first_parsed_provenance, the consolidator would pair
+        that content with the last rung's model.
+        """
+        # Per rung: initial semantic fail + same-model repair semantic fail.
+        responses = [
+            ('{"answer": "primary", "score": 1}', "served-primary"),
+            ('{"answer": "primary-repair", "score": 2}', "served-primary-repair"),
+            ('{"answer": "fallback", "score": 3}', "served-fallback"),
+            ('{"answer": "fallback-repair", "score": 4}', "served-fallback-repair"),
+        ]
+
+        def fake_completion(**_kwargs):
+            content, model = responses.pop(0)
+            return self._make_mock_response(content, model=model)
+
+        client = _build_client(
+            LiteLLMConfig(model="primary-model", fallback_models=["fallback-model"])
+        )
+
+        with (
+            patch("litellm.completion", side_effect=fake_completion),
+            pytest.raises(StructuredOutputRepairError) as exc_info,
+        ):
+            client.generate_chat_response(
+                messages=[{"role": "user", "content": "test"}],
+                response_format=SampleResponse,
+                structured_output_validator=self._score_validator,
+            )
+
+        err = exc_info.value
+        assert err.model == "fallback-model"
+        assert err.first_parsed_provenance is not None
+        assert err.first_parsed_provenance.model_name == "served-primary"
+
+    def test_ladder_preserves_first_parsed_when_final_rung_cap_saturates(self):
+        """Fail-closed cap on the last rung must not drop first-parsed attribution.
+
+        ProviderCapSaturatedError is not a LiteLLMClientError subclass. The outer
+        ladder must wrap it and keep ladder-wide first_parsed_provenance so
+        consolidator salvage pairs primary content with the primary served model.
+        """
+        from reflexio.server.llm._provider_concurrency import (  # noqa: PLC0415
+            ProviderCapSaturatedError,
+        )
+
+        call_count = 0
+
+        def fake_completion(**_kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return self._make_mock_response(
+                    '{"answer": "primary", "score": 1}', model="served-primary"
+                )
+            # Same-model repair + every later rung: fail-closed provider cap.
+            raise ProviderCapSaturatedError("provider cap saturated")
+
+        client = _build_client(
+            LiteLLMConfig(model="primary-model", fallback_models=["fallback-model"])
+        )
+
+        with (
+            patch("litellm.completion", side_effect=fake_completion),
+            pytest.raises(LiteLLMClientError) as exc_info,
+        ):
+            client.generate_chat_response(
+                messages=[{"role": "user", "content": "test"}],
+                response_format=SampleResponse,
+                structured_output_validator=self._score_validator,
+            )
+
+        err = exc_info.value
+        assert not isinstance(err, StructuredOutputRepairError)
+        assert err.first_parsed_provenance is not None
+        assert err.first_parsed_provenance.model_name == "served-primary"
 
 
 # ===================================================================
@@ -2950,7 +3288,9 @@ class TestPerCallOverrides:
         monkeypatch.setattr(
             client,
             "_make_request",
-            lambda _messages, **kw: seen_kwargs.update(kw) or "ok",
+            lambda _messages, **kw: (
+                seen_kwargs.update(kw) or CompletionResult("ok", ModelProvenance())
+            ),
         )
         client.generate_chat_response(
             [{"role": "user", "content": "hi"}], max_retries=7
@@ -2963,7 +3303,9 @@ class TestPerCallOverrides:
         monkeypatch.setattr(
             client,
             "_make_request",
-            lambda _messages, **kw: seen_kwargs.update(kw) or "ok",
+            lambda _messages, **kw: (
+                seen_kwargs.update(kw) or CompletionResult("ok", ModelProvenance())
+            ),
         )
         client.generate_chat_response(
             [{"role": "user", "content": "hi"}], fallback_models=["claude-x"]
@@ -2978,7 +3320,9 @@ class TestPerCallOverrides:
         monkeypatch.setattr(
             client,
             "_make_request",
-            lambda _messages, **kw: seen_kwargs.update(kw) or "ok",
+            lambda _messages, **kw: (
+                seen_kwargs.update(kw) or CompletionResult("ok", ModelProvenance())
+            ),
         )
         client.generate_chat_response([{"role": "user", "content": "hi"}])
         assert "max_retries" not in seen_kwargs
@@ -2988,6 +3332,21 @@ class TestPerCallOverrides:
 # ===================================================================
 # litellm.completion integration: retries + fallback delegation
 # ===================================================================
+
+
+def test_subprocess_snapshot_preserves_provenance_metadata():
+    response = _make_completion_response("ok")
+    response.model = "claude-sonnet-5"
+    response._hidden_params = {
+        "reflexio_provider": "claude-code",
+        "reflexio_cli_binary": "claude",
+        "reflexio_served_model": "claude-sonnet-5",
+    }
+
+    snapshot = _snapshot_completion_response(response)
+
+    assert snapshot.model == "claude-sonnet-5"
+    assert snapshot._hidden_params == response._hidden_params
 
 
 class TestLitellmIntegration:
@@ -3657,6 +4016,60 @@ class TestFallbackObservability:
 
         assert tags.get("llm.fallback_reason") == "transport_error"
 
+    def test_cli_route_resolution_is_not_reported_as_fallback(self, monkeypatch):
+        tags = self._install_fake_sentry(monkeypatch)
+        client = LiteLLMClient(LiteLLMConfig(model="claude-code/default"))
+        response = _make_completion_response("ok")
+        response.model = "claude-sonnet-5"
+        response._hidden_params = {
+            "reflexio_provider": "claude-code",
+            "reflexio_cli_binary": "claude",
+            "reflexio_served_model": "claude-sonnet-5",
+        }
+        monkeypatch.setattr("litellm.completion", lambda **_p: response)
+
+        client.generate_chat_response([{"role": "user", "content": "hi"}])
+
+        assert "llm.fallback_used" not in tags
+
+    def test_real_network_fallback_from_cli_primary_is_still_reported(
+        self, monkeypatch
+    ):
+        """Fallback tags fire only when the ladder advances past the primary.
+
+        Served-model metadata on a successful CLI primary response is not a
+        fallback signal (see test_cli_route_resolution_is_not_reported_as_fallback).
+        A transport failure on the CLI primary that reaches a later rung is.
+        """
+        tags = self._install_fake_sentry(monkeypatch)
+        client = LiteLLMClient(
+            LiteLLMConfig(
+                model="claude-code/default",
+                fallback_models=["gpt-5.4-mini"],
+            )
+        )
+        response = _make_completion_response("ok")
+        response.model = "gpt-5.4-mini"
+        response._hidden_params = {"custom_llm_provider": "openai"}
+
+        def _fake(**params):
+            if params["model"] == "claude-code/default":
+                raise APIConnectionError(
+                    message="cli unreachable",
+                    llm_provider="claude-code",
+                    model="claude-code/default",
+                )
+            return response
+
+        monkeypatch.setattr("litellm.completion", _fake)
+
+        client.generate_chat_response([{"role": "user", "content": "hi"}])
+
+        assert tags.get("llm.fallback_used") == "true"
+        assert tags.get("llm.primary_model") == "claude-code/default"
+        assert tags.get("llm.fallback_model") == "gpt-5.4-mini"
+        assert tags.get("llm.fallback_reason") == "transport_error"
+
 
 class TestEmbeddingRetries:
     """Embedding calls get num_retries parity with chat. Cross-model
@@ -3762,7 +4175,8 @@ def test_generate_chat_response_does_not_mutate_caller_messages() -> None:
         {"role": "user", "content": "hi"},
     ]
 
-    with patch.object(client, "_make_request", return_value="ok") as mock_req:
+    completion = CompletionResult("ok", ModelProvenance())
+    with patch.object(client, "_make_request", return_value=completion) as mock_req:
         client.generate_chat_response(original, system_message="injected")
 
     # The caller's first dict is untouched...
@@ -3773,6 +4187,6 @@ def test_generate_chat_response_does_not_mutate_caller_messages() -> None:
     assert sent[0]["content"] == "injected\n\norig-system"
 
     # A second call must not double-prepend onto the caller's data.
-    with patch.object(client, "_make_request", return_value="ok"):
+    with patch.object(client, "_make_request", return_value=completion):
         client.generate_chat_response(original, system_message="injected")
     assert original[0]["content"] == "orig-system"

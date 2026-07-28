@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel
 
 from reflexio.models.api_schema.internal_schema import RequestInteractionDataModel
+from reflexio.server.llm._litellm_types import ModelProvenance
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.llm.model_defaults import ModelRole
 from reflexio.server.llm.tools import Tool, ToolLoopTrace, ToolRegistry, run_tool_loop
@@ -76,6 +77,47 @@ class AgentRunResult:
     messages: list[dict[str, Any]]
     trace: ToolLoopTrace
     finished_reason: str
+    model_provenance: ModelProvenance | None = None
+
+
+def encode_committed_output(
+    output: BaseModel, provenance: ModelProvenance | None
+) -> dict[str, Any]:
+    """Persist output with provenance while old raw payloads remain readable."""
+    return {
+        "_reflexio_envelope_version": 1,
+        "output": output.model_dump(),
+        "model_provenance": asdict(provenance) if provenance is not None else None,
+    }
+
+
+def decode_committed_output(
+    committed_output: dict[str, Any],
+) -> tuple[dict[str, Any], ModelProvenance | None]:
+    """Read the new envelope or a pre-provenance raw structured payload."""
+    if "_reflexio_envelope_version" not in committed_output:
+        return committed_output, None
+    version = committed_output["_reflexio_envelope_version"]
+    if version != 1:
+        raise ValueError(f"Unsupported committed output envelope version: {version!r}")
+    output = committed_output.get("output")
+    if not isinstance(output, dict):
+        raise ValueError(
+            "Corrupt v1 committed output envelope: output must be an object"
+        )
+    raw_provenance = committed_output.get("model_provenance")
+    if raw_provenance is None:
+        return output, None
+    if not isinstance(raw_provenance, dict):
+        raise ValueError(
+            "Corrupt v1 committed output envelope: model_provenance must be an object or null"
+        )
+    try:
+        return output, ModelProvenance(**raw_provenance)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            "Corrupt v1 committed output envelope: invalid model_provenance"
+        ) from exc
 
 
 def _format_resolved_tool_result(record: PendingToolCallRecord) -> str:
@@ -354,7 +396,11 @@ class ResumableExtractionAgent:
         )
 
         output = result.structured_output
-        committed_output = output.model_dump() if output is not None else None
+        committed_output = (
+            encode_committed_output(output, result.provenance)
+            if output is not None
+            else None
+        )
         active_statuses = (AgentRunStatus.RUNNING, AgentRunStatus.RESUMING)
         if (
             result.finished_reason == "structured_output"
@@ -390,6 +436,7 @@ class ResumableExtractionAgent:
                     messages=result.messages,
                     trace=result.trace,
                     finished_reason="late_output_discarded",
+                    model_provenance=None,
                 )
             logger.info(
                 "event=extraction_agent_finished org_id=%s user_id=%s "
@@ -447,4 +494,5 @@ class ResumableExtractionAgent:
             messages=result.messages,
             trace=result.trace,
             finished_reason=result.finished_reason,
+            model_provenance=result.provenance,
         )

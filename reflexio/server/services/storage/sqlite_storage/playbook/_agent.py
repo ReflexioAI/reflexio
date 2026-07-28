@@ -10,6 +10,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 from reflexio.models.api_schema.common import BlockingIssue
+from reflexio.models.api_schema.domain.entities import LineageContext
 from reflexio.models.api_schema.retriever_schema import (
     SearchAgentPlaybookRequest,
 )
@@ -22,9 +23,6 @@ from reflexio.models.config_schema import SearchMode, SearchOptions
 from reflexio.server.services.embedding_text import resolve_retrieval_threshold
 from reflexio.server.services.storage.lifecycle_filters import (
     validate_include_inactive,
-)
-from reflexio.server.services.storage.storage_base._playbook import (
-    AGGREGATE_REASON_PREFIX,
 )
 
 from .._base import (
@@ -93,6 +91,7 @@ class AgentPlaybookStoreMixin:
     _vec_upsert: Any
     _delete_playbook_search_rows: Any
     _own_transaction: Any
+    commit_scope: Any
 
     def _index_agent_playbook_fts_vec(self, ap: AgentPlaybook) -> None:
         """Update the FTS and vector indexes for a single agent playbook row.
@@ -167,10 +166,34 @@ class AgentPlaybookStoreMixin:
 
     @SQLiteStorageBase.handle_exceptions
     def save_agent_playbooks(
-        self, agent_playbooks: list[AgentPlaybook]
+        self,
+        agent_playbooks: list[AgentPlaybook],
+        *,
+        lineage_contexts: list[LineageContext] | None = None,
     ) -> list[AgentPlaybook]:
-        saved: list[AgentPlaybook] = []
-        for ap in agent_playbooks:
+        if lineage_contexts is not None and len(lineage_contexts) != len(
+            agent_playbooks
+        ):
+            raise ValueError("lineage_contexts must match agent_playbooks length")
+        if any(
+            context.op_kind not in {"create", "aggregate"}
+            for context in lineage_contexts or []
+        ):
+            raise ValueError(
+                "agent playbook lineage context must use op_kind='create' or 'aggregate'"
+            )
+        if any(
+            context.op_kind == "aggregate"
+            and not (context.request_id and context.request_id.strip())
+            for context in lineage_contexts or []
+        ):
+            raise ValueError("agent playbook aggregate lineage requires request_id")
+
+        contexts = lineage_contexts or [
+            LineageContext(op_kind="create") for _ap in agent_playbooks
+        ]
+        rows: list[tuple[AgentPlaybook, LineageContext, str]] = []
+        for ap, context in zip(agent_playbooks, contexts, strict=True):
             embedding_text = ap.trigger or ap.content
             if self._should_expand_documents():
                 with ThreadPoolExecutor(max_workers=2) as executor:
@@ -181,94 +204,39 @@ class AgentPlaybookStoreMixin:
             else:
                 ap.embedding = self._get_embedding(embedding_text)
 
-            created_at_iso = _epoch_to_iso(ap.created_at)
-            with self._lock:
-                self._insert_agent_playbook_row(self.conn, ap, created_at_iso)
-                if self._own_transaction():
-                    self.conn.commit()
+            rows.append((ap, context, _epoch_to_iso(ap.created_at)))
 
-            self._index_agent_playbook_fts_vec(ap)
-            saved.append(ap)
-        return saved
+        with self.commit_scope():
+            for ap, context, created_at_iso in rows:
+                with self._lock:
+                    self._insert_agent_playbook_row(self.conn, ap, created_at_iso)
+                    is_aggregate = context.op_kind == "aggregate"
+                    _append_event_stmt(
+                        self.conn,
+                        org_id=self.org_id,
+                        entity_type="agent_playbook",
+                        entity_id=str(ap.agent_playbook_id),
+                        op=context.op_kind,
+                        prov="wasDerivedFrom" if is_aggregate else "wasGeneratedBy",
+                        source_ids=context.source_ids,
+                        actor=context.actor,
+                        request_id=context.request_id
+                        or f"{context.op_kind}_{ap.agent_playbook_id}",
+                        reason=context.reason,
+                        model_name=context.model_name,
+                        provider=context.provider,
+                    )
 
-    @SQLiteStorageBase.handle_exceptions
-    def save_agent_playbook_with_aggregate_event(
-        self,
-        agent_playbook: AgentPlaybook,
-        *,
-        source_ids: list[str],
-        request_id: str,
-        run_mode: str,
-    ) -> AgentPlaybook:
-        """Persist an agent playbook AND its ``op=aggregate`` lineage event atomically.
-
-        The INSERT and the event are committed in a single transaction — if either
-        fails, both roll back.  The event is the sole record of the run->playbook
-        membership for reconstruction, so atomicity is critical.
-
-        Args:
-            agent_playbook (AgentPlaybook): The playbook to persist.
-            source_ids (list[str]): IDs of the source entities that produced this playbook.
-            request_id (str): The aggregation run ID.
-            run_mode (str): Aggregation run mode (e.g. ``full_archive`` or ``incremental``).
-
-        Returns:
-            AgentPlaybook: The saved playbook with ``agent_playbook_id`` populated.
-
-        Raises:
-            ValueError: If ``request_id`` is empty (would produce an unreconstructable event).
-        """
-        if not request_id or not request_id.strip():
-            raise ValueError(
-                "save_agent_playbook_with_aggregate_event requires a non-empty request_id"
-            )
-        ap = agent_playbook
-        embedding_text = ap.trigger or ap.content
-        if self._should_expand_documents():
-            with ThreadPoolExecutor(max_workers=2) as executor:
-                emb_future = executor.submit(self._get_embedding, embedding_text)
-                exp_future = executor.submit(self._expand_document, embedding_text)
-                ap.embedding = emb_future.result(timeout=15)
-                ap.expanded_terms = exp_future.result(timeout=15)
-        else:
-            ap.embedding = self._get_embedding(embedding_text)
-
-        created_at_iso = _epoch_to_iso(ap.created_at)
-        with self._lock:
-            own_txn = self._own_transaction()
+        for ap, _context, _created_at_iso in rows:
             try:
-                self._insert_agent_playbook_row(self.conn, ap, created_at_iso)
-                _append_event_stmt(
-                    self.conn,
-                    org_id=self.org_id,
-                    entity_type="agent_playbook",
-                    entity_id=str(ap.agent_playbook_id),
-                    op="aggregate",
-                    prov="wasDerivedFrom",
-                    source_ids=source_ids,
-                    actor="aggregator",
-                    request_id=request_id,
-                    reason=f"{AGGREGATE_REASON_PREFIX}{run_mode}",
-                )
-                if own_txn:
-                    self.conn.commit()
+                self._index_agent_playbook_fts_vec(ap)
             except Exception:
-                if own_txn:
-                    self.conn.rollback()
-                raise
-
-        # FTS/vec indexing AFTER commit — these helpers self-commit and must
-        # not be interleaved inside the atomic transaction above.
-        # Index failure does NOT invalidate the committed row+event; the index
-        # is reconstructable from the authoritative row.
-        try:
-            self._index_agent_playbook_fts_vec(ap)
-        except Exception:
-            logger.exception(
-                "FTS/vec indexing failed for agent_playbook %s (row committed, index skipped)",
-                ap.agent_playbook_id,
-            )
-        return ap
+                logger.exception(
+                    "FTS/vec indexing failed for agent_playbook %s "
+                    "(row committed, index skipped)",
+                    ap.agent_playbook_id,
+                )
+        return agent_playbooks
 
     @SQLiteStorageBase.handle_exceptions
     def get_agent_playbooks(

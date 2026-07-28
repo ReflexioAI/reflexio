@@ -26,7 +26,7 @@ import pytest
 
 FACADE = "reflexio.server.llm.litellm_client"
 
-# The 5 public names (facade ``__all__``), also re-exported via server/llm/__init__.
+# Public names (facade ``__all__``), also re-exported via server/llm/__init__.
 PUBLIC_SYMBOLS = [
     "LiteLLMClient",
     "LiteLLMConfig",

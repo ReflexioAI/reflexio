@@ -4,6 +4,7 @@ from abc import abstractmethod
 
 from reflexio.models.api_schema.common import BlockingIssue
 from reflexio.models.api_schema.domain import Status, UserPlaybook
+from reflexio.models.api_schema.domain.entities import LineageContext
 from reflexio.models.api_schema.retriever_schema import SearchUserPlaybookRequest
 from reflexio.models.config_schema import SearchOptions
 
@@ -17,11 +18,14 @@ class UserPlaybookStoreMixin:
         user_playbooks: list[UserPlaybook],
         *,
         skip_embedding: bool = False,
+        lineage_contexts: list[LineageContext] | None = None,
     ) -> None:
-        """Insert user playbooks, assigning survivor ids.
+        """Insert user playbooks and their create lineage events atomically.
 
         Args:
             user_playbooks: Playbooks to insert.
+            lineage_contexts: Optional per-row create attribution. When omitted,
+                storage derives a context from the row and leaves model/provider null.
             skip_embedding: When ``False`` (default — what every current caller
                 gets), the embedding (and, when document expansion is enabled,
                 ``expanded_terms``) is recomputed unconditionally at write time,

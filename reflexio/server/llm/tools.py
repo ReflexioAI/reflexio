@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from reflexio.server.llm._litellm_types import ModelProvenance
 from reflexio.server.llm.llm_utils import (
     assert_provider_safe_schema,
     make_strict_json_schema,
@@ -189,6 +190,9 @@ class ToolLoopResult(BaseModel):
     # (the structured-output terminus, used by the extraction agent instead of a
     # finish-sentinel tool call).
     structured_output: BaseModel | None = None
+    # Runtime-only attribution for the final accepted LLM turn. Persistence is
+    # explicit at the lineage boundary; this must not leak into API payloads.
+    provenance: ModelProvenance | None = Field(default=None, exclude=True)
 
 
 # Models we know support function calling per vendor docs but that litellm's
@@ -378,16 +382,19 @@ def _run_multi_stage_fallback(
             log_model_response,
         )
 
+    latest_provenance: ModelProvenance | None = None
     for turn_idx in range(max_steps):
         turn_label = f"(multi-stage turn {turn_idx + 1})"
         if log_label:
             log_llm_messages(logger, f"{log_label} {turn_label}", messages)
         tool_t0 = time.monotonic()
-        parsed = client.generate_chat_response(
+        completion = client.generate_chat_response_with_provenance(
             messages=messages,
             response_format=multi_stage_schema,
             model_role=model_role,
         )
+        parsed = completion.value
+        latest_provenance = completion.provenance
         if log_label:
             log_model_response(logger, f"{log_label} {turn_label}", parsed)
         if not isinstance(parsed, BaseModel):
@@ -444,6 +451,7 @@ def _run_multi_stage_fallback(
                 messages=messages,
                 pending_tool_call_ids=pending_tool_call_ids,
                 max_steps_remaining=max_steps - turn_idx - 1,
+                provenance=latest_provenance,
             )
 
         outcome = registry.handle_outcome(tool_name, args_json, ctx)
@@ -474,6 +482,7 @@ def _run_multi_stage_fallback(
         messages=messages,
         pending_tool_call_ids=pending_tool_call_ids,
         max_steps_remaining=0,
+        provenance=latest_provenance,
     )
 
 
@@ -596,11 +605,13 @@ def run_tool_loop(
             )
         if log_label:
             log_llm_messages(logger, f"{log_label} (fallback)", messages)
-        parsed = client.generate_chat_response(
+        completion = client.generate_chat_response_with_provenance(
             messages=messages,
             response_format=fallback_schema,
             model_role=model_role,
         )
+        parsed = completion.value
+        provenance = completion.provenance
         if log_label:
             log_model_response(logger, f"{log_label} (fallback)", parsed)
         # The fallback path always passes response_format so the client
@@ -642,6 +653,7 @@ def run_tool_loop(
             messages=messages,
             pending_tool_call_ids=pending_tool_call_ids,
             max_steps_remaining=0 if exceeded else max_steps - len(bounded_items),
+            provenance=provenance,
         )
 
     # ---- Native tool loop ---------------------------------------------
@@ -649,18 +661,21 @@ def run_tool_loop(
     from reflexio.server.llm.litellm_client import LiteLLMClientError
 
     local_msgs = list(messages)
+    provenance: ModelProvenance | None = None
     try:
         tool_specs = registry.openai_specs()
         for _step in range(max_steps):
             if log_label:
                 log_llm_messages(logger, f"{log_label} (turn {_step + 1})", local_msgs)
-            resp = client.generate_chat_response(
+            completion = client.generate_chat_response_with_provenance(
                 messages=local_msgs,
                 tools=tool_specs or None,
                 tool_choice=tool_choice if tool_specs else None,
                 model_role=model_role,
                 response_format=response_format,
             )
+            resp = completion.value
+            provenance = completion.provenance
             if log_label:
                 log_model_response(logger, f"{log_label} (turn {_step + 1})", resp)
 
@@ -704,6 +719,7 @@ def run_tool_loop(
                             # The structured answer is committed on this turn —
                             # one LLM call consumed, mirroring the finish_tool path.
                             max_steps_remaining=max_steps - _step - 1,
+                            provenance=provenance,
                         )
                 # No response_format requested (or nothing parseable): the finish
                 # handler did NOT run, so no structured output was committed.
@@ -719,6 +735,7 @@ def run_tool_loop(
                     messages=local_msgs,
                     pending_tool_call_ids=pending_tool_call_ids,
                     max_steps_remaining=max_steps - _step,
+                    provenance=provenance,
                 )
             normalized_tool_calls = [
                 _normalize_tool_call_for_history(tc) for tc in tool_calls
@@ -782,6 +799,7 @@ def run_tool_loop(
                     messages=local_msgs,
                     pending_tool_call_ids=pending_tool_call_ids,
                     max_steps_remaining=max_steps - _step - 1,
+                    provenance=provenance,
                 )
     except LiteLLMClientError as e:
         # LLM failure after the client exhausted its retries and fallbacks —
@@ -816,4 +834,5 @@ def run_tool_loop(
         messages=local_msgs,
         pending_tool_call_ids=pending_tool_call_ids,
         max_steps_remaining=0,
+        provenance=provenance,
     )
