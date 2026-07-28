@@ -36,6 +36,7 @@ from reflexio.server.services.playbook.aggregation_prompt_processing import (
     PromptPostprocessResult,
     PromptPreprocessResult,
 )
+from reflexio.server.services.playbook.components import aggregator as aggregator_module
 from reflexio.server.services.playbook.components.aggregator import PlaybookAggregator
 from reflexio.server.services.playbook.playbook_service_utils import (
     PlaybookAggregationOutput,
@@ -955,6 +956,38 @@ class TestRun:
         agg.run(req)
 
         agg.storage.get_user_playbooks.assert_not_called()
+
+    @patch.object(PlaybookAggregator, "get_clusters")
+    @patch.object(PlaybookAggregator, "_generate_playbooks_with_source_clusters")
+    def test_run_reads_every_user_playbook_page(self, mock_gen, mock_clust):
+        """Aggregation must not silently stop at the storage default limit.
+
+        The page size must also stay below every backend's server-side row cap
+        (PostgREST enforces ``max_rows = 1000``), otherwise a capped page would
+        look like a short final page and truncate the read.
+        """
+        agg = self._make_runnable_aggregator()
+        assert aggregator_module._AGGREGATION_PLAYBOOK_PAGE_SIZE < 1000
+        page_size = aggregator_module._AGGREGATION_PLAYBOOK_PAGE_SIZE
+        first_page = [_raw(rid=rid) for rid in range(1, page_size + 1)]
+        final_page = [_raw(rid=page_size + 1)]
+        agg.storage.get_user_playbooks.side_effect = [first_page, final_page]
+        mock_clust.return_value = {}
+        mock_gen.return_value = []
+
+        agg.run(PlaybookAggregatorRequest(agent_version="v1", rerun=True))
+
+        assert len(mock_clust.call_args.args[0]) == page_size + 1
+        assert agg.storage.get_user_playbooks.call_args_list == [
+            call(
+                limit=page_size,
+                offset=offset,
+                agent_version="v1",
+                status_filter=[None],
+                include_embedding=True,
+            )
+            for offset in (0, page_size)
+        ]
 
     @patch.object(PlaybookAggregator, "get_clusters")
     @patch.object(PlaybookAggregator, "_generate_playbooks_with_source_clusters")

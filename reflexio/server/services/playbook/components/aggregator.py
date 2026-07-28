@@ -4,7 +4,7 @@ import logging
 import os
 import time
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import AbstractContextManager
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -25,6 +25,7 @@ from reflexio.models.config_schema import (
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm._litellm_types import ModelProvenance
 from reflexio.server.llm.litellm_client import LiteLLMClient
+from reflexio.server.services.embedding_text import resolve_clustering_similarity
 from reflexio.server.services.operation_state_utils import OperationStateManager
 from reflexio.server.services.playbook.aggregation_prompt_processing import (
     AggregationPromptProcessingContext,
@@ -55,6 +56,23 @@ from reflexio.server.tracing import capture_anomaly, sentry_tags
 from reflexio.server.usage_metrics import record_usage_event
 
 logger = logging.getLogger(__name__)
+
+# Must stay strictly below the smallest server-side row cap of any backend, or a
+# capped page would look like a short final page and silently truncate the read.
+# PostgREST enforces `max_rows = 1000` (see supabase/*/config.toml).
+_AGGREGATION_PLAYBOOK_PAGE_SIZE = 500
+
+
+def _read_all_pages[T](fetch_page: Callable[[int, int], list[T]]) -> list[T]:
+    """Read an exhaustive, stable-offset snapshot from a bounded storage API."""
+    rows: list[T] = []
+    offset = 0
+    while True:
+        page = fetch_page(_AGGREGATION_PLAYBOOK_PAGE_SIZE, offset)
+        rows.extend(page)
+        if len(page) < _AGGREGATION_PLAYBOOK_PAGE_SIZE:
+            return rows
+        offset += len(page)
 
 
 class AggregationEffectCoordinator(Protocol):
@@ -87,7 +105,10 @@ class PlaybookAggregator:
         effect_coordinator: AggregationEffectCoordinator | None = None,
     ) -> None:
         self.client = llm_client
-        self.storage = request_context.storage
+        storage = request_context.storage
+        if storage is None:
+            raise ValueError("Playbook aggregation requires configured storage")
+        self.storage = storage
         self.configurator = request_context.configurator
         self.request_context = request_context
         self.agent_version = agent_version
@@ -413,9 +434,16 @@ class PlaybookAggregator:
 
         # Get existing APPROVED and PENDING playbooks before archiving (to pass to LLM for deduplication).
         # Singleton aggregation pulls the user's whole set — no name filter.
-        existing_playbooks = self.storage.get_agent_playbooks(  # type: ignore[reportOptionalMemberAccess]
-            status_filter=[None],  # Current playbooks only
-            playbook_status_filter=[PlaybookStatus.APPROVED, PlaybookStatus.PENDING],
+        existing_playbooks = _read_all_pages(
+            lambda limit, offset: self.storage.get_agent_playbooks(  # type: ignore[reportOptionalMemberAccess]
+                limit=limit,
+                offset=offset,
+                status_filter=[None],  # Current playbooks only
+                playbook_status_filter=[
+                    PlaybookStatus.APPROVED,
+                    PlaybookStatus.PENDING,
+                ],
+            )
         )
         logger.info(
             "Found %s existing playbooks (approved + pending) to preserve",
@@ -423,9 +451,14 @@ class PlaybookAggregator:
         )
 
         # get all user playbooks and generate clusters
-        user_playbooks = self.storage.get_user_playbooks(  # type: ignore[reportOptionalMemberAccess]
-            agent_version=self.agent_version,
-            include_embedding=True,
+        user_playbooks = _read_all_pages(
+            lambda limit, offset: self.storage.get_user_playbooks(  # type: ignore[reportOptionalMemberAccess]
+                limit=limit,
+                offset=offset,
+                agent_version=self.agent_version,
+                status_filter=[None],  # Current playbooks only
+                include_embedding=True,
+            )
         )
         full_archive_playbook_names = sorted(
             {
@@ -945,13 +978,15 @@ class PlaybookAggregator:
             )
             return {}
 
-        min_cluster_size = playbook_aggregator_config.min_cluster_size
-        similarity_threshold = playbook_aggregator_config.clustering_similarity
-
         if not user_playbooks:
             logger.info("No user playbooks to cluster")
             return {}
 
+        min_cluster_size = playbook_aggregator_config.min_cluster_size
+        similarity_threshold = resolve_clustering_similarity(
+            playbook_aggregator_config.clustering_similarity,
+            model_name=self.storage.embedding_model_name,
+        )
         # Mock mode: cluster by trigger
         if os.getenv("MOCK_LLM_RESPONSE", "").lower() == "true":
             logger.info("Mock mode: clustering by trigger")
@@ -963,6 +998,16 @@ class PlaybookAggregator:
         import numpy as np
         from sklearn.metrics.pairwise import cosine_distances
 
+        embedded_playbooks = [
+            playbook for playbook in user_playbooks if playbook.embedding
+        ]
+        skipped_without_embedding = len(user_playbooks) - len(embedded_playbooks)
+        if skipped_without_embedding:
+            logger.info(
+                "Skipping %d user playbooks without an embedding",
+                skipped_without_embedding,
+            )
+        user_playbooks = embedded_playbooks
         embeddings = np.array([playbook.embedding for playbook in user_playbooks])
 
         if len(embeddings) < min_cluster_size:

@@ -201,6 +201,7 @@ def _make_user_playbook(user_playbook_id: int) -> UserPlaybook:
         agent_version="v1",
         request_id=f"req-{user_playbook_id}",
         content=f"content-{user_playbook_id}",
+        trigger=f"trigger-{user_playbook_id}",
         created_at=user_playbook_id,
         source="test",
         source_interaction_ids=[],

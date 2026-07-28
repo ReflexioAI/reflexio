@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING, cast
 
 from reflexio.models.api_schema.domain import AgentPlaybookSourceWindow
 from reflexio.models.api_schema.domain.enums import Status
+from reflexio.server.services.embedding_text import playbook_trigger_embedding_text
 from reflexio.server.services.storage.governance_validation import (
     _canonicalize_governance_windows,
     _parse_governance_window_list,
@@ -209,7 +210,7 @@ class RebuildHideMixin:
         canonical_remaining_windows = [window.model_dump() for window in windows]
         content_value = content or ""
         trigger_value = trigger or None
-        embedding_text = trigger_value or content_value
+        embedding_text = playbook_trigger_embedding_text(trigger_value)
         embedding = (
             self._deps()._get_embedding(embedding_text) if embedding_text else []
         )

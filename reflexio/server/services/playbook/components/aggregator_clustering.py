@@ -89,10 +89,14 @@ def cluster_by_trigger_mock(
     Returns:
         dict[int, list[UserPlaybook]]: Clusters grouped by trigger
     """
-    # Group by trigger
+    # Group by trigger. Playbooks without a trigger have nothing to group on, so
+    # they are skipped rather than collapsed into a single empty-string bucket
+    # that would surface as a spurious cluster.
     condition_groups: dict[str, list[UserPlaybook]] = {}
     for fb in user_playbooks:
         condition = fb.trigger or ""
+        if not condition:
+            continue
         if condition not in condition_groups:
             condition_groups[condition] = []
         condition_groups[condition].append(fb)
@@ -178,7 +182,8 @@ def cluster_with_hdbscan(
         min_cluster_size=min_cluster_size,
         min_samples=1,
         metric="precomputed",
-        cluster_selection_epsilon=distance_threshold,
+        cluster_selection_epsilon=0.0,
+        cluster_selection_epsilon_max=distance_threshold,
     )
 
     return clusterer.fit_predict(distance_matrix)

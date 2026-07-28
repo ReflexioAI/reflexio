@@ -12,7 +12,10 @@ from reflexio.models.api_schema.domain.entities import LineageContext
 from reflexio.models.api_schema.retriever_schema import SearchUserPlaybookRequest
 from reflexio.models.api_schema.service_schemas import Status, UserPlaybook
 from reflexio.models.config_schema import SearchMode, SearchOptions
-from reflexio.server.services.embedding_text import resolve_retrieval_threshold
+from reflexio.server.services.embedding_text import (
+    embedding_text,
+    resolve_retrieval_threshold,
+)
 from reflexio.server.services.playbook.publication import (
     PUBLICATION_SUBJECT_EPOCHS_METADATA_KEY,
     PublicationClaim,
@@ -770,20 +773,20 @@ class UserPlaybookStoreMixin:
         persist with ``skip_embedding=True``.
         """
         for up in playbooks:
-            embedding_text = up.trigger or up.content
-            if embedding_text:
+            text = embedding_text(up)
+            if text:
                 if self._should_expand_documents():
                     with ThreadPoolExecutor(max_workers=2) as executor:
-                        emb_future = executor.submit(
-                            self._get_embedding, embedding_text
-                        )
-                        exp_future = executor.submit(
-                            self._expand_document, embedding_text
-                        )
+                        emb_future = executor.submit(self._get_embedding, text)
+                        exp_future = executor.submit(self._expand_document, text)
                         up.embedding = emb_future.result(timeout=15)
                         up.expanded_terms = exp_future.result(timeout=15)
                 else:
-                    up.embedding = self._get_embedding(embedding_text)
+                    up.embedding = self._get_embedding(text)
+                    up.expanded_terms = None
+            else:
+                up.embedding = []
+                up.expanded_terms = None
 
     @SQLiteStorageBase.handle_exceptions
     def save_user_playbooks(

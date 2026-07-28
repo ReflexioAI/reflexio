@@ -60,6 +60,16 @@ def _make_agent_playbook(
 
 
 class TestUserPlaybookCRUD:
+    def test_precompute_without_trigger_clears_stale_search_fields(self, storage):
+        playbook = _make_user_playbook(1, "u1", "fb", "v1")
+        playbook.embedding = [0.1] * 512
+        playbook.expanded_terms = "stale expanded terms"
+
+        storage.precompute_user_playbook_embeddings([playbook])
+
+        assert playbook.embedding == []
+        assert playbook.expanded_terms is None
+
     def test_save_and_get_user_playbooks(self, storage):
         rfs = [
             _make_user_playbook(1, "u1", "fb", "v1"),
@@ -424,6 +434,16 @@ class TestAgentPlaybookSourceWindows:
 
 
 class TestAgentPlaybookCRUD:
+    def test_save_without_trigger_clears_stale_search_fields(self, storage):
+        playbook = _make_agent_playbook(1, "fb", "v1")
+        playbook.embedding = [0.1] * 512
+        playbook.expanded_terms = "stale expanded terms"
+
+        storage.save_agent_playbooks([playbook])
+
+        assert playbook.embedding == []
+        assert playbook.expanded_terms is None
+
     def test_save_and_get_agent_playbooks(self, storage):
         fbs = [
             _make_agent_playbook(1, "fb", "v1"),

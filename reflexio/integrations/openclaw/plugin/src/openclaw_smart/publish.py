@@ -63,10 +63,9 @@ def publish_unpublished(
             raw project-specific skill entries but skips the rollup into
             shared skills. openclaw-smart passes False on every publish path
             so ``user_playbooks`` roll up into ``agent_playbooks``;
-            aggregation additionally requires ``aggregation_config`` to be
-            set on reflexio's ``user_playbook_extractor_configs[0]`` and
-            ``optimize_agent_playbooks=true`` at the top level — otherwise
-            the rollup silently no-ops.
+            aggregation uses Reflexio's default ``aggregation_config`` and
+            additionally requires ``optimize_agent_playbooks=true`` at the
+            top level — otherwise the rollup silently no-ops.
         adapter (Adapter | None): Injection point for tests; a fresh
             ``Adapter()`` is constructed when omitted.
 

@@ -20,7 +20,10 @@ from reflexio.models.api_schema.service_schemas import (
     Status,
 )
 from reflexio.models.config_schema import SearchMode, SearchOptions
-from reflexio.server.services.embedding_text import resolve_retrieval_threshold
+from reflexio.server.services.embedding_text import (
+    embedding_text,
+    resolve_retrieval_threshold,
+)
 from reflexio.server.services.storage.lifecycle_filters import (
     validate_include_inactive,
 )
@@ -194,16 +197,19 @@ class AgentPlaybookStoreMixin:
         ]
         rows: list[tuple[AgentPlaybook, LineageContext, str]] = []
         for ap, context in zip(agent_playbooks, contexts, strict=True):
-            embedding_text = ap.trigger or ap.content
-            if self._should_expand_documents():
+            text = embedding_text(ap)
+            if text and self._should_expand_documents():
                 with ThreadPoolExecutor(max_workers=2) as executor:
-                    emb_future = executor.submit(self._get_embedding, embedding_text)
-                    exp_future = executor.submit(self._expand_document, embedding_text)
+                    emb_future = executor.submit(self._get_embedding, text)
+                    exp_future = executor.submit(self._expand_document, text)
                     ap.embedding = emb_future.result(timeout=15)
                     ap.expanded_terms = exp_future.result(timeout=15)
+            elif text:
+                ap.embedding = self._get_embedding(text)
+                ap.expanded_terms = None
             else:
-                ap.embedding = self._get_embedding(embedding_text)
-
+                ap.embedding = []
+                ap.expanded_terms = None
             rows.append((ap, context, _epoch_to_iso(ap.created_at)))
 
         with self.commit_scope():

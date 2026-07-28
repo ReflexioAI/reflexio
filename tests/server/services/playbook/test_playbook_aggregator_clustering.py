@@ -24,6 +24,9 @@ from reflexio.server.services.playbook.components.aggregator import (
     CLUSTERING_ALGORITHM_THRESHOLD,
     PlaybookAggregator,
 )
+from reflexio.server.services.playbook.components.aggregator_clustering import (
+    cluster_with_hdbscan,
+)
 
 
 def create_similar_embeddings(n: int, base_seed: int = 42) -> list[list[float]]:
@@ -92,6 +95,7 @@ def create_user_playbooks_with_embeddings(
             agent_version="1.0",
             request_id=str(i),
             content=f"AgentPlaybook content {i}",
+            trigger=f"Trigger {i}",
             playbook_name=playbook_name,
             embedding=emb,
         )
@@ -105,6 +109,7 @@ def mock_playbook_aggregator():
     mock_llm_client = MagicMock()
     mock_request_context = MagicMock()
     mock_request_context.storage = MagicMock()
+    mock_request_context.storage.embedding_model_name = "local/minilm-l6-v2"
     mock_request_context.configurator = MagicMock()
 
     aggregator = PlaybookAggregator(
@@ -230,9 +235,15 @@ class TestHDBSCANClustering:
 
         clusters = mock_playbook_aggregator.get_clusters(user_playbooks, config)
 
-        # The 55 similar should mostly be clustered, outliers may be noise
-        total_clustered = sum(len(c) for c in clusters.values())
-        assert total_clustered >= 45  # Most similar ones should be clustered
+        # The deliberately dissimilar tail must remain noise. HDBSCAN may retain
+        # only the dense core of the 55 similar vectors.
+        clustered_ids = {
+            playbook.user_playbook_id
+            for cluster in clusters.values()
+            for playbook in cluster
+        }
+        assert clustered_ids
+        assert clustered_ids.isdisjoint(range(55, 60))
 
     def test_uses_hdbscan_for_large_dataset(self, mock_playbook_aggregator):
         """Test that HDBSCAN is used for large datasets."""
@@ -258,6 +269,27 @@ class TestHDBSCANClustering:
             # Should use HDBSCAN, not Agglomerative
             mock_hdb.assert_called_once()
             mock_agg.assert_not_called()
+
+    def test_similarity_is_an_hdbscan_maximum_distance(self):
+        distance_matrix = np.zeros((2, 2), dtype=float)
+        fitted = MagicMock()
+        fitted.fit_predict.return_value = np.array([0, 0])
+
+        with patch("hdbscan.HDBSCAN", return_value=fitted) as hdbscan_cls:
+            labels = cluster_with_hdbscan(
+                distance_matrix,
+                min_cluster_size=2,
+                distance_threshold=0.15,
+            )
+
+        assert labels.tolist() == [0, 0]
+        hdbscan_cls.assert_called_once_with(
+            min_cluster_size=2,
+            min_samples=1,
+            metric="precomputed",
+            cluster_selection_epsilon=0.0,
+            cluster_selection_epsilon_max=0.15,
+        )
 
 
 class TestClusteringThreshold:
@@ -315,6 +347,38 @@ class TestEdgeCases:
         config = PlaybookAggregatorConfig(min_cluster_size=2)
 
         clusters = mock_playbook_aggregator.get_clusters(user_playbooks, config)
+
+        assert clusters == {}
+
+    def test_playbook_without_embedding_is_excluded(self, mock_playbook_aggregator):
+        """Clustering's only precondition is a usable vector.
+
+        Whether a trigger would normalize to embeddable text is decided at write
+        time; by read time the stored embedding is the authority.
+        """
+        playbooks = create_user_playbooks_with_embeddings(create_similar_embeddings(2))
+        playbooks[0].embedding = []
+        config = PlaybookAggregatorConfig(min_cluster_size=2)
+
+        clusters = mock_playbook_aggregator.get_clusters(playbooks, config)
+
+        assert clusters == {}
+
+    def test_triggerless_playbooks_do_not_form_a_mock_cluster(
+        self, mock_playbook_aggregator, monkeypatch
+    ):
+        """Mock mode groups by raw trigger, so a missing one has no group.
+
+        Without its own gate the empty-string key would collect every triggerless
+        playbook into one spurious cluster.
+        """
+        monkeypatch.setenv("MOCK_LLM_RESPONSE", "true")
+        playbooks = create_user_playbooks_with_embeddings(create_similar_embeddings(3))
+        for playbook in playbooks:
+            playbook.trigger = None
+        config = PlaybookAggregatorConfig(min_cluster_size=2)
+
+        clusters = mock_playbook_aggregator.get_clusters(playbooks, config)
 
         assert clusters == {}
 
