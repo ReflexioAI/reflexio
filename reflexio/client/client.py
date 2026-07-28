@@ -116,6 +116,8 @@ from reflexio.models.api_schema.service_schemas import (
     RerunPlaybookGenerationResponse,
     RerunProfileGenerationRequest,
     RerunProfileGenerationResponse,
+    ReviewUserPlaybooksRequest,
+    ReviewUserPlaybooksResponse,
     RunPlaybookAggregationRequest,
     RunPlaybookAggregationResponse,
     SessionOutcomeKind,
@@ -1606,6 +1608,40 @@ class ReflexioClient:
         )
         return GetUserPlaybooksViewResponse(**response)
 
+    def review_user_playbooks(
+        self,
+        *,
+        start_time: datetime,
+        end_time: datetime,
+        top_k: int = 10,
+        report_only: bool = True,
+    ) -> ReviewUserPlaybooksResponse:
+        """Re-review current user playbooks created within a bounded window.
+
+        The default ``report_only=True`` runs inline and returns one decision per
+        selected playbook.
+
+        With ``report_only=False`` the server accepts the run and applies it in
+        the background, so the response carries only ``run_id`` — not
+        ``results``. The run reviews newest-first and commits each completed
+        decision before moving to the next playbook: accepted rows stay
+        unchanged, rejected rows are archived, and an edit inserts the
+        replacement as current while superseding its incumbent. Applied edits are
+        recorded on the replacement's lineage under ``run_id``.
+        """
+        request = ReviewUserPlaybooksRequest(
+            start_time=start_time,
+            end_time=end_time,
+            top_k=top_k,
+            report_only=report_only,
+        )
+        response = self._make_request(
+            "POST",
+            "/api/review_user_playbooks",
+            json=request.model_dump(mode="json"),
+        )
+        return ReviewUserPlaybooksResponse(**response)
+
     def add_user_playbook(
         self,
         user_playbooks: list[UserPlaybook | dict],
@@ -2656,7 +2692,9 @@ class ReflexioClient:
             session_id=session_id,
             interaction_id=interaction_id,
         )
-        response = self._make_request("POST", "/api/search", json=req.model_dump(mode="json"))
+        response = self._make_request(
+            "POST", "/api/search", json=req.model_dump(mode="json")
+        )
         return UnifiedSearchViewResponse(**response)
 
     # =========================================================================
@@ -2707,7 +2745,9 @@ class ReflexioClient:
         """
         req = DeleteAgentPlaybooksByIdsRequest(agent_playbook_ids=agent_playbook_ids)
         response = self._make_request(
-            "DELETE", "/api/delete_agent_playbooks_by_ids", json=req.model_dump(mode="json")
+            "DELETE",
+            "/api/delete_agent_playbooks_by_ids",
+            json=req.model_dump(mode="json"),
         )
         self._cache.invalidate("get_agent_playbooks")
         return BulkDeleteResponse(**response)
@@ -2725,7 +2765,9 @@ class ReflexioClient:
         """
         req = DeleteUserPlaybooksByIdsRequest(user_playbook_ids=user_playbook_ids)
         response = self._make_request(
-            "DELETE", "/api/delete_user_playbooks_by_ids", json=req.model_dump(mode="json")
+            "DELETE",
+            "/api/delete_user_playbooks_by_ids",
+            json=req.model_dump(mode="json"),
         )
         return BulkDeleteResponse(**response)
 

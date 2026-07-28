@@ -137,6 +137,15 @@ FULL_ROUTES = [
         ("default_get_org_id",),
     ),
     (
+        "/api/review_user_playbooks",
+        ("POST",),
+        "ReviewUserPlaybooksResponse",
+        None,
+        (),
+        "review_user_playbooks_endpoint",
+        ("default_get_org_id",),
+    ),
+    (
         "/api/add_user_playbook",
         ("POST",),
         "AddUserPlaybookResponse",

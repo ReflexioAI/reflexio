@@ -8,6 +8,7 @@ Description: Evidence-grounded playbook extraction, candidate review, aggregatio
 - **Service Orchestrator**: `service.py` - Manages playbook extraction lifecycle (regular, rerun, manual modes)
 - **Playbook Extractor**: `components/extractor.py` - Extracts user playbooks from interactions via LLM
 - **Candidate Reviewer**: `components/reviewer.py` - Accepts, narrowly revises, or rejects validated normal-extraction candidates before consolidation
+- **Persisted Review Service**: `review_service.py` - Re-reviews a bounded created-at selection and optionally commits each completed decision newest-first
 - **Playbook Aggregator**: `components/aggregator.py` - Clusters similar user playbooks and generates aggregated insights
 - **Playbook Consolidator**: `components/consolidator.py` - Reconciles reviewed candidates against existing storage with evidence-aware accounting and overlap guards
 
@@ -18,6 +19,7 @@ Description: Evidence-grounded playbook extraction, candidate review, aggregatio
 | `playbook_service_constants.py` | Prompt IDs for all playbook operations |
 | `playbook_service_utils.py` | Request dataclasses, Pydantic output schemas, message construction utilities |
 | `playbook_evidence.py` | Strict evidence validation, call-local reference checks, and persisted provenance helpers |
+| `review_service.py` | Time-window selection, persisted evidence reconstruction, reporting, and newest-first per-playbook apply |
 | `aggregation_prompt_processing.py` | Optional aggregation-boundary interfaces and helpers for prompt preprocessing, contextual prompt guidance, and output post-processing |
 
 ## Architecture
@@ -60,6 +62,23 @@ Every candidate must be accounted for exactly once as `accept`, `revise`, or
 create a lesson that extraction missed. Reviewer output receives one bounded
 repair attempt and otherwise fails closed. Expert and legacy extraction paths
 do not use this reviewer.
+
+### Persisted Review (`review_service.py`)
+
+`POST /api/review_user_playbooks` selects the newest current user playbooks in
+an inclusive creation-time window, capped by `top_k`. A row whose cited evidence
+can no longer be reconstructed yields a `skip` decision and the run continues.
+
+Report mode runs inline and returns `accept`, `edit`, `reject`, and `skip`
+decisions without writes. Apply mode runs in the **background** (one LLM call
+plus one transaction per playbook would otherwise risk a proxy timeout), so its
+response carries only the `run_id`. It reviews one playbook at a time, prepares
+any successor embedding, then commits that decision before reviewing the next
+row. An edit goes through the shared `apply_playbook_edit` primitive — the
+replacement is inserted as CURRENT and the incumbent atomically superseded, with
+a `revise` lineage event under the run's `run_id`; rejects archive the incumbent
+and accepts perform no write. A later failure stops the run without rolling back
+earlier decisions.
 
 ### Playbook Aggregation (`components/aggregator.py`)
 

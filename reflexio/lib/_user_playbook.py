@@ -20,6 +20,8 @@ from reflexio.models.api_schema.service_schemas import (
     DeleteUserPlaybooksByIdsRequest,
     DowngradeUserPlaybooksRequest,
     DowngradeUserPlaybooksResponse,
+    ReviewUserPlaybooksRequest,
+    ReviewUserPlaybooksResponse,
     UpgradeUserPlaybooksRequest,
     UpgradeUserPlaybooksResponse,
 )
@@ -31,6 +33,37 @@ from reflexio.server.tracing import profile_step
 
 
 class UserPlaybookMixin(ReflexioBase):
+    def review_user_playbooks(
+        self,
+        request: ReviewUserPlaybooksRequest | dict,
+        run_id: str | None = None,
+    ) -> ReviewUserPlaybooksResponse:
+        """Re-review current user playbooks selected by creation time.
+
+        Args:
+            request: The review request.
+            run_id: Optional caller-minted run id. Apply mode is dispatched to a
+                background task, so the route mints the id up front to return it
+                before the run finishes; it correlates the run's lineage events.
+        """
+        if isinstance(request, dict):
+            request = ReviewUserPlaybooksRequest(**request)
+        if not self._is_storage_configured():
+            return ReviewUserPlaybooksResponse(
+                success=False,
+                report_only=request.report_only,
+                run_id=run_id,
+                msg=STORAGE_NOT_CONFIGURED_MSG,
+            )
+        from reflexio.server.services.playbook.review_service import (
+            UserPlaybookReviewService,
+        )
+
+        return UserPlaybookReviewService(
+            request_context=self.request_context,
+            llm_client=self.llm_client,
+        ).run(request, run_id=run_id)
+
     def get_user_playbooks(
         self,
         request: GetUserPlaybooksRequest | dict,

@@ -1,6 +1,15 @@
 """Task 2.3: optional source_span/notes/reader_angle on UserProfile and UserPlaybook."""
 
-from reflexio.models.api_schema.domain.entities import UserPlaybook, UserProfile
+from datetime import UTC, datetime
+
+import pytest
+from pydantic import ValidationError
+
+from reflexio.models.api_schema.domain.entities import (
+    ReviewUserPlaybooksRequest,
+    UserPlaybook,
+    UserProfile,
+)
 
 
 def test_user_profile_optional_new_fields_default_to_none() -> None:
@@ -59,3 +68,30 @@ def test_user_playbook_accepts_optional_fields() -> None:
     assert pb.source_span == "q"
     assert pb.notes == "n"
     assert pb.reader_angle == "behavior"
+
+
+def test_review_user_playbooks_request_defaults_to_safe_report_mode() -> None:
+    request = ReviewUserPlaybooksRequest(
+        start_time=datetime(2026, 1, 1, tzinfo=UTC),
+        end_time=datetime(2026, 1, 2, tzinfo=UTC),
+    )
+
+    assert request.top_k == 10
+    assert request.report_only is True
+
+
+@pytest.mark.parametrize("top_k", [0, 101])
+def test_review_user_playbooks_request_bounds_top_k(top_k: int) -> None:
+    with pytest.raises(ValidationError):
+        ReviewUserPlaybooksRequest(
+            start_time=datetime(2026, 1, 1, tzinfo=UTC),
+            end_time=datetime(2026, 1, 2, tzinfo=UTC),
+            top_k=top_k,
+        )
+
+
+def test_review_user_playbooks_request_requires_increasing_window() -> None:
+    instant = datetime(2026, 1, 1, tzinfo=UTC)
+
+    with pytest.raises(ValidationError, match="end_time must be after start_time"):
+        ReviewUserPlaybooksRequest(start_time=instant, end_time=instant)

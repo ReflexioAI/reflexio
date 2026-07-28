@@ -245,12 +245,7 @@ def test_live_extraction_provider_returns_canned_items(tmp_path):
                     "content": "Default the workspace to dark mode for this user.",
                     "rationale": "The explicit preference applies to future workspace configuration tasks and selecting dark mode honors it.",
                     "evidence_kind": "preference",
-                    "evidence": [
-                        {
-                            "turn_ref": "T1",
-                            "source_span": "I prefer dark mode.",
-                        }
-                    ],
+                    "evidence_refs": ["T1"],
                 }
             ]
         },

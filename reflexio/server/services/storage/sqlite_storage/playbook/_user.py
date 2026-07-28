@@ -625,7 +625,8 @@ class UserPlaybookStoreMixin:
                 "WHERE user_playbook_id = ? AND user_id = ? AND status IS NULL",
                 (Status.ARCHIVED.value, _epoch_now(), user_playbook_id, user_id),
             )
-            self.conn.commit()
+            if self._own_transaction():
+                self.conn.commit()
         return cur.rowcount > 0
 
     @SQLiteStorageBase.handle_exceptions

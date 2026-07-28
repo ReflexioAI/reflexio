@@ -123,6 +123,10 @@ __all__ = [
     "ManualPlaybookGenerationResponse",
     "RerunPlaybookGenerationRequest",
     "RerunPlaybookGenerationResponse",
+    "ReviewUserPlaybookEdit",
+    "ReviewUserPlaybookResult",
+    "ReviewUserPlaybooksRequest",
+    "ReviewUserPlaybooksResponse",
     "UpgradeProfilesRequest",
     "UpgradeProfilesResponse",
     "DowngradeProfilesRequest",
@@ -1576,6 +1580,65 @@ class RerunPlaybookGenerationResponse(BaseModel):
     msg: str | None = None
     playbooks_generated: int | None = None
     operation_id: str = "rerun_playbook_generation"
+
+
+class ReviewUserPlaybookEdit(BaseModel):
+    """Replacement fields proposed by the user-playbook reviewer."""
+
+    content: str
+    trigger: str
+    rationale: str
+
+
+class ReviewUserPlaybookResult(BaseModel):
+    """One persisted user playbook's re-review outcome.
+
+    ``skip`` means the row could not be reviewed at all (its cited evidence is
+    no longer reconstructable), not that the reviewer chose to leave it alone —
+    that is ``accept``. A skipped row is never written to.
+    """
+
+    user_playbook_id: int = Field(gt=0)
+    decision: Literal["accept", "edit", "reject", "skip"]
+    reason_code: str
+    reason: str | None = None
+    edit: ReviewUserPlaybookEdit | None = None
+    applied: bool = False
+    successor_user_playbook_id: int | None = Field(default=None, gt=0)
+
+
+class ReviewUserPlaybooksRequest(BaseModel):
+    """Select and re-review current user playbooks created in a time window."""
+
+    start_time: datetime
+    end_time: datetime
+    top_k: int = Field(default=10, gt=0, le=100)
+    report_only: bool = True
+
+    @model_validator(mode="after")
+    def check_time_range(self) -> Self:
+        TimeRangeValidatorMixin.validate_time_range(self.start_time, self.end_time)
+        return self
+
+
+class ReviewUserPlaybooksResponse(BaseModel):
+    """Bulk user-playbook re-review report and optional apply summary.
+
+    Apply mode runs in the background, so its response carries ``run_id`` and an
+    empty ``results`` list; the per-playbook outcome is durably recorded on each
+    replacement's lineage under that ``run_id``.
+    """
+
+    success: bool
+    report_only: bool = True
+    run_id: str | None = None
+    selected_count: int = 0
+    accepted_count: int = 0
+    edited_count: int = 0
+    rejected_count: int = 0
+    skipped_count: int = 0
+    results: list[ReviewUserPlaybookResult] = Field(default_factory=list)
+    msg: str | None = None
 
 
 class UpgradeProfilesRequest(BaseModel):
