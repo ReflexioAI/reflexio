@@ -288,6 +288,7 @@ from __future__ import annotations
 
 import logging
 import os
+from pydantic import ValidationError
 from reflexio import ReflexioClient
 
 
@@ -321,12 +322,21 @@ def publish_turns(
             force_extraction=False,
             skip_aggregation=False,
         )
+    except ValidationError:
+        # The payload is invalid, so retrying can never succeed. Return True to
+        # advance the high-water mark and stop re-sending it — see "A rejected
+        # batch is not a retryable failure" below.
+        logging.exception("dropping unpublishable batch of %d", len(interactions))
+        return True
     except Exception:
         return False
 
-    # Outside the try above, deliberately — see "Read `warnings`" below.
-    for warning in response.warnings:
-        logging.warning("reflexio dropped part of the payload: %s", warning)
+    # Outside the try above, and defensive about the shape — see
+    # "Read `warnings`" below for why both matter.
+    warnings = getattr(response, "warnings", None)
+    if isinstance(warnings, list):
+        for warning in warnings:
+            logging.warning("reflexio dropped part of the payload: %s", warning)
 
     return True
 ```
@@ -371,16 +381,30 @@ the buffer exists to protect. Let the server stamp drain time.
 `PublishUserInteractionResponse.warnings` lists what the server accepted but
 could not use: unrecognised field names (per interaction, with the caller's own
 index) and interactions skipped for carrying no content. A correctly-shaped
-payload produces an empty list, so anything here is real drift worth logging.
+payload produces no *payload* warnings, so anything of that kind is real drift
+worth logging.
 
 This channel exists because it is otherwise possible to publish 50 interactions,
 receive `200 OK`, and store 50 rows with `content = ''` — which happened, and
 cost hours to diagnose. A mis-keyed `Content` binds nothing and `content`
 defaults to `""`.
 
-Note that only *some* shape errors are warnings. A payload where **every**
-interaction is contentless is rejected outright with `422`, on both the sync and
-the background-task path.
+Four caveats:
+
+- **The list is bounded** — at most 5 field names per interaction and 20 entries
+  overall, each with a `+N more` suffix. On a large broken batch treat it as a
+  sample, not an inventory.
+- **`user_id` and `session_id` are stripped without a warning.** They are
+  request-level fields that callers routinely repeat on every interaction, so
+  reporting them would be noise. Their absence from the list is not evidence
+  they bound.
+- **The same field also carries extraction warnings**, including the
+  provider-stall notice — but only when `wait_for_response=True`. The deferred
+  path returns payload warnings alone.
+- **`_fire_and_forget(self._publish_interaction_async, ...)` reports nothing.**
+  That path does not merge local warnings, and the SDK strips unknown keys
+  before they reach the server, so the whole channel is silent there. Use
+  `publish_interaction` if you want the diagnostic.
 
 Read the warnings **outside** whatever `try` guards the publish call. The
 publish already succeeded at that point; if reading diagnostics could raise into
@@ -389,6 +413,22 @@ published and would be re-sent on every subsequent hook — an infinite duplicat
 loop caused purely by the code meant to improve observability. For the same
 reason, keep the read itself total: tolerate a missing or oddly-shaped
 `warnings` value instead of assuming it is a list.
+
+### A Rejected Batch Is Not a Retryable Failure
+
+Only *some* shape problems are warnings. A payload where **every** interaction
+is contentless is rejected, as are two contradictions: a `user_action` other
+than `none` with no `user_action_description`, and `interacted_image_url` and
+`image_encoding` both set. Over raw HTTP that is a `422`. **Through the Python
+SDK it is a local `pydantic.ValidationError`, raised before any HTTP request** —
+so there is no status code to inspect and no response object.
+
+This matters for the buffer pattern above. The natural `except Exception:
+return False` treats rejection exactly like a network error: the high-water mark
+never advances, and the next hook re-sends the same batch, which is rejected
+again, forever. Catch `ValidationError` separately and either advance past the
+batch or quarantine it — a payload the client refuses to send will not become
+valid on the next attempt.
 
 ### Extraction Is Gated — Don't Expect a Result From One Publish
 
