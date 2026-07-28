@@ -230,10 +230,60 @@ class TestPublishInteraction:
             "skipped 1 empty" in warning for warning in response.json()["warnings"]
         ), response.json()["warnings"]
 
+    def test_sync_publish_appends_payload_warnings_to_service_warnings(
+        self, client, patched_reflexio
+    ):
+        """The sync path must APPEND, not assign.
+
+        ``warnings`` already carries extraction-stall warnings from the
+        generation service, which the CLI renders — and the sync path is what
+        the CLI uses. Assigning the payload warnings over them drops the
+        service's, while dropping the append entirely loses the payload's; both
+        mutations are invisible to every other test here, which posts without
+        ``wait_for_response``.
+        """
+        mock_response = PublishUserInteractionResponse(
+            success=True,
+            message="Interaction processed",
+            warnings=["extraction stalled: provider auth"],
+        )
+
+        def run_immediately(**kwargs):
+            return kwargs["fn"]()
+
+        payload = self._publish_payload()
+        payload["interaction_data_list"] = [
+            {"role": "User", "content": "hi", "Content": "typo"}
+        ]
+        with (
+            patch(
+                "reflexio.server.routes._common.run_with_operation_limit",
+                side_effect=run_immediately,
+            ),
+            patch(
+                "reflexio.server.api_endpoints.publisher_api.add_user_interaction",
+                return_value=mock_response,
+            ),
+        ):
+            response = client.post(
+                "/api/publish_interaction",
+                params={"wait_for_response": "true"},
+                json=payload,
+            )
+
+        assert response.status_code == 200
+        warnings = response.json()["warnings"]
+        assert "extraction stalled: provider auth" in warnings, warnings
+        assert any("Content" in warning for warning in warnings), warnings
+        # Names only — never the value.
+        assert not any("typo" in warning for warning in warnings), warnings
+
     def test_clean_publish_reports_no_warnings(self, client, patched_reflexio):
         response = client.post("/api/publish_interaction", json=self._publish_payload())
         assert response.status_code == 200
-        assert response.json().get("warnings", []) == []
+        # Indexed, not ``.get(...)``: a default would pass even if ``warnings``
+        # disappeared from the response schema entirely.
+        assert response.json()["warnings"] == []
 
 
 class TestSearchEndpoints:

@@ -88,11 +88,19 @@ def test_wire_payload_carries_no_unknown_keys(mock_session_class):
 
     client.publish_interaction(
         user_id="user",
-        interactions=[{"content": "real", "Content": "typo"}],
+        interactions=[
+            {
+                "content": "real",
+                "Content": "typo",
+                "tools_used": [{"tool_name": "t", "zzz": "typo"}],
+            }
+        ],
         session_id="s",
     )
 
     sent = mock_session.request.call_args.kwargs["json"]
     assert "Content" not in str(sent)
+    # Nested extras are stripped too, or the nested warnings double as well.
+    assert "zzz" not in str(sent)
     # Re-parse exactly what the route parses: it must find nothing to warn about.
     assert PublishUserInteractionRequest(**sent).payload_warnings() == []
