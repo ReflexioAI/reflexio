@@ -915,6 +915,7 @@ class UserPlaybookStoreMixin:
         user_playbook_id: int | None = None,
         request_id: str | None = None,
         query: str | None = None,
+        max_user_playbook_id: int | None = None,
     ) -> list[UserPlaybook]:
         sql = "SELECT * FROM user_playbooks WHERE 1=1"
         params: list[Any] = []
@@ -922,6 +923,9 @@ class UserPlaybookStoreMixin:
         if user_playbook_id is not None:
             sql += " AND user_playbook_id = ?"
             params.append(user_playbook_id)
+        if max_user_playbook_id is not None:
+            sql += " AND user_playbook_id <= ?"
+            params.append(max_user_playbook_id)
         if user_id is not None:
             sql += " AND user_id = ?"
             params.append(user_id)
@@ -962,8 +966,12 @@ class UserPlaybookStoreMixin:
             sql += f" AND {tag_frag}"
             params.extend(tag_params)
 
-        sql += " ORDER BY created_at DESC, user_playbook_id DESC LIMIT ? OFFSET ?"
-        params.extend([limit, offset])
+        if max_user_playbook_id is not None:
+            sql += " ORDER BY user_playbook_id DESC LIMIT ?"
+            params.append(limit)
+        else:
+            sql += " ORDER BY created_at DESC, user_playbook_id DESC LIMIT ? OFFSET ?"
+            params.extend([limit, offset])
         rows = self._fetchall(sql, params)
         return [
             _row_to_user_playbook(r, include_embedding=include_embedding) for r in rows

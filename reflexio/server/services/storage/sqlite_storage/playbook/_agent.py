@@ -258,6 +258,7 @@ class AgentPlaybookStoreMixin:
         start_time: int | None = None,
         end_time: int | None = None,
         offset: int = 0,
+        max_agent_playbook_id: int | None = None,
     ) -> list[AgentPlaybook]:
         sql = "SELECT * FROM agent_playbooks WHERE 1=1"
         params: list[Any] = []
@@ -265,6 +266,9 @@ class AgentPlaybookStoreMixin:
         if agent_playbook_id is not None:
             sql += " AND agent_playbook_id = ?"
             params.append(agent_playbook_id)
+        if max_agent_playbook_id is not None:
+            sql += " AND agent_playbook_id <= ?"
+            params.append(max_agent_playbook_id)
         if query:
             like = f"%{query.lower()}%"
             sql += (
@@ -303,8 +307,12 @@ class AgentPlaybookStoreMixin:
             sql += f" AND {tag_frag}"
             params.extend(tag_params)
 
-        sql += " ORDER BY created_at DESC, agent_playbook_id DESC LIMIT ? OFFSET ?"
-        params.extend([limit, offset])
+        if max_agent_playbook_id is not None:
+            sql += " ORDER BY agent_playbook_id DESC LIMIT ?"
+            params.append(limit)
+        else:
+            sql += " ORDER BY created_at DESC, agent_playbook_id DESC LIMIT ? OFFSET ?"
+            params.extend([limit, offset])
         rows = self._fetchall(sql, params)
         return [_row_to_agent_playbook(r) for r in rows]
 

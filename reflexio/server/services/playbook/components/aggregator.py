@@ -61,18 +61,25 @@ logger = logging.getLogger(__name__)
 # capped page would look like a short final page and silently truncate the read.
 # PostgREST enforces `max_rows = 1000` (see supabase/*/config.toml).
 _AGGREGATION_PLAYBOOK_PAGE_SIZE = 500
+_SIGNED_BIGINT_MAX = (1 << 63) - 1
 
 
-def _read_all_pages[T](fetch_page: Callable[[int, int], list[T]]) -> list[T]:
-    """Read an exhaustive, stable-offset snapshot from a bounded storage API."""
+def _read_all_pages[T](
+    fetch_page: Callable[[int, int], list[T]],
+    get_id: Callable[[T], int],
+) -> tuple[list[T], int | None]:
+    """Read exhaustively by descending ID while excluding later inserts."""
     rows: list[T] = []
-    offset = 0
+    max_id = _SIGNED_BIGINT_MAX
+    high_watermark: int | None = None
     while True:
-        page = fetch_page(_AGGREGATION_PLAYBOOK_PAGE_SIZE, offset)
+        page = fetch_page(_AGGREGATION_PLAYBOOK_PAGE_SIZE, max_id)
+        if page and high_watermark is None:
+            high_watermark = get_id(page[0])
         rows.extend(page)
         if len(page) < _AGGREGATION_PLAYBOOK_PAGE_SIZE:
-            return rows
-        offset += len(page)
+            return rows, high_watermark
+        max_id = get_id(page[-1]) - 1
 
 
 class AggregationEffectCoordinator(Protocol):
@@ -207,7 +214,10 @@ class PlaybookAggregator:
         return new_count >= trigger_count
 
     def _update_operation_state(
-        self, playbook_name: str, user_playbooks: list[UserPlaybook]
+        self,
+        playbook_name: str,
+        user_playbooks: list[UserPlaybook],
+        processed_high_watermark: int | None = None,
     ) -> None:
         """
         Update operation state with the highest user_playbook_id processed.
@@ -215,18 +225,22 @@ class PlaybookAggregator:
         Args:
             playbook_name: Name of the playbook type
             user_playbooks: List of user playbooks that were processed
+            processed_high_watermark: Highest ID captured by the aggregation read.
+                Falls back to the maximum ID in ``user_playbooks`` for existing
+                direct callers.
         """
-        if not user_playbooks:
-            return
-
-        # Find max user_playbook_id
-        max_id = max(playbook.user_playbook_id for playbook in user_playbooks)
+        if processed_high_watermark is None:
+            if not user_playbooks:
+                return
+            processed_high_watermark = max(
+                playbook.user_playbook_id for playbook in user_playbooks
+            )
 
         mgr = self._create_state_manager()
         mgr.update_aggregator_bookmark(
             name=playbook_name,
             version=self.agent_version,
-            last_processed_id=max_id,
+            last_processed_id=processed_high_watermark,
         )
 
     # ===============================
@@ -434,16 +448,17 @@ class PlaybookAggregator:
 
         # Get existing APPROVED and PENDING playbooks before archiving (to pass to LLM for deduplication).
         # Singleton aggregation pulls the user's whole set — no name filter.
-        existing_playbooks = _read_all_pages(
-            lambda limit, offset: self.storage.get_agent_playbooks(  # type: ignore[reportOptionalMemberAccess]
+        existing_playbooks, _existing_high_watermark = _read_all_pages(
+            lambda limit, max_id: self.storage.get_agent_playbooks(  # type: ignore[reportOptionalMemberAccess]
                 limit=limit,
-                offset=offset,
+                max_agent_playbook_id=max_id,
                 status_filter=[None],  # Current playbooks only
                 playbook_status_filter=[
                     PlaybookStatus.APPROVED,
                     PlaybookStatus.PENDING,
                 ],
-            )
+            ),
+            lambda playbook: playbook.agent_playbook_id,
         )
         logger.info(
             "Found %s existing playbooks (approved + pending) to preserve",
@@ -451,14 +466,15 @@ class PlaybookAggregator:
         )
 
         # get all user playbooks and generate clusters
-        user_playbooks = _read_all_pages(
-            lambda limit, offset: self.storage.get_user_playbooks(  # type: ignore[reportOptionalMemberAccess]
+        user_playbooks, user_high_watermark = _read_all_pages(
+            lambda limit, max_id: self.storage.get_user_playbooks(  # type: ignore[reportOptionalMemberAccess]
                 limit=limit,
-                offset=offset,
+                max_user_playbook_id=max_id,
                 agent_version=self.agent_version,
                 status_filter=[None],  # Current playbooks only
                 include_embedding=True,
-            )
+            ),
+            lambda playbook: playbook.user_playbook_id,
         )
         full_archive_playbook_names = sorted(
             {
@@ -516,11 +532,19 @@ class PlaybookAggregator:
                         "skipped": "no cluster changes detected",
                     }
                     if self.effect_coordinator is None:
-                        self._update_operation_state(playbook_name, user_playbooks)
+                        self._update_operation_state(
+                            playbook_name,
+                            user_playbooks,
+                            processed_high_watermark=user_high_watermark,
+                        )
                     else:
                         self.effect_coordinator.prepare([])
                         with self.effect_coordinator.apply_scope():
-                            self._update_operation_state(playbook_name, user_playbooks)
+                            self._update_operation_state(
+                                playbook_name,
+                                user_playbooks,
+                                processed_high_watermark=user_high_watermark,
+                            )
                             self.effect_coordinator.complete(result)
                     record_usage_event(
                         org_id=self.request_context.org_id,
@@ -754,7 +778,11 @@ class PlaybookAggregator:
             )
 
             # Update operation state with the highest user_playbook_id processed
-            self._update_operation_state(playbook_name, user_playbooks)
+            self._update_operation_state(
+                playbook_name,
+                user_playbooks,
+                processed_high_watermark=user_high_watermark,
+            )
 
             # Remove archived playbooks after successful aggregation. ALWAYS soft-supersede
             # (never hard-delete) so the removal is reconstructable from lineage — mirrors the

@@ -51,6 +51,7 @@ class AgentPlaybookStoreMixin:
         start_time: int | None = None,
         end_time: int | None = None,
         offset: int = 0,
+        max_agent_playbook_id: int | None = None,
     ) -> list[AgentPlaybook]:
         """Get agent playbooks from storage.
 
@@ -67,6 +68,9 @@ class AgentPlaybookStoreMixin:
                 If None, returns all playbook statuses.
             tags (list[str], optional): Match playbooks having any of these tags.
             offset (int): Number of matching rows to skip. Defaults to 0.
+            max_agent_playbook_id (int, optional): Inclusive primary-key cursor.
+                When provided, rows are ordered by agent_playbook_id descending
+                and offset is ignored.
 
         Returns:
             list[AgentPlaybook]: List of agent playbook objects
