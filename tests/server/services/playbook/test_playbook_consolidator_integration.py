@@ -972,9 +972,7 @@ class TestConsolidatorNativeFallbackEndToEnd:
     every rung and NO ``fallbacks`` kwarg ever handed to litellm.
     """
 
-    def test_consolidator_advances_to_fallback_rung(
-        self, request_context, monkeypatch
-    ):
+    def test_consolidator_advances_to_fallback_rung(self, request_context, monkeypatch):
         """Production-style: ``REFLEXIO_LLM_FALLBACK_MODELS`` set globally.
 
         When the primary fails, the owned walk advances to the configured

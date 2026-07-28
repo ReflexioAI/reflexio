@@ -23,22 +23,10 @@ __all__ = [
     "BlockingIssueKind",
     "CapturesUnknownFields",
     "ToolUsed",
-    "cap_warning_list",
     "sanitise_for_log",
-    "summarise_unknown_names",
 ]
 
 _MAX_LOG_VALUE_LEN = 64
-
-# Unknown key names are caller-controlled: unbounded in length and count, and
-# free to contain newlines. They are echoed into both the HTTP response and a
-# log line, so they need bounding on THREE axes -- per-name length, names per
-# interaction, and total entries in the warning list -- plus control-character
-# stripping. Unbounded, 1000 interactions x N long bogus keys produced a
-# ~350 KB response body and one enormous log record.
-_MAX_REPORTED_NAMES = 5
-_MAX_WARNING_ENTRIES = 20
-_MAX_STATUS_LEN = 100
 
 
 def sanitise_for_log(value: str, max_len: int = _MAX_LOG_VALUE_LEN) -> str:
@@ -65,53 +53,23 @@ def sanitise_for_log(value: str, max_len: int = _MAX_LOG_VALUE_LEN) -> str:
 NEVER_EXPIRES_TIMESTAMP = 4102444800
 
 
-def summarise_unknown_names(names: list[str]) -> str:
-    """Render unknown key names for a caller-facing warning, bounded and safe.
-
-    Args:
-        names (list[str]): The unrecognised key names, already sorted.
-
-    Returns:
-        str: Comma-separated sanitised names, each truncated, with a "+N more"
-            suffix when the list was longer than the cap.
-    """
-    shown = [sanitise_for_log(name) for name in names[:_MAX_REPORTED_NAMES]]
-    remaining = len(names) - len(shown)
-    return ", ".join(shown) + (f", +{remaining} more" if remaining > 0 else "")
-
-
-def cap_warning_list(warnings: list[str]) -> list[str]:
-    """Bound the NUMBER of warning entries.
-
-    Per-name caps alone do not bound the total: ``interaction_data_list``
-    permits 1000 entries, so one warning each still adds up to a
-    multi-hundred-KB response body and a single enormous log record.
-
-    Args:
-        warnings (list[str]): Individually-bounded warning strings.
-
-    Returns:
-        list[str]: A NEW list of at most ``_MAX_WARNING_ENTRIES`` entries, with
-            a trailing overflow entry when any were dropped. Always a copy --
-            callers append to the result.
-    """
-    if len(warnings) <= _MAX_WARNING_ENTRIES:
-        return list(warnings)
-    dropped = len(warnings) - _MAX_WARNING_ENTRIES
-    return [
-        *warnings[:_MAX_WARNING_ENTRIES],
-        f"...and {dropped} more interaction(s) with the same problem",
-    ]
-
-
 class CapturesUnknownFields(BaseModel):
     """Records unrecognised keys instead of silently discarding them.
 
-    ``extra="allow"`` here is only a means of *seeing* what the caller sent; the
-    validator strips the extras straight back out, so nothing unexpected reaches
-    storage or a re-serialised request and ``model_dump()`` stays clean. Only
-    NAMES are retained -- the values are caller payload, potentially Customer
-    Content, and must never reach a log or an error body.
+    ``extra="allow"`` here is only a means of *seeing* what the caller sent.
+    **On the validation path** -- ``model_validate`` / ``__init__``, which is
+    how every HTTP request and SDK call builds these models -- the validator
+    strips the extras straight back out, so nothing unexpected reaches storage
+    or a re-serialised request and ``model_dump()`` stays clean. That guarantee
+    is scoped to that path: ``model_construct``, ``model_copy(update=...)`` and
+    a plain ``instance.attr = value`` with an undeclared name all bypass
+    validation, and under ``extra="allow"`` they store the value in
+    ``__pydantic_extra__`` where it *will* reach ``model_dump()``. Under the
+    previous ``extra="ignore"`` such an assignment raised instead. No
+    first-party code constructs these models that way; if that changes, add a
+    ``model_serializer`` that drops extras rather than relying on this note.
+    Only NAMES are retained -- the values are caller payload, potentially
+    Customer Content, and must never reach a log or an error body.
 
     Deliberately NOT ``extra="forbid"``. That was implemented and reverted:
     rejecting unknown keys broke every first-party plugin publish, because the
@@ -122,7 +80,13 @@ class CapturesUnknownFields(BaseModel):
     loss than the one this reporting exists to surface.
     """
 
-    model_config = ConfigDict(extra="allow")
+    # ``json_schema_extra`` corrects what ``extra="allow"`` would otherwise
+    # publish: pydantic emits ``additionalProperties: true`` for it, telling
+    # every OpenAPI consumer that unknown keys are accepted and kept. They are
+    # accepted and *stripped*, which is the opposite promise.
+    model_config = ConfigDict(
+        extra="allow", json_schema_extra={"additionalProperties": False}
+    )
 
     _unknown_field_names: list[str] = PrivateAttr(default_factory=list)
 
@@ -157,6 +121,11 @@ class BlockingIssue(BaseModel):
     )
 
 
+# Bounds ``ToolUsed.status`` below. That field is coerced rather than rejected,
+# so its length is caller-controlled and needs a cap of its own.
+_MAX_STATUS_LEN = 100
+
+
 class ToolUsed(CapturesUnknownFields):
     tool_name: str
     tool_data: dict = Field(
@@ -185,7 +154,10 @@ class ToolUsed(CapturesUnknownFields):
             value (object): Whatever the caller put in ``status``.
 
         Returns:
-            str: A bounded string; never raises.
+            str: A bounded string. Not literally total -- ``str(value)`` calls
+                a caller-defined ``__str__`` when one exists -- but total over
+                the inputs that matter: no decoded JSON value can make this
+                raise, so no HTTP payload can turn ``status`` into a 422.
         """
         if value is None:
             return ""

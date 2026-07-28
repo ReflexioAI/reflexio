@@ -14,8 +14,10 @@ import pytest
 from reflexio.models.api_schema.common import (
     CapturesUnknownFields,
     ToolUsed,
-    cap_warning_list,
-    summarise_unknown_names,
+)
+from reflexio.models.api_schema.domain.entities import (
+    _cap_warning_list,
+    _summarise_unknown_names,
 )
 
 
@@ -74,25 +76,25 @@ class TestToolUsedStatus:
 
 class TestBoundedRendering:
     def test_names_per_entry_are_capped_with_a_suffix(self):
-        rendered = summarise_unknown_names([f"k{i}" for i in range(9)])
+        rendered = _summarise_unknown_names([f"k{i}" for i in range(9)])
         assert rendered.endswith("+4 more")
         assert rendered.count(",") == 5
 
     def test_control_characters_cannot_forge_a_log_line(self):
-        assert "\n" not in summarise_unknown_names(["a\nERROR forged"])
+        assert "\n" not in _summarise_unknown_names(["a\nERROR forged"])
 
     def test_long_names_are_truncated(self):
-        assert len(summarise_unknown_names(["z" * 500])) < 100
+        assert len(_summarise_unknown_names(["z" * 500])) < 100
 
     def test_entry_count_is_capped_with_an_overflow_entry(self):
-        capped = cap_warning_list([f"w{i}" for i in range(30)])
+        capped = _cap_warning_list([f"w{i}" for i in range(30)])
         assert len(capped) == 21
         assert "10 more interaction(s)" in capped[-1]
 
     def test_under_the_cap_is_unchanged(self):
-        assert cap_warning_list(["a", "b"]) == ["a", "b"]
+        assert _cap_warning_list(["a", "b"]) == ["a", "b"]
 
     def test_returns_a_copy_so_callers_can_append(self):
         original = ["a"]
-        cap_warning_list(original).append("x")
+        _cap_warning_list(original).append("x")
         assert original == ["a"]

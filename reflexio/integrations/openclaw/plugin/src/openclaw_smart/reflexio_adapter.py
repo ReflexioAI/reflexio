@@ -92,12 +92,20 @@ class Adapter:
         except Exception as exc:  # noqa: BLE001
             _LOGGER.warning("publish_interaction failed: %s", exc)
             return False
-        # Deliberately outside the try above: the publish has already been
-        # accepted, and the caller advances the buffer watermark only on True.
-        # Letting a diagnostic read raise here would report a *successful*
-        # publish as failed and re-send the same batch on every later hook.
-        for warning in _publish_warnings(response):
-            _LOGGER.warning("reflexio dropped part of the payload: %s", warning)
+        # Guarded separately from the publish above, and swallowing everything:
+        # the publish has already been accepted, and the caller advances the
+        # buffer watermark only on True, so an exception escaping this
+        # diagnostic block would report a *successful* publish as failed and
+        # re-send the same accepted batch on every later hook, forever. The
+        # block is not exception-free by inspection -- ``response`` is whatever
+        # the client returned, so a ``warnings`` property, an overridden
+        # ``get``, or an item's ``__str__`` can each raise -- and the logging
+        # call itself can fail on a broken handler, which is why it is inside.
+        try:
+            for warning in _publish_warnings(response):
+                _LOGGER.warning("reflexio dropped part of the payload: %s", warning)
+        except Exception as exc:  # noqa: BLE001 — never fail an accepted publish.
+            _LOGGER.debug("could not report publish warnings: %s", exc)
         return True
 
     def apply_extraction_defaults(self, *, window_size: int, stride_size: int) -> bool:
@@ -317,9 +325,12 @@ class Adapter:
 def _publish_warnings(response: Any) -> list[str]:
     """Pull ``warnings`` off a publish response, tolerating any shape.
 
-    Total by construction — no branch here can raise. ``_extract_items`` is
-    not reused because its ``list(value)`` raises on a non-iterable, and this
-    runs on the path where an exception would be misread as a failed publish.
+    Defensive, not total: ``response`` is arbitrary, so ``.get`` may be
+    overridden, a ``warnings`` property may raise, and an item's ``__str__``
+    is caller code. The isinstance checks here remove the *shape* failures
+    (``_extract_items`` is not reused because its ``list(value)`` raises on a
+    non-iterable); the caller wraps the whole block for the rest, because this
+    runs where an exception would be misread as a failed publish.
     """
     if isinstance(response, dict):
         value = response.get("warnings")

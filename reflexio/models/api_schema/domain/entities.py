@@ -19,8 +19,7 @@ from ..common import (
     BlockingIssueKind,
     CapturesUnknownFields,
     ToolUsed,
-    cap_warning_list,
-    summarise_unknown_names,
+    sanitise_for_log,
 )
 from ..validators import (
     EmbeddingVector,
@@ -724,12 +723,19 @@ class InteractionData(CapturesUnknownFields):
     def reportable_unknown_fields(self) -> list[str]:
         """Unknown key names worth telling the caller about, nested included.
 
-        Excludes ``_BENIGN_UNKNOWN_KEYS``. Nested models report as a path, e.g.
+        Excludes ``_BENIGN_UNKNOWN_KEYS`` -- by LEAF name, so a duplicated
+        ``user_id`` is suppressed identically whether it sits at the top level
+        or on ``tools_used[0]``. Nested models report as a path, e.g.
         ``tools_used[0].stat``, because a caller matching only top-level names
         would not recognise the format otherwise.
 
+        Sorted, because only the first few names survive the render cap: an
+        unsorted list puts every top-level name ahead of every nested one, so a
+        payload with five top-level typos could never show a nested path at all.
+
         Returns:
-            list[str]: Field paths, empty when nothing unrecognised was sent.
+            list[str]: Sorted field paths, empty when nothing unrecognised was
+                sent.
         """
         names = [
             name
@@ -741,8 +747,9 @@ class InteractionData(CapturesUnknownFields):
                 names.extend(
                     f"{attribute}[{index}].{nested}"
                     for nested in item.unknown_field_names()
+                    if nested not in _BENIGN_UNKNOWN_KEYS
                 )
-        return names
+        return sorted(names)
 
     def carries_content(self) -> bool:
         """
@@ -819,17 +826,76 @@ _BENIGN_UNKNOWN_KEYS: Final = frozenset({"user_id", "session_id"})
 # How many original indices to name when reporting skipped empty rows.
 _MAX_SKIPPED_INDICES: Final = 10
 
+# Unknown key names are caller-controlled: unbounded in length and count, and
+# free to contain newlines. They are echoed into both the HTTP response and a
+# log line, so they need bounding on THREE axes -- per-name length, names per
+# interaction, and total entries in the warning list -- plus control-character
+# stripping. Unbounded, 1000 interactions x N long bogus keys produced a
+# ~350 KB response body and one enormous log record.
+_MAX_REPORTED_NAMES: Final = 5
+_MAX_WARNING_ENTRIES: Final = 20
+
+
+def _summarise_unknown_names(names: list[str]) -> str:
+    """Render unknown key names for a caller-facing warning, bounded and safe.
+
+    Args:
+        names (list[str]): The unrecognised key names, in the order they should
+            be shown. Only the first few survive the cap, so a caller wanting a
+            deterministic sample sorts before calling.
+
+    Returns:
+        str: Comma-separated sanitised names, each truncated, with a "+N more"
+            suffix when the list was longer than the cap.
+    """
+    shown = [sanitise_for_log(name) for name in names[:_MAX_REPORTED_NAMES]]
+    remaining = len(names) - len(shown)
+    return ", ".join(shown) + (f", +{remaining} more" if remaining > 0 else "")
+
+
+def _cap_warning_list(warnings: list[str]) -> list[str]:
+    """Bound the NUMBER of warning entries.
+
+    Per-name caps alone do not bound the total: ``interaction_data_list``
+    permits 1000 entries, so one warning each still adds up to a
+    multi-hundred-KB response body and a single enormous log record.
+
+    Args:
+        warnings (list[str]): Individually-bounded warning strings.
+
+    Returns:
+        list[str]: A NEW list of at most ``_MAX_WARNING_ENTRIES`` entries, with
+            a trailing overflow entry when any were dropped. Always a copy --
+            callers append to the result.
+    """
+    if len(warnings) <= _MAX_WARNING_ENTRIES:
+        return list(warnings)
+    dropped = len(warnings) - _MAX_WARNING_ENTRIES
+    return [
+        *warnings[:_MAX_WARNING_ENTRIES],
+        f"...and {dropped} more interaction(s) with the same problem",
+    ]
+
+
 CONTENT_BEARING_FIELDS = (
     f'{", ".join(CONTENT_BEARING_FIELD_NAMES)}, or a user_action other than "none"'
 )
 
 
 # publish user interaction request
-class PublishUserInteractionRequest(BaseModel):
-    # Set by ``validate_interaction_shapes`` against the caller's original
-    # list, before empty rows are filtered out; read by the route for logging.
-    # Computed against the caller's ORIGINAL list, before empty rows are
-    # filtered out; read by payload_warnings().
+class PublishUserInteractionRequest(CapturesUnknownFields):
+    """A publish payload, with everything it quietly altered recorded.
+
+    Inherits the capture mixin for the REQUEST level too, not just the
+    interactions: a top-level typo (``forceExtraction``, ``Source``,
+    ``skip_agregation``) used to bind nothing and vanish silently, which is
+    strictly worse than the nested case it was reported alongside -- a dropped
+    ``force_extraction`` changes what the server does, not just what it stores.
+    """
+
+    # All three are set by ``validate_interaction_shapes`` against the caller's
+    # ORIGINAL list, before empty rows are filtered out, and are read back by
+    # ``payload_warnings()``.
     _unknown_field_warnings: list[str] = PrivateAttr(default_factory=list)
     _skipped_empty_indices: list[int] = PrivateAttr(default_factory=list)
     _skipped_empty_count: int = PrivateAttr(default=0)
@@ -890,7 +956,7 @@ class PublishUserInteractionRequest(BaseModel):
         # index, so a warning pointed at a different row than was sent.
         self._unknown_field_warnings = [
             f"interaction_data_list[{index}]: ignored unrecognised field(s)"
-            f" {summarise_unknown_names(names)}"
+            f" {_summarise_unknown_names(names)}"
             for index, interaction in enumerate(self.interaction_data_list)
             if (names := interaction.reportable_unknown_fields())
         ]
@@ -903,9 +969,19 @@ class PublishUserInteractionRequest(BaseModel):
             if not interaction.carries_content()
         ]
         if len(skipped) == len(self.interaction_data_list):
+            # Carry the unknown-field warnings into the error. This is the
+            # motivating incident, not a nicety: 50 interactions all keyed
+            # ``Content`` bind nothing, so every row is empty, so the request
+            # 422s -- and without this the 422 never once mentions ``Content``,
+            # leaving the caller told only that their payload was empty when
+            # they can see they sent 50 rows of text. ``payload_warnings()``
+            # never runs on this path because the model never finishes
+            # validating, so the warnings are otherwise computed and discarded.
+            faults = _cap_warning_list(self._unknown_field_warnings)
+            cause = f"; likely cause -- {'; '.join(faults)}" if faults else ""
             raise ValueError(
                 "every interaction is empty: at least one must set"
-                f' "content" (or any of: {CONTENT_BEARING_FIELDS})'
+                f' "content" (or any of: {CONTENT_BEARING_FIELDS}){cause}'
             )
         self._skipped_empty_indices = skipped[:_MAX_SKIPPED_INDICES]
         self._skipped_empty_count = len(skipped)
@@ -919,20 +995,27 @@ class PublishUserInteractionRequest(BaseModel):
     def payload_warnings(self) -> list[str]:
         """Everything quietly altered in the payload, for the caller.
 
-        Unrecognised keys that were stripped, plus a summary of empty
-        interactions that were skipped. Indices refer to the payload **as the
-        caller sent it**, not the filtered list. Names only, sanitised and
-        bounded: values are caller payload, and the names are equally
-        caller-controlled, so both volume and control characters are handled.
+        Unrecognised keys that were stripped -- at the request level and per
+        interaction -- plus a summary of empty interactions that were skipped.
+        Indices refer to the payload **as the caller sent it**, not the filtered
+        list. Names only, sanitised and bounded: values are caller payload, and
+        the names are equally caller-controlled, so both volume and control
+        characters are handled.
 
         Returns:
             list[str]: Bounded warnings; empty when nothing was altered.
         """
-        # Cap the per-interaction entries, THEN append the batch-level skip
-        # summary, so the cap can never drop it. Capping the combined list
+        # Cap the per-interaction entries, THEN append the two batch-level
+        # entries, so the cap can never drop them. Capping the combined list
         # swallowed "N interactions were dropped" whenever there were >= 20
-        # field warnings -- the single most important fact about such a batch.
-        warnings = cap_warning_list(self._unknown_field_warnings)
+        # field warnings -- the single most important fact about such a batch,
+        # and the same is true of a dropped top-level ``force_extraction``.
+        warnings = _cap_warning_list(self._unknown_field_warnings)
+        if top_level := self.unknown_field_names():
+            warnings.append(
+                "publish request: ignored unrecognised field(s)"
+                f" {_summarise_unknown_names(top_level)}"
+            )
         if summary := self.skipped_empty_summary():
             warnings.append(summary)
         return warnings

@@ -42,7 +42,9 @@ def test_publish_interaction_rejects_blank_session_id(mock_session_class):
 
 
 @patch("reflexio.client.client.requests.Session")
-def test_publish_interaction_surfaces_locally_dropped_field_warnings(mock_session_class):
+def test_publish_interaction_surfaces_locally_dropped_field_warnings(
+    mock_session_class,
+):
     """SDK callers must see unrecognised-field warnings.
 
     ``publish_interaction`` builds ``InteractionData`` before
