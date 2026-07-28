@@ -1,5 +1,7 @@
 """Contract tests for OperationMixin — run against every local storage backend."""
 
+import time
+
 import pytest
 
 pytestmark = pytest.mark.integration
@@ -169,12 +171,14 @@ class TestPendingRequestQueue:
             "acquired"
         ]
 
-        # Exactly what release_lock_pop_queue writes when it promotes req_2.
+        # Exactly what release_lock_pop_queue writes when it promotes req_2 —
+        # including a CURRENT started_at. A fixed past timestamp here would make
+        # the new holder instantly stale and the assertion below meaningless.
         storage.upsert_operation_state(
             "svc_handover",
             {
                 "in_progress": True,
-                "started_at": 1_700_000_000,
+                "started_at": int(time.time()),
                 "current_request_id": "req_2",
                 "pending_request_id": None,
                 "pending_request_queue": [],
@@ -188,6 +192,51 @@ class TestPendingRequestQueue:
         )
         state = self._state(storage, "svc_handover")
         assert state.get("current_request_id") == "req_2"
+
+    def test_a_legacy_status_keyed_lock_is_still_honoured(self, storage):
+        """Rows written before the canonical flag must not read as free.
+
+        An older build wrote the held-flag as ``status: "in_progress"``. On first
+        run after upgrade those rows are still live locks; without the shim every
+        one of them would be read as free and stolen. Nothing writes this shape
+        any more, so this test is what keeps the shim honest until it is removed.
+        """
+        storage.upsert_operation_state(
+            "svc_legacy",
+            {
+                "status": "in_progress",
+                "current_request_id": "req_old",
+                "pending_request_queue": [],
+            },
+        )
+
+        result = storage.try_acquire_in_progress_lock("svc_legacy", "req_new")
+        assert result["acquired"] is False
+        assert self._state(storage, "svc_legacy").get("current_request_id") == "req_old"
+
+    def test_a_rejected_acquire_does_not_extend_the_holders_lock(self, storage):
+        """Contention must not refresh the staleness clock.
+
+        The queue-append branch rewrites the row on every rejected acquire. When
+        staleness was measured from the row's ``updated_at``, each new contender
+        pushed the deadline out, so a crashed holder's lock could never expire
+        under sustained load. Measuring from the holder's ``started_at`` fixes it.
+        """
+        storage.try_acquire_in_progress_lock("svc_stale", "req_holder")
+
+        # Backdate the holder well past any plausible staleness window, leaving
+        # the row's own updated_at fresh — exactly the post-contention shape.
+        state = self._state(storage, "svc_stale")
+        state["started_at"] = int(time.time()) - 10_000
+        storage.upsert_operation_state("svc_stale", state)
+
+        result = storage.try_acquire_in_progress_lock(
+            "svc_stale", "req_new", stale_lock_seconds=300
+        )
+        assert result["acquired"] is True, (
+            "a lock whose holder started 10000s ago was not reclaimed — staleness "
+            "is being measured from the row clock, which contention refreshes"
+        )
 
     def test_acquire_records_started_at_for_the_shared_reader(self, storage):
         """``acquire_simple_lock`` reads ``started_at``, defaulting to 0.
