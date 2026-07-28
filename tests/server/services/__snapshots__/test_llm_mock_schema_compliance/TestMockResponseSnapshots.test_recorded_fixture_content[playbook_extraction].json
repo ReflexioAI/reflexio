@@ -2,13 +2,10 @@
   "playbooks": [
     {
       "content": "Provide the requested implementation detail before summarizing.",
-      "evidence": [
-        {
-          "source_span": "implementation details",
-          "turn_ref": "T1"
-        }
-      ],
       "evidence_kind": "correction",
+      "evidence_refs": [
+        "T1"
+      ],
       "rationale": "The user explicitly rejected a vague answer, so leading with implementation detail prevents the observed omission on similar tasks.",
       "trigger": "when user asks about implementation details"
     }

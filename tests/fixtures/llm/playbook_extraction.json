@@ -2,7 +2,7 @@
   "choices": [
     {
       "message": {
-        "content": "{\"playbooks\": [{\"trigger\": \"when user asks about implementation details\", \"content\": \"Provide the requested implementation detail before summarizing.\", \"rationale\": \"The user explicitly rejected a vague answer, so leading with implementation detail prevents the observed omission on similar tasks.\", \"evidence_kind\": \"correction\", \"evidence\": [{\"turn_ref\": \"T1\", \"source_span\": \"implementation details\"}]}]}"
+        "content": "{\"playbooks\": [{\"trigger\": \"when user asks about implementation details\", \"content\": \"Provide the requested implementation detail before summarizing.\", \"rationale\": \"The user explicitly rejected a vague answer, so leading with implementation detail prevents the observed omission on similar tasks.\", \"evidence_kind\": \"correction\", \"evidence_refs\": [\"T1\"]}]}"
       },
       "finish_reason": "stop"
     }

@@ -5,6 +5,7 @@ delete_user_playbook, upgrade_all_user_playbooks, and downgrade_all_user_playboo
 with mocked storage and services.
 """
 
+from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
 
 from reflexio.lib._user_playbook import UserPlaybookMixin
@@ -17,6 +18,8 @@ from reflexio.models.api_schema.service_schemas import (
     DeleteUserPlaybookRequest,
     DeleteUserPlaybooksByIdsRequest,
     DowngradeUserPlaybooksResponse,
+    ReviewUserPlaybooksRequest,
+    ReviewUserPlaybooksResponse,
     UpgradeUserPlaybooksResponse,
     UserPlaybook,
 )
@@ -54,6 +57,45 @@ def _sample_user_playbook(**overrides) -> UserPlaybook:
     }
     defaults.update(overrides)
     return UserPlaybook(**defaults)
+
+
+# ---------------------------------------------------------------------------
+# review_user_playbooks
+# ---------------------------------------------------------------------------
+
+
+class TestReviewUserPlaybooks:
+    def test_delegates_typed_request_to_bulk_service(self):
+        mixin = _make_mixin()
+        request = ReviewUserPlaybooksRequest(
+            start_time=datetime(2026, 1, 1, tzinfo=UTC),
+            end_time=datetime(2026, 1, 2, tzinfo=UTC),
+            report_only=False,
+        )
+        expected = ReviewUserPlaybooksResponse(success=True, report_only=False)
+
+        with patch(
+            "reflexio.server.services.playbook.review_service.UserPlaybookReviewService"
+        ) as service_class:
+            service_class.return_value.run.return_value = expected
+            response = mixin.review_user_playbooks(request)
+
+        assert response is expected
+        service_class.return_value.run.assert_called_once_with(request, run_id=None)
+
+    def test_storage_failure_preserves_requested_mode(self):
+        mixin = _make_mixin(storage_configured=False)
+
+        response = mixin.review_user_playbooks(
+            {
+                "start_time": "2026-01-01T00:00:00Z",
+                "end_time": "2026-01-02T00:00:00Z",
+                "report_only": False,
+            }
+        )
+
+        assert response.success is False
+        assert response.report_only is False
 
 
 # ---------------------------------------------------------------------------

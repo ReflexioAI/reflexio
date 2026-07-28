@@ -1,7 +1,7 @@
 """Playbook route handlers (extracted from api.py, Tier3 A2)."""
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     pass
@@ -46,6 +46,8 @@ from reflexio.models.api_schema.service_schemas import (
     PlaybookAggregationChangeLogResponse,
     RerunPlaybookGenerationRequest,
     RerunPlaybookGenerationResponse,
+    ReviewUserPlaybooksRequest,
+    ReviewUserPlaybooksResponse,
     RunPlaybookAggregationRequest,
     RunPlaybookAggregationResponse,
     UpgradeUserPlaybooksRequest,
@@ -69,9 +71,72 @@ from reflexio.server.routes._common import _run_limited_api
 from reflexio.server.routes._metering import (
     _meter_applied_learnings,
 )
+from reflexio.server.services.playbook.review_service import new_review_run_id
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def _review_user_playbooks_in_background(
+    reflexio: Any,
+    org_id: str,
+    payload: ReviewUserPlaybooksRequest,
+    run_id: str,
+) -> None:
+    """Run an apply-mode review off the request, keeping the operation limit."""
+    try:
+        _run_limited_api(
+            org_id,
+            "aggregation",
+            lambda: reflexio.review_user_playbooks(payload, run_id=run_id),
+        )
+    except Exception:
+        # Nothing is left to raise to: the response was already sent.
+        logger.exception(
+            "event=review_user_playbooks_background_failed org_id=%s run_id=%s",
+            org_id,
+            run_id,
+        )
+
+
+@router.post(
+    "/api/review_user_playbooks",
+    response_model=ReviewUserPlaybooksResponse,
+    response_model_exclude_none=True,
+)
+@limiter.limit("5/minute")
+def review_user_playbooks_endpoint(
+    request: Request,
+    payload: ReviewUserPlaybooksRequest,
+    background_tasks: BackgroundTasks,
+    org_id: str = Depends(default_get_org_id),
+) -> ReviewUserPlaybooksResponse:
+    """Re-review a bounded creation-time window of current user playbooks.
+
+    Report mode answers inline because its report exists only in the response.
+    Apply mode issues one LLM call and one transaction per selected playbook, so
+    it runs in the background to avoid a proxy timeout that would strand the
+    client with committed writes and no response; each applied decision is
+    recorded on the replacement's lineage under the returned ``run_id``.
+    """
+    reflexio = reflexio_cache.get_reflexio(org_id=org_id)
+    if payload.report_only:
+        return _run_limited_api(
+            org_id,
+            "aggregation",
+            lambda: reflexio.review_user_playbooks(payload),
+        )
+
+    run_id = new_review_run_id()
+    background_tasks.add_task(
+        _review_user_playbooks_in_background, reflexio, org_id, payload, run_id
+    )
+    return ReviewUserPlaybooksResponse(
+        success=True,
+        report_only=False,
+        run_id=run_id,
+        msg="User playbook review started",
+    )
 
 
 @router.post(

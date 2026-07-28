@@ -195,6 +195,18 @@ class CandidateEvidenceUnit:
     interaction_id: int
 
 
+@dataclass(frozen=True)
+class PlaybookReviewOutcome:
+    """A validated review result plus the evidence units it was decided against.
+
+    Carrying the units keeps ``decide`` -> ``apply_decisions`` a single pass:
+    rebuilding them means re-walking the whole interaction window.
+    """
+
+    output: PlaybookCandidateReviewOutput
+    units_by_candidate: dict[str, list[CandidateEvidenceUnit]]
+
+
 def _append_review_note(
     existing: str | None,
     decision: str,
@@ -468,7 +480,7 @@ class PlaybookCandidateReviewer:
             )
         return survivors
 
-    def review(
+    def decide(
         self,
         *,
         candidates: list[UserPlaybook],
@@ -477,10 +489,18 @@ class PlaybookCandidateReviewer:
         agent_context: str,
         playbook_definition: str,
         tool_context: str,
-    ) -> list[UserPlaybook]:
-        """Run one fresh same-model review and return accepted/revised survivors."""
+    ) -> PlaybookReviewOutcome:
+        """Run one fresh same-model review and return its validated decisions.
+
+        The returned outcome carries the resolved evidence units alongside the
+        decisions so ``apply_decisions`` never has to rebuild the prompt context
+        (an O(window) walk) a second time.
+        """
         if not candidates:
-            return []
+            return PlaybookReviewOutcome(
+                output=PlaybookCandidateReviewOutput(decisions=[]),
+                units_by_candidate={},
+            )
         prompt_context = build_playbook_prompt_context(
             request_interaction_data_models,
             expert=False,
@@ -538,4 +558,40 @@ class PlaybookCandidateReviewer:
                 for reason_code, count in sorted(reason_counts.items())
             ),
         )
-        return self._apply_decisions(candidates, output, units_by_candidate)
+        return PlaybookReviewOutcome(
+            output=output, units_by_candidate=units_by_candidate
+        )
+
+    def review(
+        self,
+        *,
+        candidates: list[UserPlaybook],
+        request_interaction_data_models: list[RequestInteractionDataModel],
+        existing_playbooks: list[UserPlaybook],
+        agent_context: str,
+        playbook_definition: str,
+        tool_context: str,
+    ) -> list[UserPlaybook]:
+        """Run one fresh same-model review and return accepted/revised survivors."""
+        if not candidates:
+            return []
+        outcome = self.decide(
+            candidates=candidates,
+            request_interaction_data_models=request_interaction_data_models,
+            existing_playbooks=existing_playbooks,
+            agent_context=agent_context,
+            playbook_definition=playbook_definition,
+            tool_context=tool_context,
+        )
+        return self.apply_decisions(candidates=candidates, outcome=outcome)
+
+    def apply_decisions(
+        self,
+        *,
+        candidates: list[UserPlaybook],
+        outcome: PlaybookReviewOutcome,
+    ) -> list[UserPlaybook]:
+        """Apply already-validated decisions without making another model call."""
+        return self._apply_decisions(
+            candidates, outcome.output, outcome.units_by_candidate
+        )
