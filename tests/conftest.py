@@ -1,12 +1,27 @@
 """Test configuration — delegates to shared reflexio.test_support module."""
 
 import os
-import sys
-import tempfile
-from collections.abc import Iterator
-from pathlib import Path
 
-import pytest
+# Must run before any other import in this module. The enterprise sibling of this
+# conftest (`reflexio_ext/tests/conftest.py`) scrubs SENTRY_DSN inside a session-scoped
+# pytest fixture, which runs too late: `reflexio_ext/server/api.py` calls
+# `sentry_sdk.init()` at MODULE IMPORT TIME, and several test files import that module
+# during collection — before any fixture, even a session-scoped autouse one, gets a
+# chance to run (fixture setup fires at first-test setup, which is after collection has
+# already imported every module). This package has no equivalent import-time
+# `sentry_sdk.init()` call today, but the scrub is moved to module level here too for
+# structural symmetry with the enterprise conftest and so it stays correct if one is
+# ever added. A developer's shell or `.env` DSN otherwise reaches the real Sentry project
+# and pollutes production triage with test-run events.
+_PREVIOUS_SENTRY_DSN = os.environ.get("SENTRY_DSN")
+os.environ["SENTRY_DSN"] = ""
+
+import sys  # noqa: E402
+import tempfile  # noqa: E402
+from collections.abc import Iterator  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+import pytest  # noqa: E402
 
 _THIS_DIR = Path(__file__).resolve().parent  # tests/
 PROJECT_ROOT = _THIS_DIR.parent.parent  # repo root
@@ -90,26 +105,12 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
 
 def pytest_unconfigure(config):
     cleanup_llm_mock(config)
-
-
-@pytest.fixture(autouse=True, scope="session")
-def _scrub_sentry_dsn() -> Iterator[None]:
-    """Blank SENTRY_DSN for the whole test session.
-
-    A developer's shell or .env DSN otherwise reaches the real Sentry project and
-    pollutes production triage with test-run events. Tests that deliberately exercise
-    Sentry wiring set the DSN themselves via monkeypatch, which still wins inside their
-    own scope — this only removes the ambient default.
-    """
-    previous = os.environ.get("SENTRY_DSN")
-    os.environ["SENTRY_DSN"] = ""
-    try:
-        yield
-    finally:
-        if previous is None:
-            os.environ.pop("SENTRY_DSN", None)
-        else:
-            os.environ["SENTRY_DSN"] = previous
+    # Pair for the module-import-time scrub above: restore whatever SENTRY_DSN was
+    # ambient before this conftest ran, now that the whole session is done with it.
+    if _PREVIOUS_SENTRY_DSN is None:
+        os.environ.pop("SENTRY_DSN", None)
+    else:
+        os.environ["SENTRY_DSN"] = _PREVIOUS_SENTRY_DSN
 
 
 @pytest.fixture(autouse=True)
