@@ -80,7 +80,7 @@ class Adapter:
         if client is None:
             return False
         try:
-            client.publish_interaction(
+            response = client.publish_interaction(
                 user_id=project_id,
                 interactions=list(interactions),
                 agent_version=runtime.agent_version(),
@@ -89,10 +89,16 @@ class Adapter:
                 force_extraction=force_extraction,
                 skip_aggregation=skip_aggregation,
             )
-            return True
         except Exception as exc:  # noqa: BLE001
             _LOGGER.warning("publish_interaction failed: %s", exc)
             return False
+        # Deliberately outside the try above: the publish has already been
+        # accepted, and the caller advances the buffer watermark only on True.
+        # Letting a diagnostic read raise here would report a *successful*
+        # publish as failed and re-send the same batch on every later hook.
+        for warning in _publish_warnings(response):
+            _LOGGER.warning("reflexio dropped part of the payload: %s", warning)
+        return True
 
     def apply_extraction_defaults(self, *, window_size: int, stride_size: int) -> bool:
         """Push openclaw-smart's preferred extraction defaults to the reflexio server.
@@ -306,6 +312,22 @@ class Adapter:
                 self.fetch_project_profiles, project_id, profile_top_k
             )
         return up_future.result(), ap_future.result(), pr_future.result()
+
+
+def _publish_warnings(response: Any) -> list[str]:
+    """Pull ``warnings`` off a publish response, tolerating any shape.
+
+    Total by construction — no branch here can raise. ``_extract_items`` is
+    not reused because its ``list(value)`` raises on a non-iterable, and this
+    runs on the path where an exception would be misread as a failed publish.
+    """
+    if isinstance(response, dict):
+        value = response.get("warnings")
+    else:
+        value = getattr(response, "warnings", None)
+    if not isinstance(value, (list, tuple)):
+        return []
+    return [str(item) for item in value]
 
 
 def _extract_items(response: Any, field: str) -> list[Any]:

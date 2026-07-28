@@ -261,3 +261,72 @@ def test_to_wire_citations_preserves_explicit_playbook_source_kind() -> None:
         "user_playbook",
         "profile",
     ]
+
+
+class TestWireFieldAllowlist:
+    """The slicer must emit only fields the server's model declares.
+
+    This started as a denylist (`role`, `ts`, `cited_items`), so every
+    buffer-internal key added later — `user_id` was the live one — rode
+    along to the wire and was silently discarded server-side.
+    """
+
+    def test_allowlist_covers_every_model_field(self):
+        """A field the installed model declares but the allowlist omits is a
+        real bug: the slicer would silently drop it.
+
+        The reverse (allowlist ⊃ model) is fine and expected — this plugin
+        pins the field set literally so hooks keep working when `reflexio`
+        is not importable, and an older installed model may lag it.
+        """
+        from reflexio.models.api_schema.domain.entities import InteractionData
+
+        missing = set(InteractionData.model_fields) - state._INTERACTION_DATA_FIELDS
+        assert not missing, (
+            f"allowlist omits InteractionData field(s) {sorted(missing)};"
+            " the slicer would silently drop them"
+        )
+
+    def test_wire_fields_excludes_created_at_but_contract_set_keeps_it(self):
+        assert "created_at" in state._INTERACTION_DATA_FIELDS
+        assert "created_at" not in state._WIRE_FIELDS
+        assert state._WIRE_FIELDS < state._INTERACTION_DATA_FIELDS
+
+    def test_bookkeeping_keys_never_reach_the_wire(self):
+        """`ts` and `user_id` are buffer-internal; `created_at` backdates the
+        row past the extractor's bookmark (see `_WIRE_FIELDS`)."""
+        _, turns = state.unpublished_slice(
+            [
+                {
+                    "ts": 1700000000,
+                    "role": "User",
+                    "content": "x",
+                    "user_id": "proj",
+                    "created_at": 999,
+                }
+            ]
+        )
+        assert turns[0] == {"role": "User", "content": "x"}
+
+    def test_unknown_future_key_is_dropped_by_default(self):
+        _, turns = state.unpublished_slice(
+            [{"role": "User", "content": "x", "some_new_bookkeeping_key": 1}]
+        )
+        assert "some_new_bookkeeping_key" not in turns[0]
+
+    def test_real_model_fields_still_pass_through(self):
+        """Guards against over-filtering: the allowlist must not strip
+        content-bearing fields the server accepts."""
+        _, turns = state.unpublished_slice(
+            [
+                {
+                    "ts": 1,
+                    "role": "User",
+                    "content": "c",
+                    "shadow_content": "s",
+                    "user_action": "click",
+                }
+            ]
+        )
+        assert turns[0]["shadow_content"] == "s"
+        assert turns[0]["user_action"] == "click"

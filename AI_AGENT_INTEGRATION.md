@@ -286,6 +286,7 @@ Python SDK example:
 ```python
 from __future__ import annotations
 
+import logging
 import os
 from reflexio import ReflexioClient
 
@@ -310,7 +311,7 @@ def publish_turns(
 
     client = reflexio_client()
     try:
-        client.publish_interaction(
+        response = client.publish_interaction(
             user_id=user_id,
             interactions=interactions,
             source="my-agent-plugin",
@@ -322,6 +323,10 @@ def publish_turns(
         )
     except Exception:
         return False
+
+    # Outside the try above, deliberately — see "Read `warnings`" below.
+    for warning in response.warnings:
+        logging.warning("reflexio dropped part of the payload: %s", warning)
 
     return True
 ```
@@ -341,6 +346,49 @@ and network errors), but with `wait_for_response=False` the server returns in
 interactive hooks. If you need a truly non-blocking call, a library user can
 submit through the client's `_fire_and_forget(self._publish_interaction_async,
 ...)` path directly.
+
+### Build the Wire Payload With an Allowlist
+
+Convert buffer records to interactions by keeping **only** the fields
+`InteractionData` declares — never by excluding the bookkeeping keys you happen
+to know about today. A denylist silently widens every time you add a field to
+your buffer, and the server discards unrecognised keys rather than rejecting
+them — so nothing breaks, and the payload just quietly carries junk.
+
+Both first-party plugins pin their allowlist against the real model in a test,
+which fails if `InteractionData` grows a field the plugin would drop. Copy that
+pattern rather than importing the model at runtime if your hooks must survive
+Reflexio being uninstalled.
+
+One field deserves special care: **do not send `created_at`.** Extraction is
+bookmarked on interaction `created_at` (`created_at >= last_processed`), so a
+batch recovered from an offline buffer and stamped with its original event time
+is stored and then never extracted — permanent, silent loss on exactly the path
+the buffer exists to protect. Let the server stamp drain time.
+
+### Read `warnings` — a 200 Does Not Mean Everything Bound
+
+`PublishUserInteractionResponse.warnings` lists what the server accepted but
+could not use: unrecognised field names (per interaction, with the caller's own
+index) and interactions skipped for carrying no content. A correctly-shaped
+payload produces an empty list, so anything here is real drift worth logging.
+
+This channel exists because it is otherwise possible to publish 50 interactions,
+receive `200 OK`, and store 50 rows with `content = ''` — which happened, and
+cost hours to diagnose. A mis-keyed `Content` binds nothing and `content`
+defaults to `""`.
+
+Note that only *some* shape errors are warnings. A payload where **every**
+interaction is contentless is rejected outright with `422`, on both the sync and
+the background-task path.
+
+Read the warnings **outside** whatever `try` guards the publish call. The
+publish already succeeded at that point; if reading diagnostics could raise into
+a handler that returns "failed", a successful batch would never be marked
+published and would be re-sent on every subsequent hook — an infinite duplicate
+loop caused purely by the code meant to improve observability. For the same
+reason, keep the read itself total: tolerate a missing or oddly-shaped
+`warnings` value instead of assuming it is a list.
 
 ### Extraction Is Gated — Don't Expect a Result From One Publish
 

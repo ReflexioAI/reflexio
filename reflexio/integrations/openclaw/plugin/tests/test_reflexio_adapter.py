@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import logging
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
 from openclaw_smart.reflexio_adapter import Adapter
 
 
@@ -186,3 +189,59 @@ def test_mark_stall_notified_swallows_errors():
     with patch.object(adapter, "_get_client", return_value=fake_client):
         # Must not raise
         adapter.mark_stall_notified()
+
+
+class TestPublishWarnings:
+    """The server reports fields it could not bind; the hook log must show them.
+
+    Silent field-dropping is the defect this channel exists for: a publish of
+    50 mis-keyed interactions returned 200 and stored 50 empty rows.
+    """
+
+    def _publish_with_response(self, response, caplog):
+        fake_client = MagicMock()
+        fake_client.publish_interaction.return_value = response
+        adapter = Adapter()
+        with (
+            patch.object(adapter, "_get_client", return_value=fake_client),
+            caplog.at_level(logging.WARNING, logger="openclaw_smart.reflexio_adapter"),
+        ):
+            ok = adapter.publish(
+                session_id="s",
+                project_id="p",
+                interactions=[{"role": "User", "content": "x"}],
+            )
+        return ok, caplog.text
+
+    def test_server_warnings_are_logged(self, caplog):
+        response = SimpleNamespace(
+            warnings=["interaction_data_list[0]: ignored unrecognised field(s) Content"]
+        )
+        ok, text = self._publish_with_response(response, caplog)
+        assert ok is True
+        assert "unrecognised field(s) Content" in text
+
+    def test_dict_shaped_response_is_read(self, caplog):
+        ok, text = self._publish_with_response({"warnings": ["dropped foo"]}, caplog)
+        assert ok is True
+        assert "dropped foo" in text
+
+    def test_quiet_when_there_is_nothing_to_report(self, caplog):
+        ok, text = self._publish_with_response(SimpleNamespace(warnings=[]), caplog)
+        assert ok is True
+        assert "dropped part of the payload" not in text
+
+    @pytest.mark.parametrize(
+        "response", [None, SimpleNamespace(), {"warnings": None}, {"warnings": 5}]
+    )
+    def test_odd_response_shapes_still_report_success(self, response, caplog):
+        """A publish the server accepted must never be reported as failed.
+
+        `publish_unpublished` advances the buffer watermark only on True, so
+        raising while reading diagnostics would re-send the same accepted
+        batch on every subsequent hook — duplicates forever, caused purely by
+        the code that was supposed to improve observability. This is why the
+        warning read sits outside the try that guards the publish call.
+        """
+        ok, _ = self._publish_with_response(response, caplog)
+        assert ok is True

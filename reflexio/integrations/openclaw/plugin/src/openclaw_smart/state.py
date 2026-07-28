@@ -36,6 +36,38 @@ _DEFAULT_STATE_DIR = Path.home() / ".openclaw-smart" / "sessions"
 
 _TOOL_DATA_FIELD_MAX_LEN = 256
 
+# Fields the server's ``InteractionData`` accepts. Declared literally rather
+# than imported so this module keeps no runtime dependency on ``reflexio`` —
+# hooks must survive an uninstalled or broken server package. ``tests/
+# test_state.py`` pins it against the real model. Anything not listed here is
+# buffer-internal bookkeeping and must not reach the wire.
+_INTERACTION_DATA_FIELDS = frozenset(
+    {
+        "created_at",
+        "role",
+        "content",
+        "shadow_content",
+        "expert_content",
+        "user_action",
+        "user_action_description",
+        "interacted_image_url",
+        "image_encoding",
+        "tools_used",
+        "citations",
+        "retrieved_learnings",
+    }
+)
+
+# Fields actually put on the wire. `created_at` is a real InteractionData field
+# — so it must stay in the set above, which is pinned against the model — but it
+# must NOT be emitted. Sending a buffered event time backdates the interaction,
+# and the extractor's bookmark is keyed on `created_at` (`created_at >= ?`), so a
+# batch recovered after the bookmark moved is stored and then never extracted:
+# permanent, silent loss of learning data on exactly the offline-recovery path
+# this buffer exists for. Letting the server stamp its own time is the lesser
+# evil until ingest ordering stops depending on caller-supplied event time.
+_WIRE_FIELDS = _INTERACTION_DATA_FIELDS - {"created_at"}
+
 _VALID_CITATION_KINDS = frozenset(
     {"playbook", "profile", "user_playbook", "agent_playbook"}
 )
@@ -315,9 +347,11 @@ def unpublished_slice(
             pending_tools.append(tool_entry)
             continue
         if role in {"User", "Assistant"}:
-            turn = {
-                k: v for k, v in rec.items() if k not in {"role", "ts", "cited_items"}
-            }
+            # Allowlist, not a denylist: an unrecognised buffer key must be
+            # dropped by default. The previous exclude-list let every new
+            # bookkeeping field (e.g. `user_id`) onto the wire, where the
+            # server silently discards it.
+            turn = {k: v for k, v in rec.items() if k in _WIRE_FIELDS}
             turn["role"] = role
             if role == "Assistant":
                 citations = _to_wire_citations(rec.get("cited_items"))
