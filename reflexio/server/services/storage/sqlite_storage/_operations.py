@@ -325,8 +325,12 @@ class OperationMixin:
                 is_stale = (now - int(started_at)) >= stale_lock_seconds
             else:
                 updated_at_str = row["updated_at"]
+                # Same ``>=`` boundary as the canonical path above: the two
+                # branches are the same concept measured from different clocks, so
+                # a lock exactly ``stale_lock_seconds`` old must be reclaimable
+                # under both. (The pre-existing code here used ``>``.)
                 is_stale = bool(updated_at_str) and (
-                    (now - _iso_to_epoch(updated_at_str)) > stale_lock_seconds
+                    (now - _iso_to_epoch(updated_at_str)) >= stale_lock_seconds
                 )
 
             # ``in_progress`` is the canonical held-flag: it is what the Postgres

@@ -87,8 +87,14 @@ class LineageEventMixin:
         Idempotent in both the rows and the event — re-running on
         already-tombstoned sources changes nothing and records nothing.
 
-        This is the cross-backend contract; every implementation must match it,
-        and the shared storage contract tests assert it.
+        This is the cross-backend contract every implementation must match.
+
+        Note what does and does not enforce it: the shared storage contract tests
+        assert it only for the backends in the ``storage`` fixture, which is
+        SQLite today. The Postgres/Supabase implementation is held to the same
+        contract by ``tenant.lineage_merge_records`` (see the tenant migration
+        stream), not by those tests — so a backend can satisfy the fixture and
+        still drift here. Changing this contract means changing both.
 
         Args:
             entity_type (str): One of ``"user_playbook"``, ``"agent_playbook"``,
