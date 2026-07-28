@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import logging
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
 from openclaw_smart.reflexio_adapter import Adapter
+
+_ADAPTER_LOGGER = "openclaw_smart.reflexio_adapter"
 
 
 def test_default_url_is_8071():
@@ -186,3 +191,119 @@ def test_mark_stall_notified_swallows_errors():
     with patch.object(adapter, "_get_client", return_value=fake_client):
         # Must not raise
         adapter.mark_stall_notified()
+
+
+class _WarningsPropertyRaises:
+    """A response object whose ``warnings`` access blows up.
+
+    ``getattr(obj, "warnings", None)`` swallows only ``AttributeError`` — any
+    other exception a property raises propagates straight through the default.
+    A pydantic model with a computed field, or a lazy client wrapper that
+    re-reads the socket on attribute access, is exactly this shape.
+    """
+
+    @property
+    def warnings(self) -> list[str]:
+        raise RuntimeError("warnings unavailable")
+
+
+class _MappingGetRaises(dict):
+    """A ``dict`` subclass whose ``.get`` raises.
+
+    ``isinstance(response, dict)`` is True, so the mapping branch is taken and
+    the override — not ``dict.get`` — is what runs.
+    """
+
+    def get(self, *args: object, **kwargs: object) -> object:
+        raise KeyError("get is not safe on this mapping")
+
+
+class _UnprintableWarning:
+    """A warning item that cannot be rendered: ``str(item)`` raises."""
+
+    def __str__(self) -> str:
+        raise ValueError("cannot render this warning")
+
+
+class TestPublishWarnings:
+    """The server reports fields it could not bind; the hook log must show them.
+
+    Silent field-dropping is the defect this channel exists for: a publish of
+    50 mis-keyed interactions returned 200 and stored 50 empty rows.
+    """
+
+    def _publish_with_response(self, response, caplog) -> bool:
+        fake_client = MagicMock()
+        fake_client.publish_interaction.return_value = response
+        adapter = Adapter()
+        with (
+            patch.object(adapter, "_get_client", return_value=fake_client),
+            caplog.at_level(logging.WARNING, logger=_ADAPTER_LOGGER),
+        ):
+            return adapter.publish(
+                session_id="s",
+                project_id="p",
+                interactions=[{"role": "User", "content": "x"}],
+            )
+
+    @staticmethod
+    def _adapter_records(caplog):
+        return [r for r in caplog.records if r.name == _ADAPTER_LOGGER]
+
+    def test_server_warnings_are_logged(self, caplog):
+        response = SimpleNamespace(
+            warnings=["interaction_data_list[0]: ignored unrecognised field(s) Content"]
+        )
+        assert self._publish_with_response(response, caplog) is True
+        assert "unrecognised field(s) Content" in caplog.text
+
+    def test_dict_shaped_response_is_read(self, caplog):
+        assert (
+            self._publish_with_response({"warnings": ["dropped foo"]}, caplog) is True
+        )
+        assert "dropped foo" in caplog.text
+
+    def test_quiet_when_there_is_nothing_to_report(self, caplog):
+        # Assert on records, not on the absence of a log substring: a reworded
+        # message would make a substring check silently vacuous, and this test
+        # is the only thing standing between a clean publish and log noise.
+        assert self._publish_with_response(SimpleNamespace(warnings=[]), caplog) is True
+        assert self._adapter_records(caplog) == []
+
+    @pytest.mark.parametrize(
+        "response", [None, SimpleNamespace(), {"warnings": None}, {"warnings": 5}]
+    )
+    def test_odd_response_shapes_still_report_success(self, response, caplog):
+        """A publish the server accepted must never be reported as failed.
+
+        `publish_unpublished` advances the buffer watermark only on True, so
+        raising while reading diagnostics would re-send the same accepted
+        batch on every subsequent hook — duplicates forever, caused purely by
+        the code that was supposed to improve observability. This is why the
+        warning read sits outside the try that guards the publish call.
+        """
+        assert self._publish_with_response(response, caplog) is True
+
+    @pytest.mark.parametrize(
+        "response",
+        [
+            pytest.param(_WarningsPropertyRaises(), id="warnings-property-raises"),
+            pytest.param(_MappingGetRaises(warnings=["x"]), id="mapping-get-raises"),
+            pytest.param(
+                {"warnings": [_UnprintableWarning()]}, id="warning-item-str-raises"
+            ),
+        ],
+    )
+    def test_hostile_response_shapes_still_report_success(self, response, caplog):
+        """The shapes that actually escape the isinstance guard.
+
+        The parametrisation above only exercises inputs the guard already
+        rejects, so it asserts totality without testing it. These three reach
+        past it — attribute access, ``.get``, and ``str()`` are each a call
+        into caller-controlled code that can raise anything. The consequence of
+        a leaked exception is not a lost log line: ``publish`` would propagate
+        instead of returning True, ``publish_unpublished`` would leave the
+        buffer watermark where it was, and the same server-accepted batch would
+        be re-sent on every subsequent hook, forever.
+        """
+        assert self._publish_with_response(response, caplog) is True

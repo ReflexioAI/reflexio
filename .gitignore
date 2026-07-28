@@ -221,3 +221,8 @@ plan.md
 
 # Superpowers / SDD working artifacts (internal dev notes — never publish to OSS)
 .superpowers/
+
+# Pytest artifacts from MagicMock-stubbed storage paths: a mocked
+# request_context.storage_base_dir stringifies into a real directory name,
+# so the suite writes a tree named after the mock object.
+MagicMock/

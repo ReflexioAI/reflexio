@@ -286,7 +286,9 @@ Python SDK example:
 ```python
 from __future__ import annotations
 
+import logging
 import os
+from pydantic import ValidationError
 from reflexio import ReflexioClient
 
 
@@ -310,7 +312,7 @@ def publish_turns(
 
     client = reflexio_client()
     try:
-        client.publish_interaction(
+        response = client.publish_interaction(
             user_id=user_id,
             interactions=interactions,
             source="my-agent-plugin",
@@ -320,8 +322,28 @@ def publish_turns(
             force_extraction=False,
             skip_aggregation=False,
         )
+    except ValidationError as exc:
+        # The payload is invalid, so retrying can never succeed. Return True to
+        # advance the high-water mark and stop re-sending it — see "A rejected
+        # batch is not a retryable failure" below. Log the exception TYPE, not
+        # the exception: a ValidationError renders the offending input, and
+        # logging.exception would additionally capture frame locals holding the
+        # whole payload.
+        logging.error(
+            "dropping unpublishable batch of %d (%s)",
+            len(interactions),
+            type(exc).__name__,
+        )
+        return True
     except Exception:
         return False
+
+    # Outside the try above, and defensive about the shape — see
+    # "Read `warnings`" below for why both matter.
+    warnings = getattr(response, "warnings", None)
+    if isinstance(warnings, list):
+        for warning in warnings:
+            logging.warning("reflexio dropped part of the payload: %s", warning)
 
     return True
 ```
@@ -341,6 +363,87 @@ and network errors), but with `wait_for_response=False` the server returns in
 interactive hooks. If you need a truly non-blocking call, a library user can
 submit through the client's `_fire_and_forget(self._publish_interaction_async,
 ...)` path directly.
+
+### Build the Wire Payload With an Allowlist
+
+Convert buffer records to interactions by keeping **only** the fields
+`InteractionData` declares — never by excluding the bookkeeping keys you happen
+to know about today. A denylist silently widens every time you add a field to
+your buffer, and the server discards unrecognised keys rather than rejecting
+them — so nothing breaks, and the payload just quietly carries junk.
+
+Both first-party plugins pin their allowlist against the real model in a test,
+which fails if `InteractionData` grows a field the plugin would drop. Copy that
+pattern rather than importing the model at runtime if your hooks must survive
+Reflexio being uninstalled.
+
+One field deserves special care: **do not send `created_at`.** Extraction is
+bookmarked on interaction `created_at` (`created_at >= last_processed`), so a
+batch recovered from an offline buffer and stamped with its original event time
+is stored and then never extracted — permanent, silent loss on exactly the path
+the buffer exists to protect. Let the server stamp drain time.
+
+### Read `warnings` — a 200 Does Not Mean Everything Bound
+
+`PublishUserInteractionResponse.warnings` lists what the server accepted but
+could not use: unrecognised field names (per interaction, with the caller's own
+index) and interactions skipped for carrying no content. A correctly-shaped
+payload produces no *payload* warnings, so anything of that kind is real drift
+worth logging.
+
+This channel exists because it is otherwise possible to publish 50 interactions,
+receive `200 OK`, and store 50 rows with `content = ''` — which happened, and
+cost hours to diagnose. A mis-keyed `Content` binds nothing and `content`
+defaults to `""`.
+
+Four caveats:
+
+- **The list is bounded** — at most 5 field names per interaction and 20 entries
+  overall, each with a `+N more` suffix. On a large broken batch treat it as a
+  sample, not an inventory.
+- **`user_id` and `session_id` are stripped without a warning.** They are
+  request-level fields that callers routinely repeat on every interaction, so
+  reporting them would be noise. Their absence from the list is not evidence
+  they bound.
+- **The same field also carries extraction warnings**, including the
+  provider-stall notice — but only when `wait_for_response=True`. The deferred
+  path returns payload warnings alone.
+- **`_fire_and_forget(self._publish_interaction_async, ...)` reports nothing.**
+  That path does not merge local warnings, and the SDK strips unknown keys
+  before they reach the server, so the whole channel is silent there. Use
+  `publish_interaction` if you want the diagnostic.
+
+Read the warnings **outside** whatever `try` guards the publish call. The
+publish already succeeded at that point; if reading diagnostics could raise into
+a handler that returns "failed", a successful batch would never be marked
+published and would be re-sent on every subsequent hook — an infinite duplicate
+loop caused purely by the code meant to improve observability. For the same
+reason, keep the read itself total: tolerate a missing or oddly-shaped
+`warnings` value instead of assuming it is a list.
+
+### A Rejected Batch Is Not a Retryable Failure
+
+Only *some* shape problems are warnings. A payload where **every** interaction
+is contentless is rejected, as are two contradictions: a `user_action` other
+than `none` with no `user_action_description`, and `interacted_image_url` and
+`image_encoding` both set. Over raw HTTP that is a `422`. **Through the Python
+SDK it is a local `pydantic.ValidationError`, raised before any HTTP request** —
+so there is no status code to inspect and no response object.
+
+This matters for the buffer pattern above. The natural `except Exception:
+return False` treats rejection exactly like a network error: the high-water mark
+never advances, and the next hook re-sends the same batch, which is rejected
+again, forever. Catch `ValidationError` separately and either advance past the
+batch or quarantine it — a payload the client refuses to send will not become
+valid on the next attempt.
+
+The example only covers the client-side half. If the server is stricter than
+your pinned client — a newer validation rule, or a payload built as raw JSON
+rather than through the SDK — rejection arrives as an HTTP `422` inside your
+transport's error type, not as a `ValidationError`, and falls straight into the
+generic handler. Treat **any** `4xx` other than `408`/`429` the same way you
+treat a `ValidationError`: it is a permanent rejection, not a retryable failure.
+Only `5xx`, timeouts, and connection errors deserve a retry.
 
 ### Extraction Is Gated — Don't Expect a Result From One Publish
 

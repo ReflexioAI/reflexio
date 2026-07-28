@@ -69,20 +69,27 @@ def publish_user_interaction(
     wait_for_response: bool = False,
     _gate: None = Depends(default_billing_gate("learnings_generated")),  # noqa: B008
 ) -> PublishUserInteractionResponse:
-    # An empty interaction is dropped rather than failing the batch (plugins
-    # emit empty placeholder turns). Record it server-side so the drop is not
-    # silent; a caller-facing warnings channel is a separate change.
-    # INFO, not WARNING: the surrounding design treats an empty placeholder turn
-    # as normal plugin behaviour, so warning on it would train operators to
-    # ignore the channel.
-    if skipped := payload.skipped_empty_summary():
-        logger.info("Publish for org %s %s", org_id, skipped)
+    # Anything the request validation quietly altered: unrecognised keys that
+    # were stripped, and empty interactions that were dropped. Returned to the
+    # caller AND recorded server-side, because a mis-keyed field is otherwise
+    # silent data loss. Names only, bounded, control characters stripped -- the
+    # values are caller payload and the names are equally caller-controlled.
+    #
+    # INFO, not WARNING: an empty placeholder turn is normal plugin behaviour,
+    # and warning on the routine case trains operators to ignore the channel.
+    payload_warnings = payload.payload_warnings()
+    if payload_warnings:
+        logger.info(
+            "Publish for org %s altered the payload: %s",
+            org_id,
+            "; ".join(payload_warnings),
+        )
 
     if wait_for_response:
         # Sync callers wait for the real result, so preserve bounded backpressure
         # before any storage side effects. The inner service limiter is disabled
         # because this route already owns the publish slot.
-        return _run_limited_api(
+        sync_response = _run_limited_api(
             org_id,
             "publish",
             lambda: publisher_api.add_user_interaction(
@@ -91,6 +98,10 @@ def publish_user_interaction(
                 use_publish_limiter=False,
             ),
         )
+        # Appended, not assigned: `warnings` already carries extraction-stall
+        # warnings from the generation service, which the CLI renders.
+        sync_response.warnings = [*sync_response.warnings, *payload_warnings]
+        return sync_response
 
     # Resolve the request_id BEFORE backgrounding so we can return it to the
     # caller for polling. GenerationService uses a caller-supplied request_id
@@ -168,6 +179,7 @@ def publish_user_interaction(
         message="Interaction queued for processing",
         request_id=request_id,
         learning_status="deferred",
+        warnings=payload_warnings,
     )
 
 
