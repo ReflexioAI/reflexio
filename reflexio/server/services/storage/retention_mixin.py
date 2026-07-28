@@ -104,6 +104,38 @@ class RetentionMixin(ABC):
         self._retention_perform_delete(target, keys)
         return len(keys)
 
+    def gc_retired_optimization_jobs(
+        self,
+        *,
+        older_than_epoch: int,
+        stale_before_epoch: int,
+        limit: int = 1000,
+    ) -> int:
+        """Apply fixed optimization terminal and staging retention ownership.
+
+        Enterprise SQL backends override the protected hook. OSS backends have
+        no provider/publication staging tables and therefore return zero.
+        """
+        if older_than_epoch < 0 or stale_before_epoch < 0:
+            raise ValueError("optimization retention cutoffs must be non-negative")
+        if limit <= 0:
+            raise ValueError("optimization retention limit must be positive")
+        return self._retention_gc_retired_optimization_jobs(
+            older_than_epoch=older_than_epoch,
+            stale_before_epoch=stale_before_epoch,
+            limit=limit,
+        )
+
+    def _retention_gc_retired_optimization_jobs(
+        self,
+        *,
+        older_than_epoch: int,
+        stale_before_epoch: int,
+        limit: int,
+    ) -> int:
+        del older_than_epoch, stale_before_epoch, limit
+        return 0
+
     def _retention_select_keys(
         self, target: RetentionTarget, count: int
     ) -> list[tuple[Any, ...]]:

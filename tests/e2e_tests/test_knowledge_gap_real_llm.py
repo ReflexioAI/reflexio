@@ -20,6 +20,7 @@ import pytest
 from reflexio.lib.reflexio_lib import Reflexio
 from reflexio.models.api_schema.retriever_schema import GetUserPlaybooksRequest
 from reflexio.models.api_schema.service_schemas import InteractionData, UserPlaybook
+from reflexio.models.config_schema import SINGLETON_USER_PLAYBOOK_NAME
 from tests.server.test_utils import skip_low_priority
 
 pytestmark = [pytest.mark.e2e, pytest.mark.requires_credentials]
@@ -35,6 +36,10 @@ def test_knowledge_gap_extraction_real_llm(
     Uses the default agent_context_prompt and user_playbook_extractor_config.
     Verify the extracted playbook captures the knowledge gap honestly.
     """
+    assert os.environ.get("MOCK_LLM_RESPONSE", "").strip().lower() != "true", (
+        "requires_credentials E2E tests must run without MOCK_LLM_RESPONSE=true"
+    )
+
     interactions = [
         InteractionData(
             role="User",
@@ -62,82 +67,75 @@ def test_knowledge_gap_extraction_real_llm(
         ),
     ]
 
-    # Publish with real LLM (no MOCK_LLM_RESPONSE)
-    original_mock = os.environ.pop("MOCK_LLM_RESPONSE", None)
-    try:
-        response = reflexio_instance_playbook_only.publish_interaction(
-            {
-                "user_id": "knowledge_gap_user",
-                "session_id": "e2e_test_session",
-                "interaction_data_list": interactions,
-                "source": "test_knowledge_gap",
-                "agent_version": "v1.0",
-                "force_extraction": True,
-            }
-        )
-        assert response.success is True
+    response = reflexio_instance_playbook_only.publish_interaction(
+        {
+            "user_id": "knowledge_gap_user",
+            "session_id": "e2e_test_session",
+            "interaction_data_list": interactions,
+            "source": "test_knowledge_gap",
+            "agent_version": "v1.0",
+            "force_extraction": True,
+        }
+    )
+    assert response.success is True
 
-        # Retrieve extracted playbooks
-        playbooks_response = reflexio_instance_playbook_only.get_user_playbooks(
-            GetUserPlaybooksRequest(
-                playbook_name="test_playbook",
-                status_filter=[None],
+    # Retrieve extracted playbooks
+    playbooks_response = reflexio_instance_playbook_only.get_user_playbooks(
+        GetUserPlaybooksRequest(
+            playbook_name=SINGLETON_USER_PLAYBOOK_NAME,
+            status_filter=[None],
+        )
+    )
+    assert playbooks_response.success is True
+    user_playbooks = playbooks_response.user_playbooks
+    assert user_playbooks, (
+        "Expected at least one playbook from knowledge-gap interaction"
+    )
+
+    # Print extracted playbooks for inspection
+    print("\n" + "=" * 70)
+    print("EXTRACTED PLAYBOOKS FROM KNOWLEDGE-GAP INTERACTION")
+    print("=" * 70)
+    for i, pb in enumerate(user_playbooks, 1):
+        print(f"\n--- Playbook {i} ---")
+        print(f"  Trigger:   {pb.trigger}")
+        print(f"  Content:   {pb.content}")
+        if pb.rationale:
+            print(f"  Rationale: {pb.rationale}")
+        if pb.blocking_issue:
+            print(
+                f"  Blocking:  [{pb.blocking_issue.kind}] {pb.blocking_issue.details}"
             )
-        )
-        assert playbooks_response.success is True
-        user_playbooks = playbooks_response.user_playbooks
-        assert user_playbooks, (
-            "Expected at least one playbook from knowledge-gap interaction"
-        )
+    print("\n" + "=" * 70)
 
-        # Print extracted playbooks for inspection
-        print("\n" + "=" * 70)
-        print("EXTRACTED PLAYBOOKS FROM KNOWLEDGE-GAP INTERACTION")
-        print("=" * 70)
-        for i, pb in enumerate(user_playbooks, 1):
-            print(f"\n--- Playbook {i} ---")
-            print(f"  Trigger:   {pb.trigger}")
-            print(f"  Content:   {pb.content}")
-            if pb.rationale:
-                print(f"  Rationale: {pb.rationale}")
-            if pb.blocking_issue:
-                print(
-                    f"  Blocking:  [{pb.blocking_issue.kind}] {pb.blocking_issue.details}"
-                )
-        print("\n" + "=" * 70)
+    # Verify schema: flat fields, no instruction/pitfall
+    for pb in user_playbooks:
+        assert pb.content and pb.content.strip()
+        assert pb.trigger and pb.trigger.strip()
+        assert "instruction" not in UserPlaybook.model_fields
+        assert "pitfall" not in UserPlaybook.model_fields
 
-        # Verify schema: flat fields, no instruction/pitfall
-        for pb in user_playbooks:
-            assert pb.content and pb.content.strip()
-            assert pb.trigger and pb.trigger.strip()
-            assert "instruction" not in UserPlaybook.model_fields
-            assert "pitfall" not in UserPlaybook.model_fields
-
-        # Verify content quality: should mention the gap, not hallucinate a fix
-        all_content = " ".join(pb.content for pb in user_playbooks).lower()
-        # The playbook should reference the core issue: guessing / fabricating / no access
-        gap_keywords = [
-            "access",
-            "check",
-            "look up",
-            "guess",
-            "fabricat",
-            "admit",
-            "transparent",
-            "don't have",
-            "cannot",
-            "unable",
-            "honest",
-            "limitation",
-            "assume",
-            "verify",
-            "make up",
-            "invented",
-        ]
-        assert any(kw in all_content for kw in gap_keywords), (
-            f"Playbook content should reference the knowledge gap. Got: {all_content}"
-        )
-
-    finally:
-        if original_mock is not None:
-            os.environ["MOCK_LLM_RESPONSE"] = original_mock
+    # Verify content quality: should mention the gap, not hallucinate a fix
+    all_content = " ".join(pb.content for pb in user_playbooks).lower()
+    # The playbook should reference the core issue: guessing / fabricating / no access
+    gap_keywords = [
+        "access",
+        "check",
+        "look up",
+        "guess",
+        "fabricat",
+        "admit",
+        "transparent",
+        "don't have",
+        "cannot",
+        "unable",
+        "honest",
+        "limitation",
+        "assume",
+        "verify",
+        "make up",
+        "invented",
+    ]
+    assert any(kw in all_content for kw in gap_keywords), (
+        f"Playbook content should reference the knowledge gap. Got: {all_content}"
+    )

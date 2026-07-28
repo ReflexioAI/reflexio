@@ -1003,6 +1003,36 @@ class TestRun:
 
     @patch.object(PlaybookAggregator, "get_clusters")
     @patch.object(PlaybookAggregator, "_generate_playbooks_with_source_clusters")
+    def test_managed_run_does_not_complete_when_supersession_fails(
+        self, mock_gen, mock_clust
+    ):
+        agg = self._make_runnable_aggregator()
+        raws = [_raw(rid=1), _raw(rid=2)]
+        generated = _agent_playbook(fid=100)
+        mock_clust.return_value = {0: raws}
+        mock_gen.return_value = [(generated, raws, None)]
+
+        coordinator = MagicMock()
+
+        @contextmanager
+        def _apply_scope():
+            yield
+
+        coordinator.apply_scope.side_effect = _apply_scope
+        coordinator.save_agent_playbook.return_value = generated
+        agg.effect_coordinator = coordinator
+        agg.storage.supersede_agent_playbooks_by_playbook_name.side_effect = (
+            RuntimeError("supersession failed")
+        )
+
+        with pytest.raises(RuntimeError, match="supersession failed"):
+            agg.run(PlaybookAggregatorRequest(agent_version="v1", rerun=True))
+
+        coordinator.complete.assert_not_called()
+        agg.storage.restore_archived_agent_playbooks_by_playbook_name.assert_not_called()
+
+    @patch.object(PlaybookAggregator, "get_clusters")
+    @patch.object(PlaybookAggregator, "_generate_playbooks_with_source_clusters")
     def test_first_run_no_prev_fingerprints_full_archive(self, mock_gen, mock_clust):
         """First run (no previous fingerprints) triggers full archive."""
         agg = self._make_runnable_aggregator()

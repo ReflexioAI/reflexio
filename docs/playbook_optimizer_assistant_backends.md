@@ -55,7 +55,9 @@ The "assistant backend" is the thing that turns *(messages, playbooks)* into the
 │       )                                                               │              │
 │                                                                       │              │
 │  7.  if best passes commit thresholds:                                │              │
-│         _commit_if_allowed → archive incumbent, save successor        │              │
+│         agent target → _commit_if_allowed                             │              │
+│         user target  → stage proof + projection, then atomically      │              │
+│                        replace incumbent with one successor            │              │
 └───────────────────────────────────────────────────────────────────────┼──────────────┘
                                                                         │
                                                                         │ for each
@@ -262,7 +264,15 @@ Useful as a smoke test — confirms the optimizer end-to-end without needing an 
 
 ## 5. How a backend is selected at runtime
 
-Selection happens once per `optimize()` call inside `PlaybookOptimizer._create_assistant`:
+Before selecting a backend, `optimize()` applies the feature, target-kind, and
+adoption kill switches. For user-playbook targets it then attempts to recover
+any expired staged publication. Recovery uses the already durable candidate,
+evaluation digests, decision proof, and search projection; it does not rerun
+GEPA or require an assistant backend. A disabled kill switch prevents both a
+new run and publication recovery.
+
+For a new optimization run, backend selection happens once per `optimize()`
+call inside `PlaybookOptimizer._create_assistant`:
 
 ```python
 def _create_assistant(self, config) -> AssistantCallable | None:
@@ -280,7 +290,11 @@ def _create_assistant(self, config) -> AssistantCallable | None:
 | Both set | **Rejected at config load time** by a Pydantic validator (`ValueError: Configure only one playbook optimizer assistant backend...`) |
 | Neither set | Optimizer logs `Skipping playbook optimization: no assistant backend configured` and returns without creating a job |
 
-The backend check happens *before* loading the incumbent or resolving scenario windows, so an unconfigured optimizer short-circuits cheaply. After source-window resolution, the optimizer also skips before job creation when the validation holdout is smaller than `min_commit_windows` or the target kind has no enabled auto-update path.
+The backend check happens *before* loading the incumbent or resolving scenario
+windows, so an unconfigured optimizer short-circuits cheaply when there is no
+recoverable publication. After source-window resolution, the optimizer also
+skips before job creation when the validation holdout is smaller than
+`min_commit_windows`.
 
 ---
 
@@ -362,13 +376,13 @@ playbook_optimizer_config:
 
 ## 7. End-to-end workflow
 
-What happens, in order, when a new agent playbook is generated and the optimizer is enabled:
+What happens, in order, when a playbook is scheduled and the optimizer is enabled:
 
 | Step | Component | What it does |
 |---|---|---|
 | 1 | `PlaybookAggregator._enqueue_playbook_optimization` | After saving new agent playbooks, enqueues each PENDING playbook with the scheduler. |
 | 2 | `PlaybookOptimizationScheduler` | Debounces by `(org_id, kind, target_id)`, fires after a small jitter, spawns a daemon thread. |
-| 3 | `PlaybookOptimizer.optimize(target)` | Loads config, calls `_create_assistant` → backend instance (or returns early). |
+| 3 | `PlaybookOptimizer.optimize(target)` | Applies feature, target, and adoption gates. For user targets, resumes an expired staged publication before starting new search work. |
 | 4 | `ScenarioResolver` | Builds `ScenarioWindow`s from snapshotted agent source windows or a user playbook's `source_interaction_ids`. |
 | 5 | `gepa.api.optimize(...)` | Runs the candidate-search loop. |
 | 6 | `ReflexioPlaybookGEPAAdapter.evaluate` | For each `(candidate, window)`: |
@@ -378,9 +392,12 @@ What happens, in order, when a new agent playbook is generated and the optimizer
 |   |   | • Persists `PlaybookOptimizationEvaluation` row |
 | 7 | Failure handling | Any `AssistantFailedError` → `verdict="aborted"`, `score=0.0`, GEPA continues. |
 | 8 | `PlaybookOptimizer._passes_commit_thresholds` | Checks score / likert / per-window verdict counts. |
-| 9 | `PlaybookOptimizer._commit_if_allowed` | If gates pass → archive incumbent, save successor playbook. |
+| 9a | Agent-playbook publication | `_commit_if_allowed` archives the pending incumbent and saves its successor. |
+| 9b | User-playbook publication | Builds a fixed decision proof and search projection, stages them durably, then atomically replaces the current user playbook with exactly one successor. The compact proof binds each full durable evaluation through a canonical digest rather than duplicating rollout documents. |
+| 10 | User-playbook recovery | A later enabled run may reclaim an expired publication lease and finish from the staged bytes. Incumbent changes produce `incumbent_changed`; retries do not rerun GEPA or regenerate the projection. |
 
-The same flow runs for user playbooks, gated by `optimize_user_playbooks`.
+User-playbook recovery and new runs both require `enabled`,
+`optimize_user_playbooks`, and `auto_update_user_playbooks`.
 
 ---
 

@@ -17,6 +17,7 @@ from dotenv import dotenv_values
 from reflexio import InteractionData, ReflexioClient
 from reflexio.models.api_schema.service_schemas import Interaction, Request
 from reflexio.models.config_schema import (
+    SINGLETON_USER_PLAYBOOK_NAME,
     Config,
     PendingToolCallConfig,
     ProfileExtractorConfig,
@@ -225,9 +226,13 @@ def _poll_until(
     deadline = time.monotonic() + timeout_seconds
     last_value: Any = None
     while time.monotonic() < deadline:
-        last_value = predicate()
-        if last_value:
-            return last_value
+        try:
+            last_value = predicate()
+        except requests.RequestException as exc:
+            last_value = exc
+        else:
+            if last_value:
+                return last_value
         time.sleep(_LIVE_E2E_POLL_SECONDS)
     raise AssertionError(f"Timed out waiting for {label}; last value: {last_value!r}")
 
@@ -253,46 +258,45 @@ def _apply_live_config_patch(
     headers: dict[str, str],
     patch_payload: dict[str, Any],
     *,
-    expected_extractor_name: str | None = None,
+    expected_playbook_extractor_name: str | None = None,
 ) -> dict[str, Any]:
     _api_request("POST", base_url, "/api/update_config", headers, json=patch_payload)
     _api_request("POST", base_url, "/api/admin/cache/invalidate", headers, json={})
     config = _api_request("GET", base_url, "/api/get_config", headers)
-    if expected_extractor_name is not None:
-        profile_config = config.get("profile_extractor_config") or {}
-        assert profile_config.get("extractor_name") == expected_extractor_name
+    if expected_playbook_extractor_name is not None:
+        playbook_config = config.get("user_playbook_extractor_config") or {}
+        assert playbook_config.get("extractor_name") == expected_playbook_extractor_name
     return config
 
 
 def _live_resumable_config(marker: str) -> tuple[dict[str, Any], str, str]:
-    extractor_name = "resumable_human_question_live_e2e"
     question_text = (
         f"For live resumable test {marker}, what deployment target should be "
         "treated as canonical?"
     )
-    profile_prefix = f"Live resumable test {marker} canonical deployment target:"
+    playbook_prefix = f"Live resumable test {marker} canonical deployment target:"
     return (
         {
-            "profile_extractor_config": {
-                "extractor_name": extractor_name,
+            "profile_extractor_config": None,
+            "user_playbook_extractor_config": {
+                "extractor_name": SINGLETON_USER_PLAYBOOK_NAME,
                 "extraction_definition_prompt": (
                     f"This is an end-to-end test for marker {marker}. "
                     "If the session mentions this marker but does not explicitly "
                     "provide the canonical deployment target, call ask_human before "
-                    "extracting the deployment-target profile. Use this exact "
+                    "extracting the deployment-target playbook. Use this exact "
                     f"question text: {question_text!r}. Use answer_format "
                     f"'short text' and include the tag {marker!r}. After a human "
                     "answer is available, you must respond with the structured "
-                    "result containing exactly one profile. Never respond with "
-                    "profiles null after a resolved answer is present. The profile "
-                    f"content must be exactly {profile_prefix!r} followed by one "
-                    "space and the human-provided answer. Use time_to_live "
-                    "'one_year'. Your first action for this marker must be the "
+                    "result containing exactly one playbook. Never respond with "
+                    "an empty playbooks list after a resolved answer is present. "
+                    "The playbook content must be exactly "
+                    f"{playbook_prefix!r} followed by one space and the "
+                    "human-provided answer. Your first action for this marker must be the "
                     "ask_human tool call. Do not infer or invent the target."
                 ),
                 "context_prompt": "Live E2E test for resumable extraction.",
             },
-            "user_playbook_extractor_config": None,
             "pending_tool_call_config": {
                 "enabled": True,
                 "pending_ttl_seconds": 3600,
@@ -312,7 +316,7 @@ def _live_resumable_config(marker: str) -> tuple[dict[str, Any], str, str]:
             "stride_size": 4,
         },
         question_text,
-        profile_prefix,
+        playbook_prefix,
     )
 
 
@@ -339,15 +343,19 @@ def _find_pending_question(
     return None
 
 
-def _profile_content_with(
+def _playbook_content_with(
     client: ReflexioClient,
     *,
     user_id: str,
     required_parts: tuple[str, ...],
 ) -> str | None:
-    profiles = client.get_profiles(user_id=user_id, force_refresh=True).user_profiles
-    for profile in profiles:
-        content = profile.content
+    playbooks = client.get_user_playbooks(
+        user_id=user_id,
+        playbook_name=SINGLETON_USER_PLAYBOOK_NAME,
+    ).user_playbooks
+    for playbook in playbooks:
+        assert playbook.playbook_name == SINGLETON_USER_PLAYBOOK_NAME
+        content = playbook.content
         if all(part in content for part in required_parts):
             return content
     return None
@@ -407,6 +415,33 @@ def test_resumable_extraction_resumes_after_human_answer(
         ]
 
 
+def test_poll_until_retries_request_exception(monkeypatch):
+    outcomes = iter(
+        [requests.RequestException("transient connection failure"), "ready"]
+    )
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+
+    def predicate():
+        outcome = next(outcomes)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    assert _poll_until("transient request", predicate, timeout_seconds=1) == "ready"
+
+
+def test_live_resumable_config_uses_playbook_extractor_for_ask_human():
+    marker = "RESUMABLE_LIVE_E2E_CONFIG_TEST"
+
+    config_patch, question_text, _ = _live_resumable_config(marker)
+
+    assert config_patch["profile_extractor_config"] is None
+    playbook_config = config_patch["user_playbook_extractor_config"]
+    assert playbook_config["extractor_name"] == SINGLETON_USER_PLAYBOOK_NAME
+    assert "call ask_human" in playbook_config["extraction_definition_prompt"]
+    assert question_text in playbook_config["extraction_definition_prompt"]
+
+
 @pytest.mark.requires_credentials
 @pytest.mark.timeout(360)
 def test_live_resumable_question_resolve_and_edit_roundtrip():
@@ -426,7 +461,7 @@ def test_live_resumable_question_resolve_and_edit_roundtrip():
     session_id = f"resumable-live-e2e-{uuid.uuid4().hex[:8]}"
     first_answer = "AWS ECS"
     edited_answer = "Google Cloud Run"
-    config_patch, question_text, profile_prefix = _live_resumable_config(marker)
+    config_patch, question_text, playbook_prefix = _live_resumable_config(marker)
 
     original_config = _api_request("GET", base_url, "/api/get_config", headers)
     restore_patch = _config_restore_patch(original_config)
@@ -436,7 +471,7 @@ def test_live_resumable_question_resolve_and_edit_roundtrip():
             base_url,
             headers,
             config_patch,
-            expected_extractor_name="resumable_human_question_live_e2e",
+            expected_playbook_extractor_name=SINGLETON_USER_PLAYBOOK_NAME,
         )
 
         client.publish_interaction(
@@ -453,16 +488,16 @@ def test_live_resumable_question_resolve_and_edit_roundtrip():
                         "The canonical deployment target is unknown and not "
                         "available anywhere in this transcript. The only valid "
                         "next step is to ask the configured human follow-up "
-                        "question before extracting any profile. Once a human "
-                        "answer exists, the durable profile should contain exactly "
-                        f"this prefix: {profile_prefix}"
+                        "question before extracting any playbook. Once a human "
+                        "answer exists, the durable playbook should contain exactly "
+                        f"this prefix: {playbook_prefix}"
                     ),
                 ),
                 InteractionData(
                     role="assistant",
                     content=(
                         "I cannot infer the deployment target. I need a human "
-                        "answer before storing any deployment-target profile."
+                        "answer before storing any deployment-target playbook."
                     ),
                 ),
             ],
@@ -493,15 +528,15 @@ def test_live_resumable_question_resolve_and_edit_roundtrip():
         assert resolved_call["status"] == "resolved"
         assert resolved_call["result"]["answer"] == first_answer
 
-        first_profile = _poll_until(
-            "live profile generated from resolved human answer",
-            lambda: _profile_content_with(
+        first_playbook = _poll_until(
+            "live playbook generated from resolved human answer",
+            lambda: _playbook_content_with(
                 client,
                 user_id=user_id,
-                required_parts=(profile_prefix, first_answer),
+                required_parts=(playbook_prefix, first_answer),
             ),
         )
-        assert marker in first_profile
+        assert marker in first_playbook
 
         edited_call = _api_request(
             "PATCH",
@@ -514,15 +549,15 @@ def test_live_resumable_question_resolve_and_edit_roundtrip():
         assert edited_call["result"]["answer"] == edited_answer
         assert edited_call["result"].get("not_applicable") is not True
 
-        edited_profile = _poll_until(
-            "live profile regenerated from edited human answer",
-            lambda: _profile_content_with(
+        edited_playbook = _poll_until(
+            "live playbook regenerated from edited human answer",
+            lambda: _playbook_content_with(
                 client,
                 user_id=user_id,
-                required_parts=(profile_prefix, edited_answer),
+                required_parts=(playbook_prefix, edited_answer),
             ),
         )
-        assert marker in edited_profile
+        assert marker in edited_playbook
 
         latest_resolved_call = _find_pending_question(
             base_url,

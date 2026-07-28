@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
+from typing import Any
 
 import pytest
 from openclaw_smart import publish, state
+from openclaw_smart.reflexio_adapter import Adapter
 
 
 @pytest.fixture(autouse=True)
@@ -15,11 +18,21 @@ def isolate_state_dir(monkeypatch, tmp_path):
     return sessions
 
 
-class _Adapter:
+class _Adapter(Adapter):
     def __init__(self) -> None:
+        super().__init__()
         self.calls = 0
 
-    def publish(self, **_kwargs) -> bool:  # noqa: ANN003
+    def publish(
+        self,
+        *,
+        session_id: str,
+        project_id: str,
+        interactions: Sequence[dict[str, Any]],
+        force_extraction: bool = False,
+        skip_aggregation: bool = False,
+    ) -> bool:
+        del session_id, project_id, interactions, force_extraction, skip_aggregation
         self.calls += 1
         return True
 

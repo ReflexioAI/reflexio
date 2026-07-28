@@ -88,7 +88,9 @@ def _make_eval_result(
 
 
 def _make_job(*, target_id: int = 1) -> PlaybookOptimizationJob:
-    return PlaybookOptimizationJob(target_kind="agent_playbook", target_id=target_id)
+    return PlaybookOptimizationJob(
+        optimizer_kind="gepa", target_kind="agent_playbook", target_id=target_id
+    )
 
 
 def _make_candidate(

@@ -4,6 +4,7 @@ import json
 import sys
 import threading
 import time
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import Mock, patch
@@ -38,6 +39,9 @@ from reflexio.server.services.playbook_optimizer.gepa_adapter import (
     PLAYBOOK_CONTENT_COMPONENT,
     ReflexioPlaybookGEPAAdapter,
 )
+from reflexio.server.services.playbook_optimizer.gepa_publication import (
+    GEPA_PUBLICATION_AUTHORITY_METADATA_KEY,
+)
 from reflexio.server.services.playbook_optimizer.judge import JudgeOutput
 from reflexio.server.services.playbook_optimizer.models import (
     CandidateEvaluationOutput,
@@ -48,7 +52,6 @@ from reflexio.server.services.playbook_optimizer.models import (
 from reflexio.server.services.playbook_optimizer.optimizer import (
     PlaybookOptimizationRunStatus,
     PlaybookOptimizer,
-    _agent_like_playbook,
     _split_train_validation_windows,
 )
 from reflexio.server.services.playbook_optimizer.rollout import MultiTurnRollout
@@ -210,7 +213,9 @@ def test_local_script_assistant_times_out(tmp_path):
 def test_adapter_calls_assistant_with_same_seed_and_different_content(tmp_path):
     storage = _sqlite_storage(tmp_path)
     job = storage.create_playbook_optimization_job(
-        PlaybookOptimizationJob(target_kind="agent_playbook", target_id=1)
+        PlaybookOptimizationJob(
+            optimizer_kind="gepa", target_kind="agent_playbook", target_id=1
+        )
     )
     incumbent = AgentPlaybook(
         agent_playbook_id=1,
@@ -272,7 +277,9 @@ def test_adapter_calls_assistant_with_same_seed_and_different_content(tmp_path):
 def test_adapter_cache_distinguishes_windows_with_same_playbook_id(tmp_path):
     storage = _sqlite_storage(tmp_path)
     job = storage.create_playbook_optimization_job(
-        PlaybookOptimizationJob(target_kind="agent_playbook", target_id=1)
+        PlaybookOptimizationJob(
+            optimizer_kind="gepa", target_kind="agent_playbook", target_id=1
+        )
     )
     incumbent = AgentPlaybook(
         agent_playbook_id=1,
@@ -359,7 +366,9 @@ def test_adapter_cache_distinguishes_windows_with_same_playbook_id(tmp_path):
 def test_adapter_does_not_cache_aborted_evaluations(tmp_path):
     storage = _sqlite_storage(tmp_path)
     job = storage.create_playbook_optimization_job(
-        PlaybookOptimizationJob(target_kind="agent_playbook", target_id=1)
+        PlaybookOptimizationJob(
+            optimizer_kind="gepa", target_kind="agent_playbook", target_id=1
+        )
     )
     incumbent = AgentPlaybook(
         agent_playbook_id=1,
@@ -680,64 +689,6 @@ def test_optimizer_skips_when_winner_cannot_be_adopted(
     assert jobs == []
 
 
-def test_user_playbook_optimizer_successor_triggers_aggregation_with_successor_version(
-    tmp_path,
-):
-    storage = _sqlite_storage(tmp_path)
-    config = Config(
-        storage_config=StorageConfigSQLite(db_path=str(tmp_path / "reflexio.db")),
-        playbook_optimizer_config=PlaybookOptimizerConfig(
-            auto_update_user_playbooks=True
-        ),
-    )
-    optimizer = _optimizer_for_test(storage, config)
-    user_playbook = UserPlaybook(
-        user_playbook_id=0,
-        user_id="u1",
-        agent_version="v-incumbent",
-        request_id="req-1",
-        content="old",
-        trigger="when old",
-    )
-    storage.save_user_playbooks([user_playbook])
-    target = PlaybookOptimizationTarget(
-        kind="user_playbook", target_id=user_playbook.user_playbook_id
-    )
-    original_supersede_record = storage.supersede_record
-
-    def supersede_and_update_successor(*args, **kwargs):
-        ok = original_supersede_record(*args, **kwargs)
-        if ok:
-            storage.conn.execute(
-                "UPDATE user_playbooks SET agent_version = ? WHERE user_playbook_id = ?",
-                ("v-successor", int(kwargs["successor_id"])),
-            )
-            storage.conn.commit()
-        return ok
-
-    with (
-        patch.object(
-            storage, "supersede_record", side_effect=supersede_and_update_successor
-        ),
-        patch(
-            "reflexio.server.services.playbook_optimizer.optimizer."
-            "maybe_trigger_user_playbook_aggregation",
-        ) as trigger,
-    ):
-        successor_id = optimizer._commit_if_allowed(  # noqa: SLF001
-            target,
-            _agent_like_playbook(user_playbook),
-            "new",
-            config.playbook_optimizer_config,
-            "run-1",
-        )
-
-    assert successor_id is not None
-    trigger.assert_called_once()
-    assert trigger.call_args.kwargs["agent_version"] == "v-successor"
-    assert trigger.call_args.kwargs["reason"] == "playbook_optimizer"
-
-
 def test_agent_playbook_optimizer_successor_does_not_trigger_aggregation(tmp_path):
     storage = _sqlite_storage(tmp_path)
     config = Config(
@@ -778,51 +729,78 @@ def test_agent_playbook_optimizer_successor_does_not_trigger_aggregation(tmp_pat
     trigger.assert_not_called()
 
 
-def test_user_playbook_optimizer_successor_reload_failure_does_not_fail_commit(
+def test_agent_optimizer_local_backend_does_not_build_user_publication_authority(
     tmp_path,
 ):
     storage = _sqlite_storage(tmp_path)
     config = Config(
         storage_config=StorageConfigSQLite(db_path=str(tmp_path / "reflexio.db")),
         playbook_optimizer_config=PlaybookOptimizerConfig(
-            auto_update_user_playbooks=True
+            enabled=True,
+            optimize_agent_playbooks=True,
+            auto_update_pending_agent_playbooks=True,
+            assistant_script_path=sys.executable,
+            min_commit_windows=1,
+            min_commit_score=0.1,
+            min_commit_likert=1,
         ),
     )
     optimizer = _optimizer_for_test(storage, config)
-    user_playbook = UserPlaybook(
-        user_playbook_id=0,
-        user_id="u1",
-        agent_version="v1",
-        request_id="req-1",
-        content="old",
-        trigger="when old",
+    [agent_playbook] = storage.save_agent_playbooks(
+        [
+            AgentPlaybook(
+                playbook_name="support",
+                agent_version="v1",
+                content="old",
+                trigger="when old",
+                playbook_status=PlaybookStatus.PENDING,
+            )
+        ]
     )
-    storage.save_user_playbooks([user_playbook])
-    target = PlaybookOptimizationTarget(
-        kind="user_playbook", target_id=user_playbook.user_playbook_id
-    )
+    window = _scenario_window(agent_playbook.agent_playbook_id)
+    optimizer._resolve_windows = Mock(return_value=[window])  # type: ignore[method-assign]
 
-    with (
-        patch.object(
-            storage,
-            "get_user_playbook_by_id",
-            side_effect=[user_playbook, RuntimeError("reload failed")],
-        ),
-        patch(
-            "reflexio.server.services.playbook_optimizer.optimizer."
-            "maybe_trigger_user_playbook_aggregation",
-        ) as trigger,
-    ):
-        successor_id = optimizer._commit_if_allowed(  # noqa: SLF001
-            target,
-            _agent_like_playbook(user_playbook),
-            "new",
-            config.playbook_optimizer_config,
-            "run-1",
+    def fake_run_gepa(config, seed_content, train_windows, validation_windows, adapter):  # noqa: ARG001
+        candidate = adapter._ensure_candidate("candidate content")  # noqa: SLF001
+        storage.insert_playbook_optimization_evaluation(
+            PlaybookOptimizationEvaluation(
+                job_id=adapter.job_id,
+                candidate_id=candidate.candidate_id,
+                target_kind="agent_playbook",
+                target_id=agent_playbook.agent_playbook_id,
+                scenario_user_playbook_id=window.user_playbook_id,
+                source_interaction_ids=window.source_interaction_ids,
+                score=0.9,
+                verdict="candidate",
+                likert=5,
+            )
+        )
+        return SimpleNamespace(
+            best_candidate={PLAYBOOK_CONTENT_COMPONENT: "candidate content"},
+            val_aggregate_scores=[0.9],
+            best_idx=0,
+            to_dict=lambda: {"best_idx": 0},
         )
 
-    assert successor_id is not None
-    trigger.assert_not_called()
+    optimizer._run_gepa = fake_run_gepa  # type: ignore[method-assign]
+    with patch.object(
+        Path,
+        "read_bytes",
+        side_effect=PermissionError("publication hashing must not read agent backend"),
+    ):
+        result = optimizer.optimize(
+            PlaybookOptimizationTarget(
+                kind="agent_playbook", target_id=agent_playbook.agent_playbook_id
+            )
+        )
+
+    assert result == "completed"
+    job = storage.conn.execute(
+        "SELECT metadata_json FROM playbook_optimization_jobs"
+    ).fetchone()
+    assert GEPA_PUBLICATION_AUTHORITY_METADATA_KEY not in json.loads(
+        job["metadata_json"]
+    )
 
 
 def test_optimizer_runs_single_window_when_commit_threshold_is_one(tmp_path):
@@ -1173,7 +1151,9 @@ def test_sqlite_persists_source_mapping_and_winner_candidate(tmp_path):
     assert storage.get_source_user_playbook_ids_for_agent_playbook(10) == [id1, id2]
 
     job = storage.create_playbook_optimization_job(
-        PlaybookOptimizationJob(target_kind="agent_playbook", target_id=10)
+        PlaybookOptimizationJob(
+            optimizer_kind="gepa", target_kind="agent_playbook", target_id=10
+        )
     )
     candidate = storage.insert_playbook_optimization_candidate(
         PlaybookOptimizationCandidate(
@@ -1196,7 +1176,9 @@ def test_sqlite_persists_source_mapping_and_winner_candidate(tmp_path):
 def test_sqlite_persists_candidate_metadata_json(tmp_path):
     storage = _sqlite_storage(tmp_path)
     job = storage.create_playbook_optimization_job(
-        PlaybookOptimizationJob(target_kind="user_playbook", target_id=10)
+        PlaybookOptimizationJob(
+            optimizer_kind="gepa", target_kind="user_playbook", target_id=10
+        )
     )
     metadata_json = json.dumps(
         {
@@ -1380,7 +1362,9 @@ def test_optimizer_successor_preserves_source_window_snapshots(tmp_path):
 def test_commit_thresholds_only_count_winner_candidate(tmp_path):
     storage = _sqlite_storage(tmp_path)
     job = storage.create_playbook_optimization_job(
-        PlaybookOptimizationJob(target_kind="agent_playbook", target_id=10)
+        PlaybookOptimizationJob(
+            optimizer_kind="gepa", target_kind="agent_playbook", target_id=10
+        )
     )
     losing_candidate = storage.insert_playbook_optimization_candidate(
         PlaybookOptimizationCandidate(job_id=job.job_id, content="losing")

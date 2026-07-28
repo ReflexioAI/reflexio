@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import importlib.metadata
+import inspect
 import json
 import logging
 import os
+import uuid
+from hashlib import sha256
 from pathlib import Path
 from typing import Any, Literal, cast
 
@@ -23,12 +27,34 @@ from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.services.playbook.aggregation_trigger import (
     maybe_trigger_user_playbook_aggregation,
 )
-from reflexio.server.services.playbook.playbook_edit_apply import apply_playbook_edit
+from reflexio.server.services.playbook.publication import (
+    PUBLICATION_INCUMBENT_CONTENT_DIGEST_METADATA_KEY,
+    PUBLICATION_INCUMBENT_SEMANTIC_DIGEST_METADATA_KEY,
+    PUBLICATION_INCUMBENT_TRIGGER_METADATA_KEY,
+    PUBLICATION_PROJECTION_JSON_METADATA_KEY,
+    PUBLICATION_PROOF_JSON_METADATA_KEY,
+    PUBLICATION_SUBJECT_EPOCHS_METADATA_KEY,
+    PublicationRequest,
+    PublicationResult,
+    UserPlaybookPublicationService,
+    incumbent_user_playbook_semantic_digest,
+)
+from reflexio.server.services.storage.error import OptimizationJobLeaseLiveError
 from reflexio.server.tracing import sentry_tags
 
 from .assistant_webhook import AssistantCallable, LocalScriptAssistant, WebhookAssistant
 from .gepa_adapter import PLAYBOOK_CONTENT_COMPONENT, ReflexioPlaybookGEPAAdapter
-from .judge import PairwiseJudge
+from .gepa_publication import (
+    GEPA_PUBLICATION_AUTHORITY_METADATA_KEY,
+    GEPAUserPlaybookDecisionVerifier,
+    build_gepa_decision_proof,
+    build_gepa_search_projection,
+    gepa_adoption_authority_from_config,
+    gepa_winner_adoption_result,
+    parse_gepa_decision_proof,
+    parse_gepa_search_projection,
+)
+from .judge import PairwiseJudge, build_pairwise_judge_request_plan
 from .models import ScenarioWindow
 from .rollout import MultiTurnRollout
 from .scenario_resolver import ScenarioResolver
@@ -38,6 +64,8 @@ logger = logging.getLogger(__name__)
 # Prefix used when constructing the run-scoped lineage request_id from a job id.
 # Shared with tests so the format is defined in one place.
 _OPTIMIZER_RUN_ID_PREFIX = "optjob_"
+
+_GEPA_PUBLICATION_LEASE_SECONDS = 60
 
 
 def optimizer_run_request_id(job_id: int) -> str:
@@ -100,10 +128,16 @@ class PlaybookOptimizer:
         the incumbent in favour of a successor playbook.
         """
         config = self._config()
-        if not self._enabled_for_target(config, target):
+        if not self._enabled_for_target(config, target) or not _can_adopt_winner(
+            target, config
+        ):
             return "skipped"
-        # Backend selection happens before any storage work so an unconfigured
-        # optimizer short-circuits cheaply — useful in tests and dev setups.
+        if target.kind == "user_playbook":
+            recovered = self._recover_gepa_user_playbook_publication(target)
+            if recovered is not None:
+                return recovered
+        # Backend selection happens before any new-run storage work so an
+        # unconfigured optimizer short-circuits cheaply.
         assistant = self._create_assistant(config)
         if assistant is None:
             logger.info(
@@ -131,22 +165,40 @@ class PlaybookOptimizer:
                 config.min_commit_windows,
             )
             return "skipped"
-        if not _can_adopt_winner(target, config):
-            logger.info(
-                "Skipping playbook optimization: no configured adoption path "
-                "target_kind=%s target_id=%d",
-                target.kind,
-                target.target_id,
-            )
-            return "skipped"
-        split_metadata = _split_metadata(windows, train_windows, validation_windows)
+        split_metadata = _split_metadata(
+            windows,
+            train_windows,
+            validation_windows,
+            config=config,
+            assistant=assistant,
+            llm_client=self.llm_client,
+            prompt_manager=(
+                getattr(self.request_context, "prompt_manager", None)
+                if target.kind == "user_playbook"
+                else None
+            ),
+            include_publication_authority=target.kind == "user_playbook",
+        )
+        frozen_judge_plan = (
+            split_metadata[GEPA_PUBLICATION_AUTHORITY_METADATA_KEY][
+                "evaluator_identity"
+            ]["pairwise_judge_request_plan"]
+            if target.kind == "user_playbook"
+            else None
+        )
 
         job = self.storage.create_playbook_optimization_job(
             PlaybookOptimizationJob(
+                optimizer_kind="gepa",
                 target_kind=target.kind,
                 target_id=target.target_id,
                 status="running",
                 metadata_json=json.dumps(split_metadata, ensure_ascii=False),
+                attempt_key=(
+                    f"gepa-user-{uuid.uuid4().hex}"
+                    if target.kind == "user_playbook"
+                    else None
+                ),
             )
         )
         run_request_id = optimizer_run_request_id(job.job_id)
@@ -174,6 +226,7 @@ class PlaybookOptimizer:
                 self.request_context,
                 self.llm_client,
                 config.reflection_model,
+                frozen_request_plan=frozen_judge_plan,
             ),
             max_turns=config.max_turns,
         )
@@ -272,9 +325,20 @@ class PlaybookOptimizer:
             )
             return "completed"
 
-        successor_id = self._commit_if_allowed(
-            target, incumbent, best_content, config, run_request_id
-        )
+        result_metadata = _result_metadata(result, split_metadata)
+        if target.kind == "user_playbook":
+            publication_result = self._publish_user_playbook_winner(
+                job=job,
+                incumbent_id=target.target_id,
+                winner_candidate_id=winner_candidate.candidate_id,
+                result_metadata=result_metadata,
+                run_request_id=run_request_id,
+            )
+            successor_id = publication_result.successor_user_playbook_id
+        else:
+            successor_id = self._commit_if_allowed(
+                target, incumbent, best_content, config, run_request_id
+            )
         logger.info(
             "event=playbook_optimization_committed job_id=%d candidate_id=%d "
             "successor_target_id=%s best_score=%.3f",
@@ -283,18 +347,21 @@ class PlaybookOptimizer:
             successor_id if successor_id is not None else "none",
             best_score,
         )
-        self.storage.update_playbook_optimization_job(
-            job.job_id,
-            status="completed",
-            best_candidate_id=winner_candidate.candidate_id,
-            successor_target_id=successor_id,
-            decision_reason="committed" if successor_id else "winner persisted only",
-            metadata_json=json.dumps(
-                _result_metadata(result, split_metadata),
-                ensure_ascii=False,
-                default=str,
-            ),
-        )
+        if target.kind == "agent_playbook":
+            self.storage.update_playbook_optimization_job(
+                job.job_id,
+                status="completed",
+                best_candidate_id=winner_candidate.candidate_id,
+                successor_target_id=successor_id,
+                decision_reason=(
+                    "committed" if successor_id else "winner persisted only"
+                ),
+                metadata_json=json.dumps(
+                    result_metadata,
+                    ensure_ascii=False,
+                    default=str,
+                ),
+            )
         return "completed"
 
     def _run_gepa(
@@ -419,28 +486,256 @@ class PlaybookOptimizer:
         if best_score < config.min_commit_score:
             return False
         evaluations = self.storage.list_playbook_optimization_evaluations(job_id)
-        validation_keys = {_window_eval_key(window) for window in validation_windows}
-        winning_windows = {
-            _evaluation_key(
-                evaluation.scenario_user_playbook_id,
-                evaluation.source_interaction_ids,
-            )
-            for evaluation in evaluations
-            if evaluation.candidate_id == candidate_id
-            and _evaluation_key(
-                evaluation.scenario_user_playbook_id,
-                evaluation.source_interaction_ids,
-            )
-            in validation_keys
-            and evaluation.verdict == "candidate"
-            and evaluation.score >= config.min_commit_score
-            and evaluation.likert >= config.min_commit_likert
-        }
-        return len(winning_windows) >= config.min_commit_windows
+        authority = gepa_adoption_authority_from_config(
+            config=config,
+            validation_windows=validation_windows,
+            adoption_enabled=True,
+        )
+        adoption = gepa_winner_adoption_result(
+            winner_candidate_id=candidate_id,
+            aggregate_score=best_score,
+            evaluations=evaluations,
+            authority=authority,
+        )
+        return bool(adoption["passes"])
 
     def _has_aborted_evaluations(self, job_id: int) -> bool:
         evaluations = self.storage.list_playbook_optimization_evaluations(job_id)
         return any(evaluation.verdict == "aborted" for evaluation in evaluations)
+
+    def _publish_user_playbook_winner(
+        self,
+        *,
+        job: PlaybookOptimizationJob,
+        incumbent_id: int,
+        winner_candidate_id: int,
+        result_metadata: dict[str, Any],
+        run_request_id: str,
+    ) -> PublicationResult:
+        incumbent = self.storage.get_user_playbook_by_id(incumbent_id)
+        if incumbent is None:
+            raise ValueError("GEPA publication incumbent no longer exists")
+        winner = next(
+            (
+                candidate
+                for candidate in self.storage.list_playbook_optimization_candidates(
+                    job.job_id
+                )
+                if candidate.candidate_id == winner_candidate_id
+            ),
+            None,
+        )
+        if winner is None:
+            raise ValueError("GEPA publication winner no longer exists")
+        projection = build_gepa_search_projection(
+            self.storage, incumbent, winner.content
+        )
+        incumbent_content_digest = sha256(incumbent.content.encode("utf-8")).hexdigest()
+        incumbent_semantic_digest = incumbent_user_playbook_semantic_digest(
+            content_digest=incumbent_content_digest,
+            trigger=incumbent.trigger,
+        )
+        subject_epochs_json = self.storage.get_user_playbook_publication_subject_epochs(
+            incumbent_id
+        )
+        evaluations = self.storage.list_playbook_optimization_evaluations(job.job_id)
+        durable_metadata = json.loads(job.metadata_json)
+        proof = build_gepa_decision_proof(
+            job=job,
+            winner=winner,
+            evaluations=evaluations,
+            metadata=durable_metadata,
+            subject_epochs_json=subject_epochs_json,
+            projection_digest=projection.digest,
+        )
+        owner = f"gepa-publication-{job.job_id}"
+        durable_job = self.storage.prepare_gepa_user_playbook_publication(
+            job_id=job.job_id,
+            owner=owner,
+            lease_seconds=_GEPA_PUBLICATION_LEASE_SECONDS,
+            winner_candidate_id=winner.candidate_id,
+            candidate_content_digest=projection.candidate_content_digest,
+            search_projection_digest=projection.digest,
+            publication_proof_digest=proof.digest,
+            projection_json=projection.canonical_json,
+            decision_proof_json=proof.canonical_json,
+            subject_epochs_json=subject_epochs_json,
+            metadata_json=json.dumps(
+                {
+                    **result_metadata,
+                    PUBLICATION_INCUMBENT_CONTENT_DIGEST_METADATA_KEY: (
+                        incumbent_content_digest
+                    ),
+                    PUBLICATION_INCUMBENT_TRIGGER_METADATA_KEY: incumbent.trigger,
+                    PUBLICATION_INCUMBENT_SEMANTIC_DIGEST_METADATA_KEY: (
+                        incumbent_semantic_digest
+                    ),
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+                default=str,
+            ),
+        )
+        if durable_job.attempt_key is None:
+            raise ValueError("GEPA publication attempt identity is missing")
+        if durable_job.lease_owner is None or durable_job.lease_fence <= 0:
+            raise ValueError("GEPA publication worker claim is missing")
+        service = UserPlaybookPublicationService(
+            self.storage,
+            GEPAUserPlaybookDecisionVerifier(self.storage),
+        )
+        publication_claim = service.claim(
+            job_id=job.job_id,
+            owner=durable_job.lease_owner,
+            worker_fence=durable_job.lease_fence,
+        )
+        request = PublicationRequest(
+            optimizer_kind="gepa",
+            job_id=job.job_id,
+            attempt_key=durable_job.attempt_key,
+            publication_claim=publication_claim,
+            worker_fence=durable_job.lease_fence,
+            incumbent_user_playbook_id=incumbent_id,
+            incumbent_content_digest=incumbent_content_digest,
+            incumbent_trigger=incumbent.trigger,
+            incumbent_semantic_digest=incumbent_semantic_digest,
+            revised_content=winner.content,
+            projection=projection,
+            decision_proof=proof,
+            subject_epochs_json=subject_epochs_json,
+            request_id=run_request_id,
+        )
+        return self._publish_prepared_user_playbook_request(service, request)
+
+    def _recover_gepa_user_playbook_publication(
+        self, target: PlaybookOptimizationTarget
+    ) -> PlaybookOptimizationRunStatus | None:
+        owner = f"gepa-publication-recovery-{target.target_id}"
+        try:
+            durable_job = self.storage.reclaim_gepa_user_playbook_publishing_job(
+                target.target_id,
+                owner,
+                _GEPA_PUBLICATION_LEASE_SECONDS,
+            )
+        except OptimizationJobLeaseLiveError:
+            job = self.storage.get_unconsumed_gepa_user_playbook_publishing_job(
+                target.target_id
+            )
+            logger.info(
+                "Skipping playbook optimization: GEPA publication lease is live "
+                "job_id=%s target_id=%d",
+                job.job_id if job is not None else "unknown",
+                target.target_id,
+            )
+            return "skipped"
+        if durable_job is None:
+            return None
+        if durable_job.attempt_key is None:
+            raise ValueError("GEPA publication job disappeared during recovery")
+        if durable_job.lease_owner is None or durable_job.lease_fence <= 0:
+            raise ValueError("GEPA publication recovery claim is missing")
+        metadata = json.loads(durable_job.metadata_json)
+        projection_json = metadata.get(PUBLICATION_PROJECTION_JSON_METADATA_KEY)
+        proof_json = metadata.get(PUBLICATION_PROOF_JSON_METADATA_KEY)
+        subject_epochs = metadata.get(PUBLICATION_SUBJECT_EPOCHS_METADATA_KEY)
+        incumbent_content_digest = metadata.get(
+            PUBLICATION_INCUMBENT_CONTENT_DIGEST_METADATA_KEY
+        )
+        incumbent_trigger = metadata.get(PUBLICATION_INCUMBENT_TRIGGER_METADATA_KEY)
+        incumbent_semantic_digest = metadata.get(
+            PUBLICATION_INCUMBENT_SEMANTIC_DIGEST_METADATA_KEY
+        )
+        if (
+            not isinstance(projection_json, str)
+            or not isinstance(proof_json, str)
+            or not isinstance(subject_epochs, dict)
+            or not isinstance(incumbent_content_digest, str)
+            or (
+                incumbent_trigger is not None and not isinstance(incumbent_trigger, str)
+            )
+            or not isinstance(incumbent_semantic_digest, str)
+        ):
+            raise ValueError("GEPA publication durable bytes are missing")
+        winner = next(
+            (
+                candidate
+                for candidate in self.storage.list_playbook_optimization_candidates(
+                    durable_job.job_id
+                )
+                if candidate.candidate_id == durable_job.best_candidate_id
+            ),
+            None,
+        )
+        if winner is None:
+            raise ValueError("GEPA publication winner is missing during recovery")
+        projection = parse_gepa_search_projection(projection_json)
+        proof = parse_gepa_decision_proof(proof_json)
+        service = UserPlaybookPublicationService(
+            self.storage,
+            GEPAUserPlaybookDecisionVerifier(self.storage),
+        )
+        publication_claim = service.claim(
+            job_id=durable_job.job_id,
+            owner=durable_job.lease_owner,
+            worker_fence=durable_job.lease_fence,
+        )
+        request = PublicationRequest(
+            optimizer_kind="gepa",
+            job_id=durable_job.job_id,
+            attempt_key=durable_job.attempt_key,
+            publication_claim=publication_claim,
+            worker_fence=durable_job.lease_fence,
+            incumbent_user_playbook_id=target.target_id,
+            incumbent_content_digest=incumbent_content_digest,
+            incumbent_trigger=incumbent_trigger,
+            incumbent_semantic_digest=incumbent_semantic_digest,
+            revised_content=winner.content,
+            projection=projection,
+            decision_proof=proof,
+            subject_epochs_json=json.dumps(
+                subject_epochs,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            ),
+            request_id=optimizer_run_request_id(durable_job.job_id),
+        )
+        self._publish_prepared_user_playbook_request(service, request)
+        return "completed"
+
+    def _publish_prepared_user_playbook_request(
+        self,
+        service: UserPlaybookPublicationService,
+        request: PublicationRequest,
+    ) -> PublicationResult:
+        try:
+            publication_result = service.publish(request)
+        except Exception:
+            committed = service.load_committed(request.job_id)
+            if committed is None:
+                raise
+            publication_result = committed
+
+        if publication_result.outcome == "applied":
+            successor_id = publication_result.successor_user_playbook_id
+            if successor_id is None:
+                raise RuntimeError("applied GEPA publication has no successor")
+            try:
+                successor = self.storage.get_user_playbook_by_id(successor_id)
+                if successor is not None and successor.agent_version:
+                    maybe_trigger_user_playbook_aggregation(
+                        request_context=self.request_context,
+                        llm_client=self.llm_client,
+                        agent_version=successor.agent_version,
+                        reason="playbook_optimizer",
+                    )
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "playbook_optimizer aggregation trigger failed after successor commit",
+                    extra={"successor_id": successor_id},
+                )
+        return publication_result
 
     def _commit_if_allowed(
         self,
@@ -482,39 +777,7 @@ class PlaybookOptimizer:
                     successor_id, source_windows
                 )
             return successor_id
-        current_user = self.storage.get_user_playbook_by_id(target.target_id)
-        if current_user is None or current_user.status is not None:
-            return None
-        if current_user.user_id is None:
-            return None
-        # The optimizer can legitimately flip framing (positive guidance ->
-        # negative anti-pattern or vice versa). Orientation lives entirely in
-        # the rule wording, so writing ``best_content`` is sufficient — there
-        # is no derived polarity label or separate polarity field to keep in
-        # sync.
-        successor_id = _supersede_user_playbook(
-            self.storage,
-            current_user,
-            best_content,
-            "playbook_optimizer",
-            request_id=run_request_id,
-        )
-        if successor_id is not None:
-            try:
-                successor = self.storage.get_user_playbook_by_id(successor_id)
-                if successor is not None and successor.agent_version:
-                    maybe_trigger_user_playbook_aggregation(
-                        request_context=self.request_context,
-                        llm_client=self.llm_client,
-                        agent_version=successor.agent_version,
-                        reason="playbook_optimizer",
-                    )
-            except Exception:  # noqa: BLE001
-                logger.exception(
-                    "playbook_optimizer aggregation trigger failed after successor commit",
-                    extra={"successor_id": successor_id},
-                )
-        return successor_id
+        raise ValueError("GEPA user playbooks require durable atomic publication")
 
 
 def _agent_like_playbook(playbook: UserPlaybook) -> AgentPlaybook:
@@ -544,57 +807,6 @@ def _append_optimizer_metadata(existing: str, predecessor_id: int) -> str:
     if not existing:
         return suffix
     return f"{existing}; {suffix}"
-
-
-def _supersede_user_playbook(
-    storage: Any,
-    incumbent: UserPlaybook,
-    best_content: str,
-    source: str,
-    *,
-    request_id: str,
-) -> int | None:
-    """Insert a user-playbook successor then atomically supersede the incumbent.
-
-    Returns the new ``user_playbook_id`` on success, or ``None`` when the
-    incumbent is no longer CURRENT (lost race / already superseded).
-
-    Args:
-        storage: A storage instance implementing the canonical atomic edit path.
-        incumbent: The current user playbook to replace.
-        best_content: Content for the successor playbook.
-        source: Provenance label written to the lineage event actor field.
-        request_id: Run-scoped correlation id for the lineage event. Must be
-            non-empty; use the job-derived id from the calling optimizer run.
-
-    Returns:
-        int | None: ``user_playbook_id`` of the successor, or ``None`` if the
-            incumbent was not CURRENT.
-
-    Raises:
-        ValueError: If ``request_id`` is empty or None.
-    """
-    if not request_id:
-        raise ValueError(
-            "_supersede_user_playbook: request_id must be non-empty (run-correlation id)"
-        )
-    successor = incumbent.model_copy(
-        update={"user_playbook_id": 0, "content": best_content, "status": None}
-    )
-    ctx = LineageContext(
-        op_kind="revise",
-        actor=source,
-        request_id=request_id,
-    )
-    successor_id = apply_playbook_edit(
-        storage,
-        incumbent_id=incumbent.user_playbook_id,
-        new_playbook=successor,
-        source=source,
-        request_id=request_id,
-        revise_context=ctx,
-    )
-    return None if successor_id == -1 else successor_id
 
 
 class _LostAgentSupersedeRaceError(Exception):
@@ -779,15 +991,210 @@ def _split_metadata(
     windows: list[ScenarioWindow],
     train_windows: list[ScenarioWindow],
     validation_windows: list[ScenarioWindow],
+    *,
+    config: PlaybookOptimizerConfig,
+    assistant: AssistantCallable,
+    llm_client: LiteLLMClient,
+    prompt_manager: Any,
+    include_publication_authority: bool,
 ) -> dict[str, Any]:
-    return {
+    metadata = {
         "source_window_count": len(windows),
         "train_window_count": len(train_windows),
+        "train_windows": [
+            {
+                "scenario_user_playbook_id": window.user_playbook_id,
+                "source_interaction_ids": list(window.source_interaction_ids),
+            }
+            for window in train_windows
+        ],
         "validation_window_count": len(validation_windows),
         "validation_scenario_user_playbook_ids": [
             window.user_playbook_id for window in validation_windows
         ],
+        "validation_windows": [
+            {
+                "scenario_user_playbook_id": window.user_playbook_id,
+                "source_interaction_ids": list(window.source_interaction_ids),
+            }
+            for window in validation_windows
+        ],
     }
+    if include_publication_authority:
+        metadata[GEPA_PUBLICATION_AUTHORITY_METADATA_KEY] = _gepa_publication_authority(
+            config=config,
+            train_windows=train_windows,
+            validation_windows=validation_windows,
+            assistant=assistant,
+            llm_client=llm_client,
+            prompt_manager=prompt_manager,
+        )
+    return metadata
+
+
+def _gepa_publication_authority(
+    *,
+    config: PlaybookOptimizerConfig,
+    train_windows: list[ScenarioWindow],
+    validation_windows: list[ScenarioWindow],
+    assistant: AssistantCallable,
+    llm_client: LiteLLMClient,
+    prompt_manager: Any,
+) -> dict[str, Any]:
+    judge_model_id = config.reflection_model or llm_client.config.model
+    adoption_authority = gepa_adoption_authority_from_config(
+        config=config,
+        validation_windows=validation_windows,
+    )
+    adoption_authority["validation_manifest"]["digest"] = _window_manifest_digest(
+        validation_windows
+    )
+    return {
+        **adoption_authority,
+        "backend_identity": _assistant_backend_identity(config, assistant),
+        "budget_settings": {
+            "max_metric_calls": config.max_metric_calls,
+            "max_turns": config.max_turns,
+            "reflection_minibatch_size": config.reflection_minibatch_size,
+        },
+        "evaluator_identity": {
+            "pairwise_judge_request_plan": build_pairwise_judge_request_plan(
+                prompt_manager=prompt_manager,
+                llm_client=llm_client,
+                model_name=judge_model_id,
+            ),
+        },
+        "gepa_algorithm": {
+            "batch_sampler": "epoch_shuffled",
+            "cache_evaluation": True,
+            "candidate_selection_strategy": "pareto",
+            "display_progress_bar": False,
+            "frontier_type": "instance",
+            "raise_on_exception": False,
+        },
+        "gepa_engine_identity": _gepa_engine_identity(),
+        "merge_settings": {
+            "max_merge_invocations": config.max_merge_invocations,
+            "use_merge": config.use_merge,
+        },
+        "model_identity": {
+            "default_lm": llm_client.config.model,
+            "reflection_lm": judge_model_id,
+        },
+        "optimizer_identity": {
+            "adapter_class": _code_identity(ReflexioPlaybookGEPAAdapter),
+            "adapter_code_digest": _code_digest(ReflexioPlaybookGEPAAdapter),
+            "rollout_class": _code_identity(MultiTurnRollout),
+            "rollout_code_digest": _code_digest(MultiTurnRollout),
+        },
+        "split_settings": {
+            "max_validation_windows": config.max_validation_windows,
+        },
+        "stop_settings": {
+            "early_stop_score": _decimal_string(config.early_stop_score),
+            "stopper_class": "gepa.utils.stop_condition.ScoreThresholdStopper",
+        },
+        "train_manifest": {
+            "digest": _window_manifest_digest(train_windows),
+            "windows": [_window_manifest_item(window) for window in train_windows],
+        },
+    }
+
+
+def _gepa_engine_identity() -> dict[str, Any]:
+    try:
+        package_version = importlib.metadata.version("gepa")
+    except importlib.metadata.PackageNotFoundError:
+        package_version = "unknown"
+    try:
+        from gepa.api import optimize as gepa_optimize
+
+        optimize_code_digest = _code_digest(gepa_optimize)
+        optimize_identity = _code_identity(gepa_optimize)
+    except Exception:  # noqa: BLE001
+        optimize_code_digest = _text_digest("gepa.api.optimize")
+        optimize_identity = "gepa.api.optimize"
+    return {
+        "optimize_callable": optimize_identity,
+        "optimize_code_digest": optimize_code_digest,
+        "package_name": "gepa",
+        "package_version": package_version,
+    }
+
+
+def _assistant_backend_identity(
+    config: PlaybookOptimizerConfig,
+    assistant: AssistantCallable,
+) -> dict[str, Any]:
+    identity: dict[str, Any] = {
+        "backoff_base_seconds": _decimal_string(config.webhook_backoff_base_seconds),
+        "backend_class": _code_identity(type(assistant)),
+        "backend_class_code_digest": _code_digest(type(assistant)),
+        "max_retries": config.webhook_max_retries,
+        "timeout_seconds": config.webhook_timeout_seconds,
+    }
+    if config.webhook_url:
+        identity["backend_kind"] = "webhook"
+        identity["webhook_auth_configured"] = bool(config.webhook_auth_header)
+        identity["webhook_url_digest"] = _text_digest(config.webhook_url)
+        identity["webhook_auth_scheme"] = _webhook_auth_scheme(
+            config.webhook_auth_header
+        )
+    elif config.assistant_script_path:
+        identity["backend_kind"] = "local_script"
+        identity["script_args_digest"] = _json_digest(config.assistant_script_args)
+        identity["script_content_digest"] = sha256(
+            Path(config.assistant_script_path).read_bytes()
+        ).hexdigest()
+    else:
+        identity["backend_kind"] = "none"
+    return identity
+
+
+def _webhook_auth_scheme(value: str | None) -> str | None:
+    if not value:
+        return None
+    scheme, separator, _credential = value.strip().partition(" ")
+    return scheme if separator and scheme else None
+
+
+def _window_manifest_item(window: ScenarioWindow) -> dict[str, Any]:
+    return {
+        "scenario_user_playbook_id": window.user_playbook_id,
+        "source_interaction_ids": list(window.source_interaction_ids),
+    }
+
+
+def _window_manifest_digest(windows: list[ScenarioWindow]) -> str:
+    return _json_digest([_window_manifest_item(window) for window in windows])
+
+
+def _json_digest(value: Any) -> str:
+    return sha256(
+        json.dumps(
+            value, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _text_digest(value: str) -> str:
+    return sha256(value.encode("utf-8")).hexdigest()
+
+
+def _code_identity(value: Any) -> str:
+    return f"{value.__module__}.{value.__qualname__}"
+
+
+def _code_digest(value: Any) -> str:
+    try:
+        source = inspect.getsource(value)
+    except (OSError, TypeError):
+        source = _code_identity(value)
+    return _text_digest(source)
+
+
+def _decimal_string(value: float) -> str:
+    return repr(float(value))
 
 
 def _is_executable_file(path: str) -> bool:
@@ -805,9 +1212,3 @@ def _result_metadata(result: Any, split_metadata: dict[str, Any]) -> dict[str, A
 
 def _window_eval_key(window: ScenarioWindow) -> tuple[int | None, tuple[int, ...]]:
     return window.user_playbook_id, tuple(window.source_interaction_ids)
-
-
-def _evaluation_key(
-    scenario_user_playbook_id: int | None, source_interaction_ids: list[int]
-) -> tuple[int | None, tuple[int, ...]]:
-    return scenario_user_playbook_id, tuple(source_interaction_ids)

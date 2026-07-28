@@ -820,6 +820,7 @@ class PlaybookGenerationRequest(BaseModel):
 class PlaybookAggregatorRequest(BaseModel):
     agent_version: str
     rerun: bool = False
+    operation_key: str | None = Field(default=None, min_length=1)
 
 
 def construct_playbook_extraction_messages_from_sessions(

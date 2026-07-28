@@ -707,6 +707,84 @@ def test_governance_erase_marks_purge_failed_when_workflow_raises(
     assert failed_barriers[0]["error_detail"] == "RuntimeError"
 
 
+def test_subject_erasure_lifecycle_retry_is_idempotent_and_counted(
+    storage: SQLiteStorage,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class RetrySafeLifecycle:
+        calls = 0
+        deleted = 0
+
+        def erase_subject(
+            self,
+            *,
+            storage: SQLiteStorage,
+            subject_ref: str,
+            purge_id: str,
+        ) -> None:
+            del subject_ref
+            self.calls += 1
+            target = next(
+                target
+                for target in storage.list_purge_targets(purge_id, phase="delete")
+                if target.target_name == "offline_tuner_reward_label"
+            )
+            if target.deleted_count == 2:
+                return
+            self.deleted += 2
+            storage.record_purge_target(
+                purge_id=purge_id,
+                target_name="offline_tuner_reward_label",
+                target_ref="all",
+                phase="delete",
+                status="complete",
+                detail={"count": 2},
+                deleted_count=2,
+            )
+
+    lifecycle = RetrySafeLifecycle()
+    service = GovernanceService(
+        storage=storage,
+        org_id=storage.org_id,
+        ref_secret="test-governance-secret",
+        subject_erasure_lifecycle=lifecycle,
+    )
+    complete = storage.complete_subject_erasure_barrier_after_empty_check
+    completion_attempts = 0
+
+    def fail_after_first_lifecycle(*args, **kwargs):
+        nonlocal completion_attempts
+        completion_attempts += 1
+        if completion_attempts == 1:
+            raise RuntimeError("forced post-lifecycle failure")
+        return complete(*args, **kwargs)
+
+    monkeypatch.setattr(
+        storage,
+        "complete_subject_erasure_barrier_after_empty_check",
+        fail_after_first_lifecycle,
+    )
+
+    with pytest.raises(RuntimeError, match="forced post-lifecycle failure"):
+        service.erase_user(user_id="alice", request_id="erase-lifecycle-retry")
+
+    retried = service.erase_user(user_id="alice", request_id="erase-lifecycle-retry")
+
+    assert retried.status == "complete"
+    assert retried.deleted_counts["offline_tuner_reward_labels"] == 2
+    assert lifecycle.calls == 1
+    assert lifecycle.deleted == 2
+    snapshot = next(
+        target
+        for target in storage.list_purge_targets(
+            retried.purge_id, phase="prepare_targets"
+        )
+        if target.target_name == "target_snapshot"
+    )
+    assert snapshot.detail is not None
+    assert snapshot.detail["status"] == "complete"
+
+
 def test_session_export_paginates_by_returned_rows_when_requests_are_missing() -> None:
     class _Storage:
         def __init__(self) -> None:

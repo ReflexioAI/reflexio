@@ -4,7 +4,8 @@ Prompt management using file system prompt bank with markdown frontmatter files.
 
 import logging
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
@@ -133,6 +134,37 @@ class PromptManager:
         if not prompt:
             raise ValueError(f"Prompt {prompt_id} not found")
 
+        return self._render_prompt(prompt_id, prompt, variables)
+
+    def render_prompt_from_identity(
+        self,
+        prompt_id: str,
+        variables: dict[str, Any],
+        identity: Mapping[str, str],
+    ) -> str:
+        """Render the exact prompt template bound by a frozen identity."""
+        if identity.get("prompt_id") != prompt_id:
+            raise ValueError(f"Frozen prompt identity does not match {prompt_id}")
+        version = identity.get("active_version")
+        expected_digest = identity.get("template_content_digest")
+        if not version or not expected_digest:
+            raise ValueError(f"Frozen prompt identity for {prompt_id} is incomplete")
+        prompt = self._load_prompt(prompt_id, version)
+        if prompt is None:
+            raise ValueError(f"Prompt {prompt_id} v{version} not found")
+        actual_digest = sha256(prompt.content.encode("utf-8")).hexdigest()
+        if actual_digest != expected_digest:
+            raise ValueError(f"Frozen prompt template drifted for {prompt_id}")
+        return self._render_prompt(prompt_id, prompt, variables)
+
+    @staticmethod
+    def _render_prompt(
+        prompt_id: str,
+        prompt: Prompt,
+        variables: dict[str, Any],
+    ) -> str:
+        """Render an already resolved prompt template."""
+
         missing_vars = set(prompt.variables) - set(variables.keys())
         if missing_vars:
             raise ValueError(
@@ -179,6 +211,27 @@ class PromptManager:
         if self.version_override and prompt_id in self.version_override:
             return self.version_override[prompt_id]
         return self._find_active_version(prompt_id)
+
+    def get_prompt_template_identity(self, prompt_id: str) -> dict[str, str]:
+        """Return identity for the active unrendered prompt template.
+
+        This deliberately hashes ``Prompt.content`` before any variable
+        rendering so callers can bind prompt behavior without persisting
+        user/session inputs.
+        """
+        active_version = self.get_active_version(prompt_id)
+        if active_version is None:
+            raise ValueError(f"Prompt {prompt_id} has no active version")
+        prompt = self._get_prompt(prompt_id, active_version)
+        if prompt is None:
+            raise ValueError(f"Prompt {prompt_id} v{active_version} not found")
+        return {
+            "active_version": active_version,
+            "prompt_id": prompt_id,
+            "template_content_digest": sha256(
+                prompt.content.encode("utf-8")
+            ).hexdigest(),
+        }
 
     def get_all_prompt_ids(self) -> list[str]:
         """

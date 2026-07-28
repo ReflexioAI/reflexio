@@ -3,6 +3,9 @@ from typing import Any
 from reflexio.lib._base import ReflexioBase
 from reflexio.models.api_schema.retriever_schema import SetConfigResponse
 from reflexio.models.config_schema import Config, StorageConfigManagedSupabase
+from reflexio.server.services.configurator.config_storage import (
+    ConfigWriteConflictError,
+)
 
 
 class ConfigMixin(ReflexioBase):
@@ -18,8 +21,12 @@ class ConfigMixin(ReflexioBase):
         try:
             configurator = self.request_context.configurator
             if isinstance(config, dict):
-                config = configurator.normalize_config_payload(config)
-                config = Config(**config)
+                normalized = configurator.normalize_config_payload(config)
+                config = (
+                    normalized
+                    if isinstance(normalized, Config)
+                    else Config(**normalized)
+                )
 
             # Validate storage connection before setting config.
             # If no storage_config provided, or the caller round-tripped the
@@ -65,6 +72,8 @@ class ConfigMixin(ReflexioBase):
             configurator.set_config(config)
 
             return SetConfigResponse(success=True, msg="Configuration set successfully")
+        except ConfigWriteConflictError:
+            raise
         except Exception as e:
             return SetConfigResponse(
                 success=False, msg=f"Failed to set configuration: {str(e)}"

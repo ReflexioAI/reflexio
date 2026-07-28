@@ -132,6 +132,35 @@ class TestProfilesList:
         assert "Likes Python" in result.output
 
 
+class TestSearchShortcut:
+    def test_json_search_preserves_exact_user_playbook_id(
+        self, runner, app, mock_client
+    ) -> None:
+        """The top-level search shortcut must not lose the published successor ID."""
+        successor = MagicMock()
+        successor.model_dump.return_value = {"user_playbook_id": 77}
+        response = MagicMock()
+        response.model_dump.return_value = {
+            "success": True,
+            "profiles": [],
+            "agent_playbooks": [],
+            "user_playbooks": [{"user_playbook_id": 77}],
+        }
+        response.profiles = []
+        response.agent_playbooks = []
+        response.user_playbooks = [successor]
+        mock_client.search.return_value = response
+
+        result = runner.invoke(
+            app, ["--json", "search", "improvement", "--user-id", "u1"]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.output)["data"]["user_playbooks"] == [
+            {"user_playbook_id": 77}
+        ]
+
+
 class TestProfilesAdd:
     """Tests for the new 'user-profiles add' command."""
 

@@ -78,9 +78,25 @@ class BaseConfigurator(ABC):
         """Return config serialized for API responses."""
         return self.config.model_dump(mode="json")
 
-    def normalize_config_payload(self, config: dict[str, Any]) -> dict[str, Any]:
+    def normalize_config_payload(
+        self, config: dict[str, Any]
+    ) -> Config | dict[str, Any]:
         """Normalize raw API config payloads before Pydantic validation."""
         return config
+
+    def prepare_config_patch(self, partial: dict[str, Any]) -> Config:
+        """Prepare a top-level PATCH payload for persistence.
+
+        The shared behavior is intentionally shallow: nested config objects are
+        replaced wholesale by the caller's partial.
+        """
+        existing = self.get_config().model_dump(mode="python")
+        normalized = self.normalize_config_payload({**existing, **partial})
+        return (
+            normalized
+            if isinstance(normalized, Config)
+            else Config.model_validate(normalized)
+        )
 
     def get_prompt_bank_paths(self) -> list[Path]:
         """Return additional prompt banks this configurator contributes."""

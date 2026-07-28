@@ -5,7 +5,8 @@ import os
 import time
 import uuid
 from collections.abc import Mapping, Sequence
-from typing import TYPE_CHECKING, Any
+from contextlib import AbstractContextManager
+from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:
     import numpy as np
@@ -56,6 +57,26 @@ from reflexio.server.usage_metrics import record_usage_event
 logger = logging.getLogger(__name__)
 
 
+class AggregationEffectCoordinator(Protocol):
+    """Optional managed boundary for one atomic aggregation effect."""
+
+    def prepare(self, playbooks: list[AgentPlaybook]) -> None: ...
+
+    def apply_scope(self) -> AbstractContextManager[None]: ...
+
+    def save_agent_playbook(
+        self,
+        playbook: AgentPlaybook,
+        *,
+        source_ids: list[str],
+        request_id: str,
+        run_mode: str,
+        provenance: ModelProvenance | None,
+    ) -> AgentPlaybook: ...
+
+    def complete(self, result: dict[str, Any]) -> None: ...
+
+
 class PlaybookAggregator:
     def __init__(
         self,
@@ -63,6 +84,7 @@ class PlaybookAggregator:
         request_context: RequestContext,
         agent_version: str,
         aggregation_prompt_processor: AggregationPromptProcessor | None = None,
+        effect_coordinator: AggregationEffectCoordinator | None = None,
     ) -> None:
         self.client = llm_client
         self.storage = request_context.storage
@@ -70,6 +92,7 @@ class PlaybookAggregator:
         self.request_context = request_context
         self.agent_version = agent_version
         self.aggregation_prompt_processor = aggregation_prompt_processor
+        self.effect_coordinator = effect_coordinator
         # Cohesive pre/post-processing component (the enterprise redaction
         # Protocol seam). Constructed from the SAME injected instance stored
         # above — do NOT re-resolve the AGGREGATION_PROMPT_PROCESSOR ServiceKey.
@@ -266,12 +289,31 @@ class PlaybookAggregator:
         """
         aggregation_start = time.perf_counter()
         # Stable id for this aggregation run — groups all lineage events produced below.
-        _run_id = str(uuid.uuid4())
+        _run_id = playbook_aggregator_request.operation_key or str(uuid.uuid4())
         _empty_stats = {
             "clusters_found": 0,
             "user_playbooks_processed": 0,
             "playbooks_generated": 0,
         }
+
+        if (
+            self.effect_coordinator is None
+            and playbook_aggregator_request.operation_key
+            and any(
+                event.op == "aggregate"
+                for event in self.storage.get_lineage_events(  # type: ignore[reportOptionalMemberAccess]
+                    request_id=playbook_aggregator_request.operation_key
+                )
+            )
+        ):
+            logger.info(
+                "Skipping aggregation operation %s because its effects already exist",
+                playbook_aggregator_request.operation_key,
+            )
+            return {
+                **_empty_stats,
+                "skipped": "operation already applied",
+            }
 
         # Singleton aggregation: one playbook kind per org. The name is a fixed
         # constant used only for bookmark/archive scoping and telemetry — it is
@@ -436,8 +478,17 @@ class PlaybookAggregator:
                         "No cluster changes detected for '%s', skipping LLM calls",
                         playbook_name,
                     )
-                    # Still update bookmark
-                    self._update_operation_state(playbook_name, user_playbooks)
+                    result = {
+                        **_empty_stats,
+                        "skipped": "no cluster changes detected",
+                    }
+                    if self.effect_coordinator is None:
+                        self._update_operation_state(playbook_name, user_playbooks)
+                    else:
+                        self.effect_coordinator.prepare([])
+                        with self.effect_coordinator.apply_scope():
+                            self._update_operation_state(playbook_name, user_playbooks)
+                            self.effect_coordinator.complete(result)
                     record_usage_event(
                         org_id=self.request_context.org_id,
                         event_name="aggregation_succeeded",
@@ -452,7 +503,7 @@ class PlaybookAggregator:
                         ),
                         metadata={"skipped": "no cluster changes detected"},
                     )
-                    return {**_empty_stats, "skipped": "no cluster changes detected"}
+                    return result
 
                 logger.info(
                     "Detected %d changed clusters, %d playbooks to archive",
@@ -460,6 +511,7 @@ class PlaybookAggregator:
                     len(archived_playbook_ids),
                 )
 
+        effect_scope: AbstractContextManager[None] | None = None
         try:
             # Emit the started event inside the protected block so any failure
             # from here on is paired with an aggregation_failed event.
@@ -480,6 +532,11 @@ class PlaybookAggregator:
                 direction_overlap_threshold=playbook_aggregator_config.direction_overlap_threshold,
             )
             new_playbooks = [playbook for playbook, _, _ in generated_pairs]
+            if self.effect_coordinator is not None:
+                self.effect_coordinator.prepare(new_playbooks)
+                pending_scope = self.effect_coordinator.apply_scope()
+                pending_scope.__enter__()
+                effect_scope = pending_scope
 
             previous_fingerprints_for_changed_clusters = {}
             changed_fps_by_previous_fp = {}
@@ -568,20 +625,31 @@ class PlaybookAggregator:
                     for fb in cluster_playbooks
                     if fb.user_playbook_id
                 ]
-                saved_fb = self.storage.save_agent_playbooks(  # type: ignore[reportOptionalMemberAccess]
-                    [playbook],
-                    lineage_contexts=[
-                        LineageContext(
-                            op_kind="aggregate",
-                            actor="aggregator",
-                            request_id=_run_id,
-                            source_ids=member_ids,
-                            reason=f"{AGGREGATE_REASON_PREFIX}{run_mode}",
-                            model_name=provenance.model_name if provenance else None,
-                            provider=provenance.provider if provenance else None,
-                        )
-                    ],
-                )[0]
+                if self.effect_coordinator is None:
+                    saved_fb = self.storage.save_agent_playbooks(  # type: ignore[reportOptionalMemberAccess]
+                        [playbook],
+                        lineage_contexts=[
+                            LineageContext(
+                                op_kind="aggregate",
+                                actor="aggregator",
+                                request_id=_run_id,
+                                source_ids=member_ids,
+                                reason=f"{AGGREGATE_REASON_PREFIX}{run_mode}",
+                                model_name=(
+                                    provenance.model_name if provenance else None
+                                ),
+                                provider=provenance.provider if provenance else None,
+                            )
+                        ],
+                    )[0]
+                else:
+                    saved_fb = self.effect_coordinator.save_agent_playbook(
+                        playbook,
+                        source_ids=member_ids,
+                        request_id=_run_id,
+                        run_mode=run_mode,
+                        provenance=provenance,
+                    )
                 saved_playbook_list.append(saved_fb)
                 if saved_fb and saved_fb.agent_playbook_id:
                     fp_key = self._compute_cluster_fingerprint(cluster_playbooks)
@@ -719,14 +787,23 @@ class PlaybookAggregator:
                         org_id=self.request_context.org_id,
                         request_id=_run_id,
                     )
-
-            self._enqueue_playbook_optimization(saved_playbook_list)
+                    if self.effect_coordinator is not None:
+                        raise
 
             stats = {
                 "clusters_found": len(clusters),
                 "user_playbooks_processed": len(user_playbooks),
                 "playbooks_generated": len(saved_playbook_list),
             }
+            if self.effect_coordinator is not None:
+                self.effect_coordinator.complete(stats)
+                if effect_scope is None:
+                    raise RuntimeError("aggregation effect scope was not entered")
+                completed_scope = effect_scope
+                effect_scope = None
+                completed_scope.__exit__(None, None, None)
+
+            self._enqueue_playbook_optimization(saved_playbook_list)
             record_usage_event(
                 org_id=self.request_context.org_id,
                 event_name="aggregation_succeeded",
@@ -753,6 +830,10 @@ class PlaybookAggregator:
             return stats
 
         except Exception as e:
+            if effect_scope is not None:
+                failed_scope = effect_scope
+                effect_scope = None
+                failed_scope.__exit__(type(e), e, e.__traceback__)
             record_usage_event(
                 org_id=self.request_context.org_id,
                 event_name="aggregation_failed",
@@ -764,20 +845,26 @@ class PlaybookAggregator:
                 duration_ms=int((time.perf_counter() - aggregation_start) * 1000),
                 error_kind=type(e).__name__,
             )
-            # Restore archived playbooks if any error occurs during aggregation
-            logger.error(
-                "Error during playbook aggregation for '%s': %s. Restoring archived playbooks.",
-                playbook_name,
-                str(e),
-            )
-            if full_archive:
-                for name in full_archive_playbook_names:
-                    self.storage.restore_archived_agent_playbooks_by_playbook_name(  # type: ignore[reportOptionalMemberAccess]
-                        name, agent_version=self.agent_version
+            if self.effect_coordinator is None:
+                logger.error(
+                    "Error during playbook aggregation for '%s': %s. Restoring archived playbooks.",
+                    playbook_name,
+                    str(e),
+                )
+                if full_archive:
+                    for name in full_archive_playbook_names:
+                        self.storage.restore_archived_agent_playbooks_by_playbook_name(  # type: ignore[reportOptionalMemberAccess]
+                            name, agent_version=self.agent_version
+                        )
+                elif archived_playbook_ids:
+                    self.storage.restore_archived_agent_playbooks_by_ids(  # type: ignore[reportOptionalMemberAccess]
+                        archived_playbook_ids
                     )
-            elif archived_playbook_ids:
-                self.storage.restore_archived_agent_playbooks_by_ids(  # type: ignore[reportOptionalMemberAccess]
-                    archived_playbook_ids
+            else:
+                logger.error(
+                    "Error during managed playbook aggregation for '%s': %s. The effect transaction was rolled back.",
+                    playbook_name,
+                    str(e),
                 )
             # Re-raise the exception after restoring
             raise

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from reflexio.client import ReflexioClient
+from reflexio.client import ConfigResponse, OfflineTunerConfigResponse, ReflexioClient
 from reflexio.models.config_schema import Config, StorageConfigSQLite
 
 
@@ -32,13 +32,30 @@ def test_client_get_config_accepts_unknown_overlay(mock_session_class) -> None:
     client = ReflexioClient(api_key="test_key", url_endpoint="http://localhost:8000")
     result = client.get_config()
 
-    assert isinstance(result, Config)
+    assert isinstance(result, ConfigResponse)
     assert result.storage_config == StorageConfigSQLite(db_path="/tmp/test.db")
     assert result.model_dump()["x_extension_config"] == payload["x_extension_config"]
 
 
 @patch("reflexio.client.client.requests.Session")
-def test_client_set_config_preserves_unknown_overlay(mock_session_class) -> None:
+def test_client_get_config_types_offline_tuner_overlay(mock_session_class) -> None:
+    mock_session = MagicMock()
+    mock_session_class.return_value = mock_session
+    payload = Config(
+        storage_config=StorageConfigSQLite(db_path="/tmp/test.db")
+    ).model_dump()
+    payload["offline_tuner_config"] = {"enabled": False}
+    mock_session.request.return_value = _json_response(payload)
+
+    client = ReflexioClient(api_key="test_key", url_endpoint="http://localhost:8000")
+    result = client.get_config()
+
+    assert isinstance(result.offline_tuner_config, OfflineTunerConfigResponse)
+    assert result.offline_tuner_config.enabled is False
+
+
+@patch("reflexio.client.client.requests.Session")
+def test_client_set_config_does_not_send_response_overlay(mock_session_class) -> None:
     mock_session = MagicMock()
     mock_session_class.return_value = mock_session
     get_payload = Config(
@@ -48,6 +65,7 @@ def test_client_set_config_preserves_unknown_overlay(mock_session_class) -> None
         "enabled": True,
         "version": "extension-v1",
     }
+    get_payload["offline_tuner_config"] = {"enabled": False}
     mock_session.request.side_effect = [
         _json_response(get_payload),
         _json_response({"success": True, "msg": "Configuration set successfully"}),
@@ -62,4 +80,5 @@ def test_client_set_config_preserves_unknown_overlay(mock_session_class) -> None
     args, kwargs = mock_session.request.call_args
     assert args[0] == "POST"
     assert args[1].endswith("/api/set_config")
-    assert kwargs["json"]["x_extension_config"] == get_payload["x_extension_config"]
+    assert "x_extension_config" not in kwargs["json"]
+    assert "offline_tuner_config" not in kwargs["json"]

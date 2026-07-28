@@ -122,7 +122,37 @@ def test_find_pids_on_port_ignores_other_ports_with_same_suffix(monkeypatch) -> 
     assert utils.find_pids_on_port(8090) == []
 
 
-@pytest.mark.skipif(shutil.which("lsof") is None, reason="lsof not available")
+def test_find_pids_on_port_falls_back_to_ss(monkeypatch) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **_kwargs) -> CompletedProcess[str]:
+        calls.append(cmd)
+        if cmd[0] == "lsof":
+            return CompletedProcess(cmd, 1, stdout="")
+        return CompletedProcess(
+            cmd,
+            0,
+            stdout=(
+                "CLOSE 0 0 127.0.0.1:8090 0.0.0.0:* "
+                'users:(("python",pid=456,fd=7),("python",pid=456,fd=8))\n'
+                "ESTAB 0 0 127.0.0.1:8090 127.0.0.1:55006 "
+                'users:(("client",pid=789,fd=9))\n'
+            ),
+        )
+
+    monkeypatch.setattr(utils.subprocess, "run", fake_run)
+
+    assert utils.find_pids_on_port(8090) == [456]
+    assert calls == [
+        ["lsof", "-nP", "-Fpn", "-iTCP:8090"],
+        ["ss", "-tanpH", "sport", "=", ":8090"],
+    ]
+
+
+@pytest.mark.skipif(
+    shutil.which("lsof") is None and shutil.which("ss") is None,
+    reason="neither lsof nor ss is available",
+)
 def test_find_pids_on_port_detects_bound_socket_without_listen() -> None:
     # Regression: an orphaned process can hold a port bound without listening
     # (e.g. a leaked uvicorn --reload worker); it must still be detected.

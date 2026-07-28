@@ -46,6 +46,22 @@ class InteractionStoreMixin:
         """
         raise NotImplementedError
 
+    def record_retrieved_learning_sampling_decision(
+        self,
+        *,
+        user_id: str,  # noqa: ARG002
+        session_id: str,  # noqa: ARG002
+        request_id: str,  # noqa: ARG002
+        sampled: bool,  # noqa: ARG002
+    ) -> None:
+        """Best-effort hook for the retrieved-learning scheduler decision.
+
+        Backends without managed-platform impact-evidence storage intentionally
+        do nothing. Managed storage overrides this to persist the decision for
+        units created by the just-published request.
+        """
+        return
+
     def prepare_interaction_embeddings(self, interactions: list[Interaction]) -> None:  # noqa: ARG002
         """Pre-populate interaction.embedding for each interaction without writing to storage.
 

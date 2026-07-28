@@ -71,21 +71,23 @@ def _pids_from_lsof(port: int) -> list[int]:
             check=False,
         )
     except FileNotFoundError:
-        return []
-    if result.returncode != 0 or not result.stdout.strip():
-        return []
+        result = None
 
     pids: set[int] = set()
-    current_pid: int | None = None
-    suffix = f":{port}"
-    for line in result.stdout.splitlines():
-        if line.startswith("p") and line[1:].isdigit():
-            current_pid = int(line[1:])
-        elif line.startswith("n") and current_pid is not None:
-            name = line[1:]
-            if "->" not in name and name.endswith(suffix):
-                pids.add(current_pid)
-    return sorted(pids)
+    if result is not None and result.returncode == 0:
+        current_pid: int | None = None
+        suffix = f":{port}"
+        for line in result.stdout.splitlines():
+            if line.startswith("p") and line[1:].isdigit():
+                current_pid = int(line[1:])
+            elif line.startswith("n") and current_pid is not None:
+                name = line[1:]
+                if "->" not in name and name.endswith(suffix):
+                    pids.add(current_pid)
+    if pids:
+        return sorted(pids)
+
+    return []
 
 
 def _pids_from_ss(port: int) -> list[int]:

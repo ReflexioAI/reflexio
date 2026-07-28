@@ -14,10 +14,7 @@ if TYPE_CHECKING:
 from reflexio.models.config_schema import SearchMode
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
-from reflexio.server.llm.model_defaults import (
-    ModelRole,
-    resolve_model_name,
-)
+from reflexio.server.llm.model_defaults import ModelRole, resolve_model_name
 from reflexio.server.services.configurator.base_configurator import BaseConfigurator
 from reflexio.server.services.storage.storage_base import BaseStorage
 from reflexio.server.site_var.site_var_manager import SiteVarManager
@@ -29,6 +26,31 @@ logger = logging.getLogger(__name__)
 STORAGE_NOT_CONFIGURED_MSG = (
     "Storage not configured. Please configure storage in settings first."
 )
+
+
+def create_generation_litellm_client(
+    request_context: RequestContext,
+) -> LiteLLMClient:
+    """Build the tenant client used by normal generation and aggregation."""
+    model_setting = SiteVarManager().get_site_var("llm_model_setting")
+    site_var = model_setting if isinstance(model_setting, dict) else {}
+    config = request_context.configurator.get_config()
+    api_key_config = config.api_key_config if config else None
+    config_llm_config = config.llm_config if config else None
+    generation_model_name = resolve_model_name(
+        ModelRole.GENERATION,
+        site_var_value=site_var.get("default_generation_model_name"),
+        config_override=(
+            config_llm_config.generation_model_name if config_llm_config else None
+        ),
+        api_key_config=api_key_config,
+    )
+    return LiteLLMClient(
+        LiteLLMConfig(
+            model=generation_model_name,
+            api_key_config=api_key_config,
+        )
+    )
 
 
 def _require_storage[T: BaseModel](
@@ -88,29 +110,7 @@ class ReflexioBase:
             org_id=org_id, storage_base_dir=storage_base_dir, configurator=configurator
         )
 
-        # Create single LLM client for all services
-        model_setting = SiteVarManager().get_site_var("llm_model_setting")
-        site_var = model_setting if isinstance(model_setting, dict) else {}
-
-        # Get API key config and LLM config from configuration if available
-        config = self.request_context.configurator.get_config()
-        api_key_config = config.api_key_config if config else None
-        config_llm_config = config.llm_config if config else None
-
-        generation_model_name = resolve_model_name(
-            ModelRole.GENERATION,
-            site_var_value=site_var.get("default_generation_model_name"),
-            config_override=config_llm_config.generation_model_name
-            if config_llm_config
-            else None,
-            api_key_config=api_key_config,
-        )
-
-        llm_config = LiteLLMConfig(
-            model=generation_model_name,
-            api_key_config=api_key_config,
-        )
-        self.llm_client = LiteLLMClient(llm_config)
+        self.llm_client = create_generation_litellm_client(self.request_context)
 
     def _is_storage_configured(self) -> bool:
         """Check if storage is configured and available.
