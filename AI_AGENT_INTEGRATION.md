@@ -322,11 +322,18 @@ def publish_turns(
             force_extraction=False,
             skip_aggregation=False,
         )
-    except ValidationError:
+    except ValidationError as exc:
         # The payload is invalid, so retrying can never succeed. Return True to
         # advance the high-water mark and stop re-sending it — see "A rejected
-        # batch is not a retryable failure" below.
-        logging.exception("dropping unpublishable batch of %d", len(interactions))
+        # batch is not a retryable failure" below. Log the exception TYPE, not
+        # the exception: a ValidationError renders the offending input, and
+        # logging.exception would additionally capture frame locals holding the
+        # whole payload.
+        logging.error(
+            "dropping unpublishable batch of %d (%s)",
+            len(interactions),
+            type(exc).__name__,
+        )
         return True
     except Exception:
         return False
@@ -429,6 +436,14 @@ never advances, and the next hook re-sends the same batch, which is rejected
 again, forever. Catch `ValidationError` separately and either advance past the
 batch or quarantine it — a payload the client refuses to send will not become
 valid on the next attempt.
+
+The example only covers the client-side half. If the server is stricter than
+your pinned client — a newer validation rule, or a payload built as raw JSON
+rather than through the SDK — rejection arrives as an HTTP `422` inside your
+transport's error type, not as a `ValidationError`, and falls straight into the
+generic handler. Treat **any** `4xx` other than `408`/`429` the same way you
+treat a `ValidationError`: it is a permanent rejection, not a retryable failure.
+Only `5xx`, timeouts, and connection errors deserve a retry.
 
 ### Extraction Is Gated — Don't Expect a Result From One Publish
 
