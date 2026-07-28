@@ -180,11 +180,13 @@ class StructuredOutputParseError(Exception):
         raw_content: str | None = None,
         finish_reason: str | None = None,
         provenance: ModelProvenance | None = None,
+        validation_errors: tuple[str, ...] = (),
     ) -> None:
         super().__init__(message)
         self.raw_content = raw_content
         self.finish_reason = finish_reason
         self.provenance = provenance
+        self.validation_errors = validation_errors
 
 
 class LLMHardTimeoutError(TimeoutError):

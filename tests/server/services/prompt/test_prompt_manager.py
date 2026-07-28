@@ -330,9 +330,9 @@ class TestPromptManager:
         if errors:
             pytest.fail("Active version errors:\n" + "\n".join(errors))
 
-    def test_classic_playbook_context_extracts_compact_task_recipes(self):
-        """Classic playbook prompt uses the same compact recipe shape."""
-        rendered = PromptManager().render_prompt(
+    def test_surgical_normal_prompt_restores_procedure_and_strict_evidence(self):
+        manager = PromptManager()
+        context = manager.render_prompt(
             "playbook_extraction_context",
             {
                 "agent_context_prompt": "Agent context.",
@@ -340,22 +340,118 @@ class TestPromptManager:
                 "tool_can_use": "Tools.",
             },
         )
+        main = manager.render_prompt(
+            "playbook_extraction_main",
+            {"interactions": "[R1] [T1] user: example"},
+        )
+        normalized_context = " ".join(context.split())
+        normalized_main = " ".join(main.split())
 
-        assert "Success Path Recipes" in rendered
-        assert "reusable task structure" in rendered
-        assert "compact replay recipe" in rendered
-        assert "decisive source/artifact/signal" in rendered
-        assert "necessary constraints" in rendered
-        assert "Avoid:" in rendered
-        assert "Validate:" in rendered
-        assert "working-directory or import-path relationship" in rendered
-        assert "wrong working directories" in rendered
-        assert "failed command -> same goal succeeds" in rendered
-        assert "ignore benchmark sentinel/handoff mechanics" in rendered
-        assert "emit that setup recipe as its own playbook" in rendered
-        assert "Skip broad summaries" in rendered
-        assert "narrow verification" in rendered
-        assert "Do not add markdown headings" in rendered
-        assert "extra top-level keys" in rendered
-        assert "separate entries for those independent lessons" in rendered
-        assert "Do not add a separate polarity field" in rendered
+        assert manager.get_active_version("playbook_extraction_context") == "4.6.0"
+        assert manager.get_active_version("playbook_extraction_main") == "1.5.0"
+        for required in (
+            "Category 1 — Correction SOPs",
+            "Category 2 — Success Path Recipes",
+            "When any valid correction signal is present, you MUST emit",
+            "optimized, replayable path",
+            "Reasoning Procedure (REQUIRED)",
+            "Working tool sequences",
+            "Durable behavioral preferences",
+            "Ignored resolved answer",
+            "Repeated visible non-delivery",
+            "Exact duplicate work",
+            "Satisfied conditional authorization",
+            "Apply grounding clause by clause",
+            "evidence.turn_ref",
+            "bounded ask-once-and-act sequence is itself a successful",
+            "outside the visible interaction window",
+            "Intervening user or UI events",
+            "Use request-source metadata",
+            "cannot independently establish a user correction",
+            "not an unstated conventional checklist",
+            "Repeated bare-failure handling",
+            "The `evidence` array is the only place for turn references",
+            "do not discard it as routine clean execution",
+            "a grounded Success Path Recipe is mandatory",
+            "not reusable user guidance",
+            "establishes durability on its own",
+        ):
+            assert required in normalized_context
+
+        assert "short ordered sequence" in normalized_main
+        assert "one candidate for every distinct supported lesson" in normalized_main
+        assert "never in `content`, `trigger`, or `rationale`" in normalized_main
+        assert "final downstream artifact is not shown" in normalized_main
+        assert "next agent action without re-asking" in normalized_main
+        assert (
+            "Repeated user requests followed by the same bare failure"
+            in normalized_main
+        )
+        assert "describe evidence there without citation labels" in normalized_main
+        assert "Before returning an empty list" in normalized_main
+        assert "valid only when none is visible" in normalized_main
+        assert "not routine clean execution" in normalized_main
+        assert "grounded candidate is mandatory" in normalized_main
+        assert "durable preference by itself" in normalized_main
+        assert "prefer empty" not in normalized_context.casefold()
+        assert "org_48" not in normalized_context
+        assert "org_48" not in normalized_main
+
+    @pytest.mark.parametrize(
+        ("prompt_id", "version", "variables"),
+        [
+            (
+                "playbook_extraction_context",
+                "4.5.0",
+                {
+                    "agent_context_prompt": "Agent context.",
+                    "extraction_definition_prompt": "Extract playbooks.",
+                    "tool_can_use": "Tools.",
+                },
+            ),
+            (
+                "playbook_extraction_context",
+                "4.6.0",
+                {
+                    "agent_context_prompt": "Agent context.",
+                    "extraction_definition_prompt": "Extract playbooks.",
+                    "tool_can_use": "Tools.",
+                },
+            ),
+            (
+                "playbook_extraction_main",
+                "1.4.0",
+                {"interactions": "[T1] user: example"},
+            ),
+            (
+                "playbook_extraction_main",
+                "1.5.0",
+                {"interactions": "[T1] user: example"},
+            ),
+            (
+                "playbook_extraction_context_expert",
+                "3.5.0",
+                {
+                    "agent_context_prompt": "Agent context.",
+                    "extraction_definition_prompt": "Extract playbooks.",
+                },
+            ),
+            (
+                "playbook_extraction_main_expert",
+                "1.2.0",
+                {"comparison_pairs": "[T1] Agent Response: example"},
+            ),
+        ],
+    )
+    def test_retained_extraction_prompts_reject_invented_avoidance_rules(
+        self, prompt_id, version, variables
+    ):
+        rendered = PromptManager(version_override={prompt_id: version}).render_prompt(
+            prompt_id, variables
+        )
+        normalized = " ".join(rendered.split())
+
+        assert "avoid-bullet" in normalized
+        assert "Never write a preemptive avoidance rule" in normalized
+        assert "mistake that did not occur" in normalized
+        assert "applies per-rule" in normalized

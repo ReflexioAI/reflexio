@@ -1292,6 +1292,20 @@ class TestMaybeParseStructuredOutput:
         assert isinstance(result, SampleResponse)
         assert result.answer == "ok"
 
+    def test_once_json_encoded_object_is_parsed(self, client):
+        content = json.dumps(json.dumps({"answer": "ok", "score": 5}))
+        result = client._maybe_parse_structured_output(content, SampleResponse, True)
+
+        assert isinstance(result, SampleResponse)
+        assert result.answer == "ok"
+
+    def test_twice_json_encoded_object_still_fails(self, client):
+        payload = json.dumps({"answer": "ok", "score": 5})
+        content = json.dumps(json.dumps(payload))
+
+        with pytest.raises(StructuredOutputParseError):
+            client._maybe_parse_structured_output(content, SampleResponse, True)
+
     def test_top_level_list_wrapped_for_single_list_schema(self, client):
         content = json.dumps([{"answer": "ok", "score": 5}])
         result = client._maybe_parse_structured_output(
@@ -1301,6 +1315,22 @@ class TestMaybeParseStructuredOutput:
         assert isinstance(result, SingleListResponse)
         assert len(result.items) == 1
         assert result.items[0].answer == "ok"
+
+    def test_single_item_object_wrapped_for_single_list_schema(self, client):
+        content = json.dumps({"answer": "ok", "score": 5})
+        result = client._maybe_parse_structured_output(
+            content, SingleListResponse, True
+        )
+
+        assert isinstance(result, SingleListResponse)
+        assert len(result.items) == 1
+        assert result.items[0].answer == "ok"
+
+    def test_invalid_single_item_object_still_fails(self, client):
+        content = json.dumps({"answer": "missing score"})
+
+        with pytest.raises(StructuredOutputParseError):
+            client._maybe_parse_structured_output(content, SingleListResponse, True)
 
     def test_top_level_list_wrapped_for_optional_list_schema(self, client):
         content = json.dumps([{"answer": "ok", "score": 5}])
@@ -1363,6 +1393,35 @@ class TestMaybeParseStructuredOutput:
         content = '{"answer": "ok", "score": 5'
         with pytest.raises(StructuredOutputParseError):
             client._maybe_parse_structured_output(content, SampleResponse, True)
+
+    def test_truncated_list_salvages_only_complete_valid_items(self, client):
+        content = (
+            '{"items": ['
+            '{"answer": "first", "score": 5}, '
+            '{"answer": "incomplete", "score"'
+        )
+
+        result = client._maybe_parse_structured_output(
+            content, SingleListResponse, True
+        )
+
+        assert isinstance(result, SingleListResponse)
+        assert [(item.answer, item.score) for item in result.items] == [("first", 5)]
+
+    def test_truncated_list_drops_complete_invalid_sibling(self, client):
+        content = (
+            '{"items": ['
+            '{"answer": "missing score"}, '
+            '{"answer": "valid", "score": 7}, '
+            '{"answer": "incomplete"'
+        )
+
+        result = client._maybe_parse_structured_output(
+            content, SingleListResponse, True
+        )
+
+        assert isinstance(result, SingleListResponse)
+        assert [(item.answer, item.score) for item in result.items] == [("valid", 7)]
 
     def test_prefixed_truncated_json_not_repaired(self, client):
         """Truncation is detected even if the model prefixes the JSON with prose."""
@@ -2199,6 +2258,31 @@ class TestStructuredOutputRepair:
         err = exc_info.value
         assert err.first_parsed_provenance is not None
         assert err.first_parsed_provenance.model_name == "served-repair"
+
+    def test_repair_names_schema_error_without_echoing_field_content(self):
+        calls: list[dict[str, Any]] = []
+        responses = [
+            '{"answer": "customer text"}',
+            '{"answer": "ok", "score": 42}',
+        ]
+
+        def fake_completion(**kwargs):
+            calls.append(kwargs)
+            return self._make_mock_response(responses[len(calls) - 1])
+
+        client = _build_client(LiteLLMConfig(model="primary-model"))
+
+        with patch("litellm.completion", side_effect=fake_completion):
+            result = client.generate_chat_response(
+                messages=[{"role": "user", "content": "test"}],
+                response_format=SampleResponse,
+                structured_output_validator=self._score_validator,
+            )
+
+        assert isinstance(result, SampleResponse)
+        repair_instruction = calls[1]["messages"][-1]["content"]
+        assert "score: missing" in repair_instruction
+        assert "customer text" not in repair_instruction
 
     def test_repair_echo_replaces_length_truncated_output(self):
         calls: list[dict[str, Any]] = []
@@ -3771,6 +3855,33 @@ class TestOwnedFallbackWalk:
             for m in calls[1]["messages"]
         )
 
+    def test_hard_timeout_advances_from_minimax_to_glm(self, monkeypatch, caplog):
+        """A killed MiniMax request must advance to the configured GLM rung."""
+        client = LiteLLMClient(
+            LiteLLMConfig(model="minimax/MiniMax-M3", fallback_models=["zai/glm-5.2"])
+        )
+        calls: list[str] = []
+
+        def _complete(params, _hard_timeout):
+            model = params["model"]
+            calls.append(model)
+            if model == "minimax/MiniMax-M3":
+                raise LLMHardTimeoutError("LLM request exceeded hard timeout")
+            return _make_completion_response("from-glm")
+
+        monkeypatch.setattr(client, "_completion_with_hard_timeout", _complete)
+        with caplog.at_level(logging.INFO):
+            result = client.generate_chat_response(self._messages())
+
+        assert result == "from-glm"
+        assert calls == ["minimax/MiniMax-M3", "zai/glm-5.2"]
+        assert any(
+            "event=llm_fallback_used" in record.message
+            and "served_model=zai/glm-5.2" in record.message
+            and "reason=transport_error" in record.message
+            for record in caplog.records
+        )
+
     def test_all_rungs_fail_raises_last_error(self, monkeypatch):
         client = LiteLLMClient(
             LiteLLMConfig(model="minimax/MiniMax-M3", fallback_models=["zai/glm-5.2"])
@@ -3806,7 +3917,10 @@ class TestOwnedFallbackWalk:
         class Out(BaseModel):
             value: str
 
-        result = client.generate_chat_response(self._messages(), response_format=Out)
+        result = cast(
+            Out,
+            client.generate_chat_response(self._messages(), response_format=Out),
+        )
         assert result.value == "ok"
         # exactly: primary + one same-model parse-retry, then one fallback try
         assert calls == ["minimax/MiniMax-M3", "minimax/MiniMax-M3", "zai/glm-5.2"]
@@ -4190,3 +4304,130 @@ def test_generate_chat_response_does_not_mutate_caller_messages() -> None:
     with patch.object(client, "_make_request", return_value=completion):
         client.generate_chat_response(original, system_message="injected")
     assert original[0]["content"] == "orig-system"
+
+
+class TestTruncatedListSalvage:
+    """Recover complete items from a cut-off list without inventing content."""
+
+    class _Item(BaseModel):
+        name: str
+        score: int
+
+    class _Wrapper(BaseModel):
+        items: list["TestTruncatedListSalvage._Item"]
+
+    def test_recovers_complete_items_before_the_cut(self, caplog):
+        from reflexio.server.llm._litellm_structured_output import (
+            _salvage_complete_single_list_items,
+        )
+
+        # Third item is cut mid-object; the first two are complete.
+        truncated = (
+            '{"items": [{"name": "a", "score": 1}, {"name": "b", "score": 2}, '
+            '{"name": "c", "sco'
+        )
+
+        with caplog.at_level(
+            logging.WARNING,
+            logger="reflexio.server.llm._litellm_structured_output",
+        ):
+            salvaged = _salvage_complete_single_list_items(self._Wrapper, truncated)
+
+        assert salvaged is not None
+        typed_salvaged = cast(TestTruncatedListSalvage._Wrapper, salvaged)
+        assert [(i.name, i.score) for i in typed_salvaged.items] == [
+            ("a", 1),
+            ("b", 2),
+        ]
+        assert (
+            "event=structured_output_salvaged schema=_Wrapper salvaged=2" in caplog.text
+        )
+
+    def test_item_failing_its_own_schema_is_dropped_not_coerced(self):
+        from reflexio.server.llm._litellm_structured_output import (
+            _salvage_complete_single_list_items,
+        )
+
+        truncated = (
+            '{"items": [{"name": "a", "score": "not-an-int"}, '
+            '{"name": "b", "score": 2}, {"name": "c", "sco'
+        )
+
+        salvaged = _salvage_complete_single_list_items(self._Wrapper, truncated)
+
+        assert salvaged is not None
+        typed_salvaged = cast(TestTruncatedListSalvage._Wrapper, salvaged)
+        assert [(i.name, i.score) for i in typed_salvaged.items] == [("b", 2)]
+
+    def test_truncation_with_no_complete_item_returns_none(self):
+        """Never report a cut-off response as an empty success."""
+        from reflexio.server.llm._litellm_structured_output import (
+            _salvage_complete_single_list_items,
+        )
+
+        assert (
+            _salvage_complete_single_list_items(self._Wrapper, '{"items": [{"na')
+            is None
+        )
+
+    def test_empty_closed_list_returns_none(self):
+        """An empty list plus detected truncation is not a "found nothing" answer."""
+        from reflexio.server.llm._litellm_structured_output import (
+            _salvage_complete_single_list_items,
+        )
+
+        assert (
+            _salvage_complete_single_list_items(self._Wrapper, '{"items": [], "extra')
+            is None
+        )
+
+    def test_schema_without_a_single_list_field_is_not_salvaged(self):
+        from reflexio.server.llm._litellm_structured_output import (
+            _salvage_complete_single_list_items,
+        )
+
+        class Pair(BaseModel):
+            left: str
+            right: str
+
+        assert _salvage_complete_single_list_items(Pair, '{"left": "a", "rig') is None
+
+
+class TestSafeValidationErrors:
+    """Diagnostics must never carry model-authored content."""
+
+    def test_json_syntax_error_reports_position_only(self):
+        from reflexio.server.llm._litellm_structured_output import (
+            _safe_validation_errors,
+        )
+
+        try:
+            json.loads('{"secret": "customer data", }')
+        except json.JSONDecodeError as exc:
+            errors = _safe_validation_errors(exc)
+        else:  # pragma: no cover - the payload above is invalid by construction
+            pytest.fail("expected a JSONDecodeError")
+
+        assert len(errors) == 1
+        assert "json_invalid" in errors[0]
+        assert "customer data" not in errors[0]
+
+    def test_validation_error_reports_paths_and_codes_only(self):
+        from pydantic import ValidationError
+
+        from reflexio.server.llm._litellm_structured_output import (
+            _safe_validation_errors,
+        )
+
+        class Model(BaseModel):
+            count: int
+
+        try:
+            Model.model_validate({"count": "customer data"})
+        except ValidationError as exc:
+            errors = _safe_validation_errors(exc)
+        else:  # pragma: no cover - the payload above is invalid by construction
+            pytest.fail("expected a ValidationError")
+
+        assert errors == ("count: int_parsing",)
+        assert all("customer data" not in error for error in errors)

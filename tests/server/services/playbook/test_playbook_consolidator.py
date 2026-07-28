@@ -38,6 +38,9 @@ def _make_user_playbook(
     trigger: str | None = None,
     source_interaction_ids: list[int] | None = None,
     user_playbook_id: int = 0,
+    source_span: str | None = None,
+    notes: str | None = None,
+    reader_angle: str | None = None,
 ) -> UserPlaybook:
     """Helper to create a UserPlaybook object for tests."""
     return UserPlaybook(
@@ -49,6 +52,9 @@ def _make_user_playbook(
         trigger=trigger or f"condition_{idx}",
         source="test",
         source_interaction_ids=source_interaction_ids or [],
+        source_span=source_span,
+        notes=notes,
+        reader_angle=reader_angle,
     )
 
 
@@ -143,6 +149,35 @@ def _shared_repair_side_effect(*outputs: PlaybookConsolidationOutput):
         )
 
     return _side_effect
+
+
+@pytest.mark.parametrize(
+    ("decision", "expected_type"),
+    [
+        ({"new_id": "NEW-0", "decision": "accept"}, IndependentDecision),
+        (
+            {
+                "new_id": "NEW-0",
+                "content": "Merged rule",
+                "trigger": "At the decision point",
+                "rationale": "The evidence supports one lesson.",
+                "archive_existing_ids": [],
+            },
+            UnifyDecision,
+        ),
+        (
+            {
+                "new_id": "NEW-0",
+                "superseded_by_existing_id": 0,
+            },
+            RejectNewDecision,
+        ),
+    ],
+)
+def test_consolidation_output_infers_unambiguous_missing_kind(decision, expected_type):
+    output = PlaybookConsolidationOutput.model_validate({"decisions": [decision]})
+
+    assert isinstance(output.decisions[0], expected_type)
 
 
 # ===============================
@@ -258,12 +293,12 @@ class TestFormatNewAndExistingForPrompt:
 
 
 # ===============================
-# Tests for _retrieve_existing_playbooks
+# Tests for retrieve_existing_playbooks
 # ===============================
 
 
 class TestRetrieveExistingPlaybooks:
-    """Tests for _retrieve_existing_playbooks."""
+    """Tests for retrieve_existing_playbooks."""
 
     def test_with_embeddings(self, mock_consolidator):
         """Test retrieval embeds queries via the storage's own embedding path."""
@@ -276,7 +311,7 @@ class TestRetrieveExistingPlaybooks:
         storage._get_embedding.return_value = [0.1, 0.2, 0.3]
         storage.search_user_playbooks.return_value = [existing_fb]
 
-        result = mock_consolidator._retrieve_existing_playbooks([new_fb])
+        result = mock_consolidator.retrieve_existing_playbooks([new_fb])
 
         assert len(result) == 1
         assert result[0].user_playbook_id == 100
@@ -300,7 +335,7 @@ class TestRetrieveExistingPlaybooks:
         mock_consolidator.client.get_embeddings.return_value = [[0.1] * 768]
 
         new_fb = _make_user_playbook(0, trigger="user asks about billing")
-        mock_consolidator._retrieve_existing_playbooks([new_fb])
+        mock_consolidator.retrieve_existing_playbooks([new_fb])
 
         mock_consolidator.client.get_embeddings.assert_called_once_with(
             ["user asks about billing"],
@@ -317,7 +352,7 @@ class TestRetrieveExistingPlaybooks:
         storage._get_embedding.side_effect = Exception("embed error")
         storage.search_user_playbooks.return_value = [existing_fb]
 
-        result = mock_consolidator._retrieve_existing_playbooks([new_fb])
+        result = mock_consolidator.retrieve_existing_playbooks([new_fb])
 
         assert len(result) == 1
 
@@ -331,7 +366,7 @@ class TestRetrieveExistingPlaybooks:
             trigger="",
         )
 
-        result = mock_consolidator._retrieve_existing_playbooks([fb])
+        result = mock_consolidator.retrieve_existing_playbooks([fb])
 
         assert result == []
 
@@ -350,7 +385,7 @@ class TestRetrieveExistingPlaybooks:
             shared_existing
         ]
 
-        result = mock_consolidator._retrieve_existing_playbooks([fb1, fb2])
+        result = mock_consolidator.retrieve_existing_playbooks([fb1, fb2])
 
         # Should only appear once despite being returned for both queries
         assert len(result) == 1
@@ -387,23 +422,295 @@ class TestDeduplicate:
         assert result == []
         assert delete_ids == []
 
-    def test_error_fallback_returns_all(self, mock_consolidator):
-        """Test that LLM call error falls back to returning all playbooks."""
-        fb = _make_user_playbook(0)
+    def test_evidence_validated_new_candidates_skip_unneeded_llm(
+        self, mock_consolidator
+    ):
+        first = _make_user_playbook(
+            0,
+            source_interaction_ids=[10],
+            source_span="first correction",
+            reader_angle="correction",
+        )
+        second = _make_user_playbook(
+            1,
+            source_interaction_ids=[20],
+            source_span="second correction",
+            reader_angle="correction",
+        )
+        mock_consolidator.client.get_embeddings.return_value = [[0.1], [0.2]]
+        mock_consolidator.request_context.storage.search_user_playbooks.return_value = []
 
+        with patch.dict("os.environ", {"MOCK_LLM_RESPONSE": "false"}):
+            result, delete_ids, _ = mock_consolidator.deduplicate(
+                results=[[first, second]], request_id="req1", agent_version="v1"
+            )
+
+        assert [row.content for row in result] == [first.content, second.content]
+        assert [row.request_id for row in result] == ["req1", "req1"]
+        assert delete_ids == []
+        mock_consolidator.client.generate_chat_response.assert_not_called()
+
+    def test_overlapping_window_duplicates_merge_without_llm(self, mock_consolidator):
+        existing_format = _make_user_playbook(
+            10,
+            user_playbook_id=500,
+            content="Lead recurring analysis reports with a compact table",
+            source_interaction_ids=[10],
+            source_span="lead with a compact table",
+            reader_angle="preference",
+        )
+        existing_audio = _make_user_playbook(
+            11,
+            user_playbook_id=501,
+            content="Use clean audio without mouth sounds or harsh sibilance",
+            trigger="When generating narration audio",
+            source_interaction_ids=[20],
+            source_span="no mouth sounds or harsh esses",
+            reader_angle="preference",
+        )
+        new_format = _make_user_playbook(
+            0,
+            content="Put a compact table before commentary in analysis reports",
+            source_interaction_ids=[10, 12],
+            source_span="lead with a compact table\n\ntable before commentary",
+            reader_angle="preference",
+        )
+        new_audio = _make_user_playbook(
+            1,
+            content="Produce clean audio with no mouth sounds or harsh sibilance",
+            trigger="When generating narration audio for the user",
+            source_interaction_ids=[22],
+            source_span="no mouth sounds or harsh esses\n\nclean audio",
+            reader_angle="preference",
+        )
+        new_clarification = _make_user_playbook(
+            2,
+            content="Ask once for a missing deployment environment and then deploy",
+            source_interaction_ids=[30],
+            source_span="Which environment should receive the deployment?",
+            reader_angle="verified-success",
+        )
+        mock_consolidator.client.get_embeddings.return_value = [
+            [0.1],
+            [0.2],
+            [0.3],
+        ]
+        mock_consolidator.request_context.storage.search_user_playbooks.return_value = [
+            existing_format,
+            existing_audio,
+        ]
+
+        with patch.dict("os.environ", {"MOCK_LLM_RESPONSE": "false"}):
+            result, archive_ids, merge_groups = mock_consolidator.deduplicate(
+                results=[[new_format, new_audio, new_clarification]],
+                request_id="req-overlap",
+                agent_version="v1",
+            )
+
+        assert [row.content for row in result] == [
+            existing_format.content,
+            existing_audio.content,
+            new_clarification.content,
+        ]
+        assert [row.source_interaction_ids for row in result] == [
+            [10, 12],
+            [20, 22],
+            [30],
+        ]
+        assert result[0].source_span == (
+            "lead with a compact table\n\ntable before commentary"
+        )
+        assert result[1].source_span == (
+            "no mouth sounds or harsh esses\n\nclean audio"
+        )
+        assert archive_ids == [500, 501]
+        assert merge_groups == [(0, [500]), (1, [501])]
+        mock_consolidator.client.generate_chat_response.assert_not_called()
+
+    def test_same_source_distinct_lesson_still_uses_llm(self, mock_consolidator):
+        existing = _make_user_playbook(
+            10,
+            user_playbook_id=500,
+            content="Lead analysis reports with a compact table",
+            source_interaction_ids=[10],
+            source_span="lead with a compact table",
+            reader_angle="preference",
+        )
+        candidate = _make_user_playbook(
+            0,
+            content="Use clean narration without mouth sounds",
+            source_interaction_ids=[10],
+            source_span="no mouth sounds",
+            reader_angle="preference",
+        )
         mock_consolidator.client.get_embeddings.return_value = [[0.1]]
+        mock_consolidator.request_context.storage.search_user_playbooks.return_value = [
+            existing
+        ]
+        mock_consolidator.client.generate_chat_response.return_value = (
+            PlaybookConsolidationOutput(decisions=[IndependentDecision(new_id="NEW-0")])
+        )
+
+        with patch.dict("os.environ", {"MOCK_LLM_RESPONSE": "false"}):
+            result, archive_ids, merge_groups = mock_consolidator.deduplicate(
+                results=[[candidate]], request_id="req-distinct", agent_version="v1"
+            )
+
+        assert [row.content for row in result] == [candidate.content]
+        assert archive_ids == []
+        assert merge_groups == []
+        mock_consolidator.client.generate_chat_response.assert_called_once()
+
+    def test_shared_evidence_ask_once_variants_merge_without_llm(
+        self, mock_consolidator
+    ):
+        existing = _make_user_playbook(
+            10,
+            user_playbook_id=500,
+            content=(
+                "Ask the one necessary deployment question once, then start the rollout "
+                "with the user's selected environment without re-asking the same "
+                "clarification."
+            ),
+            trigger=(
+                "When the user requests a rollout and a single necessary deployment "
+                "environment remains unknown"
+            ),
+            source_interaction_ids=[10, 11, 12],
+            source_span="Which environment?\n\nStaging\n\nRollout started",
+            reader_angle="verified-success",
+        )
+        candidate = _make_user_playbook(
+            0,
+            content=(
+                "Ask one focused clarification about the necessary environment, then "
+                "immediately start the rollout using the supplied answer without "
+                "re-asking the same question or waiting for confirmation."
+            ),
+            trigger=(
+                "When a user requests a rollout and its target environment remains "
+                "ambiguous"
+            ),
+            source_interaction_ids=[10, 11],
+            source_span="Which environment?\n\nStaging",
+            reader_angle="verified-success",
+        )
+        mock_consolidator.client.get_embeddings.return_value = [[0.1]]
+        mock_consolidator.request_context.storage.search_user_playbooks.return_value = [
+            existing
+        ]
+
+        with patch.dict("os.environ", {"MOCK_LLM_RESPONSE": "false"}):
+            result, archive_ids, merge_groups = mock_consolidator.deduplicate(
+                results=[[candidate]], request_id="req-ask-once", agent_version="v1"
+            )
+
+        assert [row.content for row in result] == [existing.content]
+        assert result[0].source_interaction_ids == [10, 11, 12]
+        assert archive_ids == [500]
+        assert merge_groups == [(0, [500])]
+        mock_consolidator.client.generate_chat_response.assert_not_called()
+
+    def test_overlap_with_untouched_existing_is_repaired(self, mock_consolidator):
+        existing_first = _make_user_playbook(
+            10,
+            user_playbook_id=500,
+            content="Lead recurring analysis reports with a compact table",
+            source_interaction_ids=[10],
+            source_span="lead with a compact table",
+            reader_angle="preference",
+        )
+        existing_second = existing_first.model_copy(
+            update={"user_playbook_id": 501, "request_id": "req_11"}
+        )
+        candidate = _make_user_playbook(
+            0,
+            content="Lead recurring analysis reports with a compact table",
+            source_interaction_ids=[10],
+            source_span="lead with a compact table",
+            reader_angle="preference",
+        )
+        mock_consolidator.client.get_embeddings.return_value = [[0.1]]
+        mock_consolidator.request_context.storage.search_user_playbooks.return_value = [
+            existing_first,
+            existing_second,
+        ]
+        mock_consolidator.client.generate_chat_response.side_effect = (
+            _shared_repair_side_effect(
+                PlaybookConsolidationOutput(
+                    decisions=[IndependentDecision(new_id="NEW-0")]
+                ),
+                PlaybookConsolidationOutput(
+                    decisions=[
+                        RejectNewDecision(new_id="NEW-0", superseded_by_existing_id=0)
+                    ]
+                ),
+            )
+        )
+
+        with patch.dict("os.environ", {"MOCK_LLM_RESPONSE": "false"}):
+            result, archive_ids, merge_groups = mock_consolidator.deduplicate(
+                results=[[candidate]], request_id="req-duplicate", agent_version="v1"
+            )
+
+        assert result == []
+        assert archive_ids == []
+        assert merge_groups == []
+        mock_consolidator.client.generate_chat_response.assert_called_once()
+
+    def test_preexisting_duplicate_rows_do_not_poison_unrelated_candidate(
+        self, mock_consolidator
+    ):
+        existing_first = _make_user_playbook(
+            10,
+            user_playbook_id=500,
+            content="Lead recurring analysis reports with a compact table",
+            trigger="when writing a recurring analysis report",
+        )
+        existing_second = existing_first.model_copy(
+            update={"user_playbook_id": 501, "request_id": "req_11"}
+        )
+        candidate = _make_user_playbook(
+            0,
+            content="Confirm the deployment environment before starting a rollout",
+            trigger="when a rollout target is missing",
+        )
+        mock_consolidator.client.get_embeddings.return_value = [[0.1]]
+        mock_consolidator.request_context.storage.search_user_playbooks.return_value = [
+            existing_first,
+            existing_second,
+        ]
+        mock_consolidator.client.generate_chat_response.return_value = (
+            PlaybookConsolidationOutput(decisions=[IndependentDecision(new_id="NEW-0")])
+        )
+
+        with patch.dict("os.environ", {"MOCK_LLM_RESPONSE": "false"}):
+            result, archive_ids, merge_groups = mock_consolidator.deduplicate(
+                results=[[candidate]], request_id="req-unrelated", agent_version="v1"
+            )
+
+        assert [row.content for row in result] == [candidate.content]
+        assert archive_ids == []
+        assert merge_groups == []
+
+    def test_error_fails_closed(self, mock_consolidator):
+        """An LLM error must fail the batch instead of retaining candidates."""
+        first = _make_user_playbook(0)
+        second = _make_user_playbook(1)
+
+        mock_consolidator.client.get_embeddings.return_value = [[0.1], [0.2]]
         mock_consolidator.request_context.storage.search_user_playbooks.return_value = []
         mock_consolidator.client.generate_chat_response.side_effect = Exception(
             "LLM error"
         )
 
-        with patch.dict("os.environ", {"MOCK_LLM_RESPONSE": "false"}):
-            result, delete_ids, _ = mock_consolidator.deduplicate(
-                results=[[fb]], request_id="req1", agent_version="v1"
+        with (
+            patch.dict("os.environ", {"MOCK_LLM_RESPONSE": "false"}),
+            pytest.raises(Exception, match="LLM error"),
+        ):
+            mock_consolidator.deduplicate(
+                results=[[first, second]], request_id="req1", agent_version="v1"
             )
-
-        assert len(result) == 1
-        assert delete_ids == []
 
 
 # ===============================
@@ -680,6 +987,7 @@ class TestBuildDeduplicatedResults:
         dedup_output = PlaybookConsolidationOutput(
             decisions=[
                 IndependentDecision(new_id=["[NEW-0]", "NEW-2"]),  # type: ignore[arg-type]
+                IndependentDecision(new_id="NEW-1"),
             ],
         )
 
@@ -756,6 +1064,7 @@ class TestBuildDeduplicatedResults:
                     content="merged",
                     trigger="merged trigger",
                 ),
+                IndependentDecision(new_id="NEW-2"),
             ],
         )
 
@@ -848,6 +1157,7 @@ class TestBuildDeduplicatedResults:
                     new_id=["[NEW-0]", "NEW-2"],  # type: ignore[arg-type]
                     superseded_by_existing_id=["[EXISTING-0]", "EXISTING-1"],  # type: ignore[arg-type]
                 ),
+                IndependentDecision(new_id="NEW-1"),
             ],
         )
 
@@ -862,9 +1172,8 @@ class TestBuildDeduplicatedResults:
         assert [fb.content for fb in result] == ["content_1"]
         assert delete_ids == []
 
-    def test_reject_new_partial_existing_refs_reinserts_all(self, mock_consolidator):
-        """If ANY superseding ref is unknown, the decision is malformed: no NEW
-        id is consumed, so the safety fallback re-inserts every candidate."""
+    def test_reject_new_partial_existing_refs_fails_closed(self, mock_consolidator):
+        """An unresolved superseding reference invalidates the whole batch."""
         new_playbooks = [
             _make_user_playbook(0),
             _make_user_playbook(1),
@@ -882,16 +1191,14 @@ class TestBuildDeduplicatedResults:
             ],
         )
 
-        result, delete_ids, _ = mock_consolidator._build_deduplicated_results(
-            new_playbooks=new_playbooks,
-            existing_playbooks=existing_playbooks,
-            dedup_output=dedup_output,
-            request_id="req1",
-            agent_version="v1",
-        )
-
-        assert {fb.content for fb in result} == {"content_0", "content_1", "content_2"}
-        assert delete_ids == []
+        with pytest.raises(ValueError):
+            mock_consolidator._build_deduplicated_results(
+                new_playbooks=new_playbooks,
+                existing_playbooks=existing_playbooks,
+                dedup_output=dedup_output,
+                request_id="req1",
+                agent_version="v1",
+            )
 
     def test_differentiate_resolves_existing_position(self, mock_consolidator):
         """``differentiate`` ids may refer to the rendered ``EXISTING-N`` position."""
@@ -1002,8 +1309,8 @@ class TestBuildDeduplicatedResults:
 
         assert resolved is db_row
 
-    def test_safety_fallback_unhandled_playbooks(self, mock_consolidator):
-        """NEW playbooks not referenced by any decision are added via safety fallback."""
+    def test_unhandled_playbooks_fail_closed(self, mock_consolidator):
+        """Every NEW playbook must be explicitly accounted for exactly once."""
         new_playbooks = [
             _make_user_playbook(0),
             _make_user_playbook(1),
@@ -1015,16 +1322,14 @@ class TestBuildDeduplicatedResults:
             decisions=[IndependentDecision(new_id="NEW-0")],
         )
 
-        result, _, _ = mock_consolidator._build_deduplicated_results(
-            new_playbooks=new_playbooks,
-            existing_playbooks=[],
-            dedup_output=dedup_output,
-            request_id="req1",
-            agent_version="v1",
-        )
-
-        # Index 0 via independent decision + index 1 and 2 via safety fallback
-        assert len(result) == 3
+        with pytest.raises(ValueError, match="missing NEW ids"):
+            mock_consolidator._build_deduplicated_results(
+                new_playbooks=new_playbooks,
+                existing_playbooks=[],
+                dedup_output=dedup_output,
+                request_id="req1",
+                agent_version="v1",
+            )
 
 
 # ===============================
@@ -1056,6 +1361,7 @@ class TestDeduplicateHappyPath:
 
         assert [row.request_id for row in result] == ["rerun_playbook_dedup_1"]
         assert delete_ids == []
+        mock_consolidator.client.generate_chat_response.assert_not_called()
 
     def test_deduplicate_accepts_legacy_request_id_keyword(self, mock_consolidator):
         """The main entry point should keep the legacy ``request_id=`` alias."""
@@ -1325,9 +1631,7 @@ class TestConsolidationRepair:
         ]
         assert any("missing NEW ids: NEW-1" in error for error in validator(bad_output))
 
-    def test_repair_failure_falls_back_to_original_output(
-        self, mock_consolidator, caplog
-    ):
+    def test_repair_failure_fails_closed(self, mock_consolidator):
         new_0 = _make_user_playbook(
             0, content="alpha beta", source_interaction_ids=[10]
         )
@@ -1357,19 +1661,13 @@ class TestConsolidationRepair:
 
         with (
             patch.dict("os.environ", {"MOCK_LLM_RESPONSE": "false"}),
-            caplog.at_level("WARNING"),
+            pytest.raises(StructuredOutputRepairError),
         ):
-            result, delete_ids, _ = mock_consolidator.deduplicate(
+            mock_consolidator.deduplicate(
                 results=[[new_0, new_1]],
                 request_id="req_repair_fail",
                 agent_version="v1",
             )
-
-        assert [row.content for row in result] == [
-            "alpha beta gamma delta",
-            "gamma delta",
-        ]
-        assert delete_ids == []
         assert mock_consolidator.client.generate_chat_response.call_count == 1
         assert mock_consolidator.model_provenance is not None
         assert mock_consolidator.model_provenance.model_name == "served-model"
@@ -1609,7 +1907,7 @@ class TestConsolidationRepair:
         assert len(result) == 2
         assert mock_consolidator.client.generate_chat_response.call_count == 1
 
-    def test_suspicious_repair_returning_same_decisions_is_accepted(
+    def test_suspicious_repair_returning_same_decisions_fails_closed(
         self, mock_consolidator
     ):
         new_0 = _make_user_playbook(
@@ -1639,14 +1937,15 @@ class TestConsolidationRepair:
             _shared_repair_side_effect(same_output, same_output)
         )
 
-        with patch.dict("os.environ", {"MOCK_LLM_RESPONSE": "false"}):
-            result, _, _ = mock_consolidator.deduplicate(
+        with (
+            patch.dict("os.environ", {"MOCK_LLM_RESPONSE": "false"}),
+            pytest.raises(StructuredOutputRepairError),
+        ):
+            mock_consolidator.deduplicate(
                 results=[[new_0, new_1]],
                 request_id="req_same_repair",
                 agent_version="v1",
             )
-
-        assert len(result) == 2
         assert mock_consolidator.client.generate_chat_response.call_count == 1
 
     def test_same_batch_duplicate_regression_drops_raw_source_after_repair(
@@ -1709,28 +2008,21 @@ class TestBuildDeduplicatedResultsEdgeCases:
     """Extended tests for _build_deduplicated_results edge cases."""
 
     def test_unify_with_unknown_existing_position_fails_apply(self, mock_consolidator):
-        """``unify`` referencing an EXISTING-{idx} that doesn't exist is a soft failure.
-
-        Per-decision try/except isolates the failure; safety fallback still
-        re-inserts the NEW candidate as-is so the data is not silently lost.
-        """
+        """An unresolved EXISTING reference invalidates the batch."""
         new_playbooks = [_make_user_playbook(0)]
 
         dedup_output = PlaybookConsolidationOutput(
             decisions=[_unify("NEW-0", archive_existing_ids=[99])],
         )
 
-        result, delete_ids, _ = mock_consolidator._build_deduplicated_results(
-            new_playbooks=new_playbooks,
-            existing_playbooks=[],
-            dedup_output=dedup_output,
-            request_id="req1",
-            agent_version="v1",
-        )
-
-        # Decision failed, but safety fallback adds NEW-0 as-is
-        assert len(result) == 1
-        assert delete_ids == []
+        with pytest.raises(ValueError, match="unknown existing_id"):
+            mock_consolidator._build_deduplicated_results(
+                new_playbooks=new_playbooks,
+                existing_playbooks=[],
+                dedup_output=dedup_output,
+                request_id="req1",
+                agent_version="v1",
+            )
 
     def test_source_interaction_ids_combined_from_new_and_existing(
         self, mock_consolidator
@@ -1789,8 +2081,63 @@ class TestBuildDeduplicatedResultsEdgeCases:
         # ID 2 should appear only once
         assert result[0].source_interaction_ids == [1, 2, 3]
 
-    def test_unhandled_playbooks_safety_net(self, mock_consolidator):
-        """Playbooks not referenced by any decision are added via safety fallback."""
+    def test_unify_preserves_stable_evidence_union_and_consistent_metadata(
+        self, mock_consolidator
+    ):
+        new_playbooks = [
+            _make_user_playbook(
+                0,
+                source_interaction_ids=[1],
+                source_span="first correction",
+                notes="bounded caveat",
+                reader_angle="correction",
+            ),
+            _make_user_playbook(
+                1,
+                source_interaction_ids=[2],
+                source_span="second correction",
+                notes="bounded caveat",
+                reader_angle="correction",
+            ),
+        ]
+        output = PlaybookConsolidationOutput(
+            decisions=[_unify(["NEW-0", "NEW-1"], content="merged lesson")]
+        )
+
+        result, _, _ = mock_consolidator._build_deduplicated_results(
+            new_playbooks=new_playbooks,
+            existing_playbooks=[],
+            dedup_output=output,
+            request_id="req1",
+            agent_version="v1",
+        )
+
+        assert result[0].source_interaction_ids == [1, 2]
+        assert result[0].source_span == "first correction\n\nsecond correction"
+        assert result[0].notes == "bounded caveat"
+        assert result[0].reader_angle == "correction"
+
+    def test_unify_preserves_distinct_notes_in_stable_order(self, mock_consolidator):
+        new_playbooks = [
+            _make_user_playbook(0, notes="first note"),
+            _make_user_playbook(1, notes="second note"),
+        ]
+        output = PlaybookConsolidationOutput(
+            decisions=[_unify(["NEW-0", "NEW-1"], content="merged lesson")]
+        )
+
+        result, _, _ = mock_consolidator._build_deduplicated_results(
+            new_playbooks=new_playbooks,
+            existing_playbooks=[],
+            dedup_output=output,
+            request_id="req1",
+            agent_version="v1",
+        )
+
+        assert result[0].notes == "first note\nsecond note"
+
+    def test_unhandled_playbooks_fail_closed(self, mock_consolidator):
+        """Unaccounted candidates invalidate the batch."""
         new_playbooks = [
             _make_user_playbook(0),
             _make_user_playbook(1),
@@ -1802,45 +2149,31 @@ class TestBuildDeduplicatedResultsEdgeCases:
             decisions=[IndependentDecision(new_id="NEW-1")],
         )
 
-        result, _, _ = mock_consolidator._build_deduplicated_results(
-            new_playbooks=new_playbooks,
-            existing_playbooks=[],
-            dedup_output=dedup_output,
-            request_id="req1",
-            agent_version="v1",
-        )
-
-        assert len(result) == 3
-        # Index 1 is from independent decision, indices 0 and 2 from safety fallback
-        contents = {fb.content for fb in result}
-        assert "content_0" in contents
-        assert "content_1" in contents
-        assert "content_2" in contents
+        with pytest.raises(ValueError, match="missing NEW ids"):
+            mock_consolidator._build_deduplicated_results(
+                new_playbooks=new_playbooks,
+                existing_playbooks=[],
+                dedup_output=dedup_output,
+                request_id="req1",
+                agent_version="v1",
+            )
 
     def test_independent_for_unknown_new_id_fails_apply(self, mock_consolidator):
-        """``IndependentDecision`` referencing an unknown NEW id is counted as failed.
-
-        The unknown reference raises inside ``_apply_one``; the per-decision
-        ``try/except`` isolates the failure so the rest of the batch (and the
-        safety fallback) still runs.
-        """
+        """An unknown NEW reference invalidates the batch."""
         new_playbooks = [_make_user_playbook(0)]
 
         dedup_output = PlaybookConsolidationOutput(
             decisions=[IndependentDecision(new_id="NEW-99")],
         )
 
-        result, delete_ids, _ = mock_consolidator._build_deduplicated_results(
-            new_playbooks=new_playbooks,
-            existing_playbooks=[],
-            dedup_output=dedup_output,
-            request_id="req1",
-            agent_version="v1",
-        )
-
-        # Decision failed, but safety fallback adds NEW-0 as-is
-        assert len(result) == 1
-        assert delete_ids == []
+        with pytest.raises(ValueError, match="unknown NEW id"):
+            mock_consolidator._build_deduplicated_results(
+                new_playbooks=new_playbooks,
+                existing_playbooks=[],
+                dedup_output=dedup_output,
+                request_id="req1",
+                agent_version="v1",
+            )
 
 
 class TestFormatItemsForPrompt:
@@ -1934,7 +2267,7 @@ class TestMockModeCheck:
 
 
 class TestRetrieveExistingPlaybooksWithUserId:
-    """Tests for _retrieve_existing_playbooks with user_id filter."""
+    """Tests for retrieve_existing_playbooks with user_id filter."""
 
     def test_user_id_passed_to_search(self, mock_consolidator):
         """Test that user_id is passed through to the search request."""
@@ -1946,7 +2279,7 @@ class TestRetrieveExistingPlaybooksWithUserId:
             existing_fb
         ]
 
-        mock_consolidator._retrieve_existing_playbooks([new_fb], user_id="user_abc")
+        mock_consolidator.retrieve_existing_playbooks([new_fb], user_id="user_abc")
 
         # Verify search was called with user_id in the SearchUserPlaybookRequest
         call_args = (
@@ -1962,10 +2295,291 @@ class TestRetrieveExistingPlaybooksWithUserId:
         mock_consolidator.client.get_embeddings.return_value = [[0.1]]
         mock_consolidator.request_context.storage.search_user_playbooks.return_value = []
 
-        mock_consolidator._retrieve_existing_playbooks([new_fb], user_id=None)
+        mock_consolidator.retrieve_existing_playbooks([new_fb], user_id=None)
 
         call_args = (
             mock_consolidator.request_context.storage.search_user_playbooks.call_args
         )
         search_request = call_args[0][0]
         assert search_request.user_id is None
+
+
+# ===============================
+# Retrieval resilience
+# ===============================
+
+
+class TestRetrievalResilience:
+    """A failed hybrid search degrades recall; it must not fail the batch.
+
+    Losing a search result can only cause consolidation to miss an existing row
+    (a duplicate is stored). Raising instead would discard every candidate in the
+    batch, including the LLM work already paid for.
+    """
+
+    def test_search_failure_is_skipped_not_raised(self, mock_consolidator):
+        first = _make_user_playbook(0, trigger="first condition")
+        second = _make_user_playbook(1, trigger="second condition")
+        survivor = _make_user_playbook(9, user_playbook_id=77)
+
+        mock_consolidator.client.get_embeddings.return_value = [[0.1], [0.2]]
+        mock_consolidator.request_context.storage.search_user_playbooks.side_effect = [
+            RuntimeError("vector backend unavailable"),
+            [survivor],
+        ]
+
+        result = mock_consolidator.retrieve_existing_playbooks([first, second])
+
+        # The surviving query's rows are still returned.
+        assert [playbook.user_playbook_id for playbook in result] == [77]
+
+    def test_all_searches_failing_returns_empty_not_raises(self, mock_consolidator):
+        playbook = _make_user_playbook(0, trigger="only condition")
+        mock_consolidator.client.get_embeddings.return_value = [[0.1]]
+        mock_consolidator.request_context.storage.search_user_playbooks.side_effect = (
+            RuntimeError("vector backend unavailable")
+        )
+
+        assert mock_consolidator.retrieve_existing_playbooks([playbook]) == []
+
+
+# ===============================
+# Survivor overlap guard
+# ===============================
+
+
+class TestOverlappingSurvivors:
+    """Two survivors collide only when content AND situation both match."""
+
+    def test_identical_content_sharing_evidence_is_rejected(self):
+        content = "Ask for the missing value once and reuse the answer."
+        left = _make_user_playbook(
+            0,
+            content=content,
+            trigger="when a value is missing",
+            source_interaction_ids=[5],
+        )
+        right = _make_user_playbook(
+            1,
+            content=content,
+            trigger="totally different phrasing here",
+            source_interaction_ids=[5],
+        )
+
+        errors = PlaybookConsolidator._find_overlapping_survivors([left, right])
+
+        assert len(errors) == 1
+        assert "result[0] and result[1]" in errors[0]
+
+    def test_identical_content_sharing_trigger_is_rejected(self):
+        content = "Ask for the missing value once and reuse the answer."
+        left = _make_user_playbook(
+            0,
+            content=content,
+            trigger="when a value is missing",
+            source_interaction_ids=[5],
+        )
+        right = _make_user_playbook(
+            1,
+            content=content,
+            trigger="when a value is missing",
+            source_interaction_ids=[9],
+        )
+
+        assert PlaybookConsolidator._find_overlapping_survivors([left, right])
+
+    def test_same_content_with_unrelated_situation_is_allowed(self):
+        """No shared evidence and no shared trigger: not the same lesson."""
+        content = "Ask for the missing value once and reuse the answer."
+        left = _make_user_playbook(
+            0,
+            content=content,
+            trigger="when a value is missing",
+            source_interaction_ids=[5],
+        )
+        right = _make_user_playbook(
+            1,
+            content=content,
+            trigger="before archiving an inactive account record",
+            source_interaction_ids=[9],
+        )
+
+        assert PlaybookConsolidator._find_overlapping_survivors([left, right]) == []
+
+    def test_distinct_long_content_sharing_evidence_is_allowed(self):
+        """Two genuinely different lessons from one interaction may coexist."""
+        left = _make_user_playbook(
+            0,
+            content=(
+                "Confirm the destination account number with the user before "
+                "submitting any outbound transfer request."
+            ),
+            trigger="before submitting a transfer",
+            source_interaction_ids=[5],
+        )
+        right = _make_user_playbook(
+            1,
+            content=(
+                "Record the approval reference in the audit log immediately after "
+                "the transfer is accepted by the payment provider."
+            ),
+            trigger="after a transfer is accepted",
+            source_interaction_ids=[5],
+        )
+
+        assert PlaybookConsolidator._find_overlapping_survivors([left, right]) == []
+
+    def test_short_near_identical_rules_are_not_collapsed(self):
+        """Short rules share too much vocabulary to compare by token ratio."""
+        left = _make_user_playbook(
+            0,
+            content="Use UTC.",
+            trigger="when formatting a date",
+            source_interaction_ids=[5],
+        )
+        right = _make_user_playbook(
+            1,
+            content="Use ISO.",
+            trigger="when formatting a date",
+            source_interaction_ids=[5],
+        )
+
+        assert PlaybookConsolidator._find_overlapping_survivors([left, right]) == []
+
+    def test_cross_group_check_ignores_existing_existing_duplicates(self):
+        new = _make_user_playbook(
+            0,
+            content="Confirm the deployment environment before rollout",
+            trigger="when the rollout environment is missing",
+        )
+        existing_first = _make_user_playbook(
+            1,
+            content="Lead recurring analysis reports with a compact table",
+            trigger="when writing an analysis report",
+        )
+        existing_second = existing_first.model_copy(
+            update={"user_playbook_id": 2, "request_id": "req-existing-copy"}
+        )
+
+        assert (
+            PlaybookConsolidator._find_overlapping_survivors(
+                [new], [existing_first, existing_second]
+            )
+            == []
+        )
+
+
+# ===============================
+# Deterministic replay merge
+# ===============================
+
+
+class TestReplayedEvidenceMerge:
+    """The deterministic merge is narrow: it defers whenever a match is unclear."""
+
+    def test_ambiguous_multi_match_falls_through_to_llm(self, mock_consolidator):
+        content = "Retry the same request once with unchanged parameters."
+        candidate = _make_user_playbook(
+            0,
+            content=content,
+            trigger="after an uninformative error",
+            source_interaction_ids=[5],
+            reader_angle="observed-failure",
+        )
+        first = _make_user_playbook(
+            1,
+            content=content,
+            trigger="after an uninformative error",
+            source_interaction_ids=[5],
+            user_playbook_id=11,
+            reader_angle="observed-failure",
+        )
+        second = _make_user_playbook(
+            2,
+            content=content,
+            trigger="after an uninformative error",
+            source_interaction_ids=[5],
+            user_playbook_id=12,
+            reader_angle="observed-failure",
+        )
+
+        result = mock_consolidator._merge_replayed_evidence_duplicates(
+            [candidate], [first, second], generation_request_id="req-1"
+        )
+
+        # Two equally good matches — the LLM decides, not this path.
+        assert result is None
+
+    def test_equal_candidate_objects_are_not_collapsed_by_identity(
+        self, mock_consolidator
+    ):
+        """Two candidates with identical field values are still two candidates."""
+
+        def _independent(idx: int) -> UserPlaybook:
+            return _make_user_playbook(
+                idx,
+                content="Some unrelated lesson about formatting output.",
+                trigger="when formatting output",
+                source_interaction_ids=[41],
+                reader_angle="preference",
+            )
+
+        first, second = _independent(0), _independent(0)
+        assert first == second  # equal by value, distinct objects
+
+        result = mock_consolidator._merge_replayed_evidence_duplicates(
+            [first, second], [], generation_request_id="req-1"
+        )
+
+        assert result is not None
+        survivors, archive_ids, merge_groups = result
+        assert len(survivors) == 2
+        assert archive_ids == []
+        assert merge_groups == []
+
+    def test_reviewer_revision_wins_and_all_notes_are_preserved(
+        self, mock_consolidator
+    ):
+        existing = _make_user_playbook(
+            1,
+            user_playbook_id=51,
+            content=(
+                "Ask for the missing deployment environment once, then start the "
+                "rollout."
+            ),
+            trigger="when the deployment environment is missing",
+            source_interaction_ids=[10],
+            source_span="Which environment?",
+            notes="archived-row note",
+            reader_angle="verified-success",
+        )
+        revised = _make_user_playbook(
+            0,
+            content=(
+                "Ask for the missing deployment environment once, then immediately "
+                "start the rollout."
+            ),
+            trigger="when the deployment environment is missing",
+            source_interaction_ids=[10, 11],
+            source_span="Which environment?\n\nStaging",
+            notes=(
+                "candidate note\n"
+                "First-pass reviewer: revised (late_trigger) — use the earlier trigger"
+            ),
+            reader_angle="verified-success",
+        )
+
+        result = mock_consolidator._merge_replayed_evidence_duplicates(
+            [revised], [existing], generation_request_id="req-reviewed"
+        )
+
+        assert result is not None
+        survivors, archive_ids, merge_groups = result
+        assert survivors[0].content == revised.content
+        assert survivors[0].notes == (
+            "archived-row note\n"
+            "candidate note\n"
+            "First-pass reviewer: revised (late_trigger) — use the earlier trigger"
+        )
+        assert archive_ids == [51]
+        assert merge_groups == [(0, [51])]

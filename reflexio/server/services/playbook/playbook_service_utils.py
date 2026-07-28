@@ -1,13 +1,20 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from reflexio.models.api_schema.domain.entities import Interaction, UserPlaybook
+from reflexio.models.api_schema.domain.enums import UserActionType
 from reflexio.models.api_schema.internal_schema import RequestInteractionDataModel
-from reflexio.models.structured_output import StrictStructuredOutput
+from reflexio.models.structured_output import (
+    StrictStructuredOutput,
+    normalize_provider_keys,
+    normalize_provider_value,
+)
 from reflexio.server.prompt.prompt_manager import PromptManager
 from reflexio.server.services.playbook.playbook_service_constants import (
     PlaybookServiceConstants,
@@ -17,10 +24,94 @@ from reflexio.server.services.service_utils import (
     PromptConfig,
     construct_messages_from_interactions,
     extract_interactions_from_request_interaction_data_models,
-    format_sessions_to_history_string,
+    format_interactions_to_history_string,
 )
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class PlaybookEvidenceSource:
+    """One prompt-local turn and the persisted interaction it represents."""
+
+    interaction_id: int
+    request_id: str
+    evidence_texts: tuple[str, ...]
+    role: str = ""
+    request_source: str = ""
+
+
+@dataclass(frozen=True)
+class PlaybookPromptContext:
+    """Rendered extraction context plus its non-LLM provenance mapping."""
+
+    text: str
+    evidence_sources: dict[str, PlaybookEvidenceSource]
+
+
+class StructuredPlaybookEvidence(BaseModel):
+    """Verbatim evidence attached to one extracted playbook candidate."""
+
+    turn_ref: str = Field(
+        min_length=1,
+        description="Prompt-local turn label such as T1; never a database identifier",
+    )
+    source_span: str = Field(
+        min_length=1,
+        description="Non-empty verbatim excerpt from the referenced prompt turn",
+    )
+
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={"additionalProperties": False},
+    )
+
+
+# Harmless separator/short-form variants structured LLMs emit for the
+# evidence-kind tag. Shared so the strict first-pass schema and the legacy
+# schema can never drift into accepting different spellings.
+_EVIDENCE_KIND_ALIASES = {
+    "expert": "expert-gap",
+    "failure": "observed-failure",
+    "observed-fix": "observed-failure",
+    "rejection": "rejected-approach",
+    "success": "verified-success",
+}
+
+
+def normalize_evidence_kind_value(value: object) -> object:
+    """Canonicalize an evidence-kind tag without changing its meaning.
+
+    Args:
+        value (object): Raw field value straight from the parsed LLM output.
+
+    Returns:
+        object: The canonical evidence-kind string, or the value unchanged when
+        it is not a string (so Pydantic reports the real type error).
+    """
+    # Evidence kinds are hyphenated ("observed-failure"), so "-" is canonical here.
+    return normalize_provider_value(value, _EVIDENCE_KIND_ALIASES, separator="-")
+
+
+def is_evidence_validated(playbook: UserPlaybook) -> bool:
+    """Return whether a row carries complete first-pass evidence provenance.
+
+    A row is evidence-validated only when extraction resolved it to at least one
+    persisted interaction, kept the verbatim span it was drawn from, and tagged
+    the evidence class. Single source of truth so the review gate and the
+    consolidation shortcuts can never disagree about what "grounded" means.
+
+    Args:
+        playbook (UserPlaybook): The candidate or stored row to test.
+
+    Returns:
+        bool: True when source IDs, span, and evidence-kind tag are all present.
+    """
+    return bool(
+        playbook.source_interaction_ids
+        and playbook.source_span
+        and playbook.reader_angle
+    )
 
 
 def _normalized_playbook_key(playbook: UserPlaybook) -> tuple[str, str]:
@@ -35,8 +126,8 @@ def dedupe_and_drop_empty(playbooks: list[UserPlaybook]) -> list[UserPlaybook]:
     """Drop empty user playbooks and collapse exact same-batch duplicates.
 
     This is intentionally deterministic and local to one extraction batch. The
-    LLM-backed consolidator still handles semantic deduplication against stored
-    rows when its feature flag is enabled.
+    LLM-backed reviewer and consolidator handle semantic deduplication against
+    sibling candidates and stored rows.
     """
     deduped: list[UserPlaybook] = []
     seen: set[tuple[str, str]] = set()
@@ -73,6 +164,28 @@ class StructuredPlaybookContent(BaseModel):
         default=None,
         description="The reasoning behind this playbook entry — generated first for autoregressive conditioning",
     )
+    evidence_kind: (
+        Literal[
+            "correction",
+            "preference",
+            "observed-failure",
+            "rejected-approach",
+            "expert-gap",
+            "verified-success",
+        ]
+        | None
+    ) = Field(
+        default=None,
+        description="The observed evidence class that qualifies this candidate",
+    )
+    future_task_class: str | None = Field(
+        default=None,
+        description="The bounded class of future tasks where the lesson is applicable",
+    )
+    improvement_mechanism: str | None = Field(
+        default=None,
+        description="How the grounded action improves success or prevents the observed mistake",
+    )
     trigger: str | None = Field(
         default=None,
         description="The condition or context when this rule applies, evaluable at the earliest decision point — do not require facts that only appear later in the conversation",
@@ -93,10 +206,20 @@ class StructuredPlaybookContent(BaseModel):
         default=None,
         description="The extraction perspective or reader role that surfaced this entry",
     )
+    evidence: list[StructuredPlaybookEvidence] = Field(
+        default_factory=list,
+        description="One or more prompt-local turn references with verbatim supporting spans",
+    )
     model_config = ConfigDict(
         extra="allow",
         json_schema_extra={"additionalProperties": False},
     )
+
+    @field_validator("evidence_kind", mode="before")
+    @classmethod
+    def normalize_evidence_kind(cls, value: object) -> object:
+        """Accept harmless separator/short-form variants from structured LLMs."""
+        return normalize_evidence_kind_value(value)
 
     @property
     def is_structured(self) -> bool:
@@ -132,6 +255,340 @@ class StructuredPlaybookList(StrictStructuredOutput):
     model_config = ConfigDict(
         extra="forbid",
         json_schema_extra={"additionalProperties": False},
+    )
+
+
+class StructuredExtractedPlaybookContent(BaseModel):
+    """Small, strict first-pass contract used only by extraction LLM calls.
+
+    Keep the model-facing contract limited to fields that are necessary to judge
+    and persist a candidate.  Additional explanatory fields on the legacy base
+    model remain accepted for backwards compatibility, but are not required.
+    """
+
+    rationale: str = Field(
+        default=...,
+        min_length=1,
+        description="Observed signal, bounded future task class, and grounded improvement mechanism",
+    )
+    evidence_kind: Literal[
+        "correction",
+        "preference",
+        "observed-failure",
+        "rejected-approach",
+        "expert-gap",
+        "verified-success",
+    ] = Field(default=...)
+    trigger: str = Field(
+        default=...,
+        min_length=1,
+        description="Earliest observable future condition, never a later correction or retry request",
+    )
+    content: str = Field(
+        default=...,
+        min_length=1,
+        description=(
+            "One atomic grounded action. For exact duplicates, only prevent the "
+            "exact resubmission; do not invent notification, replacement, reuse, "
+            "or near-duplicate behavior"
+        ),
+    )
+    evidence: list[StructuredPlaybookEvidence] = Field(default=..., min_length=1)
+
+    model_config = ConfigDict(
+        # The provider schema still advertises additionalProperties=false, but
+        # tolerate and discard legacy explanatory fields from a model that
+        # remembers the former contract. Their presence must not erase an
+        # otherwise complete, evidence-valid candidate.
+        extra="ignore",
+        json_schema_extra={"additionalProperties": False},
+    )
+
+    @field_validator("evidence_kind", mode="before")
+    @classmethod
+    def normalize_evidence_kind(cls, value: object) -> object:
+        """Accept the same harmless evidence-kind variants as legacy output."""
+        return normalize_evidence_kind_value(value)
+
+
+# Field-name variants providers emit instead of the declared candidate fields.
+# Keys are in canonical ``normalize_provider_token`` form (casefolded, "_"-joined).
+_EXTRACTED_CANDIDATE_ALIASES = {
+    "action": "content",
+    "citations": "evidence",
+    "evidence_entries": "evidence",
+    "future_trigger": "trigger",
+    "guidance": "content",
+    "kind": "evidence_kind",
+    "lesson": "content",
+    "observed_signal": "rationale",
+    "reason": "rationale",
+    "signal_type": "evidence_kind",
+    "sources": "evidence",
+    "type": "evidence_kind",
+    "when": "trigger",
+    "why": "rationale",
+}
+
+
+class StructuredExtractedPlaybookList(StrictStructuredOutput):
+    """Minimal required-field extraction response sent to the LLM provider."""
+
+    playbooks: list[StructuredExtractedPlaybookContent] = Field(
+        default=...,
+        description="Evidence-complete candidates, or an empty list when none qualify",
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_candidate_wrappers_and_keys(cls, value: object) -> object:
+        """Accept complete candidates nested under harmless provider wrappers."""
+        if not isinstance(value, dict) or not isinstance(value.get("playbooks"), list):
+            return value
+
+        required = {"rationale", "evidence_kind", "trigger", "content", "evidence"}
+
+        def normalize_keys(candidate: dict[object, object]) -> dict[str, object]:
+            return normalize_provider_keys(candidate, _EXTRACTED_CANDIDATE_ALIASES)
+
+        def find_complete_candidate(
+            node: object, depth: int = 0
+        ) -> dict[str, object] | None:
+            if depth > 4:
+                return None
+            if isinstance(node, dict):
+                candidate = normalize_keys(node)
+                if required <= candidate.keys():
+                    return candidate
+                for nested_value in candidate.values():
+                    found = find_complete_candidate(nested_value, depth + 1)
+                    if found is not None:
+                        return found
+            elif isinstance(node, list):
+                for nested_value in node:
+                    found = find_complete_candidate(nested_value, depth + 1)
+                    if found is not None:
+                        return found
+            return None
+
+        normalized_playbooks: list[object] = []
+        for raw_candidate in value["playbooks"]:
+            if not isinstance(raw_candidate, dict):
+                normalized_playbooks.append(raw_candidate)
+                continue
+            candidate = normalize_keys(raw_candidate)
+            if candidate.keys() <= {"turn_ref", "source_span"}:
+                logger.info(
+                    "event=playbook_candidate_rejected reason=evidence_object_without_candidate"
+                )
+                continue
+            if not required <= candidate.keys():
+                candidate = find_complete_candidate(candidate) or candidate
+            evidence = candidate.get("evidence")
+            if isinstance(evidence, list):
+                candidate["evidence"] = [
+                    normalize_keys(item) if isinstance(item, dict) else item
+                    for item in evidence
+                ]
+            normalized_playbooks.append(candidate)
+
+        normalized = dict(value)
+        normalized["playbooks"] = normalized_playbooks
+        return normalized
+
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={"additionalProperties": False},
+    )
+
+
+def uses_evidence_grounded_extraction(
+    prompt_manager: PromptManager, *, expert: bool
+) -> bool:
+    """Return whether the selected prompt version requires strict evidence fields.
+
+    Strict evidence is driven entirely by which prompt version is active, so a
+    deployment can roll the contract forward or back by activating a different
+    version with no code change. The normal and expert paths are versioned
+    independently and cross their floors separately.
+
+    Args:
+        prompt_manager (PromptManager): Resolves the active prompt version.
+        expert (bool): Whether the expert-content extraction path is in use.
+
+    Returns:
+        bool: True when the active prompt version is at or above the strict
+        floor for that path.
+    """
+    prompt_id = (
+        "playbook_extraction_context_expert"
+        if expert
+        else "playbook_extraction_context"
+    )
+    minimum_version = (3, 6, 0) if expert else (4, 6, 0)
+    version = prompt_manager.get_active_version(prompt_id)
+    if version is None:
+        return False
+    try:
+        parts = [int(part) for part in version.split(".")]
+    except ValueError:
+        return False
+    # Pad to major.minor.patch so a two-part version compares as its .0 patch
+    # rather than sorting below every three-part floor ((4, 6) < (4, 6, 0)).
+    parts.extend([0] * (3 - len(parts)))
+    return tuple(parts[:3]) >= minimum_version
+
+
+def _ordered_playbook_requests(
+    sessions: list[RequestInteractionDataModel],
+) -> list[tuple[int, list[RequestInteractionDataModel]]]:
+    """Return chronologically ordered request runs with stable local session labels.
+
+    Request rows can be persisted after the user-visible event they represent
+    (for example, a quick-reply selection). Use the earliest interaction time as
+    the primary chronology signal and allow requests from linked sessions to
+    interleave. Consecutive requests from the same session remain grouped for a
+    compact prompt; a later run of that session reuses its local session number.
+    """
+
+    def request_key(
+        model: RequestInteractionDataModel,
+    ) -> tuple[int, int, str]:
+        interaction_times = [
+            interaction.created_at for interaction in model.interactions
+        ]
+        visible_time = (
+            min(interaction_times) if interaction_times else model.request.created_at
+        )
+        return visible_time, model.request.created_at, model.request.request_id
+
+    ordered_models = sorted(sessions, key=request_key)
+    session_numbers: dict[str, int] = {}
+    ordered_runs: list[tuple[int, list[RequestInteractionDataModel]]] = []
+    for model in ordered_models:
+        session_number = session_numbers.setdefault(
+            model.session_id, len(session_numbers) + 1
+        )
+        if ordered_runs and ordered_runs[-1][0] == session_number:
+            ordered_runs[-1][1].append(model)
+        else:
+            ordered_runs.append((session_number, [model]))
+    return ordered_runs
+
+
+def _turn_evidence_texts(interaction: Interaction) -> tuple[str, ...]:
+    values: list[str] = []
+    if interaction.content:
+        values.append(interaction.content)
+    if interaction.expert_content:
+        values.append(interaction.expert_content)
+    if interaction.user_action != UserActionType.NONE:
+        values.append(
+            f"{interaction.user_action.value} {interaction.user_action_description}".strip()
+        )
+    return tuple(values)
+
+
+def build_playbook_prompt_context(
+    sessions: list[RequestInteractionDataModel],
+    *,
+    expert: bool = False,
+    label_turns: bool = False,
+) -> PlaybookPromptContext:
+    """Render playbook evidence and retain a call-local provenance map.
+
+    Local ``[T#]`` labels are part of the strict evidence contract, not a
+    backwards-compatible formatting detail. Legacy and expert prompts therefore
+    remain unlabelled unless their selected prompt version explicitly opts into
+    evidence-grounded extraction.
+    """
+    ordered_sessions = _ordered_playbook_requests(sessions)
+    evidence_sources: dict[str, PlaybookEvidenceSource] = {}
+    ref_by_object_id: dict[int, str] = {}
+    turn_number = 0
+    for _, request_models in ordered_sessions:
+        for request_model in request_models:
+            for interaction in sorted(
+                request_model.interactions,
+                key=lambda item: (item.created_at, item.interaction_id),
+            ):
+                turn_number += 1
+                turn_ref = f"T{turn_number}"
+                ref_by_object_id[id(interaction)] = turn_ref
+                evidence_sources[turn_ref] = PlaybookEvidenceSource(
+                    interaction_id=interaction.interaction_id,
+                    request_id=interaction.request_id,
+                    evidence_texts=_turn_evidence_texts(interaction),
+                    role=interaction.role,
+                    request_source=request_model.request.source or "",
+                )
+
+    if expert:
+        flat = [
+            interaction
+            for _, request_models in ordered_sessions
+            for request_model in request_models
+            for interaction in sorted(
+                request_model.interactions,
+                key=lambda item: (item.created_at, item.interaction_id),
+            )
+        ]
+        pairs: list[str] = []
+        pair_number = 0
+        for index, interaction in enumerate(flat):
+            if not interaction.expert_content:
+                continue
+            pair_number += 1
+            parts = [f"=== Comparison {pair_number} ==="]
+            for preceding in reversed(flat[:index]):
+                if preceding.role.lower() == "user":
+                    prefix = (
+                        f"[{ref_by_object_id[id(preceding)]}] " if label_turns else ""
+                    )
+                    parts.append(f"{prefix}User Question: ```{preceding.content}```")
+                    break
+            turn_ref = ref_by_object_id[id(interaction)]
+            prefix = f"[{turn_ref}] " if label_turns else ""
+            parts.append(f"{prefix}Agent Response: ```{interaction.content}```")
+            parts.append(f"{prefix}Expert Response: ```{interaction.expert_content}```")
+            pairs.append("\n".join(parts))
+        return PlaybookPromptContext(
+            text="\n\n".join(pairs), evidence_sources=evidence_sources
+        )
+
+    rendered_sessions: list[str] = []
+    request_number = 0
+    for session_number, request_models in ordered_sessions:
+        interactions = [
+            interaction
+            for request_model in request_models
+            for interaction in request_model.interactions
+        ]
+        timestamps = [item.created_at for item in interactions if item.created_at]
+        date_suffix = ""
+        if timestamps:
+            try:
+                date_suffix = datetime.fromtimestamp(min(timestamps), tz=UTC).strftime(
+                    " (date: %Y-%m-%d)"
+                )
+            except (OverflowError, OSError, ValueError):
+                date_suffix = ""
+        lines = [f"=== Session {session_number}{date_suffix} ==="]
+        for request_model in request_models:
+            request_number += 1
+            source = request_model.request.source or "unknown"
+            lines.append(f"--- [R{request_number}] Request (source: {source}) ---")
+            for interaction in sorted(
+                request_model.interactions,
+                key=lambda item: (item.created_at, item.interaction_id),
+            ):
+                turn_ref = ref_by_object_id[id(interaction)]
+                rendered = format_interactions_to_history_string([interaction])
+                turn_prefix = f"[{turn_ref}] " if label_turns else ""
+                lines.extend(f"{turn_prefix}{line}" for line in rendered.splitlines())
+        rendered_sessions.append("\n".join(lines))
+    return PlaybookPromptContext(
+        text="\n\n".join(rendered_sessions), evidence_sources=evidence_sources
     )
 
 
@@ -234,6 +691,7 @@ def construct_playbook_extraction_messages_from_sessions(
     agent_context_prompt: str,
     extraction_definition_prompt: str,
     tool_can_use: str | None = None,
+    prompt_context: PlaybookPromptContext | None = None,
 ) -> list[dict]:
     """
     Construct LLM messages for playbook extraction from sessions.
@@ -264,12 +722,14 @@ def construct_playbook_extraction_messages_from_sessions(
 
     # Configure final user message (after interactions)
     # Only dynamic per-call data goes in user message
+    prompt_context = prompt_context or build_playbook_prompt_context(
+        request_interaction_data_models,
+        label_turns=uses_evidence_grounded_extraction(prompt_manager, expert=False),
+    )
     user_config = PromptConfig(
         prompt_id=PlaybookServiceConstants.PLAYBOOK_EXTRACTION_PROMPT_ID,
         variables={
-            "interactions": format_sessions_to_history_string(
-                request_interaction_data_models
-            ),
+            "interactions": prompt_context.text,
         },
     )
 
@@ -313,32 +773,9 @@ def format_expert_comparison_pairs(
     Returns:
         str: Formatted comparison pairs string
     """
-    interactions = extract_interactions_from_request_interaction_data_models(
-        request_interaction_data_models
-    )
-
-    pairs: list[str] = []
-    pair_num = 0
-    for i, interaction in enumerate(interactions):
-        if not interaction.expert_content:
-            continue
-
-        pair_num += 1
-        # Find the preceding user question for context
-        user_question = ""
-        for j in range(i - 1, -1, -1):
-            if interactions[j].role.lower() == "user":
-                user_question = interactions[j].content
-                break
-
-        parts = [f"=== Comparison {pair_num} ==="]
-        if user_question:
-            parts.append(f"User Question: ```{user_question}```")
-        parts.append(f"Agent Response: ```{interaction.content}```")
-        parts.append(f"Expert Response: ```{interaction.expert_content}```")
-        pairs.append("\n".join(parts))
-
-    return "\n\n".join(pairs)
+    return build_playbook_prompt_context(
+        request_interaction_data_models, expert=True, label_turns=False
+    ).text
 
 
 def construct_expert_playbook_extraction_messages(
@@ -346,6 +783,7 @@ def construct_expert_playbook_extraction_messages(
     request_interaction_data_models: list[RequestInteractionDataModel],
     agent_context_prompt: str,
     extraction_definition_prompt: str,
+    prompt_context: PlaybookPromptContext | None = None,
 ) -> list[dict]:
     """
     Construct LLM messages for expert-content playbook extraction.
@@ -370,12 +808,16 @@ def construct_expert_playbook_extraction_messages(
         },
     )
 
-    comparison_pairs = format_expert_comparison_pairs(request_interaction_data_models)
+    prompt_context = prompt_context or build_playbook_prompt_context(
+        request_interaction_data_models,
+        expert=True,
+        label_turns=uses_evidence_grounded_extraction(prompt_manager, expert=True),
+    )
 
     user_config = PromptConfig(
         prompt_id=PlaybookServiceConstants.PLAYBOOK_EXTRACTION_EXPERT_PROMPT_ID,
         variables={
-            "comparison_pairs": comparison_pairs,
+            "comparison_pairs": prompt_context.text,
         },
     )
 

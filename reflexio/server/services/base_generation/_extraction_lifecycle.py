@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm._litellm_types import ModelProvenance
+from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.llm.token_accounting import RunTokenTotals
 from reflexio.server.services.deferred_learning_plan import ExtractorBookmarkAdvance
 from reflexio.server.services.extraction.outcome import ExtractionOutcome
@@ -60,6 +61,7 @@ class ExtractionRunLifecycleMixin(Generic[TExtractorConfig, TGenerationServiceCo
     service_config: TGenerationServiceConfig | None
     storage: BaseStorage | None
     request_context: RequestContext
+    client: LiteLLMClient
     _last_extractor_run_stats: dict[str, int]
     _last_extraction_run_ids: list[str]
     _last_token_totals: RunTokenTotals | None
@@ -76,6 +78,17 @@ class ExtractionRunLifecycleMixin(Generic[TExtractorConfig, TGenerationServiceCo
             service_config: TGenerationServiceConfig,
         ) -> Any: ...
         def _get_service_name(self) -> str: ...
+
+    def _extractor_timeout_seconds(self) -> int:
+        """Allow a configured fallback rung to finish inside the outer service bound."""
+        from reflexio.server.services.base_generation_service import (
+            EXTRACTOR_TIMEOUT_SECONDS,
+            FALLBACK_EXTRACTOR_TIMEOUT_SECONDS,
+        )
+
+        if self.client.config.fallback_models:
+            return FALLBACK_EXTRACTOR_TIMEOUT_SECONDS
+        return EXTRACTOR_TIMEOUT_SECONDS
 
     def _execute_extractor(
         self,
@@ -99,7 +112,6 @@ class ExtractionRunLifecycleMixin(Generic[TExtractorConfig, TGenerationServiceCo
             ExtractorExecutionError: If the extractor fails with an exception or timeout.
         """
         from reflexio.server.services.base_generation_service import (
-            EXTRACTOR_TIMEOUT_SECONDS,
             ExtractorExecutionError,
         )
 
@@ -109,6 +121,7 @@ class ExtractionRunLifecycleMixin(Generic[TExtractorConfig, TGenerationServiceCo
             raise RuntimeError("service_config must be set before executing extractor")
 
         self._last_extractor_run_stats = {"total": 1, "failed": 0, "timed_out": 0}
+        timeout_seconds = self._extractor_timeout_seconds()
         extractor = self._create_extractor(extractor_config, self.service_config)
         executor: ThreadPoolExecutor | None = None
         try:
@@ -116,7 +129,7 @@ class ExtractionRunLifecycleMixin(Generic[TExtractorConfig, TGenerationServiceCo
             # Copy context so correlation ID propagates to worker thread
             ctx = contextvars.copy_context()
             future = executor.submit(ctx.run, extractor.run)  # type: ignore[reportAttributeAccessIssue]
-            result = future.result(timeout=EXTRACTOR_TIMEOUT_SECONDS)
+            result = future.result(timeout=timeout_seconds)
             if isinstance(result, ExtractionOutcome):
                 if result.run_id:
                     self._last_extraction_run_ids.append(result.run_id)
@@ -145,7 +158,7 @@ class ExtractionRunLifecycleMixin(Generic[TExtractorConfig, TGenerationServiceCo
         except FuturesTimeoutError as exc:
             self._last_extractor_run_stats = {"total": 1, "failed": 1, "timed_out": 1}
             error_msg = (
-                f"Extractor timed out after {EXTRACTOR_TIMEOUT_SECONDS} seconds "
+                f"Extractor timed out after {timeout_seconds} seconds "
                 f"for {self._get_service_name()} identifier={identifier}"
             )
             logger.error(error_msg)

@@ -2131,6 +2131,22 @@ class TestSequentialExecution:
         assert service._last_extractor_run_stats["failed"] == 1
         assert service._last_extractor_run_stats["timed_out"] == 1
 
+    def test_fallback_ladder_gets_extended_extractor_guard(
+        self, base_service, monkeypatch
+    ):
+        monkeypatch.setattr(
+            "reflexio.server.services.base_generation_service.EXTRACTOR_TIMEOUT_SECONDS",
+            11,
+        )
+        monkeypatch.setattr(
+            "reflexio.server.services.base_generation_service.FALLBACK_EXTRACTOR_TIMEOUT_SECONDS",
+            22,
+        )
+
+        assert base_service._extractor_timeout_seconds() == 11
+        base_service.client.config.fallback_models = ["zai/glm-5.2"]
+        assert base_service._extractor_timeout_seconds() == 22
+
 
 class TestPureSlashCommand:
     """Cases for the ``_is_pure_slash_command`` helper."""

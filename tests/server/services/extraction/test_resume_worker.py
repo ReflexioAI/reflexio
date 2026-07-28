@@ -15,7 +15,10 @@ from reflexio.models.config_schema import (
     StorageConfigSQLite,
 )
 from reflexio.server.api_endpoints.request_context import RequestContext
-from reflexio.server.services.extraction.resume_worker import ExtractionResumeWorker
+from reflexio.server.services.extraction.resume_worker import (
+    ExtractionResumeWorker,
+    _run_uses_strict_playbook_evidence,
+)
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 from reflexio.server.services.storage.storage_base import (
     AgentBinding,
@@ -59,6 +62,42 @@ def request_context(storage):
         f"{prompt_id}: {variables}"
     )
     return ctx
+
+
+@pytest.mark.parametrize(
+    ("schema_name", "expected"),
+    [
+        ("StructuredExtractedPlaybookList", True),
+        ("StructuredPlaybookList", False),
+    ],
+)
+def test_playbook_resume_uses_schema_recorded_at_run_creation(
+    request_context, schema_name, expected
+):
+    run = AgentRunRecord(
+        id="playbook_run",
+        binding=AgentBinding(
+            org_id="org_1",
+            extractor_kind="playbook",
+            user_id=None,
+            request_id="request_1",
+            agent_version="v1",
+            source="api",
+            source_interaction_ids=[1],
+        ),
+        status=AgentRunStatus.RUNNING,
+        generation_request_snapshot={"output_schema_name": schema_name},
+    )
+
+    assert (
+        _run_uses_strict_playbook_evidence(
+            request_context,
+            run,
+            expert=False,
+        )
+        is expected
+    )
+    request_context.prompt_manager.get_active_version.assert_not_called()
 
 
 def _seed_interactions(storage: SQLiteStorage) -> None:

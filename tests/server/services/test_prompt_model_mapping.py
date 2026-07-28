@@ -30,14 +30,15 @@ _PROMPT_BANK_DIR = (
 # holds the expected mock response for this prompt's structured output.
 # None means the prompt does not produce structured output relevant to mocking.
 PROMPT_VERSION_MAP: dict[str, tuple[str, str | None]] = {
-    "playbook_extraction_main": ("v1.4.0", "playbook_extraction"),
-    "playbook_extraction_context": ("v4.5.0", None),
+    "playbook_extraction_main": ("v1.5.0", "playbook_extraction"),
+    "playbook_extraction_context": ("v4.6.0", None),
+    "playbook_candidate_review": ("v1.0.0", None),
     "playbook_should_generate": ("v3.0.0", "boolean_evaluation"),
     "playbook_should_generate_expert": ("v1.0.0", "boolean_evaluation"),
     "playbook_extraction_context_expert": ("v3.5.0", None),
     "playbook_extraction_main_expert": ("v1.2.0", "playbook_extraction"),
     "playbook_aggregation": ("v2.4.0", "playbook_aggregation"),
-    "playbook_consolidation": ("v2.5.0", "playbook_consolidation"),
+    "playbook_consolidation": ("v2.6.0", "playbook_consolidation"),
     "playbook_optimizer_judge": ("v1.2.0", None),
     "profile_update_main": ("v1.0.0", "profile_extraction"),
     "profile_update_instruction_start": ("v1.2.0", None),
@@ -100,8 +101,8 @@ def _is_active(path: Path) -> bool:
 def _get_latest_prompt_version(prompt_id: str) -> str:
     """Scan prompt_bank/<prompt_id>/ for the latest ACTIVE v*.prompt.md file.
 
-    Sorted by semver tuple, not lexically — without this v1.10.0 would
-    sort BEFORE v1.9.0 and the trip-wire would lock to a stale version.
+    Sorted by semver tuple rather than lexically so future two-digit minor
+    versions cannot sort before a lower single-digit minor version.
 
     Files with ``active: false`` (typically ``-deprecated`` historical
     records) are filtered out so the trip-wire pins the version the runtime

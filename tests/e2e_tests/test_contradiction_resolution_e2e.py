@@ -231,7 +231,7 @@ def _drive_consolidator(
 ) -> tuple[list[UserPlaybook], list[int]]:
     """Run ``deduplicate`` with a scripted LLM and pre-fetched existing rows.
 
-    Patches ``_retrieve_existing_playbooks`` so the decision can reference
+    Patches ``retrieve_existing_playbooks`` so the decision can reference
     ``EXISTING-0`` without depending on the search backend's ranking
     behaviour. Mirrors ``_run_consolidator`` in the integration tests.
 
@@ -255,7 +255,7 @@ def _drive_consolidator(
     with (
         patch.object(
             consolidator,
-            "_retrieve_existing_playbooks",
+            "retrieve_existing_playbooks",
             return_value=existing_playbooks,
         ),
         patch.dict("os.environ", {"MOCK_LLM_RESPONSE": "false"}),

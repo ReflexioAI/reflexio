@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -41,6 +42,8 @@ from reflexio.server.services.playbook.playbook_service_utils import (
     PlaybookGenerationRequest,
     format_expert_comparison_pairs,
     has_expert_content,
+    is_evidence_validated,
+    uses_evidence_grounded_extraction,
 )
 from reflexio.server.services.service_utils import (
     extract_interactions_from_request_interaction_data_models,
@@ -103,6 +106,15 @@ class PlaybookGenerationServiceConfig:
     force_extraction: bool = False
 
 
+def _consolidation_search_keys(playbooks: list[UserPlaybook]) -> set[str]:
+    """Return the strings consolidation would use as its hybrid-search queries.
+
+    Mirrors the query selection in ``retrieve_existing_playbooks`` so callers can
+    tell whether a cached retrieval is still valid for a changed candidate set.
+    """
+    return {(playbook.trigger or playbook.content).strip() for playbook in playbooks}
+
+
 class PlaybookGenerationService(
     BaseGenerationService[
         PlaybookConfig,
@@ -141,6 +153,7 @@ class PlaybookGenerationService(
         self.allow_manual_trigger = allow_manual_trigger
         self.output_pending_status = output_pending_status
         self.skip_aggregation = skip_aggregation
+        self._review_window_cache: list[RequestInteractionDataModel] | None = None
 
     def _load_generation_service_config(
         self, request: PlaybookGenerationRequest
@@ -170,6 +183,40 @@ class PlaybookGenerationService(
     def _configured_playbook_config(self) -> PlaybookConfig | None:
         root_config = self.configurator.get_config()
         return getattr(root_config, "user_playbook_extractor_config", None)
+
+    def _review_interaction_window(
+        self, playbook_config: PlaybookConfig
+    ) -> list[RequestInteractionDataModel]:
+        """Load the interaction window the reviewer reasons over, once per run.
+
+        The reviewer needs the same chronology extraction saw. Extraction runs in
+        a separate step that does not hand its window back, so this reloads it —
+        memoized because ``_resolve_write_plan`` may be reached more than once for
+        one generation.
+
+        Args:
+            playbook_config (PlaybookConfig): Config whose window/source filters
+                define the interaction window.
+
+        Returns:
+            list[RequestInteractionDataModel]: The reloaded interaction window.
+
+        Raises:
+            RuntimeError: If the configured source filter excludes the reviewer
+                reload after extraction already produced candidates.
+        """
+        if self._review_window_cache is None:
+            if self.service_config is None:
+                raise RuntimeError("service_config must be set before review")
+            loaded_window = self._create_extractor(
+                playbook_config, self.service_config
+            )._get_interactions()
+            if loaded_window is None:
+                raise RuntimeError(
+                    "Normal playbook review source filter excluded its interaction window"
+                )
+            self._review_window_cache = loaded_window
+        return self._review_window_cache
 
     def _load_extractor_config(self) -> PlaybookConfig | None:
         """
@@ -317,9 +364,15 @@ class PlaybookGenerationService(
                 all_playbooks.extend(result)
         all_playbooks = dedupe_and_drop_empty(all_playbooks)
 
-        # Deduplicate against existing entries in DB
+        # Review complete evidence-grounded normal candidates before
+        # consolidation. Legacy or expert paths remain unchanged in this
+        # iteration; every new normal candidate is expected to carry validated
+        # evidence and therefore enters this fail-closed review path.
         from reflexio.server.services.playbook.components.consolidator import (
             PlaybookConsolidator,
+        )
+        from reflexio.server.services.playbook.components.reviewer import (
+            PlaybookCandidateReviewer,
         )
 
         playbook_config = self._configured_playbook_config()
@@ -330,6 +383,99 @@ class PlaybookGenerationService(
             llm_client=self.client,
             dedup_config=dedup_config,
         )
+        reviewer = PlaybookCandidateReviewer(
+            request_context=self.request_context,
+            llm_client=self.client,
+        )
+        # Retrieved once and shared: the reviewer and the consolidator need the
+        # same existing rows, and the hybrid search costs one embedding query per
+        # candidate.
+        existing_playbooks: list[UserPlaybook] | None = None
+        # MOCK_LLM_RESPONSE is the repository's explicit no-LLM pipeline mode:
+        # extraction creates a deterministic fixture and consolidation also skips
+        # its model call. Keep reviewer behavior consistent instead of making mock
+        # mode unexpectedly contact a provider.
+        if (
+            all_playbooks
+            and reviewer.is_enabled()
+            and playbook_config is not None
+            and self.service_config is not None
+            and os.getenv("MOCK_LLM_RESPONSE", "").lower() != "true"
+        ):
+            review_interactions = self._review_interaction_window(playbook_config)
+            if not review_interactions:
+                raise RuntimeError(
+                    "Normal playbook review could not reload its interaction window"
+                )
+            flat_review_interactions = (
+                extract_interactions_from_request_interaction_data_models(
+                    review_interactions
+                )
+            )
+            expert_batch = has_expert_content(flat_review_interactions)
+            if expert_batch:
+                logger.info(
+                    "Skipping normal candidate reviewer for expert-content batch"
+                )
+            else:
+                strict_normal = uses_evidence_grounded_extraction(
+                    self.request_context.prompt_manager,
+                    expert=False,
+                )
+                if not strict_normal:
+                    logger.info(
+                        "Skipping normal candidate reviewer for legacy extraction prompt"
+                    )
+                else:
+                    invalid_candidate_indexes = [
+                        index
+                        for index, playbook in enumerate(all_playbooks, start=1)
+                        if not is_evidence_validated(playbook)
+                    ]
+                    if invalid_candidate_indexes:
+                        raise RuntimeError(
+                            "Strict normal playbook candidates are missing validated "
+                            "evidence metadata: "
+                            + ",".join(
+                                f"C{index}" for index in invalid_candidate_indexes
+                            )
+                        )
+
+                    existing_playbooks = consolidator.retrieve_existing_playbooks(
+                        all_playbooks,
+                        user_id=self.service_config.user_id,
+                        agent_version=self.service_config.agent_version,
+                    )
+                    root_config = self.request_context.configurator.get_config()
+                    tool_context = ""
+                    if root_config and root_config.tool_can_use:
+                        tool_context = "\n".join(
+                            f"{tool.tool_name}: {tool.tool_description}"
+                            for tool in root_config.tool_can_use
+                        )
+                    search_keys_before = _consolidation_search_keys(all_playbooks)
+                    all_playbooks = dedupe_and_drop_empty(
+                        reviewer.review(
+                            candidates=all_playbooks,
+                            request_interaction_data_models=review_interactions,
+                            existing_playbooks=existing_playbooks,
+                            agent_context=self.configurator.get_agent_context(),
+                            playbook_definition=(
+                                playbook_config.extraction_definition_prompt or ""
+                            ).strip(),
+                            tool_context=tool_context,
+                        )
+                    )
+                    # Consolidation searches by trigger. Reusing this retrieval is
+                    # only sound while the survivors' search keys are unchanged; a
+                    # revised trigger would match different stored rows, so drop the
+                    # cache and let consolidation search again.
+                    if not (
+                        _consolidation_search_keys(all_playbooks) <= search_keys_before
+                    ):
+                        existing_playbooks = None
+
+        # Deduplicate reviewed survivors against existing entries in DB.
         (
             deduplicated_playbooks,
             existing_ids_to_delete,
@@ -339,6 +485,7 @@ class PlaybookGenerationService(
             generation_request_id,
             self.service_config.agent_version,  # type: ignore[reportOptionalMemberAccess]
             user_id=self.service_config.user_id,  # type: ignore[reportOptionalMemberAccess]
+            existing_playbooks=existing_playbooks,
         )
         consolidation_provenance = consolidator.model_provenance
         consolidated_output_indices = consolidator.consolidated_output_indices
@@ -346,8 +493,9 @@ class PlaybookGenerationService(
             "User playbook entries after deduplication: %d",
             len(deduplicated_playbooks),
         )
-        if deduplicated_playbooks:
-            all_playbooks = deduplicated_playbooks
+        # An empty result is meaningful: every candidate may have been rejected
+        # as redundant. Never retain the pre-consolidation rows on reject-all.
+        all_playbooks = deduplicated_playbooks
 
         # Set status and source for all entries
         for playbook in all_playbooks:

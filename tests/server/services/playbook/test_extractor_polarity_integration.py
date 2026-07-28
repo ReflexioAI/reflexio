@@ -4,8 +4,7 @@ Integration tests for polarity emission by the classic playbook extractor.
 These tests verify the end-to-end wording flow from LLM response through
 ``PlaybookExtractor.run()`` to the produced ``UserPlaybook`` objects:
 
-* Neutral / no-failure windows produce action-style playbooks whose content
-  does NOT read as avoidance.
+* Neutral / routine-success windows produce no playbook.
 * Failure-evidence windows with avoidance wording and rationale produce at
   least one playbook whose content starts with a negative/avoidance prefix
   (``"Avoid"``/``"Do not"``/``"Don't"``/``"Never"``) — confirming the
@@ -32,6 +31,7 @@ from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.services.playbook.components.extractor import PlaybookExtractor
 from reflexio.server.services.playbook.playbook_service_utils import (
     StructuredPlaybookContent,
+    StructuredPlaybookEvidence,
     StructuredPlaybookList,
 )
 from reflexio.server.services.playbook.service import (
@@ -70,7 +70,9 @@ def request_context(temp_storage_dir, worker_id):
     # without depending on the on-disk prompt registry.
     context.prompt_manager = MagicMock()
     context.prompt_manager.render_prompt.return_value = "mock prompt"
-    context.prompt_manager.get_active_version.return_value = "1.2.0"
+    context.prompt_manager.get_active_version.side_effect = lambda prompt_id: (
+        "4.6.0" if prompt_id == "playbook_extraction_context" else "1.2.0"
+    )
     return context
 
 
@@ -264,19 +266,14 @@ def _build_extractor(
 # ===============================
 
 
-def test_classic_extractor_emits_positive_when_no_failure_evidence(
+def test_classic_extractor_rejects_routine_success_without_reusable_evidence(
     request_context,
     mock_llm_client,
     extractor_config,
     service_config,
     neutral_request_interaction_models,
 ):
-    """Window with neutral interactions → extracted playbooks have polarity=positive.
-
-    Validates the default orientation end-to-end: the LLM emits
-    ``StructuredPlaybookContent`` without an explicit ``polarity`` field, and
-    ``_build_user_playbook`` derives the resulting ``UserPlaybook`` polarity.
-    """
+    """Routine success without a reusable decision is rejected."""
     request_context.storage.get_last_k_interactions_grouped.return_value = (
         neutral_request_interaction_models,
         [],
@@ -308,11 +305,7 @@ def test_classic_extractor_emits_positive_when_no_failure_evidence(
         extracted = extractor.run()
         result = extracted if isinstance(extracted, list) else extracted.items
 
-    assert len(result) == 2, "Expected two playbooks from the neutral window"
-    assert all(
-        not playbook.content.lstrip().startswith(_NEGATIVE_PREFIXES)
-        for playbook in result
-    ), "No action-style playbook from a neutral window should read as avoidance"
+    assert result == []
 
 
 def test_classic_extractor_emits_negative_on_clear_failure(
@@ -340,13 +333,17 @@ def test_classic_extractor_emits_negative_on_clear_failure(
                 StructuredPlaybookContent(
                     trigger="user confirms a cancellation request",
                     content="Avoid asking the user to confirm a cancellation more than once",
-                    rationale="User pushed back on repeated confirmation prompts.",
-                ),
-                # Companion positive entry — verifies a mixed-polarity window
-                # produces the right mix downstream.
-                StructuredPlaybookContent(
-                    trigger="user issues a cancellation command",
-                    content="Acknowledge the cancellation and proceed without redundant prompts",
+                    rationale="The user explicitly rejected a repeated confirmation, so avoiding the repeated prompt prevents the observed mistake on future cancellation tasks.",
+                    evidence_kind="correction",
+                    future_task_class="subscription cancellation tasks",
+                    improvement_mechanism="prevents repeating a confirmation the user already supplied",
+                    reader_angle="correction",
+                    evidence=[
+                        StructuredPlaybookEvidence(
+                            turn_ref="T3",
+                            source_span="I already said yes, stop asking me to confirm.",
+                        )
+                    ],
                 ),
             ]
         )
@@ -360,7 +357,7 @@ def test_classic_extractor_emits_negative_on_clear_failure(
         extracted = extractor.run()
         result = extracted if isinstance(extracted, list) else extracted.items
 
-    assert len(result) == 2, "Expected both playbook entries to be emitted"
+    assert len(result) == 1, "Expected the grounded failure lesson to be emitted"
 
     negative_playbooks = [
         pb for pb in result if pb.content.lstrip().startswith(_NEGATIVE_PREFIXES)

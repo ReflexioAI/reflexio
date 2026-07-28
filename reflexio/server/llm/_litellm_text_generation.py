@@ -1370,7 +1370,14 @@ class TextGenerationMixin:
                 )
             except StructuredOutputParseError as exc:
                 failure_kind = "parse"
-                errors: tuple[str, ...] = (str(exc),)
+                errors: tuple[str, ...] = exc.validation_errors or (str(exc),)
+                if exc.validation_errors:
+                    self.logger.warning(
+                        "event=llm_structured_schema_validation_failed model=%s schema=%s errors=%s",
+                        params.get("model"),
+                        schema_name,
+                        ",".join(exc.validation_errors),
+                    )
                 raw_content = exc.raw_content
                 finish_reason = exc.finish_reason
                 latest_parsed_output = None
@@ -1419,7 +1426,14 @@ class TextGenerationMixin:
                     model=str(repair_params.get("model")),
                     provenance=getattr(exc, "provenance", None),
                 )
-                errors = (str(exc),)
+                errors = exc.validation_errors or (str(exc),)
+                if exc.validation_errors:
+                    self.logger.warning(
+                        "event=llm_structured_schema_validation_failed model=%s schema=%s errors=%s",
+                        repair_params.get("model"),
+                        schema_name,
+                        ",".join(exc.validation_errors),
+                    )
                 failure_kind = "parse"
             except (LiteLLMClientError, ProviderCapSaturatedError) as exc:
                 # Cap saturation is not a LiteLLMClientError subclass; still stamp

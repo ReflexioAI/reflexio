@@ -332,6 +332,42 @@ def test_run_tool_loop_returns_structured_terminus_provenance(monkeypatch):
     assert "provenance" not in result.model_dump()
 
 
+def test_run_tool_loop_forwards_corrective_structured_repair(
+    monkeypatch, tool_call_completion
+):
+    """A caller can replace blind parse retry with one corrective repair turn."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_CLI", raising=False)
+
+    class StructuredFinish(BaseModel):
+        value: str
+
+    _make_tc, make_stop = tool_call_completion
+    responses = [make_stop('{"value":'), make_stop('{"value":"repaired"}')]
+    client = LiteLLMClient(LiteLLMConfig(model="claude-sonnet-4-6"))
+
+    with patch("litellm.completion", side_effect=responses) as completion:
+        result = run_tool_loop(
+            client=client,
+            messages=[{"role": "user", "content": "go"}],
+            registry=ToolRegistry([]),
+            model_role=ModelRole.EXTRACTION_AGENT,
+            response_format=StructuredFinish,
+            structured_output_validator=lambda _output: (),
+        )
+
+    assert result.finished_reason == "structured_output"
+    assert isinstance(result.structured_output, StructuredFinish)
+    assert result.structured_output.value == "repaired"
+    repair_messages = completion.call_args_list[1].kwargs["messages"]
+    assert [message["role"] for message in repair_messages] == [
+        "user",
+        "assistant",
+        "user",
+    ]
+    assert "corrected response" in repair_messages[-1]["content"]
+
+
 def test_run_tool_loop_records_async_accepted_and_continues(
     monkeypatch,
     tool_call_completion,
