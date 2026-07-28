@@ -4,10 +4,10 @@ import pytest
 from pydantic import ValidationError
 
 from reflexio.server.services.playbook.playbook_service_utils import (
-    StructuredExtractedPlaybookContent,
     StructuredExtractedPlaybookList,
     StructuredPlaybookContent,
-    StructuredPlaybookEvidence,
+    StructuredReferencedExtractedPlaybookContent,
+    StructuredReferencedExtractedPlaybookList,
 )
 
 
@@ -46,40 +46,38 @@ def test_structured_playbook_content_accepts_optional_fields() -> None:
 
 def test_extracted_playbook_content_requires_small_grounding_contract() -> None:
     with pytest.raises(ValidationError):
-        StructuredExtractedPlaybookContent(
+        StructuredReferencedExtractedPlaybookContent(
             trigger="when a task starts",
             content="Do the grounded action.",
         )
 
-    grounded = StructuredExtractedPlaybookContent(
+    grounded = StructuredReferencedExtractedPlaybookContent(
         rationale="The correction identifies a reusable failure.",
         evidence_kind="correction",
         trigger="when a similar task starts",
         content="Do the corrected action.",
-        evidence=[
-            StructuredPlaybookEvidence(turn_ref="T1", source_span="correct this")
-        ],
+        evidence_refs=["T1"],
     )
-    assert grounded.evidence[0].turn_ref == "T1"
+    assert grounded.evidence_refs == ["T1"]
     assert set(grounded.model_dump()) == {
         "rationale",
         "evidence_kind",
         "trigger",
         "content",
-        "evidence",
+        "evidence_refs",
     }
 
 
 def test_extracted_contract_ignores_legacy_candidate_fields_but_requires_wrapper() -> (
     None
 ):
-    candidate = StructuredExtractedPlaybookContent.model_validate(
+    candidate = StructuredReferencedExtractedPlaybookContent.model_validate(
         {
             "rationale": "The correction supports a future workflow rule.",
             "evidence_kind": "correction",
             "trigger": "when starting the task",
             "content": "Apply the correction before acting.",
-            "evidence": [{"turn_ref": "T1", "source_span": "do this instead"}],
+            "evidence_refs": ["T1"],
             "future_task_class": "legacy field",
             "reader_angle": "legacy field",
         }
@@ -88,4 +86,23 @@ def test_extracted_contract_ignores_legacy_candidate_fields_but_requires_wrapper
     assert "reader_angle" not in candidate.model_dump()
 
     with pytest.raises(ValidationError):
-        StructuredExtractedPlaybookList.model_validate({})
+        StructuredReferencedExtractedPlaybookList.model_validate({})
+
+
+def test_copied_span_contract_keeps_legacy_provider_aliases() -> None:
+    output = StructuredExtractedPlaybookList.model_validate(
+        {
+            "playbooks": [
+                {
+                    "Reason": "The expert correction supports a reusable rule.",
+                    "Kind": "expert gap",
+                    "When": "when the same expert task recurs",
+                    "Action": "Apply the expert correction.",
+                    "Sources": [{"Turn Ref": "T2", "Source Span": "exact text"}],
+                }
+            ]
+        }
+    )
+
+    assert output.playbooks[0].evidence[0].turn_ref == "T2"
+    assert output.playbooks[0].evidence[0].source_span == "exact text"

@@ -157,7 +157,7 @@ def test_reviewer_accepts_revises_rejects_with_exact_evidence_accounting():
     ]
     assert result[0].source_interaction_ids == [101]
     assert result[1].source_interaction_ids == [102]
-    assert result[1].source_span == "generated artifact was visibly delivered"
+    assert result[1].source_span == "The generated artifact was visibly delivered."
     assert "accepted" in (result[0].notes or "")
     assert "revised" in (result[1].notes or "")
 

@@ -31,10 +31,12 @@ from reflexio.server.services.playbook.playbook_evidence import (
 )
 from reflexio.server.services.playbook.playbook_service_utils import (
     PlaybookEvidenceSource,
+    PlaybookEvidenceUnit,
     StructuredExtractedPlaybookList,
     StructuredPlaybookContent,
     StructuredPlaybookEvidence,
     StructuredPlaybookList,
+    StructuredReferencedExtractedPlaybookList,
     build_playbook_prompt_context,
     construct_expert_playbook_extraction_messages,
     construct_playbook_extraction_messages_from_sessions,
@@ -279,7 +281,9 @@ class PlaybookExtractor:
                 [entry.content for entry in mock_response.playbooks],
             )
             return self._process_structured_response_list(
-                mock_response, evidence_sources=prompt_context.evidence_sources
+                mock_response,
+                evidence_sources=prompt_context.evidence_sources,
+                evidence_units=prompt_context.evidence_units,
             )
 
         # Get tool_can_use from root config
@@ -303,6 +307,7 @@ class PlaybookExtractor:
             prompt_manager,
             expert=expert_mode,
             evidence_sources=prompt_context.evidence_sources,
+            evidence_units=prompt_context.evidence_units,
         )
 
         if expert_mode:
@@ -350,7 +355,10 @@ class PlaybookExtractor:
         self._last_resumable_token_totals = sum_trace_tokens(result.trace)
         self._last_model_provenance = result.model_provenance
         if not isinstance(
-            result.output, StructuredPlaybookList | StructuredExtractedPlaybookList
+            result.output,
+            StructuredPlaybookList
+            | StructuredReferencedExtractedPlaybookList
+            | StructuredExtractedPlaybookList,
         ):
             logger.warning(
                 "Playbook extraction did not finish: %s",
@@ -366,6 +374,7 @@ class PlaybookExtractor:
             return self._process_structured_response_list(
                 result.output,
                 evidence_sources=prompt_context.evidence_sources,
+                evidence_units=prompt_context.evidence_units,
             )
         return self._process_structured_response_list(
             result.output,
@@ -432,9 +441,14 @@ class PlaybookExtractor:
 
     def _process_structured_response_list(
         self,
-        response: StructuredPlaybookList | StructuredExtractedPlaybookList,
+        response: (
+            StructuredPlaybookList
+            | StructuredReferencedExtractedPlaybookList
+            | StructuredExtractedPlaybookList
+        ),
         source_interaction_ids: list[int] | None = None,
         evidence_sources: dict[str, PlaybookEvidenceSource] | None = None,
+        evidence_units: dict[str, PlaybookEvidenceUnit] | None = None,
     ) -> list[UserPlaybook]:
         """
         Process a structured playbook list from the LLM into UserPlaybook entries.
@@ -458,7 +472,9 @@ class PlaybookExtractor:
             if evidence_sources is not None:
                 # Sole rejection gate for the evidence-grounded path;
                 # ``_build_user_playbook`` trusts the candidate from here on.
-                rejection_reason = candidate_rejection_reason(entry, evidence_sources)
+                rejection_reason = candidate_rejection_reason(
+                    entry, evidence_sources, evidence_units
+                )
                 if rejection_reason is not None:
                     rejection_counts[rejection_reason] += 1
                     logger.info(
@@ -470,6 +486,7 @@ class PlaybookExtractor:
                 entry,
                 source_interaction_ids=source_interaction_ids or [],
                 evidence_sources=evidence_sources,
+                evidence_units=evidence_units,
             )
             if playbook is not None:
                 user_playbooks.append(playbook)
@@ -506,6 +523,7 @@ class PlaybookExtractor:
         entry: StructuredPlaybookContent,
         source_interaction_ids: list[int],
         evidence_sources: dict[str, PlaybookEvidenceSource] | None = None,
+        evidence_units: dict[str, PlaybookEvidenceUnit] | None = None,
     ) -> UserPlaybook | None:
         """
         Convert one StructuredPlaybookContent entry into a UserPlaybook.
@@ -528,7 +546,9 @@ class PlaybookExtractor:
             # Defence in depth: callers pre-filter, but this method is the last
             # step before a row becomes persistable, so it re-checks rather than
             # trusting the caller. The check is a pure function over the entry.
-            rejection_reason = candidate_rejection_reason(entry, evidence_sources)
+            rejection_reason = candidate_rejection_reason(
+                entry, evidence_sources, evidence_units
+            )
             if rejection_reason is not None:
                 logger.info(
                     "event=playbook_candidate_rejected reason=%s",
@@ -537,17 +557,27 @@ class PlaybookExtractor:
                 return None
             resolved_source_ids = []
             spans: list[str] = []
-            for evidence in entry.evidence:
-                source = evidence_sources[evidence.turn_ref.strip()]
-                if source.interaction_id not in resolved_source_ids:
-                    resolved_source_ids.append(source.interaction_id)
-                span = resolve_verbatim_source_span(
-                    evidence.source_span.strip(), source.evidence_texts
-                )
-                if span is None:  # defensive against evidence changing after validation
+            if entry.evidence_refs:
+                if evidence_units is None:  # Guarded by evidence validation.
                     return None
-                if span not in spans:
-                    spans.append(span)
+                for raw_ref in entry.evidence_refs:
+                    unit = evidence_units[raw_ref.strip()]
+                    if unit.interaction_id not in resolved_source_ids:
+                        resolved_source_ids.append(unit.interaction_id)
+                    if unit.source_span not in spans:
+                        spans.append(unit.source_span)
+            else:
+                for evidence in entry.evidence:
+                    source = evidence_sources[evidence.turn_ref.strip()]
+                    if source.interaction_id not in resolved_source_ids:
+                        resolved_source_ids.append(source.interaction_id)
+                    span = resolve_verbatim_source_span(
+                        evidence.source_span.strip(), source.evidence_texts
+                    )
+                    if span is None:  # defensive against post-validation drift
+                        return None
+                    if span not in spans:
+                        spans.append(span)
             source_span = "\n\n".join(spans)
 
         playbook_content = ensure_playbook_content(entry.content, entry)

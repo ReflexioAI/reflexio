@@ -38,6 +38,7 @@ from reflexio.server.services.playbook.playbook_evidence import (
 from reflexio.server.services.playbook.playbook_service_utils import (
     StructuredExtractedPlaybookList,
     StructuredPlaybookList,
+    StructuredReferencedExtractedPlaybookList,
     build_playbook_prompt_context,
     construct_expert_playbook_extraction_messages,
     construct_playbook_extraction_messages_from_sessions,
@@ -198,24 +199,37 @@ def _log_config_hash_drift(
         )
 
 
+def _run_playbook_contract_selection(
+    request_context: RequestContext,
+    run: AgentRunRecord,
+    *,
+    expert: bool,
+) -> tuple[bool, bool]:
+    """Resolve the playbook schema selected when the durable run was created."""
+    output_schema_name = run.generation_request_snapshot.get("output_schema_name")
+    if output_schema_name == StructuredReferencedExtractedPlaybookList.__name__:
+        return True, True
+    if output_schema_name == StructuredExtractedPlaybookList.__name__:
+        return True, False
+    if output_schema_name == StructuredPlaybookList.__name__:
+        return False, False
+    # Backward compatibility for durable runs created before the schema name was
+    # snapshotted. New runs never consult activation state during resume.
+    strict = uses_evidence_grounded_extraction(
+        request_context.prompt_manager,
+        expert=expert,
+    )
+    return strict, strict and not expert
+
+
 def _run_uses_strict_playbook_evidence(
     request_context: RequestContext,
     run: AgentRunRecord,
     *,
     expert: bool,
 ) -> bool:
-    """Resolve the playbook schema selected when the durable run was created."""
-    output_schema_name = run.generation_request_snapshot.get("output_schema_name")
-    if output_schema_name == StructuredExtractedPlaybookList.__name__:
-        return True
-    if output_schema_name == StructuredPlaybookList.__name__:
-        return False
-    # Backward compatibility for durable runs created before the schema name was
-    # snapshotted. New runs never consult activation state during resume.
-    return uses_evidence_grounded_extraction(
-        request_context.prompt_manager,
-        expert=expert,
-    )
+    """Backward-compatible boolean view of the snapshotted contract."""
+    return _run_playbook_contract_selection(request_context, run, expert=expert)[0]
 
 
 class ExtractionResumeWorker:
@@ -570,7 +584,7 @@ class ExtractionResumeWorker:
         )
         prompt_manager = self.request_context.prompt_manager
         expert_mode = has_expert_content(all_interactions)
-        strict_evidence = _run_uses_strict_playbook_evidence(
+        strict_evidence, evidence_references = _run_playbook_contract_selection(
             self.request_context,
             run,
             expert=expert_mode,
@@ -584,7 +598,9 @@ class ExtractionResumeWorker:
             prompt_manager,
             expert=expert_mode,
             evidence_sources=prompt_context.evidence_sources,
+            evidence_units=prompt_context.evidence_units,
             strict_override=strict_evidence,
+            evidence_references_override=evidence_references,
         )
         if expert_mode:
             messages = construct_expert_playbook_extraction_messages(
@@ -628,7 +644,10 @@ class ExtractionResumeWorker:
             structured_output_validator=contract.validator,
         )
         if not isinstance(
-            result.output, StructuredPlaybookList | StructuredExtractedPlaybookList
+            result.output,
+            StructuredPlaybookList
+            | StructuredReferencedExtractedPlaybookList
+            | StructuredExtractedPlaybookList,
         ):
             raise ResumeWorkerError(
                 f"Playbook resume did not finish: {result.finished_reason}"
@@ -637,6 +656,7 @@ class ExtractionResumeWorker:
             items = extractor._process_structured_response_list(
                 result.output,
                 evidence_sources=prompt_context.evidence_sources,
+                evidence_units=prompt_context.evidence_units,
             )
         else:
             items = extractor._process_structured_response_list(
@@ -787,7 +807,7 @@ class ExtractionResumeWorker:
                 request_interaction_data_models
             )
         )
-        strict_evidence = _run_uses_strict_playbook_evidence(
+        strict_evidence, evidence_references = _run_playbook_contract_selection(
             self.request_context,
             run,
             expert=expert_mode,
@@ -801,11 +821,16 @@ class ExtractionResumeWorker:
             self.request_context.prompt_manager,
             expert=expert_mode,
             evidence_sources=prompt_context.evidence_sources,
+            evidence_units=prompt_context.evidence_units,
             strict_override=strict_evidence,
+            evidence_references_override=evidence_references,
         )
         output = contract.schema.model_validate(committed_output)
         if not isinstance(
-            output, StructuredPlaybookList | StructuredExtractedPlaybookList
+            output,
+            StructuredPlaybookList
+            | StructuredReferencedExtractedPlaybookList
+            | StructuredExtractedPlaybookList,
         ):
             raise ResumeWorkerError(
                 "Committed playbook output validated to an unexpected schema: "
@@ -831,6 +856,7 @@ class ExtractionResumeWorker:
             items = extractor._process_structured_response_list(
                 output,
                 evidence_sources=prompt_context.evidence_sources,
+                evidence_units=prompt_context.evidence_units,
             )
         else:
             items = extractor._process_structured_response_list(

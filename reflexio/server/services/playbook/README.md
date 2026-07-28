@@ -39,10 +39,10 @@ Interactions
 Extends `BaseGenerationService` extractor pattern. Each extractor:
 1. Checks stride_size threshold before running
 2. Constructs messages from interactions (via `service_utils.py`)
-3. Formats request boundaries and interactions with call-local references for strict normal extraction
+3. Formats request boundaries and visible turns with call-local references for strict normal extraction
 4. Runs the LLM with the versioned extraction prompts
-5. Validates required fields, verbatim evidence spans, atomic scope, and exact duplicates
-6. Resolves validated local references to persisted request and interaction provenance
+5. Validates required fields, allowed turn references, atomic scope, and exact duplicates
+6. Resolves validated local references to exact source text and persisted request/interaction provenance
 
 Malformed structured output receives one bounded repair attempt. An invalid
 candidate is dropped independently so a valid sibling in the same response can
@@ -54,7 +54,7 @@ continue; an unresolved malformed response fails the extraction run.
 
 Strict normal candidates enter a fresh same-model review call before
 consolidation. The reviewer receives the request-bounded chronology, validated
-evidence units, artifact-availability context, and relevant existing playbooks.
+referenced turns, artifact-availability context, and relevant existing playbooks.
 Every candidate must be accounted for exactly once as `accept`, `revise`, or
 `reject`. Revisions may narrow unsupported wording but cannot add evidence or
 create a lesson that extraction missed. Reviewer output receives one bounded
@@ -114,7 +114,8 @@ Inline consolidation always runs during generation (the legacy `deduplicator` fe
 | Class | Purpose |
 |-------|---------|
 | `StructuredPlaybookContent` | Output from playbook extraction prompt |
-| `StructuredExtractedPlaybookList` | Strict extraction candidates with rationale and evidence spans |
+| `StructuredReferencedExtractedPlaybookList` | Strict normal candidates with rationale and turn references |
+| `StructuredExtractedPlaybookList` | Inactive expert strict contract with copied evidence spans |
 | `PlaybookGenerationRequest` | Request dataclass for playbook extraction |
 | `PlaybookAggregatorRequest` | Request dataclass for playbook aggregation |
 

@@ -17,6 +17,7 @@ from reflexio.models.config_schema import (
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.services.extraction.resume_worker import (
     ExtractionResumeWorker,
+    _run_playbook_contract_selection,
     _run_uses_strict_playbook_evidence,
 )
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
@@ -67,6 +68,7 @@ def request_context(storage):
 @pytest.mark.parametrize(
     ("schema_name", "expected"),
     [
+        ("StructuredReferencedExtractedPlaybookList", True),
         ("StructuredExtractedPlaybookList", True),
         ("StructuredPlaybookList", False),
     ],
@@ -96,6 +98,38 @@ def test_playbook_resume_uses_schema_recorded_at_run_creation(
             expert=False,
         )
         is expected
+    )
+    request_context.prompt_manager.get_active_version.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("schema_name", "expected"),
+    [
+        ("StructuredReferencedExtractedPlaybookList", (True, True)),
+        ("StructuredExtractedPlaybookList", (True, False)),
+        ("StructuredPlaybookList", (False, False)),
+    ],
+)
+def test_playbook_resume_pins_evidence_reference_mode(
+    request_context, schema_name, expected
+):
+    run = AgentRunRecord(
+        id="playbook_run",
+        binding=AgentBinding(
+            org_id="org_1",
+            extractor_kind="playbook",
+            user_id=None,
+            request_id="request_1",
+            agent_version="v1",
+            source="api",
+            source_interaction_ids=[1],
+        ),
+        status=AgentRunStatus.RUNNING,
+        generation_request_snapshot={"output_schema_name": schema_name},
+    )
+
+    assert (
+        _run_playbook_contract_selection(request_context, run, expert=False) == expected
     )
     request_context.prompt_manager.get_active_version.assert_not_called()
 

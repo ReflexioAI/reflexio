@@ -332,6 +332,37 @@ def format_interactions_to_history_string(interactions: list[Interaction]) -> st
     return "\n".join(formatted_interactions)
 
 
+def visible_interaction_evidence_texts(interaction: Interaction) -> tuple[str, ...]:
+    """Return the source-backed pieces of a turn that its prompt rendering exposes.
+
+    The text uses the same content budget as ``format_interactions_to_history_string``.
+    A truncated head and tail are separate values so the synthetic truncation marker
+    is never persisted as evidence. Models cite only the turn id; code retains these
+    bounded values for reviewer context and provenance metadata.
+    """
+    values: list[str] = []
+    if interaction.content:
+        values.extend(
+            f"[used tool: {tool.tool_name}({json.dumps(tool.tool_data)})]"
+            for tool in interaction.tools_used
+        )
+        visible_content = slice_content_by_tokens(
+            interaction.content, _resolve_max_interaction_content_tokens()
+        )
+        values.extend(
+            segment
+            for segment in visible_content.split(_CONTENT_TRUNCATION_MARKER)
+            if segment
+        )
+    if interaction.expert_content:
+        values.append(interaction.expert_content)
+    if interaction.user_action != UserActionType.NONE:
+        values.append(
+            f"{interaction.user_action.value} {interaction.user_action_description}".strip()
+        )
+    return tuple(values)
+
+
 def format_sessions_to_history_string(
     sessions: list[RequestInteractionDataModel],
 ) -> str:

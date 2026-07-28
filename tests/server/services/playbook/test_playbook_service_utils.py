@@ -13,9 +13,9 @@ from reflexio.models.api_schema.service_schemas import (
 )
 from reflexio.server.prompt.prompt_manager import PromptManager
 from reflexio.server.services.playbook.playbook_service_utils import (
-    StructuredExtractedPlaybookList,
     StructuredPlaybookContent,
     StructuredPlaybookList,
+    StructuredReferencedExtractedPlaybookList,
     build_playbook_prompt_context,
     construct_playbook_extraction_messages_from_sessions,
     dedupe_and_drop_empty,
@@ -32,20 +32,20 @@ def test_strict_extraction_schema_unwraps_complete_candidate(wrapper):
         "Evidence Kind": "correction",
         "Trigger": "When the task begins",
         "Content": "Apply the corrected behavior.",
-        "Evidence": [{"Turn Ref": "T1", "Source Span": "Do it this way"}],
+        "Evidence Refs": ["T1"],
     }
 
-    output = StructuredExtractedPlaybookList.model_validate(
+    output = StructuredReferencedExtractedPlaybookList.model_validate(
         {"playbooks": [{wrapper: candidate}]}
     )
 
     assert len(output.playbooks) == 1
     assert output.playbooks[0].evidence_kind == "correction"
-    assert output.playbooks[0].evidence[0].turn_ref == "T1"
+    assert output.playbooks[0].evidence_refs == ["T1"]
 
 
 def test_strict_extraction_schema_recovers_nested_alias_contract():
-    output = StructuredExtractedPlaybookList.model_validate(
+    output = StructuredReferencedExtractedPlaybookList.model_validate(
         {
             "playbooks": [
                 {
@@ -56,12 +56,7 @@ def test_strict_extraction_schema_recovers_nested_alias_contract():
                                 "Type": "correction",
                                 "Future Trigger": "When the task begins",
                                 "Action": "Apply the corrected behavior.",
-                                "Sources": [
-                                    {
-                                        "Turn Ref": "T2",
-                                        "Source Span": "Do it this way",
-                                    }
-                                ],
+                                "Sources": ["T2"],
                             }
                         ]
                     }
@@ -71,7 +66,7 @@ def test_strict_extraction_schema_recovers_nested_alias_contract():
     )
 
     assert output.playbooks[0].content == "Apply the corrected behavior."
-    assert output.playbooks[0].evidence[0].source_span == "Do it this way"
+    assert output.playbooks[0].evidence_refs == ["T2"]
 
 
 def test_strict_extraction_schema_drops_evidence_object_but_keeps_valid_sibling():
@@ -80,13 +75,13 @@ def test_strict_extraction_schema_drops_evidence_object_but_keeps_valid_sibling(
         "evidence_kind": "correction",
         "trigger": "When the task begins",
         "content": "Apply the corrected behavior.",
-        "evidence": [{"turn_ref": "T1", "source_span": "Do it this way"}],
+        "evidence_refs": ["T1"],
     }
 
-    output = StructuredExtractedPlaybookList.model_validate(
+    output = StructuredReferencedExtractedPlaybookList.model_validate(
         {
             "playbooks": [
-                {"turn_ref": "T1", "source_span": "Do it this way"},
+                {"evidence_ref": "T1"},
                 candidate,
             ]
         }
@@ -97,11 +92,11 @@ def test_strict_extraction_schema_drops_evidence_object_but_keeps_valid_sibling(
 
 
 def test_strict_extraction_schema_treats_evidence_only_list_as_empty():
-    output = StructuredExtractedPlaybookList.model_validate(
+    output = StructuredReferencedExtractedPlaybookList.model_validate(
         {
             "playbooks": [
-                {"turn_ref": "T1", "source_span": "Do it this way"},
-                {"Turn Ref": "T2", "Source Span": "Then do this"},
+                {"evidence_ref": "T1"},
+                {"Evidence Ref": "T2"},
             ]
         }
     )
@@ -165,6 +160,10 @@ def test_prompt_context_uses_local_turn_refs_and_retains_provenance():
     )
     assert context.evidence_sources["T1"].role == "user"
     assert context.evidence_sources["T1"].request_source == "test"
+    assert context.evidence_units["T1"].source_span == (
+        "Use the regional deployment checklist."
+    )
+    assert context.evidence_units["T1"].interaction_id == 84721
 
 
 def test_prompt_context_does_not_label_turns_unless_requested():
@@ -195,6 +194,45 @@ def test_prompt_context_does_not_label_turns_unless_requested():
 
     assert "[T1]" not in context.text
     assert context.evidence_sources["T1"].interaction_id == 12
+
+
+def test_prompt_context_maps_one_turn_reference_to_all_visible_sources():
+    interaction = Interaction(
+        interaction_id=13,
+        user_id="user",
+        request_id="request",
+        content="First paragraph.\n\nSecond paragraph.",
+        role="assistant",
+        tools_used=[{"tool_name": "lookup", "tool_data": {"key": "value"}}],
+        user_action=UserActionType.CLICK,
+        user_action_description="confirm",
+    )
+    request = Request(
+        request_id="request",
+        user_id="user",
+        source="test",
+        agent_version="1",
+        session_id="session",
+    )
+
+    context = build_playbook_prompt_context(
+        [
+            RequestInteractionDataModel(
+                session_id="session",
+                request=request,
+                interactions=[interaction],
+            )
+        ],
+        label_turns=True,
+    )
+
+    assert list(context.evidence_units) == ["T1"]
+    assert context.evidence_units["T1"].source_span == (
+        '[used tool: lookup({"key": "value"})]\n\n'
+        "First paragraph.\n\nSecond paragraph.\n\nclick confirm"
+    )
+    assert "[T1] assistant: ```[used tool:" in context.text
+    assert "[T1] assistant: ```click confirm```" in context.text
 
 
 def test_prompt_context_labels_turns_in_message_order_not_database_id_order():
@@ -449,8 +487,8 @@ def test_construct_playbook_extraction_messages_with_sessions():
                 assert "user: ```Thank you!```" in content, (
                     "Expected 'user: ```Thank you!```' in prompt"
                 )
-                assert "user: ```click help button```" in content, (
-                    "Expected 'user: ```click help button```' in prompt"
+                assert "[T3] user: ```click help button```" in content, (
+                    "Expected the user action in the labelled turn"
                 )
 
                 found_interactions = True
@@ -1090,7 +1128,7 @@ class TestEvidenceKindAliases:
         ],
     )
     def test_alias_is_canonicalized_for_both_schemas(self, raw, expected):
-        strict = StructuredExtractedPlaybookList.model_validate(
+        strict = StructuredReferencedExtractedPlaybookList.model_validate(
             {
                 "playbooks": [
                     {
@@ -1098,7 +1136,7 @@ class TestEvidenceKindAliases:
                         "evidence_kind": raw,
                         "trigger": "when",
                         "content": "do",
-                        "evidence": [{"turn_ref": "T1", "source_span": "s"}],
+                        "evidence_refs": ["T1"],
                     }
                 ]
             }

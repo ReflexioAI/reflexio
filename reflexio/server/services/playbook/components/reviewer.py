@@ -234,57 +234,60 @@ class PlaybookCandidateReviewer:
         candidates: list[UserPlaybook],
         prompt_context: PlaybookPromptContext,
     ) -> dict[str, list[CandidateEvidenceUnit]]:
-        by_interaction_id = {
-            source.interaction_id: (turn_ref, source)
-            for turn_ref, source in prompt_context.evidence_sources.items()
-            if source.interaction_id
-        }
+        by_interaction_id: dict[int, list[Any]] = {}
+        for unit in prompt_context.evidence_units.values():
+            if unit.interaction_id:
+                by_interaction_id.setdefault(unit.interaction_id, []).append(unit)
         units_by_candidate: dict[str, list[CandidateEvidenceUnit]] = {}
         for candidate_index, candidate in enumerate(candidates, start=1):
             candidate_id = f"C{candidate_index}"
             combined_span = candidate.source_span or ""
             units: list[CandidateEvidenceUnit] = []
             for interaction_id in candidate.source_interaction_ids:
-                mapped = by_interaction_id.get(interaction_id)
-                if mapped is None:
+                mapped_units = by_interaction_id.get(interaction_id)
+                if not mapped_units:
                     raise ValueError(
                         f"Reviewer cannot map {candidate_id} evidence to a local turn"
                     )
-                turn_ref, source = mapped
-                matching_spans = [
-                    evidence_text
-                    for evidence_text in source.evidence_texts
-                    if evidence_text and evidence_text in combined_span
+                matching_units = [
+                    unit
+                    for unit in mapped_units
+                    if unit.source_span
+                    and (
+                        unit.source_span in combined_span
+                        or combined_span in unit.source_span
+                    )
                 ]
-                if not matching_spans:
+                if not matching_units:
                     span_fragments = [
                         fragment.strip()
                         for fragment in combined_span.split("\n\n")
                         if fragment.strip()
                     ]
-                    matching_spans = [
-                        fragment
-                        for fragment in span_fragments
+                    matching_units = [
+                        unit
+                        for unit in mapped_units
                         if any(
-                            fragment in evidence_text
-                            for evidence_text in source.evidence_texts
+                            fragment == unit.source_span or fragment in unit.source_span
+                            for fragment in span_fragments
                         )
                     ]
-                if not matching_spans:
+                if not matching_units:
                     raise ValueError(
                         f"Reviewer cannot resolve {candidate_id} validated source span"
                     )
-                for source_span in matching_spans:
+                for mapped_unit in matching_units:
                     if any(
-                        unit.turn_ref == turn_ref and unit.source_span == source_span
+                        unit.turn_ref == mapped_unit.turn_ref
+                        and unit.source_span == mapped_unit.source_span
                         for unit in units
                     ):
                         continue
                     units.append(
                         CandidateEvidenceUnit(
                             evidence_id=f"{candidate_id}-E{len(units) + 1}",
-                            turn_ref=turn_ref,
-                            source_span=source_span,
+                            turn_ref=mapped_unit.turn_ref,
+                            source_span=mapped_unit.source_span,
                             interaction_id=interaction_id,
                         )
                     )

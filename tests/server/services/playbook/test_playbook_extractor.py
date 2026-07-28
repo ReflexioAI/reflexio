@@ -40,11 +40,12 @@ from reflexio.server.services.playbook.playbook_evidence import (
 )
 from reflexio.server.services.playbook.playbook_service_utils import (
     PlaybookEvidenceSource,
-    StructuredExtractedPlaybookContent,
-    StructuredExtractedPlaybookList,
+    PlaybookEvidenceUnit,
     StructuredPlaybookContent,
     StructuredPlaybookEvidence,
     StructuredPlaybookList,
+    StructuredReferencedExtractedPlaybookContent,
+    StructuredReferencedExtractedPlaybookList,
 )
 from reflexio.server.services.playbook.service import (
     PlaybookGenerationServiceConfig,
@@ -52,6 +53,25 @@ from reflexio.server.services.playbook.service import (
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 from reflexio.server.services.storage.storage_base import AgentRunStatus
 from reflexio.test_support.llm_mock import make_structured_finish
+
+
+def _evidence_unit(
+    evidence_ref: str,
+    source_span: str,
+    *,
+    interaction_id: int = 1,
+    role: str = "user",
+) -> PlaybookEvidenceUnit:
+    turn_ref = evidence_ref.split(":", maxsplit=1)[0]
+    return PlaybookEvidenceUnit(
+        evidence_ref=evidence_ref,
+        turn_ref=turn_ref,
+        source_span=source_span,
+        interaction_id=interaction_id,
+        request_id=f"request-{interaction_id}",
+        role=role,
+    )
+
 
 # ===============================
 # Fixtures
@@ -661,12 +681,7 @@ class TestResumableAgentPath:
                         "content": "Prefer ECS deployment guidance.",
                         "rationale": "The user's request provides a concrete deployment signal that applies to future deployment tasks.",
                         "evidence_kind": "preference",
-                        "evidence": [
-                            {
-                                "turn_ref": "T1",
-                                "source_span": "I prefer ECS deployment guidance",
-                            }
-                        ],
+                        "evidence_refs": ["T1"],
                     }
                 ]
             },
@@ -707,7 +722,7 @@ class TestResumableAgentPath:
         assert run.binding.extractor_kind == "playbook"
         assert run.binding.source_interaction_ids == [1, 2, 3]
         assert run.generation_request_snapshot["output_schema_name"] == (
-            "StructuredExtractedPlaybookList"
+            "StructuredReferencedExtractedPlaybookList"
         )
 
 
@@ -779,9 +794,7 @@ class TestStructuredPlaybookExtraction:
                         "content": "ask for CLI preference before proceeding",
                         "rationale": "The user correction shows that this preference changes the successful path for similar tasks.",
                         "evidence_kind": "correction",
-                        "evidence": [
-                            {"turn_ref": "T3", "source_span": "Could be faster"}
-                        ],
+                        "evidence_refs": ["T3"],
                     }
                 ]
             },
@@ -830,9 +843,7 @@ class TestStructuredPlaybookExtraction:
                         "content": "provide step-by-step instructions",
                         "rationale": "The explicit correction shows a reusable need for ordered instructions on similar tasks.",
                         "evidence_kind": "correction",
-                        "evidence": [
-                            {"turn_ref": "T3", "source_span": "Could be faster"}
-                        ],
+                        "evidence_refs": ["T3"],
                     }
                 ]
             },
@@ -983,6 +994,81 @@ class TestBuildUserPlaybook:
         assert result.reader_angle == "correction"
         assert result.notes == "Applies only to regional deployments."
 
+    def test_resolves_evidence_unit_refs_without_model_authored_quotes(
+        self,
+        request_context,
+        mock_llm_client,
+        extractor_config,
+        service_config,
+    ):
+        extractor = PlaybookExtractor(
+            request_context=request_context,
+            llm_client=mock_llm_client,
+            extractor_config=extractor_config,
+            service_config=service_config,
+            agent_context="Test agent",
+        )
+        entry = StructuredReferencedExtractedPlaybookContent(
+            rationale="The correction supports a reusable deployment check.",
+            evidence_kind="correction",
+            trigger="When reviewing a regional deployment",
+            content="Run the regional checklist before approval.",
+            evidence_refs=["T7"],
+        )
+        sources = {
+            "T7": PlaybookEvidenceSource(
+                interaction_id=712,
+                request_id="request-44",
+                evidence_texts=("Use the regional checklist",),
+                role="user",
+            )
+        }
+        units = {
+            "T7": _evidence_unit("T7", "Use the regional checklist", interaction_id=712)
+        }
+
+        result = extractor._build_user_playbook(
+            StructuredPlaybookContent.model_validate(entry.model_dump()),
+            source_interaction_ids=[],
+            evidence_sources=sources,
+            evidence_units=units,
+        )
+
+        assert result is not None
+        assert result.source_interaction_ids == [712]
+        assert result.source_span == "Use the regional checklist"
+
+    def test_rejects_unknown_evidence_unit_ref(
+        self,
+        request_context,
+        mock_llm_client,
+        extractor_config,
+        service_config,
+    ):
+        extractor = PlaybookExtractor(
+            request_context=request_context,
+            llm_client=mock_llm_client,
+            extractor_config=extractor_config,
+            service_config=service_config,
+            agent_context="Test agent",
+        )
+        entry = StructuredPlaybookContent(
+            rationale="The correction supports a reusable deployment check.",
+            evidence_kind="correction",
+            trigger="When reviewing a regional deployment",
+            content="Run the regional checklist before approval.",
+            evidence_refs=["T99"],
+        )
+
+        result = extractor._build_user_playbook(
+            entry,
+            source_interaction_ids=[],
+            evidence_sources={},
+            evidence_units={},
+        )
+
+        assert result is None
+
     @pytest.mark.parametrize(
         ("entry_changes", "source_changes"),
         [
@@ -1087,19 +1173,14 @@ class TestBuildUserPlaybook:
         The whole batch is invalid here, so the validator DOES ask for one
         corrective turn — but the reason code is what drops the row.
         """
-        output = StructuredExtractedPlaybookList(
+        output = StructuredReferencedExtractedPlaybookList(
             playbooks=[
-                StructuredExtractedPlaybookContent(
+                StructuredReferencedExtractedPlaybookContent(
                     rationale="A direct preference changes future story generation.",
                     evidence_kind="preference",
                     trigger="When generating fantasy stories for this user",
                     content="Use quest-driven fantasy settings.",
-                    evidence=[
-                        StructuredPlaybookEvidence(
-                            turn_ref="T2",
-                            source_span="An epic quest-driven fantasy brief",
-                        )
-                    ],
+                    evidence_refs=["T2"],
                 )
             ]
         )
@@ -1111,24 +1192,30 @@ class TestBuildUserPlaybook:
                 role="agent",
             )
         }
+        units = {
+            "T2": _evidence_unit(
+                "T2",
+                "An epic quest-driven fantasy brief",
+                interaction_id=22,
+                role="agent",
+            )
+        }
 
-        assert strict_output_validation_errors(output, sources) == (
+        assert strict_output_validation_errors(output, sources, units) == (
             "playbooks[0]: preference_without_direct_user_evidence",
         )
         assert (
-            candidate_rejection_reason(output.playbooks[0], sources)
+            candidate_rejection_reason(output.playbooks[0], sources, units)
             == "preference_without_direct_user_evidence"
         )
 
     def test_candidate_rejects_turn_reference_in_persisted_rationale(self):
-        entry = StructuredExtractedPlaybookContent(
+        entry = StructuredReferencedExtractedPlaybookContent(
             rationale="T1 contains the request, but T2 proves the repeated failure.",
             evidence_kind="observed-failure",
             trigger="When the user requests a generated artifact",
             content="Deliver the requested artifact visibly.",
-            evidence=[
-                StructuredPlaybookEvidence(turn_ref="T1", source_span="Create it")
-            ],
+            evidence_refs=["T1"],
         )
         sources = {
             "T1": PlaybookEvidenceSource(
@@ -1140,7 +1227,11 @@ class TestBuildUserPlaybook:
         }
 
         assert (
-            candidate_rejection_reason(entry, sources)
+            candidate_rejection_reason(
+                entry,
+                sources,
+                {"T1": _evidence_unit("T1", "Create it", interaction_id=31)},
+            )
             == "turn_reference_in_persisted_prose"
         )
 
@@ -1154,26 +1245,31 @@ class TestBuildUserPlaybook:
                 request_source="test",
             )
         }
-        candidate = StructuredExtractedPlaybookContent(
+        candidate = StructuredReferencedExtractedPlaybookContent(
             evidence_kind="correction",
             rationale="T1 shows that the value was supplied.",
             trigger="When the required value is supplied",
             content="Use the supplied value without asking again.",
-            evidence=[
-                StructuredPlaybookEvidence(
-                    turn_ref="T1",
-                    source_span="The user supplied the required value.",
-                )
-            ],
+            evidence_refs=["T1"],
         )
 
         assert (
-            candidate_rejection_reason(candidate, evidence_sources)
+            candidate_rejection_reason(
+                candidate,
+                evidence_sources,
+                {
+                    "T1": _evidence_unit(
+                        "T1",
+                        "The user supplied the required value.",
+                        interaction_id=11,
+                    )
+                },
+            )
             == "turn_reference_in_persisted_prose"
         )
 
     def test_candidate_leaves_repetition_semantics_to_reviewer(self):
-        entry = StructuredExtractedPlaybookContent(
+        entry = StructuredPlaybookContent(
             rationale=(
                 "The status-only response forced the user to keep re-issuing the "
                 "request."
@@ -1207,7 +1303,7 @@ class TestBuildUserPlaybook:
         assert candidate_rejection_reason(entry, sources) is None
 
     def test_candidate_accepts_user_repetition_claim_with_two_user_turns(self):
-        entry = StructuredExtractedPlaybookContent(
+        entry = StructuredPlaybookContent(
             rationale="The same request recurred after only a status was visible.",
             evidence_kind="observed-failure",
             trigger="When the user requests a generated artifact",
@@ -1250,29 +1346,21 @@ class TestBuildUserPlaybook:
         )
         correction = "Please execute the requested task now."
         synthesized = "An epic quest-driven fantasy brief"
-        output = StructuredExtractedPlaybookList(
+        output = StructuredReferencedExtractedPlaybookList(
             playbooks=[
-                StructuredExtractedPlaybookContent(
+                StructuredReferencedExtractedPlaybookContent(
                     rationale="The direct correction prevents repeated explanation.",
                     evidence_kind="correction",
                     trigger="When the user requests this task",
                     content="Execute the requested task.",
-                    evidence=[
-                        StructuredPlaybookEvidence(
-                            turn_ref="T1", source_span=correction
-                        )
-                    ],
+                    evidence_refs=["T1"],
                 ),
-                StructuredExtractedPlaybookContent(
+                StructuredReferencedExtractedPlaybookContent(
                     rationale="The task brief states a reusable preference.",
                     evidence_kind="preference",
                     trigger="When writing fantasy content",
                     content="Use epic quest-driven fantasy.",
-                    evidence=[
-                        StructuredPlaybookEvidence(
-                            turn_ref="T2", source_span=synthesized
-                        )
-                    ],
+                    evidence_refs=["T2"],
                 ),
             ]
         )
@@ -1291,13 +1379,18 @@ class TestBuildUserPlaybook:
                 role="agent",
             ),
         }
+        units = {
+            "T1": _evidence_unit("T1", correction, interaction_id=31, role="user"),
+            "T2": _evidence_unit("T2", synthesized, interaction_id=32, role="agent"),
+        }
 
         # One bad sibling must not cost the batch a repair turn: the valid
         # candidate is still usable, so there is nothing for repair to fix.
-        assert not strict_output_validation_errors(output, sources)
+        assert not strict_output_validation_errors(output, sources, units)
         result = extractor._process_structured_response_list(
             output,
             evidence_sources=sources,
+            evidence_units=units,
         )
 
         assert len(result) == 1
@@ -1305,19 +1398,14 @@ class TestBuildUserPlaybook:
         assert result[0].source_interaction_ids == [31]
 
     def test_preference_validator_accepts_direct_user_evidence(self):
-        output = StructuredExtractedPlaybookList(
+        output = StructuredReferencedExtractedPlaybookList(
             playbooks=[
-                StructuredExtractedPlaybookContent(
+                StructuredReferencedExtractedPlaybookContent(
                     rationale="A direct preference changes future analysis output.",
                     evidence_kind="preference",
                     trigger="When preparing future analysis for this user",
                     content="Lead with a compact table.",
-                    evidence=[
-                        StructuredPlaybookEvidence(
-                            turn_ref="T1",
-                            source_span="For future analyses, lead with a compact table",
-                        )
-                    ],
+                    evidence_refs=["T1"],
                 )
             ]
         )
@@ -1331,7 +1419,17 @@ class TestBuildUserPlaybook:
             )
         }
 
-        assert not strict_output_validation_errors(output, sources)
+        assert not strict_output_validation_errors(
+            output,
+            sources,
+            {
+                "T1": _evidence_unit(
+                    "T1",
+                    "For future analyses, lead with a compact table",
+                    interaction_id=21,
+                )
+            },
+        )
 
     def test_build_playbook_does_not_semantically_rewrite_model_content(
         self,
@@ -1382,7 +1480,7 @@ class TestBuildUserPlaybook:
         assert result.trigger == "When preparing future analysis for this user"
 
     def test_preference_validator_ignores_synthesized_memory_signal(self):
-        output = StructuredExtractedPlaybookList(playbooks=[])
+        output = StructuredReferencedExtractedPlaybookList(playbooks=[])
         sources = {
             "T4": PlaybookEvidenceSource(
                 interaction_id=24,
@@ -1716,9 +1814,7 @@ class TestRationaleRoundTrip:
                         "trigger": "User asks for debugging help",
                         "content": "Outline strategy before writing code",
                         "reader_angle": "correction",
-                        "evidence": [
-                            {"turn_ref": "T3", "source_span": "Could be faster"}
-                        ],
+                        "evidence_refs": ["T3"],
                     }
                 ]
             },
@@ -1897,9 +1993,7 @@ class TestPlaybookContentExtraction:
                         "future_task_class": "billing support tasks",
                         "improvement_mechanism": "keeps the response focused on resolution",
                         "reader_angle": "correction",
-                        "evidence": [
-                            {"turn_ref": "T3", "source_span": "Could be faster"}
-                        ],
+                        "evidence_refs": ["T3"],
                     }
                 ]
             },
@@ -1979,59 +2073,68 @@ class TestStrictBatchValidation:
         }
 
     @staticmethod
-    def _candidate(**overrides) -> StructuredExtractedPlaybookContent:
+    def _units(role: str = "user") -> dict[str, PlaybookEvidenceUnit]:
+        return {"T1": _evidence_unit("T1", "Please execute the task now.", role=role)}
+
+    @staticmethod
+    def _candidate(**overrides) -> StructuredReferencedExtractedPlaybookContent:
         fields = {
             "rationale": "The correction applies to future runs of this task.",
             "evidence_kind": "correction",
             "trigger": "When the user requests this task",
             "content": "Execute the requested task.",
-            "evidence": [
-                StructuredPlaybookEvidence(
-                    turn_ref="T1", source_span="Please execute the task now."
-                )
-            ],
+            "evidence_refs": ["T1"],
         }
         fields.update(overrides)
-        return StructuredExtractedPlaybookContent(**fields)
+        return StructuredReferencedExtractedPlaybookContent(**fields)
 
     def test_empty_batch_is_a_valid_answer(self):
-        output = StructuredExtractedPlaybookList(playbooks=[])
-        assert strict_output_validation_errors(output, self._sources()) == ()
+        output = StructuredReferencedExtractedPlaybookList(playbooks=[])
+        assert (
+            strict_output_validation_errors(output, self._sources(), self._units())
+            == ()
+        )
 
     def test_fully_valid_batch_passes(self):
-        output = StructuredExtractedPlaybookList(playbooks=[self._candidate()])
-        assert strict_output_validation_errors(output, self._sources()) == ()
+        output = StructuredReferencedExtractedPlaybookList(
+            playbooks=[self._candidate()]
+        )
+        assert (
+            strict_output_validation_errors(output, self._sources(), self._units())
+            == ()
+        )
 
     def test_wholly_ungrounded_batch_reports_every_candidate(self):
-        bad = self._candidate(
-            evidence=[
-                StructuredPlaybookEvidence(turn_ref="T9", source_span="never said this")
-            ]
+        bad = self._candidate(evidence_refs=["T9"])
+        output = StructuredReferencedExtractedPlaybookList(
+            playbooks=[bad, bad.model_copy()]
         )
-        output = StructuredExtractedPlaybookList(playbooks=[bad, bad.model_copy()])
 
-        errors = strict_output_validation_errors(output, self._sources())
+        errors = strict_output_validation_errors(output, self._sources(), self._units())
 
         assert errors == (
-            "playbooks[0]: unknown_turn_ref",
-            "playbooks[1]: unknown_turn_ref",
+            "playbooks[0]: unknown_evidence_ref",
+            "playbooks[1]: unknown_evidence_ref",
         )
 
     def test_one_bad_sibling_does_not_trigger_repair(self):
-        bad = self._candidate(
-            evidence=[
-                StructuredPlaybookEvidence(turn_ref="T9", source_span="never said this")
-            ]
+        bad = self._candidate(evidence_refs=["T9"])
+        output = StructuredReferencedExtractedPlaybookList(
+            playbooks=[self._candidate(), bad]
         )
-        output = StructuredExtractedPlaybookList(playbooks=[self._candidate(), bad])
 
         # A usable candidate survives, so repair has nothing to fix.
-        assert strict_output_validation_errors(output, self._sources()) == ()
+        assert (
+            strict_output_validation_errors(output, self._sources(), self._units())
+            == ()
+        )
 
     def test_validator_does_not_mutate_the_output(self):
-        output = StructuredExtractedPlaybookList(playbooks=[self._candidate()])
+        output = StructuredReferencedExtractedPlaybookList(
+            playbooks=[self._candidate()]
+        )
         before = output.model_dump_json()
 
-        strict_output_validation_errors(output, self._sources())
+        strict_output_validation_errors(output, self._sources(), self._units())
 
         assert output.model_dump_json() == before

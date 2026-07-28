@@ -8,7 +8,6 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from reflexio.models.api_schema.domain.entities import Interaction, UserPlaybook
-from reflexio.models.api_schema.domain.enums import UserActionType
 from reflexio.models.api_schema.internal_schema import RequestInteractionDataModel
 from reflexio.models.structured_output import (
     StrictStructuredOutput,
@@ -25,6 +24,7 @@ from reflexio.server.services.service_utils import (
     construct_messages_from_interactions,
     extract_interactions_from_request_interaction_data_models,
     format_interactions_to_history_string,
+    visible_interaction_evidence_texts,
 )
 
 logger = logging.getLogger(__name__)
@@ -42,11 +42,25 @@ class PlaybookEvidenceSource:
 
 
 @dataclass(frozen=True)
+class PlaybookEvidenceUnit:
+    """One prompt-visible turn addressed without model-authored quoting."""
+
+    evidence_ref: str
+    turn_ref: str
+    source_span: str
+    interaction_id: int
+    request_id: str
+    role: str = ""
+    request_source: str = ""
+
+
+@dataclass(frozen=True)
 class PlaybookPromptContext:
     """Rendered extraction context plus its non-LLM provenance mapping."""
 
     text: str
     evidence_sources: dict[str, PlaybookEvidenceSource]
+    evidence_units: dict[str, PlaybookEvidenceUnit]
 
 
 class StructuredPlaybookEvidence(BaseModel):
@@ -210,6 +224,10 @@ class StructuredPlaybookContent(BaseModel):
         default_factory=list,
         description="One or more prompt-local turn references with verbatim supporting spans",
     )
+    evidence_refs: list[str] = Field(
+        default_factory=list,
+        description="One or more prompt-local turn references",
+    )
     model_config = ConfigDict(
         extra="allow",
         json_schema_extra={"additionalProperties": False},
@@ -258,7 +276,7 @@ class StructuredPlaybookList(StrictStructuredOutput):
     )
 
 
-class StructuredExtractedPlaybookContent(BaseModel):
+class StructuredReferencedExtractedPlaybookContent(BaseModel):
     """Small, strict first-pass contract used only by extraction LLM calls.
 
     Keep the model-facing contract limited to fields that are necessary to judge
@@ -293,7 +311,11 @@ class StructuredExtractedPlaybookContent(BaseModel):
             "or near-duplicate behavior"
         ),
     )
-    evidence: list[StructuredPlaybookEvidence] = Field(default=..., min_length=1)
+    evidence_refs: list[str] = Field(
+        default=...,
+        min_length=1,
+        description="Prompt-local turn ids such as T1",
+    )
 
     model_config = ConfigDict(
         # The provider schema still advertises additionalProperties=false, but
@@ -315,8 +337,9 @@ class StructuredExtractedPlaybookContent(BaseModel):
 # Keys are in canonical ``normalize_provider_token`` form (casefolded, "_"-joined).
 _EXTRACTED_CANDIDATE_ALIASES = {
     "action": "content",
-    "citations": "evidence",
-    "evidence_entries": "evidence",
+    "citations": "evidence_refs",
+    "evidence": "evidence_refs",
+    "evidence_entries": "evidence_refs",
     "future_trigger": "trigger",
     "guidance": "content",
     "kind": "evidence_kind",
@@ -324,17 +347,17 @@ _EXTRACTED_CANDIDATE_ALIASES = {
     "observed_signal": "rationale",
     "reason": "rationale",
     "signal_type": "evidence_kind",
-    "sources": "evidence",
+    "sources": "evidence_refs",
     "type": "evidence_kind",
     "when": "trigger",
     "why": "rationale",
 }
 
 
-class StructuredExtractedPlaybookList(StrictStructuredOutput):
+class StructuredReferencedExtractedPlaybookList(StrictStructuredOutput):
     """Minimal required-field extraction response sent to the LLM provider."""
 
-    playbooks: list[StructuredExtractedPlaybookContent] = Field(
+    playbooks: list[StructuredReferencedExtractedPlaybookContent] = Field(
         default=...,
         description="Evidence-complete candidates, or an empty list when none qualify",
     )
@@ -346,10 +369,122 @@ class StructuredExtractedPlaybookList(StrictStructuredOutput):
         if not isinstance(value, dict) or not isinstance(value.get("playbooks"), list):
             return value
 
-        required = {"rationale", "evidence_kind", "trigger", "content", "evidence"}
+        required = {
+            "rationale",
+            "evidence_kind",
+            "trigger",
+            "content",
+            "evidence_refs",
+        }
 
         def normalize_keys(candidate: dict[object, object]) -> dict[str, object]:
             return normalize_provider_keys(candidate, _EXTRACTED_CANDIDATE_ALIASES)
+
+        def find_complete_candidate(
+            node: object, depth: int = 0
+        ) -> dict[str, object] | None:
+            if depth > 4:
+                return None
+            if isinstance(node, dict):
+                candidate = normalize_keys(node)
+                if required <= candidate.keys():
+                    return candidate
+                for nested_value in candidate.values():
+                    found = find_complete_candidate(nested_value, depth + 1)
+                    if found is not None:
+                        return found
+            elif isinstance(node, list):
+                for nested_value in node:
+                    found = find_complete_candidate(nested_value, depth + 1)
+                    if found is not None:
+                        return found
+            return None
+
+        normalized_playbooks: list[object] = []
+        for raw_candidate in value["playbooks"]:
+            if not isinstance(raw_candidate, dict):
+                normalized_playbooks.append(raw_candidate)
+                continue
+            candidate = normalize_keys(raw_candidate)
+            if candidate.keys() <= {"evidence_ref", "turn_ref", "source_span"}:
+                logger.info(
+                    "event=playbook_candidate_rejected reason=evidence_object_without_candidate"
+                )
+                continue
+            if not required <= candidate.keys():
+                candidate = find_complete_candidate(candidate) or candidate
+            evidence_refs = candidate.get("evidence_refs")
+            if isinstance(evidence_refs, list):
+                candidate["evidence_refs"] = [
+                    (
+                        normalize_keys(item).get("evidence_ref")
+                        if isinstance(item, dict)
+                        else item
+                    )
+                    for item in evidence_refs
+                ]
+            normalized_playbooks.append(candidate)
+
+        normalized = dict(value)
+        normalized["playbooks"] = normalized_playbooks
+        return normalized
+
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={"additionalProperties": False},
+    )
+
+
+class StructuredExtractedPlaybookContent(BaseModel):
+    """Legacy strict span-copying contract retained for expert extraction."""
+
+    rationale: str = Field(default=..., min_length=1)
+    evidence_kind: Literal[
+        "correction",
+        "preference",
+        "observed-failure",
+        "rejected-approach",
+        "expert-gap",
+        "verified-success",
+    ] = Field(default=...)
+    trigger: str = Field(default=..., min_length=1)
+    content: str = Field(default=..., min_length=1)
+    evidence: list[StructuredPlaybookEvidence] = Field(default=..., min_length=1)
+
+    model_config = ConfigDict(extra="ignore")
+
+    @field_validator("evidence_kind", mode="before")
+    @classmethod
+    def normalize_evidence_kind(cls, value: object) -> object:
+        return normalize_evidence_kind_value(value)
+
+
+class StructuredExtractedPlaybookList(StrictStructuredOutput):
+    """Expert-only strict output that still cites copied source spans."""
+
+    playbooks: list[StructuredExtractedPlaybookContent] = Field(
+        default=...,
+        description="Evidence-complete expert candidates, or an empty list",
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_candidate_wrappers_and_keys(cls, value: object) -> object:
+        """Retain the copied-span contract's provider compatibility behavior."""
+        if not isinstance(value, dict) or not isinstance(value.get("playbooks"), list):
+            return value
+
+        aliases = {
+            **_EXTRACTED_CANDIDATE_ALIASES,
+            "citations": "evidence",
+            "evidence": "evidence",
+            "evidence_entries": "evidence",
+            "sources": "evidence",
+        }
+        required = {"rationale", "evidence_kind", "trigger", "content", "evidence"}
+
+        def normalize_keys(candidate: dict[object, object]) -> dict[str, object]:
+            return normalize_provider_keys(candidate, aliases)
 
         def find_complete_candidate(
             node: object, depth: int = 0
@@ -476,19 +611,6 @@ def _ordered_playbook_requests(
     return ordered_runs
 
 
-def _turn_evidence_texts(interaction: Interaction) -> tuple[str, ...]:
-    values: list[str] = []
-    if interaction.content:
-        values.append(interaction.content)
-    if interaction.expert_content:
-        values.append(interaction.expert_content)
-    if interaction.user_action != UserActionType.NONE:
-        values.append(
-            f"{interaction.user_action.value} {interaction.user_action_description}".strip()
-        )
-    return tuple(values)
-
-
 def build_playbook_prompt_context(
     sessions: list[RequestInteractionDataModel],
     *,
@@ -504,6 +626,7 @@ def build_playbook_prompt_context(
     """
     ordered_sessions = _ordered_playbook_requests(sessions)
     evidence_sources: dict[str, PlaybookEvidenceSource] = {}
+    evidence_units: dict[str, PlaybookEvidenceUnit] = {}
     ref_by_object_id: dict[int, str] = {}
     turn_number = 0
     for _, request_models in ordered_sessions:
@@ -515,10 +638,20 @@ def build_playbook_prompt_context(
                 turn_number += 1
                 turn_ref = f"T{turn_number}"
                 ref_by_object_id[id(interaction)] = turn_ref
-                evidence_sources[turn_ref] = PlaybookEvidenceSource(
+                source = PlaybookEvidenceSource(
                     interaction_id=interaction.interaction_id,
                     request_id=interaction.request_id,
-                    evidence_texts=_turn_evidence_texts(interaction),
+                    evidence_texts=visible_interaction_evidence_texts(interaction),
+                    role=interaction.role,
+                    request_source=request_model.request.source or "",
+                )
+                evidence_sources[turn_ref] = source
+                evidence_units[turn_ref] = PlaybookEvidenceUnit(
+                    evidence_ref=turn_ref,
+                    turn_ref=turn_ref,
+                    source_span="\n\n".join(source.evidence_texts),
+                    interaction_id=interaction.interaction_id,
+                    request_id=interaction.request_id,
                     role=interaction.role,
                     request_source=request_model.request.source or "",
                 )
@@ -553,7 +686,9 @@ def build_playbook_prompt_context(
             parts.append(f"{prefix}Expert Response: ```{interaction.expert_content}```")
             pairs.append("\n".join(parts))
         return PlaybookPromptContext(
-            text="\n\n".join(pairs), evidence_sources=evidence_sources
+            text="\n\n".join(pairs),
+            evidence_sources=evidence_sources,
+            evidence_units=evidence_units,
         )
 
     rendered_sessions: list[str] = []
@@ -588,7 +723,9 @@ def build_playbook_prompt_context(
                 lines.extend(f"{turn_prefix}{line}" for line in rendered.splitlines())
         rendered_sessions.append("\n".join(lines))
     return PlaybookPromptContext(
-        text="\n\n".join(rendered_sessions), evidence_sources=evidence_sources
+        text="\n\n".join(rendered_sessions),
+        evidence_sources=evidence_sources,
+        evidence_units=evidence_units,
     )
 
 

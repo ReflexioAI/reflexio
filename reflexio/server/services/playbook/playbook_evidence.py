@@ -24,10 +24,13 @@ from pydantic import BaseModel
 from reflexio.server.prompt.prompt_manager import PromptManager
 from reflexio.server.services.playbook.playbook_service_utils import (
     PlaybookEvidenceSource,
+    PlaybookEvidenceUnit,
     StructuredExtractedPlaybookContent,
     StructuredExtractedPlaybookList,
     StructuredPlaybookContent,
     StructuredPlaybookList,
+    StructuredReferencedExtractedPlaybookContent,
+    StructuredReferencedExtractedPlaybookList,
     uses_evidence_grounded_extraction,
 )
 
@@ -96,51 +99,60 @@ def resolve_verbatim_source_span(
 
 
 def as_playbook_content(
-    entry: StructuredPlaybookContent | StructuredExtractedPlaybookContent,
+    entry: (
+        StructuredPlaybookContent
+        | StructuredReferencedExtractedPlaybookContent
+        | StructuredExtractedPlaybookContent
+    ),
 ) -> StructuredPlaybookContent:
     """Widen a strict first-pass candidate to the shared playbook-content model.
 
-    ``StructuredExtractedPlaybookContent`` is a deliberately narrow contract
+    ``StructuredReferencedExtractedPlaybookContent`` is a deliberately narrow contract
     sent to the provider; the rest of the pipeline reasons over the richer
     ``StructuredPlaybookContent``. Converting once here keeps every downstream
     helper single-typed.
     """
-    if isinstance(entry, StructuredExtractedPlaybookContent):
+    if isinstance(
+        entry,
+        StructuredReferencedExtractedPlaybookContent
+        | StructuredExtractedPlaybookContent,
+    ):
         return StructuredPlaybookContent.model_validate(entry.model_dump(mode="python"))
     return entry
 
 
-def candidate_rejection_reason(
-    entry: StructuredPlaybookContent | StructuredExtractedPlaybookContent,
+def _referenced_evidence_rejection_reason(
+    entry: StructuredPlaybookContent,
+    evidence_units: dict[str, PlaybookEvidenceUnit] | None,
+) -> str | None:
+    if evidence_units is None:
+        return "missing_evidence_unit_map"
+    seen_refs: set[str] = set()
+    for raw_ref in entry.evidence_refs:
+        evidence_ref = raw_ref.strip()
+        if not evidence_ref:
+            return "empty_evidence_ref"
+        if evidence_ref in seen_refs:
+            return "duplicate_evidence_ref"
+        seen_refs.add(evidence_ref)
+        unit = evidence_units.get(evidence_ref)
+        if unit is None:
+            return "unknown_evidence_ref"
+        if not unit.interaction_id:
+            return "unpersistable_source"
+        if not unit.source_span:
+            return "empty_source_span"
+        if entry.evidence_kind == "preference" and unit.role.strip().casefold() != (
+            "user"
+        ):
+            return "preference_without_direct_user_evidence"
+    return None
+
+
+def _span_evidence_rejection_reason(
+    entry: StructuredPlaybookContent,
     evidence_sources: dict[str, PlaybookEvidenceSource],
 ) -> str | None:
-    """Return a stable rejection code for deterministically invalid evidence.
-
-    Semantic usefulness, clause support, causality, and atomicity cannot be
-    proven with surface-word heuristics. The second-pass reviewer owns those
-    judgments; this function enforces only schema and provenance invariants.
-
-    Args:
-        entry: One parsed candidate, in either the strict or the legacy shape.
-        evidence_sources: Prompt-local turn refs mapped to persisted sources.
-
-    Returns:
-        str | None: A stable snake_case rejection code, or None when the
-        candidate satisfies every deterministic invariant.
-    """
-    entry = as_playbook_content(entry)
-    if not entry.content or not entry.content.strip():
-        return "missing_content"
-    if not entry.trigger or not entry.trigger.strip():
-        return "missing_trigger"
-    if not entry.rationale or not entry.rationale.strip():
-        return "missing_rationale"
-    if entry.evidence_kind is None:
-        return "missing_evidence_kind"
-    if not entry.evidence:
-        return "missing_evidence"
-    if contains_call_local_turn_ref(entry.content, entry.trigger, entry.rationale):
-        return "turn_reference_in_persisted_prose"
     for evidence in entry.evidence:
         turn_ref = evidence.turn_ref.strip()
         source_span = evidence.source_span.strip()
@@ -160,9 +172,43 @@ def candidate_rejection_reason(
     return None
 
 
+def candidate_rejection_reason(
+    entry: (
+        StructuredPlaybookContent
+        | StructuredReferencedExtractedPlaybookContent
+        | StructuredExtractedPlaybookContent
+    ),
+    evidence_sources: dict[str, PlaybookEvidenceSource],
+    evidence_units: dict[str, PlaybookEvidenceUnit] | None = None,
+) -> str | None:
+    """Return a stable rejection code for deterministically invalid evidence.
+
+    Semantic usefulness, clause support, causality, and atomicity cannot be
+    proven with surface-word heuristics. The second-pass reviewer owns those
+    judgments; this function enforces only schema and provenance invariants.
+    """
+    entry = as_playbook_content(entry)
+    if not entry.content or not entry.content.strip():
+        return "missing_content"
+    if not entry.trigger or not entry.trigger.strip():
+        return "missing_trigger"
+    if not entry.rationale or not entry.rationale.strip():
+        return "missing_rationale"
+    if entry.evidence_kind is None:
+        return "missing_evidence_kind"
+    if not entry.evidence and not entry.evidence_refs:
+        return "missing_evidence"
+    if contains_call_local_turn_ref(entry.content, entry.trigger, entry.rationale):
+        return "turn_reference_in_persisted_prose"
+    if entry.evidence_refs:
+        return _referenced_evidence_rejection_reason(entry, evidence_units)
+    return _span_evidence_rejection_reason(entry, evidence_sources)
+
+
 def strict_output_validation_errors(
     output: object,
     evidence_sources: dict[str, PlaybookEvidenceSource],
+    evidence_units: dict[str, PlaybookEvidenceUnit] | None = None,
 ) -> tuple[str, ...]:
     """Reject a strict batch only when no candidate in it is usable.
 
@@ -180,7 +226,10 @@ def strict_output_validation_errors(
         tuple[str, ...]: One ``playbooks[i]: reason`` entry per candidate when
         the whole batch is ungrounded, otherwise an empty tuple.
     """
-    if not isinstance(output, StructuredExtractedPlaybookList):
+    if not isinstance(
+        output,
+        StructuredReferencedExtractedPlaybookList | StructuredExtractedPlaybookList,
+    ):
         return ()
     if not output.playbooks:
         return ()
@@ -188,7 +237,11 @@ def strict_output_validation_errors(
     errors = [
         f"playbooks[{index}]: {reason}"
         for index, candidate in enumerate(output.playbooks)
-        if (reason := candidate_rejection_reason(candidate, evidence_sources))
+        if (
+            reason := candidate_rejection_reason(
+                candidate, evidence_sources, evidence_units
+            )
+        )
         is not None
     ]
     if len(errors) < len(output.playbooks):
@@ -223,7 +276,9 @@ def build_playbook_extraction_contract(
     *,
     expert: bool,
     evidence_sources: dict[str, PlaybookEvidenceSource],
+    evidence_units: dict[str, PlaybookEvidenceUnit] | None = None,
     strict_override: bool | None = None,
+    evidence_references_override: bool | None = None,
 ) -> PlaybookExtractionContract:
     """Select the extraction output contract for the active prompt version.
 
@@ -251,10 +306,20 @@ def build_playbook_extraction_contract(
         return PlaybookExtractionContract(
             strict=False, schema=StructuredPlaybookList, validator=None
         )
+    uses_evidence_references = (
+        not expert
+        if evidence_references_override is None
+        else evidence_references_override
+    )
+    schema: type[BaseModel] = (
+        StructuredReferencedExtractedPlaybookList
+        if uses_evidence_references
+        else StructuredExtractedPlaybookList
+    )
     return PlaybookExtractionContract(
         strict=True,
-        schema=StructuredExtractedPlaybookList,
+        schema=schema,
         validator=lambda output: strict_output_validation_errors(
-            output, evidence_sources
+            output, evidence_sources, evidence_units
         ),
     )
