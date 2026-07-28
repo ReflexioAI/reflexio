@@ -92,6 +92,26 @@ def pytest_unconfigure(config):
     cleanup_llm_mock(config)
 
 
+@pytest.fixture(autouse=True, scope="session")
+def _scrub_sentry_dsn() -> Iterator[None]:
+    """Blank SENTRY_DSN for the whole test session.
+
+    A developer's shell or .env DSN otherwise reaches the real Sentry project and
+    pollutes production triage with test-run events. Tests that deliberately exercise
+    Sentry wiring set the DSN themselves via monkeypatch, which still wins inside their
+    own scope — this only removes the ambient default.
+    """
+    previous = os.environ.get("SENTRY_DSN")
+    os.environ["SENTRY_DSN"] = ""
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop("SENTRY_DSN", None)
+        else:
+            os.environ["SENTRY_DSN"] = previous
+
+
 @pytest.fixture(autouse=True)
 def _reset_runtime_services() -> Iterator[None]:
     """Clear process-global services and local routing before and after each test."""
