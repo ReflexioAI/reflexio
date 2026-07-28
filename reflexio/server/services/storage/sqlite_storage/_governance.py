@@ -264,6 +264,8 @@ class _SQLiteGovernanceDeps(Protocol):
     org_id: str
     _has_sqlite_vec: bool
 
+    def _subject_ref_for_user_id(self, user_id: str) -> str: ...
+
     def _fetchall(
         self, sql: str, params: list[Any] | tuple[Any, ...]
     ) -> list[sqlite3.Row]: ...
@@ -402,6 +404,11 @@ class SQLiteGovernanceMixin:
             "SELECT COUNT(DISTINCT session_id) AS cnt FROM requests WHERE user_id = ?",
             (user_id,),
         ).fetchone()
+        subject_ref = self._deps()._subject_ref_for_user_id(user_id)
+        session_outcome_row = self.conn.execute(
+            "SELECT COUNT(*) AS cnt FROM session_outcomes WHERE governance_subject_ref = ?",
+            (subject_ref,),
+        ).fetchone()
         profile_rows = self.conn.execute(
             "SELECT profile_id FROM profiles WHERE user_id = ?",
             (user_id,),
@@ -412,6 +419,7 @@ class SQLiteGovernanceMixin:
             or eval_result_row is None
             or rle_result_row is None
             or session_count_row is None
+            or session_outcome_row is None
         ):
             raise ValueError("Missing governance count rows")
         profile_ids = [str(row["profile_id"]) for row in profile_rows]
@@ -430,6 +438,7 @@ class SQLiteGovernanceMixin:
             )
         )
         return {
+            "session_outcome": int(session_outcome_row["cnt"]),
             "request": int(request_row["cnt"]),
             "interaction": int(interaction_row["cnt"]),
             "profile": len(delete_profile_ids),

@@ -33,9 +33,13 @@ from reflexio.models.api_schema.service_schemas import (
     DeleteSessionResponse,
     DeleteUserInteractionRequest,
     DeleteUserInteractionResponse,
+    GetSessionOutcomesRequest,
+    GetSessionOutcomesResponse,
     LearningStatusResponse,
     PublishUserInteractionRequest,
     PublishUserInteractionResponse,
+    SetSessionOutcomeRequest,
+    SetSessionOutcomeResponse,
 )
 from reflexio.models.api_schema.ui.converters import (
     to_interaction_view,
@@ -53,6 +57,34 @@ from reflexio.server.routes._common import _run_limited_api
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+@router.post(
+    "/api/session_outcome",
+    response_model=SetSessionOutcomeResponse,
+    response_model_exclude_none=True,
+)
+@limiter.limit("60/minute")
+def set_session_outcome(
+    request: Request,
+    payload: SetSessionOutcomeRequest,
+    org_id: str = Depends(default_get_org_id),
+) -> SetSessionOutcomeResponse:
+    return publisher_api.set_session_outcome(org_id=org_id, request=payload)
+
+
+@router.post(
+    "/api/get_session_outcomes",
+    response_model=GetSessionOutcomesResponse,
+    response_model_exclude_none=True,
+)
+@limiter.limit("60/minute")
+def get_session_outcomes(
+    request: Request,
+    payload: GetSessionOutcomesRequest,
+    org_id: str = Depends(default_get_org_id),
+) -> GetSessionOutcomesResponse:
+    return publisher_api.get_session_outcomes(org_id=org_id, request=payload)
 
 
 @router.post(

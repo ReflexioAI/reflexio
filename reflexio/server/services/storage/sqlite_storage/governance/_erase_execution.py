@@ -143,6 +143,11 @@ class GovernanceEraseExecutionMixin:
         expected_user_playbook_ids: set[int] | None = None,
     ) -> dict[str, int]:
         deps = self._deps()
+        subject_ref = deps._subject_ref_for_user_id(user_id)
+        session_outcomes_cur = self.conn.execute(
+            "DELETE FROM session_outcomes WHERE governance_subject_ref = ?",
+            (subject_ref,),
+        )
         interaction_ids = [
             int(row["interaction_id"])
             for row in self.conn.execute(
@@ -264,6 +269,11 @@ class GovernanceEraseExecutionMixin:
             )
 
         return {
+            **(
+                {"session_outcomes": session_outcomes_cur.rowcount}
+                if session_outcomes_cur.rowcount
+                else {}
+            ),
             "interactions": interactions_cur.rowcount,
             "user_playbooks": len(delete_upb_ids),
             "profiles": len(delete_profile_ids),
@@ -343,6 +353,7 @@ class GovernanceEraseExecutionMixin:
     ) -> dict[str, int]:
         purge_id = _validate_governance_purge_id("purge_id", purge_id)
         name_map = {
+            "session_outcomes": "session_outcome",
             "interactions": "interaction",
             "user_playbooks": "user_playbook",
             "profiles": "profile",
@@ -371,10 +382,17 @@ class GovernanceEraseExecutionMixin:
                     user_id,
                     expected_user_playbook_ids=expected_user_playbook_ids,
                 )
-                for key, value in counts.items():
+                unexpected_targets = set(counts) - set(name_map)
+                if unexpected_targets:
+                    raise ValueError(
+                        "Unexpected governance target_name values: "
+                        + ", ".join(sorted(unexpected_targets))
+                    )
+                for key, target_name in name_map.items():
+                    value = counts.get(key, 0)
                     self._record_purge_target_locked(
                         purge_id=purge_id,
-                        target_name=name_map.get(key, key),
+                        target_name=target_name,
                         target_ref="all",
                         phase="delete",
                         status="complete",

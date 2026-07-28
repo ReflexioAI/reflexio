@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from typing import Any, Final, Literal, Self
 
@@ -32,6 +33,8 @@ from .enums import (
     PlaybookStatus,
     ProfileTimeToLive,
     RegularVsShadow,
+    SessionOutcomeFailureReason,
+    SessionOutcomeKind,
     Status,
     UserActionType,
 )
@@ -62,6 +65,11 @@ __all__ = [
     "DeleteRequestResponse",
     "DeleteSessionRequest",
     "DeleteSessionResponse",
+    "SessionOutcomeRecord",
+    "SetSessionOutcomeRequest",
+    "SetSessionOutcomeResponse",
+    "GetSessionOutcomesRequest",
+    "GetSessionOutcomesResponse",
     "DeleteAgentPlaybookRequest",
     "DeleteAgentPlaybookResponse",
     "DeleteUserPlaybookRequest",
@@ -640,6 +648,94 @@ class DeleteSessionResponse(BaseModel):
     success: bool
     message: str = ""
     deleted_requests_count: int = 0
+
+
+class SessionOutcomeRecord(BaseModel):
+    user_id: str
+    session_id: NonEmptyStr
+    outcome: SessionOutcomeKind
+    occurred_at: int = Field(ge=0)
+    source: str
+    label: str | None = Field(default=None, max_length=128)
+    value: float | None = Field(default=None, allow_inf_nan=False)
+    metadata: dict[str, Any] | None = None
+    created_at: int = Field(ge=0)
+
+
+class SetSessionOutcomeRequest(CapturesUnknownFields):
+    session_id: NonEmptyStr
+    outcome: SessionOutcomeKind
+    occurred_at: int = Field(ge=0)
+    label: str | None = Field(default=None, max_length=128)
+    value: float | None = Field(default=None, allow_inf_nan=False)
+    metadata: dict[str, Any] | None = None
+
+    @field_validator("label")
+    @classmethod
+    def _strip_non_empty(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("must not be empty")
+        return stripped
+
+    @field_validator("metadata")
+    @classmethod
+    def _bound_metadata(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
+        if value is None:
+            return None
+        try:
+            encoded = json.dumps(
+                value,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            ).encode()
+        except (TypeError, ValueError) as exc:
+            raise ValueError("metadata must contain only valid JSON values") from exc
+        if len(encoded) > 16 * 1024:
+            raise ValueError("metadata must encode to at most 16384 bytes")
+        return value
+
+
+class SetSessionOutcomeResponse(BaseModel):
+    success: bool
+    recorded: bool = False
+    reason: SessionOutcomeFailureReason | None = None
+    message: str = ""
+    user_id: str | None = None
+    source: str | None = None
+
+
+class GetSessionOutcomesRequest(CapturesUnknownFields):
+    session_ids: list[NonEmptyStr] | None = Field(default=None, max_length=100)
+    user_id: str | None = None
+    source: str | None = None
+    outcome: SessionOutcomeKind | None = None
+    label: str | None = None
+    start_time: int | None = Field(default=None, ge=0)
+    end_time: int | None = Field(default=None, ge=0)
+    top_k: int = Field(default=100, ge=1, le=1_000)
+    offset: int = Field(default=0, ge=0)
+
+    @model_validator(mode="after")
+    def _validate_range_and_ids(self) -> Self:
+        if (
+            self.start_time is not None
+            and self.end_time is not None
+            and self.start_time > self.end_time
+        ):
+            raise ValueError("start_time must be less than or equal to end_time")
+        if self.session_ids:
+            self.session_ids = list(dict.fromkeys(self.session_ids))
+        return self
+
+
+class GetSessionOutcomesResponse(BaseModel):
+    success: bool
+    session_outcomes: list[SessionOutcomeRecord] = Field(default_factory=list)
+    message: str = ""
 
 
 # delete agent playbook request

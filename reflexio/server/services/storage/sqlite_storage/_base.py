@@ -604,6 +604,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
     # composed SQLiteStorage MRO; declared here for clear_user_data's benefit.
     _delete_in_chunks: Any
     _delete_source_windows_for_user_playbook_ids: Any
+    _subject_ref_for_user_id: Callable[[str], str]
 
     # FTS/vec index helpers provided by SQLiteFtsVecMixin via the composed
     # SQLiteStorage MRO; declared here for _migrate_vec_tables's benefit.
@@ -1823,6 +1824,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                 "SELECT rowid, profile_id FROM profiles WHERE user_id = ?",
                 (user_id,),
             ).fetchall()
+            subject_ref = self._subject_ref_for_user_id(user_id)
 
             # Build a rowid lookup for FTS/vec cleanup (SQLite-specific need).
             profile_rowid_by_id: dict[str, int] = {
@@ -1871,6 +1873,10 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             # ------------------------------------------------------------------
             interactions_cur = self.conn.execute(
                 "DELETE FROM interactions WHERE user_id = ?", (user_id,)
+            )
+            self.conn.execute(
+                "DELETE FROM session_outcomes WHERE governance_subject_ref = ?",
+                (subject_ref,),
             )
             requests_cur = self.conn.execute(
                 "DELETE FROM requests WHERE user_id = ?", (user_id,)
@@ -1986,6 +1992,25 @@ CREATE INDEX IF NOT EXISTS idx_requests_session_id ON requests(session_id);
 CREATE INDEX IF NOT EXISTS idx_requests_created_at ON requests(created_at);
 CREATE INDEX IF NOT EXISTS idx_requests_session_created_at_asc
     ON requests(session_id, created_at ASC, request_id ASC);
+
+CREATE TABLE IF NOT EXISTS session_outcomes (
+    user_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    outcome TEXT NOT NULL CHECK (outcome IN ('success', 'failure')),
+    occurred_at INTEGER NOT NULL,
+    source TEXT NOT NULL,
+    label TEXT,
+    value REAL,
+    metadata TEXT,
+    governance_subject_ref TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (user_id, session_id)
+);
+CREATE INDEX IF NOT EXISTS idx_session_outcomes_occurred_at ON session_outcomes(occurred_at);
+CREATE INDEX IF NOT EXISTS idx_session_outcomes_session_id ON session_outcomes(session_id);
+CREATE INDEX IF NOT EXISTS idx_session_outcomes_source_outcome ON session_outcomes(source, outcome);
+CREATE INDEX IF NOT EXISTS idx_session_outcomes_label ON session_outcomes(label);
+CREATE INDEX IF NOT EXISTS idx_session_outcomes_subject_ref ON session_outcomes(governance_subject_ref);
 
 CREATE TABLE IF NOT EXISTS user_playbooks (
     user_playbook_id INTEGER PRIMARY KEY AUTOINCREMENT,

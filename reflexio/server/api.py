@@ -16,6 +16,7 @@ iterates (e.g. the QPS billable-endpoint scan over ``core_router.routes``).
 
 import inspect
 import logging
+import math
 from collections.abc import Callable, Iterable
 from typing import TYPE_CHECKING
 
@@ -23,8 +24,11 @@ if TYPE_CHECKING:
     from reflexio.server.deployment_profile import DeploymentProfile
     from reflexio.server.extensions import AppContext, CapabilityRegistry
 
-from fastapi import APIRouter, FastAPI
+from fastapi import APIRouter, FastAPI, Request
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
@@ -130,6 +134,30 @@ _PUBLIC_PATHS = frozenset(
     {"/", "/health", "/meta/version", "/token", "/docs", "/openapi.json"}
 )
 _PUBLIC_PATH_PREFIXES = ("/api/register", "/api/registration-config", "/api/auth/")
+
+
+def _contains_non_finite_number(value: object) -> bool:
+    if isinstance(value, float):
+        return not math.isfinite(value)
+    if isinstance(value, dict):
+        return any(_contains_non_finite_number(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_contains_non_finite_number(item) for item in value)
+    return False
+
+
+async def _safe_request_validation_exception_handler(
+    request: Request, exc: RequestValidationError
+) -> JSONResponse:
+    """Keep non-standard JSON numbers from breaking FastAPI's 422 response."""
+    errors = exc.errors()
+    if not any(_contains_non_finite_number(error.get("input")) for error in errors):
+        return await request_validation_exception_handler(request, exc)
+    safe_errors = [
+        {key: value for key, value in error.items() if key not in {"input", "ctx"}}
+        for error in errors
+    ]
+    return JSONResponse(status_code=422, content={"detail": safe_errors})
 
 
 def _add_openapi_security(app: FastAPI) -> None:
@@ -482,6 +510,10 @@ def create_app(
             stop_publish_learning_worker(timeout=5.0)
 
     app = FastAPI(docs_url="/docs", lifespan=lifespan)
+    app.add_exception_handler(
+        RequestValidationError,
+        _safe_request_validation_exception_handler,  # type: ignore[reportArgumentType]
+    )
 
     if auth_required:
         _add_openapi_security(app)

@@ -102,6 +102,8 @@ from reflexio.models.api_schema.service_schemas import (
     DeleteUserProfileRequest,
     DeleteUserProfileResponse,
     GetOperationStatusResponse,
+    GetSessionOutcomesRequest,
+    GetSessionOutcomesResponse,
     InteractionData,
     ManualPlaybookGenerationRequest,
     ManualProfileGenerationRequest,
@@ -116,6 +118,9 @@ from reflexio.models.api_schema.service_schemas import (
     RerunProfileGenerationResponse,
     RunPlaybookAggregationRequest,
     RunPlaybookAggregationResponse,
+    SessionOutcomeKind,
+    SetSessionOutcomeRequest,
+    SetSessionOutcomeResponse,
     Status,
     UserPlaybook,
     UserProfile,
@@ -1071,6 +1076,67 @@ class ReflexioClient:
         # Non-blocking fire-and-forget
         self._fire_and_forget(self._delete_session_async, request)
         return None
+
+    def mark_session_outcome(
+        self,
+        *,
+        session_id: str,
+        outcome: SessionOutcomeKind | str,
+        occurred_at: int,
+        label: str | None = None,
+        value: float | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> SetSessionOutcomeResponse:
+        """Record the first terminal outcome for a published session.
+
+        The session must already contain at least one published request. Reflexio
+        derives both ``user_id`` and ``source`` from the earliest request ordered
+        by ``(created_at, request_id)``. Only the first outcome is recorded;
+        retries return ``success=True`` and ``recorded=False``. Sessions are not
+        required to report an outcome.
+        """
+        request = SetSessionOutcomeRequest(
+            session_id=session_id,
+            outcome=SessionOutcomeKind(outcome),
+            occurred_at=occurred_at,
+            label=label,
+            value=value,
+            metadata=metadata,
+        )
+        response = self._make_request(
+            "POST", "/api/session_outcome", json=request.model_dump(mode="json")
+        )
+        return SetSessionOutcomeResponse(**response)
+
+    def get_session_outcomes(
+        self,
+        *,
+        session_ids: list[str] | None = None,
+        user_id: str | None = None,
+        source: str | None = None,
+        outcome: SessionOutcomeKind | str | None = None,
+        label: str | None = None,
+        start_time: int | None = None,
+        end_time: int | None = None,
+        top_k: int = 100,
+        offset: int = 0,
+    ) -> GetSessionOutcomesResponse:
+        """Read session outcomes using exact optional filters."""
+        payload = GetSessionOutcomesRequest(
+            session_ids=session_ids,
+            user_id=user_id,
+            source=source,
+            outcome=SessionOutcomeKind(outcome) if outcome is not None else None,
+            label=label,
+            start_time=start_time,
+            end_time=end_time,
+            top_k=top_k,
+            offset=offset,
+        )
+        response = self._make_request(
+            "POST", "/api/get_session_outcomes", json=payload.model_dump(mode="json")
+        )
+        return GetSessionOutcomesResponse(**response)
 
     def _delete_agent_playbook_sync(
         self, request: DeleteAgentPlaybookRequest
