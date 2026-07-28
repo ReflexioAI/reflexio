@@ -192,11 +192,16 @@ def test_get_retrieved_learning_evaluation_results_posts_filters(
     args, kwargs = mock_session.request.call_args
     assert args[0] == "POST"
     assert args[1].endswith("/api/get_retrieved_learning_evaluation_results")
+    # Times go out as ISO strings, not datetime objects: `requests` runs
+    # json.dumps on this body, which cannot serialize a datetime. This
+    # assertion previously expected the raw objects, which is why the
+    # unserializable payload went unnoticed -- see
+    # tests/client/test_request_serialization.py.
     assert kwargs["json"] == {
         "user_id": "user-1",
         "session_id": "session-1",
-        "start_time": datetime(2026, 1, 1, tzinfo=UTC),
-        "end_time": datetime(2026, 1, 2, tzinfo=UTC),
+        "start_time": "2026-01-01T00:00:00Z",
+        "end_time": "2026-01-02T00:00:00Z",
         "limit": 25,
     }
 
