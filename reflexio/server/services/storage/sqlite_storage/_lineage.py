@@ -288,14 +288,18 @@ class SQLiteLineageMixin:
         eligible_ph = ",".join("?" * len(_GC_ELIGIBLE_STATUSES))
         eligible_vals = list(_GC_ELIGIBLE_STATUSES)
         with self._lock:
-            # Only the sources this call actually tombstoned. ``source_ids`` on a
+            # Only the sources this call actually tombstoned, in sorted order.
+            # ``source_ids`` on a
             # lineage event means "records merged into entity_id"
             # (``LineageEvent.source_ids``), so listing a source that was ALREADY
             # tombstoned would claim a merge this operation did not perform — and
             # an already-MERGED source may have been merged into a DIFFERENT
             # survivor entirely.
             merged_source_ids: list[str] = []
-            for sid in source_ids:
+            # Sorted so concurrent merges over overlapping sources take their row
+            # locks in a consistent sequence — the Postgres RPC sorts identically,
+            # so both backends also emit source_ids in the same order.
+            for sid in sorted(source_ids):
                 if sid == survivor_id:
                     # Never tombstone the survivor itself, even if it is
                     # accidentally listed among the source ids.
