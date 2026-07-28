@@ -2,6 +2,58 @@ import { MethodDef } from "../types";
 
 export const requestSessionMethods: MethodDef[] = [
   {
+    id: "mark-session-outcome",
+    pythonName: "mark_session_outcome",
+    displayName: "Mark Session Outcome",
+    group: "requests-sessions",
+    description:
+      "Record the lifetime-durable first success or failure marker for an existing session. User and source are derived from the first request.",
+    httpMethod: "POST",
+    endpoint: "/api/session_outcome",
+    requestStyle: "json_body",
+    params: [
+      { name: "session_id", type: "string", required: true, description: "Existing session ID" },
+      {
+        name: "outcome",
+        type: "enum",
+        required: true,
+        description: "Terminal outcome",
+        enumValues: ["success", "failure"],
+      },
+      { name: "occurred_at", type: "number", required: true, description: "Unix epoch seconds when the outcome occurred" },
+      { name: "label", type: "string", required: false, description: "Optional label, at most 128 characters" },
+      { name: "value", type: "number", required: false, description: "Optional finite value" },
+      { name: "metadata", type: "json", required: false, description: "Optional JSON object, at most 16 KiB" },
+    ],
+  },
+  {
+    id: "get-session-outcomes",
+    pythonName: "get_session_outcomes",
+    displayName: "Get Session Outcomes",
+    group: "requests-sessions",
+    description: "Read session outcomes with exact optional filters.",
+    httpMethod: "POST",
+    endpoint: "/api/get_session_outcomes",
+    requestStyle: "json_body",
+    params: [
+      { name: "session_ids", type: "string[]", required: false, description: "Filter by up to 100 session IDs" },
+      { name: "user_id", type: "string", required: false, description: "Exact user filter" },
+      { name: "source", type: "string", required: false, description: "Exact derived-source filter" },
+      {
+        name: "outcome",
+        type: "enum",
+        required: false,
+        description: "Exact outcome filter",
+        enumValues: ["success", "failure"],
+      },
+      { name: "label", type: "string", required: false, description: "Exact label filter" },
+      { name: "start_time", type: "number", required: false, description: "Inclusive minimum event time" },
+      { name: "end_time", type: "number", required: false, description: "Inclusive maximum event time" },
+      { name: "top_k", type: "number", required: false, default: 100, description: "Maximum records" },
+      { name: "offset", type: "number", required: false, default: 0, description: "Records to skip" },
+    ],
+  },
+  {
     id: "get-requests",
     pythonName: "get_requests",
     displayName: "Get Requests",

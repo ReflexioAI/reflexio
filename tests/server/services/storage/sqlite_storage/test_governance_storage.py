@@ -3329,6 +3329,7 @@ def test_apply_governance_user_data_delete_retains_lineage_skeleton(
     delete_targets = storage.list_purge_targets(purge_id, phase="delete")
     assert {target.target_name: target.deleted_count for target in delete_targets} == {
         "request": 1,
+        "session_outcome": 0,
         "interaction": 1,
         "profile": 1,
         "user_playbook": 1,

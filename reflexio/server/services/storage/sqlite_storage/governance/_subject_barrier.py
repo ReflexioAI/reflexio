@@ -167,6 +167,7 @@ class SubjectBarrierMixin:
             "user_playbooks",
             "agent_success_evaluation_result",
             "retrieved_learning_evaluation",
+            "session_outcomes",
         ):
             row = self.conn.execute(
                 f"""SELECT 1 FROM {table}

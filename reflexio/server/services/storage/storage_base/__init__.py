@@ -29,6 +29,11 @@ from ._lineage import EntityType, LineageEventMixin
 from ._operations import OperationMixin
 from ._playbook import AGGREGATE_REASON_PREFIX
 from ._requests import RequestMixin
+from ._session_outcomes import (
+    SessionOutcomeContext,
+    SessionOutcomeStoreMixin,
+    SessionOutcomeWriteResult,
+)
 from ._shadow_verdicts import ShadowVerdictsMixin
 from ._share_links import ShareLinkMixin
 from ._stall_state import StallStateMixin
@@ -57,6 +62,7 @@ class BaseStorage(
     InteractionStoreMixin,
     ProfileSearchMixin,
     RequestMixin,
+    SessionOutcomeStoreMixin,
     AgentPlaybookStoreMixin,
     UserPlaybookStoreMixin,
     PlaybookSourceLinkageMixin,
@@ -174,6 +180,7 @@ class BaseStorage(
                 ``profiles`` and ``user_playbooks`` reflect hard-deleted
                 counts; purged rows are counted separately.
         """
+        self.clear_session_outcomes_for_user(user_id)
         interaction_count = len(self.get_user_interaction(user_id))
 
         # All statuses a user's row can have — including tombstones (SUPERSEDED,

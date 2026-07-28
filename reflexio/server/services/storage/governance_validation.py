@@ -29,6 +29,7 @@ from reflexio.models.api_schema.domain.governance import (
 _PREPARE_PHASE = "prepare_targets"
 _SNAPSHOT_TARGET_NAME = "target_snapshot"
 _CANONICAL_DELETE_TARGET_NAMES = (
+    "session_outcome",
     "request",
     "interaction",
     "profile",
@@ -52,6 +53,7 @@ _ALLOWED_PURGE_TARGET_NAMES = frozenset(
     {
         _SNAPSHOT_TARGET_NAME,
         "request",
+        "session_outcome",
         "interaction",
         "profile",
         "user_playbook",

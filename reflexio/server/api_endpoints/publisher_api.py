@@ -40,10 +40,14 @@ from reflexio.models.api_schema.service_schemas import (
     DeleteUserPlaybooksByIdsRequest,
     DeleteUserProfileRequest,
     DeleteUserProfileResponse,
+    GetSessionOutcomesRequest,
+    GetSessionOutcomesResponse,
     PublishUserInteractionRequest,
     PublishUserInteractionResponse,
     RunPlaybookAggregationRequest,
     RunPlaybookAggregationResponse,
+    SetSessionOutcomeRequest,
+    SetSessionOutcomeResponse,
 )
 from reflexio.server.api_endpoints.precondition_checks import (
     validate_delete_user_profile_request,
@@ -53,6 +57,19 @@ from reflexio.server.cache.reflexio_cache import get_reflexio
 from reflexio.server.tracing import sentry_tags
 
 logger = logging.getLogger(__name__)
+
+
+def set_session_outcome(
+    org_id: str, request: SetSessionOutcomeRequest
+) -> SetSessionOutcomeResponse:
+    return get_reflexio(org_id=org_id).mark_session_outcome(request)
+
+
+def get_session_outcomes(
+    org_id: str, request: GetSessionOutcomesRequest
+) -> GetSessionOutcomesResponse:
+    return get_reflexio(org_id=org_id).get_session_outcomes(request)
+
 
 # ==============================
 # Create user interaction and profile

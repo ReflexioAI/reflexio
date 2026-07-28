@@ -100,31 +100,35 @@ class RequestMixin:
 
     @SQLiteStorageBase.handle_exceptions
     def delete_session(self, session_id: str) -> int:
-        rows = self._fetchall(
-            "SELECT request_id FROM requests WHERE session_id = ?", (session_id,)
-        )
-        if not rows:
-            return 0
-        request_ids = [r["request_id"] for r in rows]
-        for rid in request_ids:
-            # Delete FTS for interactions
-            iids = [
-                r["interaction_id"]
-                for r in self._fetchall(
-                    "SELECT interaction_id FROM interactions WHERE request_id = ?",
-                    (rid,),
-                )
-            ]
-            if iids:
-                ph = ",".join("?" for _ in iids)
-                with self._lock:
+        with self._lock:
+            try:
+                self.conn.execute("BEGIN IMMEDIATE")
+                rows = self.conn.execute(
+                    "SELECT request_id FROM requests WHERE session_id = ?",
+                    (session_id,),
+                ).fetchall()
+                request_ids = [str(row["request_id"]) for row in rows]
+                if request_ids:
+                    placeholders = ",".join("?" for _ in request_ids)
                     self.conn.execute(
-                        f"DELETE FROM interactions_fts WHERE rowid IN ({ph})", iids
+                        f"""DELETE FROM interactions_fts WHERE rowid IN (
+                            SELECT interaction_id FROM interactions
+                            WHERE request_id IN ({placeholders})
+                        )""",
+                        request_ids,
                     )
-                    self.conn.commit()
-            self._execute("DELETE FROM interactions WHERE request_id = ?", (rid,))
-        self._execute("DELETE FROM requests WHERE session_id = ?", (session_id,))
-        return len(request_ids)
+                    self.conn.execute(
+                        f"DELETE FROM interactions WHERE request_id IN ({placeholders})",
+                        request_ids,
+                    )
+                    self.conn.execute(
+                        "DELETE FROM requests WHERE session_id = ?", (session_id,)
+                    )
+                self.conn.commit()
+                return len(request_ids)
+            except Exception:
+                self.conn.rollback()
+                raise
 
     @SQLiteStorageBase.handle_exceptions
     def delete_all_requests(self) -> None:

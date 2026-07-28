@@ -13,6 +13,7 @@ from ._learning_jobs import SQLiteLearningJobStoreMixin
 from ._lineage import SQLiteLineageMixin
 from ._operations import OperationMixin
 from ._requests import RequestMixin
+from ._session_outcomes import SessionOutcomeStoreMixin
 from ._shadow_verdicts import ShadowVerdictsMixin as SQLiteShadowVerdictsMixin
 from ._share_links import SQLiteShareLinkMixin
 from ._stall_state import (
@@ -57,6 +58,7 @@ class SQLiteStorage(
     InteractionStoreMixin,
     ProfileSearchMixin,
     RequestMixin,
+    SessionOutcomeStoreMixin,
     AgentPlaybookStoreMixin,
     UserPlaybookStoreMixin,
     PlaybookSourceLinkageMixin,
@@ -80,7 +82,11 @@ class SQLiteStorage(
 ):
     """SQLite-based storage with FTS5 and hybrid search."""
 
-    pass
+    def clear_user_data(self, user_id: str) -> dict[str, int]:
+        # Hold the re-entrant storage lock across the composed clear so a marker
+        # cannot land between outcome cleanup and request deletion.
+        with self._lock:
+            return super().clear_user_data(user_id)
 
 
 __all__ = [
