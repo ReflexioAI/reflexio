@@ -82,11 +82,10 @@ post-processes generated outputs before storage or model-response logging.
 
 ### Playbook Consolidation (`components/consolidator.py`)
 
-Consolidates newly extracted playbooks against existing playbooks in the database via LLM semantic matching. For each NEW vs EXISTING pair the LLM returns one of five decision kinds, and the consolidator applies the chosen kind:
+Consolidates newly extracted playbooks against existing playbooks in the database via LLM semantic matching. For each NEW vs EXISTING pair the LLM returns one of four decision kinds, and the consolidator applies the chosen kind:
 
-- `duplicate` — merge multiple rows into one, archiving members and emitting one merged row.
-- `prefer_new` — archive the existing row and insert the new candidate unchanged.
-- `prefer_existing` — drop the new candidate; the existing row wins.
+- `unify` — merge multiple rows into one, archiving members and emitting one merged row.
+- `reject_new` — drop the new candidate because one or more existing rows already cover it.
 - `differentiate` — archive the existing row and emit two refined rows (one per side) with sharpened triggers.
 - `independent` — both rows are kept; the new candidate is inserted alongside the existing row.
 

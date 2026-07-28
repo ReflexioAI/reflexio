@@ -1188,10 +1188,13 @@ class TestBuildDeduplicatedResults:
                     # EXISTING-0 resolves; EXISTING-5 has no row/id -> unknown.
                     superseded_by_existing_id=["EXISTING-0", "EXISTING-5"],  # type: ignore[arg-type]
                 ),
+                IndependentDecision(new_id="NEW-1"),
             ],
         )
 
-        with pytest.raises(ValueError):
+        with pytest.raises(
+            ValueError, match="reject_new references unknown EXISTING ids"
+        ):
             mock_consolidator._build_deduplicated_results(
                 new_playbooks=new_playbooks,
                 existing_playbooks=existing_playbooks,

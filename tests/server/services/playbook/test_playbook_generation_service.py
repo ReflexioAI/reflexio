@@ -924,6 +924,24 @@ def test_review_interaction_window_returns_honest_empty_window():
         assert service._review_interaction_window(playbook_config) == []
 
 
+def test_loading_a_new_generation_request_clears_the_review_window_cache():
+    service = PlaybookGenerationService(
+        llm_client=MagicMock(), request_context=MagicMock()
+    )
+    service._review_window_cache = [MagicMock(spec=RequestInteractionDataModel)]
+
+    config = service._load_generation_service_config(
+        PlaybookGenerationRequest(
+            request_id="request-2",
+            agent_version="v1",
+            user_id="user-2",
+        )
+    )
+
+    assert config.request_id == "request-2"
+    assert service._review_window_cache is None
+
+
 def test_resolve_write_plan_fails_closed_for_strict_candidate_without_evidence():
     with tempfile.TemporaryDirectory() as temp_dir:
         service = PlaybookGenerationService(

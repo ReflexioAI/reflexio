@@ -2036,21 +2036,24 @@ class TestVerbatimSpanResolution:
     def test_typographic_quotes_resolve_to_the_original_text(self):
         # The model re-typed a curly apostrophe as a straight one.
         resolved = resolve_verbatim_source_span(
-            "don't ship it", ("Please don’t ship it today.",)
+            "don't ship it",
+            ("Please don’t ship it today.",),  # noqa: RUF001
         )
-        assert resolved == "don’t ship it"
+        assert resolved == "don’t ship it"  # noqa: RUF001
 
     def test_ambiguous_normalized_match_is_rejected(self):
         """Two normalized-only positions: we cannot say which was quoted."""
         resolved = resolve_verbatim_source_span(
-            "don't", ("don’t ship it and don’t merge it",)
+            "don't",
+            ("don’t ship it and don’t merge it",),  # noqa: RUF001
         )
         assert resolved is None
 
     def test_exact_match_wins_over_normalized_ambiguity(self):
         """A literal occurrence is unambiguous even if variants also appear."""
         resolved = resolve_verbatim_source_span(
-            "don't", ("don’t ship it and don't merge it",)
+            "don't",
+            ("don’t ship it and don't merge it",),  # noqa: RUF001
         )
         assert resolved == "don't"
 

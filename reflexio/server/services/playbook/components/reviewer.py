@@ -410,7 +410,9 @@ class PlaybookCandidateReviewer:
         output: PlaybookCandidateReviewOutput,
         units_by_candidate: dict[str, list[CandidateEvidenceUnit]],
     ) -> list[UserPlaybook]:
-        decisions = {decision.candidate_id: decision for decision in output.decisions}
+        decisions = {
+            decision.candidate_id.strip(): decision for decision in output.decisions
+        }
         survivors: list[UserPlaybook] = []
         for candidate_index, candidate in enumerate(candidates, start=1):
             candidate_id = f"C{candidate_index}"

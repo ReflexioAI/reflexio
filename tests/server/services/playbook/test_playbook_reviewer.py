@@ -300,6 +300,42 @@ def test_review_validation_rejects_local_turn_labels_in_revision_prose():
     assert "decisions[0] revision contains call-local turn label" in errors
 
 
+def test_apply_decisions_uses_the_same_trimmed_candidate_id_as_validation():
+    candidate = _candidate(
+        101,
+        "Use the supplied answer without asking again.",
+        content="Honor the supplied answer.",
+    )
+    output = PlaybookCandidateReviewOutput(
+        decisions=[
+            CandidateReviewDecision(
+                id=" C1 ",
+                decision="accept",
+                reason_code="grounded_useful",
+                evidence_ids=["C1-E1"],
+            )
+        ]
+    )
+
+    survivors = PlaybookCandidateReviewer._apply_decisions(
+        [candidate],
+        output,
+        {
+            "C1": [
+                CandidateEvidenceUnit(
+                    evidence_id="C1-E1",
+                    turn_ref="T1",
+                    source_span="Use the supplied answer without asking again.",
+                    interaction_id=101,
+                )
+            ]
+        },
+    )
+
+    assert len(survivors) == 1
+    assert survivors[0].content == "Honor the supplied answer."
+
+
 def test_reviewer_prompt_is_versioned_and_active():
     manager = PromptManager()
 

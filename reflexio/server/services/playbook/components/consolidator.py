@@ -1578,7 +1578,7 @@ class PlaybookConsolidator(BaseDeduplicator):
         Returns:
             Tuple of ``(rows_to_insert, handled_new_ids, merge_source_ids)``.
             ``handled_new_ids`` is the set of ``"NEW-N"`` candidate ids consumed
-            by this decision (used to suppress the safety fallback).
+            by this decision and is used to verify exact candidate accounting.
             ``merge_source_ids`` is non-empty ONLY for a ``unify`` decision that
             collapses >= 1 existing row into its single survivor (the first row
             in ``rows_to_insert``); for all other kinds it is ``[]`` because they
@@ -1742,9 +1742,8 @@ class PlaybookConsolidator(BaseDeduplicator):
         Resolve each superseding integer against the rendered ``EXISTING-N``
         position first, then as a DB ``user_playbook_id`` for backwards
         compatibility. If ANY referenced existing row does not resolve, the
-        decision is treated as malformed: we log a warning and return
-        ``([], [], [])`` so the safety fallback re-inserts every named
-        candidate rather than silently dropping extracted data.
+        decision is malformed and raises instead of silently dropping extracted
+        data.
 
         Args:
             decision: The ``RejectNewDecision`` to apply.
@@ -1755,13 +1754,13 @@ class PlaybookConsolidator(BaseDeduplicator):
 
         Returns:
             Tuple of ``([], [consumed NEW-N ids], [])`` when every superseding
-            id resolves, or ``([], [], [])`` when any is unknown. Never produces
-            a merge group — the existing rows are kept as-is (no archive, no
-            survivor).
+            id resolves. Never produces a merge group — the existing rows are
+            kept as-is (no archive, no survivor).
 
         Raises:
             KeyError: If any id in ``decision.new_ids`` does not resolve to a
                 known candidate.
+            ValueError: If any superseding existing id does not resolve.
         """
         new_ids = decision.new_ids
         missing_new_ids = [

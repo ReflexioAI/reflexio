@@ -167,6 +167,9 @@ class PlaybookGenerationService(
         Returns:
             PlaybookGenerationServiceConfig object
         """
+        # One service instance can process multiple users in a batch. Never let
+        # a review window loaded for the previous request cross that boundary.
+        self._review_window_cache = None
         generation_request_id = request.request_id
         return PlaybookGenerationServiceConfig(
             request_id=generation_request_id,
