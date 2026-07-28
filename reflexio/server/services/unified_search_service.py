@@ -614,6 +614,7 @@ def _run_phase_b(
             )
             return None, None, None
         except Exception as e:
+            _cancel_unfinished_futures(tracked_futures)
             logger.error("Unified search failed: %s", e)
             return None, None, None
 

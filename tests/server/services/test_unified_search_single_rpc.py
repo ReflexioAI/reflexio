@@ -320,7 +320,7 @@ def test_executor_span_separates_queue_wait_from_execution_time():
         queued = uss._submit_with_current_context(
             executor, "queued", deadline, lambda: "done"
         )
-        time.sleep(0.01)
+        time.sleep(0.05)
         release_running.set()
         assert queued.future.result(timeout=1) == "done"
         running.future.result(timeout=1)
@@ -460,3 +460,24 @@ def test_phase_b_timeout_records_parent_cancellation_counts(monkeypatch):
         + phase_record["completed_count"]
         == 3
     )
+
+
+def test_phase_b_failure_cleans_up_active_futures(monkeypatch):
+    cleaned: list[list[uss._TrackedSearchFuture]] = []
+
+    class FailingStorage(_CombinedStorage):
+        def search_agent_playbooks(self, *_args: Any, **_kwargs: Any) -> list[Any]:
+            raise RuntimeError("storage failed")
+
+    monkeypatch.setenv("REFLEXIO_UNIFIED_SEARCH_SINGLE_RPC", "0")
+    monkeypatch.setattr(
+        uss, "_cancel_unfinished_futures", lambda futures: cleaned.append(futures)
+    )
+
+    assert _run_phase_b(FailingStorage()) == (None, None, None)
+    assert len(cleaned) == 1
+    assert {tracked.task for tracked in cleaned[0]} == {
+        "profiles",
+        "agent_playbooks",
+        "user_playbooks",
+    }
