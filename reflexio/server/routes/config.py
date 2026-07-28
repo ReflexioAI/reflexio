@@ -198,6 +198,7 @@ def update_config(
     if (
         partial_uses_only_shared_fields
         and merged_config.model_dump(mode="python") == existing
+        and getattr(configurator, "requires_durable_config_patch", False) is not True
     ):
         logger.info("Skipping no-op config update for org %s", org_id)
         return SetConfigResponse(success=True, msg="Configuration unchanged")
