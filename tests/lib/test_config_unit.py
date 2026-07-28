@@ -7,10 +7,15 @@ get_dashboard_stats for DashboardMixin with mocked storage.
 from typing import Any, cast
 from unittest.mock import MagicMock
 
+import pytest
+
 from reflexio.lib._config import ConfigMixin
 from reflexio.lib._dashboard import DashboardMixin
 from reflexio.models.api_schema.retriever_schema import GetDashboardStatsRequest
 from reflexio.models.config_schema import Config, StorageConfigSQLite
+from reflexio.server.services.configurator.config_storage import (
+    ConfigWriteConflictError,
+)
 
 # ---------------------------------------------------------------------------
 # ConfigMixin helpers
@@ -275,6 +280,20 @@ class TestSetConfig:
 
         assert response.success is False
         assert "unexpected" in (response.msg or "")
+
+    def test_set_config_reraises_known_write_conflict(self):
+        """CAS conflicts must reach routes so callers receive HTTP 409."""
+        mixin = _make_config_mixin()
+        storage_config = StorageConfigSQLite(db_path="/var/data/current.db")
+        config = Config(storage_config=storage_config, window_size=25)
+        configurator = _get_configurator(mixin)
+        configurator.get_current_storage_configuration.return_value = storage_config
+        configurator.set_config.side_effect = ConfigWriteConflictError(
+            "Configuration changed while writing"
+        )
+
+        with pytest.raises(ConfigWriteConflictError):
+            mixin.set_config(config)
 
 
 # ---------------------------------------------------------------------------

@@ -1339,6 +1339,12 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         }
         if "optimizer_kind" not in columns:
             return
+        for index_name in (
+            "uq_poj_active_discovery",
+            "uq_poj_active_attempt",
+            "uq_poj_active_target",
+        ):
+            self.conn.execute(f"DROP INDEX IF EXISTS {index_name}")  # noqa: S608
         self.conn.execute(
             """
             WITH signatures AS (
@@ -1408,6 +1414,41 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         )
         self.conn.execute(
             """
+            WITH ranked AS (
+                SELECT
+                    job_id,
+                    row_number() OVER (
+                        PARTITION BY optimizer_kind, target_kind, target_id
+                        ORDER BY created_at, job_id
+                    ) AS target_rank,
+                    CASE WHEN discovery_key IS NOT NULL THEN row_number() OVER (
+                        PARTITION BY optimizer_kind, discovery_key
+                        ORDER BY created_at, job_id
+                    ) END AS discovery_rank,
+                    CASE WHEN attempt_key IS NOT NULL THEN row_number() OVER (
+                        PARTITION BY optimizer_kind, attempt_key
+                        ORDER BY created_at, job_id
+                    ) END AS attempt_rank
+                FROM playbook_optimization_jobs
+                WHERE status IN ('pending', 'running')
+            )
+            UPDATE playbook_optimization_jobs
+            SET status = 'skipped',
+                decision_reason = 'retired_duplicate_legacy_active_job',
+                lease_owner = NULL,
+                lease_expires_at = NULL,
+                updated_at = CAST(strftime('%s', 'now') AS INTEGER)
+            WHERE job_id IN (
+                SELECT job_id
+                FROM ranked
+                WHERE target_rank > 1
+                   OR discovery_rank > 1
+                   OR attempt_rank > 1
+            )
+            """
+        )
+        self.conn.execute(
+            """
             UPDATE playbook_optimization_jobs
             SET status = 'skipped',
                 decision_reason = 'retired_by_replay_redesign',
@@ -1420,6 +1461,23 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                 )
               AND status IN ('pending', 'running')
             """
+        )
+        self.conn.execute(
+            """CREATE UNIQUE INDEX uq_poj_active_discovery
+               ON playbook_optimization_jobs(optimizer_kind, discovery_key)
+               WHERE status IN ('pending', 'running')
+                 AND discovery_key IS NOT NULL"""
+        )
+        self.conn.execute(
+            """CREATE UNIQUE INDEX uq_poj_active_attempt
+               ON playbook_optimization_jobs(optimizer_kind, attempt_key)
+               WHERE status IN ('pending', 'running')
+                 AND attempt_key IS NOT NULL"""
+        )
+        self.conn.execute(
+            """CREATE UNIQUE INDEX uq_poj_active_target
+               ON playbook_optimization_jobs(optimizer_kind, target_kind, target_id)
+               WHERE status IN ('pending', 'running')"""
         )
         self.conn.commit()
 
@@ -1436,11 +1494,21 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             "CHECK (optimizer_kind IN",
             "CHECK (stage IS NULL OR stage IN",
             "CHECK (terminal_outcome IS NULL OR terminal_outcome IN",
+            "'governance_erased'",
         )
         if all(check in table_sql for check in required_checks):
             return
-        self.conn.executescript(
-            """
+        foreign_keys_enabled = bool(
+            self.conn.execute("PRAGMA foreign_keys").fetchone()[0]
+        )
+        self.conn.commit()
+        if foreign_keys_enabled:
+            self.conn.execute("PRAGMA foreign_keys=OFF")
+        try:
+            self.conn.execute("BEGIN IMMEDIATE")
+            self.conn.execute("DROP TABLE IF EXISTS playbook_optimization_jobs_new")
+            self.conn.execute(
+                """
             CREATE TABLE playbook_optimization_jobs_new (
                 job_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 optimizer_kind TEXT NOT NULL DEFAULT 'optimizer_legacy_unknown'
@@ -1487,7 +1555,8 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                     'incumbent_changed',
                     'generation_failed',
                     'replay_failed',
-                    'publication_failed'
+                    'publication_failed',
+                    'governance_erased'
                 )),
                 expected_population_manifest_digest TEXT,
                 generation_selection_manifest_digest TEXT,
@@ -1497,7 +1566,11 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                 publication_scope_digest TEXT,
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL
-            );
+            )
+            """
+            )
+            self.conn.execute(
+                """
             INSERT INTO playbook_optimization_jobs_new (
                 job_id, optimizer_kind, target_kind, target_id, status,
                 best_candidate_id, successor_target_id, decision_reason,
@@ -1517,24 +1590,48 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                 candidate_content_digest, search_projection_digest,
                 publication_scope_digest, created_at, updated_at
             FROM playbook_optimization_jobs;
-            DROP TABLE playbook_optimization_jobs;
-            ALTER TABLE playbook_optimization_jobs_new
-                RENAME TO playbook_optimization_jobs;
-            CREATE INDEX idx_poj_target
-                ON playbook_optimization_jobs(target_kind, target_id);
-            CREATE INDEX idx_poj_status ON playbook_optimization_jobs(status);
-            CREATE UNIQUE INDEX uq_poj_active_discovery
-                ON playbook_optimization_jobs(optimizer_kind, discovery_key)
-                WHERE status IN ('pending', 'running') AND discovery_key IS NOT NULL;
-            CREATE UNIQUE INDEX uq_poj_active_attempt
-                ON playbook_optimization_jobs(optimizer_kind, attempt_key)
-                WHERE status IN ('pending', 'running') AND attempt_key IS NOT NULL;
-            CREATE UNIQUE INDEX uq_poj_active_target
-                ON playbook_optimization_jobs(optimizer_kind, target_kind, target_id)
-                WHERE status IN ('pending', 'running');
             """
-        )
-        self.conn.commit()
+            )
+            self.conn.execute("DROP TABLE playbook_optimization_jobs")
+            self.conn.execute(
+                "ALTER TABLE playbook_optimization_jobs_new "
+                "RENAME TO playbook_optimization_jobs"
+            )
+            self.conn.execute(
+                "CREATE INDEX idx_poj_target "
+                "ON playbook_optimization_jobs(target_kind, target_id)"
+            )
+            self.conn.execute(
+                "CREATE INDEX idx_poj_status ON playbook_optimization_jobs(status)"
+            )
+            self.conn.execute(
+                """CREATE UNIQUE INDEX uq_poj_active_discovery
+                ON playbook_optimization_jobs(optimizer_kind, discovery_key)
+                WHERE status IN ('pending', 'running') AND discovery_key IS NOT NULL"""
+            )
+            self.conn.execute(
+                """CREATE UNIQUE INDEX uq_poj_active_attempt
+                ON playbook_optimization_jobs(optimizer_kind, attempt_key)
+                WHERE status IN ('pending', 'running') AND attempt_key IS NOT NULL"""
+            )
+            self.conn.execute(
+                """CREATE UNIQUE INDEX uq_poj_active_target
+                ON playbook_optimization_jobs(optimizer_kind, target_kind, target_id)
+                WHERE status IN ('pending', 'running')"""
+            )
+            violations = self.conn.execute("PRAGMA foreign_key_check").fetchall()
+            if violations:
+                raise sqlite3.IntegrityError(
+                    f"foreign key check failed after optimizer migration: {violations}"
+                )
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+        finally:
+            self.conn.execute(
+                f"PRAGMA foreign_keys={'ON' if foreign_keys_enabled else 'OFF'}"
+            )
 
     def _migrate_retire_profile_change_logs(self) -> None:
         """Retire the frozen ``profile_change_logs`` table via a reversible RENAME.
@@ -2442,7 +2539,8 @@ CREATE TABLE IF NOT EXISTS playbook_optimization_jobs (
         'incumbent_changed',
         'generation_failed',
         'replay_failed',
-        'publication_failed'
+        'publication_failed',
+        'governance_erased'
     )),
     expected_population_manifest_digest TEXT,
     generation_selection_manifest_digest TEXT,

@@ -3,6 +3,9 @@ from typing import Any
 from reflexio.lib._base import ReflexioBase
 from reflexio.models.api_schema.retriever_schema import SetConfigResponse
 from reflexio.models.config_schema import Config, StorageConfigManagedSupabase
+from reflexio.server.services.configurator.config_storage import (
+    ConfigWriteConflictError,
+)
 
 
 class ConfigMixin(ReflexioBase):
@@ -69,6 +72,8 @@ class ConfigMixin(ReflexioBase):
             configurator.set_config(config)
 
             return SetConfigResponse(success=True, msg="Configuration set successfully")
+        except ConfigWriteConflictError:
+            raise
         except Exception as e:
             return SetConfigResponse(
                 success=False, msg=f"Failed to set configuration: {str(e)}"

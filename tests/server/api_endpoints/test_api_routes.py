@@ -10,6 +10,9 @@ from inspect import iscoroutinefunction
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+from fastapi import HTTPException
+
 from reflexio.models.api_schema.retriever_schema import (
     GetProfilesViewResponse,
     SearchInteractionResponse,
@@ -23,6 +26,10 @@ from reflexio.models.api_schema.service_schemas import (
     UserProfile,
 )
 from reflexio.models.config_schema import Config, StorageConfigSQLite
+from reflexio.server.rate_limit import limiter
+from reflexio.server.services.configurator.config_storage import (
+    ConfigWriteConflictError,
+)
 
 
 class TestHealthEndpoints:
@@ -463,11 +470,13 @@ class TestUpdateConfigRoute:
     """Tests for POST /api/update_config (PATCH-style partial update).
 
     The endpoint fetches the existing config, shallow-merges the partial
-    payload over it, and round-trips through ``Config(**merged)`` so
-    Pydantic rejects unknown fields. Storage validation lives in
-    ``reflexio.set_config``; we mock it out and assert the merged dict
-    that arrives there.
+    payload over it, and delegates to the active configurator before shared
+    Pydantic validation. Storage validation lives in ``reflexio.set_config``.
     """
+
+    @pytest.fixture(autouse=True)
+    def _reset_rate_limit(self) -> None:
+        limiter.reset()
 
     @staticmethod
     def _existing_config() -> Config:
@@ -481,6 +490,14 @@ class TestUpdateConfigRoute:
     def _wire_mock(self, mock_reflexio: MagicMock, existing: Config) -> None:
         configurator = MagicMock()
         configurator.get_config.return_value = existing
+        configurator.normalize_config_payload.side_effect = lambda payload: payload
+        configurator.prepare_config_patch.side_effect = lambda partial: (
+            Config.model_validate(
+                configurator.normalize_config_payload(
+                    {**existing.model_dump(mode="python"), **partial}
+                )
+            )
+        )
         mock_reflexio.request_context.configurator = configurator
         mock_reflexio.set_config.return_value = SetConfigResponse(
             success=True, msg="Configuration set successfully"
@@ -509,9 +526,27 @@ class TestUpdateConfigRoute:
         assert isinstance(merged, Config)
         assert merged.window_size == 25
         assert merged.storage_config == existing.storage_config
+        configurator = mock_reflexio.request_context.configurator
+        configurator.prepare_config_patch.assert_called_once_with({"window_size": 25})
 
         # Cache invalidated on success.
         mock_invalidate.assert_called_once_with(org_id="test-org")
+
+    def test_patch_uses_prepared_config_instance(
+        self, client, patched_reflexio, mock_reflexio
+    ):
+        existing = self._existing_config()
+        self._wire_mock(mock_reflexio, existing)
+        configurator = mock_reflexio.request_context.configurator
+        prepared = existing.model_copy(update={"window_size": 31})
+        object.__setattr__(prepared, "_patch_marker", "prepared")
+        configurator.prepare_config_patch.return_value = prepared
+        configurator.prepare_config_patch.side_effect = None
+
+        response = client.post("/api/update_config", json={"window_size": 31})
+
+        assert response.status_code == 200, response.text
+        assert mock_reflexio.set_config.call_args.args[0] is prepared
 
     def test_no_op_patch_skips_set_config_and_cache_invalidation(
         self, client, patched_reflexio, mock_reflexio
@@ -550,6 +585,64 @@ class TestUpdateConfigRoute:
         assert response.status_code == 422, response.text
         mock_reflexio.set_config.assert_not_called()
 
+    def test_overlay_field_is_validated_by_configurator_before_shared_config(
+        self, client, patched_reflexio, mock_reflexio
+    ):
+        existing = self._existing_config()
+        self._wire_mock(mock_reflexio, existing)
+        configurator = mock_reflexio.request_context.configurator
+        normalized = existing.model_copy(update={"window_size": 25})
+        object.__setattr__(normalized, "_overlay_marker", "normalized")
+        configurator.normalize_config_payload.return_value = normalized
+        configurator.normalize_config_payload.side_effect = None
+
+        response = client.post(
+            "/api/update_config",
+            json={"offline_tuner_config": {"enabled": True}, "window_size": 25},
+        )
+
+        assert response.status_code == 200, response.text
+        patch_payload = configurator.prepare_config_patch.call_args.args[0]
+        assert patch_payload["offline_tuner_config"] == {"enabled": True}
+        assert mock_reflexio.set_config.call_args.args[0] is normalized
+
+    def test_configurator_capability_error_propagates(
+        self, client, patched_reflexio, mock_reflexio
+    ):
+        existing = self._existing_config()
+        self._wire_mock(mock_reflexio, existing)
+        configurator = mock_reflexio.request_context.configurator
+        configurator.normalize_config_payload.side_effect = HTTPException(
+            status_code=409,
+            detail={"error": "replay_unsupported"},
+        )
+
+        response = client.post(
+            "/api/update_config",
+            json={"offline_tuner_config": {"enabled": True}},
+        )
+
+        assert response.status_code == 409, response.text
+        assert response.json()["detail"] == {"error": "replay_unsupported"}
+        mock_reflexio.set_config.assert_not_called()
+
+    def test_config_write_conflict_returns_409(
+        self, client, patched_reflexio, mock_reflexio
+    ):
+        existing = self._existing_config()
+        self._wire_mock(mock_reflexio, existing)
+        mock_reflexio.set_config.side_effect = ConfigWriteConflictError(
+            "Configuration changed while writing"
+        )
+
+        response = client.post("/api/update_config", json={"window_size": 25})
+
+        assert response.status_code == 409, response.text
+        assert response.json()["detail"] == {
+            "error": "config_write_conflict",
+            "message": "Configuration changed while writing",
+        }
+
     def test_replaces_nested_object_wholesale(
         self, client, patched_reflexio, mock_reflexio
     ):
@@ -572,9 +665,7 @@ class TestUpdateConfigRoute:
     ):
         """When reflexio.set_config returns success=False, cache stays warm."""
         existing = self._existing_config()
-        configurator = MagicMock()
-        configurator.get_config.return_value = existing
-        mock_reflexio.request_context.configurator = configurator
+        self._wire_mock(mock_reflexio, existing)
         mock_reflexio.set_config.return_value = SetConfigResponse(
             success=False, msg="storage validation failed"
         )

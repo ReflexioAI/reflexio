@@ -12,6 +12,7 @@ import pytest
 from pydantic import ValidationError
 
 from reflexio.models.api_schema import service_schemas as schemas
+from reflexio.server.services.playbook.publication import canonical_json_bytes
 from reflexio.server.services.storage.error import (
     OptimizationJobLeaseLiveError,
     StorageError,
@@ -76,12 +77,7 @@ def _artifact(
     digest: str | None = None,
     content_json: str = '{"eligible_ids":[1,2]}',
 ):
-    canonical = json.dumps(
-        json.loads(content_json),
-        ensure_ascii=False,
-        separators=(",", ":"),
-        sort_keys=True,
-    )
+    canonical = canonical_json_bytes(json.loads(content_json)).decode()
     return schemas.PlaybookOptimizationArtifact(
         job_id=job_id,
         artifact_kind="expected_population_manifest",
@@ -340,23 +336,15 @@ def test_artifact_upsert_canonicalizes_equivalent_json_and_requires_digest_and_c
     assert second.artifact_id == first.artifact_id
     assert second.content_json == '{"eligible_ids":[1,2],"meta":{"a":1,"b":2}}'
 
-    with pytest.raises(StorageError, match="artifact digest conflict"):
+    with pytest.raises(StorageError, match="digest does not match content"):
         storage.upsert_playbook_optimization_artifact(
-            _artifact(
-                job_id=job.job_id,
-                digest="b" * 64,
-                content_json='{"eligible_ids":[1,2],"meta":{"b":2,"a":1}}',
-            ),
+            first.model_copy(update={"content_digest": "b" * 64}),
             fence=claim.fence,
             now=5_001,
         )
-    with pytest.raises(StorageError, match="artifact content conflict"):
+    with pytest.raises(StorageError, match="digest does not match content"):
         storage.upsert_playbook_optimization_artifact(
-            _artifact(
-                job_id=job.job_id,
-                digest=first.content_digest,
-                content_json='{"eligible_ids":[3]}',
-            ),
+            first.model_copy(update={"content_json": '{"eligible_ids":[3]}'}),
             fence=claim.fence,
             now=5_001,
         )
@@ -364,7 +352,6 @@ def test_artifact_upsert_canonicalizes_equivalent_json_and_requires_digest_and_c
         storage.upsert_playbook_optimization_artifact(
             _artifact(
                 job_id=job.job_id,
-                digest="b" * 64,
                 content_json='{"eligible_ids":[3]}',
             ),
             fence=claim.fence,
@@ -382,6 +369,185 @@ def test_artifact_model_rejects_malformed_json() -> None:
             content_json="{",
             content_digest="a" * 64,
         )
+
+
+def test_artifact_model_rejects_digest_for_different_canonical_content() -> None:
+    with pytest.raises(ValidationError, match="artifact digest must match"):
+        schemas.PlaybookOptimizationArtifact(
+            job_id=1,
+            artifact_kind="expected_population_manifest",
+            content_json='{"eligible_ids":[1,2]}',
+            content_digest=sha256(b'{"eligible_ids":[2,1]}').hexdigest(),
+        )
+
+
+def test_artifact_model_binds_digest_to_canonical_equivalent_json() -> None:
+    digest = sha256(b'{"eligible_ids":[1,2],"meta":{"a":1,"b":2}}').hexdigest()
+
+    artifact = schemas.PlaybookOptimizationArtifact(
+        job_id=1,
+        artifact_kind="expected_population_manifest",
+        content_json='{ "meta": {"b": 2, "a": 1}, "eligible_ids": [1, 2] }',
+        content_digest=digest,
+    )
+
+    assert artifact.content_json == '{"eligible_ids":[1,2],"meta":{"a":1,"b":2}}'
+    assert artifact.content_digest == digest
+
+
+def test_artifact_model_uses_rfc8785_utf16_key_order() -> None:
+    canonical = '{"\U00010000":"astral","\ue000":"bmp"}'
+
+    artifact = schemas.PlaybookOptimizationArtifact(
+        job_id=1,
+        artifact_kind="expected_population_manifest",
+        content_json='{"\ue000":"bmp","\U00010000":"astral"}',
+        content_digest=sha256(canonical.encode()).hexdigest(),
+    )
+
+    assert artifact.content_json == canonical
+
+
+def test_artifact_model_uses_publication_numeric_contract() -> None:
+    canonical = '{"maximum":9007199254740991,"minimum":-9007199254740991}'
+    artifact = schemas.PlaybookOptimizationArtifact(
+        job_id=1,
+        artifact_kind="expected_population_manifest",
+        content_json='{ "minimum": -9007199254740991, "maximum": 9007199254740991 }',
+        content_digest=sha256(canonical.encode()).hexdigest(),
+    )
+
+    assert artifact.content_json == canonical
+    with pytest.raises(
+        ValidationError, match="artifact content_json must be valid JSON"
+    ):
+        schemas.PlaybookOptimizationArtifact(
+            job_id=1,
+            artifact_kind="expected_population_manifest",
+            content_json='{"value":1.0}',
+            content_digest="a" * 64,
+        )
+
+
+@pytest.mark.parametrize(
+    "current_stage",
+    [
+        "evidence_frozen",
+        "candidate_generated",
+        "replay_running",
+        "replay_evaluated",
+    ],
+)
+def test_applied_terminal_stage_requires_publishing(
+    storage: BaseStorage,
+    current_stage: schemas.OptimizationJobStage,
+) -> None:
+    job = storage.create_or_get_playbook_optimization_job(_replay_job("d1", "a1"))
+    claim = storage.claim_playbook_optimization_job(
+        job_id=job.job_id,
+        owner="worker-a",
+        lease_seconds=60,
+        now=6_000,
+    )
+    assert isinstance(storage, SQLiteStorage)
+    storage.conn.execute(
+        "UPDATE playbook_optimization_jobs SET stage = ? WHERE job_id = ?",
+        (current_stage, job.job_id),
+    )
+    storage.conn.commit()
+
+    assert (
+        storage.advance_playbook_optimization_stage(
+            job_id=job.job_id,
+            fence=claim.fence,
+            stage="applied",
+            terminal_outcome="applied",
+            now=6_001,
+        )
+        is False
+    )
+    persisted = storage.get_playbook_optimization_job(job.job_id)
+    assert persisted is not None
+    assert persisted.stage == current_stage
+    assert persisted.status == "running"
+    assert persisted.terminal_outcome is None
+
+
+def test_applied_terminal_stage_advances_from_publishing(storage: BaseStorage) -> None:
+    job = storage.create_or_get_playbook_optimization_job(_replay_job("d1", "a1"))
+    claim = storage.claim_playbook_optimization_job(
+        job_id=job.job_id,
+        owner="worker-a",
+        lease_seconds=60,
+        now=6_000,
+    )
+    assert isinstance(storage, SQLiteStorage)
+    storage.conn.execute(
+        "UPDATE playbook_optimization_jobs SET stage = 'publishing' WHERE job_id = ?",
+        (job.job_id,),
+    )
+    storage.conn.commit()
+
+    assert storage.advance_playbook_optimization_stage(
+        job_id=job.job_id,
+        fence=claim.fence,
+        stage="applied",
+        terminal_outcome="applied",
+        now=6_001,
+    )
+    persisted = storage.get_playbook_optimization_job(job.job_id)
+    assert persisted is not None
+    assert persisted.stage == "applied"
+    assert persisted.status == "completed"
+    assert persisted.terminal_outcome == "applied"
+
+
+def test_governance_erased_terminal_outcome_round_trips(
+    storage: BaseStorage,
+) -> None:
+    job = storage.create_or_get_playbook_optimization_job(_replay_job("d1", "a1"))
+    assert isinstance(storage, SQLiteStorage)
+    storage.conn.execute(
+        """UPDATE playbook_optimization_jobs
+           SET status = 'skipped', stage = 'failed',
+               terminal_outcome = 'governance_erased'
+           WHERE job_id = ?""",
+        (job.job_id,),
+    )
+    storage.conn.commit()
+
+    persisted = storage.get_playbook_optimization_job(job.job_id)
+
+    assert persisted is not None
+    assert persisted.terminal_outcome == "governance_erased"
+
+
+def test_ordinary_stage_advance_rejects_governance_erased(
+    storage: BaseStorage,
+) -> None:
+    job = storage.create_or_get_playbook_optimization_job(_replay_job("d1", "a1"))
+    claim = storage.claim_playbook_optimization_job(
+        job_id=job.job_id,
+        owner="worker-a",
+        lease_seconds=60,
+        now=6_000,
+    )
+
+    assert (
+        storage.advance_playbook_optimization_stage(
+            job_id=job.job_id,
+            fence=claim.fence,
+            stage="abstained",
+            terminal_outcome="governance_erased",
+            now=6_001,
+        )
+        is False
+    )
+    persisted = storage.get_playbook_optimization_job(job.job_id)
+    assert persisted is not None
+    assert persisted.status == "running"
+    assert persisted.stage == "evidence_frozen"
+    assert persisted.terminal_outcome is None
 
 
 def _create_legacy_optimizer_schema(db_path: Path) -> None:
@@ -499,6 +665,201 @@ def test_legacy_optimizer_rows_are_classified_mutually_exclusively(
     assert rows[3]["status"] == "skipped"
     assert rows[4]["status"] == "completed"
     assert rows[5]["status"] == "skipped"
+
+
+def test_legacy_duplicate_active_gepa_jobs_are_deterministically_retired(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "legacy-duplicates.db"
+    _create_legacy_optimizer_schema(db_path)
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """INSERT INTO playbook_optimization_jobs
+           (job_id, target_kind, target_id, status, metadata_json, created_at, updated_at)
+           VALUES (7, 'user_playbook', 2, 'running', ?, 2, 2)""",
+        (
+            json.dumps(
+                {
+                    "source_window_count": 3,
+                    "train_window_count": 2,
+                    "validation_window_count": 1,
+                }
+            ),
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+    store = SQLiteStorage(org_id="legacy-duplicates", db_path=str(db_path))
+    try:
+        rows = store.conn.execute(
+            """SELECT job_id, optimizer_kind, status, decision_reason
+               FROM playbook_optimization_jobs
+               WHERE target_kind = 'user_playbook' AND target_id = 2
+               ORDER BY job_id"""
+        ).fetchall()
+    finally:
+        store.conn.close()
+
+    assert [(row["job_id"], row["status"]) for row in rows] == [
+        (2, "pending"),
+        (7, "skipped"),
+    ]
+    assert rows[1]["optimizer_kind"] == "gepa"
+    assert rows[1]["decision_reason"] == "retired_duplicate_legacy_active_job"
+
+
+@pytest.mark.parametrize("key_column", ["discovery_key", "attempt_key"])
+def test_legacy_duplicate_active_gepa_job_keys_are_deterministically_retired(
+    tmp_path: Path,
+    key_column: str,
+) -> None:
+    db_path = tmp_path / f"legacy-duplicate-{key_column}.db"
+    _create_legacy_optimizer_schema(db_path)
+    conn = sqlite3.connect(db_path)
+    conn.execute("ALTER TABLE playbook_optimization_jobs ADD COLUMN discovery_key TEXT")
+    conn.execute("ALTER TABLE playbook_optimization_jobs ADD COLUMN attempt_key TEXT")
+    metadata_json = json.dumps(
+        {
+            "source_window_count": 3,
+            "train_window_count": 2,
+            "validation_window_count": 1,
+        }
+    )
+    conn.execute(
+        """INSERT INTO playbook_optimization_jobs
+           (job_id, target_kind, target_id, status, metadata_json,
+            discovery_key, attempt_key, created_at, updated_at)
+           VALUES (7, 'user_playbook', 7, 'running', ?, 'discovery-7',
+                   'attempt-7', 2, 2)""",
+        (metadata_json,),
+    )
+    conn.execute(
+        f"UPDATE playbook_optimization_jobs SET {key_column} = ? "  # noqa: S608
+        "WHERE job_id IN (2, 7)",
+        (f"duplicate-{key_column}",),
+    )
+    conn.commit()
+    conn.close()
+
+    store = SQLiteStorage(org_id=f"legacy-duplicate-{key_column}", db_path=str(db_path))
+    try:
+        rows = store.conn.execute(
+            """SELECT job_id, status, decision_reason
+               FROM playbook_optimization_jobs
+               WHERE job_id IN (2, 7) ORDER BY job_id"""
+        ).fetchall()
+    finally:
+        store.conn.close()
+
+    assert [(row["job_id"], row["status"]) for row in rows] == [
+        (2, "pending"),
+        (7, "skipped"),
+    ]
+    assert rows[1]["decision_reason"] == "retired_duplicate_legacy_active_job"
+
+
+def _create_legacy_optimizer_schema_with_child(
+    db_path: Path,
+    *,
+    orphan_child: bool = False,
+    stale_rebuild_table: bool = False,
+) -> None:
+    _create_legacy_optimizer_schema(db_path)
+    conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute(
+        """CREATE TABLE optimizer_job_child (
+               child_id INTEGER PRIMARY KEY,
+               job_id INTEGER NOT NULL,
+               FOREIGN KEY (job_id) REFERENCES playbook_optimization_jobs(job_id)
+                   ON DELETE CASCADE
+           )"""
+    )
+    conn.execute("INSERT INTO optimizer_job_child VALUES (1, 2)")
+    conn.commit()
+    if orphan_child:
+        conn.execute("PRAGMA foreign_keys=OFF")
+        conn.execute("INSERT INTO optimizer_job_child VALUES (2, 999)")
+    if stale_rebuild_table:
+        conn.execute(
+            "CREATE TABLE playbook_optimization_jobs_new (job_id INTEGER PRIMARY KEY)"
+        )
+    conn.commit()
+    conn.close()
+
+
+def test_legacy_optimizer_rebuild_preserves_fk_children_and_restores_enforcement(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "legacy-child.db"
+    _create_legacy_optimizer_schema_with_child(db_path)
+
+    store = SQLiteStorage(org_id="legacy-child", db_path=str(db_path))
+    try:
+        child = store.conn.execute("SELECT * FROM optimizer_job_child").fetchone()
+        foreign_keys = store.conn.execute("PRAGMA foreign_keys").fetchone()[0]
+        violations = store.conn.execute("PRAGMA foreign_key_check").fetchall()
+    finally:
+        store.conn.close()
+
+    assert child is not None
+    assert child["job_id"] == 2
+    assert foreign_keys == 1
+    assert violations == []
+
+
+def test_legacy_optimizer_rebuild_recovers_stale_temporary_table(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "legacy-stale-rebuild.db"
+    _create_legacy_optimizer_schema_with_child(db_path, stale_rebuild_table=True)
+
+    store = SQLiteStorage(org_id="legacy-stale-rebuild", db_path=str(db_path))
+    try:
+        stale_table = store.conn.execute(
+            """SELECT 1 FROM sqlite_master
+               WHERE type = 'table' AND name = 'playbook_optimization_jobs_new'"""
+        ).fetchone()
+        child_count = store.conn.execute(
+            "SELECT COUNT(*) FROM optimizer_job_child"
+        ).fetchone()[0]
+    finally:
+        store.conn.close()
+
+    assert stale_table is None
+    assert child_count == 1
+
+
+def test_legacy_optimizer_rebuild_rolls_back_on_foreign_key_violation(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "legacy-invalid-child.db"
+    _create_legacy_optimizer_schema_with_child(db_path, orphan_child=True)
+
+    with pytest.raises(sqlite3.IntegrityError, match="foreign key check"):
+        SQLiteStorage(org_id="legacy-invalid-child", db_path=str(db_path))
+
+    conn = sqlite3.connect(db_path)
+    try:
+        parent_table = conn.execute(
+            """SELECT 1 FROM sqlite_master
+               WHERE type = 'table' AND name = 'playbook_optimization_jobs'"""
+        ).fetchone()
+        stale_table = conn.execute(
+            """SELECT 1 FROM sqlite_master
+               WHERE type = 'table' AND name = 'playbook_optimization_jobs_new'"""
+        ).fetchone()
+        conn.execute("DELETE FROM optimizer_job_child WHERE job_id = 999")
+        conn.commit()
+    finally:
+        conn.close()
+
+    assert parent_table is not None
+    assert stale_table is None
+
+    store = SQLiteStorage(org_id="legacy-invalid-child-retry", db_path=str(db_path))
+    store.conn.close()
 
 
 @pytest.mark.parametrize(

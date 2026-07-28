@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import json
 from hashlib import sha256
 from pathlib import Path
@@ -35,6 +36,7 @@ from reflexio.server.services.playbook_optimizer.gepa_publication import (
     GEPA_PROJECTOR_VERSION,
     GEPA_PUBLICATION_AUTHORITY_METADATA_KEY,
     _gepa_adoption_result_from_snapshot,
+    build_gepa_search_projection,
 )
 from reflexio.server.services.playbook_optimizer.judge import (
     PLAYBOOK_OPTIMIZER_JUDGE_PROMPT_ID,
@@ -789,9 +791,11 @@ def test_gepa_user_winner_publishes_exact_projection_then_triggers_aggregation(
         "expanded_terms": [],
         "lexical_document": "refund request new guidance",
         "preserved_trigger": "refund request",
-        "projector_code_digest": GEPA_PROJECTOR_CODE_DIGEST,
-        "projector_id": GEPA_PROJECTOR_ID,
-        "projector_version": GEPA_PROJECTOR_VERSION,
+        "projector_code_digest": (
+            "c383e3dd0df8618d3b082ccbaceed7bd676f47af0b25d442bf8ff2c628fafb42"
+        ),
+        "projector_id": "reflexio-gepa-user-playbook-search-projector",
+        "projector_version": "2",
         "schema_version": "offline-tuner-candidate-search-projection-v1",
     }
     successor_id = storage.conn.execute(
@@ -1476,8 +1480,11 @@ def test_gepa_live_publishing_lease_excludes_duplicate_worker(tmp_path):
     )
 
 
-@pytest.mark.parametrize("drift", ["disabled_config", "missing_backend"])
-def test_gepa_recovery_runs_before_live_config_and_backend_gates(tmp_path, drift):
+@pytest.mark.parametrize(
+    "kill_switch",
+    ["enabled", "optimize_user_playbooks", "auto_update_user_playbooks"],
+)
+def test_gepa_recovery_respects_live_kill_switches(tmp_path, kill_switch):
     storage = _storage(tmp_path)
     incumbent = _incumbent(storage)
     config = _optimizer_config(tmp_path)
@@ -1508,15 +1515,66 @@ def test_gepa_recovery_runs_before_live_config_and_backend_gates(tmp_path, drift
             )
         )
 
-    if drift == "disabled_config":
-        config.playbook_optimizer_config.enabled = False
-        config.playbook_optimizer_config.optimize_user_playbooks = False
-        config.playbook_optimizer_config.auto_update_user_playbooks = False
-    else:
-        config.playbook_optimizer_config.webhook_url = None
+    setattr(config.playbook_optimizer_config, kill_switch, False)
     optimizer._run_gepa = Mock(  # type: ignore[method-assign]
         side_effect=AssertionError("recovery must not rerun GEPA")
     )
+    claim_before = storage.conn.execute(
+        """SELECT lease_owner, lease_fence, lease_expires_at
+           FROM playbook_optimization_jobs"""
+    ).fetchone()
+
+    assert (
+        optimizer.optimize(
+            PlaybookOptimizationTarget(
+                kind="user_playbook", target_id=incumbent.user_playbook_id
+            )
+        )
+        == "skipped"
+    )
+    assert (
+        storage.conn.execute(
+            "SELECT outcome FROM user_playbook_publication_results"
+        ).fetchone()
+        is None
+    )
+    claim_after = storage.conn.execute(
+        """SELECT lease_owner, lease_fence, lease_expires_at
+           FROM playbook_optimization_jobs"""
+    ).fetchone()
+    assert tuple(claim_after) == tuple(claim_before)
+
+
+def test_gepa_projector_does_not_require_runtime_source(tmp_path, monkeypatch):
+    storage = _storage(tmp_path)
+    incumbent = _incumbent(storage)
+    monkeypatch.setattr(
+        inspect,
+        "getsource",
+        Mock(side_effect=OSError("source unavailable")),
+    )
+
+    projection = build_gepa_search_projection(storage, incumbent, "new guidance")
+
+    assert json.loads(projection.canonical_json) == {
+        "candidate_content_digest": sha256(b"new guidance").hexdigest(),
+        "embedding": ["0.25", "-0.5", *(["0"] * 510)],
+        "embedding_model_id": storage.embedding_model_name,
+        "expanded_terms": [],
+        "lexical_document": "refund request new guidance",
+        "preserved_trigger": "refund request",
+        "projector_code_digest": GEPA_PROJECTOR_CODE_DIGEST,
+        "projector_id": GEPA_PROJECTOR_ID,
+        "projector_version": GEPA_PROJECTOR_VERSION,
+        "schema_version": "offline-tuner-candidate-search-projection-v1",
+    }
+
+
+def test_gepa_decision_proof_uses_compact_evaluation_digests(tmp_path):
+    storage = _storage(tmp_path)
+    incumbent = _incumbent(storage)
+    optimizer = _optimizer(storage, tmp_path)
+    _install_winning_gepa(optimizer, storage, _window(incumbent.user_playbook_id))
 
     assert (
         optimizer.optimize(
@@ -1526,12 +1584,22 @@ def test_gepa_recovery_runs_before_live_config_and_backend_gates(tmp_path, drift
         )
         == "completed"
     )
-    assert (
-        storage.conn.execute(
-            "SELECT outcome FROM user_playbook_publication_results"
-        ).fetchone()[0]
-        == "applied"
-    )
+
+    row = storage.conn.execute(
+        "SELECT metadata_json FROM playbook_optimization_jobs"
+    ).fetchone()
+    proof = json.loads(json.loads(row["metadata_json"])["publication_proof_json"])
+    assert proof["schema_version"] == "gepa-user-playbook-decision-v2"
+    assert proof["evaluations"] == [
+        {
+            "evaluation_digest": proof["evaluations"][0]["evaluation_digest"],
+            "evaluation_id": proof["evaluations"][0]["evaluation_id"],
+        }
+    ]
+    assert len(proof["evaluations"][0]["evaluation_digest"]) == 64
+    serialized = json.dumps(proof)
+    assert "candidate_rollout_json" not in serialized
+    assert "incumbent_rollout_json" not in serialized
 
 
 def test_gepa_recovery_propagates_non_live_lease_reclaim_storage_error(tmp_path):

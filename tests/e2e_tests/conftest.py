@@ -360,9 +360,7 @@ def _get_playbook_names(instance: Reflexio) -> list[str]:
 
 def _cleanup_storage(instance: Reflexio):
     """Helper function to cleanup storage for an Reflexio instance."""
-    assert drain_tagging(timeout_seconds=10.0), (
-        "background tagging callbacks did not drain before storage cleanup"
-    )
+    tagging_drained = drain_tagging(timeout_seconds=10.0)
     try:
         storage = instance.request_context.storage
         assert storage is not None
@@ -377,6 +375,9 @@ def _cleanup_storage(instance: Reflexio):
         storage.delete_all_operation_states()
     except Exception as e:
         print(f"Error during cleanup: {str(e)}")
+    assert tagging_drained, (
+        "background tagging callbacks did not drain before storage cleanup"
+    )
 
 
 @pytest.fixture

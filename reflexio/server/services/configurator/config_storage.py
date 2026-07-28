@@ -4,6 +4,10 @@ from typing import Any
 from reflexio.models.config_schema import Config
 
 
+class ConfigWriteConflictError(RuntimeError):
+    """Raised when a conditional config write loses a freshness race."""
+
+
 class ConfigStorage(ABC):
     """
     Abstract base class for configuration storage operations.

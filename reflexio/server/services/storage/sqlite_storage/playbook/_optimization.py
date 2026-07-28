@@ -30,6 +30,19 @@ from reflexio.server.services.storage.error import (
 )
 
 _FAILURE_OUTCOMES = {"generation_failed", "replay_failed", "publication_failed"}
+_ABSTENTION_OUTCOMES = {
+    "insufficient_negative_evidence",
+    "insufficient_positive_evidence",
+    "insufficient_coverage",
+    "replay_unsupported",
+    "deployment_unsupported",
+    "incomplete_replay_scope",
+    "insufficient_replay_cases",
+    "replay_inconclusive",
+    "candidate_regressed",
+    "candidate_did_not_improve",
+    "incumbent_changed",
+}
 _STAGE_PREDECESSORS: dict[str, str] = {
     "candidate_generated": "evidence_frozen",
     "replay_running": "candidate_generated",
@@ -700,10 +713,7 @@ class OptimizationJobStoreMixin:
                 return False
             terminal_status = "failed"
         elif stage == "abstained":
-            if terminal_outcome is None or terminal_outcome in {
-                "applied",
-                *_FAILURE_OUTCOMES,
-            }:
+            if terminal_outcome not in _ABSTENTION_OUTCOMES:
                 return False
             terminal_status = "skipped"
         elif predecessor is None or terminal_outcome is not None:
@@ -719,6 +729,30 @@ class OptimizationJobStoreMixin:
                          AND lease_expires_at > ?
                          AND stage = ?""",
                     (stage, advanced_at, job_id, fence, advanced_at, predecessor),
+                )
+            elif stage == "applied":
+                cur = self.conn.execute(
+                    """UPDATE playbook_optimization_jobs
+                       SET stage = ?,
+                           terminal_outcome = ?,
+                           status = ?,
+                           lease_owner = NULL,
+                           lease_expires_at = NULL,
+                           updated_at = ?
+                       WHERE job_id = ?
+                         AND status IN ('pending', 'running')
+                         AND lease_fence = ?
+                         AND lease_expires_at > ?
+                         AND stage = 'publishing'""",
+                    (
+                        stage,
+                        terminal_outcome,
+                        terminal_status,
+                        advanced_at,
+                        job_id,
+                        fence,
+                        advanced_at,
+                    ),
                 )
             else:
                 cur = self.conn.execute(
@@ -763,6 +797,11 @@ class OptimizationJobStoreMixin:
         now: int | None = None,
     ) -> PlaybookOptimizationArtifact:
         artifact_content_json = canonicalize_artifact_json(artifact.content_json)
+        if (
+            sha256(artifact_content_json.encode()).hexdigest()
+            != artifact.content_digest
+        ):
+            raise ValueError("optimizer artifact digest does not match content")
         written_at = self._lease_now(now)
         with self._lock:
             owns_transaction = self._own_transaction()

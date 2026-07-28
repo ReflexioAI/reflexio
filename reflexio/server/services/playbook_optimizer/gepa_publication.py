@@ -30,11 +30,11 @@ from reflexio.server.services.playbook.publication import (
 from .models import ScenarioWindow
 
 GEPA_PROJECTOR_ID = "reflexio-gepa-user-playbook-search-projector"
-GEPA_PROJECTOR_VERSION = "1"
+GEPA_PROJECTOR_VERSION = "2"
 GEPA_PROJECTOR_CODE_DIGEST = (
-    "aaa757a569cca1222097b3d6175e02d62486fc85dc884ceed29bd9c64819564b"
+    "c383e3dd0df8618d3b082ccbaceed7bd676f47af0b25d442bf8ff2c628fafb42"
 )
-_PROOF_SCHEMA_VERSION = "gepa-user-playbook-decision-v1"
+_PROOF_SCHEMA_VERSION = "gepa-user-playbook-decision-v2"
 _PROJECTION_SCHEMA_VERSION = "offline-tuner-candidate-search-projection-v1"
 GEPA_PUBLICATION_AUTHORITY_METADATA_KEY = "gepa_publication_authority"
 
@@ -133,6 +133,25 @@ def build_gepa_search_projection(
     )
 
 
+def _evaluation_evidence(item: PlaybookOptimizationEvaluation) -> dict[str, Any]:
+    return {
+        "candidate_id": item.candidate_id,
+        "candidate_rollout_json": item.candidate_rollout_json,
+        "created_at": item.created_at,
+        "evaluation_id": item.evaluation_id,
+        "incumbent_rollout_json": item.incumbent_rollout_json,
+        "likert": item.likert,
+        "rationale": item.rationale,
+        "scenario_user_playbook_id": item.scenario_user_playbook_id,
+        "score": _decimal(item.score),
+        "source_interaction_ids": item.source_interaction_ids,
+        "target_id": item.target_id,
+        "target_kind": item.target_kind,
+        "asi_json": item.asi_json,
+        "verdict": item.verdict,
+    }
+
+
 def _proof_payload(
     *,
     job: PlaybookOptimizationJob,
@@ -159,20 +178,10 @@ def _proof_payload(
         "decision": "apply",
         "evaluations": [
             {
-                "candidate_id": item.candidate_id,
-                "candidate_rollout_json": item.candidate_rollout_json,
-                "created_at": item.created_at,
+                "evaluation_digest": sha256(
+                    canonical_json_bytes(_evaluation_evidence(item))
+                ).hexdigest(),
                 "evaluation_id": item.evaluation_id,
-                "incumbent_rollout_json": item.incumbent_rollout_json,
-                "likert": item.likert,
-                "rationale": item.rationale,
-                "scenario_user_playbook_id": item.scenario_user_playbook_id,
-                "score": _decimal(item.score),
-                "source_interaction_ids": item.source_interaction_ids,
-                "target_id": item.target_id,
-                "target_kind": item.target_kind,
-                "asi_json": item.asi_json,
-                "verdict": item.verdict,
             }
             for item in all_evaluations
         ],

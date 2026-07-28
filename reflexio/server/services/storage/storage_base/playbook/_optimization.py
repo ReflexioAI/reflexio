@@ -29,14 +29,14 @@ class OptimizationJobStoreMixin:
         """Persist a playbook optimization job and return it with id populated."""
         raise NotImplementedError
 
-    @abstractmethod
     def get_playbook_optimization_job(
         self, job_id: int
     ) -> PlaybookOptimizationJob | None:
         """Load one optimizer job by its durable identity."""
-        raise NotImplementedError
+        raise NotImplementedError(
+            "Storage backend does not support replay-gated playbook optimization"
+        )
 
-    @abstractmethod
     def prepare_gepa_user_playbook_publication(
         self,
         *,
@@ -53,16 +53,18 @@ class OptimizationJobStoreMixin:
         metadata_json: str,
     ) -> PlaybookOptimizationJob:
         """Fence and persist GEPA publication authority before staging."""
-        raise NotImplementedError
+        raise NotImplementedError(
+            "Storage backend does not support replay-gated playbook optimization"
+        )
 
-    @abstractmethod
     def get_unconsumed_gepa_user_playbook_publishing_job(
         self, target_id: int
     ) -> PlaybookOptimizationJob | None:
         """Load an active GEPA user publication job with no terminal result."""
-        raise NotImplementedError
+        raise NotImplementedError(
+            "Storage backend does not support replay-gated playbook optimization"
+        )
 
-    @abstractmethod
     def reclaim_gepa_user_playbook_publishing_job(
         self,
         target_id: int,
@@ -79,16 +81,18 @@ class OptimizationJobStoreMixin:
         and raise ``OptimizationJobLeaseLiveError`` when a matching job exists
         but its optimizer lease is still live.
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "Storage backend does not support replay-gated playbook optimization"
+        )
 
-    @abstractmethod
     def create_or_get_playbook_optimization_job(
         self, job: PlaybookOptimizationJob
     ) -> PlaybookOptimizationJob:
         """Atomically insert or return the active job with the same replay identity."""
-        raise NotImplementedError
+        raise NotImplementedError(
+            "Storage backend does not support replay-gated playbook optimization"
+        )
 
-    @abstractmethod
     def claim_playbook_optimization_job(
         self,
         job_id: int,
@@ -98,9 +102,10 @@ class OptimizationJobStoreMixin:
         now: int | None = None,
     ) -> OptimizationJobClaim:
         """Claim an unleased active optimizer job and issue a new fence."""
-        raise NotImplementedError
+        raise NotImplementedError(
+            "Storage backend does not support replay-gated playbook optimization"
+        )
 
-    @abstractmethod
     def reclaim_playbook_optimization_job(
         self,
         job_id: int,
@@ -110,9 +115,10 @@ class OptimizationJobStoreMixin:
         now: int | None = None,
     ) -> OptimizationJobClaim:
         """Reclaim an expired active optimizer job and issue a newer fence."""
-        raise NotImplementedError
+        raise NotImplementedError(
+            "Storage backend does not support replay-gated playbook optimization"
+        )
 
-    @abstractmethod
     def renew_playbook_optimization_job_lease(
         self,
         job_id: int,
@@ -123,9 +129,10 @@ class OptimizationJobStoreMixin:
         now: int | None = None,
     ) -> OptimizationJobClaim:
         """Extend a current, unexpired optimizer lease without changing its fence."""
-        raise NotImplementedError
+        raise NotImplementedError(
+            "Storage backend does not support replay-gated playbook optimization"
+        )
 
-    @abstractmethod
     def advance_playbook_optimization_stage(
         self,
         job_id: int,
@@ -136,9 +143,10 @@ class OptimizationJobStoreMixin:
         now: int | None = None,
     ) -> bool:
         """Advance the linear replay stage only for the current unexpired fence."""
-        raise NotImplementedError
+        raise NotImplementedError(
+            "Storage backend does not support replay-gated playbook optimization"
+        )
 
-    @abstractmethod
     def upsert_playbook_optimization_artifact(
         self,
         artifact: PlaybookOptimizationArtifact,
@@ -147,16 +155,19 @@ class OptimizationJobStoreMixin:
         now: int | None = None,
     ) -> PlaybookOptimizationArtifact:
         """Write a singleton artifact only under the current lease fence."""
-        raise NotImplementedError
+        raise NotImplementedError(
+            "Storage backend does not support replay-gated playbook optimization"
+        )
 
-    @abstractmethod
     def get_playbook_optimization_artifact(
         self,
         job_id: int,
         artifact_kind: OptimizationArtifactKind,
     ) -> PlaybookOptimizationArtifact | None:
         """Return one typed singleton artifact when present."""
-        raise NotImplementedError
+        raise NotImplementedError(
+            "Storage backend does not support replay-gated playbook optimization"
+        )
 
     @abstractmethod
     def update_playbook_optimization_job(

@@ -12,7 +12,7 @@ from urllib.parse import urljoin
 
 import aiohttp
 import requests
-from pydantic import ConfigDict
+from pydantic import BaseModel, ConfigDict
 
 from reflexio.defaults import DEFAULT_AGENT_VERSION
 from reflexio.models.api_schema.eval_overview_schema import (
@@ -135,7 +135,12 @@ from reflexio.models.config_schema import Config
 from .cache import InMemoryCache
 
 
-class _ClientConfigPayload(Config):
+class OfflineTunerConfigResponse(BaseModel):
+    enabled: bool
+
+
+class ConfigResponse(Config):
+    offline_tuner_config: OfflineTunerConfigResponse | None = None
     model_config = ConfigDict(extra="allow")
 
 
@@ -1467,10 +1472,16 @@ class ReflexioClient:
         Returns:
             dict: Response containing success status and message
         """
-        config = self._convert_to_model(  # type: ignore[reportAssignmentType]
-            config,
-            _ClientConfigPayload,
-        )
+        if isinstance(config, Config):
+            config = Config.model_validate(
+                config.model_dump(mode="python"),
+                extra="ignore",
+            )
+        else:
+            config = self._convert_to_model(  # type: ignore[reportAssignmentType]
+                config,
+                Config,
+            )
         return self._make_request(
             "POST",
             "/api/set_config",
@@ -1506,17 +1517,17 @@ class ReflexioClient:
             )
         return self._make_request("POST", "/api/update_config", json=partial)
 
-    def get_config(self) -> Config:
+    def get_config(self) -> ConfigResponse:
         """Get configuration for the organization.
 
         Returns:
-            Config: The current configuration
+            ConfigResponse: The current configuration, including response overlays.
         """
         response = self._make_request(
             "GET",
             "/api/get_config",
         )
-        return _ClientConfigPayload(**response)
+        return ConfigResponse(**response)
 
     def invalidate_cache(self, org_id: str | None = None) -> dict:
         """Explicitly evict the server-side per-org Reflexio cache entry.

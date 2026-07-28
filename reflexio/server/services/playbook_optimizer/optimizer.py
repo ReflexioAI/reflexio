@@ -127,15 +127,17 @@ class PlaybookOptimizer:
         creates one ``playbook_optimization_jobs`` row and possibly archives
         the incumbent in favour of a successor playbook.
         """
+        config = self._config()
+        if not self._enabled_for_target(config, target) or not _can_adopt_winner(
+            target, config
+        ):
+            return "skipped"
         if target.kind == "user_playbook":
             recovered = self._recover_gepa_user_playbook_publication(target)
             if recovered is not None:
                 return recovered
-        config = self._config()
-        if not self._enabled_for_target(config, target):
-            return "skipped"
-        # Backend selection happens before any storage work so an unconfigured
-        # optimizer short-circuits cheaply — useful in tests and dev setups.
+        # Backend selection happens before any new-run storage work so an
+        # unconfigured optimizer short-circuits cheaply.
         assistant = self._create_assistant(config)
         if assistant is None:
             logger.info(
@@ -161,14 +163,6 @@ class PlaybookOptimizer:
                 target.target_id,
                 len(validation_windows),
                 config.min_commit_windows,
-            )
-            return "skipped"
-        if not _can_adopt_winner(target, config):
-            logger.info(
-                "Skipping playbook optimization: no configured adoption path "
-                "target_kind=%s target_id=%d",
-                target.kind,
-                target.target_id,
             )
             return "skipped"
         split_metadata = _split_metadata(

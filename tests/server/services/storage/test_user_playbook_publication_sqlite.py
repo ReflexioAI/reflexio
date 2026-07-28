@@ -4,6 +4,7 @@ import json
 from concurrent.futures import ThreadPoolExecutor
 from hashlib import sha256
 from pathlib import Path
+from threading import Barrier
 from unittest.mock import Mock, patch
 
 import pytest
@@ -23,6 +24,7 @@ from reflexio.server.services.playbook.publication import (
     DecisionProofEnvelope,
     PublicationClaim,
     PublicationRequest,
+    PublicationResult,
     PublicationSearchProjection,
     PublishableOptimizerKind,
     UserPlaybookPublicationService,
@@ -642,7 +644,11 @@ def test_publication_claim_rejects_lease_expired_before_claim_without_mutation(
         ).fetchone()["count"]
         == 0
     )
-    assert incumbent.status is None
+    persisted_incumbent = storage.get_user_playbook_by_id(
+        incumbent.user_playbook_id, include_tombstones=True
+    )
+    assert persisted_incumbent is not None
+    assert persisted_incumbent.status is None
 
 
 def test_publication_stage_rejects_lease_expired_after_claim_without_mutation(
@@ -788,7 +794,8 @@ def test_two_concurrent_publishers_have_one_successor(tmp_path: Path) -> None:
     storage = _store(tmp_path)
     incumbent, job = _seed(storage)
     first_service = _service(storage)
-    second_service = _service(_store(tmp_path))
+    second_storage = _store(tmp_path)
+    second_service = _service(second_storage)
     first_claim = first_service.claim(
         job_id=job.job_id, owner="worker-a", worker_fence=5
     )
@@ -801,12 +808,22 @@ def test_two_concurrent_publishers_have_one_successor(tmp_path: Path) -> None:
     second_request = _request(
         job_id=job.job_id, incumbent_id=incumbent.user_playbook_id, claim=second_claim
     )
+    first_service.stage(first_request)
+    second_service.stage(second_request)
+    commit_barrier = Barrier(2)
+
+    def commit(
+        item: tuple[SQLiteStorage, PublicationRequest],
+    ) -> PublicationResult:
+        item_storage, request = item
+        commit_barrier.wait(timeout=5)
+        return item_storage.commit_user_playbook_publication(request)
 
     with ThreadPoolExecutor(max_workers=2) as executor:
         results = list(
             executor.map(
-                lambda item: item[0].publish(item[1]),
-                [(first_service, first_request), (second_service, second_request)],
+                commit,
+                [(storage, first_request), (second_storage, second_request)],
             )
         )
 
@@ -1010,7 +1027,7 @@ def test_reclaimed_worker_refreshes_stage_binding_and_old_worker_is_rejected(
     assert staged["worker_fence"] == 6
     assert staged["publication_fence"] == new_claim.fence
 
-    with pytest.raises(StorageError, match="worker owner|worker fence|publication"):
+    with pytest.raises(StorageError, match="publication worker owner changed"):
         service.publish(old_request)
 
     result = service.publish(new_request)

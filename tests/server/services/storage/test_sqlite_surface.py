@@ -10,6 +10,27 @@ from __future__ import annotations
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 from reflexio.server.services.storage.storage_base import BaseStorage
 
+_OPTIONAL_OPTIMIZER_METHODS = frozenset(
+    {
+        "advance_playbook_optimization_stage",
+        "claim_playbook_optimization_job",
+        "commit_user_playbook_publication",
+        "create_or_get_playbook_optimization_job",
+        "get_playbook_optimization_artifact",
+        "get_playbook_optimization_job",
+        "get_unconsumed_gepa_user_playbook_publishing_job",
+        "get_user_playbook_publication_subject_epochs",
+        "load_user_playbook_publication_result",
+        "prepare_gepa_user_playbook_publication",
+        "reclaim_gepa_user_playbook_publishing_job",
+        "reclaim_playbook_optimization_job",
+        "renew_playbook_optimization_job_lease",
+        "stage_user_playbook_publication",
+        "upsert_playbook_optimization_artifact",
+        "claim_user_playbook_publication",
+    }
+)
+
 # RetentionMixin helpers are present on SQLiteStorage but not declared in the
 # BaseStorage ABC — intentional; subclasses opt into retention without the ABC
 # requiring it.
@@ -58,3 +79,29 @@ def test_sqlite_surface_matches_base_abc() -> None:
         f"{sqlite_methods - base_methods - _RETENTION_MIXIN_METHODS}\n"
         f"  extra base (missing in sqlite): {base_methods - sqlite_methods}"
     )
+
+
+def test_optimizer_capability_is_optional_for_legacy_storage_backends() -> None:
+    """A backend implementing the pre-replay ABC remains instantiable."""
+
+    def legacy_implementation(*args: object, **kwargs: object) -> None:
+        del args, kwargs
+
+    legacy_methods = dict.fromkeys(
+        BaseStorage.__abstractmethods__ - _OPTIONAL_OPTIMIZER_METHODS,
+        legacy_implementation,
+    )
+    legacy_storage_type = type("LegacyStorage", (BaseStorage,), legacy_methods)
+
+    storage = legacy_storage_type(org_id="legacy-org")
+
+    for operation in (
+        lambda: storage.get_playbook_optimization_job(1),
+        lambda: storage.get_user_playbook_publication_subject_epochs(1),
+    ):
+        try:
+            operation()
+        except NotImplementedError as exc:
+            assert "does not support" in str(exc)
+        else:
+            raise AssertionError("optional optimizer operation unexpectedly succeeded")

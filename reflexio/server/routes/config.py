@@ -31,6 +31,9 @@ from reflexio.server.auth import (
 )
 from reflexio.server.cache import reflexio_cache
 from reflexio.server.rate_limit import limiter
+from reflexio.server.services.configurator.config_storage import (
+    ConfigWriteConflictError,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -102,7 +105,16 @@ def set_config(
         ) from exc
 
     # Set the config using Reflexio's set_config method
-    response = reflexio.set_config(normalized_config)
+    try:
+        response = reflexio.set_config(normalized_config)
+    except ConfigWriteConflictError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "error": "config_write_conflict",
+                "message": str(exc),
+            },
+        ) from exc
 
     # Invalidate cache on successful config change to ensure fresh instance next request
     if response.success:
@@ -121,8 +133,10 @@ def update_config(
     """Apply a partial update to the org's config (PATCH semantics).
 
     Performs a **top-level shallow merge** of *partial* over the existing
-    config and round-trips through ``Config(**merged)`` so Pydantic
-    validates the result and rejects bogus top-level fields.
+    config and delegates normalization to the active configurator before the
+    shared ``Config`` validation. This lets deployment-specific configurators
+    consume their overlay fields while the default configurator still rejects
+    unknown fields.
 
     .. warning::
        Nested objects (e.g. ``storage_config``, ``profile_extractor_config``,
@@ -154,17 +168,15 @@ def update_config(
     from pydantic import ValidationError
 
     reflexio = reflexio_cache.get_reflexio(org_id=org_id)
-    existing_config = reflexio.request_context.configurator.get_config()
+    configurator = reflexio.request_context.configurator
+    existing_config = configurator.get_config()
     existing = existing_config.model_dump(mode="python")
-    merged = {**existing, **partial}
-    # Pydantic validates the merged shape and rejects unknown / malformed
-    # fields here, before storage validation in reflexio.set_config.
     # Convert ValidationError into 422 so callers passing a partial that
     # would replace a nested extractor object with an incomplete dict (e.g.
     # {"user_playbook_extractor_config": {"aggregation_config": {...}}})
     # get a clean client-error response instead of a 500.
     try:
-        merged_config = Config(**merged)
+        merged_config = configurator.prepare_config_patch(partial)
     except ValidationError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -180,11 +192,26 @@ def update_config(
                 "validation_errors": exc.errors(),
             },
         ) from exc
-    if merged_config.model_dump(mode="python") == existing:
+    partial_uses_only_shared_fields = (
+        partial.keys() <= type(existing_config).model_fields.keys()
+    )
+    if (
+        partial_uses_only_shared_fields
+        and merged_config.model_dump(mode="python") == existing
+    ):
         logger.info("Skipping no-op config update for org %s", org_id)
         return SetConfigResponse(success=True, msg="Configuration unchanged")
 
-    response = reflexio.set_config(merged_config)
+    try:
+        response = reflexio.set_config(merged_config)
+    except ConfigWriteConflictError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "error": "config_write_conflict",
+                "message": str(exc),
+            },
+        ) from exc
     if response.success:
         reflexio_cache.invalidate_reflexio_cache(org_id=org_id)
     return response

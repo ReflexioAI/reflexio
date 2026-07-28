@@ -133,9 +133,10 @@ def test_find_pids_on_port_falls_back_to_ss(monkeypatch) -> None:
             cmd,
             0,
             stdout=(
-                "State Recv-Q Send-Q Local Address:Port Peer Address:Port Process\n"
                 "CLOSE 0 0 127.0.0.1:8090 0.0.0.0:* "
                 'users:(("python",pid=456,fd=7),("python",pid=456,fd=8))\n'
+                "ESTAB 0 0 127.0.0.1:8090 127.0.0.1:55006 "
+                'users:(("client",pid=789,fd=9))\n'
             ),
         )
 
@@ -144,7 +145,7 @@ def test_find_pids_on_port_falls_back_to_ss(monkeypatch) -> None:
     assert utils.find_pids_on_port(8090) == [456]
     assert calls == [
         ["lsof", "-nP", "-Fpn", "-iTCP:8090"],
-        ["ss", "-tanp", "sport = :8090"],
+        ["ss", "-tanpH", "sport", "=", ":8090"],
     ]
 
 

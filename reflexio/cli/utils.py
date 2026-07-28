@@ -87,20 +87,7 @@ def _pids_from_lsof(port: int) -> list[int]:
     if pids:
         return sorted(pids)
 
-    # Linux lsof omits some bound-but-not-listening TCP sockets. `ss` includes
-    # them and the source-port filter avoids reporting connected clients.
-    try:
-        result = subprocess.run(
-            ["ss", "-tanp", f"sport = :{port}"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-    except FileNotFoundError:
-        return []
-    if result.returncode != 0:
-        return []
-    return sorted({int(pid) for pid in re.findall(r"\bpid=(\d+)\b", result.stdout)})
+    return []
 
 
 def _pids_from_ss(port: int) -> list[int]:

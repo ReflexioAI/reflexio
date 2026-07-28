@@ -534,8 +534,9 @@ class PlaybookAggregator:
             new_playbooks = [playbook for playbook, _, _ in generated_pairs]
             if self.effect_coordinator is not None:
                 self.effect_coordinator.prepare(new_playbooks)
-                effect_scope = self.effect_coordinator.apply_scope()
-                effect_scope.__enter__()
+                pending_scope = self.effect_coordinator.apply_scope()
+                pending_scope.__enter__()
+                effect_scope = pending_scope
 
             previous_fingerprints_for_changed_clusters = {}
             changed_fps_by_previous_fp = {}

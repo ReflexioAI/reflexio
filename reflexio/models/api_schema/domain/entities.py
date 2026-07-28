@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
+from hashlib import sha256
 from typing import Any, Final, Literal, Self
 
 from pydantic import (
@@ -153,7 +154,7 @@ __all__ = [
 
 
 def canonicalize_artifact_json(content_json: str) -> str:
-    """Validate and serialize durable artifact content in one stable form."""
+    """Validate and serialize durable artifact content using the proof contract."""
     try:
         value = json.loads(
             content_json,
@@ -161,14 +162,12 @@ def canonicalize_artifact_json(content_json: str) -> str:
                 ValueError(f"invalid JSON constant: {constant}")
             ),
         )
-        return json.dumps(
-            value,
-            ensure_ascii=False,
-            separators=(",", ":"),
-            sort_keys=True,
-            allow_nan=False,
-        )
-    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        # Imported lazily because publication's contracts reference OptimizerKind
+        # from this module while defining the shared RFC 8785 encoder.
+        from reflexio.server.services.playbook.publication import canonical_json_bytes
+
+        return canonical_json_bytes(value).decode("utf-8")
+    except (TypeError, ValueError, json.JSONDecodeError, UnicodeError) as exc:
         raise ValueError("artifact content_json must be valid JSON") from exc
 
 
@@ -409,6 +408,7 @@ OptimizationTerminalOutcome = Literal[
     "generation_failed",
     "replay_failed",
     "publication_failed",
+    "governance_erased",
 ]
 
 OptimizationArtifactKind = Literal[
@@ -503,6 +503,13 @@ class PlaybookOptimizationArtifact(BaseModel):
         if len(value) != 64 or any(char not in "0123456789abcdef" for char in value):
             raise ValueError("artifact digest must be lowercase SHA-256 hex")
         return value
+
+    @model_validator(mode="after")
+    def validate_content_digest_matches_content(self) -> Self:
+        expected = sha256(self.content_json.encode()).hexdigest()
+        if self.content_digest != expected:
+            raise ValueError("artifact digest must match canonical content_json")
+        return self
 
 
 class PlaybookOptimizationCandidate(BaseModel):
