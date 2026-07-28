@@ -220,7 +220,7 @@ def _run_consolidator(
     ``merge_records`` is covered by
     ``test_consolidation_lineage_integration.py``.
 
-    Patches ``_retrieve_existing_playbooks`` so the LLM-mock decisions can
+    Patches ``retrieve_existing_playbooks`` so the LLM-mock decisions can
     reference EXISTING-N ids by position without depending on the search
     backend's ranking.
 
@@ -241,7 +241,7 @@ def _run_consolidator(
     with (
         patch.object(
             consolidator,
-            "_retrieve_existing_playbooks",
+            "retrieve_existing_playbooks",
             return_value=existing_playbooks,
         ),
         patch.dict("os.environ", {"MOCK_LLM_RESPONSE": "false"}),

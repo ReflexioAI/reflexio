@@ -15,11 +15,362 @@ from reflexio.server.prompt.prompt_manager import PromptManager
 from reflexio.server.services.playbook.playbook_service_utils import (
     StructuredPlaybookContent,
     StructuredPlaybookList,
+    StructuredReferencedExtractedPlaybookList,
+    build_playbook_prompt_context,
     construct_playbook_extraction_messages_from_sessions,
     dedupe_and_drop_empty,
     ensure_playbook_content,
     format_structured_fields_for_display,
+    uses_evidence_grounded_extraction,
 )
+
+
+@pytest.mark.parametrize("wrapper", ["candidate", "playbook", "lesson"])
+def test_strict_extraction_schema_unwraps_complete_candidate(wrapper):
+    candidate = {
+        "Rationale": "A visible correction supports a future rule.",
+        "Evidence Kind": "correction",
+        "Trigger": "When the task begins",
+        "Content": "Apply the corrected behavior.",
+        "Evidence Refs": ["T1"],
+    }
+
+    output = StructuredReferencedExtractedPlaybookList.model_validate(
+        {"playbooks": [{wrapper: candidate}]}
+    )
+
+    assert len(output.playbooks) == 1
+    assert output.playbooks[0].evidence_kind == "correction"
+    assert output.playbooks[0].evidence_refs == ["T1"]
+
+
+def test_strict_extraction_schema_recovers_nested_alias_contract():
+    output = StructuredReferencedExtractedPlaybookList.model_validate(
+        {
+            "playbooks": [
+                {
+                    "supported_signal": {
+                        "candidates": [
+                            {
+                                "Reason": "The user corrected the behavior.",
+                                "Type": "correction",
+                                "Future Trigger": "When the task begins",
+                                "Action": "Apply the corrected behavior.",
+                                "Sources": ["T2"],
+                            }
+                        ]
+                    }
+                }
+            ]
+        }
+    )
+
+    assert output.playbooks[0].content == "Apply the corrected behavior."
+    assert output.playbooks[0].evidence_refs == ["T2"]
+
+
+def test_strict_extraction_schema_drops_evidence_object_but_keeps_valid_sibling():
+    candidate = {
+        "rationale": "A visible correction supports a future rule.",
+        "evidence_kind": "correction",
+        "trigger": "When the task begins",
+        "content": "Apply the corrected behavior.",
+        "evidence_refs": ["T1"],
+    }
+
+    output = StructuredReferencedExtractedPlaybookList.model_validate(
+        {
+            "playbooks": [
+                {"evidence_ref": "T1"},
+                candidate,
+            ]
+        }
+    )
+
+    assert len(output.playbooks) == 1
+    assert output.playbooks[0].content == "Apply the corrected behavior."
+
+
+def test_strict_extraction_schema_treats_evidence_only_list_as_empty():
+    output = StructuredReferencedExtractedPlaybookList.model_validate(
+        {
+            "playbooks": [
+                {"evidence_ref": "T1"},
+                {"Evidence Ref": "T2"},
+            ]
+        }
+    )
+
+    assert output.playbooks == []
+
+
+def test_strict_evidence_schema_follows_selected_candidate_prompt_version():
+    """Strict extraction follows the independently selected prompt family."""
+    assert uses_evidence_grounded_extraction(PromptManager(), expert=False)
+    assert not uses_evidence_grounded_extraction(PromptManager(), expert=True)
+
+    manager = PromptManager(
+        version_override={
+            "playbook_extraction_context": "4.5.0",
+        }
+    )
+    assert not uses_evidence_grounded_extraction(manager, expert=False)
+    assert not uses_evidence_grounded_extraction(manager, expert=True)
+
+
+def test_prompt_context_uses_local_turn_refs_and_retains_provenance():
+    """The model sees local labels while code retains real request/interaction IDs."""
+    interaction = Interaction(
+        interaction_id=84721,
+        user_id="user_123",
+        request_id="request-secret-42",
+        content="Use the regional deployment checklist.",
+        role="user",
+        created_at=1_700_000_000,
+        user_action=UserActionType.NONE,
+        user_action_description="",
+    )
+    request = Request(
+        request_id="request-secret-42",
+        user_id="user_123",
+        source="test",
+        agent_version="1.0.0",
+        session_id="session-secret-9",
+        created_at=1_700_000_000,
+    )
+    context = build_playbook_prompt_context(
+        [
+            RequestInteractionDataModel(
+                session_id="session-secret-9",
+                request=request,
+                interactions=[interaction],
+            )
+        ],
+        label_turns=True,
+    )
+
+    assert "[T1]" in context.text
+    assert "84721" not in context.text
+    assert "request-secret-42" not in context.text
+    assert "session-secret-9" not in context.text
+    assert context.evidence_sources["T1"].interaction_id == 84721
+    assert context.evidence_sources["T1"].request_id == "request-secret-42"
+    assert context.evidence_sources["T1"].evidence_texts == (
+        "Use the regional deployment checklist.",
+    )
+    assert context.evidence_sources["T1"].role == "user"
+    assert context.evidence_sources["T1"].request_source == "test"
+    assert context.evidence_units["T1"].source_span == (
+        "Use the regional deployment checklist."
+    )
+    assert context.evidence_units["T1"].interaction_id == 84721
+
+
+def test_prompt_context_does_not_label_turns_unless_requested():
+    interaction = Interaction(
+        interaction_id=12,
+        user_id="user",
+        request_id="request",
+        content="Keep the active prompt contract unchanged.",
+        role="user",
+    )
+    request = Request(
+        request_id="request",
+        user_id="user",
+        source="test",
+        agent_version="1",
+        session_id="session",
+    )
+
+    context = build_playbook_prompt_context(
+        [
+            RequestInteractionDataModel(
+                session_id="session",
+                request=request,
+                interactions=[interaction],
+            )
+        ]
+    )
+
+    assert "[T1]" not in context.text
+    assert context.evidence_sources["T1"].interaction_id == 12
+
+
+def test_prompt_context_maps_one_turn_reference_to_all_visible_sources():
+    interaction = Interaction(
+        interaction_id=13,
+        user_id="user",
+        request_id="request",
+        content="First paragraph.\n\nSecond paragraph.",
+        role="assistant",
+        tools_used=[{"tool_name": "lookup", "tool_data": {"key": "value"}}],
+        user_action=UserActionType.CLICK,
+        user_action_description="confirm",
+    )
+    request = Request(
+        request_id="request",
+        user_id="user",
+        source="test",
+        agent_version="1",
+        session_id="session",
+    )
+
+    context = build_playbook_prompt_context(
+        [
+            RequestInteractionDataModel(
+                session_id="session",
+                request=request,
+                interactions=[interaction],
+            )
+        ],
+        label_turns=True,
+    )
+
+    assert list(context.evidence_units) == ["T1"]
+    assert context.evidence_units["T1"].source_span == (
+        '[used tool: lookup({"key": "value"})]\n\n'
+        "First paragraph.\n\nSecond paragraph.\n\nclick confirm"
+    )
+    assert "[T1] assistant: ```[used tool:" in context.text
+    assert "[T1] assistant: ```click confirm```" in context.text
+
+
+def test_prompt_context_labels_turns_in_message_order_not_database_id_order():
+    """Replay/imported IDs must not reorder the conversation shown to the model."""
+    interactions = [
+        Interaction(
+            interaction_id=900,
+            user_id="user_123",
+            request_id="request-1",
+            content="First turn",
+            role="user",
+            created_at=100,
+        ),
+        Interaction(
+            interaction_id=100,
+            user_id="user_123",
+            request_id="request-1",
+            content="Second turn",
+            role="assistant",
+            created_at=101,
+        ),
+    ]
+    request = Request(
+        request_id="request-1",
+        user_id="user_123",
+        source="test",
+        agent_version="1.0.0",
+        session_id="session-1",
+        created_at=100,
+    )
+
+    context = build_playbook_prompt_context(
+        [
+            RequestInteractionDataModel(
+                session_id="session-1",
+                request=request,
+                interactions=interactions,
+            )
+        ],
+        label_turns=True,
+    )
+
+    assert context.text.index("[T1] user: ```First turn```") < context.text.index(
+        "[T2] assistant: ```Second turn```"
+    )
+    assert context.evidence_sources["T1"].interaction_id == 900
+    assert context.evidence_sources["T2"].interaction_id == 100
+
+
+def test_prompt_context_preserves_request_boundaries_sources_and_chronology():
+    requests = []
+    for index, (created_at, source, content) in enumerate(
+        [(100, "web", "First request"), (200, "api", "Second request")], start=1
+    ):
+        request_id = f"private-request-{index}"
+        requests.append(
+            RequestInteractionDataModel(
+                session_id="private-session",
+                request=Request(
+                    request_id=request_id,
+                    user_id="user",
+                    source=source,
+                    agent_version="1",
+                    session_id="private-session",
+                    created_at=created_at,
+                ),
+                interactions=[
+                    Interaction(
+                        interaction_id=1000 + index,
+                        user_id="user",
+                        request_id=request_id,
+                        content=content,
+                        role="user",
+                        created_at=created_at,
+                    )
+                ],
+            )
+        )
+
+    context = build_playbook_prompt_context(list(reversed(requests)), label_turns=True)
+
+    assert context.text.index("[R1] Request (source: web)") < context.text.index(
+        "[R2] Request (source: api)"
+    )
+    assert context.text.index("[T1] user: ```First request```") < context.text.index(
+        "[T2] user: ```Second request```"
+    )
+    assert "private-request" not in context.text
+    assert "private-session" not in context.text
+
+
+def test_prompt_context_interleaves_linked_sessions_by_visible_turn_time():
+    """A later-persisted quick reply must follow the question it answers."""
+
+    def request_model(
+        request_id: str,
+        session_id: str,
+        request_created_at: int,
+        interaction_created_at: int,
+        content: str,
+    ) -> RequestInteractionDataModel:
+        return RequestInteractionDataModel(
+            session_id=session_id,
+            request=Request(
+                request_id=request_id,
+                user_id="user",
+                source="test",
+                agent_version="1",
+                session_id=session_id,
+                created_at=request_created_at,
+            ),
+            interactions=[
+                Interaction(
+                    interaction_id=interaction_created_at,
+                    user_id="user",
+                    request_id=request_id,
+                    content=content,
+                    role="user",
+                    created_at=interaction_created_at,
+                )
+            ],
+        )
+
+    context = build_playbook_prompt_context(
+        [
+            request_model("downstream", "main", 102, 120, "Generate now"),
+            request_model("answer", "quick-reply", 103, 110, "History"),
+            request_model("question", "main", 101, 100, "Which angle?"),
+        ],
+        label_turns=True,
+    )
+
+    assert context.text.index("[T1] user: ```Which angle?```") < context.text.index(
+        "[T2] user: ```History```"
+    )
+    assert context.text.index("[T2] user: ```History```") < context.text.index(
+        "[T3] user: ```Generate now```"
+    )
 
 
 def test_construct_playbook_extraction_messages_with_sessions():
@@ -136,8 +487,8 @@ def test_construct_playbook_extraction_messages_with_sessions():
                 assert "user: ```Thank you!```" in content, (
                     "Expected 'user: ```Thank you!```' in prompt"
                 )
-                assert "user: ```click help button```" in content, (
-                    "Expected 'user: ```click help button```' in prompt"
+                assert "[T3] user: ```click help button```" in content, (
+                    "Expected the user action in the labelled turn"
                 )
 
                 found_interactions = True
@@ -182,14 +533,14 @@ def test_extraction_prompt_keeps_general_triggers_specific_actions():
         variables={"interactions": "interaction text"},
     )
 
-    for rendered in (context_prompt, main_prompt):
-        normalized = " ".join(rendered.replace("*", "").split())
-        assert "earliest observable situation" in normalized
-        assert "user's later repair request" in normalized
     context_normalized = " ".join(context_prompt.replace("*", "").split())
-    assert "retrieval-general" in context_normalized
-    assert "content action-specific" in context_normalized
-    assert "concrete surfaces, checks, and avoid-detours" in context_normalized
+    main_normalized = " ".join(main_prompt.replace("*", "").split())
+    assert "earliest observable future condition" in main_normalized
+    assert "later mistake, correction" in main_normalized
+    assert "earliest observable task class" in context_normalized
+    assert "Do not wait for the mistake" in context_normalized
+    assert "broad enough to retrieve the supported lesson" in context_normalized
+    assert "narrow enough not to apply outside its evidence" in context_normalized
 
 
 def test_consolidation_prompt_preserves_operational_surfaces():
@@ -617,6 +968,7 @@ class TestConstructExpertPlaybookExtractionMessages:
 
         # Should include comparison pair content
         assert "Agent Response" in all_text or "Expert Response" in all_text
+        assert "[T1]" not in all_text
 
     def test_expert_prompt_no_instruction_pitfall(self):
         """Expert extraction prompt should not reference instruction or pitfall fields."""
@@ -694,6 +1046,152 @@ class TestHasExpertContent:
         )
 
         assert has_expert_content([]) is False
+
+
+class TestEvidenceGroupLabels:
+    """Group labels expose which candidates share provenance, without IDs."""
+
+    @staticmethod
+    def _row(source_ids: list[int]) -> UserPlaybook:
+        return UserPlaybook(
+            user_playbook_id=0,
+            agent_version="v1",
+            request_id="r1",
+            playbook_name="pb",
+            content="c",
+            trigger="t",
+            source="test",
+            source_interaction_ids=source_ids,
+        )
+
+    def test_transitively_linked_rows_share_one_label(self):
+        from reflexio.server.services.playbook.components.consolidator import (
+            PlaybookConsolidator,
+        )
+
+        # 1-2 and 2-3 overlap, so all three are one connected component even
+        # though rows 1 and 3 share nothing directly.
+        labels = PlaybookConsolidator._evidence_group_labels(
+            [self._row([1, 2]), self._row([2, 3]), self._row([3, 4])]
+        )
+
+        assert labels[0] == labels[1] == labels[2] != "none"
+
+    def test_disjoint_rows_get_distinct_labels(self):
+        from reflexio.server.services.playbook.components.consolidator import (
+            PlaybookConsolidator,
+        )
+
+        labels = PlaybookConsolidator._evidence_group_labels(
+            [self._row([1]), self._row([2])]
+        )
+
+        assert labels[0] != labels[1]
+        assert "none" not in labels
+
+    def test_rows_without_provenance_are_unlabelled(self):
+        from reflexio.server.services.playbook.components.consolidator import (
+            PlaybookConsolidator,
+        )
+
+        labels = PlaybookConsolidator._evidence_group_labels(
+            [self._row([]), self._row([7])]
+        )
+
+        assert labels[0] == "none"
+        assert labels[1] != "none"
+
+    def test_labels_never_contain_interaction_ids(self):
+        from reflexio.server.services.playbook.components.consolidator import (
+            PlaybookConsolidator,
+        )
+
+        labels = PlaybookConsolidator._evidence_group_labels(
+            [self._row([98765]), self._row([98765])]
+        )
+
+        assert all("98765" not in label for label in labels)
+
+
+class TestEvidenceKindAliases:
+    """Both extraction schemas must accept exactly the same spellings."""
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            ("observed_failure", "observed-failure"),
+            ("failure", "observed-failure"),
+            ("Rejection", "rejected-approach"),
+            ("expert", "expert-gap"),
+            ("SUCCESS", "verified-success"),
+            ("correction", "correction"),
+        ],
+    )
+    def test_alias_is_canonicalized_for_both_schemas(self, raw, expected):
+        strict = StructuredReferencedExtractedPlaybookList.model_validate(
+            {
+                "playbooks": [
+                    {
+                        "rationale": "why",
+                        "evidence_kind": raw,
+                        "trigger": "when",
+                        "content": "do",
+                        "evidence_refs": ["T1"],
+                    }
+                ]
+            }
+        )
+        legacy = StructuredPlaybookContent.model_validate(
+            {"content": "do", "trigger": "when", "evidence_kind": raw}
+        )
+
+        assert strict.playbooks[0].evidence_kind == expected
+        assert legacy.evidence_kind == expected
+
+
+class TestConsolidationSearchKeys:
+    """A cached retrieval is only reusable while the search keys hold."""
+
+    @staticmethod
+    def _row(trigger: str, content: str = "c") -> UserPlaybook:
+        return UserPlaybook(
+            user_playbook_id=0,
+            agent_version="v1",
+            request_id="r1",
+            playbook_name="pb",
+            content=content,
+            trigger=trigger,
+            source="test",
+        )
+
+    def test_unchanged_survivors_keep_the_cache_valid(self):
+        from reflexio.server.services.playbook.service import (
+            _consolidation_search_keys,
+        )
+
+        before = _consolidation_search_keys([self._row("when X"), self._row("when Y")])
+        after = _consolidation_search_keys([self._row("when X")])
+
+        assert after <= before
+
+    def test_a_revised_trigger_invalidates_the_cache(self):
+        from reflexio.server.services.playbook.service import (
+            _consolidation_search_keys,
+        )
+
+        before = _consolidation_search_keys([self._row("when X")])
+        after = _consolidation_search_keys([self._row("when X, narrowly")])
+
+        assert not after <= before
+
+    def test_content_is_the_key_when_trigger_is_absent(self):
+        from reflexio.server.services.playbook.service import (
+            _consolidation_search_keys,
+        )
+
+        assert _consolidation_search_keys([self._row("", content="fallback")]) == {
+            "fallback"
+        }
 
 
 if __name__ == "__main__":

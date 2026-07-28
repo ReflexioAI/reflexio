@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+from collections import Counter
 from typing import TYPE_CHECKING
 
 from reflexio.models.api_schema.internal_schema import RequestInteractionDataModel
@@ -22,13 +23,26 @@ from reflexio.server.services.extractor_interaction_utils import (
     get_extractor_window_params,
 )
 from reflexio.server.services.operation_state_utils import OperationStateManager
+from reflexio.server.services.playbook.playbook_evidence import (
+    as_playbook_content,
+    build_playbook_extraction_contract,
+    candidate_rejection_reason,
+    resolve_verbatim_source_span,
+)
 from reflexio.server.services.playbook.playbook_service_utils import (
+    PlaybookEvidenceSource,
+    PlaybookEvidenceUnit,
+    StructuredExtractedPlaybookList,
     StructuredPlaybookContent,
+    StructuredPlaybookEvidence,
     StructuredPlaybookList,
+    StructuredReferencedExtractedPlaybookList,
+    build_playbook_prompt_context,
     construct_expert_playbook_extraction_messages,
     construct_playbook_extraction_messages_from_sessions,
     ensure_playbook_content,
     has_expert_content,
+    uses_evidence_grounded_extraction,
 )
 from reflexio.server.services.service_utils import (
     extract_interactions_from_request_interaction_data_models,
@@ -42,6 +56,7 @@ if TYPE_CHECKING:
     )
 
 logger = logging.getLogger(__name__)
+
 
 """
 Extract agent evolvement playbook entries from agent to improve its performance through self evolvement.
@@ -240,19 +255,25 @@ class PlaybookExtractor:
         Returns:
             list[UserPlaybook]: List of extracted user playbook entries
         """
-        # Collect source interaction IDs
-        source_interaction_ids = [
-            interaction.interaction_id
-            for ridm in request_interaction_data_models
-            for interaction in ridm.interactions
-            if interaction.interaction_id
-        ]
+        all_interactions = extract_interactions_from_request_interaction_data_models(
+            request_interaction_data_models
+        )
+        expert_mode = has_expert_content(all_interactions)
+        prompt_manager = self.request_context.prompt_manager
+        strict_evidence = uses_evidence_grounded_extraction(
+            prompt_manager, expert=expert_mode
+        )
+        prompt_context = build_playbook_prompt_context(
+            request_interaction_data_models,
+            expert=expert_mode,
+            label_turns=strict_evidence,
+        )
 
         # Check if mock mode is enabled
         if os.getenv("MOCK_LLM_RESPONSE", "").lower() == "true":
             logger.info("Mock mode: generating mock playbook entry")
             mock_response = self._generate_mock_playbook_list(
-                request_interaction_data_models
+                request_interaction_data_models, prompt_context.evidence_sources
             )
             logger.debug(
                 "Mock playbook list: %d entries — %s",
@@ -260,7 +281,9 @@ class PlaybookExtractor:
                 [entry.content for entry in mock_response.playbooks],
             )
             return self._process_structured_response_list(
-                mock_response, source_interaction_ids=source_interaction_ids
+                mock_response,
+                evidence_sources=prompt_context.evidence_sources,
+                evidence_units=prompt_context.evidence_units,
             )
 
         # Get tool_can_use from root config
@@ -275,23 +298,26 @@ class PlaybookExtractor:
             )
 
         # Check if interactions contain expert content — use expert extraction path
-        all_interactions = extract_interactions_from_request_interaction_data_models(
-            request_interaction_data_models
-        )
         playbook_definition = (
             self.config.extraction_definition_prompt.strip()
             if self.config.extraction_definition_prompt
             else ""
         )
-        prompt_manager = self.request_context.prompt_manager
+        contract = build_playbook_extraction_contract(
+            prompt_manager,
+            expert=expert_mode,
+            evidence_sources=prompt_context.evidence_sources,
+            evidence_units=prompt_context.evidence_units,
+        )
 
-        if has_expert_content(all_interactions):
+        if expert_mode:
             logger.info("Expert content detected, using expert extraction path")
             messages = construct_expert_playbook_extraction_messages(
                 prompt_manager=prompt_manager,
                 request_interaction_data_models=request_interaction_data_models,
                 agent_context_prompt=self.agent_context,
                 extraction_definition_prompt=playbook_definition,
+                prompt_context=prompt_context,
             )
         else:
             messages = construct_playbook_extraction_messages_from_sessions(
@@ -300,6 +326,7 @@ class PlaybookExtractor:
                 agent_context_prompt=self.agent_context,
                 extraction_definition_prompt=playbook_definition,
                 tool_can_use=tool_can_use_str,
+                prompt_context=prompt_context,
             )
         log_llm_messages(logger, "Playbook extraction", messages)
 
@@ -316,25 +343,50 @@ class PlaybookExtractor:
             service_config=self.service_config,
             agent_context=self.agent_context,
             messages=messages,
-            output_schema=StructuredPlaybookList,
+            output_schema=contract.schema,
             log_label="Playbook extraction",
+            # Opt strict normal extraction into the client's one bounded
+            # corrective repair turn. The validator only fires when the whole
+            # batch is ungrounded; individually bad candidates are filtered
+            # below without spending a repair turn.
+            structured_output_validator=contract.validator,
         )
         self._last_resumable_run_id = result.run_id
         self._last_resumable_token_totals = sum_trace_tokens(result.trace)
         self._last_model_provenance = result.model_provenance
-        if not isinstance(result.output, StructuredPlaybookList):
+        if not isinstance(
+            result.output,
+            StructuredPlaybookList
+            | StructuredReferencedExtractedPlaybookList
+            | StructuredExtractedPlaybookList,
+        ):
             logger.warning(
                 "Playbook extraction did not finish: %s",
                 result.finished_reason,
             )
+            if result.finished_reason in {"error", "no_tool_call"}:
+                raise RuntimeError(
+                    "Playbook extraction failed without structured output: "
+                    f"{result.finished_reason}"
+                )
             return []
+        if contract.strict:
+            return self._process_structured_response_list(
+                result.output,
+                evidence_sources=prompt_context.evidence_sources,
+                evidence_units=prompt_context.evidence_units,
+            )
         return self._process_structured_response_list(
             result.output,
-            source_interaction_ids=source_interaction_ids,
+            source_interaction_ids=[
+                interaction.interaction_id for interaction in all_interactions
+            ],
         )
 
     def _generate_mock_playbook_list(
-        self, request_interaction_data_models: list[RequestInteractionDataModel]
+        self,
+        request_interaction_data_models: list[RequestInteractionDataModel],
+        evidence_sources: dict[str, PlaybookEvidenceSource],
     ) -> StructuredPlaybookList:
         """
         Generate mock structured playbook list for testing purposes.
@@ -365,46 +417,104 @@ class PlaybookExtractor:
                 content_preview = last_interaction.content[:50]
                 trigger = f"user says something like '{content_preview}'"
 
+        evidence: list[StructuredPlaybookEvidence] = []
+        for turn_ref, source in reversed(evidence_sources.items()):
+            if source.interaction_id and source.evidence_texts:
+                evidence = [
+                    StructuredPlaybookEvidence(
+                        turn_ref=turn_ref, source_span=source.evidence_texts[0]
+                    )
+                ]
+                break
+
         entry = StructuredPlaybookContent(
             content=f"When {trigger}, improve on {playbook_definition} by adjusting the current approach.",
             trigger=trigger,
+            rationale="The referenced turn contains the task signal used to construct this mock rule.",
+            evidence_kind="verified-success",
+            future_task_class="similar interactions",
+            improvement_mechanism="reuses the grounded behavior from the referenced turn",
+            reader_angle="behavior",
+            evidence=evidence,
         )
         return StructuredPlaybookList(playbooks=[entry])
 
     def _process_structured_response_list(
         self,
-        response: StructuredPlaybookList,
-        source_interaction_ids: list[int],
+        response: (
+            StructuredPlaybookList
+            | StructuredReferencedExtractedPlaybookList
+            | StructuredExtractedPlaybookList
+        ),
+        source_interaction_ids: list[int] | None = None,
+        evidence_sources: dict[str, PlaybookEvidenceSource] | None = None,
+        evidence_units: dict[str, PlaybookEvidenceUnit] | None = None,
     ) -> list[UserPlaybook]:
         """
         Process a structured playbook list from the LLM into UserPlaybook entries.
 
-        Filters out entries with no usable content and emits one UserPlaybook per
-        valid entry. All emitted entries share the same source_interaction_ids
-        because they were extracted from the same window in a single LLM call.
+        Filters out entries with no usable content or valid evidence and emits
+        one UserPlaybook per valid entry. In production, each entry receives
+        only the source interaction IDs resolved from its cited local turns.
 
         Args:
             response (StructuredPlaybookList): Parsed Pydantic model from structured output
-            source_interaction_ids (list[int]): IDs of interactions used to generate these entries
+            source_interaction_ids: Legacy source IDs used by private callers without
+                an evidence map.
+            evidence_sources: Prompt-local turn references mapped to persisted sources.
 
         Returns:
             list[UserPlaybook]: Zero or more user playbook entries
         """
         user_playbooks: list[UserPlaybook] = []
-        for entry in response.playbooks:
-            playbook = self._build_user_playbook(entry, source_interaction_ids)
+        rejection_counts: Counter[str] = Counter()
+        for entry in map(as_playbook_content, response.playbooks):
+            if evidence_sources is not None:
+                # Sole rejection gate for the evidence-grounded path;
+                # ``_build_user_playbook`` trusts the candidate from here on.
+                rejection_reason = candidate_rejection_reason(
+                    entry, evidence_sources, evidence_units
+                )
+                if rejection_reason is not None:
+                    rejection_counts[rejection_reason] += 1
+                    logger.info(
+                        "event=playbook_candidate_rejected reason=%s",
+                        rejection_reason,
+                    )
+                    continue
+            playbook = self._build_user_playbook(
+                entry,
+                source_interaction_ids=source_interaction_ids or [],
+                evidence_sources=evidence_sources,
+                evidence_units=evidence_units,
+            )
             if playbook is not None:
                 user_playbooks.append(playbook)
+
+        if rejection_counts:
+            logger.info(
+                "event=playbook_evidence_validation_summary rejected=%d reasons=%s",
+                sum(rejection_counts.values()),
+                ",".join(
+                    f"{reason}:{count}"
+                    for reason, count in sorted(rejection_counts.items())
+                ),
+            )
 
         if not user_playbooks:
             logger.info(
                 "No playbook entries can be generated for the given interactions"
             )
         else:
+            interaction_count = (
+                len({source.interaction_id for source in evidence_sources.values()})
+                if evidence_sources is not None
+                else len(source_interaction_ids or [])
+            )
             logger.info(
                 "Extracted %d playbook entries from %d interactions",
                 len(user_playbooks),
-                len(source_interaction_ids),
+                interaction_count,
             )
         return user_playbooks
 
@@ -412,6 +522,8 @@ class PlaybookExtractor:
         self,
         entry: StructuredPlaybookContent,
         source_interaction_ids: list[int],
+        evidence_sources: dict[str, PlaybookEvidenceSource] | None = None,
+        evidence_units: dict[str, PlaybookEvidenceUnit] | None = None,
     ) -> UserPlaybook | None:
         """
         Convert one StructuredPlaybookContent entry into a UserPlaybook.
@@ -419,12 +531,54 @@ class PlaybookExtractor:
         Args:
             entry (StructuredPlaybookContent): A single parsed playbook entry from the LLM
             source_interaction_ids (list[int]): IDs of interactions used to generate this entry
+            evidence_sources: Prompt-local turn references mapped to persisted
+                sources.
 
         Returns:
             UserPlaybook | None: The constructed playbook, or None if the entry has no usable content
         """
         if not entry.has_content:
             return None
+
+        resolved_source_ids = list(source_interaction_ids)
+        source_span = entry.source_span
+        if evidence_sources is not None:
+            # Defence in depth: callers pre-filter, but this method is the last
+            # step before a row becomes persistable, so it re-checks rather than
+            # trusting the caller. The check is a pure function over the entry.
+            rejection_reason = candidate_rejection_reason(
+                entry, evidence_sources, evidence_units
+            )
+            if rejection_reason is not None:
+                logger.info(
+                    "event=playbook_candidate_rejected reason=%s",
+                    rejection_reason,
+                )
+                return None
+            resolved_source_ids = []
+            spans: list[str] = []
+            if entry.evidence_refs:
+                if evidence_units is None:  # Guarded by evidence validation.
+                    return None
+                for raw_ref in entry.evidence_refs:
+                    unit = evidence_units[raw_ref.strip()]
+                    if unit.interaction_id not in resolved_source_ids:
+                        resolved_source_ids.append(unit.interaction_id)
+                    if unit.source_span not in spans:
+                        spans.append(unit.source_span)
+            else:
+                for evidence in entry.evidence:
+                    source = evidence_sources[evidence.turn_ref.strip()]
+                    if source.interaction_id not in resolved_source_ids:
+                        resolved_source_ids.append(source.interaction_id)
+                    span = resolve_verbatim_source_span(
+                        evidence.source_span.strip(), source.evidence_texts
+                    )
+                    if span is None:  # defensive against post-validation drift
+                        return None
+                    if span not in spans:
+                        spans.append(span)
+            source_span = "\n\n".join(spans)
 
         playbook_content = ensure_playbook_content(entry.content, entry)
 
@@ -436,5 +590,8 @@ class PlaybookExtractor:
             content=playbook_content,
             trigger=entry.trigger,
             rationale=entry.rationale,
-            source_interaction_ids=source_interaction_ids,
+            source_interaction_ids=resolved_source_ids,
+            source_span=source_span,
+            notes=entry.notes,
+            reader_angle=entry.reader_angle or entry.evidence_kind,
         )

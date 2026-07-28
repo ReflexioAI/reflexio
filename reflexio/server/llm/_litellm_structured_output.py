@@ -19,11 +19,13 @@ so this module moves BEFORE ``_litellm_text_generation``.
 """
 
 import json
+import logging
+import re
 from functools import lru_cache
 from typing import TYPE_CHECKING, Any, get_args, get_origin
 
 import litellm
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from reflexio.server.llm._litellm_json_extraction import (
     _extract_json_from_string,
@@ -41,6 +43,29 @@ from reflexio.server.llm.llm_utils import (
 if TYPE_CHECKING:
     from reflexio.server.llm._litellm_types import LiteLLMConfig
 
+logger = logging.getLogger(__name__)
+
+
+def _safe_validation_errors(error: Exception) -> tuple[str, ...]:
+    """Return schema paths and error codes without including model content.
+
+    Only Pydantic validation errors carry a structured, content-free breakdown.
+    A JSON syntax error's message quotes the offending input, so it is
+    deliberately reduced to its position rather than passed through.
+    """
+    if isinstance(error, json.JSONDecodeError):
+        return (f"<root>: json_invalid at line {error.lineno} column {error.colno}",)
+    if not isinstance(error, ValidationError):
+        return ()
+    return tuple(
+        f"{'.'.join(str(part) for part in item['loc']) or '<root>'}: {item['type']}"
+        for item in error.errors(
+            include_url=False,
+            include_context=False,
+            include_input=False,
+        )
+    )
+
 
 def _single_list_field_name(response_format: type[BaseModel]) -> str | None:
     """Return the wrapper field for schemas shaped as ``{"items": [...]}``."""
@@ -51,6 +76,30 @@ def _single_list_field_name(response_format: type[BaseModel]) -> str | None:
     field_name, field = next(iter(fields.items()))
     if _is_list_annotation(field.annotation):
         return field_name
+    return None
+
+
+def _single_list_item_model(response_format: type[BaseModel]) -> type[BaseModel] | None:
+    """Return the item model for a one-field ``list[Model]`` wrapper schema."""
+    field_name = _single_list_field_name(response_format)
+    if field_name is None:
+        return None
+
+    annotation = response_format.model_fields[field_name].annotation
+    candidates = [annotation]
+    while candidates:
+        candidate = candidates.pop()
+        origin = get_origin(candidate)
+        if origin is list:
+            args = get_args(candidate)
+            if (
+                len(args) == 1
+                and isinstance(args[0], type)
+                and issubclass(args[0], BaseModel)
+            ):
+                return args[0]
+            return None
+        candidates.extend(arg for arg in get_args(candidate) if arg is not type(None))
     return None
 
 
@@ -69,11 +118,76 @@ def _validate_structured_payload(
     response_format: type[BaseModel],
     parsed: Any,
 ) -> BaseModel:
+    if isinstance(parsed, str):
+        # Some OpenAI-compatible providers occasionally JSON-encode the entire
+        # structured object as a JSON string. Decode exactly one extra layer;
+        # ordinary prose and multiply encoded payloads still fail closed.
+        parsed = json.loads(parsed)
     if isinstance(parsed, list) and (
         field_name := _single_list_field_name(response_format)
     ):
         return response_format.model_validate({field_name: parsed})
+    if (
+        isinstance(parsed, dict)
+        and (field_name := _single_list_field_name(response_format))
+        and field_name not in parsed
+        and (item_model := _single_list_item_model(response_format))
+    ):
+        # A common provider deviation for a single-item result is to return the
+        # validated list item directly and omit only its outer list wrapper. This
+        # shape is unambiguous: validate the dict against the declared item model
+        # before wrapping it. Any missing/invalid item field still fails normally
+        # and enters the bounded repair path.
+        item = item_model.model_validate(parsed)
+        return response_format.model_validate({field_name: [item]})
     return response_format.model_validate(parsed)
+
+
+def _salvage_complete_single_list_items(
+    response_format: type[BaseModel], json_str: str
+) -> BaseModel | None:
+    """Return only fully decoded, independently valid items before truncation."""
+    field_name = _single_list_field_name(response_format)
+    if field_name is None:
+        return None
+    match = re.search(rf'"{re.escape(field_name)}"\s*:\s*\[', json_str)
+    if match is None:
+        return None
+
+    decoder = json.JSONDecoder()
+    position = match.end()
+    valid_items: list[BaseModel] = []
+    while position < len(json_str):
+        while position < len(json_str) and json_str[position] in " \t\r\n,":
+            position += 1
+        if position >= len(json_str):
+            break
+        if json_str[position] == "]":
+            break
+        try:
+            raw_item, end = decoder.raw_decode(json_str, position)
+        except json.JSONDecodeError:
+            break
+        try:
+            parsed_item = response_format.model_validate({field_name: [raw_item]})
+        except ValidationError:
+            pass
+        else:
+            valid_items.extend(getattr(parsed_item, field_name))
+        position = end
+
+    if valid_items:
+        logger.warning(
+            "event=structured_output_salvaged schema=%s salvaged=%d",
+            response_format.__name__,
+            len(valid_items),
+        )
+        return response_format.model_validate({field_name: valid_items})
+    # Nothing complete survived. Never synthesize an empty-list success here:
+    # the caller only reaches this path because the body looked truncated, and
+    # an empty result would present a cut-off response as "the model found
+    # nothing". Returning None lets the caller raise the truncation error.
+    return None
 
 
 class StructuredOutputMixin:
@@ -217,6 +331,14 @@ class StructuredOutputMixin:
         if isinstance(content, BaseModel):
             return content
 
+        # Extraction helpers can isolate the first balanced object from a
+        # truncated outer list. Salvage complete valid list items before that
+        # isolation loses later siblings.
+        if isinstance(content, str) and _looks_truncated_json(content):
+            salvaged = _salvage_complete_single_list_items(response_format, content)
+            if salvaged is not None:
+                return salvaged
+
         # Try to parse JSON and convert to Pydantic model
         # Extract JSON from markdown code blocks if present
         json_str = _extract_json_from_string(content)
@@ -241,6 +363,11 @@ class StructuredOutputMixin:
                     from json_repair import repair_json
 
                     if _looks_truncated_json(json_str):
+                        salvaged = _salvage_complete_single_list_items(
+                            response_format, json_str
+                        )
+                        if salvaged is not None:
+                            return salvaged
                         raise StructuredOutputParseError(
                             "Structured output appears truncated",
                             raw_content=content,
@@ -275,4 +402,5 @@ class StructuredOutputMixin:
                         f"{type(e).__name__}. Content length: {content_len} chars "
                         f"(content omitted from logs).",
                         raw_content=content if isinstance(content, str) else None,
+                        validation_errors=_safe_validation_errors(e),
                     ) from e

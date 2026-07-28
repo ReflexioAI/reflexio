@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -499,6 +499,7 @@ def run_tool_loop(
     fallback_tool_name: str | None = None,
     multi_stage_schema: type[BaseModel] | None = None,
     response_format: type[BaseModel] | None = None,
+    structured_output_validator: Callable[[BaseModel], Sequence[str]] | None = None,
     tool_choice: str | dict[str, Any] = "auto",
     log_label: str | None = None,
 ) -> ToolLoopResult:
@@ -547,6 +548,9 @@ def run_tool_loop(
             agent finishes (a direct structured answer) while still letting the
             model call intermediate tools such as ``ask_human``. Leave unset for
             finish-sentinel-tool loops.
+        structured_output_validator: Optional validator that opts structured
+            responses into one corrective same-model repair turn. Returning an
+            empty sequence accepts any response that satisfies the schema.
         tool_choice (str | dict): Forwarded to each native tool-calling turn.
             Defaults to ``"auto"``. Pass an OpenAI tool-choice dict (e.g.
             ``{"type": "function", "function": {"name": "finish"}}``) to force a
@@ -673,6 +677,7 @@ def run_tool_loop(
                 tool_choice=tool_choice if tool_specs else None,
                 model_role=model_role,
                 response_format=response_format,
+                structured_output_validator=structured_output_validator,
             )
             resp = completion.value
             provenance = completion.provenance

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -201,6 +202,7 @@ def run_resumable_extraction_agent(
     messages: list[dict[str, Any]],
     output_schema: type[BaseModel],
     log_label: str,
+    structured_output_validator: (Callable[[BaseModel], Sequence[str]] | None) = None,
 ) -> AgentRunResult:
     """Run and finalize a config-gated classic extraction agent pass."""
     generation_request_id = request_id
@@ -222,6 +224,7 @@ def run_resumable_extraction_agent(
         extractor_config=extractor_config,
         service_config=service_config,
         agent_context=agent_context,
+        output_schema_name=output_schema.__name__,
     )
     extra_tools: list[Tool] = []
     extra_tool_context = None
@@ -257,6 +260,7 @@ def run_resumable_extraction_agent(
         extra_tools=extra_tools,
         extra_tool_context=extra_tool_context,
         log_label=log_label,
+        structured_output_validator=structured_output_validator,
     )
 
 
@@ -285,6 +289,9 @@ class ResumableExtractionAgent:
         extra_tools: list[Tool] | None = None,
         extra_tool_context: Any | None = None,
         log_label: str | None = None,
+        structured_output_validator: (
+            Callable[[BaseModel], Sequence[str]] | None
+        ) = None,
     ) -> AgentRunResult:
         """Create the run row, execute the tool loop, and store completed output."""
         run = replace(
@@ -313,6 +320,7 @@ class ResumableExtractionAgent:
             extra_tools=extra_tools,
             extra_tool_context=extra_tool_context,
             log_label=log_label,
+            structured_output_validator=structured_output_validator,
         )
 
     def resume(
@@ -325,6 +333,9 @@ class ResumableExtractionAgent:
         extra_tools: list[Tool] | None = None,
         extra_tool_context: Any | None = None,
         log_label: str | None = None,
+        structured_output_validator: (
+            Callable[[BaseModel], Sequence[str]] | None
+        ) = None,
     ) -> AgentRunResult:
         """Resume a claimed run with resolved async tool results in context."""
         logger.info(
@@ -354,6 +365,7 @@ class ResumableExtractionAgent:
             extra_tools=extra_tools,
             extra_tool_context=extra_tool_context,
             log_label=log_label,
+            structured_output_validator=structured_output_validator,
         )
 
     def _run(
@@ -365,6 +377,9 @@ class ResumableExtractionAgent:
         extra_tools: list[Tool] | None = None,
         extra_tool_context: Any | None = None,
         log_label: str | None = None,
+        structured_output_validator: (
+            Callable[[BaseModel], Sequence[str]] | None
+        ) = None,
     ) -> AgentRunResult:
         max_steps = self.max_steps
         if run.max_steps_remaining is not None:
@@ -379,7 +394,8 @@ class ResumableExtractionAgent:
         #
         # No retry loop: a plain (no-tool) turn is now the SUCCESS terminus
         # (finished_reason="structured_output"), not a dropped output, and the
-        # client already retries once on a malformed structured parse. The
+        # client performs one configured malformed-output retry or corrective
+        # repair turn. The
         # async-info tool handlers read ctx via getattr(ctx, "extra_tool_context",
         # ctx), so the bare context object can be passed directly.
         registry = ToolRegistry(list(extra_tools or []))
@@ -391,6 +407,7 @@ class ResumableExtractionAgent:
             max_steps=max_steps,
             ctx=extra_tool_context,
             response_format=output_schema,
+            structured_output_validator=structured_output_validator,
             tool_choice="auto",
             log_label=log_label,
         )

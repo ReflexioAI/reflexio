@@ -1,0 +1,294 @@
+{
+  "version": 1,
+  "purpose": "Frozen domain-substitution corpus for normal user playbook quality",
+  "cases": [
+    {
+      "id": "code_correction_execute",
+      "synthetic_org": "software_team",
+      "domain": "software",
+      "expectation": "must_capture",
+      "family": "correction",
+      "turns": [
+        {"role": "user", "content": "Fix the null handling in the parser."},
+        {"role": "agent", "content": "Here is an explanation of how null handling could be improved."},
+        {"role": "user", "content": "Please make the code change instead of describing it."}
+      ],
+      "expected_rule": "Execute the requested code change instead of substituting an explanation.",
+      "earliest_trigger": "When the user asks for a concrete code change",
+      "leakage_probe": "make the code change instead of describing it"
+    },
+    {
+      "id": "analytics_durable_preference",
+      "synthetic_org": "research_group",
+      "domain": "analytics",
+      "expectation": "must_capture",
+      "family": "preference",
+      "turns": [
+        {"role": "user", "content": "For future analyses, lead with a compact table before commentary."}
+      ],
+      "expected_rule": "Lead future analyses with a compact table before commentary.",
+      "earliest_trigger": "When preparing an analysis for this user",
+      "leakage_probe": "lead with a compact table before commentary"
+    },
+    {
+      "id": "ops_ignored_answer",
+      "synthetic_org": "operations_team",
+      "domain": "operations",
+      "expectation": "must_capture",
+      "family": "ignored_answer",
+      "turns": [
+        {"role": "agent", "content": "Which environment should receive the rollout?"},
+        {"role": "user", "content": "Staging."},
+        {"role": "agent", "content": "Which environment should receive the rollout?"}
+      ],
+      "expected_rule": "Treat the supplied environment as resolved and proceed without asking again.",
+      "earliest_trigger": "When the user answers a necessary rollout question",
+      "leakage_probe": "which environment should receive the rollout"
+    },
+    {
+      "id": "report_non_delivery",
+      "synthetic_org": "finance_team",
+      "domain": "reporting",
+      "expectation": "must_capture",
+      "family": "non_delivery",
+      "turns": [
+        {"role": "user", "content": "Export the reconciled ledger as CSV."},
+        {"role": "agent", "content": "I am preparing the export now."},
+        {"role": "user", "content": "Export the reconciled ledger as CSV."}
+      ],
+      "expected_rule": "Perform and visibly provide the requested export rather than only announcing work.",
+      "earliest_trigger": "When the user requests a data export",
+      "leakage_probe": "export the reconciled ledger as CSV"
+    },
+    {
+      "id": "query_exact_duplicate",
+      "synthetic_org": "data_platform",
+      "domain": "data",
+      "expectation": "must_capture",
+      "family": "duplicate",
+      "turns": [
+        {"role": "user", "content": "Run the monthly retention query once."},
+        {"role": "agent", "content": "query_result job=retention-monthly execution=1 rows=842"},
+        {"role": "agent", "content": "query_result job=retention-monthly execution=2 rows=842"}
+      ],
+      "expected_rule": "Before execution, skip an identical query already completed in the same task.",
+      "earliest_trigger": "Before running a query when an identical query already completed in this task",
+      "leakage_probe": "monthly retention query execution two rows"
+    },
+    {
+      "id": "api_bounded_retry",
+      "synthetic_org": "integration_team",
+      "domain": "api",
+      "expectation": "must_capture",
+      "family": "bounded_retry",
+      "turns": [
+        {"role": "agent", "content": "GET /records?page_size=500 returned 413 Payload Too Large"},
+        {"role": "agent", "content": "GET /records?page_size=100 returned 200 with records"}
+      ],
+      "expected_rule": "After this size error, retry with the demonstrated smaller page size.",
+      "earliest_trigger": "When the records endpoint rejects the demonstrated large page size",
+      "leakage_probe": "records page size returned payload too large"
+    },
+    {
+      "id": "travel_ask_once",
+      "synthetic_org": "travel_desk",
+      "domain": "travel",
+      "expectation": "must_capture",
+      "family": "ask_once_act",
+      "turns": [
+        {"role": "agent", "content": "What return date should I use for the itinerary?"},
+        {"role": "user", "content": "October 18."},
+        {"role": "agent", "content": "search_flights return_date=2026-10-18 status=started"}
+      ],
+      "expected_rule": "Ask for the missing return date once and use the answer immediately.",
+      "earliest_trigger": "When an itinerary request lacks a necessary return date",
+      "leakage_probe": "what return date should I use"
+    },
+    {
+      "id": "database_verified_success",
+      "synthetic_org": "database_team",
+      "domain": "database",
+      "expectation": "must_capture",
+      "family": "verified_success",
+      "turns": [
+        {"role": "agent", "content": "Applied the migration to the disposable schema."},
+        {"role": "agent", "content": "Re-applied the migration successfully and verified the unique constraint."},
+        {"role": "user", "content": "Great, the idempotency check caught the issue we were worried about."}
+      ],
+      "expected_rule": "Verify migration idempotency by applying it twice in a disposable schema.",
+      "earliest_trigger": "When validating a database migration before release",
+      "leakage_probe": "re applied the migration successfully and verified"
+    },
+    {
+      "id": "support_rejected_approach",
+      "synthetic_org": "support_team",
+      "domain": "support",
+      "expectation": "must_capture",
+      "family": "rejected_approach",
+      "turns": [
+        {"role": "agent", "content": "I drafted a response that asks the customer to reinstall."},
+        {"role": "user", "content": "Do not ask for a reinstall. Have them refresh the expired token instead."}
+      ],
+      "expected_rule": "For the evidenced expired-token condition, request a token refresh instead of reinstalling.",
+      "earliest_trigger": "When handling the evidenced expired-token support condition",
+      "leakage_probe": "have them refresh the expired token instead"
+    },
+    {
+      "id": "localization_preference",
+      "synthetic_org": "communications_team",
+      "domain": "localization",
+      "expectation": "must_capture",
+      "family": "preference",
+      "turns": [
+        {"role": "user", "content": "Whenever you draft customer notices for me, use Canadian French."}
+      ],
+      "expected_rule": "Use Canadian French for this user's customer notices.",
+      "earliest_trigger": "When drafting a customer notice for this user",
+      "leakage_probe": "draft customer notices for me use Canadian French"
+    },
+    {
+      "id": "authorized_action_stall",
+      "synthetic_org": "release_team",
+      "domain": "release",
+      "expectation": "must_capture",
+      "family": "correction",
+      "turns": [
+        {"role": "user", "content": "If the checks pass, publish the internal package."},
+        {"role": "agent", "content": "All checks passed. Shall I publish now?"},
+        {"role": "user", "content": "I already authorized publishing after the checks pass."}
+      ],
+      "expected_rule": "Act on the user's existing conditional authorization when its condition is satisfied.",
+      "earliest_trigger": "When a previously authorized action's stated condition becomes satisfied",
+      "leakage_probe": "already authorized publishing after the checks pass"
+    },
+    {
+      "id": "research_tool_sequence",
+      "synthetic_org": "policy_team",
+      "domain": "research",
+      "expectation": "must_capture",
+      "family": "verified_success",
+      "turns": [
+        {"role": "agent", "content": "The summary page omitted the effective date."},
+        {"role": "agent", "content": "Opened the primary regulation and found the effective date in section 12."},
+        {"role": "user", "content": "That primary-source check gives me what I need."}
+      ],
+      "expected_rule": "When a summary omits the effective date, check the primary regulation.",
+      "earliest_trigger": "When a secondary summary lacks a required effective date",
+      "leakage_probe": "found the effective date in section twelve"
+    },
+    {
+      "id": "status_only_negative",
+      "synthetic_org": "media_team",
+      "domain": "media",
+      "expectation": "must_reject",
+      "family": "internal_status",
+      "turns": [
+        {"role": "user", "content": "Render the intro clip."},
+        {"role": "agent", "content": "render_status=success"}
+      ],
+      "expected_rule": null,
+      "earliest_trigger": null,
+      "leakage_probe": "render status success without visible delivery"
+    },
+    {
+      "id": "single_task_choice_negative",
+      "synthetic_org": "legal_team",
+      "domain": "legal",
+      "expectation": "must_reject",
+      "family": "one_task_choice",
+      "turns": [
+        {"role": "agent", "content": "PDF or DOCX for this filing?"},
+        {"role": "user", "content": "PDF for this filing."}
+      ],
+      "expected_rule": null,
+      "earliest_trigger": null,
+      "leakage_probe": "pdf for this filing only"
+    },
+    {
+      "id": "changed_request_negative",
+      "synthetic_org": "marketing_team",
+      "domain": "marketing",
+      "expectation": "must_reject",
+      "family": "changed_request",
+      "turns": [
+        {"role": "user", "content": "Draft a launch note for existing customers."},
+        {"role": "agent", "content": "Delivered the existing-customer launch note."},
+        {"role": "user", "content": "Now make a separate version for new prospects with different pricing."}
+      ],
+      "expected_rule": null,
+      "earliest_trigger": null,
+      "leakage_probe": "separate version for new prospects with different pricing"
+    },
+    {
+      "id": "intentional_rerun_negative",
+      "synthetic_org": "quality_team",
+      "domain": "quality",
+      "expectation": "must_reject",
+      "family": "intentional_repeat",
+      "turns": [
+        {"role": "user", "content": "Run the benchmark twice so we can compare variance."},
+        {"role": "agent", "content": "benchmark run=1 score=81"},
+        {"role": "agent", "content": "benchmark run=2 score=83"}
+      ],
+      "expected_rule": null,
+      "earliest_trigger": null,
+      "leakage_probe": "run the benchmark twice to compare variance"
+    },
+    {
+      "id": "unseen_replacement_negative",
+      "synthetic_org": "design_team",
+      "domain": "design",
+      "expectation": "must_reject",
+      "family": "unseen_replacement",
+      "turns": [
+        {"role": "agent", "content": "The mockup is ready."},
+        {"role": "user", "content": "I do not like it."}
+      ],
+      "expected_rule": null,
+      "earliest_trigger": null,
+      "leakage_probe": "mockup is ready but replacement remains unseen"
+    },
+    {
+      "id": "routine_success_negative",
+      "synthetic_org": "sales_team",
+      "domain": "sales",
+      "expectation": "must_reject",
+      "family": "routine_success",
+      "turns": [
+        {"role": "user", "content": "Summarize the three supplied account notes."},
+        {"role": "agent", "content": "Delivered a summary covering all three account notes."},
+        {"role": "user", "content": "Thanks."}
+      ],
+      "expected_rule": null,
+      "earliest_trigger": null,
+      "leakage_probe": "summary covering all three account notes"
+    },
+    {
+      "id": "proactive_unvalidated_negative",
+      "synthetic_org": "procurement_team",
+      "domain": "procurement",
+      "expectation": "must_reject",
+      "family": "unvalidated_proactive",
+      "turns": [
+        {"role": "agent", "content": "I proactively reordered the supplier shortlist by estimated risk."}
+      ],
+      "expected_rule": null,
+      "earliest_trigger": null,
+      "leakage_probe": "proactively reordered the supplier shortlist by estimated risk"
+    },
+    {
+      "id": "unsupported_cause_negative",
+      "synthetic_org": "security_team",
+      "domain": "security",
+      "expectation": "must_reject",
+      "family": "unsupported_causality",
+      "turns": [
+        {"role": "agent", "content": "The first scan failed."},
+        {"role": "agent", "content": "The second scan completed."}
+      ],
+      "expected_rule": null,
+      "earliest_trigger": null,
+      "leakage_probe": "second scan completed after the first failed"
+    }
+  ]
+}

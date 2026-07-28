@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import uuid
 from collections import defaultdict
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -31,11 +32,18 @@ from reflexio.server.services.extraction.resumable_agent import (
     decode_committed_output,
 )
 from reflexio.server.services.playbook.components.extractor import PlaybookExtractor
+from reflexio.server.services.playbook.playbook_evidence import (
+    build_playbook_extraction_contract,
+)
 from reflexio.server.services.playbook.playbook_service_utils import (
+    StructuredExtractedPlaybookList,
     StructuredPlaybookList,
+    StructuredReferencedExtractedPlaybookList,
+    build_playbook_prompt_context,
     construct_expert_playbook_extraction_messages,
     construct_playbook_extraction_messages_from_sessions,
     has_expert_content,
+    uses_evidence_grounded_extraction,
 )
 from reflexio.server.services.playbook.service import (
     PlaybookGenerationService,
@@ -189,6 +197,39 @@ def _log_config_hash_drift(
             run.binding.extractor_config_hash,
             current_hash,
         )
+
+
+def _run_playbook_contract_selection(
+    request_context: RequestContext,
+    run: AgentRunRecord,
+    *,
+    expert: bool,
+) -> tuple[bool, bool]:
+    """Resolve the playbook schema selected when the durable run was created."""
+    output_schema_name = run.generation_request_snapshot.get("output_schema_name")
+    if output_schema_name == StructuredReferencedExtractedPlaybookList.__name__:
+        return True, True
+    if output_schema_name == StructuredExtractedPlaybookList.__name__:
+        return True, False
+    if output_schema_name == StructuredPlaybookList.__name__:
+        return False, False
+    # Backward compatibility for durable runs created before the schema name was
+    # snapshotted. New runs never consult activation state during resume.
+    strict = uses_evidence_grounded_extraction(
+        request_context.prompt_manager,
+        expert=expert,
+    )
+    return strict, strict and not expert
+
+
+def _run_uses_strict_playbook_evidence(
+    request_context: RequestContext,
+    run: AgentRunRecord,
+    *,
+    expert: bool,
+) -> bool:
+    """Backward-compatible boolean view of the snapshotted contract."""
+    return _run_playbook_contract_selection(request_context, run, expert=expert)[0]
 
 
 class ExtractionResumeWorker:
@@ -533,12 +574,6 @@ class ExtractionResumeWorker:
             service_config=service_config,
             agent_context=agent_context,
         )
-        source_interaction_ids = [
-            interaction.interaction_id
-            for data_model in request_interaction_data_models
-            for interaction in data_model.interactions
-            if interaction.interaction_id
-        ]
         playbook_definition = (
             extractor_config.extraction_definition_prompt.strip()
             if extractor_config.extraction_definition_prompt
@@ -548,12 +583,32 @@ class ExtractionResumeWorker:
             request_interaction_data_models
         )
         prompt_manager = self.request_context.prompt_manager
-        if has_expert_content(all_interactions):
+        expert_mode = has_expert_content(all_interactions)
+        strict_evidence, evidence_references = _run_playbook_contract_selection(
+            self.request_context,
+            run,
+            expert=expert_mode,
+        )
+        prompt_context = build_playbook_prompt_context(
+            request_interaction_data_models,
+            expert=expert_mode,
+            label_turns=strict_evidence,
+        )
+        contract = build_playbook_extraction_contract(
+            prompt_manager,
+            expert=expert_mode,
+            evidence_sources=prompt_context.evidence_sources,
+            evidence_units=prompt_context.evidence_units,
+            strict_override=strict_evidence,
+            evidence_references_override=evidence_references,
+        )
+        if expert_mode:
             messages = construct_expert_playbook_extraction_messages(
                 prompt_manager=prompt_manager,
                 request_interaction_data_models=request_interaction_data_models,
                 agent_context_prompt=agent_context,
                 extraction_definition_prompt=playbook_definition,
+                prompt_context=prompt_context,
             )
         else:
             root_config = self.request_context.configurator.get_config()
@@ -571,6 +626,7 @@ class ExtractionResumeWorker:
                 agent_context_prompt=agent_context,
                 extraction_definition_prompt=playbook_definition,
                 tool_can_use=tool_can_use,
+                prompt_context=prompt_context,
             )
         result = self._resume_agent(
             run=run,
@@ -580,22 +636,34 @@ class ExtractionResumeWorker:
                 extractor_config=extractor_config,
                 resolved_calls=resolved_calls,
             ),
-            output_schema=StructuredPlaybookList,
+            output_schema=contract.schema,
             resolved_calls=resolved_calls,
             log_label="Playbook extraction resume",
+            # Same bounded corrective turn a fresh run gets, so a resumed run
+            # cannot yield a batch a fresh run would have rejected.
+            structured_output_validator=contract.validator,
         )
-        if not isinstance(result.output, StructuredPlaybookList):
+        if not isinstance(
+            result.output,
+            StructuredPlaybookList
+            | StructuredReferencedExtractedPlaybookList
+            | StructuredExtractedPlaybookList,
+        ):
             raise ResumeWorkerError(
                 f"Playbook resume did not finish: {result.finished_reason}"
             )
-        return (
-            extractor._process_structured_response_list(
+        if contract.strict:
+            items = extractor._process_structured_response_list(
                 result.output,
-                source_interaction_ids=source_interaction_ids,
-            ),
-            result.pending_tool_call_ids,
-            result.model_provenance,
-        )
+                evidence_sources=prompt_context.evidence_sources,
+                evidence_units=prompt_context.evidence_units,
+            )
+        else:
+            items = extractor._process_structured_response_list(
+                result.output,
+                source_interaction_ids=list(run.binding.source_interaction_ids),
+            )
+        return items, result.pending_tool_call_ids, result.model_provenance
 
     def _messages_with_prior_knowledge(
         self,
@@ -633,6 +701,9 @@ class ExtractionResumeWorker:
         output_schema: type[BaseModel],
         resolved_calls: list[PendingToolCallRecord],
         log_label: str,
+        structured_output_validator: (
+            Callable[[BaseModel], Sequence[str]] | None
+        ) = None,
     ) -> AgentRunResult:
         extra_tools, extra_context = self._extra_tools_for_run(run)
         return ResumableExtractionAgent(
@@ -646,6 +717,7 @@ class ExtractionResumeWorker:
             extra_tools=extra_tools,
             extra_tool_context=extra_context,
             log_label=log_label,
+            structured_output_validator=structured_output_validator,
         )
 
     def _items_from_committed_output(
@@ -730,7 +802,40 @@ class ExtractionResumeWorker:
     ) -> tuple[list[Any], list[str]]:
         if not isinstance(extractor_config, PlaybookConfig):
             raise ResumeWorkerError("Expected playbook extractor config")
-        output = StructuredPlaybookList.model_validate(committed_output)
+        expert_mode = has_expert_content(
+            extract_interactions_from_request_interaction_data_models(
+                request_interaction_data_models
+            )
+        )
+        strict_evidence, evidence_references = _run_playbook_contract_selection(
+            self.request_context,
+            run,
+            expert=expert_mode,
+        )
+        prompt_context = build_playbook_prompt_context(
+            request_interaction_data_models,
+            expert=expert_mode,
+            label_turns=strict_evidence,
+        )
+        contract = build_playbook_extraction_contract(
+            self.request_context.prompt_manager,
+            expert=expert_mode,
+            evidence_sources=prompt_context.evidence_sources,
+            evidence_units=prompt_context.evidence_units,
+            strict_override=strict_evidence,
+            evidence_references_override=evidence_references,
+        )
+        output = contract.schema.model_validate(committed_output)
+        if not isinstance(
+            output,
+            StructuredPlaybookList
+            | StructuredReferencedExtractedPlaybookList
+            | StructuredExtractedPlaybookList,
+        ):
+            raise ResumeWorkerError(
+                "Committed playbook output validated to an unexpected schema: "
+                f"{type(output).__name__}"
+            )
         agent_context = self.request_context.configurator.get_agent_context()
         service_config = PlaybookGenerationServiceConfig(
             request_id=run.binding.request_id,
@@ -747,19 +852,18 @@ class ExtractionResumeWorker:
             service_config=service_config,
             agent_context=agent_context,
         )
-        source_interaction_ids = [
-            interaction.interaction_id
-            for data_model in request_interaction_data_models
-            for interaction in data_model.interactions
-            if interaction.interaction_id
-        ]
-        return (
-            extractor._process_structured_response_list(
+        if contract.strict:
+            items = extractor._process_structured_response_list(
                 output,
-                source_interaction_ids=source_interaction_ids,
-            ),
-            run.pending_tool_call_ids,
-        )
+                evidence_sources=prompt_context.evidence_sources,
+                evidence_units=prompt_context.evidence_units,
+            )
+        else:
+            items = extractor._process_structured_response_list(
+                output,
+                source_interaction_ids=list(run.binding.source_interaction_ids),
+            )
+        return items, run.pending_tool_call_ids
 
     def _finalize_items(
         self,

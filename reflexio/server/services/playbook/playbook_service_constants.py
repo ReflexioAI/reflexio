@@ -10,6 +10,7 @@ class PlaybookServiceConstants:
     PLAYBOOK_SHOULD_GENERATE_PROMPT_ID = "playbook_should_generate"
     PLAYBOOK_EXTRACTION_CONTEXT_PROMPT_ID = "playbook_extraction_context"
     PLAYBOOK_EXTRACTION_PROMPT_ID = "playbook_extraction_main"
+    PLAYBOOK_CANDIDATE_REVIEW_PROMPT_ID = "playbook_candidate_review"
     PLAYBOOK_AGGREGATION_PROMPT_ID = "playbook_aggregation"
 
     # ===============================

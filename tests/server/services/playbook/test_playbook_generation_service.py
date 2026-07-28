@@ -766,6 +766,248 @@ def test_finalize_without_provenance_emits_create_with_null_model_fields():
         )
 
 
+def test_resolve_write_plan_honors_reject_all_consolidation():
+    """An intentionally empty consolidation result must not restore candidates."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        service = PlaybookGenerationService(
+            llm_client=LiteLLMClient(LiteLLMConfig(model="gpt-4o-mini")),
+            request_context=RequestContext(org_id="0", storage_base_dir=temp_dir),
+        )
+        service.service_config = PlaybookGenerationServiceConfig(
+            request_id="test_request_id",
+            agent_version="1.0",
+            user_id="test_user",
+            source="test_source",
+        )
+        candidate = UserPlaybook(
+            agent_version="1.0",
+            request_id="test_request_id",
+            content="A candidate already covered by an existing playbook.",
+            trigger="When handling the same task",
+        )
+
+        with (
+            patch(
+                "reflexio.server.services.playbook.components.consolidator.PlaybookConsolidator",
+            ) as consolidator_class,
+            patch.object(
+                _storage(service), "precompute_user_playbook_embeddings"
+            ) as precompute,
+        ):
+            consolidator_class.return_value.deduplicate.return_value = ([], [], [])
+            plan = service._resolve_write_plan([[candidate]])
+
+        assert plan is None
+        precompute.assert_not_called()
+
+
+def test_resolve_write_plan_reviews_grounded_normal_candidates_before_consolidation():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        service = PlaybookGenerationService(
+            llm_client=LiteLLMClient(LiteLLMConfig(model="gpt-4o-mini")),
+            request_context=RequestContext(org_id="0", storage_base_dir=temp_dir),
+        )
+        service.service_config = PlaybookGenerationServiceConfig(
+            request_id="test_request_id",
+            agent_version="1.0",
+            user_id="test_user",
+            source="test_source",
+            auto_run=False,
+        )
+        playbook_config = PlaybookConfig(
+            extractor_name="test_playbook",
+            extraction_definition_prompt="Review grounded lessons",
+        )
+        service.configurator.set_config_by_name(
+            "user_playbook_extractor_config", playbook_config
+        )
+        request = Request(
+            request_id="source_request",
+            user_id="test_user",
+            source="test_source",
+            agent_version="1.0",
+            session_id="session_1",
+        )
+        interaction = Interaction(
+            interaction_id=44,
+            user_id="test_user",
+            request_id="source_request",
+            content="Use the answer I already supplied.",
+            role="user",
+            created_at=44,
+        )
+        _storage(service).add_request(request)
+        _storage(service).add_user_interaction("test_user", interaction)
+        candidate = UserPlaybook(
+            agent_version="1.0",
+            request_id="test_request_id",
+            user_id="test_user",
+            content="Use the supplied answer.",
+            trigger="When the user supplies the requested answer",
+            rationale="The user explicitly corrected the repeated question.",
+            source_interaction_ids=[44],
+            source_span="Use the answer I already supplied.",
+            reader_angle="correction",
+        )
+        reviewed = candidate.model_copy(
+            update={"content": "Treat the supplied answer as binding."}
+        )
+
+        with (
+            patch(
+                "reflexio.server.services.playbook.components.consolidator.PlaybookConsolidator",
+            ) as consolidator_class,
+            patch(
+                "reflexio.server.services.playbook.components.reviewer.PlaybookCandidateReviewer",
+            ) as reviewer_class,
+            patch.object(_storage(service), "precompute_user_playbook_embeddings"),
+            patch.dict("os.environ", {"MOCK_LLM_RESPONSE": "false"}),
+        ):
+            consolidator = consolidator_class.return_value
+            consolidator.retrieve_existing_playbooks.return_value = []
+            consolidator.deduplicate.side_effect = lambda results, *_args, **_kwargs: (
+                [item for result in results for item in result],
+                [],
+                [],
+            )
+            reviewer = reviewer_class.return_value
+            reviewer.is_enabled.return_value = True
+            reviewer.review.return_value = [reviewed]
+
+            plan = service._resolve_write_plan([[candidate]])
+
+        assert plan is not None
+        assert plan.new_playbooks == [reviewed]
+        reviewer.review.assert_called_once()
+        consolidator.deduplicate.assert_called_once()
+        assert consolidator.deduplicate.call_args.args[0] == [[reviewed]]
+
+
+def test_review_interaction_window_raises_when_source_filter_excludes_window():
+    service = PlaybookGenerationService(
+        llm_client=MagicMock(), request_context=MagicMock()
+    )
+    service.service_config = PlaybookGenerationServiceConfig(
+        request_id="request",
+        agent_version="v1",
+    )
+    playbook_config = PlaybookConfig(
+        extractor_name="test_playbook",
+        extraction_definition_prompt="Review grounded lessons",
+    )
+    extractor = MagicMock()
+    extractor._get_interactions.return_value = None
+
+    with (
+        patch.object(service, "_create_extractor", return_value=extractor),
+        pytest.raises(RuntimeError, match="source filter excluded"),
+    ):
+        service._review_interaction_window(playbook_config)
+
+
+def test_review_interaction_window_returns_honest_empty_window():
+    service = PlaybookGenerationService(
+        llm_client=MagicMock(), request_context=MagicMock()
+    )
+    service.service_config = PlaybookGenerationServiceConfig(
+        request_id="request",
+        agent_version="v1",
+    )
+    playbook_config = PlaybookConfig(
+        extractor_name="test_playbook",
+        extraction_definition_prompt="Review grounded lessons",
+    )
+    extractor = MagicMock()
+    extractor._get_interactions.return_value = []
+
+    with patch.object(service, "_create_extractor", return_value=extractor):
+        assert service._review_interaction_window(playbook_config) == []
+
+
+def test_loading_a_new_generation_request_clears_the_review_window_cache():
+    service = PlaybookGenerationService(
+        llm_client=MagicMock(), request_context=MagicMock()
+    )
+    service._review_window_cache = [MagicMock(spec=RequestInteractionDataModel)]
+
+    config = service._load_generation_service_config(
+        PlaybookGenerationRequest(
+            request_id="request-2",
+            agent_version="v1",
+            user_id="user-2",
+        )
+    )
+
+    assert config.request_id == "request-2"
+    assert service._review_window_cache is None
+
+
+def test_resolve_write_plan_fails_closed_for_strict_candidate_without_evidence():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        service = PlaybookGenerationService(
+            llm_client=LiteLLMClient(LiteLLMConfig(model="gpt-4o-mini")),
+            request_context=RequestContext(org_id="0", storage_base_dir=temp_dir),
+        )
+        service.service_config = PlaybookGenerationServiceConfig(
+            request_id="test_request_id",
+            agent_version="1.0",
+            user_id="test_user",
+            source="test_source",
+            auto_run=False,
+        )
+        service.configurator.set_config_by_name(
+            "user_playbook_extractor_config",
+            PlaybookConfig(
+                extractor_name="test_playbook",
+                extraction_definition_prompt="Review grounded lessons",
+            ),
+        )
+        request = Request(
+            request_id="source_request",
+            user_id="test_user",
+            source="test_source",
+            agent_version="1.0",
+            session_id="session_1",
+        )
+        interaction = Interaction(
+            interaction_id=45,
+            user_id="test_user",
+            request_id="source_request",
+            content="Use the answer I already supplied.",
+            role="user",
+            created_at=45,
+        )
+        _storage(service).add_request(request)
+        _storage(service).add_user_interaction("test_user", interaction)
+        candidate = UserPlaybook(
+            agent_version="1.0",
+            request_id="test_request_id",
+            user_id="test_user",
+            content="Use the supplied answer.",
+            trigger="When the user supplies the requested answer",
+            rationale="The user explicitly corrected the repeated question.",
+            source_interaction_ids=[45],
+            source_span=None,
+            reader_angle="correction",
+        )
+
+        with (
+            patch(
+                "reflexio.server.services.playbook.components.consolidator.PlaybookConsolidator",
+            ),
+            patch(
+                "reflexio.server.services.playbook.components.reviewer.PlaybookCandidateReviewer",
+            ) as reviewer_class,
+            patch.dict("os.environ", {"MOCK_LLM_RESPONSE": "false"}),
+        ):
+            reviewer_class.return_value.is_enabled.return_value = True
+            with pytest.raises(
+                RuntimeError,
+                match="missing validated evidence metadata: C1",
+            ):
+                service._resolve_write_plan([[candidate]])
+
+
 def test_run_manual_regular_no_window_size(mock_chat_completion):
     """Test run_manual_regular works even without window_size configured.
 

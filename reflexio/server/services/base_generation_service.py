@@ -180,6 +180,11 @@ def _cheap_should_run_reject(
 
 # Timeout for individual extractor execution (safety net if LLM provider ignores its own timeout)
 EXTRACTOR_TIMEOUT_SECONDS = 300
+# A two-rung LLM ladder can legitimately consume two independent 125-second
+# provider bounds during one tool-driven extraction step. Leave enough room for
+# that fallback and one follow-up while staying below the 600-second outer
+# generation-service guard.
+FALLBACK_EXTRACTOR_TIMEOUT_SECONDS = 540
 
 TExtractorConfig = TypeVar("TExtractorConfig")
 TExtractor = TypeVar("TExtractor")

@@ -43,7 +43,7 @@ def _build_registry() -> dict[str, ModelRegistryEntry]:
     )
     from reflexio.server.services.playbook.playbook_service_utils import (
         PlaybookAggregationOutput,
-        StructuredPlaybookList,
+        StructuredReferencedExtractedPlaybookList,
     )
     from reflexio.server.services.playbook_optimizer.models import JudgeOutput
     from reflexio.server.services.profile.components.consolidator import (
@@ -57,12 +57,15 @@ def _build_registry() -> dict[str, ModelRegistryEntry]:
 
     return {
         "playbook_extraction": ModelRegistryEntry(
-            model_class=StructuredPlaybookList,
+            model_class=StructuredReferencedExtractedPlaybookList,
             minimal_valid={
                 "playbooks": [
                     {
                         "content": "When user asks a question, provide a detailed answer rather than a brief response.",
                         "trigger": "when user asks a question",
+                        "rationale": "A referenced correction shows that a brief response omitted required detail.",
+                        "evidence_kind": "correction",
+                        "evidence_refs": ["T1"],
                     },
                 ],
             },

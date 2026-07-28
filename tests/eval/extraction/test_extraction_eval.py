@@ -243,7 +243,14 @@ def test_live_extraction_provider_returns_canned_items(tmp_path):
                 {
                     "trigger": "user states a UI preference",
                     "content": "Default the workspace to dark mode for this user.",
-                    "rationale": "User explicitly asked for dark mode.",
+                    "rationale": "The explicit preference applies to future workspace configuration tasks and selecting dark mode honors it.",
+                    "evidence_kind": "preference",
+                    "evidence": [
+                        {
+                            "turn_ref": "T1",
+                            "source_span": "I prefer dark mode.",
+                        }
+                    ],
                 }
             ]
         },
@@ -276,6 +283,8 @@ def test_live_extraction_provider_returns_canned_items(tmp_path):
     assert isinstance(profiles, list)
     assert isinstance(playbooks, list)
     assert len(playbooks) == 1
+    # The model's own wording is preserved: it restates the quoted preference
+    # as an action without adding detail the quote does not support.
     assert playbooks[0].content == "Default the workspace to dark mode for this user."
     assert playbooks[0].trigger == "user states a UI preference"
     # source_interaction_ids must come from the single passed interaction.

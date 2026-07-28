@@ -2,7 +2,7 @@
   "choices": [
     {
       "message": {
-        "content": "{\"playbooks\": [{\"trigger\": \"when user asks about implementation details\", \"content\": \"Agent should provide more detailed explanations when answering technical questions\", \"rationale\": \"User expressed frustration with vague answers\"}]}"
+        "content": "{\"playbooks\": [{\"trigger\": \"when user asks about implementation details\", \"content\": \"Provide the requested implementation detail before summarizing.\", \"rationale\": \"The user explicitly rejected a vague answer, so leading with implementation detail prevents the observed omission on similar tasks.\", \"evidence_kind\": \"correction\", \"evidence\": [{\"turn_ref\": \"T1\", \"source_span\": \"implementation details\"}]}]}"
       },
       "finish_reason": "stop"
     }

@@ -19,6 +19,7 @@ from reflexio.server.services.service_utils import (
     format_interactions_to_history_string,
     format_sessions_to_history_string,
     slice_content_by_tokens,
+    visible_interaction_evidence_texts,
 )
 
 _ENV_MAX_TOKENS = "REFLEXIO_MAX_INTERACTION_CONTENT_TOKENS"
@@ -521,6 +522,20 @@ def test_format_interactions_slices_long_content(monkeypatch):
     assert long_content not in result  # full content was not emitted verbatim
     assert result.startswith("user: ```")
     assert result.endswith("```")
+
+
+def test_visible_interaction_evidence_excludes_synthetic_truncation_marker(monkeypatch):
+    """Turn references resolve only to source-backed prompt-visible text."""
+    monkeypatch.setenv(_ENV_MAX_TOKENS, "8")
+    interaction = _create_interaction(
+        1, " ".join(str(i) for i in range(500)), "user", 1_700_000_000
+    )
+
+    evidence_texts = visible_interaction_evidence_texts(interaction)
+
+    assert len(evidence_texts) == 2
+    assert all(_CONTENT_TRUNCATION_MARKER not in value for value in evidence_texts)
+    assert all(value in interaction.content for value in evidence_texts)
 
 
 def test_format_interactions_no_slice_when_disabled(monkeypatch):

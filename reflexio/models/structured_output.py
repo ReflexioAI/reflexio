@@ -16,6 +16,7 @@ base without a layering inversion (a ``models/`` file importing from
 ``server/llm/`` would invert the dependency direction).
 """
 
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, GetJsonSchemaHandler
@@ -116,6 +117,84 @@ class StrictStructuredOutput(ProviderSafeUnionMixin, BaseModel):
     ``extra=`` is not uniform across models, so a blanket dedup would silently shift
     validation/serialization behavior).
     """
+
+
+# ===============================
+# Provider-output shape tolerance
+# ===============================
+#
+# Structured-output providers occasionally rename a field or spell an enum value
+# with a different separator/casing than the schema declares. The helpers below
+# are the ONE place that canonicalizes those harmless variants, so every schema
+# that tolerates provider drift does it identically instead of hand-rolling its
+# own casefold/replace/alias chain (which is how two schemas silently start
+# accepting different spellings).
+#
+# They are deliberately mechanical: they rename and recase, never invent or drop
+# semantic content. Anything that needs judgement belongs in a model validator.
+
+
+def normalize_provider_token(value: str, *, separator: str = "_") -> str:
+    """Canonicalize a provider-emitted key or enum token.
+
+    Trims, casefolds, and rewrites both the opposite separator and spaces to
+    ``separator`` — so ``"Evidence Kind"``, ``"evidence-kind"``, and
+    ``"evidence_kind"`` all collapse to one form.
+
+    Args:
+        value (str): Raw key or enum token from parsed LLM output.
+        separator (str): The canonical separator for this vocabulary — ``"_"``
+            for Python field names, ``"-"`` for hyphenated enum values.
+
+    Returns:
+        str: The canonical token.
+    """
+    opposite = "-" if separator == "_" else "_"
+    return value.strip().casefold().replace(opposite, separator).replace(" ", separator)
+
+
+def normalize_provider_keys(
+    data: Mapping[Any, Any], aliases: Mapping[str, str]
+) -> dict[str, Any]:
+    """Rename provider key variants onto canonical field names.
+
+    First key wins: when a payload carries both a canonical name and an alias for
+    it, the earlier entry is kept rather than being silently overwritten by the
+    later one.
+
+    Args:
+        data (Mapping[Any, Any]): One raw object from parsed LLM output.
+        aliases (Mapping[str, str]): Canonical-token → field-name map. Keys must
+            already be in ``normalize_provider_token`` form.
+
+    Returns:
+        dict[str, Any]: The same values under canonical field names.
+    """
+    normalized: dict[str, Any] = {}
+    for key, item in data.items():
+        canonical = normalize_provider_token(str(key))
+        normalized.setdefault(aliases.get(canonical, canonical), item)
+    return normalized
+
+
+def normalize_provider_value(
+    value: Any, aliases: Mapping[str, str], *, separator: str = "_"
+) -> Any:
+    """Canonicalize a provider-emitted enum-ish string value.
+
+    Args:
+        value (Any): Raw field value straight from the parsed LLM output.
+        aliases (Mapping[str, str]): Canonical-token → canonical-value map.
+        separator (str): The canonical separator for this vocabulary.
+
+    Returns:
+        Any: The canonical value, or ``value`` unchanged when it is not a string
+        (so Pydantic reports the real type error instead of a coercion).
+    """
+    if not isinstance(value, str):
+        return value
+    canonical = normalize_provider_token(value, separator=separator)
+    return aliases.get(canonical, canonical)
 
 
 def find_schema_keyword(node: Any, keyword: str) -> bool:

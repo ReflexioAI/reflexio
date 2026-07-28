@@ -53,6 +53,7 @@ def build_extractor_agent_run_record(
     extractor_config: BaseModel,
     service_config: Any,
     agent_context: str,
+    output_schema_name: str | None = None,
     generation_request_id: str | None = None,
     request_id: str | None = None,
 ) -> AgentRunRecord:
@@ -100,6 +101,10 @@ def build_extractor_agent_run_record(
             "source_interaction_ids": source_interaction_ids,
             "session_count": len(request_interaction_data_models),
             "extractor_config": extractor_config_snapshot,
+            # Resume/finalization must parse the committed payload with the
+            # schema selected when this run started, even if prompt activation
+            # changes before a pending tool call is resolved.
+            "output_schema_name": output_schema_name,
         },
         service_config_snapshot=_jsonable(service_config),
         agent_context_snapshot=agent_context,

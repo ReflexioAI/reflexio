@@ -195,7 +195,7 @@ def test_consolidation_merge_routes_through_merge_records(
             return_value=None,
         ),
         patch(
-            "reflexio.server.services.playbook.components.consolidator.PlaybookConsolidator._retrieve_existing_playbooks",
+            "reflexio.server.services.playbook.components.consolidator.PlaybookConsolidator.retrieve_existing_playbooks",
             return_value=[existing],
         ),
         patch(
@@ -298,7 +298,7 @@ def test_consolidation_repair_persists_only_repaired_multi_new_unify(
             return_value=None,
         ),
         patch(
-            "reflexio.server.services.playbook.components.consolidator.PlaybookConsolidator._retrieve_existing_playbooks",
+            "reflexio.server.services.playbook.components.consolidator.PlaybookConsolidator.retrieve_existing_playbooks",
             return_value=[],
         ),
         patch.dict("os.environ", {"MOCK_LLM_RESPONSE": "false"}),
@@ -344,7 +344,7 @@ def test_consolidation_differentiate_tombstones_split_source(
             return_value=None,
         ),
         patch(
-            "reflexio.server.services.playbook.components.consolidator.PlaybookConsolidator._retrieve_existing_playbooks",
+            "reflexio.server.services.playbook.components.consolidator.PlaybookConsolidator.retrieve_existing_playbooks",
             return_value=[existing],
         ),
         patch(
@@ -385,7 +385,7 @@ def test_consolidation_differentiate_propagates_tombstone_failure(
             return_value=None,
         ),
         patch(
-            "reflexio.server.services.playbook.components.consolidator.PlaybookConsolidator._retrieve_existing_playbooks",
+            "reflexio.server.services.playbook.components.consolidator.PlaybookConsolidator.retrieve_existing_playbooks",
             return_value=[existing],
         ),
         patch(

@@ -8,7 +8,7 @@ import os
 from datetime import UTC, datetime
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from reflexio.models.api_schema.retriever_schema import SearchUserPlaybookRequest
 from reflexio.models.api_schema.service_schemas import UserPlaybook
@@ -16,7 +16,10 @@ from reflexio.models.config_schema import (
     DeduplicationConfig,
     SearchOptions,
 )
-from reflexio.models.structured_output import StrictStructuredOutput
+from reflexio.models.structured_output import (
+    StrictStructuredOutput,
+    normalize_provider_value,
+)
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm._litellm_types import ModelProvenance
 from reflexio.server.llm.litellm_client import (
@@ -28,12 +31,53 @@ from reflexio.server.services.deduplication_utils import (
     format_dedup_timestamp,
     resolve_dedup_query_embeddings,
 )
+from reflexio.server.services.playbook.playbook_service_utils import (
+    is_evidence_validated,
+)
 from reflexio.server.services.profile.profile_generation_service_utils import (
     check_string_token_overlap,
 )
 from reflexio.server.tracing import sentry_tags
 
 logger = logging.getLogger(__name__)
+
+# Token-overlap thresholds for judging whether two playbook rows state the same
+# lesson. Rows citing the same interaction need less lexical agreement than rows
+# matched purely on wording across different extraction windows.
+#
+# Calibration: these are `check_string_token_overlap` ratios (shared tokens over
+# the smaller token set), NOT semantic similarity. They were chosen for the
+# asymmetry between the two match modes, not fitted to a labelled corpus — treat
+# them as tunable policy, and re-check the consolidation regression tests in
+# `tests/server/services/playbook/test_playbook_consolidator.py` after moving any
+# of them. Raising a threshold trades duplicate survivors for missed merges;
+# lowering it trades missed merges for wrongly collapsed distinct lessons.
+#
+# Shared-provenance rows already agree on *which moment* they describe, so the
+# wording bar is deliberately the loosest of the set.
+_SAME_EVIDENCE_CONTENT_THRESHOLD = 0.5
+# Rows from different windows have only wording in common, so they must agree
+# substantially before being treated as one lesson.
+_CROSS_EVIDENCE_CONTENT_THRESHOLD = 0.75
+# Triggers are short retrieval keys; this sits between the two content bars so a
+# paraphrased trigger still anchors a match without matching every trigger.
+_SAME_TRIGGER_THRESHOLD = 0.6
+# Post-apply survivor collision uses the stricter default ratio, and ignores
+# short rules entirely — brief rules share too much vocabulary to compare by
+# ratio, so only exactly equal content counts for them. 80 chars is roughly one
+# full sentence of guidance, below which the ratio is dominated by stopwords.
+_SURVIVOR_CONTENT_THRESHOLD = 0.7
+_SURVIVOR_MIN_CONTENT_LENGTH = 80
+_REVIEWER_REVISION_NOTE_PREFIX = "First-pass reviewer: revised ("
+
+# Decision-kind variants providers emit instead of the declared literals. Keys
+# are in canonical ``normalize_provider_token`` form (casefolded, "_"-joined).
+_DECISION_KIND_ALIASES = {
+    "accept": "independent",
+    "keep": "independent",
+    "merge": "unify",
+    "reject": "reject_new",
+}
 
 
 # ===============================
@@ -376,6 +420,54 @@ class PlaybookConsolidationOutput(StrictStructuredOutput):
 
     decisions: list[ConsolidationDecision] = Field(default_factory=list)
 
+    @model_validator(mode="before")
+    @classmethod
+    def _infer_missing_decision_kinds(cls, value: object) -> object:
+        """Recover the decision tag from unambiguous fields or common aliases."""
+        if not isinstance(value, dict) or not isinstance(value.get("decisions"), list):
+            return value
+        normalized = dict(value)
+        decisions: list[object] = []
+        for raw_decision in value["decisions"]:
+            if not isinstance(raw_decision, dict) or raw_decision.get("kind"):
+                decisions.append(raw_decision)
+                continue
+            decision = dict(raw_decision)
+            aliased_kind = next(
+                (
+                    decision.get(key)
+                    for key in ("decision", "action", "type")
+                    if isinstance(decision.get(key), str)
+                ),
+                None,
+            )
+            if isinstance(aliased_kind, str):
+                candidate_kind = normalize_provider_value(
+                    aliased_kind, _DECISION_KIND_ALIASES
+                )
+                if candidate_kind in {
+                    "unify",
+                    "reject_new",
+                    "differentiate",
+                    "independent",
+                }:
+                    decision["kind"] = candidate_kind
+            if "kind" not in decision:
+                if {
+                    "refined_new_trigger",
+                    "refined_existing_trigger",
+                } <= decision.keys():
+                    decision["kind"] = "differentiate"
+                elif "superseded_by_existing_id" in decision:
+                    decision["kind"] = "reject_new"
+                elif {"content", "trigger", "rationale"} <= decision.keys():
+                    decision["kind"] = "unify"
+                elif "new_id" in decision:
+                    decision["kind"] = "independent"
+            decisions.append(decision)
+        normalized["decisions"] = decisions
+        return normalized
+
     model_config = ConfigDict(json_schema_extra={"additionalProperties": False})
 
 
@@ -502,7 +594,10 @@ class PlaybookConsolidator(BaseDeduplicator):
         return self._format_playbooks_with_prefix(playbooks, "NEW")
 
     def _format_playbooks_with_prefix(
-        self, playbooks: list[UserPlaybook], prefix: str
+        self,
+        playbooks: list[UserPlaybook],
+        prefix: str,
+        evidence_groups: list[str] | None = None,
     ) -> str:
         """
         Format user playbook entries with a given prefix (NEW or EXISTING).
@@ -530,12 +625,14 @@ class PlaybookConsolidator(BaseDeduplicator):
                 f'[{prefix}-{idx}] Content: "{playbook.content}"'
                 f' | Trigger: "{playbook.trigger or ""}"'
                 f' | Rationale: "{playbook.rationale or ""}"'
+                f' | Evidence Span: "{playbook.source_span or ""}"'
+                f' | Evidence Group: "{evidence_groups[idx] if evidence_groups else "none"}"'
                 f" | Name: {playbook_name}"
                 f" | Source: {source} | Last Modified: {created_date}"
             )
         return "\n".join(lines)
 
-    def _retrieve_existing_playbooks(
+    def retrieve_existing_playbooks(
         self,
         new_playbooks: list[UserPlaybook],
         user_id: str | None = None,
@@ -546,6 +643,11 @@ class PlaybookConsolidator(BaseDeduplicator):
 
         For each new entry, uses its trigger field as the query with
         pre-computed embeddings for vector search.
+
+        A failed per-query search is logged and skipped rather than raised. This
+        is a retrieval-recall degradation, not a correctness failure: consolidation
+        still applies its full decision contract to whatever was retrieved. Only
+        decision generation and application fail the batch closed.
 
         Args:
             new_playbooks: List of new entries to search against
@@ -596,9 +698,9 @@ class PlaybookConsolidator(BaseDeduplicator):
                     if fb.user_playbook_id and fb.user_playbook_id not in seen_ids:
                         seen_ids.add(fb.user_playbook_id)
                         existing_playbooks.append(fb)
-            except Exception as e:  # noqa: PERF203
-                logger.warning(
-                    "Failed to search existing entries for query %d: %s", i, e
+            except Exception:  # noqa: PERF203 — per-query isolation is the point
+                logger.exception(
+                    "event=playbook_consolidation_search_failed query_index=%d", i
                 )
 
         logger.info(
@@ -625,11 +727,41 @@ class PlaybookConsolidator(BaseDeduplicator):
         Returns:
             Tuple of (new_playbooks_text, existing_playbooks_text)
         """
-        new_text = self._format_playbooks_with_prefix(new_playbooks, "NEW")
+        group_labels = self._evidence_group_labels(
+            [*new_playbooks, *existing_playbooks]
+        )
+        new_text = self._format_playbooks_with_prefix(
+            new_playbooks, "NEW", group_labels[: len(new_playbooks)]
+        )
         existing_text = self._format_playbooks_with_prefix(
-            existing_playbooks, "EXISTING"
+            existing_playbooks,
+            "EXISTING",
+            group_labels[len(new_playbooks) :],
         )
         return new_text, existing_text
+
+    @staticmethod
+    def _evidence_group_labels(playbooks: list[UserPlaybook]) -> list[str]:
+        """Label connected source-overlap components without exposing source IDs."""
+        source_sets = [set(playbook.source_interaction_ids) for playbook in playbooks]
+        labels = ["none"] * len(playbooks)
+        next_group = 0
+        for start, source_ids in enumerate(source_sets):
+            if not source_ids or labels[start] != "none":
+                continue
+            label = f"EVIDENCE-{next_group}"
+            next_group += 1
+            pending = [start]
+            labels[start] = label
+            while pending:
+                current = pending.pop()
+                for other, other_source_ids in enumerate(source_sets):
+                    if labels[other] != "none" or not other_source_ids:
+                        continue
+                    if source_sets[current].intersection(other_source_ids):
+                        labels[other] = label
+                        pending.append(other)
+        return labels
 
     def _render_consolidation_prompt(
         self,
@@ -716,26 +848,46 @@ class PlaybookConsolidator(BaseDeduplicator):
             [{"role": "user", "content": prompt}],
         )
 
-        first_parsed_output: PlaybookConsolidationOutput | None = None
-
         def _validate_output(output: BaseModel) -> list[str]:
-            nonlocal first_parsed_output
             if not isinstance(output, PlaybookConsolidationOutput):
                 return [f"Unexpected output type: {type(output).__name__}."]
-            if first_parsed_output is None:
-                first_parsed_output = output
             errors = validate_consolidation_output(new_playbooks, output)
             if not errors:
                 errors = self._find_suspicious_under_consumed_new_rows(
                     new_playbooks, output
                 )
+            if not errors:
+                try:
+                    preview_rows, preview_archive_ids, _ = (
+                        self._build_deduplicated_results(
+                            new_playbooks=new_playbooks,
+                            existing_playbooks=existing_playbooks,
+                            dedup_output=output,
+                            generation_request_id="validation-preview",
+                            validate_only=True,
+                        )
+                    )
+                except (KeyError, TypeError, ValueError) as exc:
+                    errors = [f"Decisions cannot be applied: {exc}"]
+                else:
+                    untouched_existing = [
+                        existing
+                        for existing in existing_playbooks
+                        if existing.user_playbook_id not in preview_archive_ids
+                    ]
+                    errors = self._find_overlapping_survivors(
+                        preview_rows,
+                        untouched_existing,
+                    )
             if errors:
                 return [
                     *errors,
                     "Return corrected decisions that cover every NEW id exactly once. "
                     "If a unified rule uses facts/details from multiple NEW rows, "
                     "`new_id` must list every consumed NEW id. Keep decisions that are "
-                    "otherwise semantically correct and fix only the coverage.",
+                    "otherwise semantically correct. If survivors overlap, unify the "
+                    "duplicate NEW ids, reject a redundant NEW row against the matching "
+                    "EXISTING row, or differentiate genuinely distinct triggers.",
                 ]
             return []
 
@@ -747,9 +899,9 @@ class PlaybookConsolidator(BaseDeduplicator):
                 structured_output_validator=_validate_output,
             )
         except LiteLLMClientError as exc:
-            if first_parsed_output is not None:
-                self.model_provenance = exc.first_parsed_provenance
-                return first_parsed_output
+            # Keep observed attribution for diagnostics/lineage accounting, but
+            # never salvage a candidate batch that failed deterministic review.
+            self.model_provenance = exc.first_parsed_provenance
             raise
 
         self.model_provenance = completion.provenance
@@ -762,7 +914,9 @@ class PlaybookConsolidator(BaseDeduplicator):
                 "Unexpected response type from consolidation LLM: %s",
                 type(response),
             )
-            return PlaybookConsolidationOutput()
+            raise TypeError(
+                f"Unexpected response type from consolidation LLM: {type(response).__name__}"
+            )
 
         return response
 
@@ -774,6 +928,7 @@ class PlaybookConsolidator(BaseDeduplicator):
         user_id: str | None = None,
         *,
         request_id: str | None = None,
+        existing_playbooks: list[UserPlaybook] | None = None,
     ) -> tuple[list[UserPlaybook], list[int], list[tuple[int, list[int]]]]:
         """
         Consolidate user playbook entries across extractors and against existing entries in DB.
@@ -783,6 +938,10 @@ class PlaybookConsolidator(BaseDeduplicator):
             generation_request_id: Request ID for context
             agent_version: Agent version for context
             user_id: Optional user ID to scope the existing entry search
+            existing_playbooks: Already-retrieved rows for these candidates. Pass
+                this when an earlier stage in the same generation already ran the
+                hybrid search, so consolidation does not repeat the embedding
+                queries. Omit to have consolidation retrieve them itself.
 
         Returns:
             Tuple of ``(consolidated entries, existing ids to delete after save,
@@ -824,10 +983,70 @@ class PlaybookConsolidator(BaseDeduplicator):
         if not new_playbooks:
             return [], [], []
 
-        # Retrieve existing entries via hybrid search
-        existing_playbooks = self._retrieve_existing_playbooks(
-            new_playbooks, user_id=user_id, agent_version=agent_version
-        )
+        # Retrieve existing entries via hybrid search, unless an earlier stage in
+        # this generation already did (the reviewer needs the same rows).
+        if existing_playbooks is None:
+            existing_playbooks = self.retrieve_existing_playbooks(
+                new_playbooks, user_id=user_id, agent_version=agent_version
+            )
+
+        # Evidence-validated first-pass candidates need no probabilistic
+        # consolidation when there is no existing retrieval match. Exact
+        # same-batch duplicates were already removed before this component; the
+        # later reviewer/consolidation phase owns semantic candidate merging.
+        # Keeping independent grounded siblings here prevents an unrelated
+        # consolidation parse failure from erasing all first-pass lessons.
+        evidence_validated = all(map(is_evidence_validated, new_playbooks))
+        if evidence_validated and existing_playbooks:
+            deterministic_merge = self._merge_replayed_evidence_duplicates(
+                new_playbooks,
+                existing_playbooks,
+                generation_request_id=generation_request_id,
+            )
+            if deterministic_merge is not None:
+                logger.info(
+                    "event=playbook_consolidation_evidence_duplicate_merge "
+                    "new_count=%d survivor_count=%d request_id=%s",
+                    len(new_playbooks),
+                    len(deterministic_merge[0]),
+                    generation_request_id,
+                )
+                return deterministic_merge
+        if not existing_playbooks and evidence_validated:
+            logger.info(
+                "event=playbook_consolidation_evidence_independent count=%d request_id=%s",
+                len(new_playbooks),
+                generation_request_id,
+            )
+            return (
+                [
+                    playbook.model_copy(update={"request_id": generation_request_id})
+                    for playbook in new_playbooks
+                ],
+                [],
+                [],
+            )
+
+        # A single validated candidate with no retrieval match has nothing to
+        # consolidate. Avoid adding a probabilistic structured-output failure
+        # point to the common independent path; the extractor has already
+        # enforced evidence and provenance, and there is no sibling or existing
+        # row that could overlap it. Still stamp the generation request exactly
+        # as the independent decision apply path would.
+        if len(new_playbooks) == 1 and not existing_playbooks:
+            logger.info(
+                "event=playbook_consolidation_single_independent request_id=%s",
+                generation_request_id,
+            )
+            return (
+                [
+                    new_playbooks[0].model_copy(
+                        update={"request_id": generation_request_id}
+                    )
+                ],
+                [],
+                [],
+            )
 
         # Run the LLM decision step (prompt render + LLM call + parse only).
         try:
@@ -845,28 +1064,167 @@ class PlaybookConsolidator(BaseDeduplicator):
                 error_type=type(e).__name__,
             ):
                 logger.exception("Failed to identify duplicates")
-            return new_playbooks, [], []
+            raise
 
         if not dedup_output.decisions:
-            logger.info(
-                "No consolidation decisions returned for request %s",
-                generation_request_id,
+            raise ValueError(
+                "Consolidation returned no decisions for a non-empty candidate batch "
+                f"(request_id={generation_request_id})"
             )
-            return new_playbooks, [], []
 
         logger.info(
             "Received %d consolidation decisions for request %s",
             len(dedup_output.decisions),
             generation_request_id,
         )
-        # Build consolidated result via the discriminated-union apply path
-        return self._build_deduplicated_results(
+        # Build consolidated result via the discriminated-union apply path.
+        consolidated = self._build_deduplicated_results(
             new_playbooks=new_playbooks,
             existing_playbooks=existing_playbooks,
             dedup_output=dedup_output,
             generation_request_id=generation_request_id,
             agent_version=agent_version,
         )
+        new_rows, archive_ids, _ = consolidated
+        untouched_existing = [
+            existing
+            for existing in existing_playbooks
+            if existing.user_playbook_id not in archive_ids
+        ]
+        overlap_errors = self._find_overlapping_survivors(
+            new_rows,
+            untouched_existing,
+        )
+        if overlap_errors:
+            logger.error(
+                "event=playbook_consolidation_overlap_after_repair count=%d "
+                "request_id=%s",
+                len(overlap_errors),
+                generation_request_id,
+            )
+            raise ValueError("; ".join(overlap_errors))
+        return consolidated
+
+    def _merge_replayed_evidence_duplicates(
+        self,
+        new_playbooks: list[UserPlaybook],
+        existing_playbooks: list[UserPlaybook],
+        *,
+        generation_request_id: str,
+    ) -> tuple[list[UserPlaybook], list[int], list[tuple[int, list[int]]]] | None:
+        """Deterministically merge exact lessons repeated by overlapping windows.
+
+        This path is intentionally narrow. A repeated NEW row must match exactly
+        one persisted row using the same evidence kind (stored in ``reader_angle``)
+        plus either shared validated interaction provenance and substantial
+        content overlap, or high content overlap and the same future trigger. The
+        latter catches the same lesson cited from adjacent replay windows. A NEW
+        row with neither related provenance nor a semantic match is independently
+        insertable. Ambiguous matches fall through to evidence-aware LLM
+        consolidation. For matches, an explicit reviewer revision wins; otherwise
+        persisted wording wins. Provenance and notes are unioned in stable order.
+        """
+        matches: dict[int, tuple[UserPlaybook, list[UserPlaybook]]] = {}
+        # Keyed by list position, never by ``id()``: two equal candidate objects
+        # would otherwise collide and silently drop one of them.
+        independent_positions: set[int] = set()
+        matched_existing_id_by_position: dict[int, int] = {}
+        for position, candidate in enumerate(new_playbooks):
+            candidate_angle = (candidate.reader_angle or "").strip().casefold()
+            provenance_related = [
+                existing
+                for existing in existing_playbooks
+                if existing.user_playbook_id
+                and self._shares_evidence(candidate, existing)
+            ]
+            matching_existing = []
+            for existing in existing_playbooks:
+                if (
+                    not existing.user_playbook_id
+                    or candidate_angle
+                    != (existing.reader_angle or "").strip().casefold()
+                ):
+                    continue
+                # A row citing the same interaction is already known to describe
+                # the same moment, so it needs less lexical agreement than one
+                # matched purely on wording from a different window.
+                shares_evidence = existing in provenance_related
+                if self._describes_same_lesson(
+                    candidate,
+                    existing,
+                    content_threshold=(
+                        _SAME_EVIDENCE_CONTENT_THRESHOLD
+                        if shares_evidence
+                        else _CROSS_EVIDENCE_CONTENT_THRESHOLD
+                    ),
+                ):
+                    matching_existing.append(existing)
+            if not matching_existing and not provenance_related:
+                independent_positions.add(position)
+                continue
+            if len(matching_existing) != 1:
+                return None
+            existing = matching_existing[0]
+            existing_id = existing.user_playbook_id
+            matched_existing_id_by_position[position] = existing_id
+            current = matches.get(existing_id)
+            if current is None:
+                matches[existing_id] = (existing, [candidate])
+            else:
+                current[1].append(candidate)
+
+        survivors: list[UserPlaybook] = []
+        archive_ids: list[int] = []
+        merge_groups: list[tuple[int, list[int]]] = []
+        emitted_existing_ids: set[int] = set()
+        for position, candidate in enumerate(new_playbooks):
+            if position in independent_positions:
+                survivors.append(
+                    candidate.model_copy(update={"request_id": generation_request_id})
+                )
+                continue
+
+            existing_id = matched_existing_id_by_position[position]
+            if existing_id in emitted_existing_ids:
+                continue
+            emitted_existing_ids.add(existing_id)
+            existing, candidates = matches[existing_id]
+            members = [existing, *candidates]
+            revised_candidates = [
+                candidate
+                for candidate in candidates
+                if self._has_reviewer_revision(candidate)
+            ]
+            revised_shapes = {
+                (candidate.content, candidate.trigger, candidate.rationale)
+                for candidate in revised_candidates
+            }
+            if len(revised_shapes) > 1:
+                # Multiple reviewer revisions disagree about the final wording;
+                # defer to evidence-aware LLM consolidation instead of silently
+                # selecting one by list order.
+                return None
+            wording_source = revised_candidates[0] if revised_candidates else existing
+            survivor = wording_source.model_copy(
+                update={
+                    "user_playbook_id": 0,
+                    "request_id": generation_request_id,
+                    "created_at": int(datetime.now(UTC).timestamp()),
+                    "source_interaction_ids": self._merge_source_ids(members),
+                    "source_span": self._merge_source_spans(members),
+                    "notes": self._merge_notes(members),
+                    "reader_angle": self._shared_optional_value(
+                        members, "reader_angle"
+                    ),
+                    "merged_into": None,
+                    "superseded_by": None,
+                }
+            )
+            survivors.append(survivor)
+            archive_ids.append(existing_id)
+            merge_groups.append((len(survivors) - 1, [existing_id]))
+
+        return survivors, archive_ids, merge_groups
 
     @staticmethod
     def _find_suspicious_under_consumed_new_rows(
@@ -959,14 +1317,15 @@ class PlaybookConsolidator(BaseDeduplicator):
         agent_version: str | None = None,  # noqa: ARG002
         *,
         request_id: str | None = None,
+        validate_only: bool = False,
     ) -> tuple[list[UserPlaybook], list[int], list[tuple[int, list[int]]]]:
         """
         Build the deduplicated entry list from LLM decisions.
 
         Dispatches each ``ConsolidationDecision`` to its kind-specific apply
-        method, accumulates resulting rows + archive ids, and adds any NEW
-        playbooks the LLM didn't reference as a safety fallback so a
-        misbehaving LLM cannot silently drop extracted playbooks.
+        method and accumulates resulting rows + archive ids. The batch fails
+        unless every NEW playbook is referenced exactly once and every
+        decision applies cleanly.
 
         Args:
             new_playbooks: Flattened list of new (candidate) entries.
@@ -990,6 +1349,9 @@ class PlaybookConsolidator(BaseDeduplicator):
         generation_request_id = _normalize_generation_request_id(
             generation_request_id, request_id=request_id
         )
+        partition_errors = validate_consolidation_output(new_playbooks, dedup_output)
+        if partition_errors:
+            raise ValueError("; ".join(partition_errors))
 
         candidates_by_id = {
             f"NEW-{idx}": playbook for idx, playbook in enumerate(new_playbooks)
@@ -1021,8 +1383,11 @@ class PlaybookConsolidator(BaseDeduplicator):
                     archive_ids=archive_ids,
                     seen_archive=seen_archive,
                     generation_request_id=generation_request_id,
+                    validate_only=validate_only,
                 )
-            except Exception as exc:  # noqa: BLE001 — per-decision isolation
+            except Exception as exc:  # noqa: BLE001 — add context, then fail the batch
+                if validate_only:
+                    raise
                 result_counters.failed_count += 1
                 raw_new_id = getattr(decision, "new_id", "unknown")
                 new_id_str = (
@@ -1056,7 +1421,7 @@ class PlaybookConsolidator(BaseDeduplicator):
                         new_id_str,
                         existing_id_str,
                     )
-                continue
+                raise
             # Record the merge group BEFORE extending: the unified survivor is
             # the first (and only) row a ``unify`` decision emits, so its index
             # in the final list is the current length of ``new_rows``.
@@ -1068,32 +1433,124 @@ class PlaybookConsolidator(BaseDeduplicator):
                 )
             new_rows.extend(rows)
             handled_new_ids.update(marked_new_ids)
-            self._bump_counter(result_counters, decision.kind)
-            self._log_decision(
-                decision, candidates_by_id, existing_by_id, existing_by_position
+            if not validate_only:
+                self._bump_counter(result_counters, decision.kind)
+                self._log_decision(
+                    decision, candidates_by_id, existing_by_id, existing_by_position
+                )
+
+        unhandled_new_ids = set(candidates_by_id) - handled_new_ids
+        if unhandled_new_ids:
+            raise ValueError(
+                "Consolidation apply left NEW ids unhandled: "
+                + ", ".join(sorted(unhandled_new_ids))
             )
 
-        # Safety fallback: add any NEW entries the LLM did not reference, so a
-        # misbehaving model cannot silently drop extracted playbooks.
-        for new_id, candidate in candidates_by_id.items():
-            if new_id not in handled_new_ids:
-                logger.warning(
-                    "event=consolidation_unhandled_new id=%s — adding as-is",
-                    new_id,
-                )
-                new_rows.append(candidate)
+        overlap_errors = self._find_overlapping_survivors(new_rows)
+        if overlap_errors:
+            raise ValueError("; ".join(overlap_errors))
 
-        logger.info(
-            "event=playbook_consolidation_done unify=%d reject_new=%d "
-            "differentiate=%d independent=%d failed=%d",
-            result_counters.unify_count,
-            result_counters.reject_new_count,
-            result_counters.differentiate_count,
-            result_counters.independent_count,
-            result_counters.failed_count,
-        )
+        if not validate_only:
+            logger.info(
+                "event=playbook_consolidation_done unify=%d reject_new=%d "
+                "differentiate=%d independent=%d failed=%d",
+                result_counters.unify_count,
+                result_counters.reject_new_count,
+                result_counters.differentiate_count,
+                result_counters.independent_count,
+                result_counters.failed_count,
+            )
 
         return new_rows, archive_ids, merge_groups
+
+    @staticmethod
+    def _find_overlapping_survivors(
+        new_playbooks: list[UserPlaybook],
+        existing_playbooks: list[UserPlaybook] | None = None,
+    ) -> list[str]:
+        """Reject semantic duplicates involving at least one newly produced row.
+
+        Historical existing↔existing duplicates are outside this generation's
+        write plan and must not permanently poison unrelated future batches.
+        """
+        errors: list[str] = []
+        for left_index, left in enumerate(new_playbooks):
+            for right_index in range(left_index + 1, len(new_playbooks)):
+                right = new_playbooks[right_index]
+                if PlaybookConsolidator._describes_same_lesson(
+                    left,
+                    right,
+                    content_threshold=_SURVIVOR_CONTENT_THRESHOLD,
+                    min_content_length=_SURVIVOR_MIN_CONTENT_LENGTH,
+                ):
+                    errors.append(
+                        "Overlapping consolidation survivors share content and "
+                        "evidence or trigger: "
+                        f"result[{left_index}] and result[{right_index}]."
+                    )
+            for existing_index, existing in enumerate(existing_playbooks or []):
+                if PlaybookConsolidator._describes_same_lesson(
+                    left,
+                    existing,
+                    content_threshold=_SURVIVOR_CONTENT_THRESHOLD,
+                    min_content_length=_SURVIVOR_MIN_CONTENT_LENGTH,
+                ):
+                    errors.append(
+                        "Overlapping consolidation survivors share content and "
+                        "evidence or trigger: "
+                        f"result[{left_index}] and existing[{existing_index}]."
+                    )
+        return errors
+
+    @staticmethod
+    def _shares_evidence(left: UserPlaybook, right: UserPlaybook) -> bool:
+        """Return whether two rows were drawn from any common interaction."""
+        return bool(
+            set(left.source_interaction_ids).intersection(right.source_interaction_ids)
+        )
+
+    @staticmethod
+    def _describes_same_lesson(
+        left: UserPlaybook,
+        right: UserPlaybook,
+        *,
+        content_threshold: float,
+        min_content_length: int = 0,
+    ) -> bool:
+        """Return whether two rows state the same lesson for the same situation.
+
+        Two rows collide when their content overlaps AND they are anchored to the
+        same situation — either literally the same evidence, or an equivalent
+        future trigger. Content overlap alone is not enough: two genuinely
+        different lessons about one task often share most of their vocabulary.
+
+        Args:
+            left (UserPlaybook): First row to compare.
+            right (UserPlaybook): Second row to compare.
+            content_threshold (float): Token-overlap ratio the contents must reach.
+            min_content_length (int): Below this length, only exactly equal
+                content counts — short rules share too much vocabulary for a
+                token ratio to be meaningful.
+
+        Returns:
+            bool: True when the two rows describe the same lesson.
+        """
+        left_content = left.content.strip().casefold()
+        right_content = right.content.strip().casefold()
+        content_overlaps = left_content == right_content or (
+            min(len(left_content), len(right_content)) >= min_content_length
+            and check_string_token_overlap(
+                left.content, right.content, threshold=content_threshold
+            )
+        )
+        if not content_overlaps:
+            return False
+        same_trigger = check_string_token_overlap(
+            left.trigger or "",
+            right.trigger or "",
+            threshold=_SAME_TRIGGER_THRESHOLD,
+        )
+        return PlaybookConsolidator._shares_evidence(left, right) or same_trigger
 
     def _apply_one(
         self,
@@ -1105,6 +1562,7 @@ class PlaybookConsolidator(BaseDeduplicator):
         archive_ids: list[int],
         seen_archive: set[int],
         generation_request_id: str,
+        validate_only: bool = False,
     ) -> tuple[list[UserPlaybook], list[str], list[int]]:
         """Dispatch a single decision to its kind-specific apply method.
 
@@ -1123,7 +1581,7 @@ class PlaybookConsolidator(BaseDeduplicator):
         Returns:
             Tuple of ``(rows_to_insert, handled_new_ids, merge_source_ids)``.
             ``handled_new_ids`` is the set of ``"NEW-N"`` candidate ids consumed
-            by this decision (used to suppress the safety fallback).
+            by this decision and is used to verify exact candidate accounting.
             ``merge_source_ids`` is non-empty ONLY for a ``unify`` decision that
             collapses >= 1 existing row into its single survivor (the first row
             in ``rows_to_insert``); for all other kinds it is ``[]`` because they
@@ -1138,6 +1596,7 @@ class PlaybookConsolidator(BaseDeduplicator):
                 archive_ids=archive_ids,
                 seen_archive=seen_archive,
                 generation_request_id=generation_request_id,
+                validate_only=validate_only,
             )
         if isinstance(decision, RejectNewDecision):
             return self._apply_reject_new(
@@ -1145,6 +1604,7 @@ class PlaybookConsolidator(BaseDeduplicator):
                 candidates_by_id=candidates_by_id,
                 existing_by_id=existing_by_id,
                 existing_by_position=existing_by_position,
+                validate_only=validate_only,
             )
         if isinstance(decision, DifferentiateDecision):
             return self._apply_differentiate(
@@ -1173,6 +1633,7 @@ class PlaybookConsolidator(BaseDeduplicator):
         archive_ids: list[int],
         seen_archive: set[int],
         generation_request_id: str,
+        validate_only: bool = False,
     ) -> tuple[list[UserPlaybook], list[str], list[int]]:
         """Collapse / compose NEW (+ 0..N EXISTING) into one row.
 
@@ -1235,7 +1696,7 @@ class PlaybookConsolidator(BaseDeduplicator):
 
         budget = self._dedup_config.max_unified_content_chars
         content_len = len(decision.content)
-        if content_len > budget:
+        if content_len > budget and not validate_only:
             # Soft backstop only: the prompt instructs the model to prefer
             # `differentiate` over an over-long unify. We log a signal rather
             # than hard-fail or downgrade so we don't destabilize the 4-kind
@@ -1249,6 +1710,7 @@ class PlaybookConsolidator(BaseDeduplicator):
 
         primary_candidate = candidates[0]
         combined_source_ids = self._merge_source_ids([*candidates, *existing_members])
+        source_members = [*candidates, *existing_members]
         unified_row = UserPlaybook(
             user_playbook_id=0,
             user_id=primary_candidate.user_id,
@@ -1263,6 +1725,9 @@ class PlaybookConsolidator(BaseDeduplicator):
             status=primary_candidate.status,
             source=primary_candidate.source,
             source_interaction_ids=combined_source_ids,
+            source_span=self._merge_source_spans(source_members),
+            notes=self._merge_notes(source_members),
+            reader_angle=self._shared_optional_value(source_members, "reader_angle"),
         )
         return [unified_row], new_ids, merge_source_ids
 
@@ -1273,15 +1738,15 @@ class PlaybookConsolidator(BaseDeduplicator):
         candidates_by_id: dict[str, UserPlaybook],
         existing_by_id: dict[int, UserPlaybook],
         existing_by_position: dict[str, UserPlaybook],
+        validate_only: bool = False,
     ) -> tuple[list[UserPlaybook], list[str], list[int]]:
         """No-op apply: the existing row(s) win and the new candidate(s) dropped.
 
         Resolve each superseding integer against the rendered ``EXISTING-N``
         position first, then as a DB ``user_playbook_id`` for backwards
         compatibility. If ANY referenced existing row does not resolve, the
-        decision is treated as malformed: we log a warning and return
-        ``([], [], [])`` so the safety fallback re-inserts every named
-        candidate rather than silently dropping extracted data.
+        decision is malformed and raises instead of silently dropping extracted
+        data.
 
         Args:
             decision: The ``RejectNewDecision`` to apply.
@@ -1292,13 +1757,13 @@ class PlaybookConsolidator(BaseDeduplicator):
 
         Returns:
             Tuple of ``([], [consumed NEW-N ids], [])`` when every superseding
-            id resolves, or ``([], [], [])`` when any is unknown. Never produces
-            a merge group — the existing rows are kept as-is (no archive, no
-            survivor).
+            id resolves. Never produces a merge group — the existing rows are
+            kept as-is (no archive, no survivor).
 
         Raises:
             KeyError: If any id in ``decision.new_ids`` does not resolve to a
                 known candidate.
+            ValueError: If any superseding existing id does not resolve.
         """
         new_ids = decision.new_ids
         missing_new_ids = [
@@ -1317,17 +1782,16 @@ class PlaybookConsolidator(BaseDeduplicator):
             for existing_id in existing_ids
         ]
         if any(existing is None for existing in existing_members):
-            logger.warning(
-                "event=consolidation_reject_new_invalid new_id=%s existing_id=%s",
+            raise ValueError(
+                "reject_new references unknown EXISTING ids: "
+                + ", ".join(str(item) for item in existing_ids)
+            )
+        if not validate_only:
+            logger.info(
+                "event=consolidation_reject_new new_id=%s existing_id=%s",
                 ",".join(new_ids),
                 existing_ids,
             )
-            return [], [], []
-        logger.info(
-            "event=consolidation_reject_new new_id=%s existing_id=%s",
-            ",".join(new_ids),
-            existing_ids,
-        )
         return [], new_ids, []
 
     def _apply_differentiate(
@@ -1448,6 +1912,50 @@ class PlaybookConsolidator(BaseDeduplicator):
                     seen.add(sid)
                     combined.append(sid)
         return combined
+
+    @staticmethod
+    def _merge_source_spans(playbooks: list[UserPlaybook]) -> str | None:
+        """Combine non-empty evidence spans in stable order."""
+        spans: list[str] = []
+        for playbook in playbooks:
+            # Extraction stores multiple independently validated spans separated
+            # by blank lines. Split that storage representation before unioning
+            # so overlapping replay windows do not preserve the same quotation
+            # twice merely because each row also carried a different sibling span.
+            for value in (playbook.source_span or "").split("\n\n"):
+                value = value.strip()
+                if value and value not in spans:
+                    spans.append(value)
+        return "\n\n".join(spans) or None
+
+    @staticmethod
+    def _has_reviewer_revision(playbook: UserPlaybook) -> bool:
+        """Return whether metadata records a first-pass reviewer revision."""
+        return _REVIEWER_REVISION_NOTE_PREFIX in (playbook.notes or "")
+
+    @staticmethod
+    def _merge_notes(playbooks: list[UserPlaybook]) -> str | None:
+        """Combine note lines in stable order without erasing differing metadata."""
+        lines: list[str] = []
+        for playbook in playbooks:
+            for line in (playbook.notes or "").splitlines():
+                normalized = line.strip()
+                if normalized and normalized not in lines:
+                    lines.append(normalized)
+        return "\n".join(lines) or None
+
+    @staticmethod
+    def _shared_optional_value(
+        playbooks: list[UserPlaybook], field_name: str
+    ) -> str | None:
+        """Retain optional metadata only when all populated values agree."""
+        values = {
+            value.strip()
+            for playbook in playbooks
+            if isinstance((value := getattr(playbook, field_name)), str)
+            and value.strip()
+        }
+        return next(iter(values)) if len(values) == 1 else None
 
     @staticmethod
     def _resolve_existing_reference(
