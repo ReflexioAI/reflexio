@@ -292,7 +292,8 @@ class OperationMixin:
             if row is None:
                 # No state exists — acquire lock
                 state = {
-                    "status": "in_progress",
+                    "in_progress": True,
+                    "started_at": int(now),
                     "current_request_id": request_id,
                     "pending_request_id": None,
                     "pending_request_queue": [],
@@ -313,11 +314,27 @@ class OperationMixin:
                 updated_epoch = _iso_to_epoch(updated_at_str)
                 is_stale = (now - updated_epoch) > stale_lock_seconds
 
-            if current_state.get("status") != "in_progress" or is_stale:
+            # ``in_progress`` is the canonical held-flag: it is what the Postgres
+            # RPC ``tenant.try_acquire_in_progress_lock`` writes and reads, and
+            # what every writer in ``operation_state_utils`` emits — including
+            # ``release_lock_pop_queue``, which hands the lock to the next queued
+            # holder. Because ``upsert_operation_state`` REPLACES the whole blob
+            # rather than merging it, a handover left a row carrying no
+            # ``status`` key at all, so this check read a live lock as free and
+            # the next caller took it *and* reset the pending queue.
+            #
+            # The ``status`` arm is a migration shim for rows written by an older
+            # build; nothing writes that key any more, and it can be dropped once
+            # no such rows can remain.
+            held = bool(current_state.get("in_progress")) or (
+                current_state.get("status") == "in_progress"
+            )
+            if not held or is_stale:
                 # Acquire lock — reset queue (any pre-existing entries are
                 # stale-lock detritus from a crashed run; we want a clean slate).
                 state = {
-                    "status": "in_progress",
+                    "in_progress": True,
+                    "started_at": int(now),
                     "current_request_id": request_id,
                     "pending_request_id": None,
                     "pending_request_queue": [],

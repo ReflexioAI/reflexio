@@ -258,9 +258,17 @@ class SQLiteLineageMixin:
         """Soft-delete each source into the survivor in one atomic transaction.
 
         Sets ``status=MERGED`` and ``merged_into=survivor_id`` on each source
-        whose status is not already a tombstone. Appends a single ``merge``
-        lineage event keyed on ``survivor_id``. Idempotent — re-running on
-        already-tombstoned sources is a no-op.
+        whose status is not already a tombstone.
+
+        Appends **at most one** ``merge`` lineage event keyed on ``survivor_id``,
+        and only when at least one source was actually tombstoned. The event
+        records the sources this call changed, not the sources it was asked to
+        change — a partial merge (say 2 of 5 sources still eligible) records
+        exactly those 2, because the other 3 were merged by some earlier
+        operation and possibly into a different survivor.
+
+        Idempotent in both the rows and the event: re-running on
+        already-tombstoned sources changes nothing and records nothing.
 
         Args:
             entity_type (str): One of ``"user_playbook"``, ``"agent_playbook"``,
@@ -280,6 +288,13 @@ class SQLiteLineageMixin:
         eligible_ph = ",".join("?" * len(_GC_ELIGIBLE_STATUSES))
         eligible_vals = list(_GC_ELIGIBLE_STATUSES)
         with self._lock:
+            # Only the sources this call actually tombstoned. ``source_ids`` on a
+            # lineage event means "records merged into entity_id"
+            # (``LineageEvent.source_ids``), so listing a source that was ALREADY
+            # tombstoned would claim a merge this operation did not perform — and
+            # an already-MERGED source may have been merged into a DIFFERENT
+            # survivor entirely.
+            merged_source_ids: list[str] = []
             for sid in source_ids:
                 if sid == survivor_id:
                     # Never tombstone the survivor itself, even if it is
@@ -288,7 +303,7 @@ class SQLiteLineageMixin:
                 # Skip sources that already carry any eligible/tombstone status
                 # (MERGED, SUPERSEDED, or ARCHIVED) — avoids re-tombstoning an
                 # already-archived source and resetting its retired_at clock.
-                self.conn.execute(
+                cur = self.conn.execute(
                     f"UPDATE {table} SET status=?, merged_into=?, retired_at=? "  # noqa: S608
                     f"WHERE {pk}=? AND {pk}!=? "
                     f"AND (status IS NULL OR status NOT IN ({eligible_ph}))",
@@ -301,6 +316,16 @@ class SQLiteLineageMixin:
                         *eligible_vals,
                     ),
                 )
+                if cur.rowcount > 0:
+                    merged_source_ids.append(sid)
+            if not merged_source_ids:
+                # Nothing committed, so there is nothing to record. Emitting here
+                # would write a ``merge`` event asserting a state change that
+                # never happened; the sibling ``supersede_record`` already guards
+                # the same way on its single-statement ``rowcount``.
+                if self._own_transaction():
+                    self.conn.commit()
+                return
             _append_event_stmt(
                 self.conn,
                 org_id=self.org_id,
@@ -308,7 +333,7 @@ class SQLiteLineageMixin:
                 entity_id=survivor_id,
                 op="merge",
                 prov="wasDerivedFrom",
-                source_ids=source_ids,
+                source_ids=merged_source_ids,
                 actor=context.actor,
                 request_id=context.request_id,
                 reason=context.reason,

@@ -150,3 +150,54 @@ class TestPendingRequestQueue:
 
         state = self._state(storage, "svc_lock_5")
         assert state.get("pending_request_queue", []) == []
+
+    def test_lock_stays_held_across_a_handover(self, storage):
+        """A handover must not look like a release to the next acquirer.
+
+        ``release_lock_pop_queue`` hands the lock to the next queued holder by
+        upserting a state blob with ``in_progress: True``. ``upsert_operation_state``
+        REPLACES the blob rather than merging it, so any acquirer that keys off a
+        different flag than the handover writes will read a live lock as free —
+        and ``try_acquire`` also RESETS ``pending_request_queue`` when it acquires,
+        so the queued work is silently dropped along with the lock.
+
+        Three requests are the minimum to reach it: two to build a queue, and a
+        third to arrive after the handover.
+        """
+        assert storage.try_acquire_in_progress_lock("svc_handover", "req_1")["acquired"]
+        assert not storage.try_acquire_in_progress_lock("svc_handover", "req_2")[
+            "acquired"
+        ]
+
+        # Exactly what release_lock_pop_queue writes when it promotes req_2.
+        storage.upsert_operation_state(
+            "svc_handover",
+            {
+                "in_progress": True,
+                "started_at": 1_700_000_000,
+                "current_request_id": "req_2",
+                "pending_request_id": None,
+                "pending_request_queue": [],
+            },
+        )
+
+        result = storage.try_acquire_in_progress_lock("svc_handover", "req_3")
+        assert result["acquired"] is False, (
+            "req_3 took a lock still held by req_2 — the acquirer and the "
+            "handover disagree about which key means 'held'"
+        )
+        state = self._state(storage, "svc_handover")
+        assert state.get("current_request_id") == "req_2"
+
+    def test_acquire_records_started_at_for_the_shared_reader(self, storage):
+        """``acquire_simple_lock`` reads ``started_at``, defaulting to 0.
+
+        A held lock written without it computes ``now - 0`` and is therefore
+        always stale, so the shared reader would steal a lock this backend
+        considers held. The two must agree on the payload, not just the flag.
+        """
+        storage.try_acquire_in_progress_lock("svc_started_at", "req_1")
+        state = self._state(storage, "svc_started_at")
+        assert state.get("in_progress") is True
+        assert isinstance(state.get("started_at"), int)
+        assert state["started_at"] > 0
