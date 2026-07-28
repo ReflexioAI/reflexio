@@ -78,7 +78,9 @@ def set_session_outcome(
     response_model=GetSessionOutcomesResponse,
     response_model_exclude_none=True,
 )
+@limiter.limit("60/minute")
 def get_session_outcomes(
+    request: Request,
     payload: GetSessionOutcomesRequest,
     org_id: str = Depends(default_get_org_id),
 ) -> GetSessionOutcomesResponse:
