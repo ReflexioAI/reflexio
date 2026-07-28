@@ -375,7 +375,7 @@ class ReflexioClient:
         response = self._make_request(
             "POST",
             "/api/publish_interaction",
-            json=request.model_dump(),
+            json=request.model_dump(mode="json"),
             params=params,
         )
         return PublishUserInteractionResponse(**response)
@@ -395,7 +395,7 @@ class ReflexioClient:
         response = await self._make_async_request(
             "POST",
             "/api/publish_interaction",
-            json=request.model_dump(),
+            json=request.model_dump(mode="json"),
             params=params,
         )
         return PublishUserInteractionResponse(**response)
@@ -590,7 +590,7 @@ class ReflexioClient:
         response = self._make_request(
             "POST",
             "/api/search_interactions",
-            json=req.model_dump(),
+            json=req.model_dump(mode="json"),
         )
         return SearchInteractionsViewResponse(**response)
 
@@ -651,7 +651,7 @@ class ReflexioClient:
             search_mode=search_mode,
         )
         response = self._make_request(
-            "POST", "/api/search_profiles", json=req.model_dump()
+            "POST", "/api/search_profiles", json=req.model_dump(mode="json")
         )
         return SearchProfilesViewResponse(**response)
 
@@ -734,7 +734,7 @@ class ReflexioClient:
             top_k=top_k,
         )
         response = self._make_request(
-            "POST", "/api/rerank_user_profiles", json=req.model_dump()
+            "POST", "/api/rerank_user_profiles", json=req.model_dump(mode="json")
         )
         return SearchProfilesViewResponse(**response)
 
@@ -812,7 +812,7 @@ class ReflexioClient:
             search_mode=search_mode,
         )
         response = self._make_request(
-            "POST", "/api/search_user_playbooks", json=req.model_dump()
+            "POST", "/api/search_user_playbooks", json=req.model_dump(mode="json")
         )
         return SearchUserPlaybooksViewResponse(**response)
 
@@ -870,7 +870,7 @@ class ReflexioClient:
             search_mode=search_mode,
         )
         response = self._make_request(
-            "POST", "/api/search_agent_playbooks", json=req.model_dump()
+            "POST", "/api/search_agent_playbooks", json=req.model_dump(mode="json")
         )
         return SearchAgentPlaybooksViewResponse(**response)
 
@@ -881,7 +881,7 @@ class ReflexioClient:
         response = self._make_request(
             "DELETE",
             "/api/delete_profile",
-            json=request.model_dump(),
+            json=request.model_dump(mode="json"),
         )
         return DeleteUserProfileResponse(**response)
 
@@ -892,7 +892,7 @@ class ReflexioClient:
         response = await self._make_async_request(
             "DELETE",
             "/api/delete_profile",
-            json=request.model_dump(),
+            json=request.model_dump(mode="json"),
         )
         return DeleteUserProfileResponse(**response)
 
@@ -939,7 +939,7 @@ class ReflexioClient:
         response = self._make_request(
             "DELETE",
             "/api/delete_interaction",
-            json=request.model_dump(),
+            json=request.model_dump(mode="json"),
         )
         return DeleteUserInteractionResponse(**response)
 
@@ -950,7 +950,7 @@ class ReflexioClient:
         response = await self._make_async_request(
             "DELETE",
             "/api/delete_interaction",
-            json=request.model_dump(),
+            json=request.model_dump(mode="json"),
         )
         return DeleteUserInteractionResponse(**response)
 
@@ -990,7 +990,7 @@ class ReflexioClient:
         response = self._make_request(
             "DELETE",
             "/api/delete_request",
-            json=request.model_dump(),
+            json=request.model_dump(mode="json"),
         )
         return DeleteRequestResponse(**response)
 
@@ -1001,7 +1001,7 @@ class ReflexioClient:
         response = await self._make_async_request(
             "DELETE",
             "/api/delete_request",
-            json=request.model_dump(),
+            json=request.model_dump(mode="json"),
         )
         return DeleteRequestResponse(**response)
 
@@ -1037,7 +1037,7 @@ class ReflexioClient:
         response = self._make_request(
             "DELETE",
             "/api/delete_session",
-            json=request.model_dump(),
+            json=request.model_dump(mode="json"),
         )
         return DeleteSessionResponse(**response)
 
@@ -1048,7 +1048,7 @@ class ReflexioClient:
         response = await self._make_async_request(
             "DELETE",
             "/api/delete_session",
-            json=request.model_dump(),
+            json=request.model_dump(mode="json"),
         )
         return DeleteSessionResponse(**response)
 
@@ -1145,7 +1145,7 @@ class ReflexioClient:
         response = self._make_request(
             "DELETE",
             "/api/delete_agent_playbook",
-            json=request.model_dump(),
+            json=request.model_dump(mode="json"),
         )
         return DeleteAgentPlaybookResponse(**response)
 
@@ -1156,7 +1156,7 @@ class ReflexioClient:
         response = await self._make_async_request(
             "DELETE",
             "/api/delete_agent_playbook",
-            json=request.model_dump(),
+            json=request.model_dump(mode="json"),
         )
         return DeleteAgentPlaybookResponse(**response)
 
@@ -1193,7 +1193,7 @@ class ReflexioClient:
         response = self._make_request(
             "DELETE",
             "/api/delete_user_playbook",
-            json=request.model_dump(),
+            json=request.model_dump(mode="json"),
         )
         return DeleteUserPlaybookResponse(**response)
 
@@ -1204,7 +1204,7 @@ class ReflexioClient:
         response = await self._make_async_request(
             "DELETE",
             "/api/delete_user_playbook",
-            json=request.model_dump(),
+            json=request.model_dump(mode="json"),
         )
         return DeleteUserPlaybookResponse(**response)
 
@@ -1274,7 +1274,7 @@ class ReflexioClient:
         response = self._make_request(
             "POST",
             "/api/get_interactions",
-            json=req.model_dump(),
+            json=req.model_dump(mode="json"),
         )
         return GetInteractionsViewResponse(**response)
 
@@ -1362,7 +1362,7 @@ class ReflexioClient:
         response = self._make_request(
             "POST",
             "/api/get_profiles",
-            json=req.model_dump(),
+            json=req.model_dump(mode="json"),
         )
         result = GetProfilesViewResponse(**response)
 
@@ -1474,7 +1474,7 @@ class ReflexioClient:
         return self._make_request(
             "POST",
             "/api/set_config",
-            json=config.model_dump(),  # type: ignore[reportAttributeAccessIssue]
+            json=config.model_dump(mode="json"),  # type: ignore[reportAttributeAccessIssue]
         )
 
     def update_config(self, partial: dict) -> dict:
@@ -1602,7 +1602,7 @@ class ReflexioClient:
         response = self._make_request(
             "POST",
             "/api/get_user_playbooks",
-            json=req.model_dump(),
+            json=req.model_dump(mode="json"),
         )
         return GetUserPlaybooksViewResponse(**response)
 
@@ -1631,7 +1631,7 @@ class ReflexioClient:
         response = self._make_request(
             "POST",
             "/api/add_user_playbook",
-            json=request.model_dump(),
+            json=request.model_dump(mode="json"),
         )
         return AddUserPlaybookResponse(**response)
 
@@ -1662,7 +1662,7 @@ class ReflexioClient:
         response = self._make_request(
             "POST",
             "/api/add_agent_playbook",
-            json=request.model_dump(),
+            json=request.model_dump(mode="json"),
         )
         return AddAgentPlaybookResponse(**response)
 
@@ -1722,7 +1722,7 @@ class ReflexioClient:
         response = self._make_request(
             "POST",
             "/api/add_user_profile",
-            json=request.model_dump(),
+            json=request.model_dump(mode="json"),
         )
         return AddUserProfileResponse(**response)
 
@@ -1760,7 +1760,7 @@ class ReflexioClient:
         response = self._make_request(
             "PUT",
             "/api/update_user_playbook",
-            json=request.model_dump(),
+            json=request.model_dump(mode="json"),
         )
         return UpdateUserPlaybookResponse(**response)
 
@@ -1802,7 +1802,7 @@ class ReflexioClient:
         response = self._make_request(
             "PUT",
             "/api/update_agent_playbook",
-            json=request.model_dump(),
+            json=request.model_dump(mode="json"),
         )
         self._cache.invalidate("get_agent_playbooks")
         return UpdateAgentPlaybookResponse(**response)
@@ -1836,7 +1836,7 @@ class ReflexioClient:
         response = self._make_request(
             "PUT",
             "/api/update_agent_playbook_status",
-            json=request.model_dump(),
+            json=request.model_dump(mode="json"),
         )
         self._cache.invalidate("get_agent_playbooks")
         return UpdatePlaybookStatusResponse(**response)
@@ -1913,7 +1913,7 @@ class ReflexioClient:
         response = self._make_request(
             "POST",
             "/api/get_agent_playbooks",
-            json=req.model_dump(),
+            json=req.model_dump(mode="json"),
         )
         result = GetAgentPlaybooksViewResponse(**response)
 
@@ -1976,7 +1976,7 @@ class ReflexioClient:
         response = self._make_request(
             "POST",
             "/api/get_requests",
-            json=req.model_dump(),
+            json=req.model_dump(mode="json"),
         )
         return GetRequestsViewResponse(**response)
 
@@ -2012,7 +2012,7 @@ class ReflexioClient:
         response = self._make_request(
             "POST",
             "/api/get_agent_success_evaluation_results",
-            json=req.model_dump(),
+            json=req.model_dump(mode="json"),
         )
         return GetEvaluationResultsViewResponse(**response)
 
@@ -2043,7 +2043,7 @@ class ReflexioClient:
         response = self._make_request(
             "POST",
             "/api/get_retrieved_learning_evaluation_results",
-            json=req.model_dump(),
+            json=req.model_dump(mode="json"),
         )
         return GetRetrievedLearningEvaluationResultsResponse(**response)
 
@@ -2078,7 +2078,7 @@ class ReflexioClient:
         response = self._make_request(
             "POST",
             "/api/evaluations/regenerate",
-            json=req.model_dump(),
+            json=req.model_dump(mode="json"),
         )
         return RegenerateStartResponse(**response)
 
@@ -2130,7 +2130,7 @@ class ReflexioClient:
         response = self._make_request(
             "POST",
             "/api/evaluations/grade_on_demand",
-            json=req.model_dump(),
+            json=req.model_dump(mode="json"),
         )
         return GradeOnDemandResponse(**response)
 
@@ -2202,7 +2202,7 @@ class ReflexioClient:
         response = self._make_request(
             "POST",
             "/api/rerun_profile_generation",
-            json=request.model_dump(),
+            json=request.model_dump(mode="json"),
         )
         initial = RerunProfileGenerationResponse(**response)
         if not initial.success:
@@ -2240,7 +2240,7 @@ class ReflexioClient:
         response = await self._make_async_request(
             "POST",
             "/api/rerun_profile_generation",
-            json=request.model_dump(),
+            json=request.model_dump(mode="json"),
         )
         return RerunProfileGenerationResponse(**response)
 
@@ -2310,7 +2310,7 @@ class ReflexioClient:
         response = self._make_request(
             "POST",
             "/api/upgrade_all_profiles",
-            json=req.model_dump(),
+            json=req.model_dump(mode="json"),
         )
         return UpgradeProfilesResponse(**response)
 
@@ -2336,7 +2336,7 @@ class ReflexioClient:
         response = self._make_request(
             "POST",
             "/api/upgrade_all_user_playbooks",
-            json=req.model_dump(),
+            json=req.model_dump(mode="json"),
         )
         return UpgradeUserPlaybooksResponse(**response)
 
@@ -2347,7 +2347,7 @@ class ReflexioClient:
         await self._make_async_request(
             "POST",
             "/api/manual_profile_generation",
-            json=request.model_dump(),
+            json=request.model_dump(mode="json"),
         )
 
     def manual_profile_generation(
@@ -2395,7 +2395,7 @@ class ReflexioClient:
         response = self._make_request(
             "POST",
             "/api/rerun_playbook_generation",
-            json=request.model_dump(),
+            json=request.model_dump(mode="json"),
         )
         initial = RerunPlaybookGenerationResponse(**response)
         if not initial.success:
@@ -2433,7 +2433,7 @@ class ReflexioClient:
         response = await self._make_async_request(
             "POST",
             "/api/rerun_playbook_generation",
-            json=request.model_dump(),
+            json=request.model_dump(mode="json"),
         )
         return RerunPlaybookGenerationResponse(**response)
 
@@ -2485,7 +2485,7 @@ class ReflexioClient:
         await self._make_async_request(
             "POST",
             "/api/manual_playbook_generation",
-            json=request.model_dump(),
+            json=request.model_dump(mode="json"),
         )
 
     def manual_playbook_generation(
@@ -2529,7 +2529,7 @@ class ReflexioClient:
         response = self._make_request(
             "POST",
             "/api/run_playbook_aggregation",
-            json=request.model_dump(),
+            json=request.model_dump(mode="json"),
         )
         return RunPlaybookAggregationResponse(**response)
 
@@ -2540,7 +2540,7 @@ class ReflexioClient:
         response = await self._make_async_request(
             "POST",
             "/api/run_playbook_aggregation",
-            json=request.model_dump(),
+            json=request.model_dump(mode="json"),
         )
         return RunPlaybookAggregationResponse(**response)
 
@@ -2656,7 +2656,7 @@ class ReflexioClient:
             session_id=session_id,
             interaction_id=interaction_id,
         )
-        response = self._make_request("POST", "/api/search", json=req.model_dump())
+        response = self._make_request("POST", "/api/search", json=req.model_dump(mode="json"))
         return UnifiedSearchViewResponse(**response)
 
     # =========================================================================
@@ -2674,7 +2674,7 @@ class ReflexioClient:
         """
         req = DeleteRequestsByIdsRequest(request_ids=request_ids)
         response = self._make_request(
-            "DELETE", "/api/delete_requests_by_ids", json=req.model_dump()
+            "DELETE", "/api/delete_requests_by_ids", json=req.model_dump(mode="json")
         )
         return BulkDeleteResponse(**response)
 
@@ -2689,7 +2689,7 @@ class ReflexioClient:
         """
         req = DeleteProfilesByIdsRequest(profile_ids=profile_ids)
         response = self._make_request(
-            "DELETE", "/api/delete_profiles_by_ids", json=req.model_dump()
+            "DELETE", "/api/delete_profiles_by_ids", json=req.model_dump(mode="json")
         )
         self._cache.invalidate("get_profiles")
         return BulkDeleteResponse(**response)
@@ -2707,7 +2707,7 @@ class ReflexioClient:
         """
         req = DeleteAgentPlaybooksByIdsRequest(agent_playbook_ids=agent_playbook_ids)
         response = self._make_request(
-            "DELETE", "/api/delete_agent_playbooks_by_ids", json=req.model_dump()
+            "DELETE", "/api/delete_agent_playbooks_by_ids", json=req.model_dump(mode="json")
         )
         self._cache.invalidate("get_agent_playbooks")
         return BulkDeleteResponse(**response)
@@ -2725,7 +2725,7 @@ class ReflexioClient:
         """
         req = DeleteUserPlaybooksByIdsRequest(user_playbook_ids=user_playbook_ids)
         response = self._make_request(
-            "DELETE", "/api/delete_user_playbooks_by_ids", json=req.model_dump()
+            "DELETE", "/api/delete_user_playbooks_by_ids", json=req.model_dump(mode="json")
         )
         return BulkDeleteResponse(**response)
 
@@ -3007,7 +3007,7 @@ class ReflexioClient:
         """
         req = ClearUserDataRequest(user_id=user_id)
         response = self._make_request(
-            "POST", "/api/clear_user_data", json=req.model_dump()
+            "POST", "/api/clear_user_data", json=req.model_dump(mode="json")
         )
         # Nuclear — clear everything that could reference this user.
         self._cache.clear()
