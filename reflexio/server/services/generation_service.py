@@ -1092,7 +1092,7 @@ class GenerationService:
                 logger.exception(
                     "Failed to persist retrieved-learning sampling decision for "
                     "request=%s session=%s user=%s",
-                    new_request.request_id,
+                    sanitise_for_log(new_request.request_id),
                     session_id,
                     user_id,
                 )
