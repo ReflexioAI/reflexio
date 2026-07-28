@@ -1510,9 +1510,7 @@ class TestDeduplicateHappyPath:
 class TestConsolidationRepair:
     """Tests for pre-apply validation and the single repair pass."""
 
-    def test_repair_fallback_uses_first_parsed_output_provenance(
-        self, mock_consolidator
-    ):
+    def test_repair_failure_preserves_first_parsed_provenance(self, mock_consolidator):
         first_output = PlaybookConsolidationOutput(
             decisions=[IndependentDecision(new_id="NEW-0")]
         )
@@ -1529,16 +1527,14 @@ class TestConsolidationRepair:
 
         mock_consolidator.client.generate_chat_response.side_effect = repair_exhausted
 
-        result = mock_consolidator._consolidation_decisions(
-            [_make_user_playbook(0), _make_user_playbook(1)], []
-        )
+        with pytest.raises(StructuredOutputRepairError):
+            mock_consolidator._consolidation_decisions(
+                [_make_user_playbook(0), _make_user_playbook(1)], []
+            )
 
-        assert result is first_output
         assert mock_consolidator.model_provenance == first_parsed_provenance
 
-    def test_repair_fallback_returns_first_parsed_output_without_provenance(
-        self, mock_consolidator
-    ):
+    def test_repair_failure_without_provenance_fails_closed(self, mock_consolidator):
         first_output = PlaybookConsolidationOutput(
             decisions=[IndependentDecision(new_id="NEW-0")]
         )
@@ -1553,14 +1549,16 @@ class TestConsolidationRepair:
 
         mock_consolidator.client.generate_chat_response.side_effect = repair_exhausted
 
-        result = mock_consolidator._consolidation_decisions(
-            [_make_user_playbook(0), _make_user_playbook(1)], []
-        )
+        with pytest.raises(StructuredOutputRepairError):
+            mock_consolidator._consolidation_decisions(
+                [_make_user_playbook(0), _make_user_playbook(1)], []
+            )
 
-        assert result is first_output
         assert mock_consolidator.model_provenance is None
 
-    def test_transport_failure_preserves_first_parsed_output(self, mock_consolidator):
+    def test_transport_failure_preserves_provenance_and_fails_closed(
+        self, mock_consolidator
+    ):
         first_output = PlaybookConsolidationOutput(
             decisions=[IndependentDecision(new_id="NEW-0")]
         )
@@ -1575,11 +1573,11 @@ class TestConsolidationRepair:
 
         mock_consolidator.client.generate_chat_response.side_effect = transport_failure
 
-        result = mock_consolidator._consolidation_decisions(
-            [_make_user_playbook(0), _make_user_playbook(1)], []
-        )
+        with pytest.raises(LiteLLMClientError):
+            mock_consolidator._consolidation_decisions(
+                [_make_user_playbook(0), _make_user_playbook(1)], []
+            )
 
-        assert result is first_output
         assert mock_consolidator.model_provenance == first_parsed_provenance
 
     def test_under_consumed_output_repairs_to_multi_new_unify(self, mock_consolidator):

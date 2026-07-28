@@ -898,7 +898,10 @@ class PlaybookConsolidator(BaseDeduplicator):
                 response_format=output_schema_class,
                 structured_output_validator=_validate_output,
             )
-        except (StructuredOutputRepairError, LiteLLMClientError):
+        except LiteLLMClientError as exc:
+            # Keep observed attribution for diagnostics/lineage accounting, but
+            # never salvage a candidate batch that failed deterministic review.
+            self.model_provenance = exc.first_parsed_provenance
             raise
 
         self.model_provenance = completion.provenance
