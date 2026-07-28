@@ -226,7 +226,7 @@ def test_non_managed_aggregation_preserves_lineage_operation_key_deduplication(
         patch.object(
             PlaybookAggregator,
             "_generate_playbooks_with_source_clusters",
-            return_value=[(unsaved, cluster_playbooks)],
+            return_value=[(unsaved, cluster_playbooks, None)],
         ),
     ):
         aggregator.run(
@@ -336,7 +336,7 @@ def test_managed_aggregation_prepares_then_atomically_completes_all_effects(
         patch.object(
             PlaybookAggregator,
             "_generate_playbooks_with_source_clusters",
-            return_value=[(unsaved, cluster_playbooks)],
+            return_value=[(unsaved, cluster_playbooks, None)],
         ),
     ):
         result = aggregator.run(

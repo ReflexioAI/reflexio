@@ -1010,7 +1010,7 @@ class TestRun:
         raws = [_raw(rid=1), _raw(rid=2)]
         generated = _agent_playbook(fid=100)
         mock_clust.return_value = {0: raws}
-        mock_gen.return_value = [(generated, raws)]
+        mock_gen.return_value = [(generated, raws, None)]
 
         coordinator = MagicMock()
 

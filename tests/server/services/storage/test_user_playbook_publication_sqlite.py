@@ -780,7 +780,8 @@ def test_committed_response_loss_retry_returns_same_successor_after_lease_expiry
         ).fetchone()["count"]
         == 1
     )
-    assert len(storage.get_lineage_events(entity_type="user_playbook")) == 1
+    events = storage.get_lineage_events(entity_type="user_playbook")
+    assert [event.op for event in events] == ["create", "revise"]
     assert (
         storage.conn.execute(
             "SELECT COUNT(*) AS count FROM playbook_optimization_events WHERE job_id = ?",
