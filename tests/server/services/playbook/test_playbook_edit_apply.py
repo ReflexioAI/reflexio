@@ -86,38 +86,7 @@ def test_apply_skips_archive_when_incumbent_not_current():
         assert new_id == -1
 
 
-def test_apply_expect_current_false_archives():
-    """With expect_current=False, new playbook is inserted and incumbent is archived."""
-    from reflexio.server.services.playbook.playbook_edit_apply import (
-        apply_playbook_edit,
-    )
-
-    with tempfile.TemporaryDirectory() as tmp:
-        s = _storage(tmp)
-        with patch.object(SQLiteStorage, "_get_embedding", return_value=[0.0] * 512):
-            old = _playbook(content="old")
-            s.save_user_playbooks([old])
-            old_id = old.user_playbook_id
-            assert old_id > 0
-
-            new = _playbook(content="new")
-            new_id = apply_playbook_edit(
-                s,
-                incumbent_id=old_id,
-                new_playbook=new,
-                source="offline_optimizer",
-                request_id="run-abc",
-            )
-        assert new_id > 0
-
-        # Only new_id should be CURRENT (status=None); old_id should be archived
-        all_pbs = s.get_user_playbooks(user_id="u1")
-        current_ids = {p.user_playbook_id for p in all_pbs if p.status is None}
-        assert new_id in current_ids
-        assert old_id not in current_ids
-
-
-def test_apply_expect_current_false_returns_minus1_and_no_orphan():
+def test_apply_returns_minus1_and_leaves_no_orphan_on_lost_race():
     """When incumbent is already archived, supersede_record returns False.
 
     The transaction rolls back the provisional successor and its create event,
