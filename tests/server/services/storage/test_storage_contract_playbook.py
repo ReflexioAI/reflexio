@@ -60,6 +60,16 @@ def _make_agent_playbook(
 
 
 class TestUserPlaybookCRUD:
+    def test_precompute_without_trigger_clears_stale_search_fields(self, storage):
+        playbook = _make_user_playbook(1, "u1", "fb", "v1")
+        playbook.embedding = [0.1] * 512
+        playbook.expanded_terms = "stale expanded terms"
+
+        storage.precompute_user_playbook_embeddings([playbook])
+
+        assert playbook.embedding == []
+        assert playbook.expanded_terms is None
+
     def test_save_and_get_user_playbooks(self, storage):
         rfs = [
             _make_user_playbook(1, "u1", "fb", "v1"),
@@ -85,6 +95,23 @@ class TestUserPlaybookCRUD:
 
         assert [p.user_playbook_id for p in first_page] == [3, 2]
         assert [p.user_playbook_id for p in second_page] == [1]
+
+    def test_get_user_playbooks_supports_descending_id_keyset(self, storage):
+        playbooks = [
+            _make_user_playbook(1, "u1", "fb", "v1"),
+            _make_user_playbook(2, "u1", "fb", "v1"),
+            _make_user_playbook(3, "u1", "fb", "v1"),
+        ]
+        playbooks[0].created_at = 1_700_000_300
+        playbooks[1].created_at = 1_700_000_200
+        playbooks[2].created_at = 1_700_000_100
+        storage.save_user_playbooks(playbooks)
+
+        page = storage.get_user_playbooks(
+            user_id="u1", limit=2, offset=99, max_user_playbook_id=2
+        )
+
+        assert [playbook.user_playbook_id for playbook in page] == [2, 1]
 
     def test_update_user_playbook_tags_round_trip(self, storage):
         storage.save_user_playbooks([_make_user_playbook(1, "u1", "fb", "v1")])
@@ -424,6 +451,16 @@ class TestAgentPlaybookSourceWindows:
 
 
 class TestAgentPlaybookCRUD:
+    def test_save_without_trigger_clears_stale_search_fields(self, storage):
+        playbook = _make_agent_playbook(1, "fb", "v1")
+        playbook.embedding = [0.1] * 512
+        playbook.expanded_terms = "stale expanded terms"
+
+        storage.save_agent_playbooks([playbook])
+
+        assert playbook.embedding == []
+        assert playbook.expanded_terms is None
+
     def test_save_and_get_agent_playbooks(self, storage):
         fbs = [
             _make_agent_playbook(1, "fb", "v1"),
@@ -451,6 +488,21 @@ class TestAgentPlaybookCRUD:
 
         assert [p.agent_playbook_id for p in first_page] == [3, 2]
         assert [p.agent_playbook_id for p in second_page] == [1]
+
+    def test_get_agent_playbooks_supports_descending_id_keyset(self, storage):
+        playbooks = [
+            _make_agent_playbook(1, "fb", "v1"),
+            _make_agent_playbook(2, "fb", "v1"),
+            _make_agent_playbook(3, "fb", "v1"),
+        ]
+        playbooks[0].created_at = 1_700_000_300
+        playbooks[1].created_at = 1_700_000_200
+        playbooks[2].created_at = 1_700_000_100
+        storage.save_agent_playbooks(playbooks)
+
+        page = storage.get_agent_playbooks(limit=2, offset=99, max_agent_playbook_id=2)
+
+        assert [playbook.agent_playbook_id for playbook in page] == [2, 1]
 
     def test_get_agent_playbooks_filters_query_before_limit(self, storage):
         newer = _make_agent_playbook(1, "alpha", "v1")

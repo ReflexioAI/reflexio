@@ -36,6 +36,7 @@ from reflexio.server.services.playbook.aggregation_prompt_processing import (
     PromptPostprocessResult,
     PromptPreprocessResult,
 )
+from reflexio.server.services.playbook.components import aggregator as aggregator_module
 from reflexio.server.services.playbook.components.aggregator import PlaybookAggregator
 from reflexio.server.services.playbook.playbook_service_utils import (
     PlaybookAggregationOutput,
@@ -739,6 +740,48 @@ class TestUpdateOperationState:
             name="fb", version="v1", last_processed_id=10
         )
 
+    def test_uses_captured_high_watermark(self):
+        agg = _make_aggregator()
+        raws = [_raw(rid=10), _raw(rid=7)]
+
+        with patch.object(PlaybookAggregator, "_create_state_manager") as mock_csm:
+            mgr = MagicMock()
+            mock_csm.return_value = mgr
+
+            agg._update_operation_state("fb", raws, processed_high_watermark=12)
+
+        mgr.update_aggregator_bookmark.assert_called_once_with(
+            name="fb", version="v1", last_processed_id=12
+        )
+
+
+def test_read_all_pages_keeps_original_high_watermark_and_surviving_rows():
+    rows_by_id = {rid: _raw(rid=rid) for rid in range(1, 5)}
+    calls: list[tuple[int, int]] = []
+
+    def fetch_page(limit: int, max_id: int) -> list[UserPlaybook]:
+        calls.append((limit, max_id))
+        if len(calls) == 2:
+            # A newer insert must not enter the captured range. Removing rows
+            # already returned must not shift the cursor over unread rows.
+            rows_by_id[5] = _raw(rid=5)
+            rows_by_id.pop(4)
+            rows_by_id.pop(3)
+        return sorted(
+            (row for rid, row in rows_by_id.items() if rid <= max_id),
+            key=lambda row: row.user_playbook_id,
+            reverse=True,
+        )[:limit]
+
+    with patch.object(aggregator_module, "_AGGREGATION_PLAYBOOK_PAGE_SIZE", 2):
+        rows, high_watermark = aggregator_module._read_all_pages(
+            fetch_page, lambda row: row.user_playbook_id
+        )
+
+    assert [row.user_playbook_id for row in rows] == [4, 3, 2, 1]
+    assert high_watermark == 4
+    assert calls == [(2, aggregator_module._SIGNED_BIGINT_MAX), (2, 2), (2, 0)]
+
 
 # ---------------------------------------------------------------------------
 # _compute_cluster_fingerprint
@@ -955,6 +998,53 @@ class TestRun:
         agg.run(req)
 
         agg.storage.get_user_playbooks.assert_not_called()
+
+    @patch.object(PlaybookAggregator, "get_clusters")
+    @patch.object(PlaybookAggregator, "_generate_playbooks_with_source_clusters")
+    def test_run_reads_every_user_playbook_page(self, mock_gen, mock_clust):
+        """Aggregation must not silently stop at the storage default limit.
+
+        The page size must also stay below every backend's server-side row cap
+        (PostgREST enforces ``max_rows = 1000``), otherwise a capped page would
+        look like a short final page and truncate the read.
+        """
+        agg = self._make_runnable_aggregator()
+        assert aggregator_module._AGGREGATION_PLAYBOOK_PAGE_SIZE < 1000
+        page_size = aggregator_module._AGGREGATION_PLAYBOOK_PAGE_SIZE
+        first_page = [_raw(rid=rid) for rid in range(page_size + 1, 1, -1)]
+        final_page = [_raw(rid=1)]
+        agg.storage.get_user_playbooks.side_effect = [first_page, final_page]
+        mock_clust.return_value = {}
+        mock_gen.return_value = []
+
+        with patch.object(agg, "_update_operation_state") as update_state:
+            agg.run(PlaybookAggregatorRequest(agent_version="v1", rerun=True))
+
+        assert len(mock_clust.call_args.args[0]) == page_size + 1
+        assert agg.storage.get_user_playbooks.call_args_list == [
+            call(
+                limit=page_size,
+                max_user_playbook_id=max_id,
+                agent_version="v1",
+                status_filter=[None],
+                include_embedding=True,
+            )
+            for max_id in (aggregator_module._SIGNED_BIGINT_MAX, 1)
+        ]
+        agg.storage.get_agent_playbooks.assert_called_once_with(
+            limit=page_size,
+            max_agent_playbook_id=aggregator_module._SIGNED_BIGINT_MAX,
+            status_filter=[None],
+            playbook_status_filter=[
+                PlaybookStatus.APPROVED,
+                PlaybookStatus.PENDING,
+            ],
+        )
+        update_state.assert_called_once_with(
+            SINGLETON_USER_PLAYBOOK_NAME,
+            [*first_page, *final_page],
+            processed_high_watermark=page_size + 1,
+        )
 
     @patch.object(PlaybookAggregator, "get_clusters")
     @patch.object(PlaybookAggregator, "_generate_playbooks_with_source_clusters")

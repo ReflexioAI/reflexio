@@ -335,6 +335,7 @@ def save_user_playbooks(reflexio_instance: Reflexio):
                 agent_version=row["agent_version"],
                 request_id=row["request_id"],
                 content=row["content"],
+                trigger=row["trigger"],
                 playbook_name=row["playbook_name"],
             )
             for row in reader

@@ -447,17 +447,13 @@ class ProfileExtractorConfig(_ExtractorWindowOverrideCompatMixin, BaseModel):
 class PlaybookAggregatorConfig(BaseModel):
     min_cluster_size: int = Field(default=2, ge=1)
     reaggregation_trigger_count: int = Field(default=2, ge=1)
-    clustering_similarity: float = Field(
-        default=0.3,
+    clustering_similarity: float | None = Field(
+        default=None,
         ge=0.0,
         le=1.0,
         description=(
             "Cosine similarity threshold for clustering. Higher = tighter clusters. "
-            "Default 0.3 is a compromise that works for both cloud embeddings "
-            "(OpenAI text-embedding-3-*, Gemini) and the local zero-padded "
-            "MiniLM-L6-v2 embedder. Cloud embeddings typically tolerate 0.4-0.6; "
-            "the local embedder's 384-dim vectors zero-padded to 512 produce "
-            "lower cosine similarities and need ~0.15-0.3 to cluster at all."
+            "When omitted, Reflexio uses the embedding model's calibrated default."
         ),
     )
     direction_overlap_threshold: float = Field(
@@ -480,7 +476,9 @@ class UserPlaybookExtractorConfig(_ExtractorWindowOverrideCompatMixin, BaseModel
     extraction_definition_prompt: SanitizedNonEmptyStr
     context_prompt: str | None = None
     tagging_definition_prompt: str | None = None
-    aggregation_config: PlaybookAggregatorConfig | None = None
+    aggregation_config: PlaybookAggregatorConfig = Field(
+        default_factory=PlaybookAggregatorConfig
+    )
     deduplication_config: DeduplicationConfig | None = None
     request_sources_enabled: list[str] | None = (
         None  # default enabled for all sources, if set, only extract user playbooks from the enabled request sources
@@ -492,6 +490,15 @@ class UserPlaybookExtractorConfig(_ExtractorWindowOverrideCompatMixin, BaseModel
     @classmethod
     def _migrate_field_names(cls, data: Any) -> Any:
         data = _migrate_dict(data, _PLAYBOOK_CONFIG_FIELD_MIGRATION)
+        if (
+            isinstance(data, dict)
+            and "aggregation_config" in data
+            and data["aggregation_config"] is None
+        ):
+            # Historical configs persisted the absent optional aggregator as
+            # JSON null. Aggregation is now default-on, so treat both a missing
+            # field and the legacy null representation as "use defaults".
+            data.pop("aggregation_config")
         return _migrate_dict(data, _EXTRACTOR_OVERRIDE_MIGRATION)
 
 

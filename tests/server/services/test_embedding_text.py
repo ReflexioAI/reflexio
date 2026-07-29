@@ -1,12 +1,16 @@
 import pytest
 
 from reflexio.models.api_schema.service_schemas import (
+    AgentPlaybook,
     AgentSuccessEvaluationResult,
+    UserPlaybook,
     UserProfile,
 )
 from reflexio.server.services.embedding_text import (
     embedding_input,
     embedding_text,
+    playbook_trigger_embedding_text,
+    resolve_clustering_similarity,
     resolve_retrieval_threshold,
 )
 
@@ -66,6 +70,58 @@ def test_agent_success_embedding_text_omits_missing_failure_fields() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("trigger", "expected"),
+    [
+        (
+            "When a user requests a long-form lecture without AI safety framing",
+            "long-form lecture without AI safety framing",
+        ),
+        (
+            "User asks the agent to generate a 7-minute course",
+            "generate 7-minute course",
+        ),
+        (
+            "After the first attempt fails, do not retry before validation",
+            "After first attempt fails, do not retry before validation",
+        ),
+        (
+            "Please preserve Project Zephyr's status=error",
+            "preserve Project Zephyr's status=error",
+        ),
+        (
+            "When user asks to compare Plan A with Plan B",
+            "compare Plan A with Plan B",
+        ),
+        (
+            "When user requests an A/B test",
+            "A/B test",
+        ),
+    ],
+)
+def test_playbook_trigger_embedding_text_removes_only_low_signal_language(
+    trigger: str, expected: str
+) -> None:
+    assert playbook_trigger_embedding_text(trigger) == expected
+
+
+def test_playbook_embeddings_use_trigger_only_without_content_fallback() -> None:
+    user_playbook = UserPlaybook(
+        agent_version="v1",
+        request_id="r1",
+        content="content must not be embedded",
+        trigger=None,
+    )
+    agent_playbook = AgentPlaybook(
+        agent_version="v1",
+        content="content must not be embedded",
+        trigger=None,
+    )
+
+    assert embedding_text(user_playbook) == ""
+    assert embedding_text(agent_playbook) == ""
+
+
 def test_embedding_input_applies_nomic_asymmetric_prefixes() -> None:
     model = "local/nomic-embed-text-v1.5"
     assert embedding_input("hello", model_name=model) == "search_document: hello"
@@ -102,6 +158,31 @@ def test_retrieval_threshold_defaults_by_model(
 def test_explicit_retrieval_threshold_wins_including_zero() -> None:
     assert (
         resolve_retrieval_threshold(
+            0.0,
+            model_name="local/nomic-embed-text-v1.5",
+        )
+        == 0.0
+    )
+
+
+@pytest.mark.parametrize(
+    ("model_name", "expected"),
+    [
+        ("local/minilm-l6-v2", 0.30),
+        ("local/nomic-embed-text-v1.5", 0.85),
+        ("local/nomic-embed-v1.5", 0.85),
+        ("unknown-model", 0.30),
+    ],
+)
+def test_clustering_similarity_defaults_by_model(
+    model_name: str, expected: float
+) -> None:
+    assert resolve_clustering_similarity(None, model_name=model_name) == expected
+
+
+def test_explicit_clustering_similarity_wins_including_zero() -> None:
+    assert (
+        resolve_clustering_similarity(
             0.0,
             model_name="local/nomic-embed-text-v1.5",
         )

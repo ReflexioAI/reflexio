@@ -65,7 +65,7 @@ export interface ProfileExtractorConfig {
 export interface PlaybookAggregatorConfig {
   min_cluster_size: number;
   reaggregation_trigger_count: number;
-  clustering_similarity: number;
+  clustering_similarity: number | null;
   direction_overlap_threshold: number;
 }
 
@@ -79,7 +79,7 @@ export interface UserPlaybookExtractorConfig {
   extraction_definition_prompt: string;
   context_prompt: string | null;
   metadata_definition_prompt: string | null;
-  aggregation_config: PlaybookAggregatorConfig | null;
+  aggregation_config: PlaybookAggregatorConfig;
   deduplication_config: DeduplicationConfig | null;
   window_size_override: number | null;
   stride_size_override: number | null;
@@ -165,7 +165,12 @@ export function defaultPlaybookExtractor(): UserPlaybookExtractorConfig {
     extraction_definition_prompt: "",
     context_prompt: null,
     metadata_definition_prompt: null,
-    aggregation_config: null,
+    aggregation_config: {
+      min_cluster_size: 2,
+      reaggregation_trigger_count: 2,
+      clustering_similarity: null,
+      direction_overlap_threshold: 0.6,
+    },
     deduplication_config: null,
     window_size_override: null,
     stride_size_override: null,

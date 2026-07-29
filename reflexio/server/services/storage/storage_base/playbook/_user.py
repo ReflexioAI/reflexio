@@ -118,6 +118,7 @@ class UserPlaybookStoreMixin:
         user_playbook_id: int | None = None,
         request_id: str | None = None,
         query: str | None = None,
+        max_user_playbook_id: int | None = None,
     ) -> list[UserPlaybook]:
         """Get user playbooks from storage.
 
@@ -137,6 +138,9 @@ class UserPlaybookStoreMixin:
             include_embedding (bool): If True, fetch and parse embedding vectors. Defaults to False.
             tags (list[str], optional): Match playbooks having any of these tags.
             offset (int): Number of matching rows to skip. Defaults to 0.
+            max_user_playbook_id (int, optional): Inclusive primary-key cursor.
+                When provided, rows are ordered by user_playbook_id descending
+                and offset is ignored.
 
         Returns:
             list[UserPlaybook]: List of user playbook objects

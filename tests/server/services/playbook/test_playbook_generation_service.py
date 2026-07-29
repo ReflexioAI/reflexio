@@ -250,7 +250,10 @@ def test_maybe_trigger_user_playbook_aggregation_reports_no_config():
     )
 
     configurator = MagicMock()
-    configurator.get_config.return_value = Config(storage_config=StorageConfigSQLite())
+    configurator.get_config.return_value = Config(
+        storage_config=StorageConfigSQLite(),
+        user_playbook_extractor_config=None,
+    )
     ctx = MagicMock(configurator=configurator, org_id="test-org")
 
     result = maybe_trigger_user_playbook_aggregation(
