@@ -22,43 +22,53 @@ from unittest.mock import patch
 
 from reflexio.server.llm._litellm_text_generation import TextGenerationMixin
 
-# Forwarded options both entry points must accept. `generate_chat_response_with_provenance`
-# forwards each of these by name, so a missing parameter is a latent NameError.
-FORWARDED_OPTIONS = (
-    "tools",
-    "tool_choice",
-    "model_role",
-    "max_retries",
-    "fallback_models",
-    "structured_output_validator",
-    "provider_request_guard",
-)
+PLAIN = TextGenerationMixin.generate_chat_response
+PROVENANCE = TextGenerationMixin.generate_chat_response_with_provenance
+
+# Structural, not hand-maintained: the options are DERIVED from the signatures, so a
+# future option added to one entry point and forgotten in the other fails here without
+# anyone remembering to update this file. A hardcoded list would need the same manual
+# sync step that produced the original bug.
+_PLUMBING = {"self", "messages", "system_message", "kwargs"}
 
 
-def _params(func):
-    return set(inspect.signature(func).parameters)
+def _options(func):
+    return set(inspect.signature(func).parameters) - _PLUMBING
 
 
-def test_both_entry_points_declare_every_forwarded_option():
-    """Neither entry point may forward a name it does not declare."""
-    plain = _params(TextGenerationMixin.generate_chat_response)
-    provenance = _params(TextGenerationMixin.generate_chat_response_with_provenance)
-    for option in FORWARDED_OPTIONS:
-        assert option in plain, f"generate_chat_response is missing {option!r}"
-        assert option in provenance, (
-            f"generate_chat_response_with_provenance forwards {option!r} but does not "
-            f"declare it — this is a NameError at runtime, not a type error"
-        )
+def test_both_entry_points_declare_the_same_options():
+    """The two entry points must stay in lockstep.
+
+    `generate_chat_response` delegates to `generate_chat_response_with_provenance`
+    and forwards each option by name, so any asymmetry is either a NameError (declared
+    on neither side but forwarded) or a silently dropped argument.
+    """
+    plain, provenance = _options(PLAIN), _options(PROVENANCE)
+    assert plain == provenance, (
+        "signatures drifted — "
+        f"only in generate_chat_response: {sorted(plain - provenance)}; "
+        f"only in generate_chat_response_with_provenance: {sorted(provenance - plain)}"
+    )
 
 
 def test_forwarded_names_are_locals_not_globals():
-    """Every forwarded name must be a real parameter, not an accidental global lookup."""
-    code = TextGenerationMixin.generate_chat_response_with_provenance.__code__
-    for option in FORWARDED_OPTIONS:
+    """Every option must be a real local, not an accidental global lookup.
+
+    A name referenced in the forwarding block but absent from the signature compiles
+    fine and raises NameError only when that line executes.
+    """
+    code = PROVENANCE.__code__
+    for option in _options(PROVENANCE):
         assert option in code.co_varnames, (
             f"{option!r} is not a local in generate_chat_response_with_provenance; "
             f"referencing it would raise NameError"
         )
+
+
+def test_provider_request_guard_is_still_wired():
+    """Pin the specific regression the derived checks above generalise."""
+    assert "provider_request_guard" in _options(PLAIN)
+    assert "provider_request_guard" in _options(PROVENANCE)
 
 
 def test_provenance_call_without_a_guard_does_not_raise_nameerror():
