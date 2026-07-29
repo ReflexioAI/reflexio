@@ -74,9 +74,27 @@ class LineageEventMixin:
         """Soft-delete each source into the survivor in one atomic transaction.
 
         Sets ``status=MERGED`` and ``merged_into=survivor_id`` on each source
-        whose status is not already a tombstone (MERGED or SUPERSEDED). Appends
-        a single ``merge`` lineage event keyed on ``survivor_id``. Idempotent —
-        re-running on already-tombstoned sources is a no-op.
+        whose status is not already a tombstone (MERGED, SUPERSEDED, ARCHIVED,
+        or EXPIRED).
+
+        Appends **at most one** ``merge`` lineage event keyed on ``survivor_id``,
+        and only when at least one source was actually tombstoned. The event's
+        ``source_ids`` records the sources this call changed, not the sources it
+        was asked to change: a partial merge (say 2 of 5 still eligible) records
+        exactly those 2, because the other 3 were tombstoned by an earlier
+        operation and possibly into a different survivor.
+
+        Idempotent in both the rows and the event — re-running on
+        already-tombstoned sources changes nothing and records nothing.
+
+        This is the cross-backend contract every implementation must match.
+
+        Note what does and does not enforce it: the shared storage contract tests
+        assert it only for the backends in the ``storage`` fixture, which is
+        SQLite today. The Postgres/Supabase implementation is held to the same
+        contract by ``tenant.lineage_merge_records`` (see the tenant migration
+        stream), not by those tests — so a backend can satisfy the fixture and
+        still drift here. Changing this contract means changing both.
 
         Args:
             entity_type (str): One of ``"user_playbook"``, ``"agent_playbook"``,

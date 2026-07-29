@@ -134,6 +134,52 @@ def test_merge_multi_source_skips_already_tombstoned(storage) -> None:
     merge_events = [e for e in events if e.op == "merge"]
     assert len(merge_events) == 1
 
+    # ...and it records only the source this call actually merged. The
+    # already-MERGED source belongs to some earlier merge into 999, so naming it
+    # here would assert a merge that never happened.
+    assert merge_events[0].source_ids == [str(current_source.user_playbook_id)]
+
+
+def test_merge_records_nothing_when_every_source_is_already_tombstoned(
+    storage,
+) -> None:
+    """A merge that changes no row must not record that it merged anything.
+
+    The row guard makes this a no-op, but the event was previously appended
+    unconditionally — so a retry under a NEW request_id wrote a ``merge`` event
+    asserting a state change that never occurred. A new request_id is essential
+    to the test: ``_append_event_stmt`` de-duplicates on
+    ``(org_id, entity_type, entity_id, op, request_id)``, so replaying the SAME
+    id would be suppressed by that key and hide the defect.
+    """
+    survivor = UserPlaybook(
+        user_id="u",
+        agent_version="v",
+        request_id="r-noop-survivor",
+        content="survivor",
+    )
+    already_merged = UserPlaybook(
+        user_id="u",
+        agent_version="v",
+        request_id="r-noop-old",
+        content="already merged",
+        status=Status.MERGED,
+        merged_into=999,
+    )
+    storage.save_user_playbooks([survivor, already_merged])
+
+    storage.merge_records(
+        entity_type="user_playbook",
+        survivor_id=str(survivor.user_playbook_id),
+        source_ids=[str(already_merged.user_playbook_id)],
+        context=LineageContext(
+            op_kind="merge", actor="test", request_id="r-noop-attempt-1"
+        ),
+    )
+
+    events = storage.get_lineage_events(entity_id=str(survivor.user_playbook_id))
+    assert [e for e in events if e.op == "merge"] == []
+
 
 # ---------------------------------------------------------------------------
 # B1 contract cases: update / hard_delete / archive / idempotency

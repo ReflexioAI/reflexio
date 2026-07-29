@@ -292,7 +292,8 @@ class OperationMixin:
             if row is None:
                 # No state exists — acquire lock
                 state = {
-                    "status": "in_progress",
+                    "in_progress": True,
+                    "started_at": int(now),
                     "current_request_id": request_id,
                     "pending_request_id": None,
                     "pending_request_queue": [],
@@ -306,18 +307,55 @@ class OperationMixin:
 
             current_state = _json_loads(row["operation_state"]) or {}
 
-            # Check if lock is stale
-            updated_at_str = row["updated_at"]
-            is_stale = False
-            if updated_at_str:
-                updated_epoch = _iso_to_epoch(updated_at_str)
-                is_stale = (now - updated_epoch) > stale_lock_seconds
+            # Staleness is measured from when the HOLDER took the lock, not from
+            # the last write to the row. The queue-append branch at the bottom of
+            # this method rewrites the row — and therefore ``updated_at`` — on
+            # every REJECTED acquire, so keying off the row clock let each new
+            # contender refresh a dead holder's lock: above one request per
+            # ``stale_lock_seconds`` it could never expire and the service
+            # livelocked. The Postgres RPC has always measured from ``started_at``
+            # (``tenant.try_acquire_in_progress_lock``); this matches it, boundary
+            # included.
+            #
+            # ``updated_at`` stays as the fallback for rows written before
+            # ``started_at`` was stamped — unlike Postgres's ``COALESCE(…, 0)``,
+            # which would treat every such legacy row as instantly stale.
+            started_at = current_state.get("started_at")
+            if started_at is not None:
+                is_stale = (now - int(started_at)) >= stale_lock_seconds
+            else:
+                updated_at_str = row["updated_at"]
+                # Same ``>=`` boundary as the canonical path above: the two
+                # branches are the same concept measured from different clocks, so
+                # a lock exactly ``stale_lock_seconds`` old must be reclaimable
+                # under both. (The pre-existing code here used ``>``.)
+                is_stale = bool(updated_at_str) and (
+                    (now - _iso_to_epoch(updated_at_str)) >= stale_lock_seconds
+                )
 
-            if current_state.get("status") != "in_progress" or is_stale:
+            # ``in_progress`` is the canonical held-flag: it is what the Postgres
+            # RPC ``tenant.try_acquire_in_progress_lock`` writes and reads, and
+            # what every writer in ``operation_state_utils`` emits — including
+            # ``release_lock_pop_queue``, which hands the lock to the next queued
+            # holder. Because ``upsert_operation_state`` REPLACES the whole blob
+            # rather than merging it, a handover left a row carrying no
+            # ``status`` key at all, so this check read a live lock as free and
+            # the next caller took it *and* reset the pending queue.
+            #
+            # The ``status`` arm is a migration shim for lock rows written by an
+            # older build. Nothing writes ``status`` on a ``::lock`` row any more —
+            # note ``operation_state_utils`` does still write a ``status`` key, but
+            # only on the separate ``::progress`` key space, which this method
+            # never reads. The arm can be dropped once no legacy lock rows remain.
+            held = bool(current_state.get("in_progress")) or (
+                current_state.get("status") == "in_progress"
+            )
+            if not held or is_stale:
                 # Acquire lock — reset queue (any pre-existing entries are
                 # stale-lock detritus from a crashed run; we want a clean slate).
                 state = {
-                    "status": "in_progress",
+                    "in_progress": True,
+                    "started_at": int(now),
                     "current_request_id": request_id,
                     "pending_request_id": None,
                     "pending_request_queue": [],
