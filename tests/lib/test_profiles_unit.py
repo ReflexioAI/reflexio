@@ -14,6 +14,7 @@ from reflexio.lib._base import STORAGE_NOT_CONFIGURED_MSG
 from reflexio.lib._profiles import ProfilesMixin
 from reflexio.models.api_schema.retriever_schema import (
     GetUserProfilesRequest,
+    RerankUserProfilesRequest,
     SearchUserProfileRequest,
     UpdateUserProfileRequest,
 )
@@ -286,6 +287,42 @@ class TestSearchProfiles:
 
         call_kwargs = _get_storage(mixin).search_user_profile.call_args
         assert call_kwargs[1]["status_filter"] == [Status.PENDING]
+
+    def test_explicit_opt_out_skips_reformulation_embedding_and_storage(self):
+        mixin = _make_mixin()
+        mixin._reformulate_query = MagicMock()
+        mixin._maybe_get_query_embedding = MagicMock()
+
+        response = mixin.search_user_profiles(
+            SearchUserProfileRequest(
+                user_id="user1",
+                query="Write a generic answer without using my profile.",
+                enable_reformulation=True,
+            )
+        )
+
+        assert response.success is True
+        assert response.user_profiles == []
+        mixin._reformulate_query.assert_not_called()
+        mixin._maybe_get_query_embedding.assert_not_called()
+        _get_storage(mixin).search_user_profile.assert_not_called()
+
+
+class TestRerankProfiles:
+    def test_explicit_opt_out_skips_profile_fetch_and_scoring(self):
+        mixin = _make_mixin()
+
+        response = mixin.rerank_user_profiles(
+            RerankUserProfilesRequest(
+                user_id="user1",
+                query="Do not personalize this response.",
+                profile_ids=["p1"],
+            )
+        )
+
+        assert response.success is True
+        assert response.user_profiles == []
+        _get_storage(mixin).get_user_profile.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

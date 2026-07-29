@@ -74,3 +74,36 @@ def test_session_dedup_end_to_end(
     assert _search_ids(instance, test_org_id, None) == first
     assert _search_ids(instance, test_org_id, None) == first
     assert _search_ids(instance, test_org_id, session_b) == second
+
+
+def test_personalization_opt_out_skips_user_context_end_to_end(
+    reflexio_instance_playbook_only, test_org_id, cleanup_playbook_only
+):
+    instance = reflexio_instance_playbook_only
+    _seed_playbooks(instance)
+
+    ordinary_response = instance.unified_search(
+        UnifiedSearchRequest(
+            query="how to refund an order",
+            user_id="dedup-user",
+            agent_version="dedup-agent",
+            entity_types=["user_playbooks"],
+            top_k=2,
+        ),
+        org_id=test_org_id,
+    )
+    assert ordinary_response.success
+    assert ordinary_response.user_playbooks
+
+    opt_out_response = instance.unified_search(
+        UnifiedSearchRequest(
+            query="Help me refund this order without using my preferences.",
+            user_id="dedup-user",
+            agent_version="dedup-agent",
+            entity_types=["user_playbooks"],
+            top_k=2,
+        ),
+        org_id=test_org_id,
+    )
+    assert opt_out_response.success
+    assert opt_out_response.user_playbooks == []

@@ -471,6 +471,84 @@ class TestEntityTypesFiltering(unittest.TestCase):
         self.assertEqual(result.agent_playbooks, [])
         self.assertEqual(result.user_playbooks, [])
 
+    @patch("reflexio.server.services.unified_search_service.QueryReformulator")
+    def test_opt_out_keeps_agent_playbooks_and_skips_user_context(
+        self, _reformulator_cls
+    ):
+        _reformulator_cls.return_value.rewrite.return_value = ReformulationResult(
+            standalone_query="rewritten query"
+        )
+        storage = _mock_storage()
+
+        result = run_unified_search(
+            request=UnifiedSearchRequest(
+                query="Prepare a general answer without using my profile.",
+                user_id="user1",
+                enable_reformulation=True,
+            ),
+            org_id="test-org",
+            storage=storage,
+            llm_client=MagicMock(),
+            prompt_manager=MagicMock(),
+        )
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.profiles, [])
+        self.assertEqual(result.user_playbooks, [])
+        storage.search_user_profile.assert_not_called()
+        storage.search_user_playbooks.assert_not_called()
+        storage.search_agent_playbooks.assert_called_once()
+
+    @patch("reflexio.server.services.unified_search_service._run_phase_a")
+    def test_user_only_opt_out_returns_before_phase_a(self, phase_a):
+        storage = _mock_storage()
+
+        result = run_unified_search(
+            request=UnifiedSearchRequest(
+                query="Do not use my saved preferences for this answer.",
+                user_id="user1",
+                entity_types=["profiles", "user_playbooks"],
+                enable_reformulation=True,
+            ),
+            org_id="test-org",
+            storage=storage,
+            llm_client=MagicMock(),
+            prompt_manager=MagicMock(),
+        )
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.profiles, [])
+        self.assertEqual(result.user_playbooks, [])
+        phase_a.assert_not_called()
+        storage.search_user_profile.assert_not_called()
+        storage.search_user_playbooks.assert_not_called()
+        storage.search_agent_playbooks.assert_not_called()
+
+    @patch("reflexio.server.services.unified_search_service.QueryReformulator")
+    def test_public_audience_alone_does_not_suppress_user_context(
+        self, _reformulator_cls
+    ):
+        _reformulator_cls.return_value.rewrite.return_value = ReformulationResult(
+            standalone_query="Create this for a public audience."
+        )
+        storage = _mock_storage()
+
+        result = run_unified_search(
+            request=UnifiedSearchRequest(
+                query="Create this for a public audience.",
+                user_id="user1",
+                entity_types=["profiles", "user_playbooks"],
+            ),
+            org_id="test-org",
+            storage=storage,
+            llm_client=MagicMock(),
+            prompt_manager=MagicMock(),
+        )
+
+        self.assertTrue(result.success)
+        storage.search_user_profile.assert_called_once()
+        storage.search_user_playbooks.assert_called_once()
+
 
 _SERVICE_LOGGER = "reflexio.server.services.unified_search_service"
 
