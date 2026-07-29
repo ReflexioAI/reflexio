@@ -370,6 +370,7 @@ class TextGenerationMixin:
             max_retries=max_retries,
             fallback_models=fallback_models,
             structured_output_validator=structured_output_validator,
+            provider_request_guard=provider_request_guard,
             **kwargs,
         ).value
 
@@ -384,6 +385,7 @@ class TextGenerationMixin:
         max_retries: int | None = None,
         fallback_models: list[str] | None = None,
         structured_output_validator: StructuredOutputValidator | None = None,
+        provider_request_guard: ProviderRequestGuard | None = None,
         **kwargs: Any,
     ) -> CompletionResult[str | BaseModel | ToolCallingChatResponse]:
         """Generate a chat response paired with observed model provenance."""
