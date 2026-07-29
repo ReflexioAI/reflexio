@@ -9,6 +9,7 @@ from reflexio.models.api_schema.service_schemas import (
     UserPlaybook,
 )
 from reflexio.server.services import unified_search_service as uss
+from reflexio.server.services.pre_retrieval import ReformulationResult
 from reflexio.server.services.storage.storage_base import BaseStorage
 
 
@@ -160,6 +161,38 @@ def test_single_rpc_passes_tag_filter_on_scored_path(monkeypatch):
 
     assert storage.combined_calls == []
     assert storage.scored_calls[0]["tags"] == ["billing", "support"]
+
+
+def test_opt_out_disables_user_context_arms_in_single_rpc(monkeypatch):
+    monkeypatch.delenv("REFLEXIO_UNIFIED_SEARCH_SINGLE_RPC", raising=False)
+    monkeypatch.setattr(
+        uss,
+        "_run_phase_a",
+        lambda **_kwargs: (
+            ReformulationResult(standalone_query="rewritten query"),
+            [0.1, 0.2],
+            False,
+        ),
+    )
+    storage = _CombinedStorage()
+
+    response = uss.run_unified_search(
+        request=UnifiedSearchRequest(
+            query="Create a neutral answer without using my preferences.",
+            user_id="u",
+        ),
+        org_id="o",
+        storage=cast(BaseStorage, storage),
+        llm_client=cast(Any, None),
+        prompt_manager=cast(Any, None),
+    )
+
+    assert response.success is True
+    assert len(storage.combined_calls) == 1
+    call = storage.combined_calls[0]
+    assert call["include_profiles"] is False
+    assert call["include_user_playbooks"] is False
+    assert call["include_agent_playbooks"] is True
 
 
 def test_single_rpc_failure_falls_back_to_fanout(monkeypatch):

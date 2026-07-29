@@ -61,6 +61,9 @@ from reflexio.server.services.retrieval.temporal import (
     sort_by_recency,
     window_bounds,
 )
+from reflexio.server.services.retrieval.user_context_guard import (
+    should_suppress_user_context,
+)
 from reflexio.server.services.storage.storage_base import BaseStorage
 from reflexio.server.tracing import profile_step, set_span_data
 
@@ -143,6 +146,21 @@ def run_unified_search(
     """
     if not request.query:
         return UnifiedSearchResponse(success=True, msg="No query provided")
+
+    with profile_step("search.user_context_guard", entity_type="all") as span:
+        suppress_user_context = should_suppress_user_context(request.query)
+        span.set_data("suppressed", suppress_user_context)
+    if suppress_user_context:
+        requested_entity_types = set(request.entity_types or _DEFAULT_ENTITY_TYPES)
+        effective_entity_types = requested_entity_types - {
+            "profiles",
+            "user_playbooks",
+        }
+        if not effective_entity_types:
+            return UnifiedSearchResponse(success=True)
+        request = request.model_copy(
+            update={"entity_types": sorted(effective_entity_types)}
+        )
 
     top_k = request.top_k if request.top_k is not None else 5
     threshold = resolve_retrieval_threshold(

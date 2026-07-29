@@ -6,6 +6,7 @@ with mocked storage and services.
 """
 
 from datetime import UTC, datetime
+from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 from reflexio.lib._user_playbook import UserPlaybookMixin
@@ -45,11 +46,11 @@ def _make_mixin(*, storage_configured: bool = True) -> UserPlaybookMixin:
 
 
 def _get_storage(mixin: UserPlaybookMixin) -> MagicMock:
-    return mixin.request_context.storage
+    return cast(MagicMock, mixin.request_context.storage)
 
 
 def _sample_user_playbook(**overrides) -> UserPlaybook:
-    defaults = {
+    defaults: dict[str, Any] = {
         "agent_version": "v1",
         "request_id": "req-1",
         "playbook_name": "test_fb",
@@ -216,6 +217,24 @@ class TestSearchUserPlaybooks:
 
         assert response.success is True
         assert response.user_playbooks == []
+
+    def test_explicit_opt_out_skips_reformulation_embedding_and_storage(self):
+        mixin = _make_mixin()
+        mixin._reformulate_query = MagicMock()
+        mixin._maybe_get_query_embedding = MagicMock()
+
+        response = mixin.search_user_playbooks(
+            SearchUserPlaybookRequest(
+                query="Give a neutral answer and disregard my prior preferences.",
+                enable_reformulation=True,
+            )
+        )
+
+        assert response.success is True
+        assert response.user_playbooks == []
+        mixin._reformulate_query.assert_not_called()
+        mixin._maybe_get_query_embedding.assert_not_called()
+        _get_storage(mixin).search_user_playbooks.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

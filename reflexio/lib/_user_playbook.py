@@ -29,6 +29,9 @@ from reflexio.models.config_schema import SearchOptions
 from reflexio.server.services.playbook.service import (
     PlaybookGenerationService,
 )
+from reflexio.server.services.retrieval.user_context_guard import (
+    should_suppress_user_context,
+)
 from reflexio.server.tracing import profile_step
 
 
@@ -158,6 +161,18 @@ class UserPlaybookMixin(ReflexioBase):
             )
         if isinstance(request, dict):
             request = SearchUserPlaybookRequest(**request)
+
+        with profile_step(
+            "search.user_context_guard", entity_type="user_playbooks"
+        ) as span:
+            suppress_user_context = should_suppress_user_context(request.query)
+            span.set_data("suppressed", suppress_user_context)
+        if suppress_user_context:
+            return SearchUserPlaybookResponse(
+                success=True,
+                user_playbooks=[],
+                msg="Found 0 matching user playbook(s)",
+            )
 
         try:
             query = (

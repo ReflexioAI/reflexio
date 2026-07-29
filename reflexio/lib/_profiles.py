@@ -46,6 +46,9 @@ from reflexio.models.api_schema.service_schemas import (
 from reflexio.server.services.profile.service import (
     ProfileGenerationService,
 )
+from reflexio.server.services.retrieval.user_context_guard import (
+    should_suppress_user_context,
+)
 from reflexio.server.tracing import profile_step
 
 
@@ -70,6 +73,15 @@ class ProfilesMixin(ReflexioBase):
             )
         if isinstance(request, dict):
             request = SearchUserProfileRequest(**request)
+        with profile_step("search.user_context_guard", entity_type="profiles") as span:
+            suppress_user_context = should_suppress_user_context(request.query)
+            span.set_data("suppressed", suppress_user_context)
+        if suppress_user_context:
+            return SearchUserProfileResponse(
+                success=True,
+                user_profiles=[],
+                msg="Found 0 matching profile(s)",
+            )
         if status_filter is None:
             status_filter = [None]  # Default to current profiles
         rewritten = self._reformulate_query(
@@ -128,6 +140,15 @@ class ProfilesMixin(ReflexioBase):
             )
         if isinstance(request, dict):
             request = RerankUserProfilesRequest(**request)
+        with profile_step("search.user_context_guard", entity_type="profiles") as span:
+            suppress_user_context = should_suppress_user_context(request.query)
+            span.set_data("suppressed", suppress_user_context)
+        if suppress_user_context:
+            return RerankUserProfilesResponse(
+                success=True,
+                user_profiles=[],
+                msg="Reranked 0 profile(s); dropped 0 unknown id(s)",
+            )
         if not request.profile_ids:
             return RerankUserProfilesResponse(
                 success=True, user_profiles=[], msg="No profile_ids provided"
