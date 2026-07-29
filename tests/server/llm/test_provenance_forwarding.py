@@ -20,6 +20,8 @@ call test pins the specific regression.
 import inspect
 from unittest.mock import patch
 
+import pytest
+
 from reflexio.server.llm._litellm_text_generation import TextGenerationMixin
 
 PLAIN = TextGenerationMixin.generate_chat_response
@@ -51,18 +53,40 @@ def test_both_entry_points_declare_the_same_options():
     )
 
 
-def test_forwarded_names_are_locals_not_globals():
-    """Every option must be a real local, not an accidental global lookup.
+@pytest.mark.parametrize("option", sorted(_options(PLAIN)))
+def test_plain_entry_point_forwards_every_declared_option(option):
+    """Declaring an option is not enough — the delegation must actually pass it on.
 
-    A name referenced in the forwarding block but absent from the signature compiles
-    fine and raises NameError only when that line executes.
+    Signature parity alone would still pass if both entry points declared an option
+    and one dropped it in the call, which is exactly what `generate_chat_response`
+    did with `provider_request_guard`.
     """
-    code = PROVENANCE.__code__
-    for option in _options(PROVENANCE):
-        assert option in code.co_varnames, (
-            f"{option!r} is not a local in generate_chat_response_with_provenance; "
-            f"referencing it would raise NameError"
-        )
+    inst = TextGenerationMixin.__new__(TextGenerationMixin)
+    sentinel = object()
+    with patch.object(TextGenerationMixin, "generate_chat_response_with_provenance") as p:
+        p.return_value.value = "ok"
+        PLAIN(inst, [{"role": "user", "content": "hi"}], **{option: sentinel})
+    assert p.call_args.kwargs.get(option) is sentinel, (
+        f"generate_chat_response declares {option!r} but does not forward it — "
+        f"a caller's value is accepted and silently discarded"
+    )
+
+
+@pytest.mark.parametrize("option", sorted(_options(PROVENANCE)))
+def test_provenance_entry_point_forwards_every_declared_option(option):
+    """Each declared option must reach `_make_request`, exercising the real line.
+
+    This runs the forwarding block itself, so a name referenced there but missing
+    from the signature raises NameError here rather than in production.
+    """
+    inst = TextGenerationMixin.__new__(TextGenerationMixin)
+    sentinel = object()
+    with patch.object(TextGenerationMixin, "_make_request", return_value="ok") as m:
+        PROVENANCE(inst, [{"role": "user", "content": "hi"}], **{option: sentinel})
+    assert m.call_args.kwargs.get(option) is sentinel, (
+        f"generate_chat_response_with_provenance declares {option!r} but never "
+        f"forwards it into _make_request"
+    )
 
 
 def test_provider_request_guard_is_still_wired():
