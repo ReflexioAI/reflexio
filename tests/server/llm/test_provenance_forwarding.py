@@ -63,7 +63,9 @@ def test_plain_entry_point_forwards_every_declared_option(option):
     """
     inst = TextGenerationMixin.__new__(TextGenerationMixin)
     sentinel = object()
-    with patch.object(TextGenerationMixin, "generate_chat_response_with_provenance") as p:
+    with patch.object(
+        TextGenerationMixin, "generate_chat_response_with_provenance"
+    ) as p:
         p.return_value.value = "ok"
         PLAIN(inst, [{"role": "user", "content": "hi"}], **{option: sentinel})
     assert p.call_args.kwargs.get(option) is sentinel, (
