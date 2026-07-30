@@ -63,6 +63,7 @@ from reflexio.models.config_schema import SearchMode
 IS_TEST_ENV = os.environ.get("IS_TEST_ENV", "false").strip() == "true"
 
 BACKEND_URL = "http://127.0.0.1:8000" if IS_TEST_ENV else "https://www.reflexio.ai/"
+REVIEW_USER_PLAYBOOKS_TIMEOUT_SECONDS = 600
 
 from reflexio.models.api_schema.domain.entities import (
     UpgradeProfilesRequest,
@@ -1654,6 +1655,11 @@ class ReflexioClient:
             "POST",
             "/api/review_user_playbooks",
             json=request.model_dump(mode="json"),
+            timeout=(
+                max(self.timeout, REVIEW_USER_PLAYBOOKS_TIMEOUT_SECONDS)
+                if report_only
+                else self.timeout
+            ),
         )
         return ReviewUserPlaybooksResponse(**response)
 

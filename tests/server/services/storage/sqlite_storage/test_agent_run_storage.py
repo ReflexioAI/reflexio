@@ -125,6 +125,22 @@ def test_sqlite_get_latest_finalized_agent_run_for_request_filters_binding(stora
             ),
         )
     )
+    newest = replace(
+        matching,
+        id="run_newest",
+        status=AgentRunStatus.FINALIZED_PENDING_TOOL,
+        binding=replace(matching.binding, source_interaction_ids=[20, 21]),
+    )
+    storage.create_agent_run(newest)
+    storage.conn.execute(
+        "UPDATE _agent_runs SET created_at = ?, updated_at = ? WHERE id = ?",
+        ("2026-01-02T00:00:00Z", "2026-01-02T00:00:00Z", newest.id),
+    )
+    storage.conn.execute(
+        "UPDATE _agent_runs SET created_at = ?, updated_at = ? WHERE id = ?",
+        ("2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z", matching.id),
+    )
+    storage.conn.commit()
 
     loaded = storage.get_latest_finalized_agent_run_for_request(
         org_id="org_1",
@@ -134,8 +150,9 @@ def test_sqlite_get_latest_finalized_agent_run_for_request_filters_binding(stora
     )
 
     assert loaded is not None
-    assert loaded.id == "run_matching"
-    assert loaded.binding.source_interaction_ids == [10, 11, 12]
+    assert loaded.id == "run_newest"
+    assert loaded.status == AgentRunStatus.FINALIZED_PENDING_TOOL
+    assert loaded.binding.source_interaction_ids == [20, 21]
     assert (
         storage.get_latest_finalized_agent_run_for_request(
             org_id="org_1",
@@ -145,6 +162,36 @@ def test_sqlite_get_latest_finalized_agent_run_for_request_filters_binding(stora
         )
         is None
     )
+
+
+def test_sqlite_latest_finalized_agent_run_breaks_timestamp_ties(storage):
+    binding = replace(
+        _agent_run("unused", AgentRunStatus.FINALIZED).binding,
+        extractor_kind="playbook",
+    )
+    for run_id, source_ids in (("run_a", [10]), ("run_z", [20])):
+        storage.create_agent_run(
+            replace(
+                _agent_run(run_id, AgentRunStatus.FINALIZED),
+                binding=replace(binding, source_interaction_ids=source_ids),
+            )
+        )
+        storage.conn.execute(
+            "UPDATE _agent_runs SET created_at = ?, updated_at = ? WHERE id = ?",
+            ("2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z", run_id),
+        )
+    storage.conn.commit()
+
+    loaded = storage.get_latest_finalized_agent_run_for_request(
+        org_id="org_1",
+        extractor_kind="playbook",
+        user_id="user_1",
+        request_id="request_1",
+    )
+
+    assert loaded is not None
+    assert loaded.id == "run_z"
+    assert loaded.binding.source_interaction_ids == [20]
 
 
 def test_sqlite_update_agent_run_status_records_lifecycle_timestamps(storage):

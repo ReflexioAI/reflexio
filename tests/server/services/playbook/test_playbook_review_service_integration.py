@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from hashlib import sha256
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import Mock, patch
@@ -38,6 +39,11 @@ def _storage(tmp_path) -> SQLiteStorage:
     storage._get_embedding = Mock(return_value=[0.0] * 512)  # noqa: SLF001
     storage.llm_client.get_embeddings = Mock(return_value=[[0.0] * 512])
     return storage
+
+
+def _storage_digest(storage: SQLiteStorage) -> str:
+    dump = "\n".join(storage.conn.iterdump())
+    return sha256(dump.encode()).hexdigest()
 
 
 def _seed_source_interactions(
@@ -256,6 +262,7 @@ def test_report_mode_respects_window_and_top_k_without_writes(tmp_path) -> None:
         _playbook(3, created_at=202),
     ]
     storage.save_user_playbooks(rows)
+    before_digest = _storage_digest(storage)
     enabled, decide, existing = _patch_review_dependencies(
         [_accept_output(), _reject_output()]
     )
@@ -272,6 +279,7 @@ def test_report_mode_respects_window_and_top_k_without_writes(tmp_path) -> None:
     assert response.accepted_count == 1
     assert response.rejected_count == 1
     assert all(result.applied is False for result in response.results)
+    assert _storage_digest(storage) == before_digest
     assert len(storage.get_user_playbooks(status_filter=[None])) == 3
     assert storage.get_user_playbooks(status_filter=[Status.PENDING]) == []
 
