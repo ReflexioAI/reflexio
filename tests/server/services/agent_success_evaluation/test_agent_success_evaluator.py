@@ -11,6 +11,7 @@ import tempfile
 from unittest.mock import MagicMock, patch
 
 import pytest
+from pydantic import ValidationError
 
 from reflexio.models.api_schema.internal_schema import RequestInteractionDataModel
 from reflexio.models.api_schema.service_schemas import (
@@ -41,7 +42,8 @@ def mock_llm_client():
     client = MagicMock(spec=LiteLLMClient)
     # Return a successful AgentSuccessEvaluationOutput
     client.generate_chat_response.return_value = AgentSuccessEvaluationOutput(
-        is_success=True
+        is_success=True,
+        number_of_correction_per_session=0,
     )
     return client
 
@@ -403,63 +405,58 @@ class TestCountUserTurns:
         assert evaluator._count_user_turns(models) == 1
 
 
-class TestGetCorrectionCount:
-    """Tests for AgentSuccessEvaluator._get_correction_count."""
+class TestCorrectionCount:
+    """Tests for the judge-derived corrective-user-turn count."""
 
-    def test_returns_zero_on_storage_exception(self, mock_llm_client, temp_storage_dir):
-        """_get_correction_count returns 0 when storage raises."""
-        config = AgentSuccessConfig(
-            evaluation_name="test",
-            success_definition_prompt="test",
-        )
-        service_config = AgentSuccessGenerationServiceConfig(
-            session_id="test_session",
-            agent_version="v1",
-            user_id="user1",
-            request_interaction_data_models=[],
-            source="api",
-        )
-        request_context = RequestContext(
-            org_id="test_org", storage_base_dir=temp_storage_dir
-        )
-        request_context.storage = MagicMock()
-        request_context.storage.count_user_playbooks_by_session.side_effect = (
-            RuntimeError("db down")
-        )
+    def test_output_requires_correction_count(self):
+        with pytest.raises(ValidationError):
+            AgentSuccessEvaluationOutput.model_validate({"is_success": True})
 
+    def test_output_rejects_negative_correction_count(self):
+        with pytest.raises(ValidationError):
+            AgentSuccessEvaluationOutput(
+                is_success=True,
+                number_of_correction_per_session=-1,
+            )
+
+    @pytest.mark.parametrize("invalid_count", ["1", 1.5])
+    def test_output_rejects_non_integer_correction_count(self, invalid_count):
+        with pytest.raises(ValidationError):
+            AgentSuccessEvaluationOutput.model_validate(
+                {
+                    "is_success": True,
+                    "number_of_correction_per_session": invalid_count,
+                }
+            )
+
+    @pytest.mark.parametrize("is_success", [True, False])
+    def test_result_uses_judge_count_without_playbook_storage(
+        self,
+        is_success,
+        mock_llm_client,
+        request_context,
+        extractor_config,
+        service_config,
+        sample_request_interaction_models,
+    ):
         evaluator = AgentSuccessEvaluator(
             request_context=request_context,
             llm_client=mock_llm_client,
-            extractor_config=config,
+            extractor_config=extractor_config,
             service_config=service_config,
             agent_context="Test agent",
         )
-        assert evaluator._get_correction_count() == 0
+        response = AgentSuccessEvaluationOutput(
+            is_success=is_success,
+            failure_type=None if is_success else "wrong_answer",
+            failure_reason=None if is_success else "The final answer was incorrect.",
+            number_of_correction_per_session=3,
+        )
 
-    def test_returns_count_from_storage(self, mock_llm_client, temp_storage_dir):
-        """_get_correction_count returns the value from storage."""
-        config = AgentSuccessConfig(
-            evaluation_name="test",
-            success_definition_prompt="test",
+        result = evaluator._build_evaluation_result(
+            response,
+            sample_request_interaction_models,
         )
-        service_config = AgentSuccessGenerationServiceConfig(
-            session_id="test_session",
-            agent_version="v1",
-            user_id="user1",
-            request_interaction_data_models=[],
-            source="api",
-        )
-        request_context = RequestContext(
-            org_id="test_org", storage_base_dir=temp_storage_dir
-        )
-        request_context.storage = MagicMock()
-        request_context.storage.count_user_playbooks_by_session.return_value = 5
 
-        evaluator = AgentSuccessEvaluator(
-            request_context=request_context,
-            llm_client=mock_llm_client,
-            extractor_config=config,
-            service_config=service_config,
-            agent_context="Test agent",
-        )
-        assert evaluator._get_correction_count() == 5
+        assert result.number_of_correction_per_session == 3
+        request_context.storage.count_user_playbooks_by_session.assert_not_called()

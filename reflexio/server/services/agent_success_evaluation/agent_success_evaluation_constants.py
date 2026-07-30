@@ -20,13 +20,14 @@ class AgentSuccessEvaluationOutput(StrictStructuredOutput):
     """
     Unified output schema for agent success evaluation.
 
-    For successful evaluations, only is_success=True is required.
-    For failed evaluations, all fields are required to provide failure details.
+    Every evaluation includes a corrective-user-turn count. Failed evaluations
+    additionally provide failure details.
 
     Attributes:
         is_success (bool): Indicates whether the agent successfully responded to the user
         failure_type (Optional[str]): Type of failure - 'missing_tool', 'wrong_tool', 'insufficient_info_from_tool', or 'wrong_answer'. Required when is_success=False
         failure_reason (Optional[str]): Explanation for the failure and what the agent needs to do differently. Required when is_success=False
+        number_of_correction_per_session (int): Number of user turns that corrected or redirected an earlier agent response.
     """
 
     is_success: bool = Field(
@@ -48,6 +49,14 @@ class AgentSuccessEvaluationOutput(StrictStructuredOutput):
     is_escalated: bool = Field(
         default=False,
         description="Whether the user was handed off to a human agent or another agent during the session.",
+    )
+    number_of_correction_per_session: int = Field(
+        ge=0,
+        strict=True,
+        description=(
+            "Number of user turns in the session that corrected or redirected an "
+            "earlier agent response or action."
+        ),
     )
     # OpenAI schema parsing requires explicitly forbidding additional properties
     model_config = ConfigDict(

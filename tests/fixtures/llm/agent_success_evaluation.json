@@ -2,7 +2,7 @@
   "choices": [
     {
       "message": {
-        "content": "{\"is_success\": true, \"is_escalated\": false}"
+        "content": "{\"is_success\": true, \"is_escalated\": false, \"number_of_correction_per_session\": 0}"
       },
       "finish_reason": "stop"
     }

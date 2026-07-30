@@ -1,5 +1,7 @@
 """Tests for agent success evaluation utility functions."""
 
+import json
+import re
 from datetime import UTC, datetime
 
 import pytest
@@ -11,6 +13,58 @@ from reflexio.server.prompt.prompt_manager import PromptManager
 from reflexio.server.services.agent_success_evaluation.agent_success_evaluation_utils import (
     construct_agent_success_evaluation_messages_from_sessions,
 )
+
+
+def _render_agent_success_prompt() -> str:
+    return PromptManager().render_prompt(
+        "agent_success_evaluation",
+        {
+            "agent_context_prompt": "Test agent",
+            "success_definition_prompt": "Complete the requested task",
+            "tool_can_use": "No tools",
+            "metadata_definition_prompt": "No metadata",
+            "interactions": "user: ```hello```",
+        },
+    )
+
+
+def test_agent_success_prompt_v1_1_0_is_active_and_renders() -> None:
+    prompt_manager = PromptManager()
+
+    assert prompt_manager.get_active_version("agent_success_evaluation") == "1.1.0"
+    assert "Step 4: Count corrective user turns" in _render_agent_success_prompt()
+
+
+def test_agent_success_prompt_examples_are_valid_json() -> None:
+    """Every rendered output example must honor the prompt's JSON contract."""
+    examples = re.findall(
+        r"```json\n(.*?)\n```", _render_agent_success_prompt(), flags=re.DOTALL
+    )
+
+    assert len(examples) == 2
+    for example in examples:
+        json.loads(example)
+
+
+@pytest.mark.parametrize(
+    ("case", "expected_fragment"),
+    [
+        ("no correction", "the user's initial request"),
+        ("factual correction", "wrong limit"),
+        ("incomplete-answer revision", "omits rollback steps"),
+        ("approach redirection", "rejects it and asks to use the API"),
+        ("several issues in one turn", "fixes several details"),
+        ("repeated corrections", "later has to correct it again"),
+        ("same-topic new question", "different question about the same topic"),
+        ("new deliverable", "separate implementation plan"),
+        ("clarification answer", "agent's clarification question"),
+    ],
+)
+def test_agent_success_prompt_documents_correction_rubric_cases(
+    case: str, expected_fragment: str
+) -> None:
+    del case
+    assert expected_fragment in _render_agent_success_prompt()
 
 
 def test_construct_agent_success_evaluation_messages_with_sessions():
@@ -130,6 +184,13 @@ def test_construct_agent_success_evaluation_messages_with_sessions():
                     "Evaluate if the agent successfully completed the task" in content
                 ), "Expected success definition in prompt"
                 assert "search, calculator" in content, "Expected tools in prompt"
+                assert (
+                    "Count corrective user turns across the entire session" in content
+                )
+                assert (
+                    "Topic continuity alone is not evidence of a correction" in content
+                )
+                assert '"number_of_correction_per_session"' in content
 
                 found_interactions = True
                 break

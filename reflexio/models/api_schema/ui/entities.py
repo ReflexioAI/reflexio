@@ -124,7 +124,14 @@ class EvaluationResultView(BaseModel):
     evaluation_name: str | None = None
     created_at: int = Field(default_factory=lambda: int(datetime.now(UTC).timestamp()))
     regular_vs_shadow: RegularVsShadow | None = None
-    number_of_correction_per_session: int = 0
+    number_of_correction_per_session: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Number of user turns in the session that corrected or redirected an "
+            "earlier agent response or action."
+        ),
+    )
     user_turns_to_resolution: int | None = None
     is_escalated: bool = False
 
