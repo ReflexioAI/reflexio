@@ -117,6 +117,7 @@ def _build_registry() -> dict[str, ModelRegistryEntry]:
             minimal_valid={
                 "is_success": True,
                 "is_escalated": False,
+                "number_of_correction_per_session": 0,
             },
         ),
         "retrieved_learning_relevance": ModelRegistryEntry(

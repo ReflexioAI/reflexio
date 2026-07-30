@@ -5,8 +5,9 @@ These cover the regenerate flow's behavior at the runner layer:
   short-circuit and the completeness-delay gate so an operator can re-evaluate
   any session.
 - When regenerating, the runner captures the session's prior result_ids BEFORE
-  running the eval, then deletes those rows by id AFTER the new save lands. This
-  guarantees that an LLM/save failure never wipes the session's eval rows.
+  running the eval, then reconciles them AFTER the new save lands. Insert-style
+  storage deletes prior rows; upsert-style storage keeps the updated row id.
+  This guarantees that an LLM/save failure never wipes the session's eval rows.
 """
 
 from datetime import UTC, datetime
@@ -248,6 +249,7 @@ def test_force_regenerate_deletes_prior_results() -> None:
         )
     ]
     storage = _make_storage(with_evaluated_marker=True, prior_results=prior)
+    storage.get_agent_success_evaluation_result_ids.side_effect = [[42], [43, 42]]
     request_context = MagicMock()
     request_context.storage = storage
     llm_client = MagicMock()
@@ -279,12 +281,54 @@ def test_force_regenerate_deletes_prior_results() -> None:
             force_regenerate=True,
         )
 
-    # By-id delete called once with the captured prior result_ids — proving the
-    # runner passed the matching (user_a, session_a, overall_success, 1.0.0) identity to
-    # get_agent_success_evaluation_result_ids (the mock now filters on it).
+    # Insert-style storage returns a fresh id after save, so the runner removes
+    # only the captured prior id.
     storage.delete_agent_success_evaluation_results_by_ids.assert_called_once_with([42])
     # The old triple-scoped delete must NOT be called by the new flow.
     storage.delete_agent_success_evaluation_results_for_session.assert_not_called()
+
+
+def test_force_regenerate_preserves_result_updated_in_place() -> None:
+    """Upsert-style storage keeps the prior id, so cleanup must not delete it."""
+    prior = [
+        _make_prior_result(
+            result_id=42, session_id="session_a", evaluation_name="overall_success"
+        )
+    ]
+    storage = _make_storage(with_evaluated_marker=True, prior_results=prior)
+    storage.get_agent_success_evaluation_result_ids.side_effect = [[42], [42]]
+    request_context = MagicMock()
+    request_context.storage = storage
+
+    with (
+        patch(
+            "reflexio.server.services.agent_success_evaluation"
+            ".runner.AgentSuccessEvaluationService"
+        ) as service_cls,
+        patch(
+            "reflexio.server.services.agent_success_evaluation"
+            ".runner.get_extractor_name",
+            return_value="overall_success",
+        ),
+    ):
+        service = MagicMock()
+        service.has_run_failures.return_value = False
+        service.last_run_saved_result_count = 1
+        service_cls.return_value = service
+
+        run_group_evaluation(
+            org_id="org_a",
+            user_id="user_a",
+            session_id="session_a",
+            agent_version="1.0.0",
+            source="api",
+            request_context=request_context,
+            llm_client=MagicMock(),
+            force_regenerate=True,
+        )
+
+    storage.delete_agent_success_evaluation_results_by_ids.assert_not_called()
+    assert storage.get_agent_success_evaluation_result_ids.call_count == 2
 
 
 def test_force_regenerate_with_no_prior_rows_does_not_delete() -> None:
@@ -480,6 +524,7 @@ def test_regenerate_happy_path_with_real_sqlite_storage(tmp_path) -> None:
                 [
                     AgentSuccessEvaluationResult(
                         result_id=0,
+                        user_id="user_a",
                         session_id="session_a",
                         agent_version="1.0.0",
                         evaluation_name="overall_success",
@@ -487,7 +532,7 @@ def test_regenerate_happy_path_with_real_sqlite_storage(tmp_path) -> None:
                         failure_type="new_value",
                         failure_reason="fresh verdict",
                         regular_vs_shadow=None,
-                        number_of_correction_per_session=0,
+                        number_of_correction_per_session=4,
                         user_turns_to_resolution=None,
                         is_escalated=False,
                         embedding=[],
@@ -535,6 +580,7 @@ def test_regenerate_happy_path_with_real_sqlite_storage(tmp_path) -> None:
         ]
         assert len(matching) == 1
         assert matching[0].failure_type == "new_value"
+        assert matching[0].number_of_correction_per_session == 4
 
 
 def test_regenerate_failure_preserves_old_rows_with_real_sqlite_storage(

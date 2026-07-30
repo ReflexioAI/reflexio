@@ -282,7 +282,9 @@ class AgentSuccessEvaluator:
             failure_type=evaluation_response.failure_type or "",
             failure_reason=evaluation_response.failure_reason or "",
             regular_vs_shadow=None,
-            number_of_correction_per_session=self._get_correction_count(),
+            number_of_correction_per_session=(
+                evaluation_response.number_of_correction_per_session
+            ),
             user_turns_to_resolution=(
                 self._count_user_turns(request_interaction_data_models)
                 if evaluation_response.is_success
@@ -334,25 +336,6 @@ class AgentSuccessEvaluator:
                 if interaction.role.lower() not in agent_roles:
                     count += 1
         return count
-
-    def _get_correction_count(self) -> int:
-        """
-        Count user playbooks linked to the current session.
-
-        Returns:
-            int: Number of user playbooks for the session, defaulting to 0 on error.
-        """
-        try:
-            count = self.request_context.storage.count_user_playbooks_by_session(  # type: ignore[reportOptionalMemberAccess]
-                self.service_config.session_id
-            )
-            return count if count is not None else 0
-        except Exception:
-            logger.warning(
-                "Failed to count user playbooks for session %s, defaulting to 0",
-                self.service_config.session_id,
-            )
-            return 0
 
     # F1 cleanup: ``_map_comparison_to_enum`` was retracted along with
     # ``_evaluate_with_shadow_comparison``. Per-turn shadow comparison has its

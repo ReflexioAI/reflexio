@@ -1,4 +1,5 @@
 {
   "is_escalated": false,
-  "is_success": true
+  "is_success": true,
+  "number_of_correction_per_session": 0
 }

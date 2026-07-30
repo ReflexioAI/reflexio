@@ -112,12 +112,11 @@ def run_group_evaluation(
     2. Fetch all requests for the session
     3. Verify completion (latest request created_at >= delay ago; skipped when force_regenerate)
     4. Fetch interactions and build data models
-    5. Capture prior result_ids (when regenerating) so they
-       can be removed AFTER the new save lands
+    5. Capture prior result_ids (when regenerating) for post-save reconciliation
     6. Run evaluation service (which saves new rows)
-    7. On success, delete the captured prior rows by id — the new rows have
-       fresh auto-increment ids that do not overlap. A failure here leaves
-       the session in a consistent pre-regen state instead of zero rows.
+    7. On success, delete captured prior rows only when the backend inserted
+       fresh result_ids; preserve ids updated in place by an enterprise upsert.
+       A generation/save failure leaves the prior result untouched.
     8. Mark as evaluated in operation state
 
     Args:
@@ -252,19 +251,21 @@ def run_group_evaluation(
         )
         return GroupEvaluationOutcome("not_applicable", "skipped")
 
-    # 5. When regenerating, capture the prior result_ids
-    # so we can delete ONLY them AFTER the new rows have been saved. Doing
-    # the delete before the LLM call risks wiping the session's rows if the
-    # call fails (rate limit, network) and nothing replaces them. The new
-    # rows always get fresh auto-increment ids, so deleting the captured set
-    # afterwards cannot remove the new rows.
+    # 5. When regenerating, capture the prior result_ids so we can reconcile
+    # them AFTER the new rows have been saved. SQLite inserts a fresh row that
+    # needs the prior row cleaned up; enterprise storage upserts the prior row
+    # in place and therefore keeps its result_id. Doing any delete before the
+    # LLM call risks wiping the session's rows if the call fails (rate limit,
+    # network) and nothing replaces them.
     old_result_ids: list[int] = []
+    evaluation_name = ""
     if force_regenerate:
         config = request_context.configurator.get_config()
+        evaluation_name = get_extractor_name(config)
         old_result_ids = storage.get_agent_success_evaluation_result_ids(  # type: ignore[reportOptionalMemberAccess]
             user_id=user_id,
             session_id=session_id,
-            evaluation_name=get_extractor_name(config),
+            evaluation_name=evaluation_name,
             agent_version=agent_version,
         )
 
@@ -310,20 +311,36 @@ def run_group_evaluation(
         )
         return GroupEvaluationOutcome("failed", "skipped")
 
-    # 6. New rows saved successfully — now safe to remove the captured prior
-    # rows. New rows have fresh auto-increment result_ids that do not overlap
-    # with old_result_ids, so this cannot delete the regenerated verdict.
+    # 6. New rows saved successfully. Delete captured prior rows only when the
+    # writer created a distinct new result_id (SQLite). Enterprise storage uses
+    # an in-place upsert, so its post-save ids are unchanged; deleting those ids
+    # would delete the regenerated verdict itself.
     if old_result_ids:
-        deleted = storage.delete_agent_success_evaluation_results_by_ids(  # type: ignore[reportOptionalMemberAccess]
-            old_result_ids
+        saved_result_ids = storage.get_agent_success_evaluation_result_ids(  # type: ignore[reportOptionalMemberAccess]
+            user_id=user_id,
+            session_id=session_id,
+            evaluation_name=evaluation_name,
+            agent_version=agent_version,
         )
-        logger.info(
-            "Regenerate cleanup: deleted %d prior result row(s) for session=%s"
-            " (expected %d)",
-            deleted,
-            session_id,
-            len(old_result_ids),
-        )
+        inserted_result_ids = set(saved_result_ids).difference(old_result_ids)
+        if inserted_result_ids:
+            deleted = storage.delete_agent_success_evaluation_results_by_ids(  # type: ignore[reportOptionalMemberAccess]
+                old_result_ids
+            )
+            logger.info(
+                "Regenerate cleanup: deleted %d prior result row(s) for session=%s"
+                " (expected %d)",
+                deleted,
+                session_id,
+                len(old_result_ids),
+            )
+        else:
+            logger.info(
+                "Regenerate cleanup: storage updated %d prior result row(s) in place"
+                " for session=%s",
+                len(old_result_ids),
+                session_id,
+            )
 
     # 7. Mark as evaluated
     evaluated_at = int(datetime.now(UTC).timestamp())

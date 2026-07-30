@@ -22,10 +22,11 @@ BucketLiteral = Literal["day", "week"]
 class HeroBucket(BaseModel):
     """One point on the trend chart in the hero block.
 
-    ``avg_corrections`` is the mean of ``number_of_correction_per_session``
-    across this bucket's evaluation results. Surfaced so the frontend can
-    plot a "corrections over time" line beside the success-rate trend.
-    Lower is better.
+    ``avg_corrections`` is the mean judge-derived count of user turns that
+    corrected or redirected an earlier agent response, across every evaluation
+    result in this bucket (including zero-count sessions). Surfaced so the
+    frontend can plot a "corrections over time" line beside the success-rate
+    trend. Lower is better.
 
     ``escalation_rate`` is the fraction of sessions in this bucket whose
     eval result had ``is_escalated=True``. Range 0.0 – 1.0. Surfaced so
