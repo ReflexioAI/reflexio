@@ -49,6 +49,9 @@ from reflexio.server.services.profile.profile_generation_service_utils import (
 from reflexio.server.services.profile.service import (
     ProfileGenerationService,
 )
+from reflexio.server.services.retrieval_experiment import (
+    validate_retrieval_experiment_attribution,
+)
 from reflexio.server.services.shadow_comparison.worker import (
     ShadowComparisonJob,
     enqueue_shadow_comparison,
@@ -243,6 +246,23 @@ class GenerationService:
         )
 
         try:
+            retrieval_experiment_id = getattr(
+                publish_user_interaction_request,
+                "retrieval_experiment_id",
+                None,
+            )
+            retrieval_experiment_arm = getattr(
+                publish_user_interaction_request,
+                "retrieval_experiment_arm",
+                None,
+            )
+            validate_retrieval_experiment_attribution(
+                config=self.configurator.get_config(),
+                org_id=self.org_id,
+                user_id=user_id,
+                experiment_id=retrieval_experiment_id,
+                arm=retrieval_experiment_arm,
+            )
             caller_request_id = publish_user_interaction_request.request_id
             request_id = (
                 caller_request_id
@@ -293,6 +313,8 @@ class GenerationService:
                 agent_version=agent_version,
                 session_id=publish_user_interaction_request.session_id,
                 evaluation_only=publish_user_interaction_request.evaluation_only,
+                retrieval_experiment_id=retrieval_experiment_id,
+                retrieval_experiment_arm=retrieval_experiment_arm,
             )
 
             # When the durable queue is enabled and this is a deferred publish, the

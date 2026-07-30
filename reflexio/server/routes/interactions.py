@@ -54,6 +54,9 @@ from reflexio.server.auth import (
 from reflexio.server.cache import reflexio_cache
 from reflexio.server.rate_limit import limiter
 from reflexio.server.routes._common import _run_limited_api
+from reflexio.server.services.retrieval_experiment import (
+    validate_retrieval_experiment_attribution,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -116,6 +119,23 @@ def publish_user_interaction(
             org_id,
             "; ".join(payload_warnings),
         )
+
+    try:
+        config = reflexio_cache.get_reflexio(
+            org_id=org_id
+        ).request_context.configurator.get_config()
+        validate_retrieval_experiment_attribution(
+            config=config,
+            org_id=org_id,
+            user_id=payload.user_id,
+            experiment_id=payload.retrieval_experiment_id,
+            arm=payload.retrieval_experiment_arm,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=str(exc),
+        ) from exc
 
     if wait_for_response:
         # Sync callers wait for the real result, so preserve bounded backpressure

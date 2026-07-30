@@ -104,3 +104,26 @@ def test_wire_payload_carries_no_unknown_keys(mock_session_class):
     assert "zzz" not in str(sent)
     # Re-parse exactly what the route parses: it must find nothing to warn about.
     assert PublishUserInteractionRequest(**sent).payload_warnings() == []
+
+
+@patch("reflexio.client.client.requests.Session")
+def test_publish_interaction_sends_retrieval_experiment_attribution(
+    mock_session_class,
+):
+    mock_session = MagicMock()
+    mock_session_class.return_value = mock_session
+    mock_session.request.return_value.status_code = 200
+    mock_session.request.return_value.json.return_value = {"success": True}
+    client = ReflexioClient(api_key="test_key")
+
+    client.publish_interaction(
+        user_id="user",
+        interactions=[{"content": "real"}],
+        session_id="s",
+        retrieval_experiment_id="exp-1",
+        retrieval_experiment_arm="treatment",
+    )
+
+    sent = mock_session.request.call_args.kwargs["json"]
+    assert sent["retrieval_experiment_id"] == "exp-1"
+    assert sent["retrieval_experiment_arm"] == "treatment"

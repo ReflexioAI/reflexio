@@ -1,7 +1,7 @@
 """Request CRUD methods for SQLite storage."""
 
 import sqlite3
-from typing import Any
+from typing import Any, Literal, cast
 
 from reflexio.models.api_schema.internal_schema import (
     RequestInteractionDataModel,
@@ -51,8 +51,9 @@ class RequestMixin:
                 self.conn.execute(
                     """INSERT OR REPLACE INTO requests
                        (request_id, user_id, created_at, source, agent_version, session_id,
-                        evaluation_only, governance_subject_ref)
-                       VALUES (?,?,?,?,?,?,?,?)""",
+                        evaluation_only, governance_subject_ref,
+                        retrieval_experiment_id, retrieval_experiment_arm)
+                       VALUES (?,?,?,?,?,?,?,?,?,?)""",
                     (
                         request.request_id,
                         request.user_id,
@@ -62,6 +63,8 @@ class RequestMixin:
                         request.session_id,
                         1 if request.evaluation_only else 0,
                         subject_ref,
+                        request.retrieval_experiment_id,
+                        request.retrieval_experiment_arm,
                     ),
                 )
                 if own_txn:
@@ -287,6 +290,31 @@ class RequestMixin:
             (user_id, session_id),
         )
         return [_row_to_request(r) for r in rows]
+
+    @SQLiteStorageBase.handle_exceptions
+    def get_retrieval_experiment_assignments(
+        self, experiment_id: str
+    ) -> dict[tuple[str, str], Literal["treatment", "holdout"]]:
+        rows = self._fetchall(
+            """SELECT user_id, session_id, retrieval_experiment_arm
+               FROM (
+                   SELECT user_id, session_id, retrieval_experiment_arm,
+                          ROW_NUMBER() OVER (
+                              PARTITION BY user_id, session_id
+                              ORDER BY created_at ASC, request_id ASC
+                          ) AS row_number
+                   FROM requests
+                   WHERE retrieval_experiment_id = ?
+               ) ranked
+               WHERE row_number = 1""",
+            (experiment_id,),
+        )
+        return {
+            (str(row["user_id"]), str(row["session_id"])): cast(
+                Literal["treatment", "holdout"], row["retrieval_experiment_arm"]
+            )
+            for row in rows
+        }
 
     @SQLiteStorageBase.handle_exceptions
     def get_session_ids_in_window(

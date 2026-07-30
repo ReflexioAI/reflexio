@@ -115,6 +115,8 @@ def _make_request_interaction(
 ) -> RequestInteractionDataModel:
     """Build a RequestInteractionDataModel for testing."""
     mock_request = MagicMock(spec=Request)
+    mock_request.retrieval_experiment_id = None
+    mock_request.retrieval_experiment_arm = None
     mock_interaction = MagicMock(spec=Interaction)
     return RequestInteractionDataModel(
         session_id=session_id,

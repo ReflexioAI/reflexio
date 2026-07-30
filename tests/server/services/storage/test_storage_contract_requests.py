@@ -121,3 +121,25 @@ class TestSessionQueries:
         assert len(result) == 2
         ids = {r.request_id for r in result}
         assert ids == {"r1", "r2"}
+
+    def test_retrieval_experiment_assignment_uses_earliest_tagged_request(
+        self, storage: BaseStorage
+    ) -> None:
+        first = _make_request("r1", "u1", session_id="s1")
+        first.created_at = 1_700_000_000
+        first.retrieval_experiment_id = "exp-1"
+        first.retrieval_experiment_arm = "holdout"
+        later = _make_request("r2", "u1", session_id="s1")
+        later.created_at = 1_700_000_100
+        later.retrieval_experiment_id = "exp-1"
+        later.retrieval_experiment_arm = "treatment"
+        storage.add_request(later)
+        storage.add_request(first)
+
+        assignments = storage.get_retrieval_experiment_assignments("exp-1")
+
+        assert assignments == {("u1", "s1"): "holdout"}
+        stored = storage.get_request("r1")
+        assert stored is not None
+        assert stored.retrieval_experiment_id == "exp-1"
+        assert stored.retrieval_experiment_arm == "holdout"

@@ -282,6 +282,10 @@ class Request(BaseModel):
         evaluation_only (bool): Whether this request is stored for
             session-level evaluation only and must be excluded from
             profile/playbook learning windows.
+        retrieval_experiment_id (str | None): Retrieval experiment attached
+            to this request by the publishing agent.
+        retrieval_experiment_arm (str | None): Deterministic user assignment
+            for the attached retrieval experiment.
     """
 
     request_id: str
@@ -291,6 +295,18 @@ class Request(BaseModel):
     agent_version: str = ""
     session_id: NonEmptyStr
     evaluation_only: bool = False
+    retrieval_experiment_id: NonEmptyStr | None = None
+    retrieval_experiment_arm: Literal["treatment", "holdout"] | None = None
+
+    @model_validator(mode="after")
+    def validate_retrieval_experiment_pair(self) -> Self:
+        if (self.retrieval_experiment_id is None) != (
+            self.retrieval_experiment_arm is None
+        ):
+            raise ValueError(
+                "retrieval_experiment_id and retrieval_experiment_arm must be provided together"
+            )
+        return self
 
 
 # information about the user profile generated from the user interaction
@@ -1166,6 +1182,8 @@ class PublishUserInteractionRequest(CapturesUnknownFields):
     force_extraction: bool = False  # when True, bypass all extraction gates (stride_size, cheap pre-filter, LLM should_run) and always run extractors
     evaluation_only: bool = False  # when True, store for evaluation and permanently exclude from profile/playbook extraction
     override_learning_stall: bool = False  # when True, run extraction even if a provider auth/billing stall is recorded
+    retrieval_experiment_id: NonEmptyStr | None = None
+    retrieval_experiment_arm: Literal["treatment", "holdout"] | None = None
 
     @model_validator(mode="after")
     def validate_evaluation_only(self) -> Self:
@@ -1173,6 +1191,16 @@ class PublishUserInteractionRequest(CapturesUnknownFields):
             raise ValueError("evaluation_only cannot be combined with force_extraction")
         if self.evaluation_only and not self.session_id:
             raise ValueError("evaluation_only publishes require session_id")
+        return self
+
+    @model_validator(mode="after")
+    def validate_retrieval_experiment_pair(self) -> Self:
+        if (self.retrieval_experiment_id is None) != (
+            self.retrieval_experiment_arm is None
+        ):
+            raise ValueError(
+                "retrieval_experiment_id and retrieval_experiment_arm must be provided together"
+            )
         return self
 
     @model_validator(mode="after")

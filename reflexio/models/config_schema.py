@@ -798,6 +798,28 @@ class LLMConfig(BaseModel):
     )
 
 
+class RetrievalExperimentConfig(BaseModel):
+    """The single retrieval holdout experiment currently serving traffic."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    experiment_id: NonEmptyStr = Field(max_length=128)
+    holdout_percentage: float = Field(gt=0, lt=100)
+
+
+class RetrievalExperimentRecord(RetrievalExperimentConfig):
+    """Immutable lifecycle metadata retained after an experiment stops."""
+
+    started_at: int = Field(ge=0)
+    ended_at: int | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def validate_lifecycle(self) -> Self:
+        if self.ended_at is not None and self.ended_at < self.started_at:
+            raise ValueError("ended_at must be greater than or equal to started_at")
+        return self
+
+
 def _default_profile_extractor_config() -> ProfileExtractorConfig:
     return ProfileExtractorConfig(
         extraction_definition_prompt=(
@@ -850,6 +872,13 @@ class Config(BaseModel):
     api_key_config: APIKeyConfig | None = None
     # LLM model configuration overrides
     llm_config: LLMConfig | None = None
+    # One active user-randomized retrieval holdout experiment. Lifecycle
+    # endpoints own this field and the append-only history below so generic
+    # settings saves cannot silently erase an experiment.
+    retrieval_experiment_config: RetrievalExperimentConfig | None = None
+    retrieval_experiment_history: list[RetrievalExperimentRecord] = Field(
+        default_factory=list
+    )
     # Read-path relevance floor (per-arm cross-encoder score cutoff)
     retrieval_floor: RetrievalFloorConfig = Field(default_factory=RetrievalFloorConfig)
     # Optional GEPA-backed playbook content optimizer

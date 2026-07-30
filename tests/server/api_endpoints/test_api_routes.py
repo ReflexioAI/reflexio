@@ -25,7 +25,12 @@ from reflexio.models.api_schema.service_schemas import (
     Status,
     UserProfile,
 )
-from reflexio.models.config_schema import Config, StorageConfigSQLite
+from reflexio.models.config_schema import (
+    Config,
+    RetrievalExperimentConfig,
+    RetrievalExperimentRecord,
+    StorageConfigSQLite,
+)
 from reflexio.server.rate_limit import limiter
 from reflexio.server.services.configurator.config_storage import (
     ConfigWriteConflictError,
@@ -297,6 +302,9 @@ class TestSearchEndpoints:
     """Tests for search endpoints."""
 
     def test_search_profiles_returns_200(self, client, patched_reflexio, mock_reflexio):
+        mock_reflexio.request_context.configurator.get_config.return_value = Config(
+            storage_config=StorageConfigSQLite()
+        )
         mock_reflexio.search_user_profiles.return_value = SearchUserProfileResponse(
             success=True,
             user_profiles=[],
@@ -434,6 +442,9 @@ class TestSetConfigRoute:
         }
         normalized = Config.model_validate(payload)
         configurator = mock_reflexio.request_context.configurator
+        configurator.get_config.return_value = Config(
+            storage_config=StorageConfigSQLite()
+        )
         configurator.normalize_config_payload.return_value = normalized
         mock_reflexio.set_config.return_value = SetConfigResponse(
             success=True, msg="Configuration set successfully"
@@ -442,7 +453,13 @@ class TestSetConfigRoute:
         response = client.post("/api/set_config", json=payload)
 
         assert response.status_code == 200, response.text
-        configurator.normalize_config_payload.assert_called_once_with(payload)
+        configurator.normalize_config_payload.assert_called_once_with(
+            {
+                **payload,
+                "retrieval_experiment_config": None,
+                "retrieval_experiment_history": [],
+            }
+        )
         mock_reflexio.set_config.assert_called_once_with(normalized)
         assert mock_reflexio.set_config.call_args.args[0] is normalized
 
@@ -450,6 +467,9 @@ class TestSetConfigRoute:
         self, client, patched_reflexio, mock_reflexio
     ):
         configurator = mock_reflexio.request_context.configurator
+        configurator.get_config.return_value = Config(
+            storage_config=StorageConfigSQLite()
+        )
         configurator.normalize_config_payload.side_effect = lambda payload: payload
 
         response = client.post(
@@ -464,6 +484,41 @@ class TestSetConfigRoute:
 
         assert response.status_code == 422, response.text
         mock_reflexio.set_config.assert_not_called()
+
+    def test_omitted_experiment_fields_are_preserved(
+        self, client, patched_reflexio, mock_reflexio
+    ):
+        existing = Config(
+            storage_config=StorageConfigSQLite(),
+            retrieval_experiment_config=RetrievalExperimentConfig(
+                experiment_id="exp-1", holdout_percentage=10
+            ),
+            retrieval_experiment_history=[
+                RetrievalExperimentRecord(
+                    experiment_id="exp-1",
+                    holdout_percentage=10,
+                    started_at=100,
+                )
+            ],
+        )
+        configurator = mock_reflexio.request_context.configurator
+        configurator.get_config.return_value = existing
+        configurator.normalize_config_payload.side_effect = Config.model_validate
+        mock_reflexio.set_config.return_value = SetConfigResponse(
+            success=True, msg="Configuration set successfully"
+        )
+
+        response = client.post(
+            "/api/set_config",
+            json={"storage_config": {}, "window_size": 25},
+        )
+
+        assert response.status_code == 200, response.text
+        saved = mock_reflexio.set_config.call_args.args[0]
+        assert saved.retrieval_experiment_config == existing.retrieval_experiment_config
+        assert (
+            saved.retrieval_experiment_history == existing.retrieval_experiment_history
+        )
 
 
 class TestUpdateConfigRoute:
@@ -531,6 +586,25 @@ class TestUpdateConfigRoute:
 
         # Cache invalidated on success.
         mock_invalidate.assert_called_once_with(org_id="test-org")
+
+    def test_rejects_direct_experiment_lifecycle_mutation(
+        self, client, patched_reflexio, mock_reflexio
+    ):
+        existing = self._existing_config()
+        self._wire_mock(mock_reflexio, existing)
+
+        response = client.post(
+            "/api/update_config",
+            json={
+                "retrieval_experiment_config": {
+                    "experiment_id": "exp-1",
+                    "holdout_percentage": 10,
+                }
+            },
+        )
+
+        assert response.status_code == 409, response.text
+        mock_reflexio.set_config.assert_not_called()
 
     def test_patch_uses_prepared_config_instance(
         self, client, patched_reflexio, mock_reflexio

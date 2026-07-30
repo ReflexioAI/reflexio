@@ -501,6 +501,8 @@ def _row_to_request(row: sqlite3.Row) -> Request:
         agent_version=d.get("agent_version") or "",
         session_id=require_non_empty_session_id(d.get("session_id")),
         evaluation_only=bool(d.get("evaluation_only", 0)),
+        retrieval_experiment_id=d.get("retrieval_experiment_id"),
+        retrieval_experiment_arm=d.get("retrieval_experiment_arm"),
     )
 
 
@@ -760,6 +762,9 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         self._migrate_eval_result_user_id()
         self._migrate_retrieved_learning_interaction_identity()
         self._migrate_playbook_optimization_job_columns()
+        # _DDL creates an index over these columns. Upgrade legacy request tables
+        # before executescript so index creation cannot fail on missing columns.
+        self._migrate_request_retrieval_experiment()
         with self._lock:
             cur = self.conn.cursor()
             cur.executescript(_DDL)
@@ -1821,6 +1826,28 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             logger.info("Added evaluation_only column to requests")
         self.conn.commit()
 
+    def _migrate_request_retrieval_experiment(self) -> None:
+        """Add nullable retrieval experiment attribution to existing requests."""
+        cols = {
+            row["name"]
+            for row in self.conn.execute("PRAGMA table_info(requests)").fetchall()
+        }
+        if not cols:
+            return
+        if "retrieval_experiment_id" not in cols:
+            self.conn.execute(
+                "ALTER TABLE requests ADD COLUMN retrieval_experiment_id TEXT"
+            )
+        if "retrieval_experiment_arm" not in cols:
+            self.conn.execute(
+                "ALTER TABLE requests ADD COLUMN retrieval_experiment_arm TEXT"
+            )
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_requests_retrieval_experiment "
+            "ON requests(retrieval_experiment_id, user_id, session_id, created_at, request_id)"
+        )
+        self.conn.commit()
+
     def _migrate_request_session_id_required(self) -> None:
         """Require non-empty session ids on ``requests``.
 
@@ -1853,6 +1880,12 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         evaluation_only_expr = (
             "COALESCE(evaluation_only, 0)" if "evaluation_only" in cols else "0"
         )
+        retrieval_experiment_id_expr = (
+            "retrieval_experiment_id" if "retrieval_experiment_id" in cols else "NULL"
+        )
+        retrieval_experiment_arm_expr = (
+            "retrieval_experiment_arm" if "retrieval_experiment_arm" in cols else "NULL"
+        )
         # NOTE: this rebuild hardcodes the full `requests` column set. If a
         # future migration adds a column to `requests`, it MUST be added here
         # too (and to the SELECT below) or the rebuild will silently drop it.
@@ -1865,7 +1898,9 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                 source TEXT NOT NULL DEFAULT '',
                 agent_version TEXT NOT NULL DEFAULT '',
                 session_id TEXT NOT NULL CHECK (trim(session_id) != ''),
-                evaluation_only INTEGER NOT NULL DEFAULT 0
+                evaluation_only INTEGER NOT NULL DEFAULT 0,
+                retrieval_experiment_id TEXT,
+                retrieval_experiment_arm TEXT
             );
             INSERT INTO requests_new
                 (
@@ -1875,7 +1910,9 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                     source,
                     agent_version,
                     session_id,
-                    evaluation_only
+                    evaluation_only,
+                    retrieval_experiment_id,
+                    retrieval_experiment_arm
                 )
             SELECT
                 request_id,
@@ -1888,13 +1925,17 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                     THEN 'legacy-' || lower(hex(randomblob(16)))
                     ELSE trim(session_id)
                 END,
-                {evaluation_only_expr}
+                {evaluation_only_expr},
+                {retrieval_experiment_id_expr},
+                {retrieval_experiment_arm_expr}
             FROM requests;
             DROP TABLE requests;
             ALTER TABLE requests_new RENAME TO requests;
             CREATE INDEX IF NOT EXISTS idx_requests_user_id ON requests(user_id);
             CREATE INDEX IF NOT EXISTS idx_requests_session_id ON requests(session_id);
             CREATE INDEX IF NOT EXISTS idx_requests_created_at ON requests(created_at);
+            CREATE INDEX IF NOT EXISTS idx_requests_retrieval_experiment
+                ON requests(retrieval_experiment_id, user_id, session_id, created_at, request_id);
             """
         )
         self.conn.commit()
@@ -2350,13 +2391,22 @@ CREATE TABLE IF NOT EXISTS requests (
     source TEXT NOT NULL DEFAULT '',
     agent_version TEXT NOT NULL DEFAULT '',
     session_id TEXT NOT NULL CHECK (trim(session_id) != ''),
-    evaluation_only INTEGER NOT NULL DEFAULT 0
+    evaluation_only INTEGER NOT NULL DEFAULT 0,
+    retrieval_experiment_id TEXT,
+    retrieval_experiment_arm TEXT,
+    CHECK (
+        (retrieval_experiment_id IS NULL AND retrieval_experiment_arm IS NULL)
+        OR
+        (retrieval_experiment_id IS NOT NULL AND retrieval_experiment_arm IN ('treatment', 'holdout'))
+    )
 );
 CREATE INDEX IF NOT EXISTS idx_requests_user_id ON requests(user_id);
 CREATE INDEX IF NOT EXISTS idx_requests_session_id ON requests(session_id);
 CREATE INDEX IF NOT EXISTS idx_requests_created_at ON requests(created_at);
 CREATE INDEX IF NOT EXISTS idx_requests_session_created_at_asc
     ON requests(session_id, created_at ASC, request_id ASC);
+CREATE INDEX IF NOT EXISTS idx_requests_retrieval_experiment
+    ON requests(retrieval_experiment_id, user_id, session_id, created_at, request_id);
 
 CREATE TABLE IF NOT EXISTS session_outcomes (
     user_id TEXT NOT NULL,
