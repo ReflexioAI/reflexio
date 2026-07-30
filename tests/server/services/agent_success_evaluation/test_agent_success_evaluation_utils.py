@@ -1,5 +1,7 @@
 """Tests for agent success evaluation utility functions."""
 
+import json
+import re
 from datetime import UTC, datetime
 
 import pytest
@@ -31,6 +33,17 @@ def test_agent_success_prompt_v1_1_0_is_active_and_renders() -> None:
 
     assert prompt_manager.get_active_version("agent_success_evaluation") == "1.1.0"
     assert "Step 4: Count corrective user turns" in _render_agent_success_prompt()
+
+
+def test_agent_success_prompt_examples_are_valid_json() -> None:
+    """Every rendered output example must honor the prompt's JSON contract."""
+    examples = re.findall(
+        r"```json\n(.*?)\n```", _render_agent_success_prompt(), flags=re.DOTALL
+    )
+
+    assert len(examples) == 2
+    for example in examples:
+        json.loads(example)
 
 
 @pytest.mark.parametrize(

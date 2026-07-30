@@ -11,12 +11,17 @@ These cover the regenerate flow's behavior at the runner layer:
 """
 
 from datetime import UTC, datetime
-from unittest.mock import MagicMock, patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock, call, patch
 
 from reflexio.models.api_schema.service_schemas import (
     AgentSuccessEvaluationResult,
     Interaction,
     Request,
+)
+from reflexio.models.config_schema import (
+    SINGLETON_AGENT_SUCCESS_EVALUATION_NAME,
+    AgentSuccessConfig,
 )
 from reflexio.server.services.agent_success_evaluation.runner import (
     run_group_evaluation,
@@ -329,6 +334,57 @@ def test_force_regenerate_preserves_result_updated_in_place() -> None:
 
     storage.delete_agent_success_evaluation_results_by_ids.assert_not_called()
     assert storage.get_agent_success_evaluation_result_ids.call_count == 2
+
+
+def test_force_regenerate_uses_agent_success_config_evaluation_name() -> None:
+    """Regeneration must look up rows under the evaluator's singleton name."""
+    prior = [
+        _make_prior_result(
+            result_id=42,
+            session_id="session_a",
+            evaluation_name=SINGLETON_AGENT_SUCCESS_EVALUATION_NAME,
+        )
+    ]
+    storage = _make_storage(with_evaluated_marker=True, prior_results=prior)
+    storage.get_agent_success_evaluation_result_ids.side_effect = [[42], [42]]
+    request_context = MagicMock()
+    request_context.storage = storage
+    request_context.configurator.get_config.return_value = SimpleNamespace(
+        agent_success_config=AgentSuccessConfig(
+            success_definition_prompt="Complete the user's task."
+        )
+    )
+
+    with patch(
+        "reflexio.server.services.agent_success_evaluation"
+        ".runner.AgentSuccessEvaluationService"
+    ) as service_cls:
+        service = MagicMock()
+        service.has_run_failures.return_value = False
+        service.last_run_saved_result_count = 1
+        service_cls.return_value = service
+
+        run_group_evaluation(
+            org_id="org_a",
+            user_id="user_a",
+            session_id="session_a",
+            agent_version="1.0.0",
+            source="api",
+            request_context=request_context,
+            llm_client=MagicMock(),
+            force_regenerate=True,
+        )
+
+    expected_lookup = call(
+        user_id="user_a",
+        session_id="session_a",
+        evaluation_name=SINGLETON_AGENT_SUCCESS_EVALUATION_NAME,
+        agent_version="1.0.0",
+    )
+    assert storage.get_agent_success_evaluation_result_ids.call_args_list == [
+        expected_lookup,
+        expected_lookup,
+    ]
 
 
 def test_force_regenerate_with_no_prior_rows_does_not_delete() -> None:

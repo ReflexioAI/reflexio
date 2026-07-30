@@ -260,8 +260,8 @@ def run_group_evaluation(
     old_result_ids: list[int] = []
     evaluation_name = ""
     if force_regenerate:
-        config = request_context.configurator.get_config()
-        evaluation_name = get_extractor_name(config)
+        root_config = request_context.configurator.get_config()
+        evaluation_name = get_extractor_name(root_config.agent_success_config)
         old_result_ids = storage.get_agent_success_evaluation_result_ids(  # type: ignore[reportOptionalMemberAccess]
             user_id=user_id,
             session_id=session_id,
@@ -311,7 +311,7 @@ def run_group_evaluation(
         )
         return GroupEvaluationOutcome("failed", "skipped")
 
-    # 6. New rows saved successfully. Delete captured prior rows only when the
+    # 7. New rows saved successfully. Delete captured prior rows only when the
     # writer created a distinct new result_id (SQLite). Enterprise storage uses
     # an in-place upsert, so its post-save ids are unchanged; deleting those ids
     # would delete the regenerated verdict itself.
