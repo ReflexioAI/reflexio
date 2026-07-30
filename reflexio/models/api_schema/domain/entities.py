@@ -245,6 +245,7 @@ class Interaction(BaseModel):
     created_at: int = Field(default_factory=lambda: int(datetime.now(UTC).timestamp()))
     role: str = "User"
     content: str = ""
+    token_count: int | None = Field(default=None, ge=0)
     user_action: UserActionType = UserActionType.NONE
     user_action_description: str = ""
     interacted_image_url: str = ""

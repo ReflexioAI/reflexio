@@ -93,6 +93,42 @@ def _add_request_with_interactions(
     return request_id
 
 
+def test_experiment_output_tokens_exclude_sessions_with_legacy_null_counts(
+    storage: SQLiteStorage,
+) -> None:
+    request = Request(
+        request_id="req_token_coverage",
+        user_id="user_token_coverage",
+        session_id="session_token_coverage",
+        agent_version="v1",
+        source="test",
+        created_at=_now(),
+        retrieval_experiment_id="exp-token-coverage",
+        retrieval_experiment_arm="treatment",
+    )
+    storage.add_request(request)
+    interaction = Interaction(
+        user_id=request.user_id,
+        request_id=request.request_id,
+        role="assistant",
+        content="measured output",
+    )
+    storage.add_user_interactions_bulk(request.user_id, [interaction])
+    assert storage.get_retrieval_experiment_output_token_counts(
+        "exp-token-coverage"
+    ) == {(request.user_id, request.session_id): interaction.token_count}
+
+    storage.conn.execute(
+        "UPDATE interactions SET token_count = NULL WHERE request_id = ?",
+        (request.request_id,),
+    )
+    storage.conn.commit()
+
+    assert (
+        storage.get_retrieval_experiment_output_token_counts("exp-token-coverage") == {}
+    )
+
+
 # ---------------------------------------------------------------------------
 # count_sessions_with_shadow_content
 # ---------------------------------------------------------------------------

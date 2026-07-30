@@ -190,8 +190,14 @@ def get_retrieval_experiment_results(
         if storage is not None
         else []
     )
+    output_token_counts = (
+        storage.get_retrieval_experiment_output_token_counts(experiment_id)
+        if storage is not None
+        else {}
+    )
     return build_retrieval_experiment_results(
         experiment=experiment,
         assignments=assignments,
         evaluation_results=evaluation_results,
+        output_token_counts=output_token_counts,
     )

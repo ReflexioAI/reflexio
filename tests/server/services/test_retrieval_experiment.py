@@ -131,6 +131,13 @@ def test_results_join_session_outcomes_and_report_clustered_interval() -> None:
         ),
         assignments=assignments,
         evaluation_results=outcomes,
+        output_token_counts={
+            ("t1", "s1"): 90,
+            ("t2", "s3"): 30,
+            ("h1", "s4"): 120,
+            ("h1", "s5"): 0,
+            ("h2", "s6"): 60,
+        },
     )
 
     assert response.treatment.evaluated_session_count == 3
@@ -140,3 +147,7 @@ def test_results_join_session_outcomes_and_report_clustered_interval() -> None:
     assert response.confidence_interval_95_percentage_points is not None
     assert response.evaluated_session_coverage == 6 / 7
     assert response.unattributed_evaluated_session_count == 1
+    assert response.treatment.average_output_tokens == 60
+    assert response.treatment.output_token_session_count == 2
+    assert response.holdout.average_output_tokens == 60
+    assert response.holdout.output_token_session_count == 3

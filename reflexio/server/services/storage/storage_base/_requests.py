@@ -144,6 +144,17 @@ class RequestMixin:
         raise NotImplementedError
 
     @abstractmethod
+    def get_retrieval_experiment_output_token_counts(
+        self, experiment_id: str
+    ) -> dict[tuple[str, str], int]:
+        """Return stored output-token totals for fully measured tagged sessions.
+
+        A session is omitted when any non-user interaction has a NULL token count.
+        Sessions with no non-user interactions are included with a zero total.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
     def get_session_ids_in_window(
         self, from_ts: int, to_ts: int
     ) -> list[SessionDescriptor]:
