@@ -25,7 +25,7 @@ from functools import lru_cache
 from typing import TYPE_CHECKING, Any, get_args, get_origin
 
 import litellm
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from reflexio.server.llm._litellm_json_extraction import (
     _extract_json_from_string,
@@ -103,6 +103,65 @@ def _single_list_item_model(response_format: type[BaseModel]) -> type[BaseModel]
     return None
 
 
+def _sole_matching_list_field(
+    response_format: type[BaseModel], items: list[Any]
+) -> str | None:
+    """Return the one list field a bare-list payload unambiguously belongs to.
+
+    Generalizes :func:`_single_list_field_name` to multi-field schemas. Providers
+    (MiniMax in particular) sometimes emit the *inner* array and drop the object
+    that wraps it — e.g. returning ``ProfileDeduplicationOutput``'s
+    ``duplicate_groups`` list on its own. That schema has three fields, so the
+    single-field rule does not fire and the payload is rejected outright.
+
+    The wrap is only applied when it is unambiguous: exactly one list field
+    accepts the items, and every other field is optional (so the reconstructed
+    object is complete). Zero or several candidates means the payload could
+    belong to more than one field, so this returns ``None`` and the caller falls
+    through to the normal bounded repair path rather than guessing.
+
+    Args:
+        response_format (type[BaseModel]): Target schema.
+        items (list[Any]): Bare list payload returned by the provider.
+
+    Returns:
+        str | None: The unique field name to wrap into, or ``None`` when the
+            placement is ambiguous or would leave a required field unset.
+    """
+    fields = getattr(response_format, "model_fields", {})
+    candidates = [
+        name
+        for name, field in fields.items()
+        if _is_list_annotation(field.annotation)
+        and _annotation_accepts(field.annotation, items)
+    ]
+    if len(candidates) != 1:
+        return None
+    if any(
+        field.is_required() for name, field in fields.items() if name != candidates[0]
+    ):
+        return None
+    return candidates[0]
+
+
+def _annotation_accepts(annotation: Any, value: Any) -> bool:
+    """Return whether *value* validates against *annotation*.
+
+    Args:
+        annotation (Any): Field annotation to test against.
+        value (Any): Candidate payload.
+
+    Returns:
+        bool: True when the value validates, False for any failure — an
+            unbuildable adapter counts as "does not accept", never a crash.
+    """
+    try:
+        TypeAdapter(annotation).validate_python(value)
+    except Exception:
+        return False
+    return True
+
+
 def _is_list_annotation(annotation: Any) -> bool:
     """Return whether an annotation accepts a list value."""
     if annotation is list or get_origin(annotation) is list:
@@ -126,6 +185,12 @@ def _validate_structured_payload(
     if isinstance(parsed, list) and (
         field_name := _single_list_field_name(response_format)
     ):
+        return response_format.model_validate({field_name: parsed})
+    if isinstance(parsed, list) and (
+        field_name := _sole_matching_list_field(response_format, parsed)
+    ):
+        # Multi-field schema whose inner array arrived without its wrapper.
+        # Only reached when the placement is unambiguous (see the helper).
         return response_format.model_validate({field_name: parsed})
     if (
         isinstance(parsed, dict)

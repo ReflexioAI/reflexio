@@ -94,6 +94,24 @@ class BareListResponse(BaseModel):
     items: list = Field(default_factory=list)
 
 
+class OptionalMultiListResponse(BaseModel):
+    """Multi-field schema whose fields are ALL optional lists.
+
+    Mirrors ``ProfileDeduplicationOutput``: providers sometimes emit one inner
+    array and drop the object wrapping it, and only one field can accept it.
+    """
+
+    groups: list[SampleResponse] = Field(default_factory=list)
+    unique_ids: list[str] = Field(default_factory=list)
+
+
+class AmbiguousMultiListResponse(BaseModel):
+    """Two optional fields accept the same item shape — placement is a guess."""
+
+    primary_ids: list[str] = Field(default_factory=list)
+    secondary_ids: list[str] = Field(default_factory=list)
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -1351,9 +1369,47 @@ class TestMaybeParseStructuredOutput:
         assert result.items == [{"answer": "ok", "score": 5}]
 
     def test_top_level_list_not_wrapped_for_multi_field_schema(self, client):
+        """A required sibling field means the wrap cannot rebuild a whole object."""
         content = json.dumps([{"answer": "ok", "score": 5}])
         with pytest.raises(StructuredOutputParseError):
             client._maybe_parse_structured_output(content, MultiFieldListResponse, True)
+
+    def test_top_level_list_wrapped_for_multi_field_schema_when_unambiguous(
+        self, client
+    ):
+        """MiniMax drops the wrapper object and returns the inner array alone.
+
+        Only ``groups`` accepts these items and every sibling is optional, so
+        the placement is unambiguous — this is the ProfileDeduplicationOutput
+        failure that produced 12.5k Sentry events.
+        """
+        content = json.dumps([{"answer": "ok", "score": 5}])
+        result = client._maybe_parse_structured_output(
+            content, OptionalMultiListResponse, True
+        )
+
+        assert isinstance(result, OptionalMultiListResponse)
+        assert len(result.groups) == 1
+        assert result.groups[0].answer == "ok"
+        assert result.unique_ids == []
+
+    def test_top_level_list_routed_to_the_only_field_that_accepts_it(self, client):
+        """Item shape, not field order, decides which list field receives it."""
+        content = json.dumps(["NEW-2", "NEW-3"])
+        result = client._maybe_parse_structured_output(
+            content, OptionalMultiListResponse, True
+        )
+
+        assert result.unique_ids == ["NEW-2", "NEW-3"]
+        assert result.groups == []
+
+    def test_top_level_list_not_wrapped_when_two_fields_accept_it(self, client):
+        """Ambiguous placement must fail to the repair path, never be guessed."""
+        content = json.dumps(["a", "b"])
+        with pytest.raises(StructuredOutputParseError):
+            client._maybe_parse_structured_output(
+                content, AmbiguousMultiListResponse, True
+            )
 
     def test_json_in_markdown_code_block(self, client):
         content = '```json\n{"answer": "ok", "score": 5}\n```'
