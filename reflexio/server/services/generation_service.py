@@ -74,6 +74,35 @@ CLEANUP_STALE_LOCK_SECONDS = 600
 GENERATION_SERVICE_TIMEOUT_SECONDS = 600
 _STALL_WARNING_PREFIX = "Reflexio learning is paused"
 
+
+class _SharedDeadline:
+    """One wall-clock budget shared by several sequentially awaited futures.
+
+    Profile and playbook generation run concurrently but are awaited one after
+    the other. Passing each ``future.result()`` the same constant timeout hands
+    the second service a FRESH full budget on top of whatever the first already
+    consumed — so a 600s setting really allowed up to 1200s, and the
+    "timed out after 600s" log line misreported the budget it had enforced.
+
+    Attributes:
+        _deadline (float): Monotonic timestamp after which nothing may wait.
+    """
+
+    def __init__(self, timeout_seconds: float) -> None:
+        self._deadline = time.monotonic() + timeout_seconds
+
+    def remaining(self) -> float:
+        """Return seconds left in the shared budget.
+
+        Returns:
+            float: Time until the deadline, clamped at ``0.0`` once spent so an
+                exhausted budget fails the wait immediately instead of wrapping
+                into a negative (which ``Future.result`` treats as "no wait" but
+                which reads as a bug at the call site).
+        """
+        return max(0.0, self._deadline - time.monotonic())
+
+
 # Retrieved-learning statuses that committed NOTHING and have no other retry
 # trigger. These are the only ones worth re-running.
 #
@@ -732,12 +761,13 @@ class GenerationService:
                 playbook_service.compute_generation,
                 playbook_request,
             )
+            budget = _SharedDeadline(GENERATION_SERVICE_TIMEOUT_SECONDS)
             for future, service_name, service in (
                 (profile_future, "profile_generation", profile_service),
                 (playbook_future, "playbook_generation", playbook_service),
             ):
                 try:
-                    plan = future.result(timeout=GENERATION_SERVICE_TIMEOUT_SECONDS)
+                    plan = future.result(timeout=budget.remaining())
                 except FuturesTimeoutError:  # noqa: PERF203
                     msg = (
                         f"{service_name} timed out after "
@@ -993,9 +1023,10 @@ class GenerationService:
                 ]
 
                 service_names = ["profile_generation", "playbook_generation"]
+                budget = _SharedDeadline(GENERATION_SERVICE_TIMEOUT_SECONDS)
                 for future, service_name in zip(futures, service_names, strict=True):
                     try:
-                        future.result(timeout=GENERATION_SERVICE_TIMEOUT_SECONDS)
+                        future.result(timeout=budget.remaining())
                     except FuturesTimeoutError:  # noqa: PERF203
                         msg = (
                             f"{service_name} timed out after "
