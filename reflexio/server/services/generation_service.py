@@ -6,8 +6,8 @@ import os
 import threading
 import time
 import uuid
-from collections.abc import Callable, Mapping
-from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from concurrent.futures import Future, ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 from contextlib import nullcontext
 from dataclasses import dataclass, field
@@ -73,6 +73,101 @@ CLEANUP_STALE_LOCK_SECONDS = 600
 # Timeout for the outer generation service parallel execution
 GENERATION_SERVICE_TIMEOUT_SECONDS = 600
 _STALL_WARNING_PREFIX = "Reflexio learning is paused"
+
+
+class _SharedDeadline:
+    """One wall-clock budget shared by several sequentially awaited futures.
+
+    Profile and playbook generation run concurrently but are awaited one after
+    the other. Passing each ``future.result()`` the same constant timeout hands
+    the second service a FRESH full budget on top of whatever the first already
+    consumed — so a 600s setting really allowed up to 1200s, and the
+    "timed out after 600s" log line misreported the budget it had enforced.
+
+    Attributes:
+        _deadline (float): Monotonic timestamp after which nothing may wait.
+    """
+
+    def __init__(self, timeout_seconds: float) -> None:
+        self._deadline = time.monotonic() + timeout_seconds
+
+    def remaining(self) -> float:
+        """Return seconds left in the shared budget.
+
+        Returns:
+            float: Time until the deadline, clamped at ``0.0`` once spent so an
+                exhausted budget fails the wait immediately instead of wrapping
+                into a negative (which ``Future.result`` treats as "no wait" but
+                which reads as a bug at the call site).
+        """
+        return max(0.0, self._deadline - time.monotonic())
+
+
+def _completed_within_shared_budget(
+    awaited: Sequence[tuple[Future[Any], str]],
+    *,
+    request_id: str,
+    warnings: list[str],
+    timeout_seconds: float = GENERATION_SERVICE_TIMEOUT_SECONDS,
+) -> Iterator[tuple[str, Any]]:
+    """Await futures in order under ONE shared budget, yielding what completed.
+
+    Both generation call sites awaited their futures with a copy of this loop.
+    Sharing it keeps the budget arithmetic and the timeout/failure reporting in
+    a single place, so neither site can silently drift back to handing every
+    future a fresh full timeout.
+
+    Args:
+        awaited (Sequence[tuple[Future[Any], str]]): Futures paired with the
+            service name used in logs and warnings, awaited in this order.
+        request_id (str): Correlation id for the log line.
+        warnings (list[str]): Mutated in place with one entry per failed or
+            timed-out service, mirroring the previous per-site behaviour.
+        timeout_seconds (float): Total wall-clock budget for ALL of *awaited*.
+
+    Yields:
+        tuple[str, Any]: ``(service_name, value)`` for each future that
+            completed inside the shared budget. Timed-out and failed services
+            are reported and skipped, never yielded.
+    """
+    budget = _SharedDeadline(timeout_seconds)
+    for future, service_name in awaited:
+        remaining = budget.remaining()
+        try:
+            value = future.result(timeout=remaining)
+        except FuturesTimeoutError:  # noqa: PERF203
+            # Report the budget actually enforced. The second service inherits
+            # only the leftover, so naming the full total here would misreport
+            # the wait that just expired.
+            msg = (
+                f"{service_name} timed out after {remaining:.1f}s "
+                f"of the shared {timeout_seconds:.0f}s budget"
+            )
+            with sentry_tags(
+                subsystem="generation",
+                service=service_name,
+                request_id=request_id,
+                error_type="timeout",
+            ):
+                logger.error("%s for request %s", msg, sanitise_for_log(request_id))
+            warnings.append(msg)
+            continue
+        except Exception as e:
+            msg = f"{service_name} failed: {e}"
+            with sentry_tags(
+                subsystem="generation",
+                service=service_name,
+                request_id=request_id,
+                error_type=type(e).__name__,
+            ):
+                logger.exception(
+                    "Generation service failed for request %s",
+                    sanitise_for_log(request_id),
+                )
+            warnings.append(msg)
+            continue
+        yield service_name, value
+
 
 # Retrieved-learning statuses that committed NOTHING and have no other retry
 # trigger. These are the only ones worth re-running.
@@ -732,48 +827,20 @@ class GenerationService:
                 playbook_service.compute_generation,
                 playbook_request,
             )
-            for future, service_name, service in (
-                (profile_future, "profile_generation", profile_service),
-                (playbook_future, "playbook_generation", playbook_service),
+            for service_name, plan in _completed_within_shared_budget(
+                (
+                    (profile_future, "profile_generation"),
+                    (playbook_future, "playbook_generation"),
+                ),
+                request_id=request_id,
+                warnings=warnings,
             ):
-                try:
-                    plan = future.result(timeout=GENERATION_SERVICE_TIMEOUT_SECONDS)
-                except FuturesTimeoutError:  # noqa: PERF203
-                    msg = (
-                        f"{service_name} timed out after "
-                        f"{GENERATION_SERVICE_TIMEOUT_SECONDS}s"
-                    )
-                    with sentry_tags(
-                        subsystem="generation",
-                        service=service_name,
-                        request_id=request_id,
-                        error_type="timeout",
-                    ):
-                        logger.error(
-                            "%s for request %s", msg, sanitise_for_log(request_id)
-                        )
-                    warnings.append(msg)
-                    continue
-                except Exception as e:
-                    msg = f"{service_name} failed: {e}"
-                    with sentry_tags(
-                        subsystem="generation",
-                        service=service_name,
-                        request_id=request_id,
-                        error_type=type(e).__name__,
-                    ):
-                        logger.exception(
-                            "Generation service failed for request %s",
-                            sanitise_for_log(request_id),
-                        )
-                    warnings.append(msg)
-                    continue
                 if plan is None:
                     continue
                 if service_name == "profile_generation":
-                    profile_pair = (service, plan)
+                    profile_pair = (profile_service, plan)
                 else:
-                    playbook_pair = (service, plan)
+                    playbook_pair = (playbook_service, plan)
         finally:
             executor.shutdown(wait=False, cancel_futures=True)
 
@@ -993,37 +1060,14 @@ class GenerationService:
                 ]
 
                 service_names = ["profile_generation", "playbook_generation"]
-                for future, service_name in zip(futures, service_names, strict=True):
-                    try:
-                        future.result(timeout=GENERATION_SERVICE_TIMEOUT_SECONDS)
-                    except FuturesTimeoutError:  # noqa: PERF203
-                        msg = (
-                            f"{service_name} timed out after "
-                            f"{GENERATION_SERVICE_TIMEOUT_SECONDS}s"
-                        )
-                        with sentry_tags(
-                            subsystem="generation",
-                            service=service_name,
-                            request_id=request_id,
-                            error_type="timeout",
-                        ):
-                            logger.error(
-                                "%s for request %s", msg, sanitise_for_log(request_id)
-                            )
-                        result.warnings.append(msg)
-                    except Exception as e:
-                        msg = f"{service_name} failed: {e}"
-                        with sentry_tags(
-                            subsystem="generation",
-                            service=service_name,
-                            request_id=request_id,
-                            error_type=type(e).__name__,
-                        ):
-                            logger.exception(
-                                "Generation service failed for request %s",
-                                sanitise_for_log(request_id),
-                            )
-                        result.warnings.append(msg)
+                # Drained for its warnings side-effect; this path keeps no
+                # per-service value (each service already persisted its own).
+                for _ in _completed_within_shared_budget(
+                    list(zip(futures, service_names, strict=True)),
+                    request_id=request_id,
+                    warnings=result.warnings,
+                ):
+                    pass
             finally:
                 executor.shutdown(wait=False, cancel_futures=True)
 
