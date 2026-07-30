@@ -927,6 +927,37 @@ def test_review_interaction_window_returns_honest_empty_window():
         assert service._review_interaction_window(playbook_config) == []
 
 
+def test_automatic_review_reloads_the_configured_extraction_window():
+    request_context = MagicMock()
+    service = PlaybookGenerationService(
+        llm_client=MagicMock(), request_context=request_context
+    )
+    service.service_config = PlaybookGenerationServiceConfig(
+        request_id="request",
+        agent_version="v1",
+        user_id="user-1",
+        source="chat",
+    )
+    playbook_config = PlaybookConfig(
+        extractor_name="test_playbook",
+        extraction_definition_prompt="Review grounded lessons",
+        request_sources_enabled=["chat"],
+        window_size_override=3,
+    )
+    expected_window = [MagicMock(spec=RequestInteractionDataModel)]
+    extractor = MagicMock()
+    extractor._get_interactions.return_value = expected_window
+
+    with patch.object(
+        service, "_create_extractor", return_value=extractor
+    ) as create_extractor:
+        assert service._review_interaction_window(playbook_config) == expected_window
+
+    create_extractor.assert_called_once_with(playbook_config, service.service_config)
+    extractor._get_interactions.assert_called_once_with()
+    request_context.storage.get_interactions_by_ids.assert_not_called()
+
+
 def test_loading_a_new_generation_request_clears_the_review_window_cache():
     service = PlaybookGenerationService(
         llm_client=MagicMock(), request_context=MagicMock()

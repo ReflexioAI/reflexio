@@ -63,6 +63,7 @@ from reflexio.models.config_schema import SearchMode
 IS_TEST_ENV = os.environ.get("IS_TEST_ENV", "false").strip() == "true"
 
 BACKEND_URL = "http://127.0.0.1:8000" if IS_TEST_ENV else "https://www.reflexio.ai/"
+REVIEW_USER_PLAYBOOKS_TIMEOUT_SECONDS = 600
 
 from reflexio.models.api_schema.domain.entities import (
     UpgradeProfilesRequest,
@@ -1630,7 +1631,11 @@ class ReflexioClient:
         """Re-review current user playbooks created within a bounded window.
 
         The default ``report_only=True`` runs inline and returns one decision per
-        selected playbook.
+        selected playbook. Each playbook is reviewed from its full finalized
+        extraction-run window plus any cited consolidation evidence, independent
+        of the current extractor window size or source filter. Rows with missing
+        or invalid persisted provenance are skipped. Only cited interactions are
+        reviewer evidence; other run-window interactions provide chronology.
 
         With ``report_only=False`` the server accepts the run and applies it in
         the background, so the response carries only ``run_id`` — not
@@ -1650,6 +1655,11 @@ class ReflexioClient:
             "POST",
             "/api/review_user_playbooks",
             json=request.model_dump(mode="json"),
+            timeout=(
+                max(self.timeout, REVIEW_USER_PLAYBOOKS_TIMEOUT_SECONDS)
+                if report_only
+                else self.timeout
+            ),
         )
         return ReviewUserPlaybooksResponse(**response)
 

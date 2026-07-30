@@ -4,7 +4,11 @@ from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
 from reflexio.server.api import create_app
-from reflexio.server.middleware import BodySizeLimitMiddleware
+from reflexio.server.middleware import (
+    SYNC_REQUEST_TIMEOUT_SECONDS,
+    BodySizeLimitMiddleware,
+    TimeoutMiddleware,
+)
 
 
 def test_cors_uses_frontend_url_allowlist(monkeypatch):
@@ -136,6 +140,38 @@ def test_body_size_limit_rejects_streamed_body_without_content_length(monkeypatc
     )
     assert response_start["status"] == 413
     assert response_body == b'{"detail":"Request body too large"}'
+
+
+def test_playbook_review_uses_synchronous_request_timeout(monkeypatch):
+    observed: dict[str, float | None] = {}
+
+    async def fake_wait_for(awaitable, *, timeout=None):
+        observed["timeout"] = timeout
+        return await awaitable
+
+    async def call_next(_request):
+        from starlette.responses import Response
+
+        return Response()
+
+    monkeypatch.setattr(asyncio, "wait_for", fake_wait_for)
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "scheme": "http",
+            "path": "/api/review_user_playbooks",
+            "raw_path": b"/api/review_user_playbooks",
+            "query_string": b"",
+            "headers": [],
+            "client": ("testclient", 50000),
+            "server": ("testserver", 80),
+        }
+    )
+
+    asyncio.run(TimeoutMiddleware(FastAPI()).dispatch(request, call_next))
+
+    assert observed["timeout"] == SYNC_REQUEST_TIMEOUT_SECONDS
 
 
 def test_security_headers_are_added(monkeypatch):

@@ -41,6 +41,10 @@ _DECISION_ALIASES = {
 }
 
 
+class PlaybookCandidateEvidenceError(ValueError):
+    """A persisted candidate's cited evidence cannot be reconstructed."""
+
+
 class CandidateRevision(BaseModel):
     """Complete replacement fields for one narrowly revised candidate."""
 
@@ -253,42 +257,21 @@ class PlaybookCandidateReviewer:
         units_by_candidate: dict[str, list[CandidateEvidenceUnit]] = {}
         for candidate_index, candidate in enumerate(candidates, start=1):
             candidate_id = f"C{candidate_index}"
-            combined_span = candidate.source_span or ""
             units: list[CandidateEvidenceUnit] = []
             for interaction_id in candidate.source_interaction_ids:
                 mapped_units = by_interaction_id.get(interaction_id)
                 if not mapped_units:
-                    raise ValueError(
+                    raise PlaybookCandidateEvidenceError(
                         f"Reviewer cannot map {candidate_id} evidence to a local turn"
                     )
-                matching_units = [
-                    unit
-                    for unit in mapped_units
-                    if unit.source_span
-                    and (
-                        unit.source_span in combined_span
-                        or combined_span in unit.source_span
-                    )
-                ]
-                if not matching_units:
-                    span_fragments = [
-                        fragment.strip()
-                        for fragment in combined_span.split("\n\n")
-                        if fragment.strip()
-                    ]
-                    matching_units = [
-                        unit
-                        for unit in mapped_units
-                        if any(
-                            fragment == unit.source_span or fragment in unit.source_span
-                            for fragment in span_fragments
-                        )
-                    ]
-                if not matching_units:
-                    raise ValueError(
-                        f"Reviewer cannot resolve {candidate_id} validated source span"
-                    )
-                for mapped_unit in matching_units:
+                # Exact persisted interaction IDs are the durable evidence
+                # identity. Rebuild their bounded visible spans from storage;
+                # do not require every span to survive in the playbook's
+                # combined ``source_span``, which may be truncated or may have
+                # been assembled from multiple rows during consolidation.
+                for mapped_unit in mapped_units:
+                    if not mapped_unit.source_span:
+                        continue
                     if any(
                         unit.turn_ref == mapped_unit.turn_ref
                         and unit.source_span == mapped_unit.source_span
@@ -304,7 +287,9 @@ class PlaybookCandidateReviewer:
                         )
                     )
             if not units:
-                raise ValueError(f"Reviewer received {candidate_id} without evidence")
+                raise PlaybookCandidateEvidenceError(
+                    f"Reviewer received {candidate_id} without evidence"
+                )
             units_by_candidate[candidate_id] = units
         return units_by_candidate
 
