@@ -7,7 +7,7 @@ import warnings
 from collections.abc import Callable, Coroutine, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
-from typing import Any, TypeVar
+from typing import Any, Literal, TypeVar
 from urllib.parse import urljoin
 
 import aiohttp
@@ -40,6 +40,8 @@ from reflexio.models.api_schema.retriever_schema import (
     GetUserProfilesRequest,
     ProfileChangeLogViewResponse,
     RerankUserProfilesRequest,
+    RetrievalExperimentListResponse,
+    RetrievalExperimentResultsResponse,
     SearchAgentPlaybookRequest,
     SearchAgentPlaybooksViewResponse,
     SearchInteractionRequest,
@@ -48,6 +50,8 @@ from reflexio.models.api_schema.retriever_schema import (
     SearchUserPlaybookRequest,
     SearchUserPlaybooksViewResponse,
     SearchUserProfileRequest,
+    StartRetrievalExperimentRequest,
+    StopRetrievalExperimentRequest,
     StorageStatsResponse,
     UnifiedSearchRequest,
     UnifiedSearchViewResponse,
@@ -419,6 +423,8 @@ class ReflexioClient:
         force_extraction: bool = False,
         evaluation_only: bool = False,
         override_learning_stall: bool = False,
+        retrieval_experiment_id: str | None = None,
+        retrieval_experiment_arm: Literal["treatment", "holdout"] | None = None,
     ) -> PublishUserInteractionResponse:
         """Publish user interactions.
 
@@ -463,6 +469,11 @@ class ReflexioClient:
                 Reflexio has recorded a provider auth/billing stall. Keep
                 this False for automatic hook publishes; use it only for an
                 explicit retry after reauth or limit reset.
+            retrieval_experiment_id: Experiment ID returned by the learning
+                search used for this response. Supply together with
+                ``retrieval_experiment_arm``.
+            retrieval_experiment_arm: ``"treatment"`` or ``"holdout"`` as
+                returned by learning search. Supply together with the ID.
 
         Returns:
             PublishUserInteractionResponse: Server response.
@@ -505,6 +516,8 @@ class ReflexioClient:
             force_extraction=force_extraction,
             evaluation_only=evaluation_only,
             override_learning_stall=override_learning_stall,
+            retrieval_experiment_id=retrieval_experiment_id,
+            retrieval_experiment_arm=retrieval_experiment_arm,
         )
         result = self._publish_interaction_sync(
             request, wait_for_response=wait_for_response
@@ -828,6 +841,7 @@ class ReflexioClient:
         request: SearchAgentPlaybookRequest | dict | None = None,
         *,
         query: str | None = None,
+        user_id: str | None = None,
         agent_version: str | None = None,
         playbook_name: str | None = None,
         start_time: datetime | None = None,
@@ -845,6 +859,8 @@ class ReflexioClient:
         Args:
             request (Optional[SearchAgentPlaybookRequest]): The search request object (alternative to kwargs)
             query (Optional[str]): Query for semantic/text search
+            user_id (Optional[str]): User receiving the playbooks. Used for
+                retrieval-experiment assignment; it does not filter agent playbooks.
             agent_version (Optional[str]): Filter by agent version
             playbook_name (Optional[str]): Filter by playbook name
             start_time (Optional[datetime]): Start time for created_at filter
@@ -864,6 +880,7 @@ class ReflexioClient:
             request,
             SearchAgentPlaybookRequest,
             query=query,
+            user_id=user_id,
             agent_version=agent_version,
             playbook_name=playbook_name,
             start_time=start_time,
@@ -1518,6 +1535,48 @@ class ReflexioClient:
                 f"update_config requires a dict, got {type(partial).__name__}"
             )
         return self._make_request("POST", "/api/update_config", json=partial)
+
+    def list_retrieval_experiments(self) -> RetrievalExperimentListResponse:
+        """List the active and historical user-level retrieval experiments."""
+        response = self._make_request("GET", "/api/retrieval_experiments")
+        return RetrievalExperimentListResponse(**response)
+
+    def start_retrieval_experiment(
+        self, experiment_id: str, holdout_percentage: float
+    ) -> RetrievalExperimentListResponse:
+        """Start the organization's only active retrieval experiment."""
+        request = StartRetrievalExperimentRequest(
+            experiment_id=experiment_id,
+            holdout_percentage=holdout_percentage,
+        )
+        response = self._make_request(
+            "POST",
+            "/api/retrieval_experiments",
+            json=request.model_dump(mode="json"),
+        )
+        return RetrievalExperimentListResponse(**response)
+
+    def stop_retrieval_experiment(
+        self, experiment_id: str
+    ) -> RetrievalExperimentListResponse:
+        """Stop the active retrieval experiment while retaining its history."""
+        request = StopRetrievalExperimentRequest(experiment_id=experiment_id)
+        response = self._make_request(
+            "POST",
+            "/api/retrieval_experiments/stop",
+            json=request.model_dump(mode="json"),
+        )
+        return RetrievalExperimentListResponse(**response)
+
+    def get_retrieval_experiment_results(
+        self, experiment_id: str
+    ) -> RetrievalExperimentResultsResponse:
+        """Return session-success metrics grouped by the users' assigned arms."""
+        response = self._make_request(
+            "GET",
+            f"/api/retrieval_experiments/{experiment_id}/results",
+        )
+        return RetrievalExperimentResultsResponse(**response)
 
     def get_config(self) -> ConfigResponse:
         """Get configuration for the organization.

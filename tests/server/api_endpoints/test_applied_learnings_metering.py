@@ -17,6 +17,7 @@ from reflexio.models.api_schema.ui.entities import (
     ProfileView,
     UserPlaybookView,
 )
+from reflexio.models.config_schema import Config, StorageConfigSQLite
 from reflexio.server.api import create_app
 from reflexio.server.tracing import configure_tracer
 from reflexio.server.usage_metrics import UsageEvent, configure_usage_event_recorder
@@ -58,8 +59,8 @@ def _patch_unified_search(
     """Patch get_reflexio so the unified_search method returns a canned service response.
 
     The mock response carries properly-sized lists so the view converters succeed.
-    get_config() returns None so platform_llm_from_config(None) returns True without
-    iterating MagicMock values.
+    get_config() returns a concrete default config so experiment gating and
+    platform-LLM classification exercise their normal no-experiment path.
     """
     mock_reflexio = MagicMock()
     # Set up the service-level response (not the view response).
@@ -75,8 +76,9 @@ def _patch_unified_search(
     mock_response.agent_playbooks = agent_playbooks
     mock_response.user_playbooks = user_playbooks
     mock_reflexio.unified_search.return_value = mock_response
-    # Prevent platform_llm_from_config from iterating MagicMock.values()
-    mock_reflexio.request_context.configurator.get_config.return_value = None
+    mock_reflexio.request_context.configurator.get_config.return_value = Config(
+        storage_config=StorageConfigSQLite()
+    )
 
     with patch(
         "reflexio.server.cache.reflexio_cache.get_reflexio", return_value=mock_reflexio
@@ -259,10 +261,11 @@ def test_metering_failure_does_not_break_search_response() -> None:
         mock_response.agent_playbooks = []
         mock_response.user_playbooks = []
         mock_reflexio_search.unified_search.return_value = mock_response
-        # Make get_config raise so metering blows up after the search completes.
-        mock_reflexio_search.request_context.configurator.get_config.side_effect = (
-            RuntimeError("boom")
-        )
+        # Experiment gating reads config first; make the later metering read fail.
+        mock_reflexio_search.request_context.configurator.get_config.side_effect = [
+            Config(storage_config=StorageConfigSQLite()),
+            RuntimeError("boom"),
+        ]
 
         with patch(
             "reflexio.server.cache.reflexio_cache.get_reflexio",
@@ -293,8 +296,8 @@ def _patch_service_method(method_name: str, response_attr: str, items: list):
 
     The response carries ``items`` on ``response_attr`` (e.g. ``user_profiles``)
     so the endpoint's view conversion and surfaced_count computation run for real.
-    get_config() returns None so platform_llm_from_config(None) is True without
-    iterating a MagicMock.
+    get_config() returns a concrete default config so experiment gating and
+    platform-LLM classification exercise their normal no-experiment path.
     """
     mock_reflexio = MagicMock()
     mock_response = MagicMock()
@@ -302,7 +305,9 @@ def _patch_service_method(method_name: str, response_attr: str, items: list):
     mock_response.msg = "OK"
     setattr(mock_response, response_attr, items)
     getattr(mock_reflexio, method_name).return_value = mock_response
-    mock_reflexio.request_context.configurator.get_config.return_value = None
+    mock_reflexio.request_context.configurator.get_config.return_value = Config(
+        storage_config=StorageConfigSQLite()
+    )
 
     with patch(
         "reflexio.server.cache.reflexio_cache.get_reflexio", return_value=mock_reflexio

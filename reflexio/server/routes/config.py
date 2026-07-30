@@ -37,6 +37,33 @@ from reflexio.server.services.configurator.config_storage import (
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+_RETRIEVAL_EXPERIMENT_FIELDS = frozenset(
+    {"retrieval_experiment_config", "retrieval_experiment_history"}
+)
+
+
+def _reject_direct_experiment_mutation(
+    payload: dict[str, Any], existing: Config, *, preserve_missing: bool
+) -> dict[str, Any]:
+    """Keep generic config writes from bypassing experiment lifecycle checks."""
+    normalized = dict(payload)
+    existing_payload = existing.model_dump(mode="python")
+    for field_name in _RETRIEVAL_EXPERIMENT_FIELDS:
+        if field_name not in normalized and preserve_missing:
+            normalized[field_name] = existing_payload[field_name]
+            continue
+        if (
+            field_name in normalized
+            and normalized[field_name] != existing_payload[field_name]
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "Retrieval experiments must be changed through the "
+                    "/api/retrieval_experiments lifecycle endpoints"
+                ),
+            )
+    return normalized
 
 
 @router.get(
@@ -95,6 +122,9 @@ def set_config(
     # Create Reflexio instance to access the configurator through request_context
     reflexio = reflexio_cache.get_reflexio(org_id=org_id)
     configurator = reflexio.request_context.configurator
+    config = _reject_direct_experiment_mutation(
+        config, configurator.get_config(), preserve_missing=True
+    )
     try:
         normalized_config = configurator.normalize_config_payload(config)
         Config.model_validate(normalized_config)
@@ -170,6 +200,9 @@ def update_config(
     reflexio = reflexio_cache.get_reflexio(org_id=org_id)
     configurator = reflexio.request_context.configurator
     existing_config = configurator.get_config()
+    partial = _reject_direct_experiment_mutation(
+        partial, existing_config, preserve_missing=False
+    )
     existing = existing_config.model_dump(mode="python")
     # Convert ValidationError into 422 so callers passing a partial that
     # would replace a nested extractor object with an incomplete dict (e.g.

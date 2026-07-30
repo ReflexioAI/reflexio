@@ -68,6 +68,7 @@ Description: FastAPI backend server that processes user interactions to generate
 | `routes/profiles.py` | Profile retrieval, statistics, rerun/manual generation, upgrade/downgrade, update/delete lifecycle routes. |
 | `routes/playbooks.py` | User/agent playbook retrieval, aggregation, lifecycle, status/update/delete, and application stats routes. |
 | `routes/search.py` | Unified search and entity-specific search/rerank routes. |
+| `routes/experiments.py` | Single-active retrieval experiment lifecycle and user-clustered session outcome reporting. |
 | `routes/provenance.py` | Learning provenance and approval routes. |
 | `routes/evaluation.py` | Evaluation overview, regenerate jobs, grade-on-demand, shadow comparisons, pending tool calls, and stall-state routes. |
 | `routes/braintrust.py` | Braintrust connection/project/status/sync routes. |
@@ -89,6 +90,7 @@ Description: FastAPI backend server that processes user interactions to generate
 - **Publish/direct writes**: `POST /api/publish_interaction`, `POST /api/add_user_profile`, `POST /api/add_user_playbook`, `POST /api/add_agent_playbook`
 - **Retrieval**: `POST /api/get_requests`, `POST /api/get_interactions`, `GET /api/get_all_interactions`, `GET /api/learning_status`, `POST /api/get_profiles`, `GET /api/get_all_profiles`, `POST /api/get_user_playbooks`, `POST /api/get_agent_playbooks`, `POST /api/get_agent_success_evaluation_results`, `POST /api/get_retrieved_learning_evaluation_results`
 - **Search/stats**: `POST /api/search`, `POST /api/search_profiles`, `POST /api/rerank_user_profiles`, `POST /api/search_interactions`, `POST /api/search_user_playbooks`, `POST /api/search_agent_playbooks`, `GET /api/storage_stats`, `GET /api/get_profile_statistics`, `POST /api/get_dashboard_stats`, `POST /api/get_playbook_application_stats`
+- **Retrieval experiments**: `GET/POST /api/retrieval_experiments`, `POST /api/retrieval_experiments/stop`, `GET /api/retrieval_experiments/{experiment_id}/results`
 - **Profile lifecycle**: `POST /api/rerun_profile_generation`, `POST /api/manual_profile_generation`, `POST /api/upgrade_all_profiles`, `POST /api/downgrade_all_profiles`, `GET /api/profile_change_log`, `PUT /api/update_user_profile`, `DELETE /api/delete_profile`, `DELETE /api/delete_profiles_by_ids`, `DELETE /api/delete_all_profiles`
 - **Playbook lifecycle**: `POST /api/review_user_playbooks`, `POST /api/rerun_playbook_generation`, `POST /api/manual_playbook_generation`, `POST /api/run_playbook_aggregation`, `GET /api/playbook_aggregation_change_logs`, `POST /api/upgrade_all_user_playbooks`, `POST /api/downgrade_all_user_playbooks`, `PUT /api/update_agent_playbook_status`, `PUT /api/update_agent_playbook`, `PUT /api/update_user_playbook`, `DELETE /api/delete_agent_playbook`, `DELETE /api/delete_user_playbook`, `DELETE /api/delete_agent_playbooks_by_ids`, `DELETE /api/delete_user_playbooks_by_ids`, `DELETE /api/delete_all_playbooks`, `DELETE /api/delete_all_user_playbooks`, `DELETE /api/delete_all_agent_playbooks`
 - **Evaluation**: `POST /api/get_evaluation_overview`, `POST /api/evaluations/regenerate`, `GET /api/evaluations/regenerate/{job_id}`, `DELETE /api/evaluations/regenerate/{job_id}`, `POST /api/evaluations/grade_on_demand`, `GET /api/evaluations/shadow_comparisons/recent`
@@ -202,6 +204,7 @@ Access: `SiteVarManager().get_site_var(key)` for raw values, `feature_flags.is_f
 - **Durable learning queue**: `durable_learning/scheduler.py` and `durable_learning/worker.py` drain `learning_jobs` after deferred publishes and report coverage through `GET /api/learning_status`.
 - **Async clarification**: `extraction/` manages resumable agent runs, pending tool calls, and prior-answer search.
 - **Search preparation**: `pre_retrieval/` and `unified_search_service.py` handle query reformulation, document expansion, embeddings, and cross-entity search orchestration.
+- **Retrieval experiments**: `retrieval_experiment.py` owns deterministic organization/experiment/user assignment, publish-attribution validation, and session-outcome metrics with user-clustered confidence intervals. Search routes bypass retrieval for holdout but return assignment metadata; publish persists only the experiment ID and assigned arm.
 - **Optimization/integrations**: `playbook_optimizer/` and `braintrust/` run candidate playbook optimization, rollout support, and Braintrust export/sync.
 - **Lineage**: `lineage/` resolves active records across superseded chains and schedules tombstone garbage collection for profile/playbook storage.
 - **Governance**: `governance/` defines subject-reference contracts and retention/barrier policy helpers used by storage and lineage paths.

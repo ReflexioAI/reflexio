@@ -1,4 +1,5 @@
 from abc import abstractmethod
+from typing import Literal
 
 from reflexio.models.api_schema.domain import Request
 from reflexio.models.api_schema.internal_schema import (
@@ -133,6 +134,13 @@ class RequestMixin:
         Returns:
             list[Request]: List of Request objects in the session
         """
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_retrieval_experiment_assignments(
+        self, experiment_id: str
+    ) -> dict[tuple[str, str], Literal["treatment", "holdout"]]:
+        """Return the earliest published experiment arm for every tagged session."""
         raise NotImplementedError
 
     @abstractmethod

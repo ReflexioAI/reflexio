@@ -5,7 +5,7 @@ from typing import Literal, Self
 
 from pydantic import BaseModel, Field, model_validator
 
-from ..config_schema import SearchMode
+from ..config_schema import RetrievalExperimentRecord, SearchMode
 from ..structured_output import StrictStructuredOutput
 from .domain import CitationKind
 from .service_schemas import (
@@ -366,6 +366,9 @@ class SearchAgentPlaybookRequest(BaseModel):
 
     Args:
         query (str, optional): Query for semantic/text search
+        user_id (str, optional): User receiving the retrieved playbooks. This
+            does not filter agent playbooks; it is used for retrieval-experiment
+            assignment when an experiment is active.
         agent_version (str, optional): Filter by agent version
         playbook_name (str, optional): Filter by playbook name
         start_time (datetime, optional): Start time for created_at filter
@@ -383,6 +386,7 @@ class SearchAgentPlaybookRequest(BaseModel):
     """
 
     query: str | None = None
+    user_id: NonEmptyStr | None = None
     agent_version: str | None = None
     playbook_name: str | None = None
     start_time: datetime | None = None
@@ -736,6 +740,51 @@ class ReformulationResult(StrictStructuredOutput):
 
 
 UnifiedSearchEntityType = Literal["profiles", "user_playbooks", "agent_playbooks"]
+RetrievalExperimentArm = Literal["treatment", "holdout"]
+
+
+class RetrievalExperimentAssignment(BaseModel):
+    """Experiment attribution returned by learning-search endpoints."""
+
+    experiment_id: str
+    arm: RetrievalExperimentArm
+
+
+class StartRetrievalExperimentRequest(BaseModel):
+    experiment_id: NonEmptyStr = Field(max_length=128)
+    holdout_percentage: float = Field(gt=0, lt=100)
+
+
+class StopRetrievalExperimentRequest(BaseModel):
+    experiment_id: NonEmptyStr = Field(max_length=128)
+
+
+class RetrievalExperimentListResponse(BaseModel):
+    active_experiment: RetrievalExperimentRecord | None = None
+    experiments: list[RetrievalExperimentRecord] = Field(default_factory=list)
+
+
+class RetrievalExperimentArmMetrics(BaseModel):
+    arm: RetrievalExperimentArm
+    assigned_user_count: int = 0
+    published_session_count: int = 0
+    evaluated_user_count: int = 0
+    evaluated_session_count: int = 0
+    success_rate: float | None = None
+    average_corrections: float | None = None
+    average_turns_to_resolution: float | None = None
+    escalation_rate: float | None = None
+
+
+class RetrievalExperimentResultsResponse(BaseModel):
+    experiment: RetrievalExperimentRecord
+    treatment: RetrievalExperimentArmMetrics
+    holdout: RetrievalExperimentArmMetrics
+    success_rate_lift_percentage_points: float | None = None
+    relative_success_lift: float | None = None
+    confidence_interval_95_percentage_points: tuple[float, float] | None = None
+    evaluated_session_coverage: float | None = None
+    unattributed_evaluated_session_count: int = 0
 
 
 class UnifiedSearchRequest(BaseModel):
@@ -816,6 +865,7 @@ class UnifiedSearchResponse(BaseModel):
     rehydrated_text: str | None = None
     degraded: bool = False
     search_mode_effective: str | None = None
+    experiment: RetrievalExperimentAssignment | None = None
 
 
 # ===============================
@@ -853,6 +903,7 @@ class SearchProfilesViewResponse(BaseModel):
     success: bool
     user_profiles: list[ProfileView]
     msg: str | None = None
+    experiment: RetrievalExperimentAssignment | None = None
 
 
 class GetEvaluationResultsViewResponse(BaseModel):
@@ -904,6 +955,7 @@ class UnifiedSearchViewResponse(BaseModel):
     msg: str | None = None
     agent_trace: str | None = None
     rehydrated_text: str | None = None
+    experiment: RetrievalExperimentAssignment | None = None
 
 
 class GetUserPlaybooksViewResponse(BaseModel):
@@ -928,6 +980,7 @@ class SearchUserPlaybooksViewResponse(BaseModel):
     success: bool
     user_playbooks: list[UserPlaybookView]
     msg: str | None = None
+    experiment: RetrievalExperimentAssignment | None = None
 
 
 class SearchAgentPlaybooksViewResponse(BaseModel):
@@ -936,3 +989,4 @@ class SearchAgentPlaybooksViewResponse(BaseModel):
     success: bool
     agent_playbooks: list[AgentPlaybookView]
     msg: str | None = None
+    experiment: RetrievalExperimentAssignment | None = None

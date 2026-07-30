@@ -11,11 +11,14 @@ from fastapi import (
     APIRouter,
     BackgroundTasks,
     Depends,
+    HTTPException,
     Request,
+    status,
 )
 
 from reflexio.models.api_schema.retriever_schema import (
     RerankUserProfilesRequest,
+    RetrievalExperimentAssignment,
     SearchAgentPlaybookRequest,
     SearchAgentPlaybooksViewResponse,
     SearchInteractionRequest,
@@ -46,10 +49,35 @@ from reflexio.server.routes._metering import (
     _meter_search_request,
     _stamp_search_dependencies_done,
 )
+from reflexio.server.services.retrieval_experiment import (
+    active_retrieval_experiment_assignment,
+)
 from reflexio.server.tracing import profile_step
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def _retrieval_experiment_assignment(
+    *, org_id: str, caller_type: str, user_id: str | None
+) -> RetrievalExperimentAssignment | None:
+    """Resolve agent traffic assignment while leaving dashboard inspection untouched."""
+    if caller_type == "dashboard":
+        return None
+    reflexio = reflexio_cache.get_reflexio(org_id=org_id)
+    config = reflexio.request_context.configurator.get_config()
+    if config.retrieval_experiment_config is None:
+        return None
+    if user_id is None or not user_id.strip():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="user_id is required while a retrieval experiment is active",
+        )
+    return active_retrieval_experiment_assignment(
+        config=config,
+        org_id=org_id,
+        user_id=user_id,
+    )
 
 
 @router.post(
@@ -65,18 +93,30 @@ def search_user_profiles(
     caller_type: str = Depends(default_get_caller_type),
     _gate: None = Depends(default_billing_gate("application")),  # noqa: B008
 ) -> SearchProfilesViewResponse:
-    response = _run_limited_api(
-        org_id,
-        "search",
-        lambda: reflexio_cache.get_reflexio(org_id=org_id).search_user_profiles(
-            payload
-        ),
+    assignment = _retrieval_experiment_assignment(
+        org_id=org_id, caller_type=caller_type, user_id=payload.user_id
     )
-    resp = SearchProfilesViewResponse(
-        success=response.success,
-        user_profiles=[to_profile_view(p) for p in response.user_profiles],
-        msg=response.msg,
-    )
+    if assignment is not None and assignment.arm == "holdout":
+        resp = SearchProfilesViewResponse(
+            success=True,
+            user_profiles=[],
+            msg="Retrieval withheld by experiment assignment",
+            experiment=assignment,
+        )
+    else:
+        response = _run_limited_api(
+            org_id,
+            "search",
+            lambda: reflexio_cache.get_reflexio(org_id=org_id).search_user_profiles(
+                payload
+            ),
+        )
+        resp = SearchProfilesViewResponse(
+            success=response.success,
+            user_profiles=[to_profile_view(p) for p in response.user_profiles],
+            msg=response.msg,
+            experiment=assignment,
+        )
     _meter_search_request(
         org_id=org_id,
         caller_type=caller_type,
@@ -178,18 +218,32 @@ def search_user_playbooks_endpoint(
     Returns:
         SearchUserPlaybooksViewResponse: Response containing matching user playbooks
     """
-    response = _run_limited_api(
-        org_id,
-        "search",
-        lambda: reflexio_cache.get_reflexio(org_id=org_id).search_user_playbooks(
-            payload
-        ),
+    assignment = _retrieval_experiment_assignment(
+        org_id=org_id, caller_type=caller_type, user_id=payload.user_id
     )
-    resp = SearchUserPlaybooksViewResponse(
-        success=response.success,
-        user_playbooks=[to_user_playbook_view(rf) for rf in response.user_playbooks],
-        msg=response.msg,
-    )
+    if assignment is not None and assignment.arm == "holdout":
+        resp = SearchUserPlaybooksViewResponse(
+            success=True,
+            user_playbooks=[],
+            msg="Retrieval withheld by experiment assignment",
+            experiment=assignment,
+        )
+    else:
+        response = _run_limited_api(
+            org_id,
+            "search",
+            lambda: reflexio_cache.get_reflexio(org_id=org_id).search_user_playbooks(
+                payload
+            ),
+        )
+        resp = SearchUserPlaybooksViewResponse(
+            success=response.success,
+            user_playbooks=[
+                to_user_playbook_view(rf) for rf in response.user_playbooks
+            ],
+            msg=response.msg,
+            experiment=assignment,
+        )
     _meter_search_request(
         org_id=org_id,
         caller_type=caller_type,
@@ -233,18 +287,32 @@ def search_agent_playbooks_endpoint(
     Returns:
         SearchAgentPlaybooksViewResponse: Response containing matching agent playbooks
     """
-    response = _run_limited_api(
-        org_id,
-        "search",
-        lambda: reflexio_cache.get_reflexio(org_id=org_id).search_agent_playbooks(
-            payload
-        ),
+    assignment = _retrieval_experiment_assignment(
+        org_id=org_id, caller_type=caller_type, user_id=payload.user_id
     )
-    resp = SearchAgentPlaybooksViewResponse(
-        success=response.success,
-        agent_playbooks=[to_agent_playbook_view(fb) for fb in response.agent_playbooks],
-        msg=response.msg,
-    )
+    if assignment is not None and assignment.arm == "holdout":
+        resp = SearchAgentPlaybooksViewResponse(
+            success=True,
+            agent_playbooks=[],
+            msg="Retrieval withheld by experiment assignment",
+            experiment=assignment,
+        )
+    else:
+        response = _run_limited_api(
+            org_id,
+            "search",
+            lambda: reflexio_cache.get_reflexio(org_id=org_id).search_agent_playbooks(
+                payload
+            ),
+        )
+        resp = SearchAgentPlaybooksViewResponse(
+            success=response.success,
+            agent_playbooks=[
+                to_agent_playbook_view(fb) for fb in response.agent_playbooks
+            ],
+            msg=response.msg,
+            experiment=assignment,
+        )
     _meter_search_request(
         org_id=org_id,
         caller_type=caller_type,
@@ -291,6 +359,27 @@ def unified_search_endpoint(
     Returns:
         UnifiedSearchViewResponse: Combined search results
     """
+    assignment = _retrieval_experiment_assignment(
+        org_id=org_id, caller_type=caller_type, user_id=payload.user_id
+    )
+    if assignment is not None and assignment.arm == "holdout":
+        resp = UnifiedSearchViewResponse(
+            success=True,
+            profiles=[],
+            agent_playbooks=[],
+            user_playbooks=[],
+            msg="Retrieval withheld by experiment assignment",
+            experiment=assignment,
+        )
+        background_tasks.add_task(
+            _meter_search_request,
+            org_id=org_id,
+            caller_type=caller_type,
+            request_id=payload.request_id,
+            session_id=payload.session_id,
+        )
+        return resp
+
     deps_done = getattr(request.state, "search_deps_done_monotonic", None)
     deps_to_body_ms = (
         int((time.monotonic() - deps_done) * 1000) if deps_done is not None else None
@@ -328,6 +417,7 @@ def unified_search_endpoint(
                 msg=response.msg,
                 agent_trace=response.agent_trace,
                 rehydrated_text=response.rehydrated_text,
+                experiment=assignment,
             )
         background_tasks.add_task(
             _meter_search_request,

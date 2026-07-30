@@ -57,6 +57,7 @@ from reflexio.server.routes import (
     braintrust,
     config,
     evaluation,
+    experiments,
     interactions,
     playbooks,
     profiles,
@@ -123,6 +124,7 @@ for _domain_router in (
     search.router,
     provenance.router,
     evaluation.router,
+    experiments.router,
     braintrust.router,
     config.router,
 ):
