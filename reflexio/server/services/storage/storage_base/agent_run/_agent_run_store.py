@@ -1,8 +1,8 @@
 """Backend-neutral AgentRunStore contract (the AgentRunStore bucket).
 
-Extracted verbatim from ``_agent_run.py`` (the AgentRunStore bucket): the seven
-agent-run lifecycle methods. The residual ``AgentRunMixin`` composite stays
-composed alongside this class and holds the remaining pending-tool-call /
+Extracted from ``_agent_run.py`` (the AgentRunStore bucket): the agent-run
+lifecycle and provenance lookup methods. The residual ``AgentRunMixin``
+composite stays composed alongside this class and holds the remaining pending-tool-call /
 run-tool-dependency stubs plus the shared ``build_scope_hash`` /
 ``human_feedback_scope`` / ``build_pending_tool_call_dedup_key`` staticmethods.
 """
@@ -22,6 +22,17 @@ class AgentRunStoreABC:
         raise NotImplementedError(f"{type(self).__name__} does not support agent runs")
 
     def get_agent_run(self, run_id: str) -> AgentRunRecord | None:
+        raise NotImplementedError(f"{type(self).__name__} does not support agent runs")
+
+    def get_latest_finalized_agent_run_for_request(
+        self,
+        *,
+        org_id: str,
+        extractor_kind: str,
+        user_id: str | None,
+        request_id: str,
+    ) -> AgentRunRecord | None:
+        """Return the newest finalized extraction run for one logical request."""
         raise NotImplementedError(f"{type(self).__name__} does not support agent runs")
 
     def update_agent_run_status(

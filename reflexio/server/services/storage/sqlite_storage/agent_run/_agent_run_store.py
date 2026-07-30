@@ -1,7 +1,7 @@
 """SQLite AgentRunStore methods (the AgentRunStore bucket).
 
-Extracted verbatim from ``_agent_run.py`` (the AgentRunStore bucket): the seven
-agent-run lifecycle methods plus the three ``_..._unlocked`` run-cascade
+Extracted from ``_agent_run.py`` (the AgentRunStore bucket): the agent-run
+lifecycle and provenance lookup methods plus the three ``_..._unlocked`` run-cascade
 privates. The privates are consumed cross-bucket by the pending-tool-call
 methods (``cancel``/``expire``/``update_resolved``/``mark_not_applicable``) in
 ``SQLitePendingToolCallStoreMixin``, which reach them via MRO co-composition —
@@ -211,6 +211,38 @@ class SQLiteAgentRunStoreMixin:
     @SQLiteStorageBase.handle_exceptions
     def get_agent_run(self, run_id: str) -> AgentRunRecord | None:
         row = self._fetchone("SELECT * FROM _agent_runs WHERE id = ?", (run_id,))
+        return _row_to_agent_run(row) if row else None
+
+    @SQLiteStorageBase.handle_exceptions
+    def get_latest_finalized_agent_run_for_request(
+        self,
+        *,
+        org_id: str,
+        extractor_kind: str,
+        user_id: str | None,
+        request_id: str,
+    ) -> AgentRunRecord | None:
+        row = self._fetchone(
+            """
+            SELECT *
+            FROM _agent_runs
+            WHERE org_id = ?
+              AND extractor_kind = ?
+              AND user_id IS ?
+              AND request_id = ?
+              AND status IN (?, ?)
+            ORDER BY created_at DESC, updated_at DESC, id DESC
+            LIMIT 1
+            """,
+            (
+                org_id,
+                extractor_kind,
+                user_id,
+                request_id,
+                AgentRunStatus.FINALIZED.value,
+                AgentRunStatus.FINALIZED_PENDING_TOOL.value,
+            ),
+        )
         return _row_to_agent_run(row) if row else None
 
     @SQLiteStorageBase.handle_exceptions

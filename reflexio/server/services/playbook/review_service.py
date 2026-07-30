@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from reflexio.models.api_schema.domain.entities import (
+    Interaction,
     LineageContext,
     ReviewUserPlaybookEdit,
     ReviewUserPlaybookResult,
@@ -20,14 +21,12 @@ from reflexio.models.api_schema.domain.entities import (
 from reflexio.models.api_schema.internal_schema import RequestInteractionDataModel
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm.litellm_client import LiteLLMClient
-from reflexio.server.services.extractor_interaction_utils import (
-    get_extractor_window_params,
-)
 from reflexio.server.services.playbook.components.consolidator import (
     PlaybookConsolidator,
 )
 from reflexio.server.services.playbook.components.reviewer import (
     CandidateReviewDecision,
+    PlaybookCandidateEvidenceError,
     PlaybookCandidateReviewer,
 )
 from reflexio.server.services.playbook.playbook_edit_apply import apply_playbook_edit
@@ -55,7 +54,7 @@ class _PlaybookReviewRaceError(RuntimeError):
 
 
 class _PlaybookNotReviewableError(ValueError):
-    """A selected row's cited evidence can no longer be reconstructed."""
+    """A selected row's generation window or cited evidence is unavailable."""
 
 
 @dataclass
@@ -82,39 +81,98 @@ class UserPlaybookReviewService:
 
     def _review_window(
         self,
-        playbooks: list[UserPlaybook],
-        *,
-        window_size: int,
+        playbook: UserPlaybook,
     ) -> list[RequestInteractionDataModel]:
-        first = playbooks[0]
-        if not first.user_id:
+        if not playbook.user_id:
             raise _PlaybookNotReviewableError(
-                f"User playbook {first.user_playbook_id} has no owning user_id"
+                f"User playbook {playbook.user_playbook_id} has no owning user_id"
             )
-        source_filter = [first.source] if first.source else None
-        window, _ = self.storage.get_last_k_interactions_grouped(
-            user_id=first.user_id,
-            k=window_size,
-            sources=source_filter,
-            end_time=max(playbook.created_at for playbook in playbooks),
+        if not is_evidence_validated(playbook):
+            raise _PlaybookNotReviewableError(
+                f"User playbook {playbook.user_playbook_id} lacks validated evidence"
+            )
+
+        generation_run = self.storage.get_latest_finalized_agent_run_for_request(
+            org_id=self.request_context.org_id,
+            extractor_kind="playbook",
+            user_id=playbook.user_id,
+            request_id=playbook.request_id,
         )
-        window_interaction_ids = {
-            interaction.interaction_id
-            for request_model in window
-            for interaction in request_model.interactions
+        if generation_run is None or not generation_run.binding.source_interaction_ids:
+            raise _PlaybookNotReviewableError(
+                f"User playbook {playbook.user_playbook_id} has no complete "
+                "generation-window provenance"
+            )
+
+        # The extraction run records the complete prompt window. The playbook row
+        # stores only the evidence cited by that candidate and may also retain
+        # cited IDs from older rows consumed by consolidation. Review needs both:
+        # full original chronology plus every persisted evidence unit.
+        source_ids = list(
+            dict.fromkeys(
+                [
+                    *generation_run.binding.source_interaction_ids,
+                    *playbook.source_interaction_ids,
+                ]
+            )
+        )
+        interactions_by_id = {
+            interaction.interaction_id: interaction
+            for interaction in self.storage.get_interactions_by_ids(source_ids)
         }
-        for playbook in playbooks:
-            if not is_evidence_validated(playbook):
+        missing_interaction_ids = [
+            interaction_id
+            for interaction_id in source_ids
+            if interaction_id not in interactions_by_id
+        ]
+        if missing_interaction_ids:
+            raise _PlaybookNotReviewableError(
+                f"User playbook {playbook.user_playbook_id} is missing persisted "
+                f"generation-window interactions: {missing_interaction_ids}"
+            )
+
+        interactions_by_request: dict[str, list[Interaction]] = {}
+        for interaction in interactions_by_id.values():
+            if interaction.user_id != playbook.user_id:
                 raise _PlaybookNotReviewableError(
-                    f"User playbook {playbook.user_playbook_id} lacks validated evidence"
+                    f"User playbook {playbook.user_playbook_id} has source interaction "
+                    f"{interaction.interaction_id} owned by another user"
                 )
-            missing = set(playbook.source_interaction_ids) - window_interaction_ids
-            if missing:
+            interactions_by_request.setdefault(interaction.request_id, []).append(
+                interaction
+            )
+
+        review_window: list[RequestInteractionDataModel] = []
+        for request_id, interactions in interactions_by_request.items():
+            request = self.storage.get_request(request_id)
+            if request is None:
                 raise _PlaybookNotReviewableError(
-                    f"User playbook {playbook.user_playbook_id} review window is "
-                    f"missing source interactions: {sorted(missing)}"
+                    f"User playbook {playbook.user_playbook_id} is missing persisted "
+                    f"source request {request_id}"
                 )
-        return window
+            if request.user_id != playbook.user_id:
+                raise _PlaybookNotReviewableError(
+                    f"User playbook {playbook.user_playbook_id} has source request "
+                    f"{request_id} owned by another user"
+                )
+            review_window.append(
+                RequestInteractionDataModel(
+                    session_id=request.session_id,
+                    request=request,
+                    interactions=sorted(
+                        interactions,
+                        key=lambda item: (item.created_at, item.interaction_id),
+                    ),
+                )
+            )
+
+        review_window.sort(
+            key=lambda group: (
+                group.interactions[0].created_at,
+                group.interactions[0].interaction_id,
+            )
+        )
+        return review_window
 
     def _existing_playbooks(
         self,
@@ -187,11 +245,6 @@ class UserPlaybookReviewService:
         playbook_config = root_config.user_playbook_extractor_config
         if playbook_config is None:
             raise ValueError("User playbook extraction is not configured")
-        window_size, _ = get_extractor_window_params(
-            playbook_config,
-            root_config.window_size,
-            root_config.stride_size,
-        )
         reviewer = PlaybookCandidateReviewer(
             request_context=self.request_context,
             llm_client=self.client,
@@ -214,7 +267,7 @@ class UserPlaybookReviewService:
         for playbook in selected:
             candidates = [playbook]
             try:
-                window = self._review_window(candidates, window_size=window_size)
+                window = self._review_window(playbook)
             except _PlaybookNotReviewableError as exc:
                 # Selection is "newest current rows in a window", which cannot
                 # know whether a row is still reviewable. One unreviewable row
@@ -226,20 +279,30 @@ class UserPlaybookReviewService:
                 )
                 yield self._skipped_result(playbook, exc)
                 continue
-            outcome = reviewer.decide(
-                candidates=candidates,
-                request_interaction_data_models=window,
-                existing_playbooks=self._existing_playbooks(
-                    consolidator,
-                    candidates,
-                    simulated_archived_ids,
-                ),
-                agent_context=self.request_context.configurator.get_agent_context(),
-                playbook_definition=(
-                    playbook_config.extraction_definition_prompt or ""
-                ).strip(),
-                tool_context=tool_context,
-            )
+            try:
+                outcome = reviewer.decide(
+                    candidates=candidates,
+                    request_interaction_data_models=window,
+                    existing_playbooks=self._existing_playbooks(
+                        consolidator,
+                        candidates,
+                        simulated_archived_ids,
+                    ),
+                    agent_context=self.request_context.configurator.get_agent_context(),
+                    playbook_definition=(
+                        playbook_config.extraction_definition_prompt or ""
+                    ).strip(),
+                    tool_context=tool_context,
+                )
+            except PlaybookCandidateEvidenceError as exc:
+                unavailable = _PlaybookNotReviewableError(str(exc))
+                logger.info(
+                    "event=playbook_review_skipped user_playbook_id=%d reason=%s",
+                    playbook.user_playbook_id,
+                    unavailable,
+                )
+                yield self._skipped_result(playbook, unavailable)
+                continue
             survivors = reviewer.apply_decisions(
                 candidates=candidates,
                 outcome=outcome,
@@ -261,7 +324,6 @@ class UserPlaybookReviewService:
     def _successor(
         reviewed: _ReviewedPlaybook,
         *,
-        run_id: str,
         created_at: int,
     ) -> UserPlaybook:
         if reviewed.survivor is None:
@@ -269,9 +331,11 @@ class UserPlaybookReviewService:
         return reviewed.survivor.model_copy(
             update={
                 "user_playbook_id": 0,
-                # Not a real ``requests`` row: an operation-run correlation id,
-                # matching the convention ``apply_playbook_edit`` documents.
-                "request_id": run_id,
+                # Preserve the extraction request that owns the full historical
+                # window. The review run remains attributable through the revise
+                # lineage event below; replacing this with ``run_id`` would make
+                # the successor impossible to review again from full provenance.
+                "request_id": reviewed.original.request_id,
                 "created_at": created_at,
                 # CURRENT, not PENDING: retrieval reads user playbooks with
                 # ``status_filter=[None]``, so a PENDING replacement would take
@@ -287,9 +351,7 @@ class UserPlaybookReviewService:
         )
 
     def _apply_edit(self, reviewed: _ReviewedPlaybook, *, run_id: str) -> None:
-        successor = self._successor(
-            reviewed, run_id=run_id, created_at=int(time.time())
-        )
+        successor = self._successor(reviewed, created_at=int(time.time()))
         # All fallible model/embedding work happens before the transaction opens
         # (``apply_playbook_edit`` is called with ``skip_embedding=True``), so a
         # later playbook never rolls this decision back.

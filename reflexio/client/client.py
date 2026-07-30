@@ -1630,7 +1630,11 @@ class ReflexioClient:
         """Re-review current user playbooks created within a bounded window.
 
         The default ``report_only=True`` runs inline and returns one decision per
-        selected playbook.
+        selected playbook. Each playbook is reviewed from its full finalized
+        extraction-run window plus any cited consolidation evidence, independent
+        of the current extractor window size or source filter. Rows with missing
+        or invalid persisted provenance are skipped. Only cited interactions are
+        reviewer evidence; other run-window interactions provide chronology.
 
         With ``report_only=False`` the server accepts the run and applies it in
         the background, so the response carries only ``run_id`` — not

@@ -97,6 +97,56 @@ def test_sqlite_agent_run_crud_round_trip(storage):
     assert loaded.generation_request_snapshot == {"request_id": "request_1"}
 
 
+def test_sqlite_get_latest_finalized_agent_run_for_request_filters_binding(storage):
+    matching = replace(
+        _agent_run("run_matching", AgentRunStatus.FINALIZED),
+        binding=replace(
+            _agent_run("unused", AgentRunStatus.FINALIZED).binding,
+            extractor_kind="playbook",
+            source_interaction_ids=[10, 11, 12],
+        ),
+    )
+    storage.create_agent_run(matching)
+    storage.create_agent_run(
+        replace(
+            matching,
+            id="run_wrong_kind",
+            binding=replace(matching.binding, extractor_kind="profile"),
+        )
+    )
+    storage.create_agent_run(
+        replace(
+            matching,
+            id="run_not_finalized",
+            status=AgentRunStatus.RUNNING,
+            binding=replace(
+                matching.binding,
+                source_interaction_ids=[99],
+            ),
+        )
+    )
+
+    loaded = storage.get_latest_finalized_agent_run_for_request(
+        org_id="org_1",
+        extractor_kind="playbook",
+        user_id="user_1",
+        request_id="request_1",
+    )
+
+    assert loaded is not None
+    assert loaded.id == "run_matching"
+    assert loaded.binding.source_interaction_ids == [10, 11, 12]
+    assert (
+        storage.get_latest_finalized_agent_run_for_request(
+            org_id="org_1",
+            extractor_kind="playbook",
+            user_id="another-user",
+            request_id="request_1",
+        )
+        is None
+    )
+
+
 def test_sqlite_update_agent_run_status_records_lifecycle_timestamps(storage):
     storage.create_agent_run(_agent_run("run_1", AgentRunStatus.RUNNING))
 

@@ -1737,9 +1737,10 @@ class ReviewUserPlaybookEdit(BaseModel):
 class ReviewUserPlaybookResult(BaseModel):
     """One persisted user playbook's re-review outcome.
 
-    ``skip`` means the row could not be reviewed at all (its cited evidence is
-    no longer reconstructable), not that the reviewer chose to leave it alone —
-    that is ``accept``. A skipped row is never written to.
+    ``skip`` means the row could not be reviewed at all because its finalized
+    generation-window or cited-evidence provenance is absent, missing, or
+    invalid, not that the reviewer chose to leave it alone — that is ``accept``.
+    A skipped row is never written to.
     """
 
     user_playbook_id: int = Field(gt=0)

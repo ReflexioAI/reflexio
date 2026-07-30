@@ -25,6 +25,7 @@ REQUEST_TIMEOUT_SECONDS = 60
 SYNC_REQUEST_TIMEOUT_SECONDS = (
     600  # Longer timeout for synchronous processing (wait_for_response=true)
 )
+SYNC_REQUEST_PATHS = frozenset({"/api/review_user_playbooks"})
 SUSPICIOUS_USER_AGENTS = ["bot", "crawler", "spider", "scraper", "curl", "wget"]
 ALLOWED_EMPTY_UA_PATHS = ["/health", "/"]  # Paths that allow empty user agents
 DEFAULT_MAX_BODY_BYTES = 10 * 1024 * 1024
@@ -128,7 +129,10 @@ class TimeoutMiddleware(BaseHTTPMiddleware):
 
         # Use longer timeout for synchronous processing requests
         timeout = REQUEST_TIMEOUT_SECONDS
-        if request.query_params.get("wait_for_response", "").lower() == "true":
+        if (
+            request.url.path in SYNC_REQUEST_PATHS
+            or request.query_params.get("wait_for_response", "").lower() == "true"
+        ):
             timeout = SYNC_REQUEST_TIMEOUT_SECONDS
 
         try:

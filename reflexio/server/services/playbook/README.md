@@ -66,8 +66,19 @@ do not use this reviewer.
 ### Persisted Review (`review_service.py`)
 
 `POST /api/review_user_playbooks` selects the newest current user playbooks in
-an inclusive creation-time window, capped by `top_k`. A row whose cited evidence
-can no longer be reconstructed yields a `skip` decision and the run continues.
+an inclusive creation-time window, capped by `top_k`. A row whose original
+generation window or cited evidence can no longer be reconstructed yields a
+`skip` decision and the run continues.
+
+Manual review reconstructs context from the full interaction window persisted on
+the row's finalized playbook-extraction run, plus any extra cited interactions
+retained through consolidation. It never substitutes the current extractor
+window or silently falls back to the smaller cited-evidence subset. Automatic
+post-generation review continues to use the generation call's configured window.
+Only the playbook row's cited interaction IDs become candidate evidence units;
+the rest of the generation window is ancillary chronology. Evidence spans are
+rebuilt from those exact stored interactions instead of requiring every cited
+span to remain duplicated in the row's bounded combined `source_span`.
 
 Report mode runs inline and returns `accept`, `edit`, `reject`, and `skip`
 decisions without writes. Apply mode runs in the **background** (one LLM call

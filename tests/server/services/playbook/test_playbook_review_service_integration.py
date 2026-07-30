@@ -14,11 +14,17 @@ from reflexio.server.services.playbook.components.reviewer import (
     CandidateEvidenceUnit,
     CandidateReviewDecision,
     CandidateRevision,
+    PlaybookCandidateEvidenceError,
     PlaybookCandidateReviewOutput,
     PlaybookReviewOutcome,
 )
 from reflexio.server.services.playbook.review_service import UserPlaybookReviewService
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
+from reflexio.server.services.storage.storage_base import (
+    AgentBinding,
+    AgentRunRecord,
+    AgentRunStatus,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -34,7 +40,14 @@ def _storage(tmp_path) -> SQLiteStorage:
     return storage
 
 
-def _seed_source_interactions(storage: SQLiteStorage, count: int) -> None:
+def _seed_source_interactions(
+    storage: SQLiteStorage,
+    count: int,
+    *,
+    sources: tuple[str, ...] = ("test",),
+    generation_request_ids: tuple[str, ...] = ("generation-request",),
+    generation_source_interaction_ids: tuple[int, ...] | None = None,
+) -> None:
     for index in range(1, count + 1):
         request_id = f"source-request-{index}"
         storage.add_request(
@@ -42,7 +55,7 @@ def _seed_source_interactions(storage: SQLiteStorage, count: int) -> None:
                 request_id=request_id,
                 user_id="user-1",
                 created_at=100 + index,
-                source="test",
+                source=sources[(index - 1) % len(sources)],
                 agent_version="1.0",
                 session_id="session-1",
             )
@@ -63,6 +76,29 @@ def _seed_source_interactions(storage: SQLiteStorage, count: int) -> None:
                 )
             ],
             embeddings_prepared=True,
+        )
+    source_ids = list(generation_source_interaction_ids or range(1, count + 1))
+    for request_id in generation_request_ids:
+        storage.create_agent_run(
+            AgentRunRecord(
+                id=f"run-{request_id}",
+                binding=AgentBinding(
+                    org_id=storage.org_id,
+                    extractor_kind="playbook",
+                    user_id="user-1",
+                    request_id=request_id,
+                    agent_version="1.0",
+                    source="test",
+                    source_interaction_ids=source_ids,
+                    window_start_interaction_id=min(source_ids),
+                    window_end_interaction_id=max(source_ids),
+                ),
+                status=AgentRunStatus.FINALIZED,
+                generation_request_snapshot={
+                    "request_id": request_id,
+                    "source_interaction_ids": source_ids,
+                },
+            )
         )
 
 
@@ -240,6 +276,222 @@ def test_report_mode_respects_window_and_top_k_without_writes(tmp_path) -> None:
     assert storage.get_user_playbooks(status_filter=[Status.PENDING]) == []
 
 
+def test_manual_review_reconstructs_full_generation_window_across_sources(
+    tmp_path,
+) -> None:
+    storage = _storage(tmp_path)
+    _seed_source_interactions(storage, 12, sources=("chat", "api"))
+    row = _playbook(1, created_at=200).model_copy(
+        update={
+            "source": "generation-service",
+            # Candidate evidence is intentionally much smaller than the original
+            # extraction window recorded on the durable agent run.
+            "source_interaction_ids": [1],
+        }
+    )
+    storage.save_user_playbooks([row])
+    storage.get_last_k_interactions_grouped = Mock(  # type: ignore[method-assign]
+        side_effect=AssertionError("manual review must not reconstruct a last-k window")
+    )
+    reviewed_sources: set[str] = set()
+    reviewed_interaction_ids: list[int] = []
+
+    def decide(*args, **kwargs) -> PlaybookReviewOutcome:
+        for group in kwargs["request_interaction_data_models"]:
+            reviewed_sources.add(group.request.source)
+            reviewed_interaction_ids.extend(
+                interaction.interaction_id for interaction in group.interactions
+            )
+        return _accept_output(1)
+
+    enabled, _, existing = _patch_review_dependencies([])
+    with (
+        enabled,
+        patch(
+            "reflexio.server.services.playbook.review_service."
+            "PlaybookCandidateReviewer.decide",
+            side_effect=decide,
+        ),
+        existing,
+    ):
+        response = _service(storage).run(_request(report_only=True))
+
+    assert response.success is True
+    assert response.skipped_count == 0
+    assert [result.decision for result in response.results] == ["accept"]
+    assert reviewed_sources == {"chat", "api"}
+    assert reviewed_interaction_ids == list(range(1, 13))
+
+
+def test_manual_review_adds_consolidated_citations_to_generation_window(
+    tmp_path,
+) -> None:
+    storage = _storage(tmp_path)
+    _seed_source_interactions(
+        storage,
+        3,
+        generation_source_interaction_ids=(1, 2),
+    )
+    row = _playbook(3, created_at=200).model_copy(
+        update={"source_interaction_ids": [3]}
+    )
+    storage.save_user_playbooks([row])
+    reviewed_interaction_ids: list[int] = []
+
+    def decide(*args, **kwargs) -> PlaybookReviewOutcome:
+        reviewed_interaction_ids.extend(
+            interaction.interaction_id
+            for group in kwargs["request_interaction_data_models"]
+            for interaction in group.interactions
+        )
+        return _accept_output(3)
+
+    enabled, _, existing = _patch_review_dependencies([])
+    with (
+        enabled,
+        patch(
+            "reflexio.server.services.playbook.review_service."
+            "PlaybookCandidateReviewer.decide",
+            side_effect=decide,
+        ),
+        existing,
+    ):
+        response = _service(storage).run(_request(report_only=True))
+
+    assert response.success is True
+    assert response.skipped_count == 0
+    assert reviewed_interaction_ids == [1, 2, 3]
+
+
+def test_manual_review_skips_without_generation_window_provenance(tmp_path) -> None:
+    storage = _storage(tmp_path)
+    _seed_source_interactions(storage, 1)
+    storage.conn.execute("DELETE FROM _agent_runs")
+    storage.conn.commit()
+    row = _playbook(1, created_at=200)
+    storage.save_user_playbooks([row])
+    enabled, decide, existing = _patch_review_dependencies([])
+
+    with enabled, decide as decide_mock, existing:
+        response = _service(storage).run(_request(report_only=True))
+
+    assert response.success is True
+    assert response.skipped_count == 1
+    assert response.results[0].reason_code == "evidence_unavailable"
+    assert "no complete generation-window provenance" in (
+        response.results[0].reason or ""
+    )
+    decide_mock.assert_not_called()
+
+
+def test_manual_review_skips_only_when_exact_source_interaction_is_gone(
+    tmp_path,
+) -> None:
+    storage = _storage(tmp_path)
+    _seed_source_interactions(storage, 1)
+    row = _playbook(1, created_at=200)
+    storage.save_user_playbooks([row])
+    storage.delete_request("source-request-1")
+    enabled, decide, existing = _patch_review_dependencies([])
+
+    with enabled, decide as decide_mock, existing:
+        response = _service(storage).run(_request(report_only=True))
+
+    assert response.success is True
+    assert response.skipped_count == 1
+    assert response.results[0].decision == "skip"
+    assert response.results[0].reason_code == "evidence_unavailable"
+    assert "missing persisted generation-window interactions: [1]" in (
+        response.results[0].reason or ""
+    )
+    decide_mock.assert_not_called()
+
+
+def test_manual_review_skips_when_source_request_is_gone(tmp_path) -> None:
+    storage = _storage(tmp_path)
+    _seed_source_interactions(storage, 1)
+    row = _playbook(1, created_at=200)
+    storage.save_user_playbooks([row])
+    storage.get_request = Mock(return_value=None)  # type: ignore[method-assign]
+    enabled, decide, existing = _patch_review_dependencies([])
+
+    with enabled, decide as decide_mock, existing:
+        response = _service(storage).run(_request(report_only=True))
+
+    assert response.success is True
+    assert response.skipped_count == 1
+    assert response.results[0].decision == "skip"
+    assert response.results[0].reason_code == "evidence_unavailable"
+    assert "missing persisted source request source-request-1" in (
+        response.results[0].reason or ""
+    )
+    decide_mock.assert_not_called()
+
+
+@pytest.mark.parametrize("mismatched_record", ["interaction", "request"])
+def test_manual_review_skips_cross_user_provenance(
+    tmp_path,
+    mismatched_record: str,
+) -> None:
+    storage = _storage(tmp_path)
+    _seed_source_interactions(storage, 1)
+    row = _playbook(1, created_at=200)
+    storage.save_user_playbooks([row])
+    if mismatched_record == "interaction":
+        interaction = storage.get_interactions_by_ids([1])[0]
+        storage.get_interactions_by_ids = Mock(  # type: ignore[method-assign]
+            return_value=[interaction.model_copy(update={"user_id": "other-user"})]
+        )
+    else:
+        request = storage.get_request("source-request-1")
+        assert request is not None
+        storage.get_request = Mock(  # type: ignore[method-assign]
+            return_value=request.model_copy(update={"user_id": "other-user"})
+        )
+    enabled, decide, existing = _patch_review_dependencies([])
+
+    with enabled, decide as decide_mock, existing:
+        response = _service(storage).run(_request(report_only=True))
+
+    assert response.success is True
+    assert response.skipped_count == 1
+    assert response.results[0].decision == "skip"
+    assert response.results[0].reason_code == "evidence_unavailable"
+    assert "owned by another user" in (response.results[0].reason or "")
+    decide_mock.assert_not_called()
+
+
+def test_manual_review_skips_bad_candidate_evidence_and_continues(tmp_path) -> None:
+    storage = _storage(tmp_path)
+    _seed_source_interactions(
+        storage,
+        2,
+        generation_request_ids=("shared-generation",),
+    )
+    rows = [
+        _playbook(1, created_at=201, request_id="shared-generation"),
+        _playbook(2, created_at=200, request_id="shared-generation"),
+    ]
+    storage.save_user_playbooks(rows)
+    enabled, decide, existing = _patch_review_dependencies(
+        [
+            PlaybookCandidateEvidenceError(
+                "Reviewer cannot map C1 evidence to a local turn"
+            ),
+            _accept_output(2),
+        ]
+    )
+
+    with enabled, decide, existing:
+        response = _service(storage).run(_request(report_only=True))
+
+    assert response.success is True
+    assert [result.decision for result in response.results] == ["skip", "accept"]
+    assert response.skipped_count == 1
+    assert response.accepted_count == 1
+    assert "cannot map C1 evidence" in (response.results[0].reason or "")
+
+
 def test_apply_mode_commits_each_accept_edit_and_reject_in_order(tmp_path) -> None:
     storage = _storage(tmp_path)
     _seed_source_interactions(storage, 3)
@@ -283,6 +535,7 @@ def test_apply_mode_commits_each_accept_edit_and_reject_in_order(tmp_path) -> No
     successor = next(item for item in current if item.user_playbook_id == successor_id)
     assert successor.content == "Narrow revised lesson."
     assert successor.source == "test"
+    assert successor.request_id == rows[1].request_id
 
     # The edited incumbent is SUPERSEDED and points at its replacement; only the
     # rejected row is ARCHIVED.
@@ -310,7 +563,11 @@ def test_accepted_same_generation_playbook_is_visible_to_next_review(
     report_only: bool,
 ) -> None:
     storage = _storage(tmp_path)
-    _seed_source_interactions(storage, 2)
+    _seed_source_interactions(
+        storage,
+        2,
+        generation_request_ids=("shared-generation",),
+    )
     rows = [
         _playbook(1, created_at=201, request_id="shared-generation"),
         _playbook(2, created_at=200, request_id="shared-generation"),
