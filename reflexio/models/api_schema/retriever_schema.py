@@ -774,6 +774,8 @@ class RetrievalExperimentArmMetrics(BaseModel):
     average_corrections: float | None = None
     average_turns_to_resolution: float | None = None
     escalation_rate: float | None = None
+    average_output_tokens: float | None = None
+    output_token_session_count: int = 0
 
 
 class RetrievalExperimentResultsResponse(BaseModel):

@@ -13,6 +13,7 @@ from reflexio.models.api_schema.service_schemas import (
     DeleteUserInteractionRequest,
     Interaction,
 )
+from reflexio.server.billing_signals import count_input_tokens
 from reflexio.server.llm.providers.embedding_service_provider import (
     EmbeddingUnavailableError,
 )
@@ -97,6 +98,7 @@ class InteractionStoreMixin:
 
     def _insert_interaction(self, interaction: Interaction) -> int:
         created_at_iso = _epoch_to_iso(interaction.created_at)
+        interaction.token_count = count_input_tokens(interaction.content)
         subject_ref = self._subject_ref_for_user_id(interaction.user_id)
         with self._lock:
             own_txn = self._own_transaction()
@@ -108,11 +110,11 @@ class InteractionStoreMixin:
                     self.conn.execute(
                         """INSERT OR REPLACE INTO interactions
                            (interaction_id, user_id, content, request_id, created_at,
-                            role, user_action, user_action_description,
+                            role, token_count, user_action, user_action_description,
                             interacted_image_url, image_encoding, shadow_content,
                             expert_content, tools_used, citations, retrieved_learnings,
                             embedding, governance_subject_ref)
-                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                         (
                             interaction.interaction_id,
                             interaction.user_id,
@@ -120,6 +122,7 @@ class InteractionStoreMixin:
                             interaction.request_id,
                             created_at_iso,
                             interaction.role,
+                            interaction.token_count,
                             interaction.user_action.value,
                             interaction.user_action_description,
                             interaction.interacted_image_url,
@@ -147,17 +150,18 @@ class InteractionStoreMixin:
                     cur = self.conn.execute(
                         """INSERT INTO interactions
                            (user_id, content, request_id, created_at,
-                            role, user_action, user_action_description,
+                            role, token_count, user_action, user_action_description,
                             interacted_image_url, image_encoding, shadow_content,
                             expert_content, tools_used, citations, retrieved_learnings,
                             embedding, governance_subject_ref)
-                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                         (
                             interaction.user_id,
                             interaction.content,
                             interaction.request_id,
                             created_at_iso,
                             interaction.role,
+                            interaction.token_count,
                             interaction.user_action.value,
                             interaction.user_action_description,
                             interaction.interacted_image_url,

@@ -479,6 +479,7 @@ def _row_to_interaction(row: sqlite3.Row) -> Interaction:
         request_id=d["request_id"],
         created_at=_iso_to_epoch(d["created_at"]),
         role=d.get("role") or "User",
+        token_count=d.get("token_count"),
         user_action=UserActionType(d["user_action"]),
         user_action_description=d["user_action_description"],
         interacted_image_url=d["interacted_image_url"],
@@ -898,6 +899,14 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             with self._lock:
                 self.conn.execute(
                     "ALTER TABLE interactions ADD COLUMN retrieved_learnings TEXT"
+                )
+                self.conn.commit()
+
+        if "token_count" not in columns:
+            logger.info("Adding token_count column to interactions table.")
+            with self._lock:
+                self.conn.execute(
+                    "ALTER TABLE interactions ADD COLUMN token_count INTEGER"
                 )
                 self.conn.commit()
 
@@ -2367,6 +2376,7 @@ CREATE TABLE IF NOT EXISTS interactions (
     request_id TEXT NOT NULL,
     created_at TEXT NOT NULL,
     role TEXT NOT NULL DEFAULT 'User',
+    token_count INTEGER,
     user_action TEXT NOT NULL DEFAULT 'none',
     user_action_description TEXT NOT NULL DEFAULT '',
     interacted_image_url TEXT NOT NULL DEFAULT '',

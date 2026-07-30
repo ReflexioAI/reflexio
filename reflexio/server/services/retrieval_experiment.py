@@ -97,6 +97,7 @@ def build_retrieval_experiment_results(
     experiment: RetrievalExperimentRecord,
     assignments: dict[tuple[str, str], RetrievalExperimentArm],
     evaluation_results: list[AgentSuccessEvaluationResult],
+    output_token_counts: dict[tuple[str, str], int] | None = None,
 ) -> RetrievalExperimentResultsResponse:
     """Join request attribution to session evaluations and aggregate both arms."""
     attributed: dict[RetrievalExperimentArm, list[AgentSuccessEvaluationResult]] = {
@@ -111,8 +112,13 @@ def build_retrieval_experiment_results(
             continue
         attributed[arm].append(result)
 
-    treatment = _arm_metrics("treatment", assignments, attributed["treatment"])
-    holdout = _arm_metrics("holdout", assignments, attributed["holdout"])
+    measured_output_tokens = output_token_counts or {}
+    treatment = _arm_metrics(
+        "treatment", assignments, attributed["treatment"], measured_output_tokens
+    )
+    holdout = _arm_metrics(
+        "holdout", assignments, attributed["holdout"], measured_output_tokens
+    )
     lift: float | None = None
     relative_lift: float | None = None
     confidence_interval: tuple[float, float] | None = None
@@ -149,6 +155,7 @@ def _arm_metrics(
     arm: RetrievalExperimentArm,
     assignments: dict[tuple[str, str], RetrievalExperimentArm],
     results: list[AgentSuccessEvaluationResult],
+    output_token_counts: dict[tuple[str, str], int],
 ) -> RetrievalExperimentArmMetrics:
     assigned_pairs = [
         pair for pair, assigned_arm in assignments.items() if assigned_arm == arm
@@ -163,6 +170,11 @@ def _arm_metrics(
         if result.user_turns_to_resolution is not None
     )
     escalation_rate = _mean(float(result.is_escalated) for result in results)
+    measured_output_token_counts = [
+        float(output_token_counts[pair])
+        for pair in assigned_pairs
+        if pair in output_token_counts
+    ]
     return RetrievalExperimentArmMetrics(
         arm=arm,
         assigned_user_count=len({user_id for user_id, _ in assigned_pairs}),
@@ -173,6 +185,8 @@ def _arm_metrics(
         average_corrections=corrections,
         average_turns_to_resolution=turns,
         escalation_rate=escalation_rate,
+        average_output_tokens=_mean(measured_output_token_counts),
+        output_token_session_count=len(measured_output_token_counts),
     )
 
 

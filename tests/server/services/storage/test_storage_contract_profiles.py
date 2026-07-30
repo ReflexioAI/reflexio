@@ -15,6 +15,7 @@ from reflexio.models.api_schema.service_schemas import (
     UserActionType,
     UserProfile,
 )
+from reflexio.server.billing_signals import count_input_tokens
 from reflexio.server.services.storage.error import StorageError
 from reflexio.server.services.storage.storage_base import BaseStorage
 
@@ -361,6 +362,7 @@ class TestInteractionCRUD:
         result = storage.get_user_interaction("u1")
         assert len(result) == 1
         assert result[0].content == "clicked item"
+        assert result[0].token_count == count_input_tokens("clicked item")
 
     def test_add_interactions_bulk(self, storage: BaseStorage) -> None:
         interactions = [
@@ -370,6 +372,9 @@ class TestInteractionCRUD:
 
         result = storage.get_user_interaction("u1")
         assert len(result) == 3
+        assert {item.token_count for item in result} == {
+            count_input_tokens(f"action {i}") for i in range(1, 4)
+        }
 
     def test_get_all_interactions(self, storage: BaseStorage) -> None:
         storage.add_user_interaction("u1", _make_interaction("u1", 1, "a1", "req1"))

@@ -317,6 +317,50 @@ class RequestMixin:
         }
 
     @SQLiteStorageBase.handle_exceptions
+    def get_retrieval_experiment_output_token_counts(
+        self, experiment_id: str
+    ) -> dict[tuple[str, str], int]:
+        rows = self._fetchall(
+            """SELECT r.user_id,
+                      r.session_id,
+                      COALESCE(SUM(
+                          CASE
+                              WHEN LOWER(TRIM(
+                                  i.role,
+                                  char(9) || char(10) || char(11) ||
+                                  char(12) || char(13) || ' '
+                              )) <> 'user'
+                              THEN i.token_count
+                              ELSE 0
+                          END
+                      ), 0) AS output_token_count,
+                      SUM(
+                          CASE
+                              WHEN LOWER(TRIM(
+                                  i.role,
+                                  char(9) || char(10) || char(11) ||
+                                  char(12) || char(13) || ' '
+                              )) <> 'user'
+                                   AND i.token_count IS NULL
+                              THEN 1
+                              ELSE 0
+                          END
+                      ) AS missing_token_count
+               FROM requests r
+               LEFT JOIN interactions i ON i.request_id = r.request_id
+               WHERE r.retrieval_experiment_id = ?
+               GROUP BY r.user_id, r.session_id""",
+            (experiment_id,),
+        )
+        return {
+            (str(row["user_id"]), str(row["session_id"])): int(
+                row["output_token_count"]
+            )
+            for row in rows
+            if int(row["missing_token_count"] or 0) == 0
+        }
+
+    @SQLiteStorageBase.handle_exceptions
     def get_session_ids_in_window(
         self, from_ts: int, to_ts: int
     ) -> list[SessionDescriptor]:
