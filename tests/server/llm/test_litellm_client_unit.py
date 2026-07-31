@@ -40,6 +40,7 @@ from reflexio.models.config_schema import (
     OpenAIConfig as CommonsOpenAIConfig,
 )
 from reflexio.models.structured_output import find_schema_keyword
+from reflexio.server import error_reporting
 from reflexio.server.llm._litellm_subprocess import _snapshot_completion_response
 from reflexio.server.llm._litellm_types import CompletionResult, ModelProvenance
 from reflexio.server.llm._provider_concurrency import ProviderCapSaturatedError
@@ -1381,7 +1382,7 @@ class TestMaybeParseStructuredOutput:
 
         Only ``groups`` accepts these items and every sibling is optional, so
         the placement is unambiguous — this is the ProfileDeduplicationOutput
-        failure that produced 12.5k Sentry events.
+        failure that produced 12.5k duplicate error events.
         """
         content = json.dumps([{"answer": "ok", "score": 5}])
         result = client._maybe_parse_structured_output(
@@ -1711,7 +1712,7 @@ class TestStrictStructuredOutputRequest:
         assert params["messages"] == messages
 
     def test_openai_compatible_underreported_provider_uses_strict_schema(self):
-        # Regression for Sentry PYTHON-FASTAPI-9J: minimax reports
+        # Regression: minimax reports
         # supports_response_schema=False, but it is an OpenAI-compatible endpoint
         # LiteLLM would still hand a self-built json_schema. We must send our own
         # normalized strict schema instead of the raw Pydantic model.
@@ -1794,7 +1795,7 @@ class TestStrictStructuredOutputRequest:
         provider_format = params["response_format"]
         assert isinstance(provider_format, dict), (
             "minimax must receive a normalized strict schema, not the raw Pydantic "
-            "model (Sentry PYTHON-FASTAPI-9J)"
+            "model"
         )
         schema = provider_format["json_schema"]["schema"]
         assert not find_schema_keyword(schema, "oneOf")
@@ -2881,7 +2882,7 @@ class TestBuildCompletionParams:
     @patch("reflexio.server.llm.litellm_client.litellm.completion")
     def test_minimax_m3_floor_is_120(self, mock_completion):
         """MiniMax-M3's floor was lowered from 240s to the 120s default
-        (Sentry PYTHON-FASTAPI-62) so a hung primary is abandoned sooner and the
+        so a hung primary is abandoned sooner and the
         fallback is reached faster."""
         mock_completion.return_value = _make_completion_response("ok")
         client = LiteLLMClient(LiteLLMConfig(model="minimax/MiniMax-M3"))
@@ -3377,7 +3378,7 @@ class TestBuildCompletionParamsEdgeCases:
         """A ``local/*`` in-process embedding model must be filtered out of the
         fallback list: it has no litellm completion route (it is served
         in-process), so handing it to litellm's fallback ladder raises
-        ``BadRequestError: LLM Provider NOT provided`` (Sentry PYTHON-FASTAPI-CV).
+        ``BadRequestError: LLM Provider NOT provided``.
         Valid generation fallbacks are preserved."""
         config = LiteLLMConfig(
             model="gpt-4o",
@@ -4104,39 +4105,31 @@ class TestOwnedFallbackWalk:
 
 
 # ===================================================================
-# Fallback observability: Sentry tags + structured log line
+# Fallback observability: error-reporting tags + structured log line
 # ===================================================================
 
 
 class TestFallbackObservability:
-    """Verify Sentry tags fire when a fallback RUNG served the request, and stay
+    """Verify error tags fire when a fallback rung served the request, and stay
     silent when the primary served. Detection is now authoritative and
     loop-driven: the owned walk knows exactly which rung served, so it calls
     ``_emit_fallback_signal`` with the primary, the served rung, and a reason —
     no more response-model diffing.
-
-    ``sentry_sdk`` is an enterprise-only dependency and is not installed in the
-    OSS test env. ``_emit_fallback_signal`` performs a local ``import
-    sentry_sdk`` inside its ``try`` block, so we inject a fake module into
-    ``sys.modules`` to capture the ``set_tag`` calls without pulling in the real
-    SDK.
     """
 
     @staticmethod
-    def _install_fake_sentry(monkeypatch) -> dict[str, str]:
-        """Register a fake ``sentry_sdk`` module that records ``set_tag``
-        calls into the returned dict."""
-        import sys  # noqa: PLC0415
-        import types  # noqa: PLC0415
-
+    def _install_recording_reporter(monkeypatch) -> dict[str, str]:
         tags: dict[str, str] = {}
-        fake = types.ModuleType("sentry_sdk")
-        fake.set_tag = lambda k, v: tags.__setitem__(k, str(v))  # type: ignore[attr-defined]
-        monkeypatch.setitem(sys.modules, "sentry_sdk", fake)
+
+        class RecordingReporter:
+            def set_error_tags(self, values) -> None:
+                tags.update(values)
+
+        monkeypatch.setattr(error_reporting, "_error_reporter", RecordingReporter())
         return tags
 
-    def test_sentry_tag_set_when_fallback_serves(self, monkeypatch):
-        tags = self._install_fake_sentry(monkeypatch)
+    def test_error_tag_set_when_fallback_serves(self, monkeypatch):
+        tags = self._install_recording_reporter(monkeypatch)
         client = LiteLLMClient(
             LiteLLMConfig(model="minimax/MiniMax-M3", fallback_models=["gpt-5.4-mini"])
         )
@@ -4153,8 +4146,8 @@ class TestFallbackObservability:
         assert tags.get("llm.primary_model") == "minimax/MiniMax-M3"
         assert tags.get("llm.fallback_model") == "gpt-5.4-mini"
 
-    def test_sentry_tag_not_set_when_primary_served(self, monkeypatch):
-        tags = self._install_fake_sentry(monkeypatch)
+    def test_error_tag_not_set_when_primary_served(self, monkeypatch):
+        tags = self._install_recording_reporter(monkeypatch)
         client = LiteLLMClient(
             LiteLLMConfig(model="minimax/MiniMax-M3", fallback_models=["gpt-5.4-mini"])
         )
@@ -4167,11 +4160,11 @@ class TestFallbackObservability:
 
         assert "llm.fallback_used" not in tags
 
-    def test_sentry_reason_tag_reflects_failure_class(self, monkeypatch):
+    def test_error_reason_tag_reflects_failure_class(self, monkeypatch):
         """The new ``llm.fallback_reason`` tag distinguishes an outage from a
         broken-but-reachable primary. A transport error on the primary tags the
         fallback with ``transport_error``."""
-        tags = self._install_fake_sentry(monkeypatch)
+        tags = self._install_recording_reporter(monkeypatch)
         client = LiteLLMClient(
             LiteLLMConfig(model="minimax/MiniMax-M3", fallback_models=["gpt-5.4-mini"])
         )
@@ -4187,7 +4180,7 @@ class TestFallbackObservability:
         assert tags.get("llm.fallback_reason") == "transport_error"
 
     def test_cli_route_resolution_is_not_reported_as_fallback(self, monkeypatch):
-        tags = self._install_fake_sentry(monkeypatch)
+        tags = self._install_recording_reporter(monkeypatch)
         client = LiteLLMClient(LiteLLMConfig(model="claude-code/default"))
         response = _make_completion_response("ok")
         response.model = "claude-sonnet-5"
@@ -4211,7 +4204,7 @@ class TestFallbackObservability:
         fallback signal (see test_cli_route_resolution_is_not_reported_as_fallback).
         A transport failure on the CLI primary that reaches a later rung is.
         """
-        tags = self._install_fake_sentry(monkeypatch)
+        tags = self._install_recording_reporter(monkeypatch)
         client = LiteLLMClient(
             LiteLLMConfig(
                 model="claude-code/default",

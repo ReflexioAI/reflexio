@@ -1003,7 +1003,7 @@ class TestBuildDeduplicatedResults:
         assert contents == {"content_0", "content_2", "content_1"}
 
     def test_unify_accepts_bracketed_new_id_from_llm(self, mock_consolidator):
-        """Regression for Sentry: ``[NEW-0]`` normalizes before apply lookup."""
+        """Regression: ``[NEW-0]`` normalizes before apply lookup."""
         new_playbooks = [_make_user_playbook(0, source_interaction_ids=[10])]
 
         dedup_output = PlaybookConsolidationOutput(

@@ -24,7 +24,7 @@ def validate_include_inactive(
     Raises ``StorageError`` rather than ``ValueError`` so the behavior is uniform
     across backends: both ``handle_exceptions`` decorators re-raise ``StorageError``
     untouched, whereas any other exception type is swallowed, wrapped, and (on
-    Supabase) reported to Sentry — turning a caller bug into noise.
+    Supabase) reported externally — turning a caller bug into noise.
 
     Args:
         include_inactive (bool): Whether the caller asked for all rows regardless

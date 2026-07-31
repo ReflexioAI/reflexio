@@ -7,7 +7,7 @@ from typing import Any, Literal
 
 from reflexio.models.api_schema.domain.entities import LineageContext, LineageEvent
 from reflexio.models.api_schema.domain.enums import Status
-from reflexio.server.tracing import capture_anomaly
+from reflexio.server.error_reporting import capture_anomaly
 
 from ._base import _epoch_now
 

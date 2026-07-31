@@ -193,7 +193,7 @@ class TestLogSafety:
     """`sanitise_for_log` is a security control, so pin it.
 
     Any caller-supplied value reaching a log record needs it: a newline forges a
-    line in a shared multi-tenant stream that Sentry ingests, and an unbounded
+    line in a shared multi-tenant stream that external reporters may ingest, and an unbounded
     value bloats the record. `request_id` qualifies — it is a `NonEmptyStr` with
     no length cap and no character restrictions.
     """
@@ -233,7 +233,7 @@ class TestLogSafety:
             lines = path.read_text().splitlines()
             in_call = False
             for number, line in enumerate(lines, 1):
-                # error/warning/exception are the Sentry-ingested levels, and
+                # error/warning/exception are externally ingested levels, and
                 # info still lands in the shared stream.
                 if any(
                     f"logger.{level}(" in line

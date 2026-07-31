@@ -159,7 +159,7 @@ class TestPublishInteraction:
         The async path hands the caller 200 "queued" and throws the publisher's
         return value away, so this log line is the only evidence a rejected
         publish ever produces. The reason string is deliberately withheld -- it
-        can be an unbounded ``str(e)`` and Sentry ingests ERROR bodies unscrubbed.
+        can be an unbounded ``str(e)`` and reporters may ingest ERROR bodies unscrubbed.
         """
         import logging
 

@@ -16,6 +16,7 @@ from typing import ClassVar
 
 from fastapi import APIRouter
 
+from reflexio.server.error_reporting import ErrorReporter, configure_error_reporter
 from reflexio.server.tracing import Tracer, configure_tracer
 from reflexio.server.usage_metrics import (
     UsageEventRecorder,
@@ -101,6 +102,10 @@ class HookRegistry:
         """
         configure_tracer(tracer)
 
+    def set_error_reporter(self, reporter: ErrorReporter | None) -> None:
+        """Install or clear the process-global error reporter."""
+        configure_error_reporter(reporter)
+
     def set_usage_recorder(self, recorder: UsageEventRecorder | None) -> None:
         """Install (or clear) the process-global usage-event recorder.
 
@@ -140,7 +145,7 @@ class Capability(ABC):
         """Register runtime-service providers (process-global). Default: none."""
 
     def install_hooks(self, hooks: HookRegistry) -> None:  # noqa: B027
-        """Install pipeline hooks (tracer / usage-recorder). Default: none.
+        """Install pipeline hooks (tracing, reporting, usage). Default: none.
 
         Args:
             hooks (HookRegistry): Registry to install hooks through.

@@ -83,7 +83,7 @@ def missing_vector_backfill_sweep(org_id: str, _now: int) -> int:
 
     # Imported lazily so importing this module never drags in the request stack.
     from reflexio.server.api_endpoints.request_context import RequestContext
-    from reflexio.server.tracing import capture_anomaly
+    from reflexio.server.error_reporting import capture_anomaly
 
     try:
         ctx = RequestContext(org_id=org_id)
@@ -133,7 +133,7 @@ def install_missing_vector_backfill_sweep() -> None:
             "event=missing_vector_backfill_sweep_registered cap=%d", _resolve_cap()
         )
     except Exception:
-        from reflexio.server.tracing import capture_anomaly
+        from reflexio.server.error_reporting import capture_anomaly
 
         capture_anomaly("interactions.missing_vector_backfill.install_failed")
         logger.exception("event=missing_vector_backfill_install_failed")

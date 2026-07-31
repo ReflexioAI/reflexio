@@ -24,6 +24,7 @@ from reflexio.models.api_schema.service_schemas import (
     UserProfile,
 )
 from reflexio.models.config_schema import ProfileExtractorConfig
+from reflexio.server.error_reporting import capture_anomaly, error_tags
 from reflexio.server.llm._litellm_types import ModelProvenance
 from reflexio.server.services.base_generation_service import (
     BaseGenerationService,
@@ -38,7 +39,6 @@ from reflexio.server.services.profile.profile_generation_service_utils import (
 from reflexio.server.services.service_utils import (
     format_sessions_to_history_string,
 )
-from reflexio.server.tracing import capture_anomaly, sentry_tags
 
 logger = logging.getLogger(__name__)
 
@@ -287,7 +287,7 @@ class ProfileGenerationService(
                     lineage_contexts=plan.lineage_contexts,
                 )
             except Exception as e:
-                with sentry_tags(
+                with error_tags(
                     subsystem="profile_generation",
                     op="save_profiles",
                     org_id=self.org_id,
@@ -315,7 +315,7 @@ class ProfileGenerationService(
                     request_id=generation_request_id,
                 )
             except Exception as e:
-                with sentry_tags(
+                with error_tags(
                     subsystem="profile_generation",
                     op="supersede_profiles",
                     org_id=self.org_id,

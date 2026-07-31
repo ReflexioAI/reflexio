@@ -154,7 +154,7 @@ class DocumentExpander:
                 return expansions
         except json.JSONDecodeError:
             # Log the raw output length only — the model output is Customer
-            # Content and must not reach logs/Sentry/CloudWatch. `text` is the
+            # Content and must not reach logs or external telemetry. `text` is the
             # normalized (stripped, fence-extracted) buffer, so report `output`
             # to reflect the true response size.
             logger.warning(

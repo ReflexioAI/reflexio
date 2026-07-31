@@ -200,7 +200,7 @@ class QueryReformulator:
 
         if not isinstance(result, ReformulationResult):
             # Log the type only — `result` may contain the user's query text, which
-            # must not reach logs/Sentry/CloudWatch as Customer Content.
+            # must not reach logs or external telemetry as Customer Content.
             logger.warning(
                 "LLM returned non-structured reformulation (type %s)",
                 type(result).__name__,

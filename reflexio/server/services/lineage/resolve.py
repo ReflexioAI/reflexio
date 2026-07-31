@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from reflexio.models.api_schema.domain.entities import RecordRef
-from reflexio.server.tracing import capture_anomaly
+from reflexio.server.error_reporting import capture_anomaly
 
 EntityType = Literal["user_playbook", "agent_playbook", "profile"]
 
@@ -54,7 +54,7 @@ def resolve_current(
         if cur_id in visited or len(visited) >= _MAX_HOPS:
             # A cycle or an over-long chain means a malformed pointer graph;
             # we return None (callers treat as unresolvable) but surface it to
-            # Sentry so the otherwise-silent breakage is observable.
+            # the error reporter so the otherwise-silent breakage is observable.
             reason = "cycle" if cur_id in visited else "max_hops_exceeded"
             capture_anomaly(
                 f"lineage.resolve_current.{reason}",

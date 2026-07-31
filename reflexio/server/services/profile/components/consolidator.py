@@ -15,6 +15,7 @@ from reflexio.models.api_schema.retriever_schema import SearchUserProfileRequest
 from reflexio.models.api_schema.service_schemas import Status, UserProfile
 from reflexio.models.structured_output import StrictStructuredOutput
 from reflexio.server.api_endpoints.request_context import RequestContext
+from reflexio.server.error_reporting import capture_anomaly
 from reflexio.server.llm._litellm_types import ModelProvenance
 from reflexio.server.llm.litellm_client import (
     LiteLLMClient,
@@ -31,7 +32,6 @@ from reflexio.server.services.profile.profile_generation_service_utils import (
     ProfileTimeToLive,
     calculate_expiration_timestamp,
 )
-from reflexio.server.tracing import capture_anomaly
 
 logger = logging.getLogger(__name__)
 
@@ -186,7 +186,7 @@ def _dedup_failure_kind(exc: BaseException) -> str:
         exc (BaseException): The exception that aborted the dedup call.
 
     Returns:
-        str: A coarse, low-cardinality failure class suitable as a Sentry tag.
+        str: A coarse, low-cardinality failure class suitable as an error tag.
     """
     if isinstance(exc, StructuredOutputRepairError):
         return f"repair_{exc.failure_kind}"

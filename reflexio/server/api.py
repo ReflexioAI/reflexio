@@ -278,7 +278,7 @@ def _wire_capabilities(
                 capabilities.billing_gate(line)
             )
     # HookRegistry is a stateless facade: its methods configure process-global
-    # tracer/usage-recorder/retrieval-capture singletons; the object needn't be stored.
+    # reporting/tracing/usage singletons; the object needn't be stored.
     hooks = HookRegistry()
     additional = additional_routers or []
     for cap in capabilities.capabilities:

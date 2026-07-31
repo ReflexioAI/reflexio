@@ -21,6 +21,7 @@ from reflexio.models.structured_output import (
     normalize_provider_value,
 )
 from reflexio.server.api_endpoints.request_context import RequestContext
+from reflexio.server.error_reporting import error_tags
 from reflexio.server.llm._litellm_types import ModelProvenance
 from reflexio.server.llm.litellm_client import (
     LiteLLMClient,
@@ -37,7 +38,6 @@ from reflexio.server.services.playbook.playbook_service_utils import (
 from reflexio.server.services.profile.profile_generation_service_utils import (
     check_string_token_overlap,
 )
-from reflexio.server.tracing import sentry_tags
 
 logger = logging.getLogger(__name__)
 
@@ -406,7 +406,7 @@ ConsolidationDecision = Annotated[
 
 # ``PlaybookConsolidationOutput`` inherits ``StrictStructuredOutput`` so the
 # emitted JSON schema is folded into the provider-accepted union shape while the
-# discriminator is kept for keyed validation at parse time (Sentry
+# discriminator is kept for keyed validation at parse time (production
 # PYTHON-FASTAPI-9J). This note is a comment, NOT part of the docstring, because
 # the docstring is serialized into the wire schema's ``description`` sent to the
 # model — keep implementation tokens out of it.
@@ -1054,7 +1054,7 @@ class PlaybookConsolidator(BaseDeduplicator):
                 new_playbooks, existing_playbooks
             )
         except Exception as e:
-            with sentry_tags(
+            with error_tags(
                 subsystem="playbook_consolidator",
                 op="identify_duplicates",
                 org_id=self.request_context.org_id,
@@ -1405,7 +1405,7 @@ class PlaybookConsolidator(BaseDeduplicator):
                     if isinstance(raw_existing_id, (int, list))
                     else "unknown"
                 )
-                with sentry_tags(
+                with error_tags(
                     subsystem="playbook_consolidator",
                     op="apply_decision",
                     org_id=self.request_context.org_id,

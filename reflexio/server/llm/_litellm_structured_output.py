@@ -268,7 +268,7 @@ class StructuredOutputMixin:
     # these, the gate below would fall back to handing LiteLLM the raw Pydantic
     # model; LiteLLM then builds the ``json_schema`` itself and emits ``oneOf``
     # for discriminated unions, which strict structured-output endpoints reject
-    # (Sentry PYTHON-FASTAPI-9J). Listing the provider here forces our own
+    # Listing the provider here forces our own
     # normalized strict schema (``oneOf`` folded into ``anyOf``) to be sent.
     _JSON_SCHEMA_PROVIDER_ALLOWLIST: frozenset[str] = frozenset({"minimax"})
     _PROMPT_SCHEMA_PROVIDER_ALLOWLIST: frozenset[str] = frozenset({"zai"})
@@ -450,7 +450,7 @@ class StructuredOutputMixin:
                 except Exception as e:
                     model = self.config.model
                     # Do NOT embed the raw model output in the exception message:
-                    # this exception is logged at ERROR and rides to Sentry/CloudWatch
+                    # this exception is logged at ERROR and may reach external telemetry
                     # via the logging bridge, so a content snippet would leak Customer
                     # Content there. Log only the length; the raw text stays on
                     # `raw_content` for in-process repair (not serialized to logs).
@@ -459,7 +459,7 @@ class StructuredOutputMixin:
                     # error's message often echoes the offending input (Customer
                     # Content). This exception's str() is logged downstream at
                     # ERROR (error=%s) and wrapped into LiteLLMClientError, both
-                    # of which ride to Sentry/CloudWatch — so the message must
+                    # of which may reach external telemetry — so the message must
                     # stay content-free. The raw text remains on raw_content for
                     # in-process repair (never serialized to logs).
                     raise StructuredOutputParseError(

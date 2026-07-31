@@ -230,7 +230,7 @@ class ProfileExtractor:
             ) from e
 
         # Log only the count — the raw profile dicts are extracted Customer
-        # Content, and INFO records become Sentry breadcrumbs (LoggingIntegration
+        # Content, and INFO records may become external telemetry breadcrumbs
         # level=INFO), whose bodies before_send does not scrub.
         logger.info(
             "Generated raw profiles: count=%d", len(raw_profiles) if raw_profiles else 0
