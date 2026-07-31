@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from hashlib import sha256
+from secrets import token_hex
 from typing import Protocol
 
 from reflexio.models.api_schema.domain import UserPlaybook
@@ -24,6 +25,17 @@ class SearchExposureBatch:
     interaction_id: int | None
     user_id: str | None
     user_playbooks: tuple[UserPlaybook, ...]
+    invocation_id: str = field(default_factory=lambda: token_hex(16))
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "request_id", _normalize_correlation_id(self.request_id)
+        )
+        object.__setattr__(
+            self, "session_id", _normalize_correlation_id(self.session_id)
+        )
+        if self.interaction_id is not None and self.interaction_id <= 0:
+            object.__setattr__(self, "interaction_id", None)
 
 
 @dataclass(frozen=True)
@@ -60,6 +72,11 @@ class SearchExposureRecorder(Protocol):
 SEARCH_EXPOSURE_RECORDER = ServiceKey[SearchExposureRecorder](
     "search_exposure_recorder"
 )
+
+
+def _normalize_correlation_id(value: str | None) -> str | None:
+    normalized = value.strip() if value is not None else ""
+    return normalized or None
 
 
 def record_search_exposures(batch: SearchExposureBatch) -> None:
@@ -100,7 +117,7 @@ def build_user_playbook_exposure_event(
         and batch.session_id is None
         and batch.interaction_id is None
     ):
-        identity["exposed_at"] = exposed_at
+        identity["invocation_id"] = batch.invocation_id
     content_digest = sha256(playbook.content.encode("utf-8")).hexdigest()
     return UserPlaybookExposureEvent(
         exposure_event_id=sha256(canonical_json_bytes(identity)).hexdigest(),
