@@ -237,9 +237,12 @@ def _resolve_lifespan_org_id(get_org_id: Callable[..., str] | None) -> str:
 
     if _lifespan_org_id_resolver is not None:
         try:
-            resolved = str(_lifespan_org_id_resolver())
+            # Check the RAW value before str(): str(None) is the truthy literal
+            # "None", which would sail through as a bootstrap org id matching no
+            # organization row -- reintroducing exactly the failure this hook fixes.
+            resolved = _lifespan_org_id_resolver()
             if resolved:
-                return resolved
+                return str(resolved)
             logger.warning("Lifespan org_id resolver returned empty; using default org")
         except Exception:
             logger.exception("Lifespan org_id resolver failed; using default org")

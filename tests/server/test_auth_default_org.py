@@ -80,6 +80,9 @@ class TestLifespanOrgIdResolver:
                 lambda: (_ for _ in ()).throw(RuntimeError("boom")), id="raises"
             ),
             pytest.param(lambda: "", id="empty"),
+            # str(None) is the truthy literal "None" -- a resolver violating the
+            # str contract must fall through, not hand back "None" as an org id.
+            pytest.param(lambda: None, id="none"),
         ],
     )
     def test_broken_resolver_degrades_to_default(self, resolver) -> None:
