@@ -136,6 +136,7 @@ class GovernanceService:
             scope_type="user",
             subject_ref=subref,
             request_ref=reqref,
+            authoritative_user_id=user_id,
         )
         if purge.status == "complete":
             barrier = self._completed_barrier_for_retry(

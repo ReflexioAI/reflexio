@@ -165,7 +165,9 @@ class PurgeOperationStoreMixin:
         scope_type: Literal["user", "org"],
         subject_ref: str | None,
         request_ref: str,
+        authoritative_user_id: str | None = None,
     ) -> PurgeOperation:
+        del authoritative_user_id
         _validate_governance_enum(
             "operation_type",
             operation_type,
