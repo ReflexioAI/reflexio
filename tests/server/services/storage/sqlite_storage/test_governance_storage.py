@@ -2430,6 +2430,7 @@ def test_record_purge_target_accepts_target_detail_shapes(storage):
     purge_id = _begin_purge(storage, "purge_target_detail_shapes")
 
     detail = {
+        "authoritative_user_digest": "a" * 64,
         "owned_user_playbook_ids": [7],
         "source_interaction_ids": [11, 12],
         "original_source_windows": [

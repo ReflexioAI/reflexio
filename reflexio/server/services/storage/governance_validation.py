@@ -90,6 +90,7 @@ _ALLOWED_PURGE_TARGET_DETAIL_KEYS = frozenset(
     {
         "affected_agent_playbook_ids",
         "agent_playbook_id",
+        "authoritative_user_digest",
         "count",
         "deleted_counts",
         "deleted_count",
@@ -476,6 +477,12 @@ def _validate_governance_detail_entry(
     if key in {"agent_playbook_id", "user_playbook_id"}:
         _validate_governance_int(field_name, value)
         return cast(int, value)
+    if key == "authoritative_user_digest":
+        if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
+            _raise_governance_validation_error(
+                field_name, "expected 64 lowercase hex chars"
+            )
+        return value
     if key == "deleted_counts":
         return _validate_governance_deleted_counts(field_name, value)
     if key in {
