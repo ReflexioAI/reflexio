@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from hashlib import sha256
 
 import pytest
@@ -10,6 +11,7 @@ from reflexio.models.api_schema.domain.entities import (
 from reflexio.models.api_schema.domain.enums import SessionOutcomeKind
 from reflexio.server.services.storage.session_outcome_identity import (
     canonical_json_bytes,
+    canonical_session_trajectory,
     outcome_contract_digest,
     trajectory_digest,
 )
@@ -65,6 +67,67 @@ def test_outcome_contract_digest_changes_when_finalization_rule_changes() -> Non
 def test_trajectory_digest_changes_when_trajectory_data_changes() -> None:
     assert trajectory_digest({"messages": [{"role": "user", "content": "one"}]}) != (
         trajectory_digest({"messages": [{"role": "user", "content": "two"}]})
+    )
+
+
+def test_canonical_session_trajectory_normalizes_sqlite_and_postgres_rows() -> None:
+    sqlite_request = {
+        "request_id": "parity-request",
+        "user_id": "parity-user",
+        "created_at": "2023-11-14T22:13:20+00:00",
+        "source": "parity-source",
+        "agent_version": "parity-agent",
+        "session_id": "parity-session",
+        "evaluation_only": 0,
+        "retrieval_experiment_id": None,
+        "retrieval_experiment_arm": None,
+    }
+    postgres_request = {
+        **sqlite_request,
+        "created_at": datetime(2023, 11, 14, 22, 13, 20, tzinfo=UTC),
+        "evaluation_only": False,
+    }
+    sqlite_interaction = {
+        "interaction_id": 4242,
+        "user_id": "parity-user",
+        "request_id": "parity-request",
+        "created_at": "2023-11-14T22:13:21+00:00",
+        "content": "Parity trajectory",
+        "role": "User",
+        "token_count": 3,
+        "user_action": "none",
+        "user_action_description": "",
+        "interacted_image_url": "",
+        "image_encoding": "",
+        "shadow_content": "",
+        "expert_content": "",
+        "tools_used": "[]",
+        "citations": "[]",
+        "retrieved_learnings": "[]",
+    }
+    postgres_interaction = {
+        **sqlite_interaction,
+        "created_at": datetime(2023, 11, 14, 22, 13, 21, tzinfo=UTC),
+        "tools_used": [],
+        "citations": [],
+        "retrieved_learnings": [],
+    }
+
+    sqlite_projection = canonical_session_trajectory(
+        "parity-session",
+        [sqlite_request],
+        {"parity-request": [sqlite_interaction]},
+    )
+    postgres_projection = canonical_session_trajectory(
+        "parity-session",
+        [postgres_request],
+        {"parity-request": [postgres_interaction]},
+    )
+
+    assert sqlite_projection == postgres_projection
+    assert sqlite_projection["requests"][0]["request"]["evaluation_only"] is False
+    assert trajectory_digest(sqlite_projection) == (
+        "9d644676a7287f52e175c9a5ee7b6c7cbf0dfc6118ae83ace6850e6c7b2e2be8"
     )
 
 

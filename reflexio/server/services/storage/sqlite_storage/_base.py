@@ -60,7 +60,9 @@ from reflexio.server.services.storage.error import (
 )
 from reflexio.server.services.storage.retention_mixin import RetentionMixin
 from reflexio.server.services.storage.session_outcome_identity import (
+    CanonicalSessionTrajectory,
     canonical_json_bytes,
+    canonical_session_trajectory,
     outcome_contract_digest,
     trajectory_digest,
 )
@@ -94,7 +96,7 @@ def _json_loads(text: str | None) -> Any:
 
 def _canonical_session_snapshot(
     conn: sqlite3.Connection, session_id: str
-) -> dict[str, object]:
+) -> CanonicalSessionTrajectory:
     """Return the durable session state used to bind an outcome finalization."""
     request_rows = conn.execute(
         """SELECT request_id, user_id, created_at, source, agent_version, session_id,
@@ -103,7 +105,8 @@ def _canonical_session_snapshot(
            ORDER BY created_at ASC, request_id ASC""",
         (session_id,),
     ).fetchall()
-    requests: list[dict[str, object]] = []
+    request_payloads = [dict(request) for request in request_rows]
+    interactions_by_request: dict[str, list[dict[str, object]]] = {}
     for request in request_rows:
         interactions = conn.execute(
             """SELECT interaction_id, user_id, request_id, created_at, content, role,
@@ -114,28 +117,12 @@ def _canonical_session_snapshot(
                ORDER BY created_at ASC, interaction_id ASC""",
             (request["request_id"],),
         ).fetchall()
-        requests.append(
-            {
-                "request": dict(request),
-                "interactions": [
-                    {
-                        **{
-                            key: value
-                            for key, value in dict(interaction).items()
-                            if key
-                            not in {"tools_used", "citations", "retrieved_learnings"}
-                        },
-                        "tools_used": _json_loads(interaction["tools_used"]),
-                        "citations": _json_loads(interaction["citations"]),
-                        "retrieved_learnings": _json_loads(
-                            interaction["retrieved_learnings"]
-                        ),
-                    }
-                    for interaction in interactions
-                ],
-            }
-        )
-    return {"session_id": session_id, "requests": requests}
+        interactions_by_request[str(request["request_id"])] = [
+            dict(interaction) for interaction in interactions
+        ]
+    return canonical_session_trajectory(
+        session_id, request_payloads, interactions_by_request
+    )
 
 
 def _legacy_session_outcome_id(user_id: str, session_id: str) -> str:
