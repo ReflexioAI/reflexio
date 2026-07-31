@@ -17,6 +17,7 @@ import sqlite3
 import threading
 from collections.abc import Callable, Generator, Sequence
 from datetime import UTC, datetime
+from hashlib import sha256
 from pathlib import Path
 from typing import Any, ClassVar, Literal
 
@@ -59,6 +60,7 @@ from reflexio.server.services.storage.error import (
 )
 from reflexio.server.services.storage.retention_mixin import RetentionMixin
 from reflexio.server.services.storage.session_outcome_identity import (
+    canonical_json_bytes,
     outcome_contract_digest,
     trajectory_digest,
 )
@@ -134,6 +136,11 @@ def _canonical_session_snapshot(
             }
         )
     return {"session_id": session_id, "requests": requests}
+
+
+def _legacy_session_outcome_id(user_id: str, session_id: str) -> str:
+    """Return a delimiter-safe immutable identity for a migrated legacy outcome."""
+    return sha256(canonical_json_bytes([user_id, session_id])).hexdigest()
 
 
 _FTS5_OPERATORS = frozenset({"OR", "AND", "NOT"})
@@ -918,29 +925,32 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
     def _migrate_session_outcomes_schema(self) -> None:
         """Rebuild legacy outcome rows with immutable v1 finalization identities."""
         with self._lock:
-            columns = {
-                row["name"]
-                for row in self.conn.execute(
-                    "PRAGMA table_info(session_outcomes)"
-                ).fetchall()
-            }
-            table = self.conn.execute(
-                "SELECT sql FROM sqlite_master WHERE type = 'table' "
-                "AND name = 'session_outcomes'"
-            ).fetchone()
-            table_sql = (table["sql"] if table is not None else "") or ""
-            required = {
-                "outcome_id",
-                "outcome_revision",
-                "outcome_contract_digest",
-                "finalized_trajectory_digest",
-            }
-            if required.issubset(columns) and "'unknown'" in table_sql:
-                return
-
-            legacy_rows = self.conn.execute("SELECT * FROM session_outcomes").fetchall()
             self.conn.execute("BEGIN IMMEDIATE")
             try:
+                columns = {
+                    row["name"]
+                    for row in self.conn.execute(
+                        "PRAGMA table_info(session_outcomes)"
+                    ).fetchall()
+                }
+                table = self.conn.execute(
+                    "SELECT sql FROM sqlite_master WHERE type = 'table' "
+                    "AND name = 'session_outcomes'"
+                ).fetchone()
+                table_sql = (table["sql"] if table is not None else "") or ""
+                required = {
+                    "outcome_id",
+                    "outcome_revision",
+                    "outcome_contract_digest",
+                    "finalized_trajectory_digest",
+                }
+                if required.issubset(columns) and "'unknown'" in table_sql:
+                    self.conn.commit()
+                    return
+
+                legacy_rows = self.conn.execute(
+                    "SELECT * FROM session_outcomes"
+                ).fetchall()
                 self.conn.execute(
                     "ALTER TABLE session_outcomes RENAME TO session_outcomes_legacy"
                 )
@@ -973,7 +983,9 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                             governance_subject_ref, created_at
                         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                         (
-                            f"legacy:{row['user_id']}:{row['session_id']}",
+                            _legacy_session_outcome_id(
+                                str(row["user_id"]), str(row["session_id"])
+                            ),
                             1,
                             row["user_id"],
                             row["session_id"],

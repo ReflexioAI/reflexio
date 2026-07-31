@@ -1,5 +1,7 @@
 """Session outcome storage contract."""
 
+from typing import cast
+
 from reflexio.models.api_schema.domain import (
     GetSessionOutcomesRequest,
     Request,
@@ -7,6 +9,7 @@ from reflexio.models.api_schema.domain import (
     SessionOutcomeKind,
     SetSessionOutcomeRequest,
 )
+from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 from reflexio.server.services.storage.storage_base import BaseStorage
 
 
@@ -87,7 +90,7 @@ def test_exact_finalization_retry_is_idempotent(storage: BaseStorage) -> None:
     assert retry.finalized_trajectory_digest == first.finalized_trajectory_digest
 
 
-def test_changed_source_contract_is_conflicting_finalization(
+def test_changed_contract_identity_is_conflicting_finalization(
     storage: BaseStorage,
 ) -> None:
     storage.add_request(
@@ -109,15 +112,13 @@ def test_changed_source_contract_is_conflicting_finalization(
         created_at=102,
         expected_context=storage.get_session_outcome_context("contract-conflict"),
     )
-    storage.add_request(
-        Request(
-            request_id="contract-r1",
-            user_id="u1",
-            session_id="contract-conflict",
-            source="replacement-source",
-            created_at=100,
-        )
+    sqlite_storage = cast(SQLiteStorage, storage)
+    sqlite_storage.conn.execute(
+        """UPDATE session_outcomes SET outcome_contract_digest = ?
+           WHERE session_id = ?""",
+        ("0" * 64, "contract-conflict"),
     )
+    sqlite_storage.conn.commit()
 
     changed_contract = storage.record_session_outcome(
         request,
