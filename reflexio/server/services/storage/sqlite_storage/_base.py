@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, ClassVar, Literal
 
 from reflexio.models.api_schema.common import BlockingIssue
+from reflexio.models.api_schema.domain import SessionOutcomeKind
 from reflexio.models.api_schema.service_schemas import (
     AgentPlaybook,
     AgentSuccessEvaluationResult,
@@ -57,6 +58,10 @@ from reflexio.server.services.storage.error import (
     require_non_empty_session_id,
 )
 from reflexio.server.services.storage.retention_mixin import RetentionMixin
+from reflexio.server.services.storage.session_outcome_identity import (
+    outcome_contract_digest,
+    trajectory_digest,
+)
 from reflexio.server.services.storage.storage_base import BaseStorage
 from reflexio.server.site_var.site_var_manager import SiteVarManager
 
@@ -83,6 +88,52 @@ def _json_loads(text: str | None) -> Any:
     if not text:
         return None
     return json.loads(text)
+
+
+def _canonical_session_snapshot(
+    conn: sqlite3.Connection, session_id: str
+) -> dict[str, object]:
+    """Return the durable session state used to bind an outcome finalization."""
+    request_rows = conn.execute(
+        """SELECT request_id, user_id, created_at, source, agent_version, session_id,
+                  evaluation_only, retrieval_experiment_id, retrieval_experiment_arm
+           FROM requests WHERE session_id = ?
+           ORDER BY created_at ASC, request_id ASC""",
+        (session_id,),
+    ).fetchall()
+    requests: list[dict[str, object]] = []
+    for request in request_rows:
+        interactions = conn.execute(
+            """SELECT interaction_id, user_id, request_id, created_at, content, role,
+                      token_count, user_action, user_action_description,
+                      interacted_image_url, image_encoding, shadow_content,
+                      expert_content, tools_used, citations, retrieved_learnings
+               FROM interactions WHERE request_id = ?
+               ORDER BY created_at ASC, interaction_id ASC""",
+            (request["request_id"],),
+        ).fetchall()
+        requests.append(
+            {
+                "request": dict(request),
+                "interactions": [
+                    {
+                        **{
+                            key: value
+                            for key, value in dict(interaction).items()
+                            if key
+                            not in {"tools_used", "citations", "retrieved_learnings"}
+                        },
+                        "tools_used": _json_loads(interaction["tools_used"]),
+                        "citations": _json_loads(interaction["citations"]),
+                        "retrieved_learnings": _json_loads(
+                            interaction["retrieved_learnings"]
+                        ),
+                    }
+                    for interaction in interactions
+                ],
+            }
+        )
+    return {"session_id": session_id, "requests": requests}
 
 
 _FTS5_OPERATORS = frozenset({"OR", "AND", "NOT"})
@@ -771,6 +822,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             cur.executescript(_DDL)
             init_governance_tables(self.conn)
             self.conn.commit()
+        self._migrate_session_outcomes_schema()
         if self._has_sqlite_vec:
             self._create_vec_tables()
             self._migrate_vec_tables()
@@ -862,6 +914,116 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                 emb = _json_loads(r["embedding"])
                 if emb:
                     self._vec_upsert(vec_table, r["rid"], emb)
+
+    def _migrate_session_outcomes_schema(self) -> None:
+        """Rebuild legacy outcome rows with immutable v1 finalization identities."""
+        with self._lock:
+            columns = {
+                row["name"]
+                for row in self.conn.execute(
+                    "PRAGMA table_info(session_outcomes)"
+                ).fetchall()
+            }
+            table = self.conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' "
+                "AND name = 'session_outcomes'"
+            ).fetchone()
+            table_sql = (table["sql"] if table is not None else "") or ""
+            required = {
+                "outcome_id",
+                "outcome_revision",
+                "outcome_contract_digest",
+                "finalized_trajectory_digest",
+            }
+            if required.issubset(columns) and "'unknown'" in table_sql:
+                return
+
+            legacy_rows = self.conn.execute("SELECT * FROM session_outcomes").fetchall()
+            self.conn.execute("BEGIN IMMEDIATE")
+            try:
+                self.conn.execute(
+                    "ALTER TABLE session_outcomes RENAME TO session_outcomes_legacy"
+                )
+                self.conn.execute(
+                    """CREATE TABLE session_outcomes (
+                        outcome_id TEXT NOT NULL UNIQUE,
+                        outcome_revision INTEGER NOT NULL CHECK (outcome_revision >= 1),
+                        user_id TEXT NOT NULL,
+                        session_id TEXT NOT NULL,
+                        outcome TEXT NOT NULL CHECK (outcome IN ('success', 'failure', 'unknown')),
+                        occurred_at INTEGER NOT NULL,
+                        source TEXT NOT NULL,
+                        label TEXT,
+                        value REAL,
+                        metadata TEXT,
+                        outcome_contract_digest TEXT NOT NULL,
+                        finalized_trajectory_digest TEXT NOT NULL,
+                        governance_subject_ref TEXT NOT NULL,
+                        created_at INTEGER NOT NULL,
+                        PRIMARY KEY (user_id, session_id)
+                    )"""
+                )
+                for row in legacy_rows:
+                    source = str(row["source"])
+                    self.conn.execute(
+                        """INSERT INTO session_outcomes (
+                            outcome_id, outcome_revision, user_id, session_id, outcome,
+                            occurred_at, source, label, value, metadata,
+                            outcome_contract_digest, finalized_trajectory_digest,
+                            governance_subject_ref, created_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (
+                            f"legacy:{row['user_id']}:{row['session_id']}",
+                            1,
+                            row["user_id"],
+                            row["session_id"],
+                            row["outcome"],
+                            row["occurred_at"],
+                            source,
+                            row["label"],
+                            row["value"],
+                            row["metadata"],
+                            outcome_contract_digest(
+                                source=source,
+                                schema_version=1,
+                                allowed_values={
+                                    kind.value for kind in SessionOutcomeKind
+                                },
+                                finalization_rule="first_write",
+                            ),
+                            trajectory_digest(
+                                _canonical_session_snapshot(
+                                    self.conn, str(row["session_id"])
+                                )
+                            ),
+                            row["governance_subject_ref"],
+                            row["created_at"],
+                        ),
+                    )
+                self.conn.execute("DROP TABLE session_outcomes_legacy")
+                self.conn.execute(
+                    "CREATE INDEX idx_session_outcomes_occurred_at "
+                    "ON session_outcomes(occurred_at)"
+                )
+                self.conn.execute(
+                    "CREATE INDEX idx_session_outcomes_session_id "
+                    "ON session_outcomes(session_id)"
+                )
+                self.conn.execute(
+                    "CREATE INDEX idx_session_outcomes_source_outcome "
+                    "ON session_outcomes(source, outcome)"
+                )
+                self.conn.execute(
+                    "CREATE INDEX idx_session_outcomes_label ON session_outcomes(label)"
+                )
+                self.conn.execute(
+                    "CREATE INDEX idx_session_outcomes_subject_ref "
+                    "ON session_outcomes(governance_subject_ref)"
+                )
+                self.conn.commit()
+            except Exception:
+                self.conn.rollback()
+                raise
 
     def _migrate_interactions_schema(self) -> None:
         """Add new columns to existing interactions table if missing."""
@@ -2419,14 +2581,18 @@ CREATE INDEX IF NOT EXISTS idx_requests_retrieval_experiment
     ON requests(retrieval_experiment_id, user_id, session_id, created_at, request_id);
 
 CREATE TABLE IF NOT EXISTS session_outcomes (
+    outcome_id TEXT NOT NULL UNIQUE,
+    outcome_revision INTEGER NOT NULL CHECK (outcome_revision >= 1),
     user_id TEXT NOT NULL,
     session_id TEXT NOT NULL,
-    outcome TEXT NOT NULL CHECK (outcome IN ('success', 'failure')),
+    outcome TEXT NOT NULL CHECK (outcome IN ('success', 'failure', 'unknown')),
     occurred_at INTEGER NOT NULL,
     source TEXT NOT NULL,
     label TEXT,
     value REAL,
     metadata TEXT,
+    outcome_contract_digest TEXT NOT NULL,
+    finalized_trajectory_digest TEXT NOT NULL,
     governance_subject_ref TEXT NOT NULL,
     created_at INTEGER NOT NULL,
     PRIMARY KEY (user_id, session_id)

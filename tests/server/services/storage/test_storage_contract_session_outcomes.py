@@ -3,6 +3,7 @@
 from reflexio.models.api_schema.domain import (
     GetSessionOutcomesRequest,
     Request,
+    SessionOutcomeFailureReason,
     SessionOutcomeKind,
     SetSessionOutcomeRequest,
 )
@@ -39,12 +40,142 @@ def test_first_write_preserves_outcome_fields(storage: BaseStorage) -> None:
 
     assert first.recorded is True
     assert duplicate.recorded is False
+    assert duplicate.reason == SessionOutcomeFailureReason.CONFLICTING_FINALIZATION
     assert duplicate.source == "published"
     records = storage.get_session_outcomes(GetSessionOutcomesRequest(label="booked"))
     assert len(records) == 1
+    assert records[0].outcome_id
+    assert records[0].outcome_revision == 1
+    assert len(records[0].outcome_contract_digest) == 64
+    assert len(records[0].finalized_trajectory_digest) == 64
     assert records[0].outcome == SessionOutcomeKind.SUCCESS
     assert records[0].value == 12.0
     assert records[0].metadata == {"crm": "test"}
+
+
+def test_exact_finalization_retry_is_idempotent(storage: BaseStorage) -> None:
+    storage.add_request(
+        Request(
+            request_id="retry-r1",
+            user_id="u1",
+            session_id="exact-retry",
+            source="published",
+            created_at=100,
+        )
+    )
+    request = SetSessionOutcomeRequest(
+        session_id="exact-retry",
+        outcome=SessionOutcomeKind.UNKNOWN,
+        occurred_at=101,
+        metadata={"reason": "not enough information"},
+    )
+    context = storage.get_session_outcome_context("exact-retry")
+
+    first = storage.record_session_outcome(
+        request, created_at=102, expected_context=context
+    )
+    retry = storage.record_session_outcome(
+        request, created_at=103, expected_context=context
+    )
+
+    assert first.recorded is True
+    assert retry.recorded is False
+    assert retry.reason is None
+    assert retry.outcome_id == first.outcome_id
+    assert retry.outcome_revision == first.outcome_revision == 1
+    assert retry.outcome_contract_digest == first.outcome_contract_digest
+    assert retry.finalized_trajectory_digest == first.finalized_trajectory_digest
+
+
+def test_changed_source_contract_is_conflicting_finalization(
+    storage: BaseStorage,
+) -> None:
+    storage.add_request(
+        Request(
+            request_id="contract-r1",
+            user_id="u1",
+            session_id="contract-conflict",
+            source="published",
+            created_at=100,
+        )
+    )
+    request = SetSessionOutcomeRequest(
+        session_id="contract-conflict",
+        outcome=SessionOutcomeKind.SUCCESS,
+        occurred_at=101,
+    )
+    first = storage.record_session_outcome(
+        request,
+        created_at=102,
+        expected_context=storage.get_session_outcome_context("contract-conflict"),
+    )
+    storage.add_request(
+        Request(
+            request_id="contract-r1",
+            user_id="u1",
+            session_id="contract-conflict",
+            source="replacement-source",
+            created_at=100,
+        )
+    )
+
+    changed_contract = storage.record_session_outcome(
+        request,
+        created_at=103,
+        expected_context=storage.get_session_outcome_context("contract-conflict"),
+    )
+
+    assert first.recorded is True
+    assert changed_contract.recorded is False
+    assert (
+        changed_contract.reason == SessionOutcomeFailureReason.CONFLICTING_FINALIZATION
+    )
+
+
+def test_changed_session_trajectory_is_conflicting_finalization(
+    storage: BaseStorage,
+) -> None:
+    storage.add_request(
+        Request(
+            request_id="trajectory-r1",
+            user_id="u1",
+            session_id="trajectory-conflict",
+            source="published",
+            created_at=100,
+        )
+    )
+    request = SetSessionOutcomeRequest(
+        session_id="trajectory-conflict",
+        outcome=SessionOutcomeKind.FAILURE,
+        occurred_at=101,
+    )
+    first = storage.record_session_outcome(
+        request,
+        created_at=102,
+        expected_context=storage.get_session_outcome_context("trajectory-conflict"),
+    )
+    storage.add_request(
+        Request(
+            request_id="trajectory-r2",
+            user_id="u1",
+            session_id="trajectory-conflict",
+            source="published",
+            created_at=103,
+        )
+    )
+
+    changed_trajectory = storage.record_session_outcome(
+        request,
+        created_at=104,
+        expected_context=storage.get_session_outcome_context("trajectory-conflict"),
+    )
+
+    assert first.recorded is True
+    assert changed_trajectory.recorded is False
+    assert (
+        changed_trajectory.reason
+        == SessionOutcomeFailureReason.CONFLICTING_FINALIZATION
+    )
 
 
 def test_unknown_session_is_rejected(storage: BaseStorage) -> None:

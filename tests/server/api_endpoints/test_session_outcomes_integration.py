@@ -54,13 +54,18 @@ def test_source_is_derived_from_tiebroken_first_request(
         )
 
     assert response.status_code == 200
-    assert response.json() == {
+    body = response.json()
+    assert {
         "success": True,
         "recorded": True,
         "message": "Outcome recorded",
         "user_id": "u1",
         "source": "canonical-source",
-    }
+    }.items() <= body.items()
+    assert body["outcome_id"]
+    assert body["outcome_revision"] == 1
+    assert len(body["outcome_contract_digest"]) == 64
+    assert len(body["finalized_trajectory_digest"]) == 64
     assert "stripped unknown fields: source" in caplog.text
     assert "multiple sources for session source-session" in caplog.text
 
@@ -103,6 +108,45 @@ def test_retry_survives_ordinary_session_deletion(
     assert retry.json()["success"] is True
     assert retry.json()["recorded"] is False
     assert retry.json()["source"] == "published"
+
+
+def test_conflicting_retry_is_not_accepted_only_by_session_identity(
+    client_with_org: tuple[TestClient, str],
+) -> None:
+    client, org_id = client_with_org
+    storage = get_reflexio(org_id=org_id).get_storage()
+    storage.add_request(
+        Request(
+            request_id="conflict-r1",
+            user_id="u1",
+            session_id="conflict-session",
+            source="published",
+            created_at=100,
+        )
+    )
+    first = client.post(
+        "/api/session_outcome",
+        json={
+            "session_id": "conflict-session",
+            "outcome": "success",
+            "occurred_at": 101,
+        },
+    )
+    conflict = client.post(
+        "/api/session_outcome",
+        json={
+            "session_id": "conflict-session",
+            "outcome": "failure",
+            "occurred_at": 101,
+        },
+    )
+
+    assert first.status_code == 200
+    assert first.json()["recorded"] is True
+    assert conflict.status_code == 200
+    assert conflict.json()["success"] is False
+    assert conflict.json()["recorded"] is False
+    assert conflict.json()["reason"] == "conflicting_finalization"
 
 
 def test_outcome_validation_boundaries(

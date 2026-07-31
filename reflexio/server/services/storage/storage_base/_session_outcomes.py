@@ -18,6 +18,10 @@ class SessionOutcomeWriteResult:
     source: str | None = None
     reason: SessionOutcomeFailureReason | None = None
     context_changed: bool = False
+    outcome_id: str | None = None
+    outcome_revision: int | None = None
+    outcome_contract_digest: str | None = None
+    finalized_trajectory_digest: str | None = None
 
 
 @dataclass(frozen=True)
