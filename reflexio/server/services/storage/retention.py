@@ -52,7 +52,7 @@ RETENTION_TARGETS: tuple[RetentionTarget, ...] = (
         "session_outcomes",
         "session_outcomes",
         "created_at",
-        ("session_id",),
+        ("user_id", "session_id"),
     ),
     RetentionTarget(
         "user_playbooks",
