@@ -40,6 +40,7 @@ from typing import TYPE_CHECKING, Any
 import litellm
 from pydantic import BaseModel
 
+from reflexio.server.error_reporting import set_error_tags
 from reflexio.server.llm._litellm_subprocess import _litellm_completion_worker
 from reflexio.server.llm._litellm_types import (
     CompletionResult,
@@ -78,7 +79,7 @@ if TYPE_CHECKING:
 #
 # MiniMax-M3 was pinned to 240s when it was the sole model. That let a *hung*
 # primary block ~240s before falling back, dominating the wasted time behind
-# Sentry PYTHON-FASTAPI-62. It is now floored at the 120s default so a hang is
+# a production timeout incident. It is now floored at the 120s default so a hang is
 # abandoned sooner and the fallback (e.g. gpt-5-mini) is reached faster. This is
 # the key post-deploy tuning knob: raise it if legitimately-slow calls start
 # timing out, lower it to cut more waste.
@@ -491,7 +492,7 @@ class TextGenerationMixin:
         # embedding models: they have no litellm completion route (they are served
         # in-process by ``_litellm_embedding.py``), so litellm would raise
         # ``BadRequestError: LLM Provider NOT provided`` deep inside its fallback
-        # ladder if one ever landed in this list (Sentry PYTHON-FASTAPI-CV).
+        # ladder if one ever landed in this list.
         fallback_models = [
             m
             for m in fallback_models_raw
@@ -647,7 +648,7 @@ class TextGenerationMixin:
 
         The reflexio-owned walk consumes this once and then rebuilds transport
         params per rung; ``local/*`` in-process embedding models have no litellm
-        completion route (Sentry PYTHON-FASTAPI-CV) and self-referential entries
+        completion route and self-referential entries
         would just retry the same broken endpoint, so both are filtered here.
 
         A configured custom endpoint is a single-model hard pin (every rung's
@@ -767,7 +768,7 @@ class TextGenerationMixin:
         LiteLLM — the reflexio-owned walk advances between rungs itself), so the
         caller sizes ``hard_timeout`` to a single attempt on one rung, not the
         whole ladder. A hung primary is killed at its own bound and the walk
-        then starts the next rung fresh — preserving the Sentry PYTHON-FASTAPI-62
+        then starts the next rung fresh — preserving the timeout-regression
         property (a hung primary must not block the fallback) per rung.
         """
         provider_timeout = params.get("timeout", self.config.timeout)
@@ -989,8 +990,8 @@ class TextGenerationMixin:
         replaces the old response-model-diffing heuristic (which never fired once
         fallbacks left litellm). Preserves the pre-existing wire format —
         ``event=llm_fallback_used`` plus the ``llm.fallback_used`` /
-        ``llm.primary_model`` / ``llm.fallback_model`` Sentry tags — so dashboards
-        and alerts keep working; adds ``llm.fallback_reason`` so alerting can page
+        ``llm.primary_model`` / ``llm.fallback_model`` error-reporting tags — so
+        dashboards and alerts keep working; adds ``llm.fallback_reason`` so alerting can page
         on a broken-but-reachable primary (``parse_exhausted``) differently from an
         outage (``transport_error`` / ``cap_saturated``).
 
@@ -1005,19 +1006,14 @@ class TextGenerationMixin:
             served_model,
             reason,
         )
-        try:
-            # Local import keeps sentry out of module-init paths the tests
-            # exercise without a Sentry SDK installed. sentry_sdk is an
-            # enterprise-only dependency; OSS callers run without it and the
-            # ImportError is intentionally absorbed by the except.
-            import sentry_sdk  # type: ignore[import-not-found]
-
-            sentry_sdk.set_tag("llm.fallback_used", "true")
-            sentry_sdk.set_tag("llm.primary_model", str(primary_model))
-            sentry_sdk.set_tag("llm.fallback_model", str(served_model))
-            sentry_sdk.set_tag("llm.fallback_reason", reason)
-        except Exception:  # noqa: BLE001 — observability must not break the call
-            return
+        set_error_tags(
+            **{
+                "llm.fallback_used": "true",
+                "llm.primary_model": primary_model,
+                "llm.fallback_model": served_model,
+                "llm.fallback_reason": reason,
+            }
+        )
 
     def _make_request(  # noqa: C901
         self, messages: list[dict[str, Any]], **kwargs: Any
@@ -1031,7 +1027,7 @@ class TextGenerationMixin:
         rung so each provider gets its own structured-output strategy, api_base,
         and a per-single-attempt hard timeout. ``num_retries`` is forced to 0 on
         every rung: same-model retry of a *hung* primary is what made the fallback
-        unreachable and produced the 490s in Sentry PYTHON-FASTAPI-62. Each rung is
+        unreachable and produced 490-second requests. Each rung is
         entered at most once per logical request; within a rung the primary keeps
         exactly one same-model parse-retry (plain path) or one same-model
         corrective repair turn (validator path). A rung reached via the repair

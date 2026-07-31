@@ -15,6 +15,7 @@ from reflexio.models.api_schema.internal_schema import RequestInteractionDataMod
 from reflexio.models.api_schema.service_schemas import Interaction, Request
 from reflexio.models.config_schema import PlaybookConfig, ProfileExtractorConfig
 from reflexio.server.api_endpoints.request_context import RequestContext
+from reflexio.server.error_reporting import error_tags
 from reflexio.server.llm._litellm_types import ModelProvenance
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 from reflexio.server.llm.model_defaults import ModelRole, resolve_model_name
@@ -73,7 +74,6 @@ from reflexio.server.services.storage.storage_base import (
 )
 from reflexio.server.services.tagging.tagging_scheduler import schedule_tagging
 from reflexio.server.site_var.site_var_manager import SiteVarManager
-from reflexio.server.tracing import sentry_tags
 
 logger = logging.getLogger(__name__)
 
@@ -292,7 +292,7 @@ class ExtractionResumeWorker:
                 run, resolved_calls
             )
         except Exception as exc:
-            with sentry_tags(
+            with error_tags(
                 subsystem="extraction",
                 op="resume_run",
                 org_id=self.request_context.org_id,
@@ -331,7 +331,7 @@ class ExtractionResumeWorker:
                 pending_tool_call_ids=pending_tool_call_ids,
             )
         except Exception as exc:
-            with sentry_tags(
+            with error_tags(
                 subsystem="extraction",
                 op="finalize_run",
                 org_id=self.request_context.org_id,
@@ -377,7 +377,7 @@ class ExtractionResumeWorker:
                 pending_tool_call_ids=pending_tool_call_ids,
             )
         except Exception as exc:
-            with sentry_tags(
+            with error_tags(
                 subsystem="extraction",
                 op="finalize_run_retry",
                 org_id=self.request_context.org_id,

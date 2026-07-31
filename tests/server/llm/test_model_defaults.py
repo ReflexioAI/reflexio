@@ -446,7 +446,7 @@ class TestProviderDefaults:
         ``_build_completion_params`` (in ``_litellm_text_generation``) drops every
         ``local/*`` model from text-generation fallback lists on the assumption
         that ``local`` is an in-process EMBEDDING provider with no litellm
-        completion route (that blanket filter is what fixes Sentry
+        completion route (that blanket filter fixes the production
         PYTHON-FASTAPI-CV). If a local *generation* model is ever added, this
         assertion fails loudly so that filter — and the whole ``local/`` naming
         scheme — is revisited before a legitimate local generation fallback gets

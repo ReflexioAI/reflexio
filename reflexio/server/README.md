@@ -98,7 +98,7 @@ Description: FastAPI backend server that processes user interactions to generate
 - **Operations/admin**: `GET /api/get_operation_status`, `POST /api/cancel_operation`, `POST /api/admin/cache/invalidate`, `POST /api/session_outcome`, `POST /api/get_session_outcomes`, `DELETE /api/delete_interaction`, `DELETE /api/delete_request`, `DELETE /api/delete_session`, `DELETE /api/delete_requests_by_ids`, `DELETE /api/delete_all_interactions`, `POST /api/clear_user_data`
 - **Human clarification/stall state**: `GET /api/pending_tool_calls`, `GET /api/pending_tool_calls/{pending_tool_call_id}`, `POST /api/pending_tool_calls/{pending_tool_call_id}/resolve`, `PATCH /api/pending_tool_calls/{pending_tool_call_id}/answer`, `POST /api/pending_tool_calls/{pending_tool_call_id}/not_applicable`, `POST /api/pending_tool_calls/{pending_tool_call_id}/cancel`, `GET /api/stall_state`, `POST /api/stall_state/notified`
 
-**Authentication Pattern**: The open-source app uses `default_get_org_id` and `DEFAULT_ORG_ID` for local/no-auth starts. The enterprise extension wraps `create_app()` with authenticated org resolution, login/OAuth/account/share routers, admin checks, Sentry tracing, and usage metrics.
+**Authentication Pattern**: The open-source app uses `default_get_org_id` and `DEFAULT_ORG_ID` for local/no-auth starts. Enterprise deployments wrap `create_app()` with authenticated org resolution, additional account routers, admin checks, observability hooks, and usage metrics.
 
 **Pattern**: Core route handlers call `Reflexio` through `get_reflexio(org_id)`; endpoint helper files should not instantiate `Reflexio` directly.
 
@@ -109,6 +109,15 @@ Description: FastAPI backend server that processes user interactions to generate
 `CapabilityRegistry` lets deployments register optional routers, startup/shutdown hooks, and cross-cutting services without hardcoding enterprise-only imports into the OSS app. `create_app()` builds the active registry, stores it on `app.state.capability_registry`, installs capability routers/startup/shutdown hooks, and exposes typed service lookup through `ServiceKey`.
 
 **Pattern**: Optional integrations should register capabilities/services at app construction time and consume them through the registry; avoid importing enterprise implementations directly in OSS modules.
+
+### Error reporting hook
+
+`error_reporting.py` defines the vendor-neutral `ErrorReporter` protocol and the
+`configure_error_reporter`, `error_tags`, `set_error_tags`, and `capture_anomaly`
+facades. They are no-ops unless a deployment registers an implementation through
+`HookRegistry.set_error_reporter`. Reporter failures are logged and swallowed so
+diagnostics never change product control flow; exceptions raised by code inside an
+`error_tags` block are re-raised unchanged.
 
 ## LLM Client
 

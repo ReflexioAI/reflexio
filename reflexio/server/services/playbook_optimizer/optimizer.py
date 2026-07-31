@@ -23,6 +23,7 @@ from reflexio.models.api_schema.domain import (
 from reflexio.models.api_schema.domain.entities import LineageContext
 from reflexio.models.config_schema import PlaybookOptimizerConfig
 from reflexio.server.api_endpoints.request_context import RequestContext
+from reflexio.server.error_reporting import error_tags
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.services.playbook.aggregation_trigger import (
     maybe_trigger_user_playbook_aggregation,
@@ -40,7 +41,6 @@ from reflexio.server.services.playbook.publication import (
     incumbent_user_playbook_semantic_digest,
 )
 from reflexio.server.services.storage.error import OptimizationJobLeaseLiveError
-from reflexio.server.tracing import sentry_tags
 
 from .assistant_webhook import AssistantCallable, LocalScriptAssistant, WebhookAssistant
 from .gepa_adapter import PLAYBOOK_CONTENT_COMPONENT, ReflexioPlaybookGEPAAdapter
@@ -239,7 +239,7 @@ class PlaybookOptimizer:
                 adapter,
             )
         except Exception as exc:
-            with sentry_tags(
+            with error_tags(
                 subsystem="playbook_optimizer",
                 op="run",
                 org_id=self.request_context.org_id,

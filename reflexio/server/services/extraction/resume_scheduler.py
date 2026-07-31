@@ -15,12 +15,12 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 
 from reflexio.server.api_endpoints.request_context import RequestContext
+from reflexio.server.error_reporting import error_tags
 from reflexio.server.scheduling import ThreadedScheduler
 from reflexio.server.services.extraction.resumable_agent import (
     pending_tool_calls_enabled,
 )
 from reflexio.server.services.extraction.resume_worker import ExtractionResumeWorker
-from reflexio.server.tracing import sentry_tags
 
 logger = logging.getLogger(__name__)
 
@@ -91,7 +91,7 @@ class ExtractionResumeScheduler(ThreadedScheduler):
                     resumed,
                 )
         except Exception as exc:
-            with sentry_tags(
+            with error_tags(
                 subsystem="extraction",
                 op="scheduler_org_drain",
                 org_id=org_id,
@@ -114,7 +114,7 @@ class ExtractionResumeScheduler(ThreadedScheduler):
                     break
                 self._drain_org(org_id)
         except Exception as exc:
-            with sentry_tags(
+            with error_tags(
                 subsystem="extraction",
                 op="scheduler_tick",
                 error_type=type(exc).__name__,

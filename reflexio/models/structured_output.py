@@ -78,7 +78,7 @@ class ProviderSafeUnionMixin(_ProviderSafeUnionBase):
 
     A model containing a Pydantic discriminated union serializes to JSON Schema
     with ``oneOf`` + ``discriminator``, which strict structured-output endpoints
-    reject (the Sentry ``PYTHON-FASTAPI-9J`` incident). Mixing this in folds
+    reject (a production structured-output incident). Mixing this in folds
     ``oneOf`` into ``anyOf`` (and drops ``discriminator``) at the model boundary,
     so every caller of ``model_json_schema()`` — litellm, instructor, our own
     path — gets a provider-safe schema **unconditionally**, without depending on

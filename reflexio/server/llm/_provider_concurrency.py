@@ -4,7 +4,7 @@ A bounded semaphore keyed by LLM provider. Acquired in the PARENT process
 around a provider call so N tasks don't fan into a provider-429 storm.
 By default, on saturation it fails OPEN (proceeds without a permit) after a
 bounded wait, never blocking unboundedly — that would re-open the hung-provider
-stall class (Sentry PYTHON-FASTAPI-62) through the limiter. Providers listed in
+stall class through the limiter. Providers listed in
 ``REFLEXIO_LLM_FAIL_CLOSED_PROVIDERS`` instead fail CLOSED — they raise
 ``ProviderCapSaturatedError`` on saturation to protect a fixed-quota
 subscription (e.g. the Z.ai GLM coding plan used as a fallback), which the

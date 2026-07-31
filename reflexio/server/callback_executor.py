@@ -19,7 +19,7 @@ from collections import deque
 from collections.abc import Callable
 from typing import NamedTuple
 
-from reflexio.server.tracing import capture_anomaly
+from reflexio.server.error_reporting import capture_anomaly
 
 logger = logging.getLogger(__name__)
 

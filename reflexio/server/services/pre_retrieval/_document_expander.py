@@ -16,7 +16,6 @@ from pydantic import BaseModel
 
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.prompt.prompt_manager import PromptManager
-from reflexio.server.services.service_utils import log_model_response
 
 logger = logging.getLogger(__name__)
 
@@ -114,8 +113,6 @@ class DocumentExpander:
             max_retries=self.LLM_MAX_RETRIES,
             **model_kwargs,
         )
-        log_model_response(logger, "Document expansion model response", result)
-
         if isinstance(result, str):
             return self._parse_expansion_json(result)
         return {}
@@ -154,7 +151,7 @@ class DocumentExpander:
                 return expansions
         except json.JSONDecodeError:
             # Log the raw output length only — the model output is Customer
-            # Content and must not reach logs/Sentry/CloudWatch. `text` is the
+            # Content and must not reach logs or external telemetry. `text` is the
             # normalized (stripped, fence-extracted) buffer, so report `output`
             # to reflect the true response size.
             logger.warning(

@@ -143,7 +143,7 @@ def assert_provider_safe_schema(schema: dict[str, Any], *, name: str = "") -> No
     """Enforce that an emitted structured-output schema is provider-safe.
 
     Strict structured-output endpoints (OpenAI, minimax) reject ``oneOf`` /
-    ``discriminator`` (Sentry PYTHON-FASTAPI-9J). Models that inherit
+    ``discriminator``. Models that inherit
     ``StrictStructuredOutput`` are safe by construction; this is the runtime net
     at the call boundary for anything that bypasses that guarantee — a model that
     forgot the base, or a tool-argument / dynamically-built schema not covered by
@@ -173,7 +173,7 @@ def assert_provider_safe_schema(schema: dict[str, Any], *, name: str = "") -> No
         f"Structured-output schema {name or '<unnamed>'!r} contains provider-unsafe "
         f"keyword(s) {offenders}; strict providers reject these. Inherit "
         "StrictStructuredOutput so the schema folds oneOf->anyOf by construction "
-        "(Sentry PYTHON-FASTAPI-9J)."
+        "before sending."
     )
     if "pytest" in sys.modules:
         raise ValueError(msg)

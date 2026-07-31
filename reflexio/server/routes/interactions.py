@@ -163,7 +163,7 @@ def publish_user_interaction(
     request_id = payload.request_id or str(uuid.uuid4())
     payload.request_id = request_id
     # request_id is caller-supplied (NonEmptyStr: no length cap, no character
-    # restrictions) and is logged below at ERROR, which Sentry ingests as an
+    # restrictions) and is logged below at ERROR, which external reporters ingest as an
     # event body. A newline in it would forge a line in a shared multi-tenant
     # log stream -- the same hazard as the unknown field names.
     safe_request_id = sanitise_for_log(request_id)
@@ -186,7 +186,7 @@ def publish_user_interaction(
             # Deliberately NOT logging ``response.message``: on the storage
             # path it is ``str(e)`` from a catch-all (lib/_interactions.py), an
             # unbounded exception string with no content-freeness guarantee,
-            # and Sentry ingests ERROR records as event bodies without
+            # and error reporters may ingest ERROR records as event bodies without
             # scrubbing them. #377 established that such messages must be
             # content-free by construction, so log a bounded shape instead.
             if not response.success:
@@ -200,7 +200,7 @@ def publish_user_interaction(
         except Exception as exc:  # noqa: BLE001 - a background task must never raise past add_task
             # Same content-freeness problem as response.message above: an
             # exception string (and its traceback locals) has no guarantee of
-            # being free of Customer Content, and Sentry ingests this as an
+            # being free of Customer Content, and reporters may ingest this as an
             # event body. Log the type and the raising location -- file:line is
             # content-free and is the only way to find a background failure --
             # but never the message.

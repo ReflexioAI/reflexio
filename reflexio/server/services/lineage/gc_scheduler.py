@@ -13,7 +13,7 @@ org's config. Each tick evaluates every org independently.
   unconditionally once per org after the Class-B block. Enterprise registers a
   governance-retention closure here at startup (see ``reflexio_ext``).
 
-One org's failure never stalls the loop; errors are captured as Sentry anomalies
+One org's failure never stalls the loop; errors are captured as anomalies
 and the loop continues to the next org.
 
 Note: the poll interval is always taken from ``lineage_gc.poll_interval_seconds``
@@ -29,9 +29,9 @@ from collections.abc import Callable
 
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.env_utils import env_str
+from reflexio.server.error_reporting import capture_anomaly
 from reflexio.server.org_fanout import iterate_orgs_bounded
 from reflexio.server.scheduling import LeaderGate, ThreadedScheduler
-from reflexio.server.tracing import capture_anomaly
 
 logger = logging.getLogger(__name__)
 

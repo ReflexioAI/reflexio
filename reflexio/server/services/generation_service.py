@@ -23,6 +23,7 @@ from reflexio.models.api_schema.service_schemas import (
 from reflexio.models.config_schema import Config
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.env_utils import env_str, env_truthy
+from reflexio.server.error_reporting import error_tags
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.operation_limiter import operation_limit
 from reflexio.server.services.agent_success_evaluation.runner import (
@@ -61,7 +62,6 @@ from reflexio.server.services.storage.retention import (
     get_row_retention_limits,
 )
 from reflexio.server.services.tagging.tagging_scheduler import schedule_tagging
-from reflexio.server.tracing import sentry_tags
 from reflexio.server.usage_metrics import record_usage_event
 
 if TYPE_CHECKING:
@@ -143,7 +143,7 @@ def _completed_within_shared_budget(
                 f"{service_name} timed out after {remaining:.1f}s "
                 f"of the shared {timeout_seconds:.0f}s budget"
             )
-            with sentry_tags(
+            with error_tags(
                 subsystem="generation",
                 service=service_name,
                 request_id=request_id,
@@ -154,7 +154,7 @@ def _completed_within_shared_budget(
             continue
         except Exception as e:
             msg = f"{service_name} failed: {e}"
-            with sentry_tags(
+            with error_tags(
                 subsystem="generation",
                 service=service_name,
                 request_id=request_id,
@@ -641,7 +641,7 @@ class GenerationService:
                 duration_ms=int((time.perf_counter() - publish_start) * 1000),
                 error_kind=type(e).__name__,
             )
-            with sentry_tags(
+            with error_tags(
                 subsystem="generation",
                 op="refresh_profile",
                 org_id=self.org_id,
@@ -1032,7 +1032,7 @@ class GenerationService:
                     _run()
                 except Exception as e:
                     msg = f"{svc_name} failed: {e}"
-                    with sentry_tags(
+                    with error_tags(
                         subsystem="generation",
                         service=svc_name,
                         request_id=request_id,
@@ -1308,7 +1308,7 @@ class GenerationService:
                     try:
                         self._cleanup_retention_target(target_name, limit)
                     except Exception as e:  # noqa: BLE001
-                        with sentry_tags(
+                        with error_tags(
                             subsystem="generation",
                             op="cleanup_retention_target",
                             org_id=self.org_id,
@@ -1323,7 +1323,7 @@ class GenerationService:
                 mgr.release_simple_lock()
 
         except Exception as e:
-            with sentry_tags(
+            with error_tags(
                 subsystem="generation",
                 op="cleanup_storage_tables",
                 org_id=self.org_id,

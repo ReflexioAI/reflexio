@@ -155,7 +155,7 @@ def _assert_response_format_strict_compatible(kwargs: dict[str, Any]) -> None:
     """Guard every structured-output call: a ``json_schema`` response_format sent
     to the provider must be OpenAI strict-mode compatible (no ``oneOf`` /
     ``discriminator``). Pydantic discriminated unions emit ``oneOf``, which strict
-    structured-output endpoints reject with a 400 (Sentry PYTHON-FASTAPI-9J) — a
+    structured-output endpoints reject with a 400 — a
     failure the canned mock would otherwise hide. Raw Pydantic-class
     response_format (the unsupported-provider passthrough) is skipped: that path
     is handled by LiteLLM/the provider, not by an explicit strict schema.
@@ -173,7 +173,7 @@ def _assert_response_format_strict_compatible(kwargs: dict[str, Any]) -> None:
             raise AssertionError(
                 f"response_format json_schema contains '{banned}' — OpenAI strict "
                 "structured outputs reject it. Normalize via make_strict_json_schema "
-                "before sending (Sentry PYTHON-FASTAPI-9J)."
+                "before sending."
             )
 
 

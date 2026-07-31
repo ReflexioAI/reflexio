@@ -54,7 +54,7 @@ from reflexio.server.api_endpoints.precondition_checks import (
     validate_publish_user_interaction_request,
 )
 from reflexio.server.cache.reflexio_cache import get_reflexio
-from reflexio.server.tracing import sentry_tags
+from reflexio.server.error_reporting import error_tags
 
 logger = logging.getLogger(__name__)
 
@@ -187,7 +187,7 @@ def delete_user_profile(
     try:
         return reflexio.delete_profile(request)
     except Exception as e:
-        with sentry_tags(
+        with error_tags(
             subsystem="publisher_api", action="delete_user_profile", org_id=org_id
         ):
             logger.exception("Failed to delete user profile")
@@ -210,7 +210,7 @@ def delete_user_interaction(
     try:
         return reflexio.delete_interaction(request)
     except Exception as e:
-        with sentry_tags(
+        with error_tags(
             subsystem="publisher_api", action="delete_user_interaction", org_id=org_id
         ):
             logger.exception("Failed to delete user interaction")
@@ -231,7 +231,7 @@ def delete_request(org_id: str, request: DeleteRequestRequest) -> DeleteRequestR
     try:
         return reflexio.delete_request(request)
     except Exception as e:
-        with sentry_tags(
+        with error_tags(
             subsystem="publisher_api", action="delete_request", org_id=org_id
         ):
             logger.exception("Failed to delete request")
@@ -252,7 +252,7 @@ def delete_session(org_id: str, request: DeleteSessionRequest) -> DeleteSessionR
     try:
         return reflexio.delete_session(request)
     except Exception as e:
-        with sentry_tags(
+        with error_tags(
             subsystem="publisher_api", action="delete_session", org_id=org_id
         ):
             logger.exception("Failed to delete session")
@@ -275,7 +275,7 @@ def delete_agent_playbook(
     try:
         return reflexio.delete_agent_playbook(request)
     except Exception as e:
-        with sentry_tags(
+        with error_tags(
             subsystem="publisher_api", action="delete_agent_playbook", org_id=org_id
         ):
             logger.exception("Failed to delete agent playbook")
@@ -298,7 +298,7 @@ def delete_user_playbook(
     try:
         return reflexio.delete_user_playbook(request)
     except Exception as e:
-        with sentry_tags(
+        with error_tags(
             subsystem="publisher_api", action="delete_user_playbook", org_id=org_id
         ):
             logger.exception("Failed to delete user playbook")
@@ -478,7 +478,7 @@ def run_playbook_aggregation(
             request.agent_version, request.playbook_name
         )
     except Exception as e:
-        with sentry_tags(
+        with error_tags(
             subsystem="publisher_api", action="run_playbook_aggregation", org_id=org_id
         ):
             logger.exception("Failed to run playbook aggregation")
@@ -518,7 +518,7 @@ def update_agent_playbook_status(
     try:
         return reflexio.update_agent_playbook_status(request)
     except Exception as e:
-        with sentry_tags(
+        with error_tags(
             subsystem="publisher_api", action="update_playbook_status", org_id=org_id
         ):
             logger.exception("Failed to update playbook status")
@@ -541,7 +541,7 @@ def update_agent_playbook(
     try:
         return reflexio.update_agent_playbook(request)
     except Exception as e:
-        with sentry_tags(
+        with error_tags(
             subsystem="publisher_api", action="update_agent_playbook", org_id=org_id
         ):
             logger.exception("Failed to update agent playbook")
@@ -564,7 +564,7 @@ def update_user_playbook(
     try:
         return reflexio.update_user_playbook(request)
     except Exception as e:
-        with sentry_tags(
+        with error_tags(
             subsystem="publisher_api", action="update_user_playbook", org_id=org_id
         ):
             logger.exception("Failed to update user playbook")
@@ -587,7 +587,7 @@ def update_user_profile(
     try:
         return reflexio.update_user_profile(request)
     except Exception as e:
-        with sentry_tags(
+        with error_tags(
             subsystem="publisher_api", action="update_user_profile", org_id=org_id
         ):
             logger.exception("Failed to update user profile")

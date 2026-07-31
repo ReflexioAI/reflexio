@@ -323,7 +323,7 @@ def parse_status(value: str | None) -> Status | None:
     try:
         return Status(value)
     except ValueError:
-        from reflexio.server.tracing import capture_anomaly
+        from reflexio.server.error_reporting import capture_anomaly
 
         capture_anomaly(
             "storage.status.unknown_value", level="warning", status_value=value
@@ -1477,19 +1477,19 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             """
         )
         self.conn.execute(
-            """CREATE UNIQUE INDEX uq_poj_active_discovery
+            """CREATE UNIQUE INDEX IF NOT EXISTS uq_poj_active_discovery
                ON playbook_optimization_jobs(optimizer_kind, discovery_key)
                WHERE status IN ('pending', 'running')
                  AND discovery_key IS NOT NULL"""
         )
         self.conn.execute(
-            """CREATE UNIQUE INDEX uq_poj_active_attempt
+            """CREATE UNIQUE INDEX IF NOT EXISTS uq_poj_active_attempt
                ON playbook_optimization_jobs(optimizer_kind, attempt_key)
                WHERE status IN ('pending', 'running')
                  AND attempt_key IS NOT NULL"""
         )
         self.conn.execute(
-            """CREATE UNIQUE INDEX uq_poj_active_target
+            """CREATE UNIQUE INDEX IF NOT EXISTS uq_poj_active_target
                ON playbook_optimization_jobs(optimizer_kind, target_kind, target_id)
                WHERE status IN ('pending', 'running')"""
         )

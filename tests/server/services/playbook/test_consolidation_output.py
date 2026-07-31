@@ -58,7 +58,7 @@ def test_output_json_schema_is_provider_safe_by_construction():
     Option C (``ProviderSafeUnionMixin``): the discriminated union is folded to
     ``anyOf`` at the model boundary, so the emitted JSON schema is accepted by
     strict structured-output providers WITHOUT ``make_strict_json_schema`` and
-    WITHOUT any provider-detection gate (the gap that caused Sentry
+    WITHOUT any provider-detection gate (the gap that caused the production
     ``PYTHON-FASTAPI-9J``). Asserting on the raw schema proves the property is
     intrinsic to the model, not bolted on by a downstream normalizer.
     """

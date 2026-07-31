@@ -23,6 +23,7 @@ from reflexio.models.config_schema import (
     PlaybookAggregatorConfig,
 )
 from reflexio.server.api_endpoints.request_context import RequestContext
+from reflexio.server.error_reporting import capture_anomaly, error_tags
 from reflexio.server.llm._litellm_types import ModelProvenance
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.services.embedding_text import resolve_clustering_similarity
@@ -52,7 +53,6 @@ from reflexio.server.services.playbook.playbook_service_utils import (
 )
 from reflexio.server.services.service_utils import log_model_response
 from reflexio.server.services.storage.storage_base import AGGREGATE_REASON_PREFIX
-from reflexio.server.tracing import capture_anomaly, sentry_tags
 from reflexio.server.usage_metrics import record_usage_event
 
 logger = logging.getLogger(__name__)
@@ -832,7 +832,7 @@ class PlaybookAggregator:
                             self.agent_version,
                         )
                 except Exception:
-                    with sentry_tags(
+                    with error_tags(
                         subsystem="playbook_aggregation",
                         op="supersede_agent_playbooks",
                         org_id=self.request_context.org_id,
