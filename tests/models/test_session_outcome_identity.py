@@ -103,6 +103,42 @@ def test_session_outcome_record_accepts_unknown_and_serializes_identities() -> N
     ]
 
 
+def test_session_outcome_record_accepts_legacy_all_null_identity() -> None:
+    record = SessionOutcomeRecord(
+        outcome_id=None,
+        outcome_revision=None,
+        user_id="legacy-user",
+        session_id="legacy-session",
+        outcome=SessionOutcomeKind.SUCCESS,
+        occurred_at=1,
+        source="customer_webhook",
+        outcome_contract_digest=None,
+        finalized_trajectory_digest=None,
+        created_at=2,
+    )
+
+    assert record.outcome_id is None
+    assert record.outcome_revision is None
+    assert record.outcome_contract_digest is None
+    assert record.finalized_trajectory_digest is None
+
+
+def test_session_outcome_record_rejects_partial_legacy_identity() -> None:
+    with pytest.raises(ValidationError, match="all populated or all null"):
+        SessionOutcomeRecord(
+            outcome_id="outcome-1",
+            outcome_revision=None,
+            user_id="legacy-user",
+            session_id="legacy-session",
+            outcome=SessionOutcomeKind.SUCCESS,
+            occurred_at=1,
+            source="customer_webhook",
+            outcome_contract_digest=None,
+            finalized_trajectory_digest=None,
+            created_at=2,
+        )
+
+
 @pytest.mark.parametrize(
     "field_name", ["outcome_contract_digest", "finalized_trajectory_digest"]
 )
