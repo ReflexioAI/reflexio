@@ -823,6 +823,8 @@ class DeleteSessionResponse(BaseModel):
 
 
 class SessionOutcomeRecord(BaseModel):
+    outcome_id: NonEmptyStr
+    outcome_revision: int = Field(ge=1)
     user_id: str
     session_id: NonEmptyStr
     outcome: SessionOutcomeKind
@@ -831,7 +833,16 @@ class SessionOutcomeRecord(BaseModel):
     label: str | None = Field(default=None, max_length=128)
     value: float | None = Field(default=None, allow_inf_nan=False)
     metadata: dict[str, Any] | None = None
+    outcome_contract_digest: Sha256Digest
+    finalized_trajectory_digest: Sha256Digest
     created_at: int = Field(ge=0)
+
+    @field_validator("outcome_contract_digest", "finalized_trajectory_digest")
+    @classmethod
+    def validate_sha256_digest(cls, value: str) -> str:
+        if len(value) != 64 or any(char not in "0123456789abcdef" for char in value):
+            raise ValueError("outcome identity digests must be lowercase SHA-256 hex")
+        return value
 
 
 class SetSessionOutcomeRequest(CapturesUnknownFields):
@@ -878,6 +889,19 @@ class SetSessionOutcomeResponse(BaseModel):
     message: str = ""
     user_id: str | None = None
     source: str | None = None
+    outcome_id: NonEmptyStr | None = None
+    outcome_revision: int | None = Field(default=None, ge=1)
+    outcome_contract_digest: Sha256Digest | None = None
+    finalized_trajectory_digest: Sha256Digest | None = None
+
+    @field_validator("outcome_contract_digest", "finalized_trajectory_digest")
+    @classmethod
+    def validate_sha256_digest(cls, value: str | None) -> str | None:
+        if value is not None and (
+            len(value) != 64 or any(char not in "0123456789abcdef" for char in value)
+        ):
+            raise ValueError("outcome identity digests must be lowercase SHA-256 hex")
+        return value
 
 
 class GetSessionOutcomesRequest(CapturesUnknownFields):
