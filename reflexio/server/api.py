@@ -202,6 +202,27 @@ def _add_openapi_security(app: FastAPI) -> None:
     app.openapi = custom_openapi  # type: ignore[method-assign]
 
 
+# Injection seam: enterprise registers a resolver that returns a REAL org id at
+# composition time, exactly like gc_scheduler.set_org_id_provider. Needed because
+# the request-scoped `get_org_id` dependency takes FastAPI parameters and so can
+# never be called outside a request -- without this hook the lifespan falls
+# through to the `default_get_org_id()` sentinel ("self-host-org"), which matches
+# no organization row in ANY deployment mode. Every config read keyed on it then
+# raises, which silently skipped the lineage-GC and extraction-resume schedulers.
+_lifespan_org_id_resolver: Callable[[], str] | None = None
+
+
+def set_lifespan_org_id_resolver(resolver: Callable[[], str] | None) -> None:
+    """Register the resolver used to pick the bootstrap org for lifespan schedulers.
+
+    Args:
+        resolver (Callable[[], str] | None): Callable returning a real org id, or
+            ``None`` to clear the hook (used by tests to restore OSS defaults).
+    """
+    global _lifespan_org_id_resolver  # noqa: PLW0603
+    _lifespan_org_id_resolver = resolver
+
+
 def _resolve_lifespan_org_id(get_org_id: Callable[..., str] | None) -> str:
     """Resolve the bootstrap org ID for lifespan schedulers without a request context.
 
@@ -213,6 +234,18 @@ def _resolve_lifespan_org_id(get_org_id: Callable[..., str] | None) -> str:
         str: The resolved org ID string.
     """
     from reflexio.server.auth import default_get_org_id
+
+    if _lifespan_org_id_resolver is not None:
+        try:
+            # Check the RAW value before str(): str(None) is the truthy literal
+            # "None", which would sail through as a bootstrap org id matching no
+            # organization row -- reintroducing exactly the failure this hook fixes.
+            resolved = _lifespan_org_id_resolver()
+            if resolved:
+                return str(resolved)
+            logger.warning("Lifespan org_id resolver returned empty; using default org")
+        except Exception:
+            logger.exception("Lifespan org_id resolver failed; using default org")
 
     if get_org_id is None:
         return default_get_org_id()

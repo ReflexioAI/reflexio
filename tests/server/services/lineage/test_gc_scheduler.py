@@ -321,6 +321,33 @@ def test_maybe_start_lineage_gc_returns_none_on_factory_error():
     assert result is None
 
 
+def test_maybe_start_lineage_gc_starts_when_config_unreadable_but_sweeps_registered(
+    caplog,
+):
+    """A config-read failure must not silence explicitly registered sweeps.
+
+    Registered hooks carry their own per-org gates, so the documented
+    "start unconditionally, gate per-org" invariant still applies. Production
+    ran with 8 registered sweeps never firing because this read raised on a
+    bootstrap org id that matched no organization row.
+    """
+
+    def bad_factory(org_id: str):
+        raise RuntimeError("Organization self-host-org not found")
+
+    register_per_org_sweep(lambda _org_id, _budget: 0)
+    try:
+        with caplog.at_level(logging.WARNING):
+            sched = maybe_start_lineage_gc(bad_factory, bootstrap_org_id="org_1")
+        assert sched is not None
+        sched.stop(timeout_seconds=1.0)
+    finally:
+        clear_per_org_sweeps()
+
+    assert "lineage_gc_config_read_failed" in caplog.text
+    assert "lineage_gc_scheduler_start_skipped" not in caplog.text
+
+
 # ---------------------------------------------------------------------------
 # list_org_ids — degraded-mode fallback is visible (not silent)
 # ---------------------------------------------------------------------------

@@ -8,6 +8,7 @@ if TYPE_CHECKING:
     import numpy as np
 
 from reflexio.models.api_schema.service_schemas import UserPlaybook
+from reflexio.server.llm.llm_utils import positive_int_env
 
 logger = logging.getLogger(__name__)
 
@@ -15,6 +16,33 @@ logger = logging.getLogger(__name__)
 # Below this, use Agglomerative (works better with small datasets)
 # Above this, use HDBSCAN (scales better, handles noise)
 CLUSTERING_ALGORITHM_THRESHOLD = 50
+
+# Upper bound on how many user playbooks a single aggregation run will cluster.
+#
+# This is a CPU bound, not a memory bound. HDBSCAN runs on raw unit-normalized
+# vectors (see cluster_with_hdbscan), so peak RSS stays flat -- ~320 MB at
+# n=20_000 against 512-dim embeddings. Runtime is what grows, and it grows
+# quadratically; measured on a 512-dim corpus:
+#
+#     n= 2_000 ->   1.3 s      n=10_000 ->  32 s
+#     n= 5_000 ->   8.0 s      n=20_000 -> 126 s
+#
+# Aggregation runs on a background daemon thread that shares one vCPU with
+# request serving, so the default is set where a run costs ~2 minutes.
+MAX_CLUSTERING_PLAYBOOKS_DEFAULT = 20_000
+MAX_CLUSTERING_PLAYBOOKS_ENV = "REFLEXIO_MAX_CLUSTERING_PLAYBOOKS"
+
+
+def max_clustering_playbooks() -> int:
+    """
+    Resolve the per-run cap on user playbooks fed to clustering.
+
+    Returns:
+        int: The configured cap, or MAX_CLUSTERING_PLAYBOOKS_DEFAULT.
+    """
+    return positive_int_env(
+        MAX_CLUSTERING_PLAYBOOKS_ENV, MAX_CLUSTERING_PLAYBOOKS_DEFAULT, logger
+    )
 
 
 def compute_cluster_fingerprint(cluster_playbooks: list[UserPlaybook]) -> str:
@@ -153,18 +181,63 @@ def cluster_with_agglomerative(
     return clusterer.fit_predict(distance_matrix)
 
 
+def unit_normalize(embeddings: np.ndarray) -> np.ndarray:
+    """
+    Scale each row to unit L2 norm, leaving zero rows at the origin.
+
+    Args:
+        embeddings (np.ndarray): Raw embedding matrix, shape (n_samples, n_features)
+
+    Returns:
+        np.ndarray: Row-normalized copy of ``embeddings``
+    """
+    import numpy as np
+
+    norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+    # A zero row has no direction, so it cannot be normalized. Leave it at the
+    # origin rather than dividing by zero: it sits sqrt(2) away from every unit
+    # vector, which is beyond any reachable threshold, so it becomes noise.
+    norms[norms == 0.0] = 1.0
+    return embeddings / norms
+
+
+def cosine_threshold_to_euclidean(distance_threshold: float) -> float:
+    """
+    Convert a cosine distance threshold to its unit-sphere euclidean equivalent.
+
+    For unit vectors ``d_euclidean == sqrt(2 * d_cosine)`` exactly. The mapping
+    is monotonic, so it preserves the MST and therefore the cluster hierarchy --
+    only the epsilon cut-off needs converting.
+
+    Args:
+        distance_threshold (float): Cosine distance (1 - similarity)
+
+    Returns:
+        float: The equivalent euclidean distance between unit vectors
+    """
+    import numpy as np
+
+    return float(np.sqrt(2.0 * max(distance_threshold, 0.0)))
+
+
 def cluster_with_hdbscan(
-    distance_matrix: np.ndarray,
+    embeddings: np.ndarray,
     min_cluster_size: int,
     distance_threshold: float,
 ) -> np.ndarray:
     """
     Cluster using HDBSCAN - best for large datasets with potential noise.
 
+    Takes raw embeddings rather than a precomputed distance matrix. A
+    precomputed cosine matrix is O(n^2): at n=62_766 it asked for 29.4 GiB and
+    OOM-killed the container. Unit-normalizing and clustering under the
+    euclidean metric is mathematically equivalent (see
+    cosine_threshold_to_euclidean) and keeps peak memory linear in n.
+
     Args:
-        distance_matrix: Precomputed cosine distance matrix
-        min_cluster_size: Minimum number of points to form a cluster
-        distance_threshold: Maximum cosine distance for cluster merging (1 - similarity_threshold)
+        embeddings (np.ndarray): Raw embedding matrix, shape (n_samples, n_features)
+        min_cluster_size (int): Minimum number of points to form a cluster
+        distance_threshold (float): Maximum cosine distance for cluster merging (1 - similarity_threshold)
 
     Returns:
         np.ndarray: Cluster labels for each point (-1 indicates noise)
@@ -173,7 +246,7 @@ def cluster_with_hdbscan(
 
     logger.info(
         "Using HDBSCAN for %d playbooks (>= %d threshold), distance_threshold=%.2f",
-        len(distance_matrix),
+        len(embeddings),
         CLUSTERING_ALGORITHM_THRESHOLD,
         distance_threshold,
     )
@@ -181,9 +254,9 @@ def cluster_with_hdbscan(
     clusterer = hdbscan.HDBSCAN(
         min_cluster_size=min_cluster_size,
         min_samples=1,
-        metric="precomputed",
+        metric="euclidean",
         cluster_selection_epsilon=0.0,
-        cluster_selection_epsilon_max=distance_threshold,
+        cluster_selection_epsilon_max=cosine_threshold_to_euclidean(distance_threshold),
     )
 
-    return clusterer.fit_predict(distance_matrix)
+    return clusterer.fit_predict(unit_normalize(embeddings))

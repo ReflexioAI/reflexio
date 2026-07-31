@@ -26,6 +26,7 @@ from reflexio.server.services.playbook.components.aggregator import (
 )
 from reflexio.server.services.playbook.components.aggregator_clustering import (
     cluster_with_hdbscan,
+    unit_normalize,
 )
 
 
@@ -271,13 +272,19 @@ class TestHDBSCANClustering:
             mock_agg.assert_not_called()
 
     def test_similarity_is_an_hdbscan_maximum_distance(self):
-        distance_matrix = np.zeros((2, 2), dtype=float)
+        """The cosine threshold is passed through as its euclidean equivalent.
+
+        HDBSCAN runs on raw unit-normalized vectors rather than a precomputed
+        cosine matrix (that matrix is O(n^2) and OOM-killed production), so the
+        epsilon cut-off must be converted with sqrt(2 * d_cosine).
+        """
+        embeddings = np.ones((2, 4), dtype=float)
         fitted = MagicMock()
         fitted.fit_predict.return_value = np.array([0, 0])
 
         with patch("hdbscan.HDBSCAN", return_value=fitted) as hdbscan_cls:
             labels = cluster_with_hdbscan(
-                distance_matrix,
+                embeddings,
                 min_cluster_size=2,
                 distance_threshold=0.15,
             )
@@ -286,10 +293,53 @@ class TestHDBSCANClustering:
         hdbscan_cls.assert_called_once_with(
             min_cluster_size=2,
             min_samples=1,
+            metric="euclidean",
+            cluster_selection_epsilon=0.0,
+            cluster_selection_epsilon_max=float(np.sqrt(2 * 0.15)),
+        )
+
+    @pytest.mark.parametrize("similarity", [0.30, 0.75, 0.85])
+    def test_raw_euclidean_matches_precomputed_cosine(self, similarity):
+        """The refactor must not change which playbooks cluster together.
+
+        Guards the load-bearing identity behind the rewrite: for unit vectors
+        d_euclidean == sqrt(2 * d_cosine), which is monotonic and therefore
+        preserves the MST and the whole cluster hierarchy. Covers every
+        similarity production actually resolves (0.30 MiniLM, 0.85 Nomic).
+        """
+        import hdbscan
+        from sklearn.metrics.pairwise import cosine_distances
+
+        rng = np.random.default_rng(20260731)
+        centroids = rng.normal(size=(12, 128))
+        embeddings = np.repeat(centroids, 20, axis=0) + rng.normal(
+            scale=0.35, size=(240, 128)
+        )
+        distance_threshold = 1.0 - similarity
+
+        # The pre-refactor implementation, reproduced verbatim.
+        legacy_labels = hdbscan.HDBSCAN(
+            min_cluster_size=2,
+            min_samples=1,
             metric="precomputed",
             cluster_selection_epsilon=0.0,
-            cluster_selection_epsilon_max=0.15,
+            cluster_selection_epsilon_max=distance_threshold,
+        ).fit_predict(cosine_distances(embeddings))
+
+        new_labels = cluster_with_hdbscan(
+            embeddings, min_cluster_size=2, distance_threshold=distance_threshold
         )
+
+        assert new_labels.tolist() == legacy_labels.tolist()
+
+    def test_zero_embeddings_do_not_produce_nan(self):
+        """A zero row has no direction; normalizing must not divide by zero."""
+        embeddings = np.zeros((3, 8), dtype=float)
+
+        normalized = unit_normalize(embeddings)
+
+        assert not np.isnan(normalized).any()
+        assert (normalized == 0.0).all()
 
 
 class TestClusteringThreshold:
@@ -326,6 +376,59 @@ class TestClusteringThreshold:
         ) as mock_hdb:
             mock_playbook_aggregator.get_clusters(user_playbooks, config)
             mock_hdb.assert_called_once()
+
+
+class TestClusteringInputCap:
+    """Tests for the per-run cap on clustering input size."""
+
+    def test_over_cap_refuses_without_building_a_matrix(
+        self, mock_playbook_aggregator, monkeypatch
+    ):
+        """Above the cap, refuse before allocating anything O(n^2).
+
+        The production OOM was a 29.4 GiB cosine_distances() call, so the
+        assertion that matters is that the matrix is never even requested --
+        not merely that the result is empty.
+        """
+        monkeypatch.setenv("REFLEXIO_MAX_CLUSTERING_PLAYBOOKS", "10")
+        config = PlaybookAggregatorConfig(min_cluster_size=2)
+        user_playbooks = create_user_playbooks_with_embeddings(
+            create_similar_embeddings(11)
+        )
+
+        with (
+            patch("sklearn.metrics.pairwise.cosine_distances") as cosine,
+            patch.object(PlaybookAggregator, "_cluster_with_hdbscan") as hdb,
+        ):
+            clusters = mock_playbook_aggregator.get_clusters(user_playbooks, config)
+
+        assert clusters == {}
+        cosine.assert_not_called()
+        hdb.assert_not_called()
+
+    def test_at_cap_still_clusters(self, mock_playbook_aggregator, monkeypatch):
+        """The cap is an inclusive upper bound, not an off-by-one refusal."""
+        monkeypatch.setenv("REFLEXIO_MAX_CLUSTERING_PLAYBOOKS", "10")
+        config = PlaybookAggregatorConfig(min_cluster_size=2)
+        user_playbooks = create_user_playbooks_with_embeddings(
+            create_similar_embeddings(10)
+        )
+
+        clusters = mock_playbook_aggregator.get_clusters(user_playbooks, config)
+
+        assert clusters != {}
+
+    def test_large_input_never_builds_a_distance_matrix(self, mock_playbook_aggregator):
+        """Above CLUSTERING_ALGORITHM_THRESHOLD, HDBSCAN takes raw vectors."""
+        config = PlaybookAggregatorConfig(min_cluster_size=2)
+        user_playbooks = create_user_playbooks_with_embeddings(
+            create_similar_embeddings(CLUSTERING_ALGORITHM_THRESHOLD + 1)
+        )
+
+        with patch("sklearn.metrics.pairwise.cosine_distances") as cosine:
+            mock_playbook_aggregator.get_clusters(user_playbooks, config)
+
+        cosine.assert_not_called()
 
 
 class TestEdgeCases:

@@ -513,6 +513,14 @@ def maybe_start_lineage_gc(
         LineageGCScheduler: The started scheduler, or ``None`` if no start
         condition holds (see the startup criteria above).
     """
+    # Registered sweeps carry their own per-org gates, so they must start the
+    # scheduler whether or not the bootstrap org's config is readable. Evaluate
+    # that first: the config read below needs a real org, and a failure there
+    # must not silence sweeps that were explicitly registered. Production ran
+    # with 8 registered sweeps (metering force-seal/retention/derive, governance
+    # retention, missing-vector backfill) never firing because this read raised.
+    has_registered_sweeps = bool(_per_org_sweep_hooks) or bool(_global_sweep_hooks)
+
     try:
         ctx = request_context_factory(bootstrap_org_id)
         cfg = ctx.configurator.get_config()
@@ -547,25 +555,34 @@ def maybe_start_lineage_gc(
         governance_retention_enabled = getattr(
             gr, "audit_events_retention_enabled", False
         )
-        # Also start when any reclamation sweep has been registered — registered
-        # hooks carry their own per-org gates (in the enterprise closure), so the
-        # scheduler must run even if the bootstrap org's config has all flags off.
-        # This preserves the "start unconditionally, gate per-org" invariant of
-        # the deleted GovernanceRetentionScheduler.
-        if not (
+        config_enabled = bool(
             cfg.lineage_gc.enabled
             or expiry_reclamation_enabled
             or governance_retention_enabled
-            or bool(_per_org_sweep_hooks)
-            or bool(_global_sweep_hooks)
-        ):
-            return None
+        )
     except Exception as exc:
+        # Only a deployment with nothing registered has nothing to lose here.
+        if not has_registered_sweeps:
+            logger.warning(
+                "event=lineage_gc_scheduler_start_skipped error_type=%s error=%s",
+                type(exc).__name__,
+                exc,
+            )
+            return None
         logger.warning(
-            "event=lineage_gc_scheduler_start_skipped error_type=%s error=%s",
+            "event=lineage_gc_config_read_failed error_type=%s error=%s "
+            "starting anyway: registered sweeps gate themselves per-org",
             type(exc).__name__,
             exc,
         )
+        config_enabled = False
+
+    # Also start when any reclamation sweep has been registered — registered
+    # hooks carry their own per-org gates (in the enterprise closure), so the
+    # scheduler must run even if the bootstrap org's config has all flags off.
+    # This preserves the "start unconditionally, gate per-org" invariant of
+    # the deleted GovernanceRetentionScheduler.
+    if not (config_enabled or has_registered_sweeps):
         return None
 
     scheduler = LineageGCScheduler(

@@ -465,6 +465,49 @@ class PlaybookAggregator:
             len(existing_playbooks),
         )
 
+        # Preflight the corpus size with a COUNT before paging it in. The read
+        # below pulls every current user playbook WITH its embedding, so an
+        # oversized org costs ~1 GB of resident floats before clustering is even
+        # reached -- the cap has to be enforced ahead of the load, not just
+        # inside get_clusters().
+        max_playbooks = aggregator_clustering.max_clustering_playbooks()
+        total_user_playbooks = self.storage.count_user_playbooks(  # pyright: ignore[reportOptionalMemberAccess]
+            min_user_playbook_id=0,
+            agent_version=self.agent_version,
+            status_filter=[None],
+        )
+        if total_user_playbooks > max_playbooks:
+            logger.error(
+                "Skipping user playbook aggregation for '%s' (agent_version=%s): "
+                "%d current user playbooks exceeds the %s cap of %d",
+                playbook_name,
+                self.agent_version,
+                total_user_playbooks,
+                aggregator_clustering.MAX_CLUSTERING_PLAYBOOKS_ENV,
+                max_playbooks,
+            )
+            record_usage_event(
+                org_id=self.request_context.org_id,
+                event_name="aggregation_gate_evaluated",
+                event_category="aggregation",
+                pipeline="playbook",
+                playbook_name=playbook_name,
+                agent_version=self.agent_version,
+                outcome="should_skip",
+                count_value=total_user_playbooks,
+                metadata={
+                    "user_playbooks": total_user_playbooks,
+                    "max_clustering_playbooks": max_playbooks,
+                },
+            )
+            return {
+                **_empty_stats,
+                "skipped": (
+                    f"too many user playbooks to cluster "
+                    f"({total_user_playbooks} > {max_playbooks})"
+                ),
+            }
+
         # get all user playbooks and generate clusters
         user_playbooks, user_high_watermark = _read_all_pages(
             lambda limit, max_id: self.storage.get_user_playbooks(  # type: ignore[reportOptionalMemberAccess]
@@ -1024,7 +1067,6 @@ class PlaybookAggregator:
 
         # Extract embeddings from user playbooks
         import numpy as np
-        from sklearn.metrics.pairwise import cosine_distances
 
         embedded_playbooks = [
             playbook for playbook in user_playbooks if playbook.embedding
@@ -1036,7 +1078,9 @@ class PlaybookAggregator:
                 skipped_without_embedding,
             )
         user_playbooks = embedded_playbooks
-        embeddings = np.array([playbook.embedding for playbook in user_playbooks])
+        embeddings = np.asarray(
+            [playbook.embedding for playbook in user_playbooks], dtype=np.float64
+        )
 
         if len(embeddings) < min_cluster_size:
             logger.info(
@@ -1046,19 +1090,35 @@ class PlaybookAggregator:
             )
             return {}
 
-        # Compute cosine distance matrix for better text embedding clustering
-        distance_matrix = cosine_distances(embeddings)
+        max_playbooks = aggregator_clustering.max_clustering_playbooks()
+        if len(embeddings) > max_playbooks:
+            # Refuse rather than sampling down: a sampled subset would silently
+            # produce different agent playbooks run-to-run.
+            logger.error(
+                "Refusing to cluster %d user playbooks (cap %d). Raise %s to "
+                "allow it -- runtime grows quadratically, so expect roughly "
+                "(n/20000)^2 * 2 minutes of CPU.",
+                len(embeddings),
+                max_playbooks,
+                aggregator_clustering.MAX_CLUSTERING_PLAYBOOKS_ENV,
+            )
+            return {}
 
         # Choose algorithm based on dataset size
         # Convert similarity threshold to distance threshold (distance = 1 - similarity)
         distance_threshold = 1.0 - similarity_threshold
         if len(embeddings) < CLUSTERING_ALGORITHM_THRESHOLD:
+            # Small input only: the precomputed cosine matrix is O(n^2), which is
+            # negligible below the threshold and catastrophic above it.
+            from sklearn.metrics.pairwise import cosine_distances
+
             cluster_labels = self._cluster_with_agglomerative(
-                distance_matrix, min_cluster_size, distance_threshold
+                cosine_distances(embeddings), min_cluster_size, distance_threshold
             )
         else:
+            # HDBSCAN clusters the raw vectors directly -- no O(n^2) matrix.
             cluster_labels = self._cluster_with_hdbscan(
-                distance_matrix, min_cluster_size, distance_threshold
+                embeddings, min_cluster_size, distance_threshold
             )
 
         # Group playbooks by cluster
@@ -1097,12 +1157,12 @@ class PlaybookAggregator:
 
     def _cluster_with_hdbscan(
         self,
-        distance_matrix: np.ndarray,
+        embeddings: np.ndarray,
         min_cluster_size: int,
         distance_threshold: float,
     ) -> np.ndarray:
         return aggregator_clustering.cluster_with_hdbscan(
-            distance_matrix, min_cluster_size, distance_threshold
+            embeddings, min_cluster_size, distance_threshold
         )
 
     def _generate_playbooks_with_source_clusters(
