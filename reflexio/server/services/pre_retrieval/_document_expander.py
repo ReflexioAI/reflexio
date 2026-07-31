@@ -16,7 +16,6 @@ from pydantic import BaseModel
 
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.prompt.prompt_manager import PromptManager
-from reflexio.server.services.service_utils import log_model_response
 
 logger = logging.getLogger(__name__)
 
@@ -114,8 +113,6 @@ class DocumentExpander:
             max_retries=self.LLM_MAX_RETRIES,
             **model_kwargs,
         )
-        log_model_response(logger, "Document expansion model response", result)
-
         if isinstance(result, str):
             return self._parse_expansion_json(result)
         return {}

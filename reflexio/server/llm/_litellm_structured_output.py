@@ -267,7 +267,7 @@ class StructuredOutputMixin:
     # but that ``litellm.supports_response_schema`` reports as unsupported. For
     # these, the gate below would fall back to handing LiteLLM the raw Pydantic
     # model; LiteLLM then builds the ``json_schema`` itself and emits ``oneOf``
-    # for discriminated unions, which strict structured-output endpoints reject
+    # for discriminated unions, which strict structured-output endpoints reject.
     # Listing the provider here forces our own
     # normalized strict schema (``oneOf`` folded into ``anyOf``) to be sent.
     _JSON_SCHEMA_PROVIDER_ALLOWLIST: frozenset[str] = frozenset({"minimax"})

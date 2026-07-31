@@ -196,8 +196,6 @@ class QueryReformulator:
             max_retries=self.LLM_MAX_RETRIES,
             **model_kwargs,
         )
-        log_model_response(logger, "Query reformulation model response", result)
-
         if not isinstance(result, ReformulationResult):
             # Log the type only — `result` may contain the user's query text, which
             # must not reach logs or external telemetry as Customer Content.
@@ -206,6 +204,8 @@ class QueryReformulator:
                 type(result).__name__,
             )
             return ReformulationResult(standalone_query=query)
+
+        log_model_response(logger, "Query reformulation model response", result)
 
         extracted = self._extract_reformulated_query(result.standalone_query)
         if not extracted:
