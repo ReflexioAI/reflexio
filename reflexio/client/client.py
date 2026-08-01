@@ -1116,13 +1116,15 @@ class ReflexioClient:
 
         The session must already contain at least one published request. Reflexio
         derives both ``user_id`` and ``source`` from the earliest request ordered
-        by ``(created_at, request_id)`` and binds the outcome to the server-owned
-        outcome contract and canonical finalized trajectory. An exact retry
-        returns ``success=True`` and ``recorded=False`` with the same immutable
-        identity. A changed outcome, payload, contract, or trajectory is rejected
-        with ``reason="conflicting_finalization"``. Sessions may report
-        ``success``, ``failure``, or ``unknown`` and are not required to report an
-        outcome.
+        by ``(created_at, request_id)``. New canonical rows bind the outcome to
+        the server-owned outcome contract and canonical finalized trajectory. An
+        exact canonical retry must match the payload, contract, and trajectory;
+        otherwise it is rejected with ``reason="conflicting_finalization"``.
+        Rolling-upgrade rows with all four identity fields null can compare
+        only the stored payload and preserve those null fields on retry. An
+        accepted retry returns ``success=True`` and ``recorded=False``. Sessions
+        may report ``success``, ``failure``, or ``unknown`` and are not required
+        to report an outcome.
         """
         request = SetSessionOutcomeRequest(
             session_id=session_id,
