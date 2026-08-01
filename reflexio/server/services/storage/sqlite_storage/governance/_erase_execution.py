@@ -39,6 +39,7 @@ from reflexio.models.api_schema.domain.governance import (
     AuditEvent,
     PurgeOperation,
 )
+from reflexio.server.services.storage.governance_claims import PurgeExecutionClaim
 from reflexio.server.services.storage.governance_validation import (
     _CANONICAL_DELETE_TARGET_NAMES,
     _PREPARE_PHASE,
@@ -88,6 +89,9 @@ class GovernanceEraseExecutionMixin:
     ]
     get_purge_operation: Callable[[str], PurgeOperation]
     _record_purge_target_locked: Callable[..., None]
+    _assert_purge_operation_execution_claim_locked: Callable[
+        [str, PurgeExecutionClaim | None], None
+    ]
 
     def _purge_governance_entity_content_locked(
         self,
@@ -349,7 +353,10 @@ class GovernanceEraseExecutionMixin:
         return deleted
 
     def apply_governance_user_data_delete(
-        self, purge_id: str, user_id: str
+        self,
+        purge_id: str,
+        user_id: str,
+        execution_claim: PurgeExecutionClaim | None = None,
     ) -> dict[str, int]:
         purge_id = _validate_governance_purge_id("purge_id", purge_id)
         name_map = {
@@ -372,7 +379,10 @@ class GovernanceEraseExecutionMixin:
         }
         with self._lock:
             try:
-                self.conn.execute("BEGIN")
+                self.conn.execute("BEGIN IMMEDIATE")
+                self._assert_purge_operation_execution_claim_locked(
+                    purge_id, execution_claim
+                )
                 self._validate_prepared_delete_target_matrix_locked(purge_id)
                 self._validate_hide_for_rebuild_targets_locked(purge_id)
                 expected_user_playbook_ids = (
@@ -407,7 +417,10 @@ class GovernanceEraseExecutionMixin:
         return counts
 
     def complete_purge_operation_with_audit(
-        self, purge_id: str, audit_event: AuditEvent
+        self,
+        purge_id: str,
+        audit_event: AuditEvent,
+        execution_claim: PurgeExecutionClaim | None = None,
     ) -> PurgeOperation:
         purge_id = _validate_governance_purge_id("purge_id", purge_id)
         if audit_event.org_id != self.org_id:
@@ -423,6 +436,9 @@ class GovernanceEraseExecutionMixin:
         with self._lock:
             try:
                 self.conn.execute("BEGIN IMMEDIATE")
+                self._assert_purge_operation_execution_claim_locked(
+                    purge_id, execution_claim
+                )
                 row = self.conn.execute(
                     "SELECT * FROM purge_operations WHERE purge_id = ? AND org_id = ?",
                     (purge_id, self.org_id),

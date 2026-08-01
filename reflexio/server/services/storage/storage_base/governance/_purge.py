@@ -51,6 +51,17 @@ class PurgeOperationStoreMixin(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def renew_purge_operation_execution_claim(
+        self,
+        purge_id: str,
+        execution_claim: PurgeExecutionClaim,
+        *,
+        lease_ttl_seconds: int,
+    ) -> PurgeExecutionClaim:
+        """Atomically renew an active purge execution claim."""
+        raise NotImplementedError
+
+    @abstractmethod
     def record_purge_target(
         self,
         purge_id: str,
@@ -81,12 +92,17 @@ class PurgeOperationStoreMixin(ABC):
         purge_id: str,
         user_id: str,
         owned_user_playbook_ids: set[int] | None = None,
+        execution_claim: PurgeExecutionClaim | None = None,
     ) -> None:
         raise NotImplementedError
 
     @abstractmethod
     def fail_purge_operation(
-        self, purge_id: str, error_code: str, error_detail: str
+        self,
+        purge_id: str,
+        error_code: str,
+        error_detail: str,
+        execution_claim: PurgeExecutionClaim | None = None,
     ) -> PurgeOperation:
         raise NotImplementedError
 

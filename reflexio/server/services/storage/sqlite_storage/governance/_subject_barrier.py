@@ -38,6 +38,7 @@ from reflexio.server.services.governance.config import (
     governance_subject_ref,
 )
 from reflexio.server.services.storage.error import SubjectWriteBarrierError
+from reflexio.server.services.storage.governance_claims import PurgeExecutionClaim
 from reflexio.server.services.storage.governance_validation import (
     _CANONICAL_DELETE_TARGET_NAMES,
     _PREPARE_PHASE,
@@ -75,6 +76,9 @@ class SubjectBarrierMixin:
         [sqlite3.Connection | sqlite3.Cursor, AuditEvent], bool
     ]
     get_purge_operation: Callable[[str], PurgeOperation]
+    _assert_purge_operation_execution_claim_locked: Callable[
+        [str, PurgeExecutionClaim | None], None
+    ]
 
     def _barrier_from_purge(
         self,
@@ -211,7 +215,10 @@ class SubjectBarrierMixin:
         )
 
     def begin_subject_erasure_barrier(
-        self, subject_ref: str, purge_id: str
+        self,
+        subject_ref: str,
+        purge_id: str,
+        execution_claim: PurgeExecutionClaim | None = None,
     ) -> SubjectWriteBarrier:
         _validate_governance_prefixed_ref(
             "subject_ref", subject_ref, prefix="subref_v1_"
@@ -221,6 +228,9 @@ class SubjectBarrierMixin:
         with self._lock:
             try:
                 self.conn.execute("BEGIN IMMEDIATE")
+                self._assert_purge_operation_execution_claim_locked(
+                    validated_purge_id, execution_claim
+                )
                 purge_row = self.conn.execute(
                     """SELECT * FROM purge_operations
                        WHERE purge_id = ? AND org_id = ?""",
@@ -293,7 +303,10 @@ class SubjectBarrierMixin:
                 raise
 
     def complete_subject_erasure_barrier_after_empty_check(
-        self, purge_id: str, audit_event: AuditEvent
+        self,
+        purge_id: str,
+        audit_event: AuditEvent,
+        execution_claim: PurgeExecutionClaim | None = None,
     ) -> PurgeOperation:
         purge_id = _validate_governance_purge_id("purge_id", purge_id)
         if audit_event.org_id != self.org_id:
@@ -309,6 +322,9 @@ class SubjectBarrierMixin:
         with self._lock:
             try:
                 self.conn.execute("BEGIN IMMEDIATE")
+                self._assert_purge_operation_execution_claim_locked(
+                    purge_id, execution_claim
+                )
                 row = self.conn.execute(
                     "SELECT * FROM purge_operations WHERE purge_id = ? AND org_id = ?",
                     (purge_id, self.org_id),
@@ -442,6 +458,7 @@ class SubjectBarrierMixin:
         purge_id: str,
         error_code: str,
         error_detail: str,
+        execution_claim: PurgeExecutionClaim | None = None,
     ) -> SubjectWriteBarrier:
         _validate_governance_prefixed_ref(
             "subject_ref", subject_ref, prefix="subref_v1_"
@@ -453,6 +470,9 @@ class SubjectBarrierMixin:
         with self._lock:
             try:
                 self.conn.execute("BEGIN IMMEDIATE")
+                self._assert_purge_operation_execution_claim_locked(
+                    validated_purge_id, execution_claim
+                )
                 update_cursor = self.conn.execute(
                     """UPDATE subject_write_barriers
                        SET status = 'failed',

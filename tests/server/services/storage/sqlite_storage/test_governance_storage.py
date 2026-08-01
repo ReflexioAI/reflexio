@@ -87,6 +87,43 @@ def _begin_purge(storage: SQLiteStorage, purge_id: str) -> str:
     return purge.purge_id
 
 
+def _begin_raw_user_erasure_purge(storage: SQLiteStorage, purge_id: str) -> str:
+    purge = storage.begin_purge_operation(
+        purge_id=purge_id,
+        idempotency_key=f"idem_{purge_id}",
+        operation_type="user_erasure",
+        scope_type="user",
+        subject_ref=SUBJECT_REF,
+        request_ref=REQUEST_REF,
+        authoritative_user_id="alice",
+    )
+    return purge.purge_id
+
+
+def _claim_then_take_over(storage: SQLiteStorage, purge_id: str):
+    first_claim = storage.claim_purge_operation_execution(
+        purge_id,
+        lease_owner="owner-a",
+        lease_ttl_seconds=30,
+    )
+    assert first_claim is not None
+    storage.conn.execute(
+        """UPDATE purge_operations
+           SET execution_claim_expires_at = 0
+           WHERE org_id = ? AND purge_id = ?""",
+        (storage.org_id, purge_id),
+    )
+    storage.conn.commit()
+    takeover_claim = storage.claim_purge_operation_execution(
+        purge_id,
+        lease_owner="owner-b",
+        lease_ttl_seconds=30,
+    )
+    assert takeover_claim is not None
+    assert takeover_claim.fence == first_claim.fence + 1
+    return first_claim, takeover_claim
+
+
 def _add_complete_delete_target_matrix(storage: SQLiteStorage, purge_id: str) -> None:
     for target_name in CANONICAL_DELETE_TARGET_NAMES:
         storage.record_purge_target(
@@ -958,6 +995,153 @@ def test_stale_execution_claim_takeover_fences_previous_owner(storage):
     assert [(target.target_name, target.status) for target in targets] == [
         ("interaction", "complete")
     ]
+
+
+def test_stale_execution_claim_cannot_start_subject_barrier(storage):
+    purge_id = _begin_raw_user_erasure_purge(storage, "purge_stale_barrier_start")
+    first_claim, takeover_claim = _claim_then_take_over(storage, purge_id)
+
+    with pytest.raises(ValueError, match="purge execution claim"):
+        storage.begin_subject_erasure_barrier(
+            SUBJECT_REF,
+            purge_id,
+            execution_claim=first_claim,
+        )
+    assert storage.get_subject_write_barrier(SUBJECT_REF) is None
+
+    barrier = storage.begin_subject_erasure_barrier(
+        SUBJECT_REF,
+        purge_id,
+        execution_claim=takeover_claim,
+    )
+    assert barrier.status == "erasing"
+
+
+def test_stale_execution_claim_cannot_prepare_delete_targets(storage):
+    purge_id = _begin_raw_user_erasure_purge(storage, "purge_stale_prepare")
+    first_claim, takeover_claim = _claim_then_take_over(storage, purge_id)
+
+    with pytest.raises(ValueError, match="purge execution claim"):
+        storage.prepare_governance_erase_targets(
+            purge_id=purge_id,
+            user_id="alice",
+            owned_user_playbook_ids=set(),
+            execution_claim=first_claim,
+        )
+    assert storage.list_purge_targets(purge_id) == []
+
+    storage.prepare_governance_erase_targets(
+        purge_id=purge_id,
+        user_id="alice",
+        owned_user_playbook_ids=set(),
+        execution_claim=takeover_claim,
+    )
+    assert storage.purge_targets_prepared(purge_id)
+
+
+def test_stale_execution_claim_cannot_apply_protected_delete(storage):
+    purge_id = _begin_raw_user_erasure_purge(storage, "purge_stale_delete")
+    first_claim, takeover_claim = _claim_then_take_over(storage, purge_id)
+    storage.prepare_governance_erase_targets(
+        purge_id=purge_id,
+        user_id="alice",
+        owned_user_playbook_ids=set(),
+        execution_claim=takeover_claim,
+    )
+
+    with pytest.raises(ValueError, match="purge execution claim"):
+        storage.apply_governance_user_data_delete(
+            purge_id,
+            "alice",
+            execution_claim=first_claim,
+        )
+    assert all(
+        target.status == "pending"
+        for target in storage.list_purge_targets(purge_id, phase="delete")
+    )
+
+    counts = storage.apply_governance_user_data_delete(
+        purge_id,
+        "alice",
+        execution_claim=takeover_claim,
+    )
+    assert counts["requests"] == 0
+    assert all(
+        target.status == "complete"
+        for target in storage.list_purge_targets(purge_id, phase="delete")
+    )
+
+
+def test_stale_execution_claim_cannot_complete_purge_or_barrier(storage):
+    purge_id = _begin_completeable_purge(storage, "purge_stale_complete")
+    first_claim, takeover_claim = _claim_then_take_over(storage, purge_id)
+
+    with pytest.raises(ValueError, match="purge execution claim"):
+        storage.complete_subject_erasure_barrier_after_empty_check(
+            purge_id,
+            _erase_event(purge_id=purge_id),
+            execution_claim=first_claim,
+        )
+    assert storage.get_purge_operation(purge_id).status == "running"
+    barrier = storage.get_subject_write_barrier(SUBJECT_REF)
+    assert barrier is not None
+    assert barrier.status == "erasing"
+    assert storage.list_audit_events(subject_ref=SUBJECT_REF) == []
+
+    completed = storage.complete_subject_erasure_barrier_after_empty_check(
+        purge_id,
+        _erase_event(purge_id=purge_id),
+        execution_claim=takeover_claim,
+    )
+    assert completed.status == "complete"
+
+
+def test_stale_execution_claim_cannot_fail_purge_or_barrier(storage):
+    barrier_purge_id = _begin_raw_user_erasure_purge(
+        storage, "purge_stale_barrier_failure"
+    )
+    storage.begin_subject_erasure_barrier(SUBJECT_REF, barrier_purge_id)
+    first_claim, takeover_claim = _claim_then_take_over(storage, barrier_purge_id)
+
+    with pytest.raises(ValueError, match="purge execution claim"):
+        storage.fail_subject_erasure_barrier(
+            SUBJECT_REF,
+            barrier_purge_id,
+            error_code="governance_erase_failed",
+            error_detail="RuntimeError",
+            execution_claim=first_claim,
+        )
+    barrier = storage.get_subject_write_barrier(SUBJECT_REF)
+    assert barrier is not None
+    assert barrier.status == "erasing"
+
+    failed_barrier = storage.fail_subject_erasure_barrier(
+        SUBJECT_REF,
+        barrier_purge_id,
+        error_code="governance_erase_failed",
+        error_detail="RuntimeError",
+        execution_claim=takeover_claim,
+    )
+    assert failed_barrier.status == "failed"
+
+    purge_id = _begin_raw_user_erasure_purge(storage, "purge_stale_purge_failure")
+    first_claim, takeover_claim = _claim_then_take_over(storage, purge_id)
+    with pytest.raises(ValueError, match="purge execution claim"):
+        storage.fail_purge_operation(
+            purge_id,
+            error_code="governance_erase_failed",
+            error_detail="RuntimeError",
+            execution_claim=first_claim,
+        )
+    assert storage.get_purge_operation(purge_id).status == "running"
+
+    failed_purge = storage.fail_purge_operation(
+        purge_id,
+        error_code="governance_erase_failed",
+        error_detail="RuntimeError",
+        execution_claim=takeover_claim,
+    )
+    assert failed_purge.status == "failed"
 
 
 def test_prepare_governance_erase_targets_sanitizes_snapshot_detail(storage):

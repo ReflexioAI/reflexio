@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 import time
 import uuid
 from contextlib import suppress
@@ -40,6 +41,7 @@ _USER_PLAYBOOK_PAGE_SIZE = 1000
 _LIFECYCLE_COMPLETION_STATUS = "complete"
 _DUPLICATE_ERASE_POLL_SECONDS = 0.05
 _PURGE_EXECUTION_LEASE_SECONDS = 300
+_PURGE_EXECUTION_HEARTBEAT_SECONDS = 30
 
 
 class GovernanceActorContext(TypedDict):
@@ -56,7 +58,52 @@ class SubjectErasureLifecycle(Protocol):
         storage: Any,
         subject_ref: str,
         purge_id: str,
+        execution_claim: PurgeExecutionClaim,
     ) -> None: ...
+
+
+class _PurgeExecutionHeartbeat:
+    def __init__(
+        self,
+        *,
+        storage: Any,
+        purge_id: str,
+        execution_claim: PurgeExecutionClaim,
+    ) -> None:
+        self._storage = storage
+        self._purge_id = purge_id
+        self._claim = execution_claim
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def __enter__(self) -> _PurgeExecutionHeartbeat:
+        self.renew_now()
+        self._thread.start()
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self._stop.set()
+        self._thread.join(timeout=1)
+
+    def claim(self) -> PurgeExecutionClaim:
+        with self._lock:
+            return self._claim
+
+    def renew_now(self) -> PurgeExecutionClaim:
+        renewed = self._storage.renew_purge_operation_execution_claim(
+            self._purge_id,
+            self.claim(),
+            lease_ttl_seconds=_PURGE_EXECUTION_LEASE_SECONDS,
+        )
+        with self._lock:
+            self._claim = renewed
+        return renewed
+
+    def _run(self) -> None:
+        while not self._stop.wait(_PURGE_EXECUTION_HEARTBEAT_SECONDS):
+            with suppress(Exception):
+                self.renew_now()
 
 
 class GovernanceService:
@@ -179,51 +226,64 @@ class GovernanceService:
                 raise ValueError(f"Unsupported purge operation status: {purge.status}")
             time.sleep(_DUPLICATE_ERASE_POLL_SECONDS)
         try:
-            self._assert_execution_claim(purge_id, execution_claim)
-            self.storage.begin_subject_erasure_barrier(subref, purge_id)
-            if not self.storage.purge_targets_prepared(purge_id):
-                self._assert_execution_claim(purge_id, execution_claim)
-                self.storage.prepare_governance_erase_targets(
+            with _PurgeExecutionHeartbeat(
+                storage=self.storage,
+                purge_id=purge_id,
+                execution_claim=execution_claim,
+            ) as heartbeat:
+                self.storage.begin_subject_erasure_barrier(
+                    subref,
                     purge_id,
-                    user_id,
+                    execution_claim=heartbeat.claim(),
                 )
+                if not self.storage.purge_targets_prepared(purge_id):
+                    self.storage.prepare_governance_erase_targets(
+                        purge_id,
+                        user_id,
+                        execution_claim=heartbeat.claim(),
+                    )
 
-            if not self._delete_targets_complete(purge_id):
-                self._assert_execution_claim(purge_id, execution_claim)
-                self.storage.apply_governance_user_data_delete(purge_id, user_id)
-            if (
-                self.subject_erasure_lifecycle is not None
-                and not self._subject_erasure_lifecycle_complete(purge_id)
-            ):
-                self._assert_execution_claim(purge_id, execution_claim)
-                self.subject_erasure_lifecycle.erase_subject(
-                    storage=self.storage,
-                    subject_ref=subref,
-                    purge_id=purge_id,
+                if not self._delete_targets_complete(purge_id):
+                    self.storage.apply_governance_user_data_delete(
+                        purge_id,
+                        user_id,
+                        execution_claim=heartbeat.claim(),
+                    )
+                if (
+                    self.subject_erasure_lifecycle is not None
+                    and not self._subject_erasure_lifecycle_complete(purge_id)
+                ):
+                    self.subject_erasure_lifecycle.erase_subject(
+                        storage=self.storage,
+                        subject_ref=subref,
+                        purge_id=purge_id,
+                        execution_claim=heartbeat.claim(),
+                    )
+                    self._record_subject_erasure_lifecycle_complete(
+                        purge_id,
+                        execution_claim=heartbeat.claim(),
+                    )
+                deleted_counts = self._deleted_counts_from_targets(purge_id)
+
+                rebuilt_agent_playbook_ids: list[int] = []
+                completed = self.storage.complete_subject_erasure_barrier_after_empty_check(
+                    purge_id,
+                    AuditEvent(
+                        org_id=self.org_id,
+                        actor_type=actor_type,
+                        actor_ref=actor_ref,
+                        operation="ERASE",
+                        entity_type="request",
+                        subject_ref=subref,
+                        request_ref=reqref,
+                        idempotency_key=purge_id,
+                        detail={
+                            "deleted_counts": deleted_counts,
+                            "rebuilt_agent_playbook_ids": rebuilt_agent_playbook_ids,
+                        },
+                    ),
+                    execution_claim=heartbeat.claim(),
                 )
-                self._assert_execution_claim(purge_id, execution_claim)
-                self._record_subject_erasure_lifecycle_complete(purge_id)
-            deleted_counts = self._deleted_counts_from_targets(purge_id)
-
-            rebuilt_agent_playbook_ids: list[int] = []
-            self._assert_execution_claim(purge_id, execution_claim)
-            completed = self.storage.complete_subject_erasure_barrier_after_empty_check(
-                purge_id,
-                AuditEvent(
-                    org_id=self.org_id,
-                    actor_type=actor_type,
-                    actor_ref=actor_ref,
-                    operation="ERASE",
-                    entity_type="request",
-                    subject_ref=subref,
-                    request_ref=reqref,
-                    idempotency_key=purge_id,
-                    detail={
-                        "deleted_counts": deleted_counts,
-                        "rebuilt_agent_playbook_ids": rebuilt_agent_playbook_ids,
-                    },
-                ),
-            )
         except Exception as exc:
             if not self._execution_claim_is_current(purge_id, execution_claim):
                 raise
@@ -233,12 +293,14 @@ class GovernanceService:
                     purge_id,
                     error_code="governance_erase_failed",
                     error_detail=type(exc).__name__,
+                    execution_claim=execution_claim,
                 )
             with suppress(Exception):
                 self.storage.fail_purge_operation(
                     purge_id,
                     error_code="governance_erase_failed",
                     error_detail=type(exc).__name__,
+                    execution_claim=execution_claim,
                 )
             raise
         return UserEraseResult(
@@ -399,7 +461,11 @@ class GovernanceService:
             and (snapshot.detail or {}).get("status") == _LIFECYCLE_COMPLETION_STATUS
         )
 
-    def _record_subject_erasure_lifecycle_complete(self, purge_id: str) -> None:
+    def _record_subject_erasure_lifecycle_complete(
+        self,
+        purge_id: str,
+        execution_claim: PurgeExecutionClaim,
+    ) -> None:
         snapshot = self._prepared_target_snapshot(purge_id)
         if snapshot is None or snapshot.status != "complete":
             raise ValueError(
@@ -416,6 +482,7 @@ class GovernanceService:
             detail=detail,
             deleted_count=snapshot.deleted_count,
             error_detail=snapshot.error_detail,
+            execution_claim=execution_claim,
         )
 
     def _prepared_target_snapshot(self, purge_id: str) -> PurgeOperationTarget | None:

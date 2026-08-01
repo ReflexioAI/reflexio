@@ -723,8 +723,9 @@ def test_subject_erasure_lifecycle_retry_is_idempotent_and_counted(
             storage: SQLiteStorage,
             subject_ref: str,
             purge_id: str,
+            execution_claim: object,
         ) -> None:
-            del subject_ref
+            del subject_ref, execution_claim
             self.calls += 1
             target = next(
                 target
@@ -805,8 +806,9 @@ def test_duplicate_erase_waits_for_lifecycle_winner_beyond_old_deadline(
             storage: SQLiteStorage,
             subject_ref: str,
             purge_id: str,
+            execution_claim: object,
         ) -> None:
-            del storage, subject_ref, purge_id
+            del storage, subject_ref, purge_id, execution_claim
             with self._lock:
                 self.calls += 1
                 call_number = self.calls
@@ -871,6 +873,102 @@ def test_duplicate_erase_waits_for_lifecycle_winner_beyond_old_deadline(
     assert lifecycle.duplicate_rejections == 0
 
 
+def test_healthy_slow_lifecycle_renews_lease_and_duplicate_converges(
+    storage: SQLiteStorage,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_now = {"value": 100}
+    real_sleep = governance_service_module.time.sleep
+    monkeypatch.setattr(
+        governance_service_module,
+        "_PURGE_EXECUTION_HEARTBEAT_SECONDS",
+        0.01,
+        raising=False,
+    )
+
+    from reflexio.server.services.storage.sqlite_storage.governance import (
+        _purge as sqlite_purge_module,
+    )
+
+    monkeypatch.setattr(sqlite_purge_module, "_epoch_now", lambda: fake_now["value"])
+
+    class SlowSingleUseLifecycle:
+        def __init__(self) -> None:
+            self.first_call_started = threading.Event()
+            self.release_first_call = threading.Event()
+            self._lock = threading.Lock()
+            self.calls = 0
+
+        def erase_subject(
+            self,
+            *,
+            storage: SQLiteStorage,
+            subject_ref: str,
+            purge_id: str,
+            execution_claim: object,
+        ) -> None:
+            del storage, subject_ref, purge_id, execution_claim
+            with self._lock:
+                self.calls += 1
+                call_number = self.calls
+            if call_number != 1:
+                raise RuntimeError("provider lifecycle already running")
+            self.first_call_started.set()
+            fake_now["value"] = 350
+            real_sleep(0.05)
+            fake_now["value"] = 401
+            assert self.release_first_call.wait(timeout=5)
+
+    lifecycle = SlowSingleUseLifecycle()
+    service = GovernanceService(
+        storage=storage,
+        org_id=storage.org_id,
+        ref_secret="test-governance-secret",
+        subject_erasure_lifecycle=lifecycle,
+    )
+    winner_results: list[UserEraseResult] = []
+    winner_errors: list[BaseException] = []
+    duplicate_results: list[UserEraseResult] = []
+    duplicate_errors: list[BaseException] = []
+
+    def run_winner() -> None:
+        try:
+            winner_results.append(
+                service.erase_user(user_id="alice", request_id="erase-renewed-slow")
+            )
+        except BaseException as exc:
+            winner_errors.append(exc)
+
+    def run_duplicate() -> None:
+        try:
+            duplicate_results.append(
+                service.erase_user(user_id="alice", request_id="erase-renewed-slow")
+            )
+        except BaseException as exc:
+            duplicate_errors.append(exc)
+
+    winner = threading.Thread(target=run_winner)
+    winner.start()
+    assert lifecycle.first_call_started.wait(timeout=5)
+
+    duplicate = threading.Thread(target=run_duplicate)
+    duplicate.start()
+    real_sleep(0.05)
+    lifecycle.release_first_call.set()
+    winner.join(timeout=5)
+    duplicate.join(timeout=5)
+
+    assert not winner.is_alive()
+    assert not duplicate.is_alive()
+    assert winner_errors == []
+    assert duplicate_errors == []
+    assert len(winner_results) == 1
+    assert len(duplicate_results) == 1
+    assert duplicate_results[0].status == "complete"
+    assert duplicate_results[0].purge_id == winner_results[0].purge_id
+    assert lifecycle.calls == 1
+
+
 def test_stale_running_erase_claim_recovers_after_crash(
     storage: SQLiteStorage,
     monkeypatch: pytest.MonkeyPatch,
@@ -883,12 +981,12 @@ def test_stale_running_erase_claim_recovers_after_crash(
     original_begin_barrier = storage.begin_subject_erasure_barrier
     crash_once = True
 
-    def crash_after_claim(subject_ref: str, purge_id: str):
+    def crash_after_claim(subject_ref: str, purge_id: str, **kwargs):
         nonlocal crash_once
         if crash_once:
             crash_once = False
             raise SystemExit("simulated crash after claim")
-        return original_begin_barrier(subject_ref, purge_id)
+        return original_begin_barrier(subject_ref, purge_id, **kwargs)
 
     monkeypatch.setattr(
         storage,
