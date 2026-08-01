@@ -331,6 +331,8 @@ class UserPlaybookStoreMixin:
         self,
         user_playbook_ids: list[int],
         status_filter: list[Status | None] | None = None,
+        *,
+        include_embedding: bool = False,
     ) -> list[UserPlaybook]:
         """Fetch user playbooks by ids without requiring a single owner id."""
         raise NotImplementedError

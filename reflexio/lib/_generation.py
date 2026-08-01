@@ -1,3 +1,4 @@
+import uuid
 from typing import Any
 
 from reflexio.lib._base import (
@@ -42,6 +43,9 @@ class GenerationMixin(ReflexioBase):
         from reflexio.server.services.playbook.aggregation_prompt_processing import (
             AGGREGATION_PROMPT_PROCESSOR,
         )
+        from reflexio.server.services.playbook.aggregation_scheduler import (
+            aggregation_min_interval_seconds,
+        )
         from reflexio.server.services.playbook.components.aggregator import (
             PlaybookAggregator,
         )
@@ -50,23 +54,61 @@ class GenerationMixin(ReflexioBase):
         )
 
         aggregation_prompt_processor = get_service(AGGREGATION_PROMPT_PROCESSOR)
+        min_interval_seconds = aggregation_min_interval_seconds()
         aggregator_kwargs = {}
         if aggregation_prompt_processor is not None:
             aggregator_kwargs["aggregation_prompt_processor"] = (
                 aggregation_prompt_processor
             )
 
+        aggregator_request = PlaybookAggregatorRequest(
+            agent_version=agent_version,
+            rerun=True,
+        )
+        storage = self.request_context.storage
+        if storage is None:
+            raise ValueError(STORAGE_NOT_CONFIGURED_MSG)
+        claim = None
+        if getattr(storage, "supports_incremental_playbook_aggregation", False) is True:
+            storage.schedule_playbook_aggregation(agent_version)
+            claim = storage.claim_due_playbook_aggregation(
+                owner=f"admin-rerun:{uuid.uuid4().hex}",
+                lease_seconds=1800,
+                agent_version=agent_version,
+            )
+            if claim is None:
+                raise RuntimeError(
+                    "another playbook aggregation is already running for this organization"
+                )
+        if claim is not None:
+            aggregator_kwargs["aggregation_claim"] = claim
         playbook_aggregator = PlaybookAggregator(
             llm_client=self.llm_client,
             request_context=self.request_context,
             agent_version=agent_version,
             **aggregator_kwargs,
         )
-        aggregator_request = PlaybookAggregatorRequest(
-            agent_version=agent_version,
-            rerun=True,
-        )
-        return playbook_aggregator.run(aggregator_request)
+        try:
+            result = playbook_aggregator.run(aggregator_request)
+        except Exception:
+            if claim is not None:
+                storage.finish_playbook_aggregation_claim(
+                    claim,
+                    success=False,
+                    retry_after_seconds=60,
+                    backlog_retry_after_seconds=1,
+                    min_interval_seconds=min_interval_seconds,
+                )
+            raise
+        if claim is not None and not storage.finish_playbook_aggregation_claim(
+            claim,
+            success=True,
+            retry_after_seconds=60,
+            backlog_retry_after_seconds=1,
+            min_interval_seconds=min_interval_seconds,
+        ):
+            raise RuntimeError("playbook aggregation rerun lost its database fence")
+        return result
 
     def _run_generation_service(
         self,

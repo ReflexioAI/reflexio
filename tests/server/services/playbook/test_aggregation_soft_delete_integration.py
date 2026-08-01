@@ -335,6 +335,11 @@ def _run_aggregator_with_supersede(
 ) -> tuple[SQLiteStorage, RequestContext]:
     """Run one aggregation with one new and one old archived playbook."""
     storage = _make_storage(temp_dir, worker_id, suffix=suffix)
+    if not full_archive:
+        # These cases characterize the legacy fingerprint replacement path.
+        # Durable incremental aggregation only attaches or creates clusters and
+        # intentionally performs no supersession.
+        storage.supports_incremental_playbook_aggregation = False
     ctx = _make_request_context(storage, temp_dir, worker_id, suffix=suffix)
 
     # Seed old archived agent playbook (will be removed on SUCCESS path)

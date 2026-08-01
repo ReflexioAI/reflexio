@@ -1034,6 +1034,7 @@ class TestRun:
         agg.storage.get_agent_playbooks.assert_called_once_with(
             limit=page_size,
             max_agent_playbook_id=aggregator_module._SIGNED_BIGINT_MAX,
+            agent_version="v1",
             status_filter=[None],
             playbook_status_filter=[
                 PlaybookStatus.APPROVED,
@@ -1757,6 +1758,10 @@ class TestProcessAggregationResponse:
         response = PlaybookAggregationOutput(playbook=None)
         assert agg._process_aggregation_response(response, [_raw()]) is None
 
+        outcome = agg._process_aggregation_response_outcome(response, [_raw()])
+        assert outcome.status == "semantic_null"
+        assert outcome.playbook is None
+
     def test_valid_response_returns_playbook(self):
         from reflexio.server.services.playbook.playbook_service_utils import (
             PlaybookAggregationOutput,
@@ -1827,6 +1832,32 @@ class TestProcessAggregationResponse:
         )
 
         assert agg._process_aggregation_response(response, [_raw()]) is None
+        assert (
+            agg._process_aggregation_response_outcome(response, [_raw()]).status
+            == "retryable_failure"
+        )
+
+    def test_batch_preserves_one_tagged_outcome_per_cluster(self):
+        agg = _make_aggregator()
+        agg._generate_playbook_from_cluster_outcome = MagicMock(  # type: ignore[method-assign]
+            side_effect=[
+                aggregator_module.AggregationGenerationOutcome(
+                    "semantic_null", [_raw(1)]
+                ),
+                aggregator_module.AggregationGenerationOutcome(
+                    "retryable_failure", [_raw(2)]
+                ),
+            ]
+        )
+
+        outcomes = agg._generate_playbook_outcomes_with_source_clusters(
+            {0: [_raw(1)], 1: [_raw(2)]}, []
+        )
+
+        assert [item.status for item in outcomes] == [
+            "semantic_null",
+            "retryable_failure",
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -1890,6 +1921,39 @@ def test_aggregator_groups_by_content_similarity_not_polarity():
         f"high-overlap content must group together (no polarity gate), got {groups}"
     )
     assert len(groups[0]) == 2
+
+
+def test_large_prompt_cluster_skips_quadratic_direction_grouping(monkeypatch):
+    raws = [_make_pb(f"rule {index}", rid=index) for index in range(257)]
+    monkeypatch.setattr(
+        aggregator_module.aggregator_prompt_formatting,
+        "group_playbooks_by_direction",
+        MagicMock(side_effect=AssertionError("quadratic grouping should be bounded")),
+    )
+
+    rendered = (
+        aggregator_module.aggregator_prompt_formatting.format_structured_cluster_input(
+            raws
+        )
+    )
+
+    assert "TRIGGER conditions: (none specified)" in rendered
+
+
+def test_existing_prompt_context_is_embedding_ranked_and_bounded():
+    cluster = [_raw(1).model_copy(update={"embedding": [1.0, 0.0]})]
+    irrelevant = [
+        _agent_playbook(index).model_copy(update={"embedding": [0.0, 1.0]})
+        for index in range(1, 22)
+    ]
+    relevant = _agent_playbook(99).model_copy(update={"embedding": [1.0, 0.0]})
+
+    selected = aggregator_module._select_relevant_existing_playbooks(
+        cluster, [*irrelevant, relevant]
+    )
+
+    assert len(selected) == 20
+    assert selected[0].agent_playbook_id == 99
 
 
 def test_aggregation_preserves_distinct_do_and_avoid_rules():
