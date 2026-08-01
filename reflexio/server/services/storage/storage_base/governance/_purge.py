@@ -7,6 +7,7 @@ from reflexio.models.api_schema.domain.governance import (
     PurgeOperation,
     PurgeOperationTarget,
 )
+from reflexio.server.services.storage.governance_claims import PurgeExecutionClaim
 
 
 class PurgeOperationStoreMixin(ABC):
@@ -32,8 +33,21 @@ class PurgeOperationStoreMixin(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def claim_purge_operation_execution(self, purge_id: str) -> bool:
-        """Atomically claim a pending or failed purge for execution."""
+    def claim_purge_operation_execution(
+        self,
+        purge_id: str,
+        *,
+        lease_owner: str,
+        lease_ttl_seconds: int,
+    ) -> PurgeExecutionClaim | None:
+        """Atomically claim or take over a stale purge execution."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def assert_purge_operation_execution_claim(
+        self, purge_id: str, execution_claim: PurgeExecutionClaim
+    ) -> None:
+        """Raise when the purge execution claim no longer owns the live fence."""
         raise NotImplementedError
 
     @abstractmethod
@@ -47,6 +61,7 @@ class PurgeOperationStoreMixin(ABC):
         detail: dict[str, object] | None = None,
         deleted_count: int = 0,
         error_detail: str | None = None,
+        execution_claim: PurgeExecutionClaim | None = None,
     ) -> None:
         raise NotImplementedError
 

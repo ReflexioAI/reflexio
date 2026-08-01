@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+import uuid
 from contextlib import suppress
 from typing import Any, Literal, Protocol, TypedDict
 
@@ -17,6 +18,7 @@ from reflexio.server.services.governance.config import (
     governance_subject_ref,
 )
 from reflexio.server.services.governance.subject_refs import stable_id
+from reflexio.server.services.storage.governance_claims import PurgeExecutionClaim
 
 _DELETE_TARGET_NAME_TO_RESULT_KEY = {
     "interaction": "interactions",
@@ -37,6 +39,7 @@ _REQUIRED_DELETE_TARGET_NAMES = tuple(_DELETE_TARGET_NAME_TO_RESULT_KEY)
 _USER_PLAYBOOK_PAGE_SIZE = 1000
 _LIFECYCLE_COMPLETION_STATUS = "complete"
 _DUPLICATE_ERASE_POLL_SECONDS = 0.05
+_PURGE_EXECUTION_LEASE_SECONDS = 300
 
 
 class GovernanceActorContext(TypedDict):
@@ -156,7 +159,16 @@ class GovernanceService:
             return self._completed_erase_result_for_retry(
                 subject_ref=subref, purge_id=purge_id
             )
-        while not self.storage.claim_purge_operation_execution(purge_id):
+        lease_owner = f"governance-erase-{uuid.uuid4().hex}"
+        execution_claim: PurgeExecutionClaim | None = None
+        while execution_claim is None:
+            execution_claim = self.storage.claim_purge_operation_execution(
+                purge_id,
+                lease_owner=lease_owner,
+                lease_ttl_seconds=_PURGE_EXECUTION_LEASE_SECONDS,
+            )
+            if execution_claim is not None:
+                break
             purge = self.storage.get_purge_operation(purge_id)
             if purge.status == "complete":
                 return self._completed_erase_result_for_retry(
@@ -167,28 +179,34 @@ class GovernanceService:
                 raise ValueError(f"Unsupported purge operation status: {purge.status}")
             time.sleep(_DUPLICATE_ERASE_POLL_SECONDS)
         try:
+            self._assert_execution_claim(purge_id, execution_claim)
             self.storage.begin_subject_erasure_barrier(subref, purge_id)
             if not self.storage.purge_targets_prepared(purge_id):
+                self._assert_execution_claim(purge_id, execution_claim)
                 self.storage.prepare_governance_erase_targets(
                     purge_id,
                     user_id,
                 )
 
             if not self._delete_targets_complete(purge_id):
+                self._assert_execution_claim(purge_id, execution_claim)
                 self.storage.apply_governance_user_data_delete(purge_id, user_id)
             if (
                 self.subject_erasure_lifecycle is not None
                 and not self._subject_erasure_lifecycle_complete(purge_id)
             ):
+                self._assert_execution_claim(purge_id, execution_claim)
                 self.subject_erasure_lifecycle.erase_subject(
                     storage=self.storage,
                     subject_ref=subref,
                     purge_id=purge_id,
                 )
+                self._assert_execution_claim(purge_id, execution_claim)
                 self._record_subject_erasure_lifecycle_complete(purge_id)
             deleted_counts = self._deleted_counts_from_targets(purge_id)
 
             rebuilt_agent_playbook_ids: list[int] = []
+            self._assert_execution_claim(purge_id, execution_claim)
             completed = self.storage.complete_subject_erasure_barrier_after_empty_check(
                 purge_id,
                 AuditEvent(
@@ -207,6 +225,8 @@ class GovernanceService:
                 ),
             )
         except Exception as exc:
+            if not self._execution_claim_is_current(purge_id, execution_claim):
+                raise
             with suppress(Exception):
                 self.storage.fail_subject_erasure_barrier(
                     subref,
@@ -228,6 +248,20 @@ class GovernanceService:
             deleted_counts=deleted_counts,
             rebuilt_agent_playbook_ids=rebuilt_agent_playbook_ids,
         )
+
+    def _assert_execution_claim(
+        self, purge_id: str, execution_claim: PurgeExecutionClaim
+    ) -> None:
+        self.storage.assert_purge_operation_execution_claim(purge_id, execution_claim)
+
+    def _execution_claim_is_current(
+        self, purge_id: str, execution_claim: PurgeExecutionClaim
+    ) -> bool:
+        try:
+            self._assert_execution_claim(purge_id, execution_claim)
+        except Exception:
+            return False
+        return True
 
     def _assert_storage_ref_secret_matches(self) -> None:
         storage_secret = get_governance_ref_secret()

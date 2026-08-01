@@ -903,6 +903,63 @@ def test_complete_retry_replaces_failed_completed_at(storage):
     assert completed.completed_at == 222
 
 
+def test_stale_execution_claim_takeover_fences_previous_owner(storage):
+    purge_id = _begin_purge(storage, "purge_stale_claim")
+    first_claim = storage.claim_purge_operation_execution(
+        purge_id,
+        lease_owner="owner-a",
+        lease_ttl_seconds=30,
+    )
+    assert first_claim is not None
+
+    live_duplicate = storage.claim_purge_operation_execution(
+        purge_id,
+        lease_owner="owner-b",
+        lease_ttl_seconds=30,
+    )
+    assert live_duplicate is None
+
+    storage.conn.execute(
+        """UPDATE purge_operations
+           SET execution_claim_expires_at = 0
+           WHERE org_id = ? AND purge_id = ?""",
+        (storage.org_id, purge_id),
+    )
+    storage.conn.commit()
+
+    takeover_claim = storage.claim_purge_operation_execution(
+        purge_id,
+        lease_owner="owner-b",
+        lease_ttl_seconds=30,
+    )
+    assert takeover_claim is not None
+    assert takeover_claim.owner == "owner-b"
+    assert takeover_claim.fence == first_claim.fence + 1
+
+    with pytest.raises(ValueError, match="purge execution claim"):
+        storage.record_purge_target(
+            purge_id=purge_id,
+            target_name="interaction",
+            target_ref="all",
+            phase="delete",
+            status="complete",
+            execution_claim=first_claim,
+        )
+
+    storage.record_purge_target(
+        purge_id=purge_id,
+        target_name="interaction",
+        target_ref="all",
+        phase="delete",
+        status="complete",
+        execution_claim=takeover_claim,
+    )
+    targets = storage.list_purge_targets(purge_id, phase="delete")
+    assert [(target.target_name, target.status) for target in targets] == [
+        ("interaction", "complete")
+    ]
+
+
 def test_prepare_governance_erase_targets_sanitizes_snapshot_detail(storage):
     storage.begin_purge_operation(
         purge_id="purge_detail",

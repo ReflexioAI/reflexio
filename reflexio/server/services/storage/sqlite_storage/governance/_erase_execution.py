@@ -534,7 +534,9 @@ class GovernanceEraseExecutionMixin:
                            error_code = NULL,
                            error_detail = NULL,
                            updated_at = ?,
-                           completed_at = ?
+                           completed_at = ?,
+                           execution_claim_owner = NULL,
+                           execution_claim_expires_at = NULL
                        WHERE purge_id = ? AND org_id = ?""",
                     (now, now, purge_id, self.org_id),
                 )

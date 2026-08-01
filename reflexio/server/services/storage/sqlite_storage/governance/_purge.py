@@ -27,6 +27,10 @@ from reflexio.models.api_schema.domain.governance import (
     PurgeOperation,
     PurgeOperationTarget,
 )
+from reflexio.server.services.storage.governance_claims import (
+    PurgeExecutionClaim,
+    validate_purge_execution_claim,
+)
 from reflexio.server.services.storage.governance_validation import (
     _ALLOWED_PURGE_OPERATION_TYPES,
     _ALLOWED_PURGE_SCOPE_TYPES,
@@ -232,26 +236,90 @@ class PurgeOperationStoreMixin:
             self.conn.commit()
         return self.get_purge_operation(validated_purge_id)
 
-    def claim_purge_operation_execution(self, purge_id: str) -> bool:
+    def claim_purge_operation_execution(
+        self,
+        purge_id: str,
+        *,
+        lease_owner: str,
+        lease_ttl_seconds: int,
+    ) -> PurgeExecutionClaim | None:
         validated_purge_id = _validate_governance_purge_id("purge_id", purge_id)
+        if not lease_owner.strip():
+            raise ValueError("lease_owner is required")
+        if lease_ttl_seconds <= 0:
+            raise ValueError("lease_ttl_seconds must be positive")
         now = _epoch_now()
+        expires_at = now + lease_ttl_seconds
         with self._lock:
             try:
                 self.conn.execute("BEGIN IMMEDIATE")
                 cursor = self.conn.execute(
                     """UPDATE purge_operations
                        SET status = 'running', error_code = NULL, error_detail = NULL,
-                           completed_at = NULL, updated_at = ?
+                           completed_at = NULL, updated_at = ?,
+                           execution_claim_owner = ?,
+                           execution_claim_fence = execution_claim_fence + 1,
+                           execution_claim_expires_at = ?
                        WHERE purge_id = ? AND org_id = ?
-                         AND status IN ('pending', 'failed')""",
-                    (now, validated_purge_id, self.org_id),
+                         AND (
+                            status IN ('pending', 'failed')
+                            OR (
+                                status = 'running'
+                                AND (
+                                    execution_claim_expires_at IS NULL
+                                    OR execution_claim_expires_at <= ?
+                                )
+                            )
+                         )
+                       RETURNING execution_claim_owner,
+                                 execution_claim_fence,
+                                 execution_claim_expires_at""",
+                    (
+                        now,
+                        lease_owner,
+                        expires_at,
+                        validated_purge_id,
+                        self.org_id,
+                        now,
+                    ),
                 )
-                claimed = cursor.rowcount == 1
+                row = cursor.fetchone()
                 self.conn.commit()
-                return claimed
+                if row is None:
+                    return None
+                return PurgeExecutionClaim(
+                    purge_id=validated_purge_id,
+                    owner=str(row["execution_claim_owner"]),
+                    fence=int(row["execution_claim_fence"]),
+                    expires_at=int(row["execution_claim_expires_at"]),
+                )
             except Exception:
                 self.conn.rollback()
                 raise
+
+    def assert_purge_operation_execution_claim(
+        self, purge_id: str, execution_claim: PurgeExecutionClaim
+    ) -> None:
+        purge_id = _validate_governance_purge_id("purge_id", purge_id)
+        claim = validate_purge_execution_claim(purge_id, execution_claim)
+        now = _epoch_now()
+        row = self._deps()._fetchone(
+            """SELECT status, execution_claim_owner, execution_claim_fence,
+                      execution_claim_expires_at
+               FROM purge_operations
+               WHERE purge_id = ? AND org_id = ?""",
+            (purge_id, self.org_id),
+        )
+        if row is None:
+            raise ValueError(f"Purge operation {purge_id!r} not found")
+        if (
+            row["status"] != "running"
+            or row["execution_claim_owner"] != claim.owner
+            or int(row["execution_claim_fence"]) != claim.fence
+            or row["execution_claim_expires_at"] is None
+            or int(row["execution_claim_expires_at"]) <= now
+        ):
+            raise ValueError("purge execution claim is no longer active")
 
     def record_purge_target(
         self,
@@ -263,6 +331,7 @@ class PurgeOperationStoreMixin:
         detail: dict[str, object] | None = None,
         deleted_count: int = 0,
         error_detail: str | None = None,
+        execution_claim: PurgeExecutionClaim | None = None,
     ) -> None:
         purge_id = _validate_governance_purge_id("purge_id", purge_id)
         _validate_governance_enum(
@@ -281,6 +350,8 @@ class PurgeOperationStoreMixin:
             allowed=_ALLOWED_PURGE_TARGET_STATUSES,
         )
         with self._lock:
+            if execution_claim is not None:
+                self.assert_purge_operation_execution_claim(purge_id, execution_claim)
             self._record_purge_target_locked(
                 purge_id=purge_id,
                 target_name=target_name,
@@ -377,7 +448,9 @@ class PurgeOperationStoreMixin:
             cur = self.conn.execute(
                 """UPDATE purge_operations
                    SET status = 'failed', error_code = ?, error_detail = ?,
-                   updated_at = ?, completed_at = ?
+                   updated_at = ?, completed_at = ?,
+                   execution_claim_owner = NULL,
+                   execution_claim_expires_at = NULL
                    WHERE purge_id = ? AND org_id = ? AND status != 'complete'""",
                 (
                     validated_error_code,

@@ -871,6 +871,113 @@ def test_duplicate_erase_waits_for_lifecycle_winner_beyond_old_deadline(
     assert lifecycle.duplicate_rejections == 0
 
 
+def test_stale_running_erase_claim_recovers_after_crash(
+    storage: SQLiteStorage,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = GovernanceService(
+        storage=storage,
+        org_id=storage.org_id,
+        ref_secret="test-governance-secret",
+    )
+    original_begin_barrier = storage.begin_subject_erasure_barrier
+    crash_once = True
+
+    def crash_after_claim(subject_ref: str, purge_id: str):
+        nonlocal crash_once
+        if crash_once:
+            crash_once = False
+            raise SystemExit("simulated crash after claim")
+        return original_begin_barrier(subject_ref, purge_id)
+
+    monkeypatch.setattr(
+        storage,
+        "begin_subject_erasure_barrier",
+        crash_after_claim,
+    )
+
+    with pytest.raises(SystemExit, match="simulated crash after claim"):
+        service.erase_user(user_id="alice", request_id="erase-crash-after-claim")
+
+    storage.conn.execute("UPDATE purge_operations SET execution_claim_expires_at = 0")
+    storage.conn.commit()
+
+    def fail_if_duplicate_polls(_seconds: float) -> None:
+        raise AssertionError("stale running claim did not recover")
+
+    monkeypatch.setattr(
+        governance_service_module.time, "sleep", fail_if_duplicate_polls
+    )
+
+    recovered = service.erase_user(
+        user_id="alice",
+        request_id="erase-crash-after-claim",
+    )
+
+    assert recovered.status == "complete"
+    assert storage.get_purge_operation(recovered.purge_id).status == "complete"
+    barrier = storage.get_subject_write_barrier(recovered.subject_ref)
+    assert barrier is not None
+    assert barrier.status == "erased"
+
+
+def test_delete_committed_before_completion_retry_converges_idempotently(
+    storage: SQLiteStorage,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = GovernanceService(
+        storage=storage,
+        org_id=storage.org_id,
+        ref_secret="test-governance-secret",
+    )
+    original_complete = storage.complete_subject_erasure_barrier_after_empty_check
+    completion_attempts = 0
+
+    def crash_after_delete_targets(*args, **kwargs):
+        nonlocal completion_attempts
+        completion_attempts += 1
+        if completion_attempts == 1:
+            raise SystemExit("simulated crash after delete")
+        return original_complete(*args, **kwargs)
+
+    monkeypatch.setattr(
+        storage,
+        "complete_subject_erasure_barrier_after_empty_check",
+        crash_after_delete_targets,
+    )
+
+    with pytest.raises(SystemExit, match="simulated crash after delete"):
+        service.erase_user(user_id="alice", request_id="erase-crash-after-delete")
+
+    storage.conn.execute("UPDATE purge_operations SET execution_claim_expires_at = 0")
+    storage.conn.commit()
+
+    delete_targets_after_crash = storage.list_purge_targets(
+        storage.conn.execute("SELECT purge_id FROM purge_operations").fetchone()[
+            "purge_id"
+        ],
+        phase="delete",
+    )
+    assert delete_targets_after_crash
+    assert all(target.status == "complete" for target in delete_targets_after_crash)
+
+    def fail_if_duplicate_polls(_seconds: float) -> None:
+        raise AssertionError("stale post-delete claim did not recover")
+
+    monkeypatch.setattr(
+        governance_service_module.time, "sleep", fail_if_duplicate_polls
+    )
+
+    recovered = service.erase_user(
+        user_id="alice",
+        request_id="erase-crash-after-delete",
+    )
+
+    assert recovered.status == "complete"
+    assert storage.get_purge_operation(recovered.purge_id).status == "complete"
+    assert completion_attempts == 2
+
+
 def test_pending_duplicate_erase_has_one_durable_execution_owner(
     storage: SQLiteStorage,
     monkeypatch: pytest.MonkeyPatch,

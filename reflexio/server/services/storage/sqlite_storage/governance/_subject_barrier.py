@@ -424,7 +424,9 @@ class SubjectBarrierMixin:
                            error_code = NULL,
                            error_detail = NULL,
                            updated_at = ?,
-                           completed_at = ?
+                           completed_at = ?,
+                           execution_claim_owner = NULL,
+                           execution_claim_expires_at = NULL
                        WHERE purge_id = ? AND org_id = ?""",
                     (now, now, purge_id, self.org_id),
                 )
@@ -480,7 +482,9 @@ class SubjectBarrierMixin:
                     self.conn.execute(
                         """UPDATE purge_operations
                            SET status = 'failed', error_code = ?, error_detail = ?,
-                               updated_at = ?, completed_at = ?
+                               updated_at = ?, completed_at = ?,
+                               execution_claim_owner = NULL,
+                               execution_claim_expires_at = NULL
                            WHERE purge_id = ? AND org_id = ?""",
                         (
                             validated_error_code,
