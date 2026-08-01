@@ -4,9 +4,14 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from reflexio.models.api_schema.service_schemas import AgentPlaybook, UserPlaybook
+from reflexio.models.config_schema import PlaybookAggregatorConfig, PlaybookConfig
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.services.extraction.resume_worker import ExtractionResumeWorker
 from reflexio.server.services.playbook.components.aggregator import PlaybookAggregator
+from reflexio.server.services.playbook.playbook_service_utils import (
+    PlaybookAggregatorRequest,
+)
 from reflexio.server.services.storage.storage_base import (
     AgentBinding,
     AgentRunRecord,
@@ -178,76 +183,74 @@ def test_resumable_finalization_falls_back_when_a_playbook_id_is_unset() -> None
     )
 
 
-def test_aggregation_records_attributed_learnings_generated() -> None:
-    """Aggregation emits one entity-backed event per generated playbook.
-
-    ``saved_playbook_list`` entries always carry a real ``agent_playbook_id``
-    (``save_agent_playbooks`` raises rather than
-    returning a partial row) -- aggregator.py is the one caller with a clean,
-    always-populated per-record id list, so it uses the entity-backed path
-    (Task A3) rather than the count-only fallback.
-    """
+def test_aggregation_emits_no_learnings_generated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A completed aggregation remains observable but adds no billable learning."""
     events: list[UsageEvent] = []
     configure_usage_event_recorder(events.append)
+    request_context = _request_context()
+    storage = MagicMock()
+    configurator = MagicMock()
+    request_context.storage = storage
+    request_context.configurator = configurator
     aggregator = PlaybookAggregator(
         llm_client=MagicMock(),
-        request_context=_request_context(),
+        request_context=request_context,
         agent_version="v1",
     )
-
-    aggregator._record_learnings_generated(
-        learning_ids=["101", "102", "103"],
-        playbook_name="agent_rules",
-        request_id="agg-run-1",
-        metadata={"playbooks_generated": 3},
+    config = MagicMock()
+    configurator.get_config.return_value = config
+    config.user_playbook_extractor_config = PlaybookConfig(
+        extractor_name="billing-boundary",
+        extraction_definition_prompt="Extract user playbooks.",
+        aggregation_config=PlaybookAggregatorConfig(
+            min_cluster_size=2,
+            reaggregation_trigger_count=2,
+        ),
     )
-
-    assert len(events) == 3
-    assert sum(e.count_value for e in events) == 3  # total unchanged vs old count=3
-    assert {e.event_key for e in events} == {
-        "learn:agent_playbook:101",
-        "learn:agent_playbook:102",
-        "learn:agent_playbook:103",
-    }
-    assert {e.entity_id for e in events} == {"101", "102", "103"}
-    for event in events:
-        assert event.event_name == "learnings_generated"
-        assert event.count_value == 1
-        assert event.pipeline == "playbook"
-        assert event.source == "aggregation"
-        assert event.entity_type == "agent_playbook"
-        assert event.agent_version == "v1"
-        assert event.playbook_name == "agent_rules"
-        # tie key<->entity together so a swapped association can't pass on sets alone
-        assert event.event_key == f"learn:{event.entity_type}:{event.entity_id}"
-
-
-def test_aggregation_falls_back_when_an_agent_playbook_id_is_falsy() -> None:
-    """Whole-branch-review finding (2): a falsy/0 ``agent_playbook_id`` mixed
-    into the run must not mint a colliding ``learn:agent_playbook:0`` key --
-    fall back to the count-based aggregate event instead, matching
-    ``ExtractionResumeWorker``'s guard for the same failure mode.
-    """
-    events: list[UsageEvent] = []
-    configure_usage_event_recorder(events.append)
-    aggregator = PlaybookAggregator(
-        llm_client=MagicMock(),
-        request_context=_request_context(),
+    user_playbooks = [
+        UserPlaybook(
+            user_playbook_id=1,
+            agent_version="v1",
+            request_id="request-1",
+            playbook_name="user_playbook",
+            content="Document deployment decisions.",
+        ),
+        UserPlaybook(
+            user_playbook_id=2,
+            agent_version="v1",
+            request_id="request-2",
+            playbook_name="user_playbook",
+            content="Verify deployment outcomes.",
+        ),
+    ]
+    generated = AgentPlaybook(
+        agent_playbook_id=101,
+        playbook_name="user_playbook",
         agent_version="v1",
+        content="Deploy changes and verify results.",
+    )
+    storage.count_user_playbooks.return_value = len(user_playbooks)
+    storage.get_agent_playbooks.return_value = []
+    storage.get_user_playbooks.return_value = user_playbooks
+    storage.save_agent_playbooks.return_value = [generated]
+    monkeypatch.setattr(
+        aggregator,
+        "get_clusters",
+        lambda *_args: {0: user_playbooks},
+    )
+    monkeypatch.setattr(
+        aggregator,
+        "_generate_playbooks_with_source_clusters",
+        lambda *_args, **_kwargs: [(generated, user_playbooks, None)],
+    )
+    monkeypatch.setattr(
+        aggregator, "_enqueue_playbook_optimization", lambda _items: None
     )
 
-    aggregator._record_learnings_generated(
-        learning_ids=["201"],  # one id missing relative to total_count=2
-        playbook_name="agent_rules",
-        request_id="agg-run-2",
-        metadata={"playbooks_generated": 2},
-        total_count=2,
-    )
+    stats = aggregator.run(PlaybookAggregatorRequest(agent_version="v1", rerun=True))
 
-    assert len(events) == 1
-    assert events[0].count_value == 2  # total unchanged vs old count=2
-    assert events[0].event_key is not None and events[0].event_key.startswith(
-        "learn-batch:"
-    )
-    assert events[0].entity_type == "agent_playbook"
-    assert events[0].source == "aggregation"
+    assert stats["playbooks_generated"] == 1
+    assert any(event.event_name == "aggregation_succeeded" for event in events)
+    assert not any(event.event_name == "learnings_generated" for event in events)

@@ -90,11 +90,10 @@ def record_learnings_generated(
 ) -> None:
     """Emit the Learning value facet — number of profiles/playbooks generated.
 
-    Documented FALLBACK for callers that genuinely lack a per-record id list
-    (e.g. dedup/consolidation can reduce the persisted count below the raw
-    extracted count, so there is no safe 1:1 id per unit of ``count``). Prefer
+    Documented fallback for online extraction or resumable finalization when
+    a complete per-record id list is unavailable. Prefer
     :func:`record_learnings_generated_records` whenever the caller has the
-    durable learning ids in scope. No-op when ``count <= 0``.
+    durable user-learning ids in scope. No-op when ``count <= 0``.
 
     Emits a single event carrying a synthesized ``event_key=f"learn-batch:{uuid4()}"``
     (distinct per call) so this aggregate event still has a dedup key, even
@@ -178,7 +177,7 @@ def record_learnings_generated_records(
     Args:
         org_id: Organisation identifier.
         learning_ids: Ids of the learnings durably generated in this run
-            (e.g. ``profile_id`` / ``user_playbook_id`` / ``agent_playbook_id``).
+            (e.g. ``profile_id`` / ``user_playbook_id``).
         platform_llm: True iff the platform supplies the LLM for this org.
         platform_storage: True iff the platform supplies storage; None defers to rollup.
         pipeline: Optional pipeline tag (e.g. ``"playbook"``).
@@ -231,20 +230,19 @@ def emit_learnings_generated(
 ) -> None:
     """Resolve ``platform_llm`` from config and emit the Learning value facet.
 
-    Convenience wrapper for non-extraction learning-mutation paths such as
-    resumable-extraction finalization, aggregation, and offline-tuner auto-apply. It
-    owns the ``configurator.get_config()`` + ``platform_llm_from_config`` lookup so
-    each call site stays a thin one-liner, and — critically — is **guarded**: the
-    product path must never fail because metering failed, so config resolution and
-    emission are wrapped and any exception is logged and swallowed (mirroring the
-    extraction path's ``_record_billing_learning_events``). No-op when
-    ``count <= 0``.
+    Convenience wrapper for resumable-extraction finalization. It owns the
+    ``configurator.get_config()`` + ``platform_llm_from_config`` lookup so the
+    call site stays a thin one-liner, and — critically — is **guarded**: the
+    product path must never fail because metering failed, so config resolution
+    and emission are wrapped and any exception is logged and swallowed
+    (mirroring the extraction path's ``_record_billing_learning_events``).
+    No-op when ``count <= 0``.
 
     Args:
         org_id: Organisation identifier.
         configurator: Object exposing ``get_config()`` for platform-LLM resolution.
         count: Number of learnings durably produced by this path.
-        source: Metering source/path label (e.g. ``"offline_optimizer"``).
+        source: Metering source/path label (e.g. ``"resumable_extraction"``).
         pipeline: Optional pipeline tag (e.g. ``"playbook"``).
         user_id: Optional user ID tied to the generated learning.
         request_id: Optional request correlation ID.
@@ -299,22 +297,20 @@ def emit_learnings_generated_records(
 ) -> None:
     """Resolve ``platform_llm`` from config and emit one event per learning id.
 
-    Entity-backed counterpart to :func:`emit_learnings_generated`, currently
-    adopted by two of the non-extraction learning-mutation paths —
-    resumable-extraction finalization and aggregation — the callers with
-    durable per-record ids in scope. Extraction and offline-tuner auto-apply do
-    not have a safe 1:1 id per unit of count (see
-    :func:`record_learnings_generated_records`) and use the count-based
-    :func:`emit_learnings_generated` fallback instead. Same guard semantics:
-    config resolution and emission are wrapped and any exception is logged
-    and swallowed — the product path must never fail because metering
-    failed. No-op when ``learning_ids`` is empty.
+    Entity-backed counterpart to :func:`emit_learnings_generated`, used by
+    resumable-extraction finalization when every created user learning has a
+    durable id. Online extraction uses the count-based
+    :func:`record_learnings_generated` helper because it does not retain a
+    safe 1:1 id per generated unit. Same guard semantics: config resolution
+    and emission are wrapped and any exception is logged and swallowed — the
+    product path must never fail because metering failed. No-op when
+    ``learning_ids`` is empty.
 
     Args:
         org_id: Organisation identifier.
         configurator: Object exposing ``get_config()`` for platform-LLM resolution.
         learning_ids: Ids of the learnings durably produced by this path.
-        source: Metering source/path label (e.g. ``"aggregation"``).
+        source: Metering source/path label (e.g. ``"resumable_extraction"``).
         pipeline: Optional pipeline tag (e.g. ``"playbook"``).
         user_id: Optional user ID tied to the generated learning.
         request_id: Optional request correlation ID.
