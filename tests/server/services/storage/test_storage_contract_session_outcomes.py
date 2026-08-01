@@ -49,8 +49,12 @@ def test_first_write_preserves_outcome_fields(storage: BaseStorage) -> None:
     assert len(records) == 1
     assert records[0].outcome_id
     assert records[0].outcome_revision == 1
-    assert len(records[0].outcome_contract_digest) == 64
-    assert len(records[0].finalized_trajectory_digest) == 64
+    outcome_contract_digest = records[0].outcome_contract_digest
+    finalized_trajectory_digest = records[0].finalized_trajectory_digest
+    assert outcome_contract_digest is not None
+    assert finalized_trajectory_digest is not None
+    assert len(outcome_contract_digest) == 64
+    assert len(finalized_trajectory_digest) == 64
     assert records[0].outcome == SessionOutcomeKind.SUCCESS
     assert records[0].value == 12.0
     assert records[0].metadata == {"crm": "test"}
