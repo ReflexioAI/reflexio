@@ -188,10 +188,10 @@ class UsageBillingMixin(Generic[TExtractorConfig, TGenerationServiceConfig]):  #
         (cost facet) via the OSS emission helpers. ``platform_storage`` is left
         ``None`` here and resolved enterprise-side at rollup (Phase 1).
 
-        Gated by ``EMITS_LEARNING_BILLING`` — only profile/playbook generation
-        services opt in here. Non-extraction learning mutation paths emit their
-        own ``learnings_generated`` value-facet events when they durably apply
-        revisions/successors.
+        Gated by ``EMITS_LEARNING_BILLING`` — only online profile/playbook
+        extraction services opt in here. Resumable-extraction finalization emits
+        the same value facet separately. Derived mutation paths emit no additional
+        ``learnings_generated`` events.
 
         Args:
             prepared: The prepared generation run (used for input-text computation).
