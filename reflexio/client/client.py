@@ -1120,11 +1120,12 @@ class ReflexioClient:
         the server-owned outcome contract and canonical finalized trajectory. An
         exact canonical retry must match the payload, contract, and trajectory;
         otherwise it is rejected with ``reason="conflicting_finalization"``.
-        Rolling-upgrade rows with all four identity fields null can compare
-        only the stored payload and preserve those null fields on retry. An
-        accepted retry returns ``success=True`` and ``recorded=False``. Sessions
-        may report ``success``, ``failure``, or ``unknown`` and are not required
-        to report an outcome.
+        Rolling-upgrade rows with all four identity fields null compare the
+        caller payload and any available server-derived session context, but
+        cannot compare absent contract or trajectory digests. An accepted retry
+        preserves all four null identity fields and returns ``success=True`` and
+        ``recorded=False``. Sessions may report ``success``, ``failure``, or
+        ``unknown`` and are not required to report an outcome.
         """
         request = SetSessionOutcomeRequest(
             session_id=session_id,
