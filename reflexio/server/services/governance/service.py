@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from contextlib import suppress
 from typing import Any, Literal, Protocol, TypedDict
 
@@ -35,6 +36,7 @@ _DELETE_TARGET_NAME_TO_RESULT_KEY = {
 _REQUIRED_DELETE_TARGET_NAMES = tuple(_DELETE_TARGET_NAME_TO_RESULT_KEY)
 _USER_PLAYBOOK_PAGE_SIZE = 1000
 _LIFECYCLE_COMPLETION_STATUS = "complete"
+_DUPLICATE_ERASE_POLL_SECONDS = 0.05
 
 
 class GovernanceActorContext(TypedDict):
@@ -129,32 +131,41 @@ class GovernanceService:
             f"{self.org_id}:user_erasure:{subref}:{reqref}",
         )
         purge_id = stable_id("purge", idempotency_key)
-        purge = self.storage.begin_purge_operation(
-            purge_id=purge_id,
-            idempotency_key=idempotency_key,
-            operation_type="user_erasure",
-            scope_type="user",
-            subject_ref=subref,
-            request_ref=reqref,
-            authoritative_user_id=user_id,
-        )
+        try:
+            purge = self.storage.begin_purge_operation(
+                purge_id=purge_id,
+                idempotency_key=idempotency_key,
+                operation_type="user_erasure",
+                scope_type="user",
+                subject_ref=subref,
+                request_ref=reqref,
+                authoritative_user_id=user_id,
+            )
+        except Exception as begin_exc:
+            try:
+                purge = self._matching_user_erasure_purge_for_retry(
+                    purge_id=purge_id,
+                    operation_type="user_erasure",
+                    scope_type="user",
+                    subject_ref=subref,
+                    request_ref=reqref,
+                )
+            except Exception:
+                raise begin_exc from None
         if purge.status == "complete":
-            barrier = self._completed_barrier_for_retry(
+            return self._completed_erase_result_for_retry(
                 subject_ref=subref, purge_id=purge_id
             )
-            if barrier.status != "erased":
-                raise ValueError(
-                    "Completed purge retry requires an erased subject barrier"
+        while not self.storage.claim_purge_operation_execution(purge_id):
+            purge = self.storage.get_purge_operation(purge_id)
+            if purge.status == "complete":
+                return self._completed_erase_result_for_retry(
+                    subject_ref=subref,
+                    purge_id=purge_id,
                 )
-            return UserEraseResult(
-                subject_ref=subref,
-                purge_id=purge_id,
-                status="complete",
-                deleted_counts=self._deleted_counts_from_targets(purge_id),
-                rebuilt_agent_playbook_ids=(
-                    self._rebuilt_agent_playbook_ids_from_targets(purge_id)
-                ),
-            )
+            if purge.status not in {"pending", "running", "failed"}:
+                raise ValueError(f"Unsupported purge operation status: {purge.status}")
+            time.sleep(_DUPLICATE_ERASE_POLL_SECONDS)
         try:
             self.storage.begin_subject_erasure_barrier(subref, purge_id)
             if not self.storage.purge_targets_prepared(purge_id):
@@ -235,6 +246,49 @@ class GovernanceService:
                 "Completed purge retry requires the matching subject barrier"
             )
         return barrier
+
+    def _completed_erase_result_for_retry(
+        self, *, subject_ref: str, purge_id: str
+    ) -> UserEraseResult:
+        barrier = self._completed_barrier_for_retry(
+            subject_ref=subject_ref, purge_id=purge_id
+        )
+        if barrier.status != "erased":
+            raise ValueError("Completed purge retry requires an erased subject barrier")
+        return UserEraseResult(
+            subject_ref=subject_ref,
+            purge_id=purge_id,
+            status="complete",
+            deleted_counts=self._deleted_counts_from_targets(purge_id),
+            rebuilt_agent_playbook_ids=(
+                self._rebuilt_agent_playbook_ids_from_targets(purge_id)
+            ),
+        )
+
+    def _matching_user_erasure_purge_for_retry(
+        self,
+        *,
+        purge_id: str,
+        operation_type: str,
+        scope_type: str,
+        subject_ref: str,
+        request_ref: str,
+    ) -> Any:
+        purge = self.storage.get_purge_operation(purge_id)
+        expected_identity = {
+            "purge_id": purge_id,
+            "operation_type": operation_type,
+            "scope_type": scope_type,
+            "subject_ref": subject_ref,
+            "request_ref": request_ref,
+        }
+        for field_name, expected_value in expected_identity.items():
+            if getattr(purge, field_name) != expected_value:
+                raise ValueError(
+                    "Existing purge operation for idempotency_key has "
+                    f"mismatched {field_name}"
+                )
+        return purge
 
     def _load_user_requests_and_sessions(
         self, user_id: str

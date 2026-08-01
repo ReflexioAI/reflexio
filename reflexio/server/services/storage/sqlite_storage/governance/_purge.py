@@ -232,6 +232,27 @@ class PurgeOperationStoreMixin:
             self.conn.commit()
         return self.get_purge_operation(validated_purge_id)
 
+    def claim_purge_operation_execution(self, purge_id: str) -> bool:
+        validated_purge_id = _validate_governance_purge_id("purge_id", purge_id)
+        now = _epoch_now()
+        with self._lock:
+            try:
+                self.conn.execute("BEGIN IMMEDIATE")
+                cursor = self.conn.execute(
+                    """UPDATE purge_operations
+                       SET status = 'running', error_code = NULL, error_detail = NULL,
+                           completed_at = NULL, updated_at = ?
+                       WHERE purge_id = ? AND org_id = ?
+                         AND status IN ('pending', 'failed')""",
+                    (now, validated_purge_id, self.org_id),
+                )
+                claimed = cursor.rowcount == 1
+                self.conn.commit()
+                return claimed
+            except Exception:
+                self.conn.rollback()
+                raise
+
     def record_purge_target(
         self,
         purge_id: str,

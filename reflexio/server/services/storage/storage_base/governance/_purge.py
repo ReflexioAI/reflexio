@@ -32,6 +32,11 @@ class PurgeOperationStoreMixin(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def claim_purge_operation_execution(self, purge_id: str) -> bool:
+        """Atomically claim a pending or failed purge for execution."""
+        raise NotImplementedError
+
+    @abstractmethod
     def record_purge_target(
         self,
         purge_id: str,
