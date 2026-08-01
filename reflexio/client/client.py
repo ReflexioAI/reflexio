@@ -1112,13 +1112,17 @@ class ReflexioClient:
         value: float | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> SetSessionOutcomeResponse:
-        """Record the first terminal outcome for a published session.
+        """Record the immutable first outcome for a published session.
 
         The session must already contain at least one published request. Reflexio
         derives both ``user_id`` and ``source`` from the earliest request ordered
-        by ``(created_at, request_id)``. Only the first outcome is recorded;
-        retries return ``success=True`` and ``recorded=False``. Sessions are not
-        required to report an outcome.
+        by ``(created_at, request_id)`` and binds the outcome to the server-owned
+        outcome contract and canonical finalized trajectory. An exact retry
+        returns ``success=True`` and ``recorded=False`` with the same immutable
+        identity. A changed outcome, payload, contract, or trajectory is rejected
+        with ``reason="conflicting_finalization"``. Sessions may report
+        ``success``, ``failure``, or ``unknown`` and are not required to report an
+        outcome.
         """
         request = SetSessionOutcomeRequest(
             session_id=session_id,
