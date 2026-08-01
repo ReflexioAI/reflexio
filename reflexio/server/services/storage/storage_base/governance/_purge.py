@@ -68,11 +68,12 @@ class PurgeOperationStoreMixin(ABC):
         target_name: str,
         phase: str,
         status: Literal["pending", "running", "failed", "complete"],
+        *,
+        execution_claim: PurgeExecutionClaim,
         target_ref: str = "",
         detail: dict[str, object] | None = None,
         deleted_count: int = 0,
         error_detail: str | None = None,
-        execution_claim: PurgeExecutionClaim | None = None,
     ) -> None:
         raise NotImplementedError
 
@@ -91,8 +92,9 @@ class PurgeOperationStoreMixin(ABC):
         self,
         purge_id: str,
         user_id: str,
+        *,
+        execution_claim: PurgeExecutionClaim,
         owned_user_playbook_ids: set[int] | None = None,
-        execution_claim: PurgeExecutionClaim | None = None,
     ) -> None:
         raise NotImplementedError
 
@@ -102,7 +104,8 @@ class PurgeOperationStoreMixin(ABC):
         purge_id: str,
         error_code: str,
         error_detail: str,
-        execution_claim: PurgeExecutionClaim | None = None,
+        *,
+        execution_claim: PurgeExecutionClaim,
     ) -> PurgeOperation:
         raise NotImplementedError
 

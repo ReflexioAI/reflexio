@@ -13,8 +13,12 @@ class PurgeExecutionClaim:
 
 def validate_purge_execution_claim(
     purge_id: str,
-    execution_claim: PurgeExecutionClaim,
+    execution_claim: PurgeExecutionClaim | None,
 ) -> PurgeExecutionClaim:
+    if execution_claim is None:
+        raise ValueError("purge execution claim is required")
+    if type(execution_claim) is not PurgeExecutionClaim:
+        raise ValueError("purge execution claim must be typed")
     if execution_claim.purge_id != purge_id:
         raise ValueError("purge execution claim purge_id mismatch")
     if not execution_claim.owner.strip():

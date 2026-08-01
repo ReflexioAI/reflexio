@@ -218,7 +218,8 @@ class SubjectBarrierMixin:
         self,
         subject_ref: str,
         purge_id: str,
-        execution_claim: PurgeExecutionClaim | None = None,
+        *,
+        execution_claim: PurgeExecutionClaim,
     ) -> SubjectWriteBarrier:
         _validate_governance_prefixed_ref(
             "subject_ref", subject_ref, prefix="subref_v1_"
@@ -306,7 +307,8 @@ class SubjectBarrierMixin:
         self,
         purge_id: str,
         audit_event: AuditEvent,
-        execution_claim: PurgeExecutionClaim | None = None,
+        *,
+        execution_claim: PurgeExecutionClaim,
     ) -> PurgeOperation:
         purge_id = _validate_governance_purge_id("purge_id", purge_id)
         if audit_event.org_id != self.org_id:
@@ -458,7 +460,8 @@ class SubjectBarrierMixin:
         purge_id: str,
         error_code: str,
         error_detail: str,
-        execution_claim: PurgeExecutionClaim | None = None,
+        *,
+        execution_claim: PurgeExecutionClaim,
     ) -> SubjectWriteBarrier:
         _validate_governance_prefixed_ref(
             "subject_ref", subject_ref, prefix="subref_v1_"

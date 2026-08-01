@@ -24,7 +24,8 @@ class SubjectBarrierMixin(ABC):
         self,
         subject_ref: str,
         purge_id: str,
-        execution_claim: PurgeExecutionClaim | None = None,
+        *,
+        execution_claim: PurgeExecutionClaim,
     ) -> SubjectWriteBarrier:
         raise NotImplementedError
 
@@ -37,7 +38,8 @@ class SubjectBarrierMixin(ABC):
         self,
         purge_id: str,
         audit_event: AuditEvent,
-        execution_claim: PurgeExecutionClaim | None = None,
+        *,
+        execution_claim: PurgeExecutionClaim,
     ) -> PurgeOperation:
         raise NotImplementedError
 
@@ -48,7 +50,8 @@ class SubjectBarrierMixin(ABC):
         purge_id: str,
         error_code: str,
         error_detail: str,
-        execution_claim: PurgeExecutionClaim | None = None,
+        *,
+        execution_claim: PurgeExecutionClaim,
     ) -> SubjectWriteBarrier:
         raise NotImplementedError
 

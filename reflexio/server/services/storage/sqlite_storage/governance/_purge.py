@@ -324,10 +324,8 @@ class PurgeOperationStoreMixin:
     def _assert_purge_operation_execution_claim_locked(
         self,
         purge_id: str,
-        execution_claim: PurgeExecutionClaim | None,
+        execution_claim: PurgeExecutionClaim,
     ) -> None:
-        if execution_claim is None:
-            return
         purge_id = _validate_governance_purge_id("purge_id", purge_id)
         claim = validate_purge_execution_claim(purge_id, execution_claim)
         now = _epoch_now()
@@ -407,11 +405,12 @@ class PurgeOperationStoreMixin:
         target_name: str,
         phase: str,
         status: Literal["pending", "running", "failed", "complete"],
+        *,
+        execution_claim: PurgeExecutionClaim,
         target_ref: str = "",
         detail: dict[str, object] | None = None,
         deleted_count: int = 0,
         error_detail: str | None = None,
-        execution_claim: PurgeExecutionClaim | None = None,
     ) -> None:
         purge_id = _validate_governance_purge_id("purge_id", purge_id)
         _validate_governance_enum(
@@ -478,8 +477,9 @@ class PurgeOperationStoreMixin:
         self,
         purge_id: str,
         user_id: str,
+        *,
+        execution_claim: PurgeExecutionClaim,
         owned_user_playbook_ids: set[int] | None = None,
-        execution_claim: PurgeExecutionClaim | None = None,
     ) -> None:
         purge_id = _validate_governance_purge_id("purge_id", purge_id)
         with self._lock:
@@ -539,7 +539,8 @@ class PurgeOperationStoreMixin:
         purge_id: str,
         error_code: str,
         error_detail: str,
-        execution_claim: PurgeExecutionClaim | None = None,
+        *,
+        execution_claim: PurgeExecutionClaim,
     ) -> PurgeOperation:
         purge_id = _validate_governance_purge_id("purge_id", purge_id)
         validated_error_code = _validate_governance_error_code(error_code)

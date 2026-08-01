@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import ast
+import inspect
 import json
 import sqlite3
+from collections.abc import Callable
+from pathlib import Path
 from typing import Any, Literal, cast
 from unittest.mock import patch
 
@@ -21,6 +25,7 @@ from reflexio.models.api_schema.domain.governance import (
 )
 from reflexio.models.api_schema.retriever_schema import SearchAgentPlaybookRequest
 from reflexio.models.config_schema import GovernanceRetentionConfig
+from reflexio.server.services.storage.governance_claims import PurgeExecutionClaim
 from reflexio.server.services.storage.governance_validation import (
     _CANONICAL_DELETE_TARGET_NAMES,
 )
@@ -34,6 +39,15 @@ from reflexio.server.services.storage.sqlite_storage.governance import (
 from reflexio.server.services.storage.sqlite_storage.governance import (
     _purge as purge_module,
 )
+from reflexio.server.services.storage.storage_base.governance._erase_execution import (
+    GovernanceEraseExecutionMixin,
+)
+from reflexio.server.services.storage.storage_base.governance._purge import (
+    PurgeOperationStoreMixin,
+)
+from reflexio.server.services.storage.storage_base.governance._subject_barrier import (
+    SubjectBarrierMixin,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -45,6 +59,16 @@ ACTOR_REF = "actref_v1_" + "e" * 32
 # Single source of truth — a stale local copy of this tuple is exactly how
 # this suite went red when new canonical targets landed without test updates.
 CANONICAL_DELETE_TARGET_NAMES = _CANONICAL_DELETE_TARGET_NAMES
+CLAIMED_ERASURE_MUTATIONS = {
+    "record_purge_target",
+    "prepare_governance_erase_targets",
+    "fail_purge_operation",
+    "begin_subject_erasure_barrier",
+    "complete_subject_erasure_barrier_after_empty_check",
+    "fail_subject_erasure_barrier",
+    "apply_governance_user_data_delete",
+    "complete_purge_operation_with_audit",
+}
 
 
 @pytest.fixture
@@ -65,21 +89,28 @@ def storage_factory(tmp_path, monkeypatch):
         yield _make_storage
 
 
-def _begin_purge(storage: SQLiteStorage, purge_id: str) -> str:
+def _begin_purge(
+    storage: SQLiteStorage,
+    purge_id: str,
+    *,
+    subject_ref: str = SUBJECT_REF,
+) -> str:
     purge = storage.begin_purge_operation(
         purge_id=purge_id,
         idempotency_key=f"idem_{purge_id}",
         operation_type="user_erasure",
         scope_type="user",
-        subject_ref=SUBJECT_REF,
+        subject_ref=subject_ref,
         request_ref=REQUEST_REF,
     )
+    claim = _claim_purge(storage, purge.purge_id)
     storage.record_purge_target(
         purge_id=purge.purge_id,
         target_name="target_snapshot",
         target_ref="all",
         phase="prepare_targets",
         status="complete",
+        execution_claim=claim,
         detail={
             "owned_user_playbook_ids": [11],
         },
@@ -88,12 +119,23 @@ def _begin_purge(storage: SQLiteStorage, purge_id: str) -> str:
 
 
 def _begin_raw_user_erasure_purge(storage: SQLiteStorage, purge_id: str) -> str:
+    return _begin_raw_user_erasure_purge_for_subject(
+        storage, purge_id, subject_ref=SUBJECT_REF
+    )
+
+
+def _begin_raw_user_erasure_purge_for_subject(
+    storage: SQLiteStorage,
+    purge_id: str,
+    *,
+    subject_ref: str,
+) -> str:
     purge = storage.begin_purge_operation(
         purge_id=purge_id,
         idempotency_key=f"idem_{purge_id}",
         operation_type="user_erasure",
         scope_type="user",
-        subject_ref=SUBJECT_REF,
+        subject_ref=subject_ref,
         request_ref=REQUEST_REF,
         authoritative_user_id="alice",
     )
@@ -106,6 +148,19 @@ def _claim_then_take_over(storage: SQLiteStorage, purge_id: str):
         lease_owner="owner-a",
         lease_ttl_seconds=30,
     )
+    if first_claim is None:
+        storage.conn.execute(
+            """UPDATE purge_operations
+               SET execution_claim_expires_at = 0
+               WHERE org_id = ? AND purge_id = ?""",
+            (storage.org_id, purge_id),
+        )
+        storage.conn.commit()
+        first_claim = storage.claim_purge_operation_execution(
+            purge_id,
+            lease_owner="owner-a",
+            lease_ttl_seconds=30,
+        )
     assert first_claim is not None
     storage.conn.execute(
         """UPDATE purge_operations
@@ -124,7 +179,54 @@ def _claim_then_take_over(storage: SQLiteStorage, purge_id: str):
     return first_claim, takeover_claim
 
 
-def _add_complete_delete_target_matrix(storage: SQLiteStorage, purge_id: str) -> None:
+def _claim_purge(storage: SQLiteStorage, purge_id: str) -> PurgeExecutionClaim:
+    claim = storage.claim_purge_operation_execution(
+        purge_id,
+        lease_owner=f"owner-{purge_id}",
+        lease_ttl_seconds=30,
+    )
+    if claim is None:
+        storage.conn.execute(
+            """UPDATE purge_operations
+               SET execution_claim_expires_at = 0
+               WHERE org_id = ? AND purge_id = ?""",
+            (storage.org_id, purge_id),
+        )
+        storage.conn.commit()
+        claim = storage.claim_purge_operation_execution(
+            purge_id,
+            lease_owner=f"owner-{purge_id}",
+            lease_ttl_seconds=30,
+        )
+    assert claim is not None
+    return claim
+
+
+def _typed_test_claim_for_unvalidated_purge_id(purge_id: str) -> PurgeExecutionClaim:
+    return PurgeExecutionClaim(
+        purge_id=purge_id,
+        owner="test-invalid-purge-id",
+        fence=1,
+        expires_at=1,
+    )
+
+
+def _assert_rejects_missing_claim(
+    omitted_call: Callable[[], object],
+    none_call: Callable[[], object],
+) -> None:
+    with pytest.raises((TypeError, ValueError)):
+        omitted_call()
+    with pytest.raises((TypeError, ValueError)):
+        none_call()
+
+
+def _add_complete_delete_target_matrix(
+    storage: SQLiteStorage,
+    purge_id: str,
+    *,
+    execution_claim: PurgeExecutionClaim,
+) -> None:
     for target_name in CANONICAL_DELETE_TARGET_NAMES:
         storage.record_purge_target(
             purge_id=purge_id,
@@ -132,13 +234,28 @@ def _add_complete_delete_target_matrix(storage: SQLiteStorage, purge_id: str) ->
             target_ref="all",
             phase="delete",
             status="complete",
+            execution_claim=execution_claim,
         )
 
 
-def _begin_completeable_purge(storage: SQLiteStorage, purge_id: str) -> str:
-    purge_id = _begin_purge(storage, purge_id)
-    _add_complete_delete_target_matrix(storage, purge_id)
-    storage.begin_subject_erasure_barrier(SUBJECT_REF, purge_id)
+def _begin_completeable_purge(
+    storage: SQLiteStorage,
+    purge_id: str,
+    *,
+    subject_ref: str = SUBJECT_REF,
+) -> str:
+    purge_id = _begin_purge(storage, purge_id, subject_ref=subject_ref)
+    claim = _claim_purge(storage, purge_id)
+    _add_complete_delete_target_matrix(
+        storage,
+        purge_id,
+        execution_claim=claim,
+    )
+    storage.begin_subject_erasure_barrier(
+        subject_ref,
+        purge_id,
+        execution_claim=claim,
+    )
     return purge_id
 
 
@@ -147,12 +264,13 @@ def _erase_event(
     purge_id: str,
     status: AuditStatus = "ok",
     operation: AuditOperation = "ERASE",
+    subject_ref: str = SUBJECT_REF,
 ):
     return AuditEvent(
         org_id="org1",
         operation=operation,
         entity_type="request",
-        subject_ref=SUBJECT_REF,
+        subject_ref=subject_ref,
         request_ref=REQUEST_REF,
         idempotency_key=purge_id,
         status=status,
@@ -380,6 +498,7 @@ def _record_agent_playbook_rebuild_target(
         target_ref=str(agent_playbook_id),
         phase="rebuild_without_erased_sources",
         status=status,
+        execution_claim=_claim_purge(storage, purge_id),
         detail={
             "original_source_windows": original_windows
             or [
@@ -536,10 +655,15 @@ def test_purge_targets_require_snapshot_marker(storage):
         phase="delete",
         status="complete",
         deleted_count=1,
+        execution_claim=_claim_purge(storage, purge.purge_id),
     )
 
     assert storage.purge_targets_prepared(purge.purge_id) is False
-    storage.begin_subject_erasure_barrier(SUBJECT_REF, purge.purge_id)
+    storage.begin_subject_erasure_barrier(
+        SUBJECT_REF,
+        purge.purge_id,
+        execution_claim=_claim_purge(storage, purge.purge_id),
+    )
     with pytest.raises(ValueError, match="target snapshot"):
         storage.complete_purge_operation_with_audit(
             purge.purge_id,
@@ -551,24 +675,28 @@ def test_purge_targets_require_snapshot_marker(storage):
                 request_ref=REQUEST_REF,
                 idempotency_key=purge.purge_id,
             ),
+            execution_claim=_claim_purge(storage, purge.purge_id),
         )
 
 
 def test_complete_purge_operation_with_audit_is_atomic_success_path(storage):
     purge_id = _begin_completeable_purge(storage, "purge_atomic_success")
+    complete_claim = _claim_purge(storage, purge_id)
     complete = storage.complete_purge_operation_with_audit(
         purge_id,
         _erase_event(purge_id=purge_id),
+        execution_claim=complete_claim,
     )
 
     assert complete.status == "complete"
     rows = storage.list_audit_events(subject_ref=SUBJECT_REF)
     assert [row.operation for row in rows] == ["ERASE"]
-    same = storage.complete_purge_operation_with_audit(
-        purge_id,
-        _erase_event(purge_id=purge_id),
-    )
-    assert same.status == "complete"
+    with pytest.raises(ValueError, match="purge execution claim"):
+        storage.complete_purge_operation_with_audit(
+            purge_id,
+            _erase_event(purge_id=purge_id),
+            execution_claim=complete_claim,
+        )
     assert len(storage.list_audit_events(subject_ref=SUBJECT_REF)) == 1
 
 
@@ -582,6 +710,7 @@ def test_complete_purge_operation_with_audit_begins_immediate_transaction_before
         storage.complete_purge_operation_with_audit(
             purge_id,
             _erase_event(purge_id=purge_id),
+            execution_claim=_claim_purge(storage, purge_id),
         )
     finally:
         storage.conn.set_trace_callback(None)
@@ -623,6 +752,7 @@ def test_complete_purge_operation_with_audit_accepts_planned_success_detail(stor
                 "rebuilt_agent_playbook_ids": rebuilt_ids,
             },
         ),
+        execution_claim=_claim_purge(storage, purge_id),
     )
 
     assert complete.status == "complete"
@@ -652,7 +782,11 @@ def test_complete_purge_operation_rejects_audit_refs_that_mismatch_persisted_pur
     event = _erase_event(purge_id=purge_id).model_copy(update=event_kwargs)
 
     with pytest.raises(ValueError, match=match):
-        storage.complete_purge_operation_with_audit(purge_id, event)
+        storage.complete_purge_operation_with_audit(
+            purge_id,
+            event,
+            execution_claim=_claim_purge(storage, purge_id),
+        )
 
     assert storage.get_purge_operation(purge_id).status == "running"
     assert storage.list_audit_events(subject_ref=SUBJECT_REF) == []
@@ -791,7 +925,11 @@ def test_complete_purge_operation_rejects_invalid_audit_event(storage, event, ma
     purge_id = _begin_completeable_purge(storage, "purge_invalid")
 
     with pytest.raises(ValueError, match=match):
-        storage.complete_purge_operation_with_audit(purge_id, event)
+        storage.complete_purge_operation_with_audit(
+            purge_id,
+            event,
+            execution_claim=_claim_purge(storage, purge_id),
+        )
 
     assert storage.get_purge_operation(purge_id).status == "running"
     assert storage.list_audit_events(subject_ref=SUBJECT_REF) == []
@@ -820,7 +958,9 @@ def test_complete_purge_operation_requires_matching_existing_erase_row(
 
     with pytest.raises(ValueError, match=match):
         storage.complete_purge_operation_with_audit(
-            purge_id, _erase_event(purge_id=purge_id)
+            purge_id,
+            _erase_event(purge_id=purge_id),
+            execution_claim=_claim_purge(storage, purge_id),
         )
 
     assert storage.get_purge_operation(purge_id).status == "running"
@@ -877,7 +1017,9 @@ def test_complete_purge_operation_rejects_mismatched_existing_erase_row(
 
     with pytest.raises(ValueError, match="matching successful ERASE"):
         storage.complete_purge_operation_with_audit(
-            purge_id, _erase_event(purge_id=purge_id)
+            purge_id,
+            _erase_event(purge_id=purge_id),
+            execution_claim=_claim_purge(storage, purge_id),
         )
 
     assert storage.get_purge_operation(purge_id).status == "running"
@@ -908,12 +1050,17 @@ def test_append_audit_event_rejects_successful_erase_without_idempotency_key(sto
 
 def test_complete_purge_operation_requires_full_delete_target_matrix(storage):
     purge_id = _begin_purge(storage, "purge_snapshot_only")
-    storage.begin_subject_erasure_barrier(SUBJECT_REF, purge_id)
+    storage.begin_subject_erasure_barrier(
+        SUBJECT_REF,
+        purge_id,
+        execution_claim=_claim_purge(storage, purge_id),
+    )
 
     with pytest.raises(ValueError, match="delete target matrix"):
         storage.complete_purge_operation_with_audit(
             purge_id,
             _erase_event(purge_id=purge_id),
+            execution_claim=_claim_purge(storage, purge_id),
         )
 
     assert storage.get_purge_operation(purge_id).status == "running"
@@ -927,6 +1074,7 @@ def test_complete_retry_replaces_failed_completed_at(storage):
             purge_id,
             error_code="governance_erase_failed",
             error_detail="RuntimeError",
+            execution_claim=_claim_purge(storage, purge_id),
         )
     assert failed.completed_at == 111
 
@@ -934,6 +1082,7 @@ def test_complete_retry_replaces_failed_completed_at(storage):
         completed = storage.complete_purge_operation_with_audit(
             purge_id,
             _erase_event(purge_id=purge_id),
+            execution_claim=_claim_purge(storage, purge_id),
         )
 
     assert completed.status == "complete"
@@ -942,6 +1091,13 @@ def test_complete_retry_replaces_failed_completed_at(storage):
 
 def test_stale_execution_claim_takeover_fences_previous_owner(storage):
     purge_id = _begin_purge(storage, "purge_stale_claim")
+    storage.conn.execute(
+        """UPDATE purge_operations
+           SET execution_claim_expires_at = 0
+           WHERE org_id = ? AND purge_id = ?""",
+        (storage.org_id, purge_id),
+    )
+    storage.conn.commit()
     first_claim = storage.claim_purge_operation_execution(
         purge_id,
         lease_owner="owner-a",
@@ -995,6 +1151,254 @@ def test_stale_execution_claim_takeover_fences_previous_owner(storage):
     assert [(target.target_name, target.status) for target in targets] == [
         ("interaction", "complete")
     ]
+
+
+def test_claimed_erasure_mutation_signatures_and_callers_require_claim() -> None:
+    method_owners = {
+        PurgeOperationStoreMixin: {
+            "record_purge_target",
+            "prepare_governance_erase_targets",
+            "fail_purge_operation",
+        },
+        SubjectBarrierMixin: {
+            "begin_subject_erasure_barrier",
+            "complete_subject_erasure_barrier_after_empty_check",
+            "fail_subject_erasure_barrier",
+        },
+        GovernanceEraseExecutionMixin: {
+            "apply_governance_user_data_delete",
+            "complete_purge_operation_with_audit",
+        },
+        SQLiteStorage: CLAIMED_ERASURE_MUTATIONS,
+    }
+    for owner, method_names in method_owners.items():
+        for method_name in method_names:
+            parameter = inspect.signature(getattr(owner, method_name)).parameters[
+                "execution_claim"
+            ]
+            assert parameter.kind is inspect.Parameter.KEYWORD_ONLY, method_name
+            assert parameter.default is inspect.Parameter.empty, method_name
+            assert parameter.annotation in {"PurgeExecutionClaim", PurgeExecutionClaim}
+
+    production_root = Path(__file__).resolve().parents[5] / "reflexio"
+    violations: list[str] = []
+    for path in production_root.rglob("*.py"):
+        tree = ast.parse(path.read_text(), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            function = node.func
+            if not isinstance(function, ast.Attribute):
+                continue
+            if function.attr not in CLAIMED_ERASURE_MUTATIONS:
+                continue
+            claim_keywords = [
+                keyword for keyword in node.keywords if keyword.arg == "execution_claim"
+            ]
+            if not claim_keywords:
+                violations.append(f"{path.relative_to(production_root)}:{node.lineno}")
+                continue
+            if any(keyword.arg is None for keyword in node.keywords):
+                violations.append(
+                    f"{path.relative_to(production_root)}:{node.lineno}: **kwargs"
+                )
+            claim_value = claim_keywords[0].value
+            if isinstance(claim_value, ast.Constant) and claim_value.value is None:
+                violations.append(
+                    f"{path.relative_to(production_root)}:{node.lineno}: None"
+                )
+    assert violations == []
+
+
+def test_sqlite_claimed_erasure_mutations_reject_omitted_and_none_claim(storage):
+    target_purge_id = _begin_raw_user_erasure_purge(storage, "purge_no_claim_target")
+    _, target_claim = _claim_then_take_over(storage, target_purge_id)
+    _assert_rejects_missing_claim(
+        lambda: storage.record_purge_target(
+            purge_id=target_purge_id,
+            target_name="interaction",
+            target_ref="all",
+            phase="delete",
+            status="complete",
+        ),
+        lambda: storage.record_purge_target(
+            purge_id=target_purge_id,
+            target_name="interaction",
+            target_ref="all",
+            phase="delete",
+            status="complete",
+            execution_claim=None,  # type: ignore[arg-type]
+        ),
+    )
+    assert storage.list_purge_targets(target_purge_id, phase="delete") == []
+    storage.record_purge_target(
+        purge_id=target_purge_id,
+        target_name="interaction",
+        target_ref="all",
+        phase="delete",
+        status="complete",
+        execution_claim=target_claim,
+    )
+
+    barrier_subject_ref = "subref_v1_" + "1" * 32
+    barrier_purge_id = _begin_raw_user_erasure_purge_for_subject(
+        storage,
+        "purge_no_claim_barrier",
+        subject_ref=barrier_subject_ref,
+    )
+    _, barrier_claim = _claim_then_take_over(storage, barrier_purge_id)
+    _assert_rejects_missing_claim(
+        lambda: storage.begin_subject_erasure_barrier(
+            barrier_subject_ref, barrier_purge_id
+        ),
+        lambda: storage.begin_subject_erasure_barrier(
+            barrier_subject_ref,
+            barrier_purge_id,
+            execution_claim=None,  # type: ignore[arg-type]
+        ),
+    )
+    assert storage.get_subject_write_barrier(barrier_subject_ref) is None
+    storage.begin_subject_erasure_barrier(
+        barrier_subject_ref,
+        barrier_purge_id,
+        execution_claim=barrier_claim,
+    )
+
+    prepare_purge_id = _begin_raw_user_erasure_purge(storage, "purge_no_claim_prepare")
+    _, prepare_claim = _claim_then_take_over(storage, prepare_purge_id)
+    _assert_rejects_missing_claim(
+        lambda: storage.prepare_governance_erase_targets(
+            purge_id=prepare_purge_id,
+            user_id="alice",
+            owned_user_playbook_ids=set(),
+        ),
+        lambda: storage.prepare_governance_erase_targets(
+            purge_id=prepare_purge_id,
+            user_id="alice",
+            owned_user_playbook_ids=set(),
+            execution_claim=None,  # type: ignore[arg-type]
+        ),
+    )
+    assert storage.list_purge_targets(prepare_purge_id) == []
+    storage.prepare_governance_erase_targets(
+        purge_id=prepare_purge_id,
+        user_id="alice",
+        owned_user_playbook_ids=set(),
+        execution_claim=prepare_claim,
+    )
+
+    delete_purge_id = _begin_raw_user_erasure_purge(storage, "purge_no_claim_delete")
+    delete_claim = _claim_purge(storage, delete_purge_id)
+    storage.prepare_governance_erase_targets(
+        purge_id=delete_purge_id,
+        user_id="alice",
+        owned_user_playbook_ids=set(),
+        execution_claim=delete_claim,
+    )
+    _assert_rejects_missing_claim(
+        lambda: storage.apply_governance_user_data_delete(delete_purge_id, "alice"),
+        lambda: storage.apply_governance_user_data_delete(
+            delete_purge_id,
+            "alice",
+            execution_claim=None,  # type: ignore[arg-type]
+        ),
+    )
+    assert all(
+        target.status == "pending"
+        for target in storage.list_purge_targets(delete_purge_id, phase="delete")
+    )
+
+    complete_subject_ref = "subref_v1_" + "2" * 32
+    complete_purge_id = _begin_completeable_purge(
+        storage,
+        "purge_no_claim_complete",
+        subject_ref=complete_subject_ref,
+    )
+    _claim_purge(storage, complete_purge_id)
+    _assert_rejects_missing_claim(
+        lambda: storage.complete_subject_erasure_barrier_after_empty_check(
+            complete_purge_id,
+            _erase_event(
+                purge_id=complete_purge_id,
+                subject_ref=complete_subject_ref,
+            ),
+        ),
+        lambda: storage.complete_subject_erasure_barrier_after_empty_check(
+            complete_purge_id,
+            _erase_event(
+                purge_id=complete_purge_id,
+                subject_ref=complete_subject_ref,
+            ),
+            execution_claim=None,  # type: ignore[arg-type]
+        ),
+    )
+    assert storage.get_purge_operation(complete_purge_id).status == "running"
+    _assert_rejects_missing_claim(
+        lambda: storage.complete_purge_operation_with_audit(
+            complete_purge_id,
+            _erase_event(
+                purge_id=complete_purge_id,
+                subject_ref=complete_subject_ref,
+            ),
+        ),
+        lambda: storage.complete_purge_operation_with_audit(
+            complete_purge_id,
+            _erase_event(
+                purge_id=complete_purge_id,
+                subject_ref=complete_subject_ref,
+            ),
+            execution_claim=None,  # type: ignore[arg-type]
+        ),
+    )
+    assert storage.get_purge_operation(complete_purge_id).status == "running"
+
+    fail_barrier_subject_ref = "subref_v1_" + "3" * 32
+    fail_barrier_purge_id = _begin_raw_user_erasure_purge_for_subject(
+        storage,
+        "purge_no_claim_fail_barrier",
+        subject_ref=fail_barrier_subject_ref,
+    )
+    fail_barrier_claim = _claim_purge(storage, fail_barrier_purge_id)
+    storage.begin_subject_erasure_barrier(
+        fail_barrier_subject_ref,
+        fail_barrier_purge_id,
+        execution_claim=fail_barrier_claim,
+    )
+    _assert_rejects_missing_claim(
+        lambda: storage.fail_subject_erasure_barrier(
+            fail_barrier_subject_ref,
+            fail_barrier_purge_id,
+            error_code="governance_erase_failed",
+            error_detail="RuntimeError",
+        ),
+        lambda: storage.fail_subject_erasure_barrier(
+            fail_barrier_subject_ref,
+            fail_barrier_purge_id,
+            error_code="governance_erase_failed",
+            error_detail="RuntimeError",
+            execution_claim=None,  # type: ignore[arg-type]
+        ),
+    )
+    barrier = storage.get_subject_write_barrier(fail_barrier_subject_ref)
+    assert barrier is not None
+    assert barrier.status == "erasing"
+
+    fail_purge_id = _begin_raw_user_erasure_purge(storage, "purge_no_claim_fail")
+    _claim_purge(storage, fail_purge_id)
+    _assert_rejects_missing_claim(
+        lambda: storage.fail_purge_operation(
+            fail_purge_id,
+            error_code="governance_erase_failed",
+            error_detail="RuntimeError",
+        ),
+        lambda: storage.fail_purge_operation(
+            fail_purge_id,
+            error_code="governance_erase_failed",
+            error_detail="RuntimeError",
+            execution_claim=None,  # type: ignore[arg-type]
+        ),
+    )
+    assert storage.get_purge_operation(fail_purge_id).status == "running"
 
 
 def test_stale_execution_claim_cannot_start_subject_barrier(storage):
@@ -1100,7 +1504,12 @@ def test_stale_execution_claim_cannot_fail_purge_or_barrier(storage):
     barrier_purge_id = _begin_raw_user_erasure_purge(
         storage, "purge_stale_barrier_failure"
     )
-    storage.begin_subject_erasure_barrier(SUBJECT_REF, barrier_purge_id)
+    barrier_claim = _claim_purge(storage, barrier_purge_id)
+    storage.begin_subject_erasure_barrier(
+        SUBJECT_REF,
+        barrier_purge_id,
+        execution_claim=barrier_claim,
+    )
     first_claim, takeover_claim = _claim_then_take_over(storage, barrier_purge_id)
 
     with pytest.raises(ValueError, match="purge execution claim"):
@@ -1157,6 +1566,7 @@ def test_prepare_governance_erase_targets_sanitizes_snapshot_detail(storage):
         purge_id="purge_detail",
         user_id="user_123@example.com",
         owned_user_playbook_ids={7},
+        execution_claim=_claim_purge(storage, "purge_detail"),
     )
 
     snapshot = next(
@@ -1183,6 +1593,7 @@ def test_apply_governance_user_data_delete_rejects_playbook_snapshot_drift(stora
     storage.prepare_governance_erase_targets(
         purge_id="purge_snapshot_drift",
         user_id=user_id,
+        execution_claim=_claim_purge(storage, "purge_snapshot_drift"),
     )
     storage.conn.execute(
         """INSERT INTO user_playbooks (
@@ -1199,7 +1610,11 @@ def test_apply_governance_user_data_delete_rejects_playbook_snapshot_drift(stora
     storage.conn.commit()
 
     with pytest.raises(ValueError, match="prepared purge snapshot"):
-        storage.apply_governance_user_data_delete("purge_snapshot_drift", user_id)
+        storage.apply_governance_user_data_delete(
+            "purge_snapshot_drift",
+            user_id,
+            execution_claim=_claim_purge(storage, "purge_snapshot_drift"),
+        )
 
     remaining_ids = {
         int(row["user_playbook_id"])
@@ -1236,6 +1651,7 @@ def test_prepare_governance_erase_targets_does_not_plan_org_agent_playbook_rebui
         purge_id="purge_rebuild_windows",
         user_id="user-rebuild-windows",
         owned_user_playbook_ids={7},
+        execution_claim=_claim_purge(storage, "purge_rebuild_windows"),
     )
 
     assert (
@@ -1270,6 +1686,7 @@ def test_prepare_governance_erase_targets_records_full_delete_matrix_counts(stor
         purge_id=purge_id,
         user_id=user_id,
         owned_user_playbook_ids=owned_user_playbook_ids,
+        execution_claim=_claim_purge(storage, purge_id),
     )
 
     delete_targets = {
@@ -1384,12 +1801,14 @@ def test_apply_governance_agent_playbook_rebuild_completes_planned_phase(storage
             AgentPlaybookSourceWindow(user_playbook_id=9, source_interaction_ids=[201]),
         ],
     )
+    claim = _claim_purge(storage, purge_id)
     storage.record_purge_target(
         purge_id=purge_id,
         target_name="agent_playbook",
         target_ref=str(agent_playbook_id),
         phase="rebuild_without_erased_sources",
         status="running",
+        execution_claim=claim,
         detail={
             "original_source_windows": [
                 {"user_playbook_id": 7, "source_interaction_ids": [101]},
@@ -1407,6 +1826,7 @@ def test_apply_governance_agent_playbook_rebuild_completes_planned_phase(storage
         target_ref=str(agent_playbook_id),
         phase="hide_for_rebuild",
         status="complete",
+        execution_claim=claim,
     )
     expected_detail = {
         "original_source_windows": [
@@ -1547,12 +1967,14 @@ def test_apply_governance_agent_playbook_rebuild_rejects_rebuild_before_hide_pha
             AgentPlaybookSourceWindow(user_playbook_id=9, source_interaction_ids=[201]),
         ],
     )
+    claim = _claim_purge(storage, purge_id)
     storage.record_purge_target(
         purge_id=purge_id,
         target_name="agent_playbook",
         target_ref=str(agent_playbook_id),
         phase="rebuild_without_erased_sources",
         status="running",
+        execution_claim=claim,
         detail={
             "original_source_windows": [
                 {"user_playbook_id": 7, "source_interaction_ids": [101]},
@@ -1708,12 +2130,14 @@ def test_apply_governance_agent_playbook_rebuild_does_not_complete_target_when_s
             AgentPlaybookSourceWindow(user_playbook_id=9, source_interaction_ids=[201]),
         ],
     )
+    claim = _claim_purge(storage, purge_id)
     storage.record_purge_target(
         purge_id=purge_id,
         target_name="agent_playbook",
         target_ref=str(agent_playbook_id),
         phase="rebuild_without_erased_sources",
         status="running",
+        execution_claim=claim,
         detail={
             "original_source_windows": [
                 {"user_playbook_id": 7, "source_interaction_ids": [101]},
@@ -1731,6 +2155,7 @@ def test_apply_governance_agent_playbook_rebuild_does_not_complete_target_when_s
         target_ref=str(agent_playbook_id),
         phase="hide_for_rebuild",
         status="complete",
+        execution_claim=claim,
     )
     original_row = storage.conn.execute(
         """SELECT content, trigger, rationale, blocking_issue, expanded_terms, tags, status
@@ -1820,12 +2245,14 @@ def test_apply_governance_agent_playbook_rebuild_removes_orphaned_aggregate_when
             AgentPlaybookSourceWindow(user_playbook_id=7, source_interaction_ids=[101]),
         ],
     )
+    claim = _claim_purge(storage, purge_id)
     storage.record_purge_target(
         purge_id=purge_id,
         target_name="agent_playbook",
         target_ref=str(agent_playbook_id),
         phase="rebuild_without_erased_sources",
         status="running",
+        execution_claim=claim,
         detail={
             "original_source_windows": [
                 {"user_playbook_id": 7, "source_interaction_ids": [101]},
@@ -1840,6 +2267,7 @@ def test_apply_governance_agent_playbook_rebuild_removes_orphaned_aggregate_when
         target_ref=str(agent_playbook_id),
         phase="hide_for_rebuild",
         status="complete",
+        execution_claim=claim,
     )
 
     storage.apply_governance_agent_playbook_rebuild(
@@ -1922,12 +2350,14 @@ def test_apply_governance_agent_playbook_rebuild_restores_previous_lifecycle_sta
             AgentPlaybookSourceWindow(user_playbook_id=9, source_interaction_ids=[201]),
         ],
     )
+    claim = _claim_purge(storage, purge_id)
     storage.record_purge_target(
         purge_id=purge_id,
         target_name="agent_playbook",
         target_ref=str(agent_playbook_id),
         phase="rebuild_without_erased_sources",
         status="running",
+        execution_claim=claim,
         detail={
             "original_source_windows": [
                 {"user_playbook_id": 7, "source_interaction_ids": [101]},
@@ -1945,6 +2375,7 @@ def test_apply_governance_agent_playbook_rebuild_restores_previous_lifecycle_sta
         target_ref=str(agent_playbook_id),
         phase="hide_for_rebuild",
         status="complete",
+        execution_claim=claim,
     )
 
     storage.apply_governance_agent_playbook_rebuild(
@@ -2300,6 +2731,7 @@ def test_prepare_governance_erase_targets_is_idempotent_after_completed_snapshot
         purge_id=purge_id,
         user_id=user_id,
         owned_user_playbook_ids=owned_user_playbook_ids,
+        execution_claim=_claim_purge(storage, purge_id),
     )
 
     before_targets = [
@@ -2319,6 +2751,7 @@ def test_prepare_governance_erase_targets_is_idempotent_after_completed_snapshot
         purge_id=purge_id,
         user_id=user_id,
         owned_user_playbook_ids=owned_user_playbook_ids,
+        execution_claim=_claim_purge(storage, purge_id),
     )
 
     after_targets = [
@@ -2361,6 +2794,7 @@ def test_purge_targets_are_scoped_by_org_for_same_purge_id(storage_factory):
         target_ref="all",
         phase="prepare_targets",
         status="complete",
+        execution_claim=_claim_purge(storage_org1, purge_id),
         detail={"prepared": True},
     )
     storage_org1.record_purge_target(
@@ -2369,6 +2803,7 @@ def test_purge_targets_are_scoped_by_org_for_same_purge_id(storage_factory):
         target_ref="all",
         phase="delete",
         status="pending",
+        execution_claim=_claim_purge(storage_org1, purge_id),
         detail={"count": 1},
     )
     storage_org2.record_purge_target(
@@ -2377,6 +2812,7 @@ def test_purge_targets_are_scoped_by_org_for_same_purge_id(storage_factory):
         target_ref="all",
         phase="delete",
         status="complete",
+        execution_claim=_claim_purge(storage_org2, purge_id),
         detail={"count": 2},
         deleted_count=2,
     )
@@ -2404,6 +2840,7 @@ def test_purge_targets_are_scoped_by_org_for_same_purge_id(storage_factory):
         target_ref="all",
         phase="delete",
         status="running",
+        execution_claim=_claim_purge(storage_org2, purge_id),
         detail={"count": 3},
     )
 
@@ -2500,6 +2937,7 @@ def test_record_purge_target_validates_governance_fields(storage, kwargs, match)
         "phase": "delete",
         "status": "running",
         "target_ref": "all",
+        "execution_claim": _claim_purge(storage, purge_id),
     }
     params.update(kwargs)
 
@@ -2538,6 +2976,7 @@ def test_record_purge_target_rejects_invalid_deleted_count(
             phase="delete",
             status="complete",
             deleted_count=deleted_count,
+            execution_claim=_claim_purge(storage, purge_id),
         )
 
 
@@ -2555,6 +2994,7 @@ def test_record_purge_target_accepts_nonnegative_detail_deleted_count(
         target_ref="all",
         phase="delete",
         status="complete",
+        execution_claim=_claim_purge(storage, purge_id),
         detail={"deleted_count": detail_deleted_count},
     )
 
@@ -2577,6 +3017,7 @@ def test_record_purge_target_rejects_negative_detail_deleted_count(storage):
             phase="delete",
             status="complete",
             detail={"deleted_count": -1},
+            execution_claim=_claim_purge(storage, purge_id),
         )
 
 
@@ -2689,6 +3130,7 @@ def test_record_purge_target_accepts_target_detail_shapes(storage):
         target_ref="7",
         phase="rebuild_without_erased_sources",
         status="complete",
+        execution_claim=_claim_purge(storage, purge_id),
         detail=detail,
     )
 
@@ -2740,6 +3182,7 @@ def test_fail_purge_operation_rejects_raw_error_detail(storage):
             purge_id,
             error_code="boom",
             error_detail="RuntimeError: request reqref_123 for alice@example.com",
+            execution_claim=_claim_purge(storage, purge_id),
         )
 
     assert storage.get_purge_operation(purge_id).error_detail is None
@@ -2753,6 +3196,7 @@ def test_fail_purge_operation_rejects_freeform_error_detail(storage):
             purge_id,
             error_code="PURGE_TARGET_FAILED",
             error_detail="stable failure detail",
+            execution_claim=_claim_purge(storage, purge_id),
         )
 
     assert storage.get_purge_operation(purge_id).error_detail is None
@@ -2765,6 +3209,7 @@ def test_fail_purge_operation_persists_code_shaped_error_detail(storage):
         purge_id,
         error_code="PURGE_TARGET_FAILED",
         error_detail="target_delete_failed",
+        execution_claim=_claim_purge(storage, purge_id),
     )
 
     assert failed.status == "failed"
@@ -2783,6 +3228,7 @@ def test_fail_purge_operation_accepts_code_shaped_error_code_with_prompt_or_cont
         purge_id,
         error_code=error_code,
         error_detail="target_delete_failed",
+        execution_claim=_claim_purge(storage, purge_id),
     )
 
     assert failed.status == "failed"
@@ -2797,6 +3243,7 @@ def test_fail_purge_operation_rejects_prompt_content_prose_error_detail(storage)
             purge_id,
             error_code="PURGE_TARGET_FAILED",
             error_detail="prompt content leaked from upstream",
+            execution_claim=_claim_purge(storage, purge_id),
         )
 
     assert storage.get_purge_operation(purge_id).error_detail is None
@@ -2819,6 +3266,7 @@ def test_fail_purge_operation_validates_error_code(storage, error_code, match):
             purge_id,
             error_code=error_code,
             error_detail="target_delete_failed",
+            execution_claim=_claim_purge(storage, purge_id),
         )
         assert failed.status == "failed"
         assert failed.error_code == error_code
@@ -2829,6 +3277,7 @@ def test_fail_purge_operation_validates_error_code(storage, error_code, match):
             purge_id,
             error_code=error_code,
             error_detail="target_delete_failed",
+            execution_claim=_claim_purge(storage, purge_id),
         )
 
     assert storage.get_purge_operation(purge_id).error_code is None
@@ -3054,6 +3503,7 @@ def test_record_purge_target_rejects_mixed_case_window_keys(storage, detail_key)
             target_ref="7",
             phase="rebuild_without_erased_sources",
             status="running",
+            execution_claim=_claim_purge(storage, purge_id),
             detail={detail_key: [{"User_Playbook_Id": "alice@example.com"}]},
         )
 
@@ -3089,6 +3539,7 @@ def test_record_purge_target_requires_window_user_playbook_id(storage, detail_ke
             target_ref="7",
             phase="rebuild_without_erased_sources",
             status="running",
+            execution_claim=_claim_purge(storage, purge_id),
             detail={detail_key: [{"source_interaction_ids": [1, 2]}]},
         )
 
@@ -3110,6 +3561,7 @@ def test_record_purge_target_accepts_previous_lifecycle_status_for_rebuild_targe
         target_ref="7",
         phase="rebuild_without_erased_sources",
         status="running",
+        execution_claim=_claim_purge(storage, purge_id),
         detail={
             "original_source_windows": [
                 {"user_playbook_id": 7, "source_interaction_ids": [11, 12]}
@@ -3188,6 +3640,7 @@ def test_record_purge_target_rejects_invalid_previous_lifecycle_status_detail(
             target_ref="7",
             phase="rebuild_without_erased_sources",
             status="running",
+            execution_claim=_claim_purge(storage, purge_id),
             detail=detail,
         )
 
@@ -3215,6 +3668,7 @@ def test_record_purge_target_validates_target_ref_contract(storage, target_ref, 
             target_ref=target_ref,
             phase="delete",
             status="running",
+            execution_claim=_claim_purge(storage, purge_id),
         )
         return
 
@@ -3225,6 +3679,7 @@ def test_record_purge_target_validates_target_ref_contract(storage, target_ref, 
             target_ref=target_ref,
             phase="delete",
             status="running",
+            execution_claim=_claim_purge(storage, purge_id),
         )
 
 
@@ -3259,6 +3714,7 @@ def test_persistence_paths_reject_unsafe_purge_id(storage, purge_id):
             target_ref="all",
             phase="delete",
             status="running",
+            execution_claim=_typed_test_claim_for_unvalidated_purge_id(purge_id),
         )
 
     with pytest.raises(ValueError, match="purge_id"):
@@ -3272,6 +3728,7 @@ def test_persistence_paths_reject_unsafe_purge_id(storage, purge_id):
                 request_ref=REQUEST_REF,
                 idempotency_key=purge_id,
             ),
+            execution_claim=_typed_test_claim_for_unvalidated_purge_id(purge_id),
         )
 
     with pytest.raises(ValueError, match="purge_id"):
@@ -3289,6 +3746,9 @@ def test_apply_governance_user_data_delete_rejects_unsafe_purge_id_before_side_e
         storage.apply_governance_user_data_delete(
             purge_id="alice@example.com",
             user_id=user_id,
+            execution_claim=_typed_test_claim_for_unvalidated_purge_id(
+                "alice@example.com"
+            ),
         )
 
     remaining = _user_scoped_row_counts(storage, user_id=user_id)
@@ -3311,6 +3771,7 @@ def test_apply_governance_user_data_delete_rejects_unexpected_target_name_from_i
             target_ref="all",
             phase="delete",
             status="pending",
+            execution_claim=_claim_purge(storage, purge_id),
             detail={"count": 0},
         )
 
@@ -3333,6 +3794,7 @@ def test_apply_governance_user_data_delete_rejects_unexpected_target_name_from_i
         storage.apply_governance_user_data_delete(
             purge_id=purge_id,
             user_id="user-delete-seed",
+            execution_claim=_claim_purge(storage, purge_id),
         )
 
     delete_targets = storage.list_purge_targets(purge_id, phase="delete")
@@ -3353,6 +3815,7 @@ def test_apply_governance_user_data_delete_requires_complete_prepared_delete_mat
         target_ref="all",
         phase="delete",
         status="pending",
+        execution_claim=_claim_purge(storage, purge_id),
         detail={"count": 1},
     )
     storage.record_purge_target(
@@ -3361,6 +3824,7 @@ def test_apply_governance_user_data_delete_requires_complete_prepared_delete_mat
         target_ref="all",
         phase="delete",
         status="complete",
+        execution_claim=_claim_purge(storage, purge_id),
         detail={"count": 0},
         deleted_count=0,
     )
@@ -3386,6 +3850,7 @@ def test_apply_governance_user_data_delete_requires_complete_prepared_delete_mat
         storage.apply_governance_user_data_delete(
             purge_id=purge_id,
             user_id=user_id,
+            execution_claim=_claim_purge(storage, purge_id),
         )
 
     assert clear_locked_called is False
@@ -3432,11 +3897,13 @@ def test_apply_governance_user_data_delete_preserves_org_agent_playbooks_without
         purge_id=purge_id,
         user_id=user_id,
         owned_user_playbook_ids=owned_user_playbook_ids,
+        execution_claim=_claim_purge(storage, purge_id),
     )
 
     counts = storage.apply_governance_user_data_delete(
         purge_id=purge_id,
         user_id=user_id,
+        execution_claim=_claim_purge(storage, purge_id),
     )
 
     assert counts["user_playbooks"] == 1
@@ -3504,12 +3971,14 @@ def test_apply_governance_user_data_delete_retains_lineage_skeleton(
         purge_id=purge_id,
         user_id=user_id,
         owned_user_playbook_ids=owned_user_playbook_ids,
+        execution_claim=_claim_purge(storage, purge_id),
     )
     storage.hide_governance_agent_playbooks_for_rebuild(purge_id)
 
     counts = storage.apply_governance_user_data_delete(
         purge_id=purge_id,
         user_id=user_id,
+        execution_claim=_claim_purge(storage, purge_id),
     )
 
     assert counts == {
@@ -3613,6 +4082,7 @@ def test_apply_governance_user_data_delete_is_failure_atomic(storage, monkeypatc
         purge_id=purge_id,
         user_id=user_id,
         owned_user_playbook_ids=owned_user_playbook_ids,
+        execution_claim=_claim_purge(storage, purge_id),
     )
     storage.hide_governance_agent_playbooks_for_rebuild(purge_id)
 
@@ -3668,6 +4138,7 @@ def test_apply_governance_user_data_delete_is_failure_atomic(storage, monkeypatc
         storage.apply_governance_user_data_delete(
             purge_id=purge_id,
             user_id=user_id,
+            execution_claim=_claim_purge(storage, purge_id),
         )
 
     assert _user_scoped_row_counts(storage, user_id=user_id) == before_counts
@@ -3739,6 +4210,7 @@ def test_fail_purge_operation_rejects_unsafe_purge_id_before_side_effects(storag
             SUBJECT_REF,
             "governance.error",
             "detail.code",
+            execution_claim=_typed_test_claim_for_unvalidated_purge_id(SUBJECT_REF),
         )
 
     failed = storage.get_purge_operation(purge_id)
@@ -3773,6 +4245,7 @@ def test_apply_governance_agent_playbook_rebuild_rejects_mismatched_remaining_so
         target_ref=str(agent_playbook_id),
         phase="rebuild_without_erased_sources",
         status="running",
+        execution_claim=_claim_purge(storage, purge_id),
         detail={
             "original_source_windows": [
                 {"user_playbook_id": 7, "source_interaction_ids": [101]},
@@ -3790,6 +4263,7 @@ def test_apply_governance_agent_playbook_rebuild_rejects_mismatched_remaining_so
         target_ref=str(agent_playbook_id),
         phase="hide_for_rebuild",
         status="complete",
+        execution_claim=_claim_purge(storage, purge_id),
     )
     original_row = storage.conn.execute(
         """SELECT content, trigger, rationale, blocking_issue, expanded_terms, tags, status
@@ -3930,6 +4404,7 @@ def test_record_purge_target_rejects_invalid_enum_values(
             target_ref="all",
             phase=phase,
             status=status,
+            execution_claim=_claim_purge(storage, purge_id),
         )
 
 
@@ -4087,6 +4562,7 @@ def test_governance_detail_rejects_noncanonical_status_and_route(
             target_ref="all",
             phase="delete",
             status="running",
+            execution_claim=_claim_purge(storage, purge_id),
             detail=detail,
         )
 
@@ -4133,6 +4609,7 @@ def test_record_purge_target_canonicalizes_detail_keys_before_persistence(storag
         target_ref="all",
         phase="delete",
         status="complete",
+        execution_claim=_claim_purge(storage, purge_id),
         detail={" Deleted_Counts ": {"requests": 2}},
         deleted_count=2,
     )
@@ -4168,6 +4645,7 @@ def test_governance_detail_rejects_duplicate_normalized_keys(storage, persistenc
             target_ref="all",
             phase="delete",
             status="complete",
+            execution_claim=_claim_purge(storage, purge_id),
             detail=detail,
         )
 
@@ -4295,6 +4773,7 @@ def test_record_purge_target_validates_target_ref_by_phase_and_name(
             target_ref=target_ref,
             phase=phase,
             status="running",
+            execution_claim=_claim_purge(storage, purge_id),
         )
         return
 
@@ -4305,6 +4784,7 @@ def test_record_purge_target_validates_target_ref_by_phase_and_name(
             target_ref=target_ref,
             phase=phase,
             status="running",
+            execution_claim=_claim_purge(storage, purge_id),
         )
 
 
@@ -4379,6 +4859,7 @@ def test_init_governance_tables_upgrades_legacy_purge_target_table(tmp_path):
         target_ref="all",
         phase="prepare_targets",
         status="complete",
+        execution_claim=_claim_purge(storage, purge_id),
     )
 
     assert storage.purge_targets_prepared(purge_id) is True
@@ -4585,18 +5066,21 @@ def test_successful_erase_audit_row_exists_only_after_complete_purge(storage):
     # (2) The one legitimate writer produces exactly one successful-ERASE row,
     # and only after the purge_operation transitions to 'complete'.
     completed = storage.complete_purge_operation_with_audit(
-        purge_id, _erase_event(purge_id=purge_id)
+        purge_id,
+        _erase_event(purge_id=purge_id),
+        execution_claim=_claim_purge(storage, purge_id),
     )
     assert completed.status == "complete"
     erase_rows = _successful_erase_audit_rows(storage)
     assert [event.idempotency_key for event in erase_rows] == [purge_id]
     _assert_successful_erase_rows_only_for_complete_purges(storage)
 
-    # Idempotent re-completion neither duplicates the row nor breaks the
-    # invariant.
-    storage.complete_purge_operation_with_audit(
-        purge_id, _erase_event(purge_id=purge_id)
-    )
+    with pytest.raises(ValueError, match="purge execution claim"):
+        storage.complete_purge_operation_with_audit(
+            purge_id,
+            _erase_event(purge_id=purge_id),
+            execution_claim=_typed_test_claim_for_unvalidated_purge_id(purge_id),
+        )
     assert [
         event.idempotency_key for event in _successful_erase_audit_rows(storage)
     ] == [purge_id]

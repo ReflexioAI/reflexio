@@ -356,7 +356,8 @@ class GovernanceEraseExecutionMixin:
         self,
         purge_id: str,
         user_id: str,
-        execution_claim: PurgeExecutionClaim | None = None,
+        *,
+        execution_claim: PurgeExecutionClaim,
     ) -> dict[str, int]:
         purge_id = _validate_governance_purge_id("purge_id", purge_id)
         name_map = {
@@ -420,7 +421,8 @@ class GovernanceEraseExecutionMixin:
         self,
         purge_id: str,
         audit_event: AuditEvent,
-        execution_claim: PurgeExecutionClaim | None = None,
+        *,
+        execution_claim: PurgeExecutionClaim,
     ) -> PurgeOperation:
         purge_id = _validate_governance_purge_id("purge_id", purge_id)
         if audit_event.org_id != self.org_id:

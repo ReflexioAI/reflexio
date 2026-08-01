@@ -26,6 +26,7 @@ from reflexio.server.services.governance import service as governance_service_mo
 from reflexio.server.services.governance.config import governance_subject_ref
 from reflexio.server.services.governance.service import GovernanceService
 from reflexio.server.services.storage.error import SubjectWriteBarrierError
+from reflexio.server.services.storage.governance_claims import PurgeExecutionClaim
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 
 pytestmark = pytest.mark.integration
@@ -634,7 +635,17 @@ def test_second_erase_conflict_preserves_original_barrier_and_write_block(
         subject_ref=subject_ref,
         request_ref="reqref_v1_00000000000000000000000000000061",
     )
-    storage.begin_subject_erasure_barrier(subject_ref, first_purge.purge_id)
+    first_claim = storage.claim_purge_operation_execution(
+        first_purge.purge_id,
+        lease_owner="test-conflict-first",
+        lease_ttl_seconds=30,
+    )
+    assert first_claim is not None
+    storage.begin_subject_erasure_barrier(
+        subject_ref,
+        first_purge.purge_id,
+        execution_claim=first_claim,
+    )
     service = GovernanceService(
         storage=storage,
         org_id=storage.org_id,
@@ -723,9 +734,9 @@ def test_subject_erasure_lifecycle_retry_is_idempotent_and_counted(
             storage: SQLiteStorage,
             subject_ref: str,
             purge_id: str,
-            execution_claim: object,
+            execution_claim: PurgeExecutionClaim,
         ) -> None:
-            del subject_ref, execution_claim
+            del subject_ref
             self.calls += 1
             target = next(
                 target
@@ -743,6 +754,7 @@ def test_subject_erasure_lifecycle_retry_is_idempotent_and_counted(
                 status="complete",
                 detail={"count": 2},
                 deleted_count=2,
+                execution_claim=execution_claim,
             )
 
     lifecycle = RetrySafeLifecycle()

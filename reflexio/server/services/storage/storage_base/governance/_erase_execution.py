@@ -23,7 +23,8 @@ class GovernanceEraseExecutionMixin(ABC):
         self,
         purge_id: str,
         user_id: str,
-        execution_claim: PurgeExecutionClaim | None = None,
+        *,
+        execution_claim: PurgeExecutionClaim,
     ) -> dict[str, int]:
         raise NotImplementedError
 
@@ -32,6 +33,7 @@ class GovernanceEraseExecutionMixin(ABC):
         self,
         purge_id: str,
         audit_event: AuditEvent,
-        execution_claim: PurgeExecutionClaim | None = None,
+        *,
+        execution_claim: PurgeExecutionClaim,
     ) -> PurgeOperation:
         raise NotImplementedError

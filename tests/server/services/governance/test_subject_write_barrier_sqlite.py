@@ -14,12 +14,13 @@ from reflexio.models.api_schema.domain.entities import (
     UserPlaybook,
     UserProfile,
 )
-from reflexio.models.api_schema.domain.governance import AuditEvent
+from reflexio.models.api_schema.domain.governance import AuditEvent, SubjectWriteBarrier
 from reflexio.server.services.governance.config import governance_subject_ref
 from reflexio.server.services.storage.error import (
     StorageError,
     SubjectWriteBarrierError,
 )
+from reflexio.server.services.storage.governance_claims import PurgeExecutionClaim
 from reflexio.server.services.storage.governance_validation import (
     _CANONICAL_DELETE_TARGET_NAMES,
 )
@@ -36,13 +37,59 @@ def _storage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SQLiteStorage:
     return SQLiteStorage(org_id="org-barrier", db_path=str(tmp_path / "barrier.db"))
 
 
+def _claim_purge(storage: SQLiteStorage, purge_id: str) -> PurgeExecutionClaim:
+    claim = storage.claim_purge_operation_execution(
+        purge_id,
+        lease_owner=f"test-{purge_id}",
+        lease_ttl_seconds=30,
+    )
+    if claim is None:
+        storage.conn.execute(
+            """UPDATE purge_operations
+               SET execution_claim_expires_at = 0
+               WHERE org_id = ? AND purge_id = ?""",
+            (storage.org_id, purge_id),
+        )
+        storage.conn.commit()
+        claim = storage.claim_purge_operation_execution(
+            purge_id,
+            lease_owner=f"test-{purge_id}",
+            lease_ttl_seconds=30,
+        )
+    assert claim is not None
+    return claim
+
+
+def _typed_test_claim_for_unvalidated_purge_id(purge_id: str) -> PurgeExecutionClaim:
+    return PurgeExecutionClaim(
+        purge_id=purge_id,
+        owner="test-unvalidated",
+        fence=1,
+        expires_at=1,
+    )
+
+
+def _begin_claimed_subject_erasure_barrier(
+    storage: SQLiteStorage,
+    subject_ref: str,
+    purge_id: str,
+) -> SubjectWriteBarrier:
+    return storage.begin_subject_erasure_barrier(
+        subject_ref,
+        purge_id,
+        execution_claim=_claim_purge(storage, purge_id),
+    )
+
+
 def _mark_all_completion_targets(storage: SQLiteStorage, purge_id: str) -> None:
+    claim = _claim_purge(storage, purge_id)
     storage.record_purge_target(
         purge_id,
         target_name="target_snapshot",
         phase="prepare_targets",
         status="complete",
         target_ref="all",
+        execution_claim=claim,
         detail={"prepared": True},
     )
     # Single source of truth — a stale local copy of the canonical tuple is
@@ -54,6 +101,7 @@ def _mark_all_completion_targets(storage: SQLiteStorage, purge_id: str) -> None:
             phase="delete",
             status="complete",
             target_ref="all",
+            execution_claim=claim,
             detail={"count": 0},
         )
 
@@ -77,6 +125,7 @@ def _complete_empty_purge(
             idempotency_key=purge_id,
             detail={"deleted_counts": {}, "rebuilt_agent_playbook_ids": []},
         ),
+        execution_claim=_claim_purge(storage, purge_id),
     )
 
 
@@ -95,7 +144,9 @@ def test_barrier_blocks_request_interaction_and_profile_writes(
         request_ref="reqref_v1_11111111111111111111111111111111",
     )
 
-    barrier = storage.begin_subject_erasure_barrier(subject_ref, purge.purge_id)
+    barrier = _begin_claimed_subject_erasure_barrier(
+        storage, subject_ref, purge.purge_id
+    )
 
     assert barrier.status == "erasing"
     with pytest.raises(SubjectWriteBarrierError):
@@ -174,7 +225,7 @@ def test_barrier_blocks_playbook_eval_and_source_window_writes(
         ]
     )[0]
 
-    storage.begin_subject_erasure_barrier(subject_ref, purge.purge_id)
+    _begin_claimed_subject_erasure_barrier(storage, subject_ref, purge.purge_id)
 
     with pytest.raises(SubjectWriteBarrierError):
         storage.save_user_playbooks(
@@ -233,11 +284,15 @@ def test_begin_subject_erasure_barrier_requires_matching_purge(
     )
 
     with pytest.raises(ValueError, match="subject_ref must match"):
-        storage.begin_subject_erasure_barrier(bob_subject_ref, purge.purge_id)
+        _begin_claimed_subject_erasure_barrier(storage, bob_subject_ref, purge.purge_id)
 
     with pytest.raises(ValueError, match="not found"):
         storage.begin_subject_erasure_barrier(
-            alice_subject_ref, "purge_barrier_missing"
+            alice_subject_ref,
+            "purge_barrier_missing",
+            execution_claim=_typed_test_claim_for_unvalidated_purge_id(
+                "purge_barrier_missing"
+            ),
         )
 
 
@@ -264,7 +319,7 @@ def test_fail_subject_erasure_barrier_requires_matching_barrier_row(
         request_ref="reqref_v1_00000000000000000000000000000052",
     )
 
-    storage.begin_subject_erasure_barrier(subject_ref, first_purge.purge_id)
+    _begin_claimed_subject_erasure_barrier(storage, subject_ref, first_purge.purge_id)
 
     with pytest.raises(ValueError, match="matching barrier"):
         storage.fail_subject_erasure_barrier(
@@ -272,6 +327,7 @@ def test_fail_subject_erasure_barrier_requires_matching_barrier_row(
             second_purge.purge_id,
             error_code="governance_erase_failed",
             error_detail="ValueError",
+            execution_claim=_claim_purge(storage, second_purge.purge_id),
         )
 
     barrier = storage.get_subject_write_barrier(subject_ref)
@@ -306,7 +362,7 @@ def test_begin_subject_erasure_barrier_preserves_terminal_erased_state(
         subject_ref=subject_ref,
         request_ref=request_ref,
     )
-    storage.begin_subject_erasure_barrier(subject_ref, purge.purge_id)
+    _begin_claimed_subject_erasure_barrier(storage, subject_ref, purge.purge_id)
     _complete_empty_purge(
         storage,
         purge_id=purge.purge_id,
@@ -314,7 +370,14 @@ def test_begin_subject_erasure_barrier_preserves_terminal_erased_state(
         request_ref=request_ref,
     )
 
-    barrier = storage.begin_subject_erasure_barrier(subject_ref, purge.purge_id)
+    with pytest.raises(ValueError, match="purge execution claim"):
+        storage.begin_subject_erasure_barrier(
+            subject_ref,
+            purge.purge_id,
+            execution_claim=_typed_test_claim_for_unvalidated_purge_id(purge.purge_id),
+        )
+    barrier = storage.get_subject_write_barrier(subject_ref)
+    assert barrier is not None
     stored_barrier = storage.get_subject_write_barrier(subject_ref)
     stored_purge = storage.get_purge_operation(purge.purge_id)
 
@@ -340,7 +403,7 @@ def test_fail_subject_erasure_barrier_rejects_terminal_erased_state(
         subject_ref=subject_ref,
         request_ref=request_ref,
     )
-    storage.begin_subject_erasure_barrier(subject_ref, purge.purge_id)
+    _begin_claimed_subject_erasure_barrier(storage, subject_ref, purge.purge_id)
     _complete_empty_purge(
         storage,
         purge_id=purge.purge_id,
@@ -348,12 +411,13 @@ def test_fail_subject_erasure_barrier_rejects_terminal_erased_state(
         request_ref=request_ref,
     )
 
-    with pytest.raises(ValueError, match="matching barrier"):
+    with pytest.raises(ValueError, match="purge execution claim"):
         storage.fail_subject_erasure_barrier(
             subject_ref,
             purge.purge_id,
             error_code="governance_erase_failed",
             error_detail="late_failure",
+            execution_claim=_typed_test_claim_for_unvalidated_purge_id(purge.purge_id),
         )
 
     barrier = storage.get_subject_write_barrier(subject_ref)
@@ -381,7 +445,7 @@ def test_fail_purge_operation_rejects_terminal_complete_state(
         subject_ref=subject_ref,
         request_ref=request_ref,
     )
-    storage.begin_subject_erasure_barrier(subject_ref, purge.purge_id)
+    _begin_claimed_subject_erasure_barrier(storage, subject_ref, purge.purge_id)
     _complete_empty_purge(
         storage,
         purge_id=purge.purge_id,
@@ -389,11 +453,12 @@ def test_fail_purge_operation_rejects_terminal_complete_state(
         request_ref=request_ref,
     )
 
-    with pytest.raises(ValueError, match="already complete"):
+    with pytest.raises(ValueError, match="purge execution claim"):
         storage.fail_purge_operation(
             purge.purge_id,
             error_code="governance_erase_failed",
             error_detail="late_failure",
+            execution_claim=_typed_test_claim_for_unvalidated_purge_id(purge.purge_id),
         )
 
     barrier = storage.get_subject_write_barrier(subject_ref)
@@ -438,7 +503,7 @@ def test_guarded_completion_allows_purged_retained_skeletons(
         subject_ref=subject_ref,
         request_ref="reqref_v1_00000000000000000000000000000061",
     )
-    storage.begin_subject_erasure_barrier(subject_ref, purge.purge_id)
+    _begin_claimed_subject_erasure_barrier(storage, subject_ref, purge.purge_id)
 
     assert storage.purge_content(entity_type="profile", entity_id=profile.profile_id)
     assert storage.purge_content(
@@ -513,13 +578,14 @@ def test_guarded_completion_requires_empty_subject_rows(
             created_at=_now(),
         )
     )
-    storage.begin_subject_erasure_barrier(subject_ref, purge.purge_id)
+    _begin_claimed_subject_erasure_barrier(storage, subject_ref, purge.purge_id)
     storage.record_purge_target(
         purge.purge_id,
         target_name="target_snapshot",
         phase="prepare_targets",
         status="complete",
         target_ref="all",
+        execution_claim=_claim_purge(storage, purge.purge_id),
         detail={"prepared": True},
     )
 
@@ -535,6 +601,7 @@ def test_guarded_completion_requires_empty_subject_rows(
                 idempotency_key=purge.purge_id,
                 detail={"deleted_counts": {}, "rebuilt_agent_playbook_ids": []},
             ),
+            execution_claim=_claim_purge(storage, purge.purge_id),
         )
 
 
@@ -570,13 +637,14 @@ def test_guarded_completion_requires_empty_legacy_null_subject_rows(
     )
     storage.conn.commit()
 
-    storage.begin_subject_erasure_barrier(subject_ref, purge.purge_id)
+    _begin_claimed_subject_erasure_barrier(storage, subject_ref, purge.purge_id)
     storage.record_purge_target(
         purge.purge_id,
         target_name="target_snapshot",
         phase="prepare_targets",
         status="complete",
         target_ref="all",
+        execution_claim=_claim_purge(storage, purge.purge_id),
         detail={"prepared": True},
     )
 
@@ -592,6 +660,7 @@ def test_guarded_completion_requires_empty_legacy_null_subject_rows(
                 idempotency_key=purge.purge_id,
                 detail={"deleted_counts": {}, "rebuilt_agent_playbook_ids": []},
             ),
+            execution_claim=_claim_purge(storage, purge.purge_id),
         )
 
 
@@ -623,6 +692,7 @@ def test_guarded_completion_requires_existing_erasing_subject_barrier(
                 idempotency_key=purge.purge_id,
                 detail={"deleted_counts": {}, "rebuilt_agent_playbook_ids": []},
             ),
+            execution_claim=_claim_purge(storage, purge.purge_id),
         )
 
 
@@ -640,12 +710,13 @@ def test_guarded_completion_rejects_failed_subject_barrier(
         subject_ref=subject_ref,
         request_ref="reqref_v1_00000000000000000000000000000035",
     )
-    storage.begin_subject_erasure_barrier(subject_ref, purge.purge_id)
+    _begin_claimed_subject_erasure_barrier(storage, subject_ref, purge.purge_id)
     storage.fail_subject_erasure_barrier(
         subject_ref,
         purge.purge_id,
         error_code="test_failed_barrier",
         error_detail="RuntimeError",
+        execution_claim=_claim_purge(storage, purge.purge_id),
     )
     _mark_all_completion_targets(storage, purge.purge_id)
 
@@ -661,6 +732,7 @@ def test_guarded_completion_rejects_failed_subject_barrier(
                 idempotency_key=purge.purge_id,
                 detail={"deleted_counts": {}, "rebuilt_agent_playbook_ids": []},
             ),
+            execution_claim=_claim_purge(storage, purge.purge_id),
         )
 
 
@@ -686,7 +758,7 @@ def test_barrier_blocks_profile_update_paths(
         subject_ref=subject_ref,
         request_ref="reqref_v1_00000000000000000000000000000033",
     )
-    storage.begin_subject_erasure_barrier(subject_ref, purge.purge_id)
+    _begin_claimed_subject_erasure_barrier(storage, subject_ref, purge.purge_id)
 
     with pytest.raises(SubjectWriteBarrierError):
         storage.update_user_profile_tags("alice", profile.profile_id, ["blocked"])
@@ -726,7 +798,7 @@ def test_barrier_blocks_user_playbook_update_paths(
         subject_ref=subject_ref,
         request_ref="reqref_v1_00000000000000000000000000000034",
     )
-    storage.begin_subject_erasure_barrier(subject_ref, purge.purge_id)
+    _begin_claimed_subject_erasure_barrier(storage, subject_ref, purge.purge_id)
 
     with pytest.raises(SubjectWriteBarrierError):
         storage.archive_user_playbook_by_id("alice", playbook.user_playbook_id)
@@ -762,7 +834,9 @@ def test_assert_subject_writable_blocks_only_barriered_subject(
     storage.assert_subject_writable(barriered_subject_ref)
     storage.assert_subject_writable(other_subject_ref)
 
-    storage.begin_subject_erasure_barrier(barriered_subject_ref, purge.purge_id)
+    _begin_claimed_subject_erasure_barrier(
+        storage, barriered_subject_ref, purge.purge_id
+    )
 
     # The 'erasing' barrier blocks only its own subject.
     with pytest.raises(SubjectWriteBarrierError, match="blocked by erasure barrier"):
@@ -832,7 +906,7 @@ def test_source_window_write_blocks_legacy_null_subject_ref_user_playbook(
         ]
     )[0]
 
-    storage.begin_subject_erasure_barrier(subject_ref, purge.purge_id)
+    _begin_claimed_subject_erasure_barrier(storage, subject_ref, purge.purge_id)
 
     with pytest.raises(SubjectWriteBarrierError):
         storage.set_source_windows_for_agent_playbook(
