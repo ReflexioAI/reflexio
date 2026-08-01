@@ -522,7 +522,7 @@ Pre-computed embeddings passed to storage methods via `query_embedding` paramete
 | File | Purpose |
 |------|---------|
 | `storage_base/` | BaseStorage interface split by domain. Legacy facades (`_profiles.py`, `_playbook.py`, `_agent_run.py`, etc.) preserve imports while subpackages (`profiles/`, `playbook/`, `agent_run/`, `governance/`) hold focused abstract store contracts. |
-| `sqlite_storage/` | SQLite-backed implementation split across matching facades and subpackages (`profiles/`, `playbook/`, `agent_run/`, `governance/`, `base/`), including governance-aware retention/barrier handling and lineage/tombstone support. |
+| `sqlite_storage/` | SQLite-backed implementation split across matching facades and subpackages (`profiles/`, `playbook/`, `agent_run/`, `governance/`, `base/`), including governance-aware retention/barrier handling, lineage/tombstone support, and durable incremental playbook-aggregation state. |
 | `governance_validation.py` | Shared validation helpers for subject references and governance contracts before storage writes. |
 | `retention.py`, `retention_mixin.py` | Data retention and cleanup helpers |
 | `constants.py`, `error.py` | Storage constants and shared errors |

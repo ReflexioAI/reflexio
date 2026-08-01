@@ -68,7 +68,7 @@ def _append_event_stmt(
 
     Returns the cursor so callers can inspect ``rowcount``/``lastrowid``.
     """
-    return conn.execute(
+    cursor = conn.execute(
         "INSERT OR IGNORE INTO lineage_event "
         "(org_id, entity_type, entity_id, op, prov_relation, source_ids, "
         "actor, request_id, reason, created_at, "
@@ -93,6 +93,39 @@ def _append_event_stmt(
             provider,
         ),
     )
+    if (
+        cursor.rowcount > 0
+        and entity_type == "user_playbook"
+        and op in {"create", "merge", "revise", "status_change", "purge"}
+    ):
+        candidate_ids = [
+            int(value) for value in [entity_id, *source_ids] if str(value).isdigit()
+        ]
+        if not candidate_ids:
+            return cursor
+        placeholders = ",".join("?" for _ in candidate_ids)
+        version_row = conn.execute(
+            "SELECT agent_version FROM user_playbooks "
+            f"WHERE user_playbook_id IN ({placeholders}) "
+            "AND trim(agent_version) <> '' LIMIT 1",
+            candidate_ids,
+        ).fetchone()
+        if version_row is not None:
+            agent_version = str(version_row[0])
+            conn.execute(
+                "INSERT INTO playbook_aggregation_invalidation "
+                "(agent_version, operation, entity_id, source_ids) VALUES (?, ?, ?, ?)",
+                (agent_version, op, int(entity_id), json.dumps(source_ids)),
+            )
+            conn.execute(
+                "INSERT INTO playbook_aggregation_state "
+                "(agent_version, pending, next_attempt_at) VALUES (?, 1, unixepoch()) "
+                "ON CONFLICT(agent_version) DO UPDATE SET pending=1, "
+                "next_attempt_at=min(playbook_aggregation_state.next_attempt_at, "
+                "excluded.next_attempt_at)",
+                (agent_version,),
+            )
+    return cursor
 
 
 # Per-entity purge SQL: blank every PII/content column.

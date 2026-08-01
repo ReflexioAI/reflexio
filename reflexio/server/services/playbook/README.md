@@ -10,6 +10,7 @@ Description: Evidence-grounded playbook extraction, candidate review, aggregatio
 - **Candidate Reviewer**: `components/reviewer.py` - Accepts, narrowly revises, or rejects validated normal-extraction candidates before consolidation
 - **Persisted Review Service**: `review_service.py` - Re-reviews a bounded created-at selection and optionally commits each completed decision newest-first
 - **Playbook Aggregator**: `components/aggregator.py` - Clusters similar user playbooks and generates aggregated insights
+- **Aggregation Scheduler**: `aggregation_scheduler.py` - Claims durable per-version work and runs bounded incremental aggregation
 - **Playbook Consolidator**: `components/consolidator.py` - Reconciles reviewed candidates against existing storage with evidence-aware accounting and overlap guards
 
 ## Supporting Files
@@ -20,6 +21,8 @@ Description: Evidence-grounded playbook extraction, candidate review, aggregatio
 | `playbook_service_utils.py` | Request dataclasses, Pydantic output schemas, message construction utilities |
 | `playbook_evidence.py` | Strict evidence validation, call-local reference checks, and persisted provenance helpers |
 | `review_service.py` | Time-window selection, persisted evidence reconstruction, reporting, and newest-first per-playbook apply |
+| `aggregation_trigger.py` | Converts post-generation activity into an idempotent durable scheduling signal |
+| `aggregation_scheduler.py` | Polling, fleet claim/lease handling, retries, and structured aggregation progress telemetry |
 | `aggregation_prompt_processing.py` | Optional aggregation-boundary interfaces and helpers for prompt preprocessing, contextual prompt guidance, and output post-processing |
 
 ## Architecture
@@ -32,7 +35,9 @@ Interactions
     -> PlaybookCandidateReviewer (normal strict-evidence candidates only)
       -> PlaybookConsolidator (consolidates reviewed vs existing DB playbooks)
         -> UserPlaybook (validated evidence + persisted provenance) -> Storage
-        -> PlaybookAggregator (manual trigger)
+        -> Durable aggregation signal
+          -> PlaybookAggregationScheduler (hourly cadence, bounded work)
+            -> PlaybookAggregator (incremental clustering)
           -> AgentPlaybook (aggregated insights) -> Storage
 ```
 
@@ -93,7 +98,12 @@ earlier decisions.
 
 ### Playbook Aggregation (`components/aggregator.py`)
 
-Triggered manually via `/api/run_playbook_aggregation`. Clusters user playbooks and generates consolidated insights.
+Normal generation durably schedules bounded incremental aggregation through
+`aggregation_trigger.py`; `aggregation_scheduler.py` claims due work across
+processes. New playbooks first match compatible centroids for the same agent
+version, while unmatched residuals form new clusters in bounded batches. The
+manual `/api/run_playbook_aggregation` route remains a capped administrative
+full rerun.
 
 **Key Methods**:
 - `get_clusters(user_playbooks, config)` - HDBSCAN/Agglomerative clustering on embeddings

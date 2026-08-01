@@ -17,7 +17,8 @@ logger = logging.getLogger(__name__)
 # Above this, use HDBSCAN (scales better, handles noise)
 CLUSTERING_ALGORITHM_THRESHOLD = 50
 
-# Upper bound on how many user playbooks a single aggregation run will cluster.
+# Shared upper bound on rows/embeddings consumed by one incremental run. Full
+# administrative reruns use the same value as a fail-before-mutation safety cap.
 #
 # This is a CPU bound, not a memory bound. HDBSCAN runs on raw unit-normalized
 # vectors (see cluster_with_hdbscan), so peak RSS stays flat -- ~320 MB at
@@ -27,8 +28,8 @@ CLUSTERING_ALGORITHM_THRESHOLD = 50
 #     n= 2_000 ->   1.3 s      n=10_000 ->  32 s
 #     n= 5_000 ->   8.0 s      n=20_000 -> 126 s
 #
-# Aggregation runs on a background daemon thread that shares one vCPU with
-# request serving, so the default is set where a run costs ~2 minutes.
+# The scheduler is durable and fleet-fenced, but still shares CPU with request
+# serving, so the default is set where one worst-case Stage B batch costs ~2 min.
 MAX_CLUSTERING_PLAYBOOKS_DEFAULT = 20_000
 MAX_CLUSTERING_PLAYBOOKS_ENV = "REFLEXIO_MAX_CLUSTERING_PLAYBOOKS"
 
