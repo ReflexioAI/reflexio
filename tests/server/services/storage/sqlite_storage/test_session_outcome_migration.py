@@ -38,6 +38,48 @@ CREATE TABLE session_outcomes (
 """
 
 
+def _legacy_session_outcomes_ddl(*, with_subject_column: bool) -> str:
+    subject_column = "governance_subject_ref TEXT," if with_subject_column else ""
+    return f"""
+CREATE TABLE session_outcomes (
+    user_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    outcome TEXT NOT NULL CHECK (outcome IN ('success', 'failure')),
+    occurred_at INTEGER NOT NULL,
+    source TEXT NOT NULL,
+    label TEXT,
+    value REAL,
+    metadata TEXT,
+    {subject_column}
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (user_id, session_id)
+);
+"""
+
+
+def _identity_complete_session_outcomes_ddl(*, with_subject_column: bool) -> str:
+    subject_column = "governance_subject_ref TEXT," if with_subject_column else ""
+    return f"""
+CREATE TABLE session_outcomes (
+    outcome_id TEXT NOT NULL UNIQUE,
+    outcome_revision INTEGER NOT NULL CHECK (outcome_revision >= 1),
+    user_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    outcome TEXT NOT NULL CHECK (outcome IN ('success', 'failure', 'unknown')),
+    occurred_at INTEGER NOT NULL,
+    source TEXT NOT NULL,
+    label TEXT,
+    value REAL,
+    metadata TEXT,
+    outcome_contract_digest TEXT NOT NULL,
+    finalized_trajectory_digest TEXT NOT NULL,
+    {subject_column}
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (user_id, session_id)
+);
+"""
+
+
 def test_migration_preserves_populated_legacy_outcomes_with_unambiguous_ids(
     tmp_path,
 ) -> None:
@@ -147,3 +189,122 @@ def test_migration_preserves_populated_legacy_outcomes_with_unambiguous_ids(
         assert record.finalized_trajectory_digest == trajectory_digest(
             _canonical_session_snapshot(migrated.conn, row["session_id"])
         )
+
+
+@pytest.mark.parametrize(
+    ("with_subject_column", "stored_subject_ref"),
+    [(False, None), (True, None), (True, "   ")],
+    ids=["absent", "null", "whitespace"],
+)
+def test_migration_derives_missing_legacy_governance_subject_ref(
+    tmp_path, with_subject_column: bool, stored_subject_ref: str | None
+) -> None:
+    db_path = str(tmp_path / f"legacy-subject-{with_subject_column}.db")
+    storage = SQLiteStorage(org_id="legacy-subject", db_path=db_path)
+    storage.add_request(
+        Request(
+            request_id="legacy-subject-request",
+            user_id="legacy-user",
+            session_id="legacy-session",
+            source="legacy-source",
+            created_at=100,
+        )
+    )
+    storage.conn.execute("DROP TABLE session_outcomes")
+    storage.conn.executescript(
+        _legacy_session_outcomes_ddl(with_subject_column=with_subject_column)
+    )
+    values = (
+        "legacy-user",
+        "legacy-session",
+        "success",
+        101,
+        "legacy-source",
+        102,
+    )
+    if with_subject_column:
+        storage.conn.execute(
+            """INSERT INTO session_outcomes (
+                   user_id, session_id, outcome, occurred_at, source, created_at,
+                   governance_subject_ref
+               ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (*values, stored_subject_ref),
+        )
+    else:
+        storage.conn.execute(
+            """INSERT INTO session_outcomes (
+                   user_id, session_id, outcome, occurred_at, source, created_at
+               ) VALUES (?, ?, ?, ?, ?, ?)""",
+            values,
+        )
+    storage.conn.commit()
+    storage.conn.close()
+
+    migrated = SQLiteStorage(org_id="legacy-subject", db_path=db_path)
+
+    row = migrated.conn.execute(
+        "SELECT governance_subject_ref FROM session_outcomes WHERE session_id = ?",
+        ("legacy-session",),
+    ).fetchone()
+    assert row is not None
+    assert row["governance_subject_ref"] == migrated._subject_ref_for_user_id(
+        "legacy-user"
+    )
+
+
+@pytest.mark.parametrize("with_subject_column", [False, True])
+def test_identity_complete_migration_backfills_missing_governance_subject_ref(
+    tmp_path, with_subject_column: bool
+) -> None:
+    db_path = str(tmp_path / f"complete-subject-{with_subject_column}.db")
+    storage = SQLiteStorage(org_id="complete-subject", db_path=db_path)
+    storage.conn.execute("DROP TABLE session_outcomes")
+    storage.conn.executescript(
+        _identity_complete_session_outcomes_ddl(with_subject_column=with_subject_column)
+    )
+    values = (
+        "stable-outcome-id",
+        1,
+        "complete-user",
+        "complete-session",
+        "unknown",
+        101,
+        "complete-source",
+        "a" * 64,
+        "b" * 64,
+        102,
+    )
+    if with_subject_column:
+        storage.conn.execute(
+            """INSERT INTO session_outcomes (
+                   outcome_id, outcome_revision, user_id, session_id, outcome,
+                   occurred_at, source, outcome_contract_digest,
+                   finalized_trajectory_digest, created_at,
+                   governance_subject_ref
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (*values, None),
+        )
+    else:
+        storage.conn.execute(
+            """INSERT INTO session_outcomes (
+                   outcome_id, outcome_revision, user_id, session_id, outcome,
+                   occurred_at, source, outcome_contract_digest,
+                   finalized_trajectory_digest, created_at
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            values,
+        )
+    storage.conn.commit()
+    storage.conn.close()
+
+    migrated = SQLiteStorage(org_id="complete-subject", db_path=db_path)
+
+    row = migrated.conn.execute(
+        """SELECT outcome_id, governance_subject_ref
+           FROM session_outcomes WHERE session_id = ?""",
+        ("complete-session",),
+    ).fetchone()
+    assert row is not None
+    assert row["outcome_id"] == "stable-outcome-id"
+    assert row["governance_subject_ref"] == migrated._subject_ref_for_user_id(
+        "complete-user"
+    )

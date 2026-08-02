@@ -87,7 +87,12 @@ def record_search_exposures(batch: SearchExposureBatch) -> None:
 
 
 def user_playbook_full_version_fingerprint(playbook: UserPlaybook) -> str:
-    """Bind every persisted playbook field except its derived embedding vector."""
+    """Bind every persisted playbook field except its derived embedding vector.
+
+    Adding or changing persisted ``UserPlaybook`` fields requires bumping
+    ``user-playbook-full-version-v1``; cross-version fingerprint comparisons are
+    undefined.
+    """
     payload = {
         "schema_version": "user-playbook-full-version-v1",
         "user_playbook": playbook.model_dump(mode="json", exclude={"embedding"}),

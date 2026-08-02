@@ -162,6 +162,27 @@ def outcome_contract_digest(
     return sha256(canonical_json_bytes(payload)).hexdigest()
 
 
+def _canonical_trajectory_json(value: object) -> str:
+    """Encode trajectory JSON, including finite floats, deterministically."""
+    if isinstance(value, float):
+        return json.dumps(value, allow_nan=False, separators=(",", ":"))
+    if isinstance(value, tuple | list):
+        return "[" + ",".join(_canonical_trajectory_json(item) for item in value) + "]"
+    if isinstance(value, Mapping):
+        if not all(isinstance(key, str) for key in value):
+            raise TypeError("canonical trajectory object keys must be strings")
+        keys = sorted(value, key=lambda key: key.encode("utf-16be"))
+        return (
+            "{"
+            + ",".join(
+                f"{canonical_json_bytes(key).decode()}:{_canonical_trajectory_json(value[key])}"
+                for key in keys
+            )
+            + "}"
+        )
+    return canonical_json_bytes(value).decode()
+
+
 def trajectory_digest(trajectory: object) -> str:
     """Hash the canonical finalized session trajectory."""
-    return sha256(canonical_json_bytes(trajectory)).hexdigest()
+    return sha256(_canonical_trajectory_json(trajectory).encode()).hexdigest()

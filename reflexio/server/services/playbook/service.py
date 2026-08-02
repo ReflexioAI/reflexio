@@ -624,7 +624,8 @@ class PlaybookGenerationService(
         all_playbooks: list[UserPlaybook],
         *,
         model_provenance: ModelProvenance | None = None,
-    ) -> None:
+        finalization_run_id: str | None = None,
+    ) -> list[str]:
         """Permanent V3 wrapper: compute→persist→schedulers together (no fence).
 
         Kept for the synchronous resume/manual callers
@@ -634,13 +635,54 @@ class PlaybookGenerationService(
         ``commit_scope`` — then dispatches the same off-thread schedulers, so the
         result is identical to the pre-split monolith.
         """
+        entity_type = "user_playbook"
+        if finalization_run_id is not None:
+            receipt = self.storage.get_agent_run_finalization_receipt(  # type: ignore[reportOptionalMemberAccess]
+                run_id=finalization_run_id,
+                entity_type=entity_type,
+            )
+            if receipt is not None:
+                return receipt
         if model_provenance is not None:
             self._last_model_provenance = model_provenance
         plan = self._resolve_write_plan([all_playbooks])
-        if plan is None:
-            return
-        self._persist_write_plan(plan)
-        self._dispatch_playbook_schedulers(plan)
+        learning_ids: list[str] = []
+        if finalization_run_id is None:
+            if plan is not None:
+                self._persist_write_plan(plan)
+                self._dispatch_playbook_schedulers(plan)
+            return (
+                [
+                    str(playbook.user_playbook_id)
+                    for playbook in plan.new_playbooks
+                    if playbook.user_playbook_id
+                ]
+                if plan is not None
+                else []
+            )
+
+        with self.storage.commit_scope():  # type: ignore[reportOptionalMemberAccess]
+            receipt = self.storage.get_agent_run_finalization_receipt(  # type: ignore[reportOptionalMemberAccess]
+                run_id=finalization_run_id,
+                entity_type=entity_type,
+            )
+            if receipt is not None:
+                return receipt
+            if plan is not None:
+                self._persist_write_plan(plan)
+                learning_ids = [
+                    str(playbook.user_playbook_id)
+                    for playbook in plan.new_playbooks
+                    if playbook.user_playbook_id
+                ]
+            self.storage.save_agent_run_finalization_receipt(  # type: ignore[reportOptionalMemberAccess]
+                run_id=finalization_run_id,
+                entity_type=entity_type,
+                learning_ids=learning_ids,
+            )
+        if plan is not None:
+            self._dispatch_playbook_schedulers(plan)
+        return learning_ids
 
     def _apply_consolidation_lineage(
         self,

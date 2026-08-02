@@ -260,3 +260,16 @@ class UsageBillingMixin(Generic[TExtractorConfig, TGenerationServiceConfig]):  #
         if isinstance(result, list):
             return len(result)
         return 1 if result else 0
+
+    @staticmethod
+    def _count_retained_online_learnings(write_plan: Any) -> int:
+        from reflexio.server.services.deferred_learning_plan import (
+            PlaybookWritePlan,
+            ProfileWritePlan,
+        )
+
+        if isinstance(write_plan, ProfileWritePlan):
+            return len(write_plan.new_profiles)
+        if isinstance(write_plan, PlaybookWritePlan):
+            return len(write_plan.new_playbooks)
+        return 0

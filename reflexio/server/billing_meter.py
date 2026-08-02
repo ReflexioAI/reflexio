@@ -243,7 +243,7 @@ def emit_learnings_generated(
         org_id: Organisation identifier.
         configurator: Object exposing ``get_config()`` for platform-LLM resolution.
         count: Number of learnings durably produced by this path.
-        source: Metering source/path label (e.g. ``"resumable_extraction"``).
+        source: Metering source/path label (e.g. ``"online_extraction"``).
         pipeline: Optional pipeline tag (e.g. ``"playbook"``).
         user_id: Optional user ID tied to the generated learning.
         request_id: Optional request correlation ID.

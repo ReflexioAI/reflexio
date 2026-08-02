@@ -41,6 +41,8 @@ _REQUIRED_DELETE_TARGET_NAMES = tuple(_DELETE_TARGET_NAME_TO_RESULT_KEY)
 _USER_PLAYBOOK_PAGE_SIZE = 1000
 _LIFECYCLE_COMPLETION_STATUS = "complete"
 _DUPLICATE_ERASE_POLL_SECONDS = 0.05
+_DUPLICATE_ERASE_MAX_POLL_SECONDS = 1.0
+_DUPLICATE_ERASE_WAIT_SECONDS = 5.0
 _PURGE_EXECUTION_LEASE_SECONDS = 300
 _PURGE_EXECUTION_HEARTBEAT_SECONDS = 30
 
@@ -64,6 +66,10 @@ class SubjectErasureLifecycle(Protocol):
 
 
 class _PurgeExecutionHeartbeatLostError(ValueError):
+    pass
+
+
+class GovernanceEraseRetryLaterError(RuntimeError):
     pass
 
 
@@ -224,12 +230,16 @@ class GovernanceService:
                 )
             except Exception:
                 raise begin_exc from None
+            if purge.status == "complete":
+                raise begin_exc from None
         if purge.status == "complete":
             return self._completed_erase_result_for_retry(
                 subject_ref=subref, purge_id=purge_id
             )
         lease_owner = f"governance-erase-{uuid.uuid4().hex}"
         execution_claim: PurgeExecutionClaim | None = None
+        claim_deadline = self._monotonic() + _DUPLICATE_ERASE_WAIT_SECONDS
+        poll_seconds = _DUPLICATE_ERASE_POLL_SECONDS
         while execution_claim is None:
             execution_claim = self.storage.claim_purge_operation_execution(
                 purge_id,
@@ -246,7 +256,16 @@ class GovernanceService:
                 )
             if purge.status not in {"pending", "running", "failed"}:
                 raise ValueError(f"Unsupported purge operation status: {purge.status}")
-            time.sleep(_DUPLICATE_ERASE_POLL_SECONDS)
+            remaining_seconds = claim_deadline - self._monotonic()
+            if remaining_seconds <= 0:
+                raise GovernanceEraseRetryLaterError(
+                    "Another erase request still owns the execution claim; retry later"
+                )
+            self._sleep(min(poll_seconds, remaining_seconds))
+            poll_seconds = min(
+                poll_seconds * 2,
+                _DUPLICATE_ERASE_MAX_POLL_SECONDS,
+            )
         try:
             with _PurgeExecutionHeartbeat(
                 storage=self.storage,
@@ -306,6 +325,7 @@ class GovernanceService:
                             "rebuilt_agent_playbook_ids": rebuilt_agent_playbook_ids,
                         },
                     ),
+                    authoritative_user_id=user_id,
                     execution_claim=heartbeat.claim(),
                 )
         except Exception as exc:
@@ -336,6 +356,14 @@ class GovernanceService:
             deleted_counts=deleted_counts,
             rebuilt_agent_playbook_ids=rebuilt_agent_playbook_ids,
         )
+
+    @staticmethod
+    def _monotonic() -> float:
+        return time.monotonic()
+
+    @staticmethod
+    def _sleep(seconds: float) -> None:
+        time.sleep(seconds)
 
     def _assert_execution_claim(
         self, purge_id: str, execution_claim: PurgeExecutionClaim

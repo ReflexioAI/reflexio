@@ -93,7 +93,7 @@ class GovernanceEraseExecutionMixin:
         [str, PurgeExecutionClaim | None], None
     ]
     _assert_authoritative_user_identity_locked: Callable[[str, str], str]
-    _assert_bound_authoritative_user_identity_locked: Callable[[str, str], None]
+    _assert_bound_authoritative_user_identity_locked: Callable[[str, str, str], None]
 
     def _purge_governance_entity_content_locked(
         self,
@@ -420,6 +420,7 @@ class GovernanceEraseExecutionMixin:
         purge_id: str,
         audit_event: AuditEvent,
         *,
+        authoritative_user_id: str,
         execution_claim: PurgeExecutionClaim,
     ) -> PurgeOperation:
         purge_id = _validate_governance_purge_id("purge_id", purge_id)
@@ -472,7 +473,9 @@ class GovernanceEraseExecutionMixin:
                         "Cannot complete purge without target snapshot marker"
                     )
                 self._assert_bound_authoritative_user_identity_locked(
-                    purge_id, audit_event.subject_ref or ""
+                    purge_id,
+                    audit_event.subject_ref or "",
+                    authoritative_user_id,
                 )
                 delete_rows = self.conn.execute(
                     """SELECT target_name, status FROM purge_operation_targets

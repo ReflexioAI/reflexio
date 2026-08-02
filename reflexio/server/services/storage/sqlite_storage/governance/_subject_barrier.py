@@ -80,6 +80,7 @@ class SubjectBarrierMixin:
     _assert_purge_operation_execution_claim_locked: Callable[
         [str, PurgeExecutionClaim | None], None
     ]
+    _authoritative_user_digest: Callable[[str, str], str]
 
     def _barrier_from_purge(
         self,
@@ -163,19 +164,17 @@ class SubjectBarrierMixin:
                 return True
         return False
 
-    def _authoritative_user_rows_remain_locked(
-        self, *, table: str, subject_ref: str
-    ) -> bool:
-        rows = self.conn.execute(
-            f"SELECT DISTINCT user_id FROM {table}"  # noqa: S608
-        ).fetchall()
-        return any(
-            self._subject_ref_for_user_id(str(row["user_id"])) == subject_ref
-            for row in rows
+    def _authoritative_user_session_outcome_remains_locked(self, user_id: str) -> bool:
+        return (
+            self.conn.execute(
+                "SELECT 1 FROM session_outcomes WHERE user_id = ? LIMIT 1",
+                (user_id,),
+            ).fetchone()
+            is not None
         )
 
     def _assert_bound_authoritative_user_identity_locked(
-        self, purge_id: str, subject_ref: str
+        self, purge_id: str, subject_ref: str, authoritative_user_id: str
     ) -> None:
         purge_row = self.conn.execute(
             """SELECT operation_type, scope_type, subject_ref,
@@ -186,8 +185,11 @@ class SubjectBarrierMixin:
         ).fetchone()
         if purge_row is None:
             raise ValueError(f"Purge operation {purge_id!r} not found")
-        if purge_row["operation_type"] != "user_erasure":
-            return
+        if (
+            purge_row["operation_type"] != "user_erasure"
+            or purge_row["scope_type"] != "user"
+        ):
+            raise ValueError("Completion requires a user erasure purge")
         authoritative_user_digest = purge_row["authoritative_user_digest"]
         snapshot_row = self.conn.execute(
             """SELECT detail FROM purge_operation_targets
@@ -198,17 +200,23 @@ class SubjectBarrierMixin:
         snapshot_detail = (
             _json_loads(snapshot_row["detail"]) if snapshot_row is not None else None
         )
+        expected_digest = self._authoritative_user_digest(
+            purge_id, authoritative_user_id
+        )
         if (
             purge_row["scope_type"] != "user"
             or purge_row["subject_ref"] != subject_ref
+            or self._subject_ref_for_user_id(authoritative_user_id) != subject_ref
             or not isinstance(authoritative_user_digest, str)
+            or authoritative_user_digest != expected_digest
             or not isinstance(snapshot_detail, dict)
-            or snapshot_detail.get("authoritative_user_digest")
-            != authoritative_user_digest
+            or snapshot_detail.get("authoritative_user_digest") != expected_digest
         ):
             raise ValueError("Purge authoritative user identity does not match")
 
-    def _same_subject_rows_remain_locked(self, subject_ref: str) -> bool:
+    def _same_subject_rows_remain_locked(
+        self, subject_ref: str, authoritative_user_id: str
+    ) -> bool:
         legacy_request_ids = self._legacy_request_ids_for_subject_locked(subject_ref)
         for table in (
             "requests",
@@ -226,11 +234,11 @@ class SubjectBarrierMixin:
             ).fetchone()
             if row is not None:
                 return True
-        if self._authoritative_user_rows_remain_locked(
-            table="session_outcomes", subject_ref=subject_ref
-        ):
-            return True
         if legacy_request_ids:
+            return True
+        if self._authoritative_user_session_outcome_remains_locked(
+            authoritative_user_id
+        ):
             return True
         if self._legacy_user_id_rows_remain_locked(
             table="interactions",
@@ -357,6 +365,7 @@ class SubjectBarrierMixin:
         purge_id: str,
         audit_event: AuditEvent,
         *,
+        authoritative_user_id: str,
         execution_claim: PurgeExecutionClaim,
     ) -> PurgeOperation:
         purge_id = _validate_governance_purge_id("purge_id", purge_id)
@@ -402,9 +411,13 @@ class SubjectBarrierMixin:
                         "Cannot complete purge without target snapshot marker"
                     )
                 self._assert_bound_authoritative_user_identity_locked(
-                    purge_id, audit_event.subject_ref or ""
+                    purge_id,
+                    audit_event.subject_ref or "",
+                    authoritative_user_id,
                 )
-                if self._same_subject_rows_remain_locked(audit_event.subject_ref or ""):
+                if self._same_subject_rows_remain_locked(
+                    audit_event.subject_ref or "", authoritative_user_id
+                ):
                     raise ValueError("same-subject rows remain")
                 delete_rows = self.conn.execute(
                     """SELECT target_name, status FROM purge_operation_targets

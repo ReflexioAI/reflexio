@@ -19,6 +19,7 @@ and the module-level helpers (``_json_dumps``, ``_row_to_purge_operation``,
 from __future__ import annotations
 
 import hashlib
+import hmac
 import sqlite3
 import threading
 from collections.abc import Callable
@@ -28,6 +29,7 @@ from reflexio.models.api_schema.domain.governance import (
     PurgeOperation,
     PurgeOperationTarget,
 )
+from reflexio.server.services.governance.config import get_governance_ref_secret
 from reflexio.server.services.storage.governance_claims import (
     PurgeExecutionClaim,
     validate_purge_execution_claim,
@@ -53,7 +55,12 @@ from reflexio.server.services.storage.governance_validation import (
     _validate_governance_target_ref,
 )
 
-from .._governance import _json_dumps, _row_to_purge_operation, _row_to_purge_target
+from .._governance import (
+    _json_dumps,
+    _json_loads,
+    _row_to_purge_operation,
+    _row_to_purge_target,
+)
 
 if TYPE_CHECKING:
     from .._governance import _SQLiteGovernanceDeps
@@ -72,8 +79,16 @@ class PurgeOperationStoreMixin:
     _planned_governance_delete_counts: Callable[[str, set[int]], dict[str, int]]
     _subject_ref_for_user_id: Callable[[str], str]
 
+    def _authoritative_user_digest(self, purge_id: str, user_id: str) -> str:
+        material = f"authoritative-user-v1\0{self.org_id}\0{purge_id}\0{user_id}"
+        return hmac.new(
+            get_governance_ref_secret().encode(),
+            material.encode(),
+            hashlib.sha256,
+        ).hexdigest()
+
     @staticmethod
-    def _authoritative_user_digest(purge_id: str, user_id: str) -> str:
+    def _legacy_authoritative_user_digest(purge_id: str, user_id: str) -> str:
         return hashlib.sha256(f"{purge_id}\0{user_id}".encode()).hexdigest()
 
     def _assert_authoritative_user_identity_locked(
@@ -96,6 +111,80 @@ class PurgeOperationStoreMixin:
         ):
             raise ValueError("Purge authoritative user identity does not match")
         return expected_digest
+
+    def _adopt_authoritative_user_digest_bindings_locked(
+        self,
+        *,
+        purge_id: str,
+        user_id: str,
+        existing_digest: object,
+        authoritative_user_digest: str,
+        now: int,
+    ) -> None:
+        legacy_digest = self._legacy_authoritative_user_digest(purge_id, user_id)
+
+        def is_recognized(binding: object) -> bool:
+            return binding is None or (
+                isinstance(binding, str)
+                and (
+                    hmac.compare_digest(binding, authoritative_user_digest)
+                    or hmac.compare_digest(binding, legacy_digest)
+                )
+            )
+
+        if not is_recognized(existing_digest):
+            raise ValueError(
+                "Existing purge operation has mismatched authoritative user identity"
+            )
+
+        snapshot_row = self.conn.execute(
+            """SELECT detail FROM purge_operation_targets
+               WHERE org_id = ? AND purge_id = ? AND target_name = ?
+                 AND target_ref = 'all' AND phase = ?""",
+            (self.org_id, purge_id, _SNAPSHOT_TARGET_NAME, _PREPARE_PHASE),
+        ).fetchone()
+        snapshot_detail = None
+        if snapshot_row is not None:
+            snapshot_detail = _json_loads(snapshot_row["detail"])
+            if not isinstance(snapshot_detail, dict) or not is_recognized(
+                snapshot_detail.get("authoritative_user_digest")
+            ):
+                raise ValueError(
+                    "Existing purge snapshot has mismatched authoritative user identity"
+                )
+
+        if existing_digest != authoritative_user_digest:
+            self.conn.execute(
+                """UPDATE purge_operations
+                   SET authoritative_user_digest = ?, updated_at = ?
+                   WHERE org_id = ? AND purge_id = ?
+                     AND authoritative_user_digest IS ?""",
+                (
+                    authoritative_user_digest,
+                    now,
+                    self.org_id,
+                    purge_id,
+                    existing_digest,
+                ),
+            )
+        if (
+            snapshot_detail is not None
+            and snapshot_detail.get("authoritative_user_digest")
+            != authoritative_user_digest
+        ):
+            snapshot_detail["authoritative_user_digest"] = authoritative_user_digest
+            self.conn.execute(
+                """UPDATE purge_operation_targets SET detail = ?
+                   WHERE org_id = ? AND purge_id = ? AND target_name = ?
+                     AND target_ref = 'all' AND phase = ?""",
+                (
+                    _json_dumps(snapshot_detail),
+                    self.org_id,
+                    purge_id,
+                    _SNAPSHOT_TARGET_NAME,
+                    _PREPARE_PHASE,
+                ),
+            )
 
     def _record_purge_target_locked(
         self,
@@ -235,51 +324,65 @@ class PurgeOperationStoreMixin:
         )
         now = _epoch_now()
         with self._lock:
-            existing = self.conn.execute(
-                """SELECT * FROM purge_operations
-                   WHERE org_id = ? AND idempotency_key = ?""",
-                (self.org_id, validated_idempotency_key),
-            ).fetchone()
-            if existing is not None:
-                existing_operation = _row_to_purge_operation(existing)
-                expected_identity = {
-                    "purge_id": validated_purge_id,
-                    "operation_type": operation_type,
-                    "scope_type": scope_type,
-                    "subject_ref": subject_ref,
-                    "request_ref": request_ref,
-                }
-                for field_name, expected_value in expected_identity.items():
-                    if getattr(existing_operation, field_name) != expected_value:
-                        raise ValueError(
-                            "Existing purge operation for idempotency_key has "
-                            f"mismatched {field_name}"
+            try:
+                self.conn.execute("BEGIN IMMEDIATE")
+                existing = self.conn.execute(
+                    """SELECT * FROM purge_operations
+                       WHERE org_id = ? AND idempotency_key = ?""",
+                    (self.org_id, validated_idempotency_key),
+                ).fetchone()
+                if existing is not None:
+                    existing_operation = _row_to_purge_operation(existing)
+                    expected_identity = {
+                        "purge_id": validated_purge_id,
+                        "operation_type": operation_type,
+                        "scope_type": scope_type,
+                        "subject_ref": subject_ref,
+                        "request_ref": request_ref,
+                    }
+                    for field_name, expected_value in expected_identity.items():
+                        if getattr(existing_operation, field_name) != expected_value:
+                            raise ValueError(
+                                "Existing purge operation for idempotency_key has "
+                                f"mismatched {field_name}"
+                            )
+                    if authoritative_user_id and authoritative_user_digest:
+                        self._adopt_authoritative_user_digest_bindings_locked(
+                            purge_id=validated_purge_id,
+                            user_id=authoritative_user_id,
+                            existing_digest=existing["authoritative_user_digest"],
+                            authoritative_user_digest=authoritative_user_digest,
+                            now=now,
                         )
-                if existing["authoritative_user_digest"] != authoritative_user_digest:
-                    raise ValueError(
-                        "Existing purge operation has mismatched authoritative user identity"
-                    )
-                return _row_to_purge_operation(existing)
-            self.conn.execute(
-                """INSERT INTO purge_operations (
-                       purge_id, org_id, operation_type, scope_type, subject_ref,
-                       request_ref, idempotency_key, authoritative_user_digest,
-                       status, created_at, updated_at
-                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)""",
-                (
-                    validated_purge_id,
-                    self.org_id,
-                    operation_type,
-                    scope_type,
-                    subject_ref,
-                    request_ref,
-                    validated_idempotency_key,
-                    authoritative_user_digest,
-                    now,
-                    now,
-                ),
-            )
-            self.conn.commit()
+                    elif existing["authoritative_user_digest"] is not None:
+                        raise ValueError(
+                            "Existing purge operation has mismatched authoritative user identity"
+                        )
+                    self.conn.commit()
+                    return _row_to_purge_operation(existing)
+                self.conn.execute(
+                    """INSERT INTO purge_operations (
+                           purge_id, org_id, operation_type, scope_type, subject_ref,
+                           request_ref, idempotency_key, authoritative_user_digest,
+                           status, created_at, updated_at
+                       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)""",
+                    (
+                        validated_purge_id,
+                        self.org_id,
+                        operation_type,
+                        scope_type,
+                        subject_ref,
+                        request_ref,
+                        validated_idempotency_key,
+                        authoritative_user_digest,
+                        now,
+                        now,
+                    ),
+                )
+                self.conn.commit()
+            except Exception:
+                self.conn.rollback()
+                raise
         return self.get_purge_operation(validated_purge_id)
 
     def claim_purge_operation_execution(

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -52,11 +52,8 @@ def _agent_run(*, extractor_kind: str) -> AgentRunRecord:
     )
 
 
-def test_resumable_finalization_falls_back_when_items_lack_ids() -> None:
-    """Items with no durable id (e.g. plain objects) fall back to the
-    count-based aggregate event -- Task A3's documented fallback, since there
-    is no safe per-record id to key a dedup event on.
-    """
+def test_resumable_profile_bills_only_ids_returned_by_finalization() -> None:
+    """A preassigned candidate ID is not billed when finalization drops it."""
     events: list[UsageEvent] = []
     configure_usage_event_recorder(events.append)
     worker = ExtractionResumeWorker(
@@ -65,28 +62,18 @@ def test_resumable_finalization_falls_back_when_items_lack_ids() -> None:
     )
     run = _agent_run(extractor_kind="profile")
 
-    worker._record_finalized_learnings(
-        run,
-        [object(), object()],
-        entity_type="profile",
-    )
+    dropped_candidate = MagicMock(profile_id="dropped-before-persist")
+    with patch(
+        "reflexio.server.services.extraction.resume_worker.ProfileGenerationService"
+    ) as service_class:
+        service_class.return_value._finalize_extracted_items.return_value = []
+        worker._finalize_items(run, [dropped_candidate])
 
-    assert len(events) == 1
-    event = events[0]
-    assert event.event_name == "learnings_generated"
-    assert event.count_value == 2
-    assert event.pipeline == "profile"
-    assert event.source == "resumable_extraction"
-    assert event.entity_type == "profile"
-    assert event.metadata == {"run_id": "run-1", "extractor_kind": "profile"}
-    assert event.event_key is not None and event.event_key.startswith("learn-batch:")
+    assert events == []
 
 
 def test_resumable_finalization_emits_one_event_per_profile_id() -> None:
-    """When every item carries a durable ``profile_id`` (the common case --
-    profile ids are assigned by the extractor before finalize runs), emit one
-    entity-backed event per profile instead of the count-only fallback.
-    """
+    """Finalization survivor IDs emit one entity-backed event per profile."""
     events: list[UsageEvent] = []
     configure_usage_event_recorder(events.append)
     worker = ExtractionResumeWorker(
@@ -95,13 +82,9 @@ def test_resumable_finalization_emits_one_event_per_profile_id() -> None:
     )
     run = _agent_run(extractor_kind="profile")
 
-    class _FakeProfile:
-        def __init__(self, profile_id: str) -> None:
-            self.profile_id = profile_id
-
     worker._record_finalized_learnings(
         run,
-        [_FakeProfile("prof-1"), _FakeProfile("prof-2")],
+        ["prof-1", "prof-2"],
         entity_type="profile",
     )
 
@@ -121,7 +104,7 @@ def test_resumable_finalization_emits_one_event_per_profile_id() -> None:
 
 
 def test_resumable_finalization_emits_one_event_per_playbook_id() -> None:
-    """Same as above for the playbook (``user_playbook_id``) kind."""
+    """Finalization survivor IDs emit one entity-backed event per playbook."""
     events: list[UsageEvent] = []
     configure_usage_event_recorder(events.append)
     worker = ExtractionResumeWorker(
@@ -130,13 +113,9 @@ def test_resumable_finalization_emits_one_event_per_playbook_id() -> None:
     )
     run = _agent_run(extractor_kind="playbook")
 
-    class _FakePlaybook:
-        def __init__(self, user_playbook_id: int) -> None:
-            self.user_playbook_id = user_playbook_id
-
     worker._record_finalized_learnings(
         run,
-        [_FakePlaybook(11), _FakePlaybook(12), _FakePlaybook(13)],
+        ["11", "12", "13"],
         entity_type="user_playbook",
     )
 
@@ -153,11 +132,8 @@ def test_resumable_finalization_emits_one_event_per_playbook_id() -> None:
         assert event.event_key == f"learn:{event.entity_type}:{event.entity_id}"
 
 
-def test_resumable_finalization_falls_back_when_a_playbook_id_is_unset() -> None:
-    """A ``user_playbook_id=0`` (default, unset) mixed in with real ids means
-    dedup dropped that item before persist -- fall back to the count-based
-    aggregate rather than emit a colliding ``learn:0`` key or fabricate an id.
-    """
+def test_resumable_playbook_bills_consolidation_replacement_id() -> None:
+    """Billing follows the persisted replacement, not its input candidate."""
     events: list[UsageEvent] = []
     configure_usage_event_recorder(events.append)
     worker = ExtractionResumeWorker(
@@ -166,21 +142,17 @@ def test_resumable_finalization_falls_back_when_a_playbook_id_is_unset() -> None
     )
     run = _agent_run(extractor_kind="playbook")
 
-    class _FakePlaybook:
-        def __init__(self, user_playbook_id: int) -> None:
-            self.user_playbook_id = user_playbook_id
-
-    worker._record_finalized_learnings(
-        run,
-        [_FakePlaybook(21), _FakePlaybook(0)],
-        entity_type="user_playbook",
-    )
+    original_candidate = MagicMock(user_playbook_id=21)
+    with patch(
+        "reflexio.server.services.extraction.resume_worker.PlaybookGenerationService"
+    ) as service_class:
+        service_class.return_value._finalize_extracted_items.return_value = ["88"]
+        worker._finalize_items(run, [original_candidate])
 
     assert len(events) == 1
-    assert events[0].count_value == 2  # total unchanged vs old count=2
-    assert events[0].event_key is not None and events[0].event_key.startswith(
-        "learn-batch:"
-    )
+    assert events[0].count_value == 1
+    assert events[0].event_key == "learn:user_playbook:88"
+    assert events[0].entity_id == "88"
 
 
 def test_aggregation_emits_no_learnings_generated(

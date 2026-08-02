@@ -21,11 +21,42 @@ from reflexio.server.services.storage.storage_base._session_outcomes import (
     SessionOutcomeWriteResult,
 )
 
-from ._base import SQLiteStorageBase, _canonical_session_snapshot, _iso_to_epoch
+from ._base import (
+    _OUTCOME_ALLOWED_VALUES,
+    SQLiteStorageBase,
+    _canonical_session_snapshot,
+    _iso_to_epoch,
+)
 
 _OUTCOME_SCHEMA_VERSION = 1
 _OUTCOME_FINALIZATION_RULE = "first_write"
-_OUTCOME_ALLOWED_VALUES = ("success", "failure", "unknown")
+
+
+def _canonical_metadata_json(metadata: object) -> str | None:
+    if metadata is None:
+        return None
+    return json.dumps(
+        metadata,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+
+
+def _metadata_matches(*, stored_metadata: str | None, request_metadata: object) -> bool:
+    if stored_metadata is None:
+        stored_value = None
+    else:
+        try:
+            stored_value = json.loads(stored_metadata)
+        except (RecursionError, TypeError, ValueError):
+            return False
+    try:
+        return _canonical_metadata_json(stored_value) == _canonical_metadata_json(
+            request_metadata
+        )
+    except (RecursionError, TypeError, ValueError):
+        return False
 
 
 class SessionOutcomeStoreMixin:
@@ -119,7 +150,10 @@ class SessionOutcomeStoreMixin:
                         and int(existing["occurred_at"]) == request.occurred_at
                         and existing["label"] == request.label
                         and existing["value"] == request.value
-                        and existing["metadata"] == self._metadata_json(request)
+                        and _metadata_matches(
+                            stored_metadata=existing["metadata"],
+                            request_metadata=request.metadata,
+                        )
                         and server_context_matches
                         and (
                             stored_contract_digest is None
@@ -317,9 +351,7 @@ class SessionOutcomeStoreMixin:
 
     @staticmethod
     def _metadata_json(request: SetSessionOutcomeRequest) -> str | None:
-        if request.metadata is None:
-            return None
-        return json.dumps(request.metadata, sort_keys=True, separators=(",", ":"))
+        return _canonical_metadata_json(request.metadata)
 
     @staticmethod
     def _outcome_contract_digest(source: str) -> str:

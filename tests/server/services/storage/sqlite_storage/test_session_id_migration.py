@@ -20,6 +20,7 @@ CREATE TABLE requests (
     source TEXT NOT NULL DEFAULT '',
     agent_version TEXT NOT NULL DEFAULT '',
     session_id TEXT,
+    governance_subject_ref TEXT,
     metadata TEXT NOT NULL DEFAULT '{}'
 );
 """
@@ -29,12 +30,35 @@ def _seed_legacy_db(db_path: str) -> None:
     conn = sqlite3.connect(db_path)
     conn.executescript(_LEGACY_REQUESTS_DDL)
     conn.executemany(
-        "INSERT INTO requests (request_id, user_id, created_at, source, session_id) "
-        "VALUES (?, ?, ?, ?, ?)",
+        """INSERT INTO requests (
+               request_id, user_id, created_at, source, session_id,
+               governance_subject_ref
+           ) VALUES (?, ?, ?, ?, ?, ?)""",
         [
-            ("r-null", "u1", "2026-01-01T00:00:00+00:00", "web", None),
-            ("r-blank", "u1", "2026-01-01T00:00:01+00:00", "web", "   "),
-            ("r-valid", "u1", "2026-01-01T00:00:02+00:00", "web", "s-valid"),
+            (
+                "r-null",
+                "u1",
+                "2026-01-01T00:00:00+00:00",
+                "web",
+                None,
+                "subject-null",
+            ),
+            (
+                "r-blank",
+                "u1",
+                "2026-01-01T00:00:01+00:00",
+                "web",
+                "   ",
+                "subject-blank",
+            ),
+            (
+                "r-valid",
+                "u1",
+                "2026-01-01T00:00:02+00:00",
+                "web",
+                "s-valid",
+                "subject-valid",
+            ),
         ],
     )
     conn.commit()
@@ -87,6 +111,28 @@ def test_migration_enforces_not_null_and_non_empty(tmp_path):
             )
     finally:
         conn.close()
+
+
+def test_migration_preserves_governance_subject_ref(tmp_path):
+    db_path = str(tmp_path / "legacy.db")
+    _seed_legacy_db(db_path)
+
+    SQLiteStorage(org_id="0", db_path=db_path)
+
+    conn = sqlite3.connect(db_path)
+    try:
+        subject_refs = dict(
+            conn.execute(
+                "SELECT request_id, governance_subject_ref FROM requests"
+            ).fetchall()
+        )
+    finally:
+        conn.close()
+    assert subject_refs == {
+        "r-null": "subject-null",
+        "r-blank": "subject-blank",
+        "r-valid": "subject-valid",
+    }
 
 
 def test_migration_is_idempotent(tmp_path):

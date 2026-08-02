@@ -884,8 +884,12 @@ class ExtractionResumeWorker:
                 auto_run=False,
                 force_extraction=True,
             )
-            service._finalize_extracted_items(items, model_provenance=model_provenance)
-            self._record_finalized_learnings(run, items, entity_type="profile")
+            learning_ids = service._finalize_extracted_items(
+                items,
+                model_provenance=model_provenance,
+                finalization_run_id=run.id,
+            )
+            self._record_finalized_learnings(run, learning_ids, entity_type="profile")
             return
         if run.binding.extractor_kind == "playbook":
             service = PlaybookGenerationService(
@@ -900,42 +904,35 @@ class ExtractionResumeWorker:
                 auto_run=False,
                 force_extraction=True,
             )
-            service._finalize_extracted_items(items, model_provenance=model_provenance)
-            self._record_finalized_learnings(run, items, entity_type="user_playbook")
+            learning_ids = service._finalize_extracted_items(
+                items,
+                model_provenance=model_provenance,
+                finalization_run_id=run.id,
+            )
+            self._record_finalized_learnings(
+                run, learning_ids, entity_type="user_playbook"
+            )
             return
         raise ResumeWorkerError(
             f"Unsupported extractor kind {run.binding.extractor_kind!r}"
         )
 
     def _record_finalized_learnings(
-        self, run: AgentRunRecord, items: list[Any], *, entity_type: str
+        self, run: AgentRunRecord, learning_ids: list[str], *, entity_type: str
     ) -> None:
         """Emit ``learnings_generated`` for a finalized resumable-extraction batch.
 
-        Emits one event per durable learning id (``profile_id`` for profiles,
-        ``user_playbook_id`` for playbooks). Per-record keys make finalization
-        retries idempotent downstream. Items without an id may have been
-        dropped before persistence; they are not billable. A legacy persisted
-        item without an id is also skipped conservatively, so metering never
-        risks double- or over-billing and cannot interrupt finalization.
+        Emits one event per durable learning id returned by finalization.
+        Per-record keys make finalization retries idempotent downstream.
         """
         from reflexio.server.billing_meter import emit_learnings_generated_records
 
-        if not items:
+        if not learning_ids:
             return
-
-        id_attr = "profile_id" if entity_type == "profile" else "user_playbook_id"
-        learning_ids = [
-            str(getattr(item, id_attr))
-            for item in items
-            if getattr(item, id_attr, None)
-        ]
         metadata = {
             "run_id": run.id,
             "extractor_kind": run.binding.extractor_kind,
         }
-        if not learning_ids:
-            return
         emit_learnings_generated_records(
             org_id=self.request_context.org_id,
             configurator=self.request_context.configurator,

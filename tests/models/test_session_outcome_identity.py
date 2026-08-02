@@ -105,14 +105,14 @@ def test_canonical_session_trajectory_normalizes_sqlite_and_postgres_rows() -> N
         "image_encoding": "",
         "shadow_content": "",
         "expert_content": "",
-        "tools_used": "[]",
+        "tools_used": '[{"tool_data":{"confidence":0.75},"tool_name":"rank"}]',
         "citations": "[]",
         "retrieved_learnings": "[]",
     }
     postgres_interaction = {
         **sqlite_interaction,
         "created_at": datetime(2023, 11, 14, 22, 13, 21, tzinfo=UTC),
-        "tools_used": [],
+        "tools_used": [{"tool_name": "rank", "tool_data": {"confidence": 0.75}}],
         "citations": [],
         "retrieved_learnings": [],
     }
@@ -131,8 +131,14 @@ def test_canonical_session_trajectory_normalizes_sqlite_and_postgres_rows() -> N
     assert sqlite_projection == postgres_projection
     assert sqlite_projection["requests"][0]["request"]["evaluation_only"] is False
     assert trajectory_digest(sqlite_projection) == (
-        "9d644676a7287f52e175c9a5ee7b6c7cbf0dfc6118ae83ace6850e6c7b2e2be8"
+        "73d0f738bb5a3c7668787c678230c4758b68923e12a16e3851b401db780e4272"
     )
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_trajectory_digest_rejects_non_finite_nested_floats(value: float) -> None:
+    with pytest.raises(ValueError, match="Out of range float values"):
+        trajectory_digest({"nested": [{"value": value}]})
 
 
 def test_session_outcome_record_accepts_unknown_and_serializes_identities() -> None:

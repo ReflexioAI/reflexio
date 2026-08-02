@@ -39,6 +39,7 @@ class SubjectBarrierMixin(ABC):
         purge_id: str,
         audit_event: AuditEvent,
         *,
+        authoritative_user_id: str,
         execution_claim: PurgeExecutionClaim,
     ) -> PurgeOperation:
         raise NotImplementedError

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import inspect
 import json
 import sqlite3
@@ -709,6 +710,7 @@ def test_purge_targets_require_snapshot_marker(storage):
                 request_ref=REQUEST_REF,
                 idempotency_key=purge.purge_id,
             ),
+            authoritative_user_id="alice",
             execution_claim=_claim_purge(storage, purge.purge_id),
         )
 
@@ -719,6 +721,7 @@ def test_complete_purge_operation_with_audit_is_atomic_success_path(storage):
     complete = storage.complete_purge_operation_with_audit(
         purge_id,
         _erase_event(purge_id=purge_id),
+        authoritative_user_id="alice",
         execution_claim=complete_claim,
     )
 
@@ -729,9 +732,271 @@ def test_complete_purge_operation_with_audit_is_atomic_success_path(storage):
         storage.complete_purge_operation_with_audit(
             purge_id,
             _erase_event(purge_id=purge_id),
+            authoritative_user_id="alice",
             execution_claim=complete_claim,
         )
     assert len(storage.list_audit_events(subject_ref=SUBJECT_REF)) == 1
+
+
+def test_complete_purge_operation_with_audit_rejects_wrong_authoritative_user(storage):
+    purge_id = _begin_completeable_purge(storage, "purge_wrong_complete_user")
+
+    with pytest.raises(ValueError, match="authoritative user identity"):
+        storage.complete_purge_operation_with_audit(
+            purge_id,
+            _erase_event(purge_id=purge_id),
+            authoritative_user_id="bob",
+            execution_claim=_claim_purge(storage, purge_id),
+        )
+
+    assert storage.get_purge_operation(purge_id).status == "running"
+    assert storage.list_audit_events(subject_ref=SUBJECT_REF) == []
+
+
+@pytest.mark.parametrize(
+    "complete_method_name",
+    [
+        "complete_purge_operation_with_audit",
+        "complete_subject_erasure_barrier_after_empty_check",
+    ],
+)
+def test_user_erasure_completion_contracts_reject_org_purge(
+    storage,
+    complete_method_name,
+):
+    purge = _begin_test_purge_operation(
+        storage,
+        purge_id=f"purge_org_scope_{complete_method_name}",
+        idempotency_key=f"idem_org_scope_{complete_method_name}",
+        operation_type="org_purge",
+        scope_type="org",
+        subject_ref=SUBJECT_REF,
+        request_ref=REQUEST_REF,
+    )
+    claim = _claim_purge(storage, purge.purge_id)
+    storage.record_purge_target(
+        purge.purge_id,
+        target_name="target_snapshot",
+        target_ref="all",
+        phase="prepare_targets",
+        status="complete",
+        detail={"prepared": True},
+        execution_claim=claim,
+    )
+    storage.begin_subject_erasure_barrier(
+        SUBJECT_REF,
+        purge.purge_id,
+        execution_claim=claim,
+    )
+
+    complete = getattr(storage, complete_method_name)
+    with pytest.raises(ValueError, match="user erasure"):
+        complete(
+            purge.purge_id,
+            _erase_event(purge_id=purge.purge_id),
+            authoritative_user_id="arbitrary-user",
+            execution_claim=claim,
+        )
+
+    assert storage.get_purge_operation(purge.purge_id).status == "running"
+    assert storage.list_audit_events(subject_ref=SUBJECT_REF) == []
+
+
+@pytest.mark.parametrize(
+    ("purge_binding", "snapshot_binding"),
+    [
+        pytest.param("legacy", "legacy", id="both-unkeyed"),
+        pytest.param(None, None, id="both-null"),
+        pytest.param("current", "legacy", id="interrupted-row-only-upgrade"),
+    ],
+)
+def test_idempotent_retry_upgrades_legacy_identity_bindings_and_resumes_completion(
+    storage,
+    purge_binding,
+    snapshot_binding,
+):
+    purge_id = _begin_completeable_purge(storage, "purge_interrupted_legacy_resume")
+    current_digest = storage.conn.execute(
+        """SELECT authoritative_user_digest FROM purge_operations
+           WHERE org_id = ? AND purge_id = ?""",
+        (storage.org_id, purge_id),
+    ).fetchone()["authoritative_user_digest"]
+    legacy_digest = hashlib.sha256(f"{purge_id}\0alice".encode()).hexdigest()
+
+    def resolve_binding(binding):
+        return (
+            legacy_digest
+            if binding == "legacy"
+            else current_digest
+            if binding == "current"
+            else None
+        )
+
+    snapshot_row = storage.conn.execute(
+        """SELECT detail FROM purge_operation_targets
+           WHERE org_id = ? AND purge_id = ? AND target_name = 'target_snapshot'
+             AND target_ref = 'all' AND phase = 'prepare_targets'""",
+        (storage.org_id, purge_id),
+    ).fetchone()
+    snapshot_detail = json.loads(snapshot_row["detail"])
+    snapshot_detail["authoritative_user_digest"] = resolve_binding(snapshot_binding)
+    storage.conn.execute(
+        """UPDATE purge_operations SET authoritative_user_digest = ?
+           WHERE org_id = ? AND purge_id = ?""",
+        (resolve_binding(purge_binding), storage.org_id, purge_id),
+    )
+    storage.conn.execute(
+        """UPDATE purge_operation_targets SET detail = ?
+           WHERE org_id = ? AND purge_id = ? AND target_name = 'target_snapshot'
+             AND target_ref = 'all' AND phase = 'prepare_targets'""",
+        (json.dumps(snapshot_detail), storage.org_id, purge_id),
+    )
+    storage.conn.commit()
+
+    _begin_test_purge_operation(
+        storage,
+        purge_id=purge_id,
+        idempotency_key=f"idem_{purge_id}",
+        operation_type="user_erasure",
+        scope_type="user",
+        subject_ref=SUBJECT_REF,
+        request_ref=REQUEST_REF,
+        authoritative_user_id="alice",
+    )
+
+    adopted_purge_digest = storage.conn.execute(
+        """SELECT authoritative_user_digest FROM purge_operations
+           WHERE org_id = ? AND purge_id = ?""",
+        (storage.org_id, purge_id),
+    ).fetchone()["authoritative_user_digest"]
+    adopted_snapshot = storage.conn.execute(
+        """SELECT detail FROM purge_operation_targets
+           WHERE org_id = ? AND purge_id = ? AND target_name = 'target_snapshot'
+             AND target_ref = 'all' AND phase = 'prepare_targets'""",
+        (storage.org_id, purge_id),
+    ).fetchone()
+    assert adopted_purge_digest == current_digest
+    assert (
+        json.loads(adopted_snapshot["detail"])["authoritative_user_digest"]
+        == current_digest
+    )
+
+    completed = storage.complete_purge_operation_with_audit(
+        purge_id,
+        _erase_event(purge_id=purge_id),
+        authoritative_user_id="alice",
+        execution_claim=_claim_purge(storage, purge_id),
+    )
+    assert completed.status == "complete"
+
+
+def test_idempotent_retry_rolls_back_purge_digest_when_snapshot_binding_mismatches(
+    storage,
+):
+    purge_id = _begin_completeable_purge(storage, "purge_mismatched_legacy_snapshot")
+    legacy_digest = hashlib.sha256(f"{purge_id}\0alice".encode()).hexdigest()
+    snapshot_row = storage.conn.execute(
+        """SELECT detail FROM purge_operation_targets
+           WHERE org_id = ? AND purge_id = ? AND target_name = 'target_snapshot'
+             AND target_ref = 'all' AND phase = 'prepare_targets'""",
+        (storage.org_id, purge_id),
+    ).fetchone()
+    snapshot_detail = json.loads(snapshot_row["detail"])
+    snapshot_detail["authoritative_user_digest"] = "mismatched-digest"
+    storage.conn.execute(
+        """UPDATE purge_operations SET authoritative_user_digest = ?
+           WHERE org_id = ? AND purge_id = ?""",
+        (legacy_digest, storage.org_id, purge_id),
+    )
+    storage.conn.execute(
+        """UPDATE purge_operation_targets SET detail = ?
+           WHERE org_id = ? AND purge_id = ? AND target_name = 'target_snapshot'
+             AND target_ref = 'all' AND phase = 'prepare_targets'""",
+        (json.dumps(snapshot_detail), storage.org_id, purge_id),
+    )
+    storage.conn.commit()
+
+    with pytest.raises(ValueError, match="authoritative user identity"):
+        _begin_test_purge_operation(
+            storage,
+            purge_id=purge_id,
+            idempotency_key=f"idem_{purge_id}",
+            operation_type="user_erasure",
+            scope_type="user",
+            subject_ref=SUBJECT_REF,
+            request_ref=REQUEST_REF,
+            authoritative_user_id="alice",
+        )
+
+    persisted_digest = storage.conn.execute(
+        """SELECT authoritative_user_digest FROM purge_operations
+           WHERE org_id = ? AND purge_id = ?""",
+        (storage.org_id, purge_id),
+    ).fetchone()["authoritative_user_digest"]
+    assert persisted_digest == legacy_digest
+
+
+def test_idempotent_retry_rolls_back_row_upgrade_when_snapshot_upgrade_fails(storage):
+    purge_id = _begin_completeable_purge(storage, "purge_snapshot_upgrade_failure")
+    legacy_digest = hashlib.sha256(f"{purge_id}\0alice".encode()).hexdigest()
+    snapshot_row = storage.conn.execute(
+        """SELECT detail FROM purge_operation_targets
+           WHERE org_id = ? AND purge_id = ? AND target_name = 'target_snapshot'
+             AND target_ref = 'all' AND phase = 'prepare_targets'""",
+        (storage.org_id, purge_id),
+    ).fetchone()
+    snapshot_detail = json.loads(snapshot_row["detail"])
+    snapshot_detail["authoritative_user_digest"] = legacy_digest
+    storage.conn.execute(
+        """UPDATE purge_operations SET authoritative_user_digest = ?
+           WHERE org_id = ? AND purge_id = ?""",
+        (legacy_digest, storage.org_id, purge_id),
+    )
+    storage.conn.execute(
+        """UPDATE purge_operation_targets SET detail = ?
+           WHERE org_id = ? AND purge_id = ? AND target_name = 'target_snapshot'
+             AND target_ref = 'all' AND phase = 'prepare_targets'""",
+        (json.dumps(snapshot_detail), storage.org_id, purge_id),
+    )
+    storage.conn.execute(
+        f"""CREATE TRIGGER fail_snapshot_digest_upgrade
+            BEFORE UPDATE OF detail ON purge_operation_targets
+            WHEN OLD.org_id = '{storage.org_id}' AND OLD.purge_id = '{purge_id}'
+              AND OLD.target_name = 'target_snapshot'
+            BEGIN
+                SELECT RAISE(ABORT, 'snapshot upgrade failed');
+            END"""
+    )
+    storage.conn.commit()
+
+    with pytest.raises(sqlite3.IntegrityError, match="snapshot upgrade failed"):
+        _begin_test_purge_operation(
+            storage,
+            purge_id=purge_id,
+            idempotency_key=f"idem_{purge_id}",
+            operation_type="user_erasure",
+            scope_type="user",
+            subject_ref=SUBJECT_REF,
+            request_ref=REQUEST_REF,
+            authoritative_user_id="alice",
+        )
+
+    persisted_digest = storage.conn.execute(
+        """SELECT authoritative_user_digest FROM purge_operations
+           WHERE org_id = ? AND purge_id = ?""",
+        (storage.org_id, purge_id),
+    ).fetchone()["authoritative_user_digest"]
+    persisted_snapshot = storage.conn.execute(
+        """SELECT detail FROM purge_operation_targets
+           WHERE org_id = ? AND purge_id = ? AND target_name = 'target_snapshot'
+             AND target_ref = 'all' AND phase = 'prepare_targets'""",
+        (storage.org_id, purge_id),
+    ).fetchone()
+    assert persisted_digest == legacy_digest
+    assert (
+        json.loads(persisted_snapshot["detail"])["authoritative_user_digest"]
+        == legacy_digest
+    )
 
 
 def test_complete_purge_operation_with_audit_begins_immediate_transaction_before_reads(
@@ -744,6 +1009,7 @@ def test_complete_purge_operation_with_audit_begins_immediate_transaction_before
         storage.complete_purge_operation_with_audit(
             purge_id,
             _erase_event(purge_id=purge_id),
+            authoritative_user_id="alice",
             execution_claim=_claim_purge(storage, purge_id),
         )
     finally:
@@ -786,6 +1052,7 @@ def test_complete_purge_operation_with_audit_accepts_planned_success_detail(stor
                 "rebuilt_agent_playbook_ids": rebuilt_ids,
             },
         ),
+        authoritative_user_id="alice",
         execution_claim=_claim_purge(storage, purge_id),
     )
 
@@ -819,6 +1086,7 @@ def test_complete_purge_operation_rejects_audit_refs_that_mismatch_persisted_pur
         storage.complete_purge_operation_with_audit(
             purge_id,
             event,
+            authoritative_user_id="alice",
             execution_claim=_claim_purge(storage, purge_id),
         )
 
@@ -967,6 +1235,7 @@ def test_complete_purge_operation_rejects_invalid_audit_event(storage, event, ma
         storage.complete_purge_operation_with_audit(
             purge_id,
             event,
+            authoritative_user_id="alice",
             execution_claim=_claim_purge(storage, purge_id),
         )
 
@@ -999,6 +1268,7 @@ def test_complete_purge_operation_requires_matching_existing_erase_row(
         storage.complete_purge_operation_with_audit(
             purge_id,
             _erase_event(purge_id=purge_id),
+            authoritative_user_id="alice",
             execution_claim=_claim_purge(storage, purge_id),
         )
 
@@ -1058,6 +1328,7 @@ def test_complete_purge_operation_rejects_mismatched_existing_erase_row(
         storage.complete_purge_operation_with_audit(
             purge_id,
             _erase_event(purge_id=purge_id),
+            authoritative_user_id="alice",
             execution_claim=_claim_purge(storage, purge_id),
         )
 
@@ -1099,6 +1370,7 @@ def test_complete_purge_operation_requires_full_delete_target_matrix(storage):
         storage.complete_purge_operation_with_audit(
             purge_id,
             _erase_event(purge_id=purge_id),
+            authoritative_user_id="alice",
             execution_claim=_claim_purge(storage, purge_id),
         )
 
@@ -1121,6 +1393,7 @@ def test_complete_retry_replaces_failed_completed_at(storage):
         completed = storage.complete_purge_operation_with_audit(
             purge_id,
             _erase_event(purge_id=purge_id),
+            authoritative_user_id="alice",
             execution_claim=_claim_purge(storage, purge_id),
         )
 
@@ -1499,6 +1772,7 @@ def test_sqlite_claimed_erasure_mutations_reject_omitted_and_none_claim(storage)
                 purge_id=complete_purge_id,
                 subject_ref=complete_subject_ref,
             ),
+            authoritative_user_id=complete_user_id,
         ),
         lambda: storage.complete_subject_erasure_barrier_after_empty_check(
             complete_purge_id,
@@ -1506,6 +1780,7 @@ def test_sqlite_claimed_erasure_mutations_reject_omitted_and_none_claim(storage)
                 purge_id=complete_purge_id,
                 subject_ref=complete_subject_ref,
             ),
+            authoritative_user_id=complete_user_id,
             execution_claim=None,  # type: ignore[arg-type]
         ),
     )
@@ -1517,6 +1792,7 @@ def test_sqlite_claimed_erasure_mutations_reject_omitted_and_none_claim(storage)
                 purge_id=complete_purge_id,
                 subject_ref=complete_subject_ref,
             ),
+            authoritative_user_id=complete_user_id,
         ),
         lambda: storage.complete_purge_operation_with_audit(
             complete_purge_id,
@@ -1524,6 +1800,7 @@ def test_sqlite_claimed_erasure_mutations_reject_omitted_and_none_claim(storage)
                 purge_id=complete_purge_id,
                 subject_ref=complete_subject_ref,
             ),
+            authoritative_user_id=complete_user_id,
             execution_claim=None,  # type: ignore[arg-type]
         ),
     )
@@ -1663,6 +1940,7 @@ def test_stale_execution_claim_cannot_complete_purge_or_barrier(storage):
         storage.complete_subject_erasure_barrier_after_empty_check(
             purge_id,
             _erase_event(purge_id=purge_id),
+            authoritative_user_id="alice",
             execution_claim=first_claim,
         )
     assert storage.get_purge_operation(purge_id).status == "running"
@@ -1674,6 +1952,7 @@ def test_stale_execution_claim_cannot_complete_purge_or_barrier(storage):
     completed = storage.complete_subject_erasure_barrier_after_empty_check(
         purge_id,
         _erase_event(purge_id=purge_id),
+        authoritative_user_id="alice",
         execution_claim=takeover_claim,
     )
     assert completed.status == "complete"
@@ -3953,6 +4232,7 @@ def test_persistence_paths_reject_unsafe_purge_id(storage, purge_id):
                 request_ref=REQUEST_REF,
                 idempotency_key=purge_id,
             ),
+            authoritative_user_id="alice",
             execution_claim=_typed_test_claim_for_unvalidated_purge_id(purge_id),
         )
 
@@ -5313,6 +5593,7 @@ def test_successful_erase_audit_row_exists_only_after_complete_purge(storage):
     completed = storage.complete_purge_operation_with_audit(
         purge_id,
         _erase_event(purge_id=purge_id),
+        authoritative_user_id="alice",
         execution_claim=_claim_purge(storage, purge_id),
     )
     assert completed.status == "complete"
@@ -5324,6 +5605,7 @@ def test_successful_erase_audit_row_exists_only_after_complete_purge(storage):
         storage.complete_purge_operation_with_audit(
             purge_id,
             _erase_event(purge_id=purge_id),
+            authoritative_user_id="alice",
             execution_claim=_typed_test_claim_for_unvalidated_purge_id(purge_id),
         )
     assert [

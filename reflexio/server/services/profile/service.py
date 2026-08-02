@@ -337,7 +337,8 @@ class ProfileGenerationService(
         all_new_profiles: list[UserProfile],
         *,
         model_provenance: ModelProvenance | None = None,
-    ) -> None:
+        finalization_run_id: str | None = None,
+    ) -> list[str]:
         """Permanent V3 wrapper: compute-then-persist together (no external fence).
 
         Kept for the synchronous resume/manual callers
@@ -346,11 +347,46 @@ class ProfileGenerationService(
         (persist) split the durable worker uses — with no external
         ``commit_scope`` — so the result is identical to the pre-split monolith.
         """
+        entity_type = "profile"
+        if finalization_run_id is not None:
+            receipt = self.storage.get_agent_run_finalization_receipt(  # type: ignore[reportOptionalMemberAccess]
+                run_id=finalization_run_id,
+                entity_type=entity_type,
+            )
+            if receipt is not None:
+                return receipt
         if model_provenance is not None:
             self._last_model_provenance = model_provenance
         plan = self._resolve_write_plan([all_new_profiles])
-        if plan is not None:
-            self._persist_write_plan(plan)
+        learning_ids = (
+            [
+                str(profile.profile_id)
+                for profile in plan.new_profiles
+                if profile.profile_id
+            ]
+            if plan is not None
+            else []
+        )
+        if finalization_run_id is None:
+            if plan is not None:
+                self._persist_write_plan(plan)
+            return learning_ids
+
+        with self.storage.commit_scope():  # type: ignore[reportOptionalMemberAccess]
+            receipt = self.storage.get_agent_run_finalization_receipt(  # type: ignore[reportOptionalMemberAccess]
+                run_id=finalization_run_id,
+                entity_type=entity_type,
+            )
+            if receipt is not None:
+                return receipt
+            if plan is not None:
+                self._persist_write_plan(plan)
+            self.storage.save_agent_run_finalization_receipt(  # type: ignore[reportOptionalMemberAccess]
+                run_id=finalization_run_id,
+                entity_type=entity_type,
+                learning_ids=learning_ids,
+            )
+        return learning_ids
 
     def check_and_update_profiles(self, profiles: list[UserProfile]) -> None:
         """check if the profiles are expired and update them if they are"""

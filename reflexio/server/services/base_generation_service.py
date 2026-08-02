@@ -342,10 +342,16 @@ class BaseGenerationService(
             results: List of all results from extractors (one per successful extractor)
         """
 
-    def _finalize_extracted_items(self, items: list) -> None:
+    def _finalize_extracted_items(
+        self,
+        items: list,
+        *,
+        finalization_run_id: str | None = None,  # noqa: ARG002
+    ) -> list[str] | None:
         """Persist already-flattened extracted items through the service path."""
         if items:
             self._process_results([items])
+        return None
 
     @abstractmethod
     def _should_track_in_progress(self) -> bool:
@@ -633,7 +639,6 @@ class BaseGenerationService(
         self._last_bookmark_advance = None
         self._last_model_provenance = None
         result = self._execute_extractor(prepared.extractor_config, prepared.identifier)
-        generated_count = self._count_generated_results(result)
 
         try:
             write_plan = self._resolve_write_plan([result]) if result else None
@@ -641,6 +646,12 @@ class BaseGenerationService(
         except Exception as exc:
             self._mark_extraction_runs_finalization_failed(exc)
             raise
+
+        generated_count = (
+            self._count_retained_online_learnings(write_plan)
+            if self.EMITS_LEARNING_BILLING
+            else self._count_generated_results(result)
+        )
 
         return GenerationComputePlan(
             prepared=prepared,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import threading
 from collections.abc import Generator
 from datetime import UTC, datetime
@@ -591,6 +592,54 @@ def test_completed_erase_retry_reconstructs_response(
     assert second.rebuilt_agent_playbook_ids == first.rebuilt_agent_playbook_ids
 
 
+@pytest.mark.parametrize("corrupt_binding", ["purge", "snapshot"])
+def test_completed_erase_retry_rejects_corrupt_authoritative_binding(
+    storage: SQLiteStorage,
+    monkeypatch: pytest.MonkeyPatch,
+    corrupt_binding: str,
+) -> None:
+    monkeypatch.setenv("REFLEXIO_GOVERNANCE_REF_SECRET", "test-governance-secret")
+    service = GovernanceService(
+        storage=storage,
+        org_id=storage.org_id,
+        ref_secret="test-governance-secret",
+    )
+    completed = service.erase_user(
+        user_id="alice",
+        request_id=f"erase-retry-corrupt-{corrupt_binding}",
+    )
+
+    if corrupt_binding == "purge":
+        storage.conn.execute(
+            """UPDATE purge_operations SET authoritative_user_digest = ?
+               WHERE org_id = ? AND purge_id = ?""",
+            ("a" * 64, storage.org_id, completed.purge_id),
+        )
+    else:
+        snapshot = next(
+            target
+            for target in storage.list_purge_targets(
+                completed.purge_id, phase="prepare_targets"
+            )
+            if target.target_name == "target_snapshot"
+        )
+        detail = dict(snapshot.detail or {})
+        detail["authoritative_user_digest"] = "a" * 64
+        storage.conn.execute(
+            """UPDATE purge_operation_targets SET detail = ?
+               WHERE org_id = ? AND purge_id = ? AND target_name = 'target_snapshot'
+                 AND target_ref = 'all' AND phase = 'prepare_targets'""",
+            (json.dumps(detail), storage.org_id, completed.purge_id),
+        )
+    storage.conn.commit()
+
+    with pytest.raises(ValueError, match="authoritative user identity"):
+        service.erase_user(
+            user_id="alice",
+            request_id=f"erase-retry-corrupt-{corrupt_binding}",
+        )
+
+
 def test_erase_fails_fast_when_service_and_storage_ref_secrets_differ(
     storage: SQLiteStorage,
 ) -> None:
@@ -910,16 +959,12 @@ def test_duplicate_erase_waits_for_lifecycle_winner_beyond_old_deadline(
         ref_secret="test-governance-secret",
         subject_erasure_lifecycle=lifecycle,
     )
-    monkeypatch.setattr(governance_service_module, "_DUPLICATE_ERASE_POLL_SECONDS", 0.0)
-    real_sleep = governance_service_module.time.sleep
 
     def release_winner_on_duplicate_poll(_seconds: float) -> None:
         lifecycle.release_first_call.set()
-        real_sleep(0.001)
+        threading.Event().wait(0.001)
 
-    monkeypatch.setattr(
-        governance_service_module.time, "sleep", release_winner_on_duplicate_poll
-    )
+    monkeypatch.setattr(service, "_sleep", release_winner_on_duplicate_poll)
     winner_results: list[UserEraseResult] = []
     winner_errors: list[BaseException] = []
 
@@ -957,6 +1002,53 @@ def test_duplicate_erase_waits_for_lifecycle_winner_beyond_old_deadline(
     assert lifecycle.duplicate_rejections == 0
 
 
+def test_duplicate_erase_wait_is_bounded_with_exponential_backoff(
+    storage: SQLiteStorage,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class ControlledWaitGovernanceService(GovernanceService):
+        def __init__(self, **kwargs) -> None:
+            super().__init__(**kwargs)
+            self.now = 0.0
+            self.sleep_delays: list[float] = []
+
+        def _monotonic(self) -> float:
+            return self.now
+
+        def _sleep(self, seconds: float) -> None:
+            self.sleep_delays.append(seconds)
+            self.now += seconds
+
+    service = ControlledWaitGovernanceService(
+        storage=storage,
+        org_id=storage.org_id,
+        ref_secret="test-governance-secret",
+    )
+    claim_attempts = 0
+
+    def reject_duplicate_claim(*args, **kwargs):
+        nonlocal claim_attempts
+        del args, kwargs
+        claim_attempts += 1
+        if claim_attempts > 100:
+            raise AssertionError("duplicate claim wait exceeded its attempt bound")
+
+    monkeypatch.setattr(
+        storage,
+        "claim_purge_operation_execution",
+        reject_duplicate_claim,
+    )
+    with pytest.raises(RuntimeError, match="retry later") as exc_info:
+        service.erase_user(user_id="alice", request_id="erase-bounded-duplicate")
+
+    assert (
+        type(exc_info.value) is governance_service_module.GovernanceEraseRetryLaterError
+    )
+    assert service.sleep_delays[:5] == pytest.approx([0.05, 0.1, 0.2, 0.4, 0.8])
+    assert max(service.sleep_delays) == 1.0
+    assert sum(service.sleep_delays) == pytest.approx(5.0)
+
+
 def test_healthy_slow_lifecycle_renews_lease_and_duplicate_converges(
     storage: SQLiteStorage,
     monkeypatch: pytest.MonkeyPatch,
@@ -966,7 +1058,6 @@ def test_healthy_slow_lifecycle_renews_lease_and_duplicate_converges(
         governance_service_module,
         "_PURGE_EXECUTION_HEARTBEAT_SECONDS",
         0.01,
-        raising=False,
     )
 
     from reflexio.server.services.storage.sqlite_storage.governance import (
@@ -1078,7 +1169,6 @@ def test_heartbeat_renewal_loss_fences_external_lifecycle_and_retry_converges(
         governance_service_module,
         "_PURGE_EXECUTION_HEARTBEAT_SECONDS",
         0.01,
-        raising=False,
     )
     from reflexio.server.services.storage.sqlite_storage.governance import (
         _purge as sqlite_purge_module,
@@ -1224,11 +1314,7 @@ def test_synchronous_renewal_loss_skips_lifecycle_and_retry_converges(
     def fail_if_recovery_polls(_seconds: float) -> None:
         raise AssertionError("expired synchronous-renewal claim did not recover")
 
-    monkeypatch.setattr(
-        governance_service_module.time,
-        "sleep",
-        fail_if_recovery_polls,
-    )
+    monkeypatch.setattr(service, "_sleep", fail_if_recovery_polls)
 
     recovered = service.erase_user(
         user_id="alice",
@@ -1275,9 +1361,7 @@ def test_stale_running_erase_claim_recovers_after_crash(
     def fail_if_duplicate_polls(_seconds: float) -> None:
         raise AssertionError("stale running claim did not recover")
 
-    monkeypatch.setattr(
-        governance_service_module.time, "sleep", fail_if_duplicate_polls
-    )
+    monkeypatch.setattr(service, "_sleep", fail_if_duplicate_polls)
 
     recovered = service.erase_user(
         user_id="alice",
@@ -1334,9 +1418,7 @@ def test_delete_committed_before_completion_retry_converges_idempotently(
     def fail_if_duplicate_polls(_seconds: float) -> None:
         raise AssertionError("stale post-delete claim did not recover")
 
-    monkeypatch.setattr(
-        governance_service_module.time, "sleep", fail_if_duplicate_polls
-    )
+    monkeypatch.setattr(service, "_sleep", fail_if_duplicate_polls)
 
     recovered = service.erase_user(
         user_id="alice",
