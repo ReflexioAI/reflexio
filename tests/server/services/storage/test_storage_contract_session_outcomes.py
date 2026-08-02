@@ -203,6 +203,67 @@ def test_legacy_all_null_identity_changed_payload_still_conflicts(
     assert retry.reason == SessionOutcomeFailureReason.CONFLICTING_FINALIZATION
 
 
+def test_legacy_all_null_identity_changed_governance_context_conflicts(
+    storage: BaseStorage,
+) -> None:
+    storage.add_request(
+        Request(
+            request_id="legacy-governance-r1",
+            user_id="legacy-user",
+            session_id="legacy-governance-conflict",
+            source="published",
+            created_at=100,
+        )
+    )
+    request = SetSessionOutcomeRequest(
+        session_id="legacy-governance-conflict",
+        outcome=SessionOutcomeKind.SUCCESS,
+        occurred_at=101,
+    )
+    storage.record_session_outcome(
+        request,
+        created_at=102,
+        expected_context=storage.get_session_outcome_context(
+            "legacy-governance-conflict"
+        ),
+    )
+    sqlite_storage = cast(SQLiteStorage, storage)
+    sqlite_storage.conn.execute(
+        "CREATE TABLE legacy_session_outcomes AS SELECT * FROM session_outcomes"
+    )
+    sqlite_storage.conn.execute("DROP TABLE session_outcomes")
+    sqlite_storage.conn.execute(
+        "ALTER TABLE legacy_session_outcomes RENAME TO session_outcomes"
+    )
+    sqlite_storage.conn.execute(
+        """UPDATE session_outcomes
+           SET outcome_id = NULL, outcome_revision = NULL,
+               outcome_contract_digest = NULL,
+               finalized_trajectory_digest = NULL
+           WHERE session_id = ?""",
+        ("legacy-governance-conflict",),
+    )
+    sqlite_storage.conn.execute(
+        "UPDATE requests SET governance_subject_ref = ? WHERE session_id = ?",
+        (
+            sqlite_storage._subject_ref_for_user_id("different-user"),
+            "legacy-governance-conflict",
+        ),
+    )
+    sqlite_storage.conn.commit()
+
+    retry = storage.record_session_outcome(
+        request,
+        created_at=103,
+        expected_context=storage.get_session_outcome_context(
+            "legacy-governance-conflict"
+        ),
+    )
+
+    assert retry.recorded is False
+    assert retry.reason == SessionOutcomeFailureReason.CONFLICTING_FINALIZATION
+
+
 def test_sqlite_canonical_snapshot_loads_interactions_in_one_query(
     storage: BaseStorage,
 ) -> None:

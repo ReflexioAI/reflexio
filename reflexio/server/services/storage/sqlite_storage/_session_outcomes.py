@@ -81,7 +81,8 @@ class SessionOutcomeStoreMixin:
                 ).fetchone()
                 if existing is not None:
                     first = self.conn.execute(
-                        """SELECT user_id, source FROM requests WHERE session_id = ?
+                        """SELECT user_id, source, governance_subject_ref
+                           FROM requests WHERE session_id = ?
                            ORDER BY created_at ASC, request_id ASC LIMIT 1""",
                         (request.session_id,),
                     ).fetchone()
@@ -89,6 +90,14 @@ class SessionOutcomeStoreMixin:
                         str(first["source"])
                         if first is not None
                         else str(existing["source"])
+                    )
+                    subject_ref = (
+                        str(
+                            first["governance_subject_ref"]
+                            or self._subject_ref_for_user_id(str(first["user_id"]))
+                        )
+                        if first is not None
+                        else str(existing["governance_subject_ref"])
                     )
                     contract_digest = self._outcome_contract_digest(source)
                     current_snapshot_digest = (
@@ -103,6 +112,7 @@ class SessionOutcomeStoreMixin:
                     server_context_matches = first is None or (
                         str(existing["user_id"]) == str(first["user_id"])
                         and str(existing["source"]) == str(first["source"])
+                        and str(existing["governance_subject_ref"]) == subject_ref
                     )
                     exact_retry = (
                         existing["outcome"] == str(request.outcome)

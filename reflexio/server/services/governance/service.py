@@ -101,11 +101,20 @@ class _PurgeExecutionHeartbeat:
             return self._claim
 
     def renew_now(self) -> PurgeExecutionClaim:
-        renewed = self._storage.renew_purge_operation_execution_claim(
-            self._purge_id,
-            self.claim(),
-            lease_ttl_seconds=_PURGE_EXECUTION_LEASE_SECONDS,
-        )
+        try:
+            renewed = self._storage.renew_purge_operation_execution_claim(
+                self._purge_id,
+                self.claim(),
+                lease_ttl_seconds=_PURGE_EXECUTION_LEASE_SECONDS,
+            )
+        except _PurgeExecutionHeartbeatLostError:
+            raise
+        except Exception as exc:
+            with self._lock:
+                self._renewal_error = exc
+            raise _PurgeExecutionHeartbeatLostError(
+                "purge execution heartbeat renewal was lost"
+            ) from exc
         with self._lock:
             self._claim = renewed
         return renewed
@@ -114,9 +123,7 @@ class _PurgeExecutionHeartbeat:
         while not self._stop.wait(_PURGE_EXECUTION_HEARTBEAT_SECONDS):
             try:
                 self.renew_now()
-            except Exception as exc:
-                with self._lock:
-                    self._renewal_error = exc
+            except _PurgeExecutionHeartbeatLostError:
                 return
 
 

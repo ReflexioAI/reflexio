@@ -1156,6 +1156,91 @@ def test_heartbeat_renewal_loss_fences_external_lifecycle_and_retry_converges(
     assert storage.get_purge_operation(purge_id).status == "complete"
 
 
+def test_synchronous_renewal_loss_skips_lifecycle_and_retry_converges(
+    storage: SQLiteStorage,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_renew = storage.renew_purge_operation_execution_claim
+    renewal_attempts = 0
+    renewal_failed = threading.Event()
+    lifecycle_called = threading.Event()
+
+    def fail_mandatory_lifecycle_renewal(*args, **kwargs):
+        nonlocal renewal_attempts
+        renewal_attempts += 1
+        if renewal_attempts == 2:
+            renewal_failed.set()
+            raise RuntimeError("simulated synchronous renewal loss")
+        return original_renew(*args, **kwargs)
+
+    monkeypatch.setattr(
+        storage,
+        "renew_purge_operation_execution_claim",
+        fail_mandatory_lifecycle_renewal,
+    )
+
+    class CountingLifecycle:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def erase_subject(self, **_kwargs) -> None:
+            self.calls += 1
+            lifecycle_called.set()
+
+    lifecycle = CountingLifecycle()
+    service = GovernanceService(
+        storage=storage,
+        org_id=storage.org_id,
+        ref_secret="test-governance-secret",
+        subject_erasure_lifecycle=lifecycle,
+    )
+
+    with pytest.raises(ValueError, match="heartbeat renewal was lost"):
+        service.erase_user(user_id="alice", request_id="erase-sync-renewal-loss")
+
+    purge_id = str(
+        storage.conn.execute("SELECT purge_id FROM purge_operations").fetchone()[
+            "purge_id"
+        ]
+    )
+    purge = storage.get_purge_operation(purge_id)
+    assert purge.subject_ref is not None
+    barrier = storage.get_subject_write_barrier(purge.subject_ref)
+    assert renewal_attempts == 2
+    assert renewal_failed.is_set()
+    assert not lifecycle_called.is_set()
+    assert lifecycle.calls == 0
+    assert purge.status == "running"
+    assert barrier is not None
+    assert barrier.status == "erasing"
+    assert storage.list_audit_events() == []
+
+    storage.conn.execute(
+        "UPDATE purge_operations SET execution_claim_expires_at = 0 WHERE purge_id = ?",
+        (purge_id,),
+    )
+    storage.conn.commit()
+
+    def fail_if_recovery_polls(_seconds: float) -> None:
+        raise AssertionError("expired synchronous-renewal claim did not recover")
+
+    monkeypatch.setattr(
+        governance_service_module.time,
+        "sleep",
+        fail_if_recovery_polls,
+    )
+
+    recovered = service.erase_user(
+        user_id="alice",
+        request_id="erase-sync-renewal-loss",
+    )
+
+    assert recovered.status == "complete"
+    assert lifecycle_called.is_set()
+    assert lifecycle.calls == 1
+    assert storage.get_purge_operation(purge_id).status == "complete"
+
+
 def test_stale_running_erase_claim_recovers_after_crash(
     storage: SQLiteStorage,
     monkeypatch: pytest.MonkeyPatch,
