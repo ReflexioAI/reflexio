@@ -1,5 +1,7 @@
 from datetime import UTC, datetime
 from hashlib import sha256
+from itertools import combinations
+from typing import Any
 
 import pytest
 from pydantic import ValidationError
@@ -7,6 +9,7 @@ from pydantic import ValidationError
 from reflexio.models.api_schema.domain.entities import (
     GetSessionOutcomesResponse,
     SessionOutcomeRecord,
+    SetSessionOutcomeResponse,
 )
 from reflexio.models.api_schema.domain.enums import SessionOutcomeKind
 from reflexio.server.services.storage.session_outcome_identity import (
@@ -15,6 +18,7 @@ from reflexio.server.services.storage.session_outcome_identity import (
     outcome_contract_digest,
     trajectory_digest,
 )
+from reflexio.server.services.storage.storage_base import SessionOutcomeWriteResult
 
 
 def _outcome_contract_digest(**changes: object) -> str:
@@ -200,6 +204,101 @@ def test_session_outcome_record_rejects_partial_legacy_identity() -> None:
             finalized_trajectory_digest=None,
             created_at=2,
         )
+
+
+@pytest.mark.parametrize(
+    "populated_fields",
+    [
+        fields
+        for populated_count in range(1, 4)
+        for fields in combinations(
+            (
+                "outcome_id",
+                "outcome_revision",
+                "outcome_contract_digest",
+                "finalized_trajectory_digest",
+            ),
+            populated_count,
+        )
+    ],
+)
+def test_session_outcome_write_result_rejects_partial_identity(
+    populated_fields: tuple[str, ...],
+) -> None:
+    identity = {
+        "outcome_id": "outcome-1",
+        "outcome_revision": 1,
+        "outcome_contract_digest": "a" * 64,
+        "finalized_trajectory_digest": "b" * 64,
+    }
+
+    with pytest.raises(ValueError, match="all populated or all null"):
+        SessionOutcomeWriteResult(
+            recorded=False,
+            **{
+                field_name: value
+                for field_name, value in identity.items()
+                if field_name in populated_fields
+            },
+        )
+
+
+@pytest.mark.parametrize(
+    "populated_fields",
+    [
+        fields
+        for populated_count in range(1, 4)
+        for fields in combinations(
+            (
+                "outcome_id",
+                "outcome_revision",
+                "outcome_contract_digest",
+                "finalized_trajectory_digest",
+            ),
+            populated_count,
+        )
+    ],
+)
+def test_set_session_outcome_response_rejects_partial_identity(
+    populated_fields: tuple[str, ...],
+) -> None:
+    identity = {
+        "outcome_id": "outcome-1",
+        "outcome_revision": 1,
+        "outcome_contract_digest": "a" * 64,
+        "finalized_trajectory_digest": "b" * 64,
+    }
+
+    with pytest.raises(ValidationError, match="all populated or all null"):
+        SetSessionOutcomeResponse(
+            success=True,
+            **{
+                field_name: value
+                for field_name, value in identity.items()
+                if field_name in populated_fields
+            },
+        )
+
+
+@pytest.mark.parametrize(
+    "identity",
+    [
+        {},
+        {
+            "outcome_id": "outcome-1",
+            "outcome_revision": 1,
+            "outcome_contract_digest": "a" * 64,
+            "finalized_trajectory_digest": "b" * 64,
+        },
+    ],
+)
+def test_write_result_and_response_accept_complete_identity_shapes(
+    identity: dict[str, Any],
+) -> None:
+    write_result = SessionOutcomeWriteResult(recorded=False, **identity)
+    response = SetSessionOutcomeResponse(success=True, **identity)
+
+    assert write_result.outcome_id == response.outcome_id
 
 
 @pytest.mark.parametrize(

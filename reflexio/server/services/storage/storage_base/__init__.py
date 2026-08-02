@@ -145,8 +145,8 @@ class BaseStorage(
     def clear_user_data(self, user_id: str) -> dict[str, int]:
         """Delete all rows scoped to a single ``user_id``.
 
-        Removes the user's interactions, user playbooks, profiles, and
-        requests. Intentionally does NOT touch ``agent_playbooks`` — those
+        Removes the user's session outcomes, interactions, user playbooks,
+        profiles, and requests. Intentionally does NOT touch ``agent_playbooks`` — those
         are the cross-project rollup of skills and have no ``user_id``
         column. This is the data-isolation primitive used by paired
         protocols (e.g. SWE-bench) that share a single backend across
@@ -175,12 +175,12 @@ class BaseStorage(
 
         Returns:
             dict[str, int]: Per-entity counts with keys ``interactions``,
-                ``user_playbooks``, ``profiles``, ``requests``,
+                ``session_outcomes``, ``user_playbooks``, ``profiles``, ``requests``,
                 ``purged_profiles``, and ``purged_user_playbooks``.
                 ``profiles`` and ``user_playbooks`` reflect hard-deleted
                 counts; purged rows are counted separately.
         """
-        self.clear_session_outcomes_for_user(user_id)
+        session_outcome_counts = self.clear_session_outcomes_for_user(user_id)
         interaction_count = len(self.get_user_interaction(user_id))
 
         # All statuses a user's row can have — including tombstones (SUPERSEDED,
@@ -262,6 +262,7 @@ class BaseStorage(
             self.purge_content(entity_type="user_playbook", entity_id=upid)
 
         return {
+            "session_outcomes": session_outcome_counts.get("session_outcomes", 0),
             "interactions": interaction_count,
             "user_playbooks": deleted_user_playbooks,
             "profiles": deleted_profiles,

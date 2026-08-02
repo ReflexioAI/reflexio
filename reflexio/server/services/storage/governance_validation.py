@@ -167,6 +167,7 @@ _ALLOWED_DELETED_COUNTS_KEYS = frozenset(
         "user_playbooks",
         "profiles",
         "requests",
+        "session_outcomes",
         "agent_success_evaluation_results",
         "retrieved_learning_evaluation_results",
         "evaluation_operation_states",

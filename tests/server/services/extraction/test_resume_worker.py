@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import tempfile
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -360,6 +361,47 @@ def test_resume_worker_tagging_schedule_failure_is_best_effort(
         side_effect=RuntimeError("scheduler unavailable"),
     ):
         worker._schedule_finalized_tagging(run)
+
+
+def test_resumable_finalization_bills_only_durable_ids_idempotently_on_retry(
+    request_context,
+):
+    """A mixed batch charges its persisted profile once across finalization retries."""
+    run = AgentRunRecord(
+        id="run_mixed_billing",
+        binding=AgentBinding(
+            org_id="org_1",
+            extractor_kind="profile",
+            user_id="user_1",
+            request_id="request_1",
+            agent_version="v1",
+            source="api",
+        ),
+        status=AgentRunStatus.FINALIZATION_FAILED,
+        generation_request_snapshot={"request_id": "request_1"},
+    )
+    items = [
+        SimpleNamespace(profile_id="profile_1"),
+        SimpleNamespace(profile_id=0),
+    ]
+    worker = ExtractionResumeWorker(request_context=request_context)
+
+    with patch("reflexio.server.billing_meter.record_usage_event") as record_event:
+        worker._record_finalized_learnings(run, items, entity_type="profile")
+        worker._record_finalized_learnings(run, items, entity_type="profile")
+
+    assert [call.kwargs["event_key"] for call in record_event.call_args_list] == [
+        "learn:profile:profile_1",
+        "learn:profile:profile_1",
+    ]
+    assert [call.kwargs["count_value"] for call in record_event.call_args_list] == [
+        1,
+        1,
+    ]
+    assert [call.kwargs["entity_id"] for call in record_event.call_args_list] == [
+        "profile_1",
+        "profile_1",
+    ]
 
 
 def test_resume_worker_fails_run_when_step_budget_exhausted(

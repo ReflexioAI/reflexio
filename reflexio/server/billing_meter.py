@@ -90,10 +90,10 @@ def record_learnings_generated(
 ) -> None:
     """Emit the Learning value facet — number of profiles/playbooks generated.
 
-    Documented fallback for online extraction or resumable finalization when
-    a complete per-record id list is unavailable. Prefer
-    :func:`record_learnings_generated_records` whenever the caller has the
-    durable user-learning ids in scope. No-op when ``count <= 0``.
+    Intended for online extraction paths that have a known billable count but
+    do not retain a complete per-record id list. Resumable finalization must
+    use :func:`record_learnings_generated_records` and skip items without
+    durable ids. No-op when ``count <= 0``.
 
     Emits a single event carrying a synthesized ``event_key=f"learn-batch:{uuid4()}"``
     (distinct per call) so this aggregate event still has a dedup key, even
@@ -230,12 +230,13 @@ def emit_learnings_generated(
 ) -> None:
     """Resolve ``platform_llm`` from config and emit the Learning value facet.
 
-    Convenience wrapper for resumable-extraction finalization. It owns the
+    Convenience wrapper for count-based online extraction callers. It owns the
     ``configurator.get_config()`` + ``platform_llm_from_config`` lookup so the
     call site stays a thin one-liner, and — critically — is **guarded**: the
     product path must never fail because metering failed, so config resolution
     and emission are wrapped and any exception is logged and swallowed
     (mirroring the extraction path's ``_record_billing_learning_events``).
+    Resumable finalization must use :func:`emit_learnings_generated_records`.
     No-op when ``count <= 0``.
 
     Args:
@@ -298,13 +299,13 @@ def emit_learnings_generated_records(
     """Resolve ``platform_llm`` from config and emit one event per learning id.
 
     Entity-backed counterpart to :func:`emit_learnings_generated`, used by
-    resumable-extraction finalization when every created user learning has a
-    durable id. Online extraction uses the count-based
-    :func:`record_learnings_generated` helper because it does not retain a
-    safe 1:1 id per generated unit. Same guard semantics: config resolution
-    and emission are wrapped and any exception is logged and swallowed — the
-    product path must never fail because metering failed. No-op when
-    ``learning_ids`` is empty.
+    resumable-extraction finalization for every created user learning with a
+    durable id. Items without ids are not billable on that path. Online
+    extraction uses the count-based :func:`record_learnings_generated` helper
+    because it does not retain a safe 1:1 id per generated unit. Same guard
+    semantics: config resolution and emission are wrapped and any exception is
+    logged and swallowed — the product path must never fail because metering
+    failed. No-op when ``learning_ids`` is empty.
 
     Args:
         org_id: Organisation identifier.

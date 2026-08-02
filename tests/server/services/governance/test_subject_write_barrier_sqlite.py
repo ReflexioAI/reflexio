@@ -81,6 +81,14 @@ def _begin_claimed_subject_erasure_barrier(
     )
 
 
+def _authoritative_user_digest(storage: SQLiteStorage, purge_id: str) -> str:
+    return storage.conn.execute(
+        """SELECT authoritative_user_digest FROM purge_operations
+           WHERE org_id = ? AND purge_id = ?""",
+        (storage.org_id, purge_id),
+    ).fetchone()["authoritative_user_digest"]
+
+
 def _mark_all_completion_targets(storage: SQLiteStorage, purge_id: str) -> None:
     claim = _claim_purge(storage, purge_id)
     storage.record_purge_target(
@@ -90,7 +98,10 @@ def _mark_all_completion_targets(storage: SQLiteStorage, purge_id: str) -> None:
         status="complete",
         target_ref="all",
         execution_claim=claim,
-        detail={"prepared": True},
+        detail={
+            "prepared": True,
+            "authoritative_user_digest": _authoritative_user_digest(storage, purge_id),
+        },
     )
     # Single source of truth — a stale local copy of the canonical tuple is
     # exactly how this suite went red when new delete targets landed.
@@ -140,6 +151,7 @@ def test_barrier_blocks_request_interaction_and_profile_writes(
         idempotency_key="idem_barrier",
         operation_type="user_erasure",
         scope_type="user",
+        authoritative_user_id="alice",
         subject_ref=subject_ref,
         request_ref="reqref_v1_11111111111111111111111111111111",
     )
@@ -196,6 +208,7 @@ def test_barrier_blocks_playbook_eval_and_source_window_writes(
         idempotency_key="idem_barrier",
         operation_type="user_erasure",
         scope_type="user",
+        authoritative_user_id="alice",
         subject_ref=subject_ref,
         request_ref="reqref_v1_11111111111111111111111111111111",
     )
@@ -279,6 +292,7 @@ def test_begin_subject_erasure_barrier_requires_matching_purge(
         idempotency_key="idem_barrier_match",
         operation_type="user_erasure",
         scope_type="user",
+        authoritative_user_id="alice",
         subject_ref=alice_subject_ref,
         request_ref="reqref_v1_00000000000000000000000000000021",
     )
@@ -307,6 +321,7 @@ def test_fail_subject_erasure_barrier_requires_matching_barrier_row(
         idempotency_key="idem_barrier_first",
         operation_type="user_erasure",
         scope_type="user",
+        authoritative_user_id="alice",
         subject_ref=subject_ref,
         request_ref="reqref_v1_00000000000000000000000000000051",
     )
@@ -315,6 +330,7 @@ def test_fail_subject_erasure_barrier_requires_matching_barrier_row(
         idempotency_key="idem_barrier_second",
         operation_type="user_erasure",
         scope_type="user",
+        authoritative_user_id="alice",
         subject_ref=subject_ref,
         request_ref="reqref_v1_00000000000000000000000000000052",
     )
@@ -359,6 +375,7 @@ def test_begin_subject_erasure_barrier_preserves_terminal_erased_state(
         idempotency_key="idem_barrier_terminal_begin",
         operation_type="user_erasure",
         scope_type="user",
+        authoritative_user_id="alice",
         subject_ref=subject_ref,
         request_ref=request_ref,
     )
@@ -400,6 +417,7 @@ def test_fail_subject_erasure_barrier_rejects_terminal_erased_state(
         idempotency_key="idem_barrier_terminal_fail",
         operation_type="user_erasure",
         scope_type="user",
+        authoritative_user_id="alice",
         subject_ref=subject_ref,
         request_ref=request_ref,
     )
@@ -442,6 +460,7 @@ def test_fail_purge_operation_rejects_terminal_complete_state(
         idempotency_key="idem_barrier_terminal_purge_fail",
         operation_type="user_erasure",
         scope_type="user",
+        authoritative_user_id="alice",
         subject_ref=subject_ref,
         request_ref=request_ref,
     )
@@ -500,6 +519,7 @@ def test_guarded_completion_allows_purged_retained_skeletons(
         idempotency_key="idem_purged_skeletons",
         operation_type="user_erasure",
         scope_type="user",
+        authoritative_user_id="alice",
         subject_ref=subject_ref,
         request_ref="reqref_v1_00000000000000000000000000000061",
     )
@@ -565,6 +585,7 @@ def test_guarded_completion_requires_empty_subject_rows(
         idempotency_key="idem_guarded_complete",
         operation_type="user_erasure",
         scope_type="user",
+        authoritative_user_id="alice",
         subject_ref=subject_ref,
         request_ref="reqref_v1_0123456789abcdef0123456789abcdef",
     )
@@ -586,7 +607,12 @@ def test_guarded_completion_requires_empty_subject_rows(
         status="complete",
         target_ref="all",
         execution_claim=_claim_purge(storage, purge.purge_id),
-        detail={"prepared": True},
+        detail={
+            "prepared": True,
+            "authoritative_user_digest": _authoritative_user_digest(
+                storage, purge.purge_id
+            ),
+        },
     )
 
     with pytest.raises(ValueError, match="same-subject rows remain"):
@@ -616,6 +642,7 @@ def test_guarded_completion_requires_empty_legacy_null_subject_rows(
         idempotency_key="idem_guarded_legacy",
         operation_type="user_erasure",
         scope_type="user",
+        authoritative_user_id="alice",
         subject_ref=subject_ref,
         request_ref="reqref_v1_00000000000000000000000000000031",
     )
@@ -645,7 +672,12 @@ def test_guarded_completion_requires_empty_legacy_null_subject_rows(
         status="complete",
         target_ref="all",
         execution_claim=_claim_purge(storage, purge.purge_id),
-        detail={"prepared": True},
+        detail={
+            "prepared": True,
+            "authoritative_user_digest": _authoritative_user_digest(
+                storage, purge.purge_id
+            ),
+        },
     )
 
     with pytest.raises(ValueError, match="same-subject rows remain"):
@@ -675,6 +707,7 @@ def test_guarded_completion_requires_existing_erasing_subject_barrier(
         idempotency_key="idem_missing_barrier",
         operation_type="user_erasure",
         scope_type="user",
+        authoritative_user_id="alice",
         subject_ref=subject_ref,
         request_ref="reqref_v1_00000000000000000000000000000032",
     )
@@ -707,6 +740,7 @@ def test_guarded_completion_rejects_failed_subject_barrier(
         idempotency_key="idem_failed_barrier",
         operation_type="user_erasure",
         scope_type="user",
+        authoritative_user_id="alice",
         subject_ref=subject_ref,
         request_ref="reqref_v1_00000000000000000000000000000035",
     )
@@ -755,6 +789,7 @@ def test_barrier_blocks_profile_update_paths(
         idempotency_key="idem_profile_update",
         operation_type="user_erasure",
         scope_type="user",
+        authoritative_user_id="alice",
         subject_ref=subject_ref,
         request_ref="reqref_v1_00000000000000000000000000000033",
     )
@@ -795,6 +830,7 @@ def test_barrier_blocks_user_playbook_update_paths(
         idempotency_key="idem_playbook_update",
         operation_type="user_erasure",
         scope_type="user",
+        authoritative_user_id="alice",
         subject_ref=subject_ref,
         request_ref="reqref_v1_00000000000000000000000000000034",
     )
@@ -826,6 +862,7 @@ def test_assert_subject_writable_blocks_only_barriered_subject(
         idempotency_key="idem_assert_writable",
         operation_type="user_erasure",
         scope_type="user",
+        authoritative_user_id="alice",
         subject_ref=barriered_subject_ref,
         request_ref=request_ref,
     )
@@ -870,6 +907,7 @@ def test_source_window_write_blocks_legacy_null_subject_ref_user_playbook(
         idempotency_key="idem_source_window_legacy",
         operation_type="user_erasure",
         scope_type="user",
+        authoritative_user_id="alice",
         subject_ref=subject_ref,
         request_ref="reqref_v1_00000000000000000000000000000041",
     )

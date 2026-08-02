@@ -117,7 +117,8 @@ def _erase(storage: SQLiteStorage, user_id: str, purge_id: str) -> dict[str, int
         idempotency_key=f"idem_{purge_id}",
         operation_type="user_erasure",
         scope_type="user",
-        subject_ref=SUBJECT_REF,
+        authoritative_user_id=user_id,
+        subject_ref=storage._subject_ref_for_user_id(user_id),
         request_ref=REQUEST_REF,
     )
     claim = storage.claim_purge_operation_execution(

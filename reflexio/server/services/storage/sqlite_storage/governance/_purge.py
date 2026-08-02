@@ -18,6 +18,7 @@ and the module-level helpers (``_json_dumps``, ``_row_to_purge_operation``,
 
 from __future__ import annotations
 
+import hashlib
 import sqlite3
 import threading
 from collections.abc import Callable
@@ -69,6 +70,32 @@ class PurgeOperationStoreMixin:
     _deps: Callable[[], _SQLiteGovernanceDeps]
     _owned_user_playbook_ids_locked: Callable[[str], set[int]]
     _planned_governance_delete_counts: Callable[[str, set[int]], dict[str, int]]
+    _subject_ref_for_user_id: Callable[[str], str]
+
+    @staticmethod
+    def _authoritative_user_digest(purge_id: str, user_id: str) -> str:
+        return hashlib.sha256(f"{purge_id}\0{user_id}".encode()).hexdigest()
+
+    def _assert_authoritative_user_identity_locked(
+        self, purge_id: str, user_id: str
+    ) -> str:
+        row = self.conn.execute(
+            """SELECT operation_type, scope_type, subject_ref,
+                      authoritative_user_digest
+               FROM purge_operations
+               WHERE org_id = ? AND purge_id = ?""",
+            (self.org_id, purge_id),
+        ).fetchone()
+        expected_digest = self._authoritative_user_digest(purge_id, user_id)
+        if (
+            row is None
+            or row["operation_type"] != "user_erasure"
+            or row["scope_type"] != "user"
+            or row["subject_ref"] != self._subject_ref_for_user_id(user_id)
+            or row["authoritative_user_digest"] != expected_digest
+        ):
+            raise ValueError("Purge authoritative user identity does not match")
+        return expected_digest
 
     def _record_purge_target_locked(
         self,
@@ -171,7 +198,6 @@ class PurgeOperationStoreMixin:
         request_ref: str,
         authoritative_user_id: str | None = None,
     ) -> PurgeOperation:
-        del authoritative_user_id
         _validate_governance_enum(
             "operation_type",
             operation_type,
@@ -192,6 +218,20 @@ class PurgeOperationStoreMixin:
         validated_idempotency_key = cast(
             str,
             _validate_governance_idempotency_key("idempotency_key", idempotency_key),
+        )
+        if operation_type == "user_erasure" and scope_type == "user":
+            if not authoritative_user_id:
+                raise ValueError("authoritative user identity is required")
+            if subject_ref != self._subject_ref_for_user_id(authoritative_user_id):
+                raise ValueError("authoritative user identity must match subject_ref")
+        elif authoritative_user_id:
+            raise ValueError(
+                "authoritative user identity is only valid for user erasure"
+            )
+        authoritative_user_digest = (
+            self._authoritative_user_digest(validated_purge_id, authoritative_user_id)
+            if authoritative_user_id
+            else None
         )
         now = _epoch_now()
         with self._lock:
@@ -215,12 +255,17 @@ class PurgeOperationStoreMixin:
                             "Existing purge operation for idempotency_key has "
                             f"mismatched {field_name}"
                         )
+                if existing["authoritative_user_digest"] != authoritative_user_digest:
+                    raise ValueError(
+                        "Existing purge operation has mismatched authoritative user identity"
+                    )
                 return _row_to_purge_operation(existing)
             self.conn.execute(
                 """INSERT INTO purge_operations (
                        purge_id, org_id, operation_type, scope_type, subject_ref,
-                       request_ref, idempotency_key, status, created_at, updated_at
-                   ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)""",
+                       request_ref, idempotency_key, authoritative_user_digest,
+                       status, created_at, updated_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)""",
                 (
                     validated_purge_id,
                     self.org_id,
@@ -229,6 +274,7 @@ class PurgeOperationStoreMixin:
                     subject_ref,
                     request_ref,
                     validated_idempotency_key,
+                    authoritative_user_digest,
                     now,
                     now,
                 ),
@@ -488,6 +534,9 @@ class PurgeOperationStoreMixin:
                 self._assert_purge_operation_execution_claim_locked(
                     purge_id, execution_claim
                 )
+                authoritative_user_digest = (
+                    self._assert_authoritative_user_identity_locked(purge_id, user_id)
+                )
                 prepared = self.conn.execute(
                     """SELECT 1 FROM purge_operation_targets
                        WHERE org_id = ? AND purge_id = ? AND target_name = ? AND target_ref = 'all'
@@ -524,6 +573,7 @@ class PurgeOperationStoreMixin:
                     phase=_PREPARE_PHASE,
                     status="complete",
                     detail={
+                        "authoritative_user_digest": authoritative_user_digest,
                         "owned_user_playbook_ids": sorted(owned_user_playbook_ids),
                     },
                     deleted_count=0,

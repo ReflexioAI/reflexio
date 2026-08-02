@@ -33,6 +33,7 @@ _DELETE_TARGET_NAME_TO_RESULT_KEY = {
     "offline_tuner_reward_label_target_by_target_owner": (
         "offline_tuner_reward_label_targets_by_target_owner"
     ),
+    "session_outcome": "session_outcomes",
     "profile_purge": "purged_profiles",
     "user_playbook_purge": "purged_user_playbooks",
 }
@@ -50,7 +51,7 @@ class GovernanceActorContext(TypedDict):
 
 
 class SubjectErasureLifecycle(Protocol):
-    """Deployment-specific erasure work that must precede barrier completion."""
+    """External erasure work invoked only after a synchronous live-claim check."""
 
     def erase_subject(
         self,
@@ -60,6 +61,10 @@ class SubjectErasureLifecycle(Protocol):
         purge_id: str,
         execution_claim: PurgeExecutionClaim,
     ) -> None: ...
+
+
+class _PurgeExecutionHeartbeatLostError(ValueError):
+    pass
 
 
 class _PurgeExecutionHeartbeat:
@@ -74,6 +79,7 @@ class _PurgeExecutionHeartbeat:
         self._purge_id = purge_id
         self._claim = execution_claim
         self._lock = threading.Lock()
+        self._renewal_error: Exception | None = None
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
 
@@ -88,6 +94,10 @@ class _PurgeExecutionHeartbeat:
 
     def claim(self) -> PurgeExecutionClaim:
         with self._lock:
+            if self._renewal_error is not None:
+                raise _PurgeExecutionHeartbeatLostError(
+                    "purge execution heartbeat renewal was lost"
+                ) from self._renewal_error
             return self._claim
 
     def renew_now(self) -> PurgeExecutionClaim:
@@ -102,8 +112,12 @@ class _PurgeExecutionHeartbeat:
 
     def _run(self) -> None:
         while not self._stop.wait(_PURGE_EXECUTION_HEARTBEAT_SECONDS):
-            with suppress(Exception):
+            try:
                 self.renew_now()
+            except Exception as exc:
+                with self._lock:
+                    self._renewal_error = exc
+                return
 
 
 class GovernanceService:
@@ -199,6 +213,7 @@ class GovernanceService:
                     scope_type="user",
                     subject_ref=subref,
                     request_ref=reqref,
+                    authoritative_user_id=user_id,
                 )
             except Exception:
                 raise begin_exc from None
@@ -253,6 +268,8 @@ class GovernanceService:
                     self.subject_erasure_lifecycle is not None
                     and not self._subject_erasure_lifecycle_complete(purge_id)
                 ):
+                    heartbeat.renew_now()
+                    self._assert_execution_claim(purge_id, heartbeat.claim())
                     self.subject_erasure_lifecycle.erase_subject(
                         storage=self.storage,
                         subject_ref=subref,
@@ -285,6 +302,8 @@ class GovernanceService:
                     execution_claim=heartbeat.claim(),
                 )
         except Exception as exc:
+            if isinstance(exc, _PurgeExecutionHeartbeatLostError):
+                raise
             if not self._execution_claim_is_current(purge_id, execution_claim):
                 raise
             with suppress(Exception):
@@ -369,6 +388,7 @@ class GovernanceService:
         scope_type: str,
         subject_ref: str,
         request_ref: str,
+        authoritative_user_id: str,
     ) -> Any:
         purge = self.storage.get_purge_operation(purge_id)
         expected_identity = {
@@ -384,6 +404,13 @@ class GovernanceService:
                     "Existing purge operation for idempotency_key has "
                     f"mismatched {field_name}"
                 )
+        if (
+            governance_subject_ref(self.org_id, authoritative_user_id, self.ref_secret)
+            != purge.subject_ref
+        ):
+            raise ValueError(
+                "Existing purge operation has mismatched authoritative user"
+            )
         return purge
 
     def _load_user_requests_and_sessions(

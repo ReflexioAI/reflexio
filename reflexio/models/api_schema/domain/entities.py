@@ -921,6 +921,22 @@ class SetSessionOutcomeResponse(BaseModel):
             raise ValueError("outcome identity digests must be lowercase SHA-256 hex")
         return value
 
+    @model_validator(mode="after")
+    def validate_identity_shape(self) -> Self:
+        identity = (
+            self.outcome_id,
+            self.outcome_revision,
+            self.outcome_contract_digest,
+            self.finalized_trajectory_digest,
+        )
+        if any(value is None for value in identity) and not all(
+            value is None for value in identity
+        ):
+            raise ValueError(
+                "outcome identity fields must be all populated or all null"
+            )
+        return self
+
 
 class GetSessionOutcomesRequest(CapturesUnknownFields):
     session_ids: list[NonEmptyStr] | None = Field(default=None, max_length=100)
@@ -996,8 +1012,8 @@ class DeleteUserPlaybooksByIdsRequest(BaseModel):
     user_playbook_ids: list[int] = Field(min_length=1, max_length=10_000)
 
 
-# Clear all data scoped to a single user_id (interactions, requests, user
-# playbooks, profiles). Used by paired-protocol harnesses (e.g. SWE-bench) to
+# Clear all data scoped to a single user_id (session outcomes, interactions,
+# requests, user playbooks, profiles). Used by paired-protocol harnesses to
 # isolate per-task data on a shared storage backend without nuking sibling
 # tasks' rows. Intentionally does NOT touch agent_playbooks — they are the
 # cross-project rollup of skills and have no user_id column.

@@ -92,6 +92,8 @@ class GovernanceEraseExecutionMixin:
     _assert_purge_operation_execution_claim_locked: Callable[
         [str, PurgeExecutionClaim | None], None
     ]
+    _assert_authoritative_user_identity_locked: Callable[[str, str], str]
+    _assert_bound_authoritative_user_identity_locked: Callable[[str, str], None]
 
     def _purge_governance_entity_content_locked(
         self,
@@ -147,10 +149,9 @@ class GovernanceEraseExecutionMixin:
         expected_user_playbook_ids: set[int] | None = None,
     ) -> dict[str, int]:
         deps = self._deps()
-        subject_ref = deps._subject_ref_for_user_id(user_id)
         session_outcomes_cur = self.conn.execute(
-            "DELETE FROM session_outcomes WHERE governance_subject_ref = ?",
-            (subject_ref,),
+            "DELETE FROM session_outcomes WHERE user_id = ?",
+            (user_id,),
         )
         interaction_ids = [
             int(row["interaction_id"])
@@ -273,11 +274,7 @@ class GovernanceEraseExecutionMixin:
             )
 
         return {
-            **(
-                {"session_outcomes": session_outcomes_cur.rowcount}
-                if session_outcomes_cur.rowcount
-                else {}
-            ),
+            "session_outcomes": session_outcomes_cur.rowcount,
             "interactions": interactions_cur.rowcount,
             "user_playbooks": len(delete_upb_ids),
             "profiles": len(delete_profile_ids),
@@ -384,6 +381,7 @@ class GovernanceEraseExecutionMixin:
                 self._assert_purge_operation_execution_claim_locked(
                     purge_id, execution_claim
                 )
+                self._assert_authoritative_user_identity_locked(purge_id, user_id)
                 self._validate_prepared_delete_target_matrix_locked(purge_id)
                 self._validate_hide_for_rebuild_targets_locked(purge_id)
                 expected_user_playbook_ids = (
@@ -473,6 +471,9 @@ class GovernanceEraseExecutionMixin:
                     raise ValueError(
                         "Cannot complete purge without target snapshot marker"
                     )
+                self._assert_bound_authoritative_user_identity_locked(
+                    purge_id, audit_event.subject_ref or ""
+                )
                 delete_rows = self.conn.execute(
                     """SELECT target_name, status FROM purge_operation_targets
                        WHERE org_id = ? AND purge_id = ? AND phase = 'delete'

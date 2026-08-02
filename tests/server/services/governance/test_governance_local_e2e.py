@@ -120,6 +120,27 @@ def _eval_result(
     )
 
 
+def _insert_session_outcome(
+    storage: SQLiteStorage,
+    *,
+    outcome_id: str,
+    user_id: str,
+    session_id: str,
+    subject_ref: str,
+) -> None:
+    storage.conn.execute(
+        """INSERT INTO session_outcomes (
+               outcome_id, outcome_revision, user_id, session_id, outcome,
+               occurred_at, source, label, value, metadata,
+               outcome_contract_digest, finalized_trajectory_digest,
+               governance_subject_ref, created_at
+           ) VALUES (?, 1, ?, ?, 'success', 100, 'test', NULL, NULL, NULL,
+                     ?, ?, ?, 101)""",
+        (outcome_id, user_id, session_id, "a" * 64, "b" * 64, subject_ref),
+    )
+    storage.conn.commit()
+
+
 @pytest.fixture
 def storage(
     tmp_path: Path,
@@ -309,6 +330,7 @@ def test_local_governance_e2e_erases_exports_audits_and_preserves_org_agent_play
     assert erased.deleted_counts["requests"] == 1
     assert erased.deleted_counts["user_playbooks"] == 2
     assert erased.deleted_counts["agent_success_evaluation_results"] == 1
+    assert erased.deleted_counts["session_outcomes"] == 0
     assert erased.rebuilt_agent_playbook_ids == []
 
     assert storage.get_user_interaction("alice") == []
@@ -438,6 +460,55 @@ def test_local_governance_e2e_erases_exports_audits_and_preserves_org_agent_play
         if event.operation == "ERASE" and event.status == "ok"
     ]
     assert len(erase_events_after_retry) == 1
+
+
+def test_governance_erasure_uses_authoritative_user_for_session_outcomes_and_receipts(
+    storage: SQLiteStorage,
+) -> None:
+    alice_ref = governance_subject_ref(
+        storage.org_id, "alice", "test-governance-secret"
+    )
+    bob_ref = governance_subject_ref(storage.org_id, "bob", "test-governance-secret")
+    _insert_session_outcome(
+        storage,
+        outcome_id="alice-stale-ref",
+        user_id="alice",
+        session_id="alice-session",
+        subject_ref=bob_ref,
+    )
+    _insert_session_outcome(
+        storage,
+        outcome_id="bob-conflicting-ref",
+        user_id="bob",
+        session_id="bob-session",
+        subject_ref=alice_ref,
+    )
+    service = GovernanceService(
+        storage=storage,
+        org_id=storage.org_id,
+        ref_secret="test-governance-secret",
+    )
+
+    erased = service.erase_user(user_id="alice", request_id="erase-outcomes")
+    retried = service.erase_user(user_id="alice", request_id="erase-outcomes")
+
+    remaining = storage.conn.execute(
+        "SELECT outcome_id, user_id FROM session_outcomes ORDER BY outcome_id"
+    ).fetchall()
+    assert [(row["outcome_id"], row["user_id"]) for row in remaining] == [
+        ("bob-conflicting-ref", "bob")
+    ]
+    assert erased.deleted_counts["session_outcomes"] == 1
+    assert retried.deleted_counts == erased.deleted_counts
+    audit = next(
+        event
+        for event in storage.list_audit_events(subject_ref=alice_ref)
+        if event.operation == "ERASE"
+    )
+    assert audit.detail is not None
+    deleted_counts = audit.detail["deleted_counts"]
+    assert isinstance(deleted_counts, dict)
+    assert deleted_counts["session_outcomes"] == 1
 
 
 def test_governance_service_persists_actor_context_in_audit(
@@ -632,6 +703,7 @@ def test_second_erase_conflict_preserves_original_barrier_and_write_block(
         idempotency_key="idem_conflict_first",
         operation_type="user_erasure",
         scope_type="user",
+        authoritative_user_id="alice",
         subject_ref=subject_ref,
         request_ref="reqref_v1_00000000000000000000000000000061",
     )
@@ -890,7 +962,6 @@ def test_healthy_slow_lifecycle_renews_lease_and_duplicate_converges(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     fake_now = {"value": 100}
-    real_sleep = governance_service_module.time.sleep
     monkeypatch.setattr(
         governance_service_module,
         "_PURGE_EXECUTION_HEARTBEAT_SECONDS",
@@ -903,6 +974,23 @@ def test_healthy_slow_lifecycle_renews_lease_and_duplicate_converges(
     )
 
     monkeypatch.setattr(sqlite_purge_module, "_epoch_now", lambda: fake_now["value"])
+    original_renew = storage.renew_purge_operation_execution_claim
+    renewal_confirmed = threading.Event()
+    renewals_by_owner: dict[str, int] = {}
+
+    def observed_renew(*args, **kwargs):
+        claim = args[1]
+        renewals_by_owner[claim.owner] = renewals_by_owner.get(claim.owner, 0) + 1
+        renewed = original_renew(*args, **kwargs)
+        if renewals_by_owner[claim.owner] >= 3:
+            renewal_confirmed.set()
+        return renewed
+
+    monkeypatch.setattr(
+        storage,
+        "renew_purge_operation_execution_claim",
+        observed_renew,
+    )
 
     class SlowSingleUseLifecycle:
         def __init__(self) -> None:
@@ -927,7 +1015,7 @@ def test_healthy_slow_lifecycle_renews_lease_and_duplicate_converges(
                 raise RuntimeError("provider lifecycle already running")
             self.first_call_started.set()
             fake_now["value"] = 350
-            real_sleep(0.05)
+            assert renewal_confirmed.wait(timeout=5)
             fake_now["value"] = 401
             assert self.release_first_call.wait(timeout=5)
 
@@ -962,10 +1050,10 @@ def test_healthy_slow_lifecycle_renews_lease_and_duplicate_converges(
     winner = threading.Thread(target=run_winner)
     winner.start()
     assert lifecycle.first_call_started.wait(timeout=5)
+    assert renewal_confirmed.wait(timeout=5)
 
     duplicate = threading.Thread(target=run_duplicate)
     duplicate.start()
-    real_sleep(0.05)
     lifecycle.release_first_call.set()
     winner.join(timeout=5)
     duplicate.join(timeout=5)
@@ -979,6 +1067,93 @@ def test_healthy_slow_lifecycle_renews_lease_and_duplicate_converges(
     assert duplicate_results[0].status == "complete"
     assert duplicate_results[0].purge_id == winner_results[0].purge_id
     assert lifecycle.calls == 1
+
+
+def test_heartbeat_renewal_loss_fences_external_lifecycle_and_retry_converges(
+    storage: SQLiteStorage,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_now = {"value": 100}
+    monkeypatch.setattr(
+        governance_service_module,
+        "_PURGE_EXECUTION_HEARTBEAT_SECONDS",
+        0.01,
+        raising=False,
+    )
+    from reflexio.server.services.storage.sqlite_storage.governance import (
+        _purge as sqlite_purge_module,
+    )
+
+    monkeypatch.setattr(sqlite_purge_module, "_epoch_now", lambda: fake_now["value"])
+    original_renew = storage.renew_purge_operation_execution_claim
+    first_owner: list[str] = []
+    renewals_by_owner: dict[str, int] = {}
+    renewal_lost = threading.Event()
+
+    def fail_first_owner_heartbeat(*args, **kwargs):
+        claim = args[1]
+        if not first_owner:
+            first_owner.append(claim.owner)
+        renewals_by_owner[claim.owner] = renewals_by_owner.get(claim.owner, 0) + 1
+        if claim.owner == first_owner[0] and renewals_by_owner[claim.owner] == 2:
+            renewal_lost.set()
+            raise RuntimeError("simulated heartbeat renewal loss")
+        return original_renew(*args, **kwargs)
+
+    monkeypatch.setattr(
+        storage,
+        "renew_purge_operation_execution_claim",
+        fail_first_owner_heartbeat,
+    )
+    original_apply = storage.apply_governance_user_data_delete
+
+    def apply_then_wait_for_renewal_loss(*args, **kwargs):
+        result = original_apply(*args, **kwargs)
+        assert renewal_lost.wait(timeout=5)
+        return result
+
+    monkeypatch.setattr(
+        storage,
+        "apply_governance_user_data_delete",
+        apply_then_wait_for_renewal_loss,
+    )
+
+    class CountingLifecycle:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def erase_subject(self, **_kwargs) -> None:
+            self.calls += 1
+
+    lifecycle = CountingLifecycle()
+    service = GovernanceService(
+        storage=storage,
+        org_id=storage.org_id,
+        ref_secret="test-governance-secret",
+        subject_erasure_lifecycle=lifecycle,
+    )
+
+    with pytest.raises(ValueError, match="heartbeat renewal was lost"):
+        service.erase_user(user_id="alice", request_id="erase-renewal-loss")
+
+    assert lifecycle.calls == 0
+    purge_id = str(
+        storage.conn.execute("SELECT purge_id FROM purge_operations").fetchone()[
+            "purge_id"
+        ]
+    )
+    assert storage.get_purge_operation(purge_id).status == "running"
+    assert storage.list_audit_events() == []
+
+    fake_now["value"] = 401
+    recovered = service.erase_user(
+        user_id="alice",
+        request_id="erase-renewal-loss",
+    )
+
+    assert recovered.status == "complete"
+    assert lifecycle.calls == 1
+    assert storage.get_purge_operation(purge_id).status == "complete"
 
 
 def test_stale_running_erase_claim_recovers_after_crash(

@@ -20,6 +20,8 @@ from reflexio.models.api_schema.service_schemas import (
     UserPlaybook,
     UserProfile,
 )
+from reflexio.server.services.governance.config import governance_subject_ref
+from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 from reflexio.server.services.storage.storage_base import BaseStorage
 
 pytestmark = pytest.mark.integration
@@ -165,6 +167,69 @@ class TestClearUserData:
         assert len(storage.get_user_profile("userA")) == 1
         assert len(storage.get_user_playbooks(user_id="userA")) == 1
         assert storage.get_request("req_a") is not None
+
+    def test_session_outcomes_use_authoritative_user_and_report_stable_zero(
+        self, storage: BaseStorage, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("REFLEXIO_GOVERNANCE_REF_SECRET", "test-governance-secret")
+        sqlite_storage = storage
+        assert isinstance(sqlite_storage, SQLiteStorage)
+        alice_ref = governance_subject_ref(
+            sqlite_storage.org_id, "alice", "test-governance-secret"
+        )
+        bob_ref = governance_subject_ref(
+            sqlite_storage.org_id, "bob", "test-governance-secret"
+        )
+        for outcome_id, user_id, subject_ref in (
+            ("alice-stale", "alice", bob_ref),
+            ("bob-conflict", "bob", alice_ref),
+        ):
+            sqlite_storage.conn.execute(
+                """INSERT INTO session_outcomes (
+                       outcome_id, outcome_revision, user_id, session_id, outcome,
+                       occurred_at, source, outcome_contract_digest,
+                       finalized_trajectory_digest, governance_subject_ref, created_at
+                   ) VALUES (?, 1, ?, ?, 'success', 100, 'test', ?, ?, ?, 101)""",
+                (
+                    outcome_id,
+                    user_id,
+                    f"session-{outcome_id}",
+                    "a" * 64,
+                    "b" * 64,
+                    subject_ref,
+                ),
+            )
+        sqlite_storage.conn.commit()
+
+        counts = storage.clear_user_data("alice")
+        zero_counts = storage.clear_user_data("missing-user")
+
+        remaining = sqlite_storage.conn.execute(
+            "SELECT outcome_id FROM session_outcomes ORDER BY outcome_id"
+        ).fetchall()
+        assert [row["outcome_id"] for row in remaining] == ["bob-conflict"]
+        assert counts["session_outcomes"] == 1
+        assert zero_counts["session_outcomes"] == 0
+
+    def test_default_clear_user_data_preserves_session_outcome_count(
+        self, storage: BaseStorage
+    ) -> None:
+        sqlite_storage = storage
+        assert isinstance(sqlite_storage, SQLiteStorage)
+        sqlite_storage.conn.execute(
+            """INSERT INTO session_outcomes (
+                   outcome_id, outcome_revision, user_id, session_id, outcome,
+                   occurred_at, source, outcome_contract_digest,
+                   finalized_trajectory_digest, governance_subject_ref, created_at
+               ) VALUES ('default-clear', 1, 'alice', 'default-clear-session',
+                         'success', 100, 'test', ?, ?, 'subref_v1_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 101)""",
+            ("a" * 64, "b" * 64),
+        )
+        sqlite_storage.conn.commit()
+
+        counts = BaseStorage.clear_user_data(sqlite_storage, "alice")
+
+        assert counts["session_outcomes"] == 1
 
     def test_returned_counts_match_seeded_rows(self, storage: BaseStorage) -> None:
         """Per-entity counts must reflect actual seeded row counts for the user."""

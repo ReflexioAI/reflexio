@@ -81,7 +81,7 @@ class SessionOutcomeStoreMixin:
                 ).fetchone()
                 if existing is not None:
                     first = self.conn.execute(
-                        """SELECT source FROM requests WHERE session_id = ?
+                        """SELECT user_id, source FROM requests WHERE session_id = ?
                            ORDER BY created_at ASC, request_id ASC LIMIT 1""",
                         (request.session_id,),
                     ).fetchone()
@@ -91,12 +91,18 @@ class SessionOutcomeStoreMixin:
                         else str(existing["source"])
                     )
                     contract_digest = self._outcome_contract_digest(source)
-                    snapshot_digest = (
+                    current_snapshot_digest = (
                         trajectory_digest(
                             _canonical_session_snapshot(self.conn, request.session_id)
                         )
                         if first is not None
-                        else str(existing["finalized_trajectory_digest"])
+                        else None
+                    )
+                    stored_contract_digest = existing["outcome_contract_digest"]
+                    stored_snapshot_digest = existing["finalized_trajectory_digest"]
+                    server_context_matches = first is None or (
+                        str(existing["user_id"]) == str(first["user_id"])
+                        and str(existing["source"]) == str(first["source"])
                     )
                     exact_retry = (
                         existing["outcome"] == str(request.outcome)
@@ -104,8 +110,16 @@ class SessionOutcomeStoreMixin:
                         and existing["label"] == request.label
                         and existing["value"] == request.value
                         and existing["metadata"] == self._metadata_json(request)
-                        and existing["outcome_contract_digest"] == contract_digest
-                        and existing["finalized_trajectory_digest"] == snapshot_digest
+                        and server_context_matches
+                        and (
+                            stored_contract_digest is None
+                            or stored_contract_digest == contract_digest
+                        )
+                        and (
+                            stored_snapshot_digest is None
+                            or current_snapshot_digest is None
+                            or stored_snapshot_digest == current_snapshot_digest
+                        )
                     )
                     self.conn.rollback()
                     return SessionOutcomeWriteResult(
@@ -117,13 +131,25 @@ class SessionOutcomeStoreMixin:
                             if exact_retry
                             else SessionOutcomeFailureReason.CONFLICTING_FINALIZATION
                         ),
-                        outcome_id=str(existing["outcome_id"]),
-                        outcome_revision=int(existing["outcome_revision"]),
-                        outcome_contract_digest=str(
-                            existing["outcome_contract_digest"]
+                        outcome_id=(
+                            str(existing["outcome_id"])
+                            if existing["outcome_id"] is not None
+                            else None
                         ),
-                        finalized_trajectory_digest=str(
-                            existing["finalized_trajectory_digest"]
+                        outcome_revision=(
+                            int(existing["outcome_revision"])
+                            if existing["outcome_revision"] is not None
+                            else None
+                        ),
+                        outcome_contract_digest=(
+                            str(stored_contract_digest)
+                            if stored_contract_digest is not None
+                            else None
+                        ),
+                        finalized_trajectory_digest=(
+                            str(stored_snapshot_digest)
+                            if stored_snapshot_digest is not None
+                            else None
                         ),
                     )
                 first = self.conn.execute(
@@ -269,11 +295,10 @@ class SessionOutcomeStoreMixin:
 
     @SQLiteStorageBase.handle_exceptions
     def clear_session_outcomes_for_user(self, user_id: str) -> dict[str, int]:
-        subject_ref = self._subject_ref_for_user_id(user_id)
         with self._lock:
             outcome_cursor = self.conn.execute(
-                "DELETE FROM session_outcomes WHERE governance_subject_ref = ?",
-                (subject_ref,),
+                "DELETE FROM session_outcomes WHERE user_id = ?",
+                (user_id,),
             )
             self.conn.commit()
         return {

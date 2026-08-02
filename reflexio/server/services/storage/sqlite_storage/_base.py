@@ -106,20 +106,25 @@ def _canonical_session_snapshot(
         (session_id,),
     ).fetchall()
     request_payloads = [dict(request) for request in request_rows]
-    interactions_by_request: dict[str, list[dict[str, object]]] = {}
-    for request in request_rows:
-        interactions = conn.execute(
-            """SELECT interaction_id, user_id, request_id, created_at, content, role,
-                      token_count, user_action, user_action_description,
-                      interacted_image_url, image_encoding, shadow_content,
-                      expert_content, tools_used, citations, retrieved_learnings
-               FROM interactions WHERE request_id = ?
-               ORDER BY created_at ASC, interaction_id ASC""",
-            (request["request_id"],),
-        ).fetchall()
-        interactions_by_request[str(request["request_id"])] = [
-            dict(interaction) for interaction in interactions
-        ]
+    interactions_by_request: dict[str, list[dict[str, object]]] = {
+        str(request["request_id"]): [] for request in request_rows
+    }
+    interaction_rows = conn.execute(
+        """SELECT interaction_id, user_id, request_id, created_at, content, role,
+                  token_count, user_action, user_action_description,
+                  interacted_image_url, image_encoding, shadow_content,
+                  expert_content, tools_used, citations, retrieved_learnings
+           FROM interactions
+           WHERE request_id IN (
+               SELECT request_id FROM requests WHERE session_id = ?
+           )
+           ORDER BY request_id ASC, created_at ASC, interaction_id ASC""",
+        (session_id,),
+    ).fetchall()
+    for interaction in interaction_rows:
+        interactions_by_request[str(interaction["request_id"])].append(
+            dict(interaction)
+        )
     return canonical_session_trajectory(
         session_id, request_payloads, interactions_by_request
     )
@@ -2373,7 +2378,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
 
         Returns:
             dict[str, int]: Per-entity counts with keys ``interactions``,
-                ``user_playbooks``, ``profiles``, ``requests``,
+                ``session_outcomes``, ``user_playbooks``, ``profiles``, ``requests``,
                 ``purged_profiles``, and ``purged_user_playbooks``.
                 ``profiles`` and ``user_playbooks`` reflect hard-deleted counts;
                 purged rows are counted separately.
@@ -2400,7 +2405,6 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                 "SELECT rowid, profile_id FROM profiles WHERE user_id = ?",
                 (user_id,),
             ).fetchall()
-            subject_ref = self._subject_ref_for_user_id(user_id)
 
             # Build a rowid lookup for FTS/vec cleanup (SQLite-specific need).
             profile_rowid_by_id: dict[str, int] = {
@@ -2450,9 +2454,9 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             interactions_cur = self.conn.execute(
                 "DELETE FROM interactions WHERE user_id = ?", (user_id,)
             )
-            self.conn.execute(
-                "DELETE FROM session_outcomes WHERE governance_subject_ref = ?",
-                (subject_ref,),
+            session_outcomes_cur = self.conn.execute(
+                "DELETE FROM session_outcomes WHERE user_id = ?",
+                (user_id,),
             )
             requests_cur = self.conn.execute(
                 "DELETE FROM requests WHERE user_id = ?", (user_id,)
@@ -2489,6 +2493,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                 self.purge_content(entity_type="user_playbook", entity_id=str(upid))
 
         return {
+            "session_outcomes": session_outcomes_cur.rowcount,
             "interactions": interactions_cur.rowcount,
             "user_playbooks": upb_deleted_count,
             "profiles": profile_deleted_count,
