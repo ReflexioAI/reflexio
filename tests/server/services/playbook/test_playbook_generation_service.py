@@ -79,7 +79,7 @@ def _service_for_inline_aggregation(configurator: Any) -> PlaybookGenerationServ
     return service
 
 
-def test_inline_aggregation_default_path_does_not_inject_processor():
+def test_inline_aggregation_default_path_schedules_durably():
     configurator = MagicMock()
     configurator.get_config.return_value = _aggregation_enabled_config()
     service = _service_for_inline_aggregation(configurator)

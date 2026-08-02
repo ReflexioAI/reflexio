@@ -120,13 +120,27 @@ def init_playbook_aggregation_tables(conn: sqlite3.Connection) -> None:
 
 
 class PlaybookAggregationStoreMixin:
-    supports_incremental_playbook_aggregation = True
-
     conn: sqlite3.Connection
     _lock: threading.RLock
     _own_transaction: Any
     commit_scope: Any
     _has_sqlite_vec: bool
+
+    @property
+    def supports_incremental_playbook_aggregation(self) -> bool:
+        return self._has_sqlite_vec and getattr(
+            self, "_incremental_aggregation_enabled", True
+        )
+
+    @supports_incremental_playbook_aggregation.setter
+    def supports_incremental_playbook_aggregation(self, enabled: bool) -> None:
+        self._incremental_aggregation_enabled = bool(enabled)
+
+    @property
+    def playbook_aggregation_blocked_reason(self) -> str | None:
+        if self._has_sqlite_vec:
+            return None
+        return "blocked_missing_vector_index"
 
     def schedule_playbook_aggregation(self, agent_version: str) -> None:
         if not agent_version.strip():
@@ -355,6 +369,8 @@ class PlaybookAggregationStoreMixin:
                 ),
             )
             if cur.rowcount != 1:
+                if self._own_transaction():
+                    self.conn.rollback()
                 return False
             self.conn.execute(
                 "UPDATE playbook_aggregation_lease SET claim_owner=NULL, "
@@ -759,41 +775,28 @@ class PlaybookAggregationStoreMixin:
                     (agent_version,),
                 ).fetchone()[0]
             )
-            retry_rows = self.conn.execute(
-                "SELECT attempt_count, last_attempt_at "
+            residual_retry_after = self.conn.execute(
+                "SELECT COALESCE(MAX(0, MIN(CASE "
+                "WHEN attempt_count <= 0 OR last_attempt_at IS NULL THEN 0 "
+                "ELSE last_attempt_at + MIN(?, ? * (1 << MIN(MAX("
+                "attempt_count - 1, 0), 6))) - unixepoch() END)), 0) "
                 "FROM playbook_aggregation_item WHERE agent_version=? "
                 "AND disposition='residual'",
-                (agent_version,),
-            ).fetchall()
-            now = int(self.conn.execute("SELECT unixepoch()").fetchone()[0])
-            residual_retry_after = (
-                min(
-                    (
-                        max(
-                            0,
-                            int(last_attempt_at)
-                            + min(
-                                AGGREGATION_RETRY_MAX_SECONDS,
-                                AGGREGATION_RETRY_BASE_SECONDS
-                                * (1 << min(max(int(attempt_count) - 1, 0), 6)),
-                            )
-                            - now,
-                        )
-                        if int(attempt_count) > 0 and last_attempt_at is not None
-                        else 0
-                    )
-                    for attempt_count, last_attempt_at in retry_rows
-                )
-                if retry_rows
-                else 0
-            )
+                (
+                    AGGREGATION_RETRY_MAX_SECONDS,
+                    AGGREGATION_RETRY_BASE_SECONDS,
+                    agent_version,
+                ),
+            ).fetchone()[0]
         return PlaybookAggregationBacklog(
-            undisposed,
-            residual,
-            invalidations,
-            int(oldest_residual_age) if oldest_residual_age is not None else None,
-            dirty_repairs,
-            residual_retry_after,
+            undisposed=undisposed,
+            residual=residual,
+            invalidations=invalidations,
+            oldest_residual_age_seconds=(
+                int(oldest_residual_age) if oldest_residual_age is not None else None
+            ),
+            dirty_repairs=dirty_repairs,
+            residual_retry_after_seconds=int(residual_retry_after),
         )
 
     def append_playbook_aggregation_invalidation(

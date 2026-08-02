@@ -98,8 +98,13 @@ def _append_event_stmt(
         and entity_type == "user_playbook"
         and op in {"create", "merge", "revise", "status_change", "purge"}
     ):
+        if not str(entity_id).isdigit():
+            return cursor
+        parsed_entity_id = int(entity_id)
         candidate_ids = [
-            int(value) for value in [entity_id, *source_ids] if str(value).isdigit()
+            int(value)
+            for value in [parsed_entity_id, *source_ids]
+            if str(value).isdigit()
         ]
         if not candidate_ids:
             return cursor
@@ -115,7 +120,7 @@ def _append_event_stmt(
             conn.execute(
                 "INSERT INTO playbook_aggregation_invalidation "
                 "(agent_version, operation, entity_id, source_ids) VALUES (?, ?, ?, ?)",
-                (agent_version, op, int(entity_id), json.dumps(source_ids)),
+                (agent_version, op, parsed_entity_id, json.dumps(source_ids)),
             )
             conn.execute(
                 "INSERT INTO playbook_aggregation_state "

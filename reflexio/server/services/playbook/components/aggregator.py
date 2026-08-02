@@ -485,7 +485,7 @@ class PlaybookAggregator:
         ]
         saved_playbooks: list[AgentPlaybook] = []
         replacement_agent_ids_by_outcome = {
-            id(outcome): self.storage.get_playbook_aggregation_replacement_agent_ids(  # type: ignore[attr-defined]
+            index: self.storage.get_playbook_aggregation_replacement_agent_ids(  # type: ignore[attr-defined]
                 self.agent_version,
                 [
                     int(item.user_playbook_id)
@@ -493,7 +493,7 @@ class PlaybookAggregator:
                     if item.user_playbook_id is not None
                 ],
             )
-            for outcome in outcomes
+            for index, outcome in enumerate(outcomes)
             if outcome.status == "generated"
         }
         replaced_agent_ids: set[int] = set()
@@ -521,7 +521,7 @@ class PlaybookAggregator:
                     if item.user_playbook_id is not None and item.embedding
                 ],
             )
-            for outcome in outcomes:
+            for outcome_index, outcome in enumerate(outcomes):
                 members = outcome.source_cluster
                 member_ids = [
                     int(item.user_playbook_id)
@@ -577,7 +577,9 @@ class PlaybookAggregator:
                         [outcome.playbook], lineage_contexts=lineage_contexts
                     )[0]
                 saved_playbooks.append(saved)
-                replaced_agent_ids.update(replacement_agent_ids_by_outcome[id(outcome)])
+                replaced_agent_ids.update(
+                    replacement_agent_ids_by_outcome[outcome_index]
+                )
                 embeddings = [item.embedding for item in members if item.embedding]
                 cluster_id = self._stable_aggregation_cluster_id(
                     self._compute_cluster_fingerprint(members)
@@ -961,9 +963,10 @@ class PlaybookAggregator:
                 pipeline="playbook",
                 playbook_name=playbook_name,
                 agent_version=self.agent_version,
-                outcome="should_skip",
+                outcome="failed",
                 count_value=total_user_playbooks,
                 metadata={
+                    "failure_reason": "full_rerun_safety_cap_exceeded",
                     "user_playbooks": total_user_playbooks,
                     "max_clustering_playbooks": max_playbooks,
                 },

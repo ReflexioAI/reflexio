@@ -29,9 +29,9 @@ from reflexio.server.services.storage.storage_base.playbook import (
 logger = logging.getLogger("reflexio.server.services.playbook.aggregation_scheduler")
 
 _POLL_SECONDS = 10.0
-_LEASE_SECONDS = 300
-_RETRY_SECONDS = 60
-_BACKLOG_RETRY_SECONDS = 1
+AGGREGATION_LEASE_SECONDS = 300
+AGGREGATION_RETRY_SECONDS = 60
+AGGREGATION_BACKLOG_RETRY_SECONDS = 1
 _REPAIR_INTERVAL_SECONDS = 300.0
 
 
@@ -46,7 +46,7 @@ def aggregation_min_interval_seconds() -> int:
         return 3600
 
 
-class _LeaseHeartbeat:
+class AggregationLeaseHeartbeat:
     def __init__(self, storage: Any, claim: PlaybookAggregationClaim) -> None:
         self.storage = storage
         self.claim = claim
@@ -63,10 +63,20 @@ class _LeaseHeartbeat:
         self._thread.start()
 
     def _run(self) -> None:
-        while not self._stop.wait(_LEASE_SECONDS / 3):
-            renewed = self.storage.renew_playbook_aggregation_claim(
-                self.claim, lease_seconds=_LEASE_SECONDS
-            )
+        while not self._stop.wait(AGGREGATION_LEASE_SECONDS / 3):
+            try:
+                renewed = self.storage.renew_playbook_aggregation_claim(
+                    self.claim, lease_seconds=AGGREGATION_LEASE_SECONDS
+                )
+            except Exception:
+                logger.exception(
+                    "event=playbook_aggregation_progress state=lease_lost "
+                    "agent_version=%s fence=%s reason=renewal_failed",
+                    self.claim.agent_version,
+                    self.claim.fence,
+                )
+                self._lost.set()
+                return
             if renewed is None:
                 self._lost.set()
                 return
@@ -109,9 +119,19 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
         )
         if playbook_config is None or playbook_config.aggregation_config is None:
             return
-        if storage is None or not getattr(
-            storage, "supports_incremental_playbook_aggregation", False
-        ):
+        if storage is None:
+            return
+        if not getattr(storage, "supports_incremental_playbook_aggregation", False):
+            blocked_reason = getattr(
+                storage, "playbook_aggregation_blocked_reason", None
+            )
+            if blocked_reason:
+                logger.warning(
+                    "event=playbook_aggregation_progress state=blocked org_id=%s "
+                    "reason=%s",
+                    context.org_id,
+                    blocked_reason,
+                )
             return
         repair_now = time.monotonic()
         last_repair_at = self._last_repair_at.get(context.org_id)
@@ -130,7 +150,7 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
                 )
         claim = storage.claim_due_playbook_aggregation(
             owner=f"aggregation:{self._worker_id}:{context.org_id}",
-            lease_seconds=_LEASE_SECONDS,
+            lease_seconds=AGGREGATION_LEASE_SECONDS,
         )
         if claim is None:
             return
@@ -142,7 +162,7 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
             claim.agent_version,
             claim.fence,
         )
-        heartbeat = _LeaseHeartbeat(storage, claim)
+        heartbeat = AggregationLeaseHeartbeat(storage, claim)
         heartbeat.start()
         success = False
         result: dict[str, Any] = {}
@@ -210,8 +230,8 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
             finished = storage.finish_playbook_aggregation_claim(
                 active_claim,
                 success=success,
-                retry_after_seconds=_RETRY_SECONDS,
-                backlog_retry_after_seconds=_BACKLOG_RETRY_SECONDS,
+                retry_after_seconds=AGGREGATION_RETRY_SECONDS,
+                backlog_retry_after_seconds=AGGREGATION_BACKLOG_RETRY_SECONDS,
                 min_interval_seconds=aggregation_min_interval_seconds(),
                 backlog=after if success else None,
             )
@@ -259,6 +279,15 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
         logger.info("event=playbook_aggregation_scheduler_started")
 
     def _on_stopped(self) -> None:
+        if not self.is_running():
+            with _LOCAL_SCHEDULERS_LOCK:
+                stale_org_ids = [
+                    org_id
+                    for org_id, scheduler in _LOCAL_SCHEDULERS.items()
+                    if scheduler is self
+                ]
+                for org_id in stale_org_ids:
+                    _LOCAL_SCHEDULERS.pop(org_id, None)
         logger.info("event=playbook_aggregation_scheduler_stopped")
 
 
@@ -282,11 +311,10 @@ def ensure_local_playbook_aggregation_scheduler(
         return None
     with _LOCAL_SCHEDULERS_LOCK:
         scheduler = _LOCAL_SCHEDULERS.get(request_context.org_id)
-        if scheduler is None:
+        if scheduler is None or not scheduler.is_running():
             scheduler = PlaybookAggregationScheduler(
                 context_provider=lambda: [request_context]
             )
             _LOCAL_SCHEDULERS[request_context.org_id] = scheduler
-        if not scheduler.is_running():
             scheduler.start()
         return scheduler

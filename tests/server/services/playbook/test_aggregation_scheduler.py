@@ -5,7 +5,10 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
 
+import pytest
+
 from reflexio.server.services.playbook import aggregation_scheduler
+from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 from reflexio.server.services.storage.storage_base.playbook import (
     PlaybookAggregationBacklog,
     PlaybookAggregationClaim,
@@ -119,7 +122,6 @@ def test_scheduler_throttles_idle_repair_scans(monkeypatch) -> None:
     storage = MagicMock(supports_incremental_playbook_aggregation=True)
     storage.repair_playbook_aggregation_pending_state.return_value = []
     storage.claim_due_playbook_aggregation.return_value = None
-    monkeypatch.setattr(aggregation_scheduler.time, "monotonic", lambda: 10.0)
     scheduler = aggregation_scheduler.PlaybookAggregationScheduler(
         context_provider=lambda: [], worker_id="worker"
     )
@@ -127,6 +129,74 @@ def test_scheduler_throttles_idle_repair_scans(monkeypatch) -> None:
 
     scheduler._run_context(context)
     scheduler._run_context(context)
+    scheduler._last_repair_at["org-1"] -= (
+        aggregation_scheduler._REPAIR_INTERVAL_SECONDS + 1
+    )
+    scheduler._run_context(context)
 
-    storage.repair_playbook_aggregation_pending_state.assert_called_once_with()
-    assert storage.claim_due_playbook_aggregation.call_count == 2
+    assert storage.repair_playbook_aggregation_pending_state.call_count == 2
+    assert storage.claim_due_playbook_aggregation.call_count == 3
+
+
+def test_lease_heartbeat_marks_renewal_exception_as_lost() -> None:
+    claim = PlaybookAggregationClaim("v1", "owner", 7, 3, 10_000)
+    storage = MagicMock()
+    storage.renew_playbook_aggregation_claim.side_effect = RuntimeError("db down")
+    heartbeat = aggregation_scheduler.AggregationLeaseHeartbeat(storage, claim)
+    heartbeat._stop.wait = MagicMock(return_value=False)
+
+    heartbeat._run()
+
+    with pytest.raises(RuntimeError, match="lease was lost"):
+        heartbeat.require_live()
+
+
+def test_stopped_local_scheduler_drops_captured_context(monkeypatch) -> None:
+    monkeypatch.delenv("DEPLOYMENT_MODE", raising=False)
+    aggregation_scheduler._LOCAL_SCHEDULERS.clear()
+    monkeypatch.setattr(
+        aggregation_scheduler.PlaybookAggregationScheduler,
+        "start",
+        MagicMock(),
+    )
+    monkeypatch.setattr(
+        aggregation_scheduler.PlaybookAggregationScheduler,
+        "is_running",
+        MagicMock(return_value=False),
+    )
+    first_context = _context(MagicMock())
+    first = aggregation_scheduler.ensure_local_playbook_aggregation_scheduler(
+        first_context
+    )
+    assert first is not None
+
+    first._on_stopped()
+    second_context = _context(MagicMock())
+    second = aggregation_scheduler.ensure_local_playbook_aggregation_scheduler(
+        second_context
+    )
+
+    assert second is not None
+    assert second is not first
+    assert list(second._context_provider()) == [second_context]
+
+
+def test_scheduler_keeps_sqlite_work_pending_when_vector_index_is_unavailable(
+    tmp_path, monkeypatch, caplog
+) -> None:
+    monkeypatch.setattr(SQLiteStorage, "_try_load_sqlite_vec", lambda _self: False)
+    storage = SQLiteStorage(org_id="org-1", db_path=str(tmp_path / "missing-vec.db"))
+    storage.schedule_playbook_aggregation("v1")
+    caplog.set_level(logging.WARNING, logger=aggregation_scheduler.logger.name)
+
+    scheduler = aggregation_scheduler.PlaybookAggregationScheduler(
+        context_provider=lambda: [], worker_id="worker"
+    )
+    scheduler._run_context(_context(storage))
+
+    state = storage.conn.execute(
+        "SELECT pending FROM playbook_aggregation_state WHERE agent_version='v1'"
+    ).fetchone()
+    assert state is not None and int(state[0]) == 1
+    assert storage.supports_incremental_playbook_aggregation is False
+    assert "blocked_missing_vector_index" in caplog.text

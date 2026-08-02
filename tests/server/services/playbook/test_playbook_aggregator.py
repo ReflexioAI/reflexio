@@ -569,6 +569,34 @@ def test_artifact_postprocessing_warning_does_not_write_usage_event(caplog):
     mock_record_usage_event.assert_not_called()
 
 
+def test_oversized_full_rerun_records_failed_gate(monkeypatch) -> None:
+    monkeypatch.setenv("REFLEXIO_MAX_CLUSTERING_PLAYBOOKS", "1")
+    agg = _make_aggregator()
+    agg.configurator.get_config.return_value.user_playbook_extractor_config = (
+        PlaybookConfig(
+            extractor_name="playbook",
+            extraction_definition_prompt="test",
+            aggregation_config=PlaybookAggregatorConfig(min_cluster_size=2),
+        )
+    )
+    agg.storage.count_user_playbooks.return_value = 2
+    agg.storage.get_agent_playbooks.return_value = []
+
+    with (
+        patch(
+            "reflexio.server.services.playbook.components.aggregator.record_usage_event"
+        ) as record_usage,
+        pytest.raises(RuntimeError, match="exceeds the safety cap"),
+    ):
+        agg.run(PlaybookAggregatorRequest(agent_version="v1", rerun=True))
+
+    assert record_usage.call_args.kwargs["outcome"] == "failed"
+    assert (
+        record_usage.call_args.kwargs["metadata"]["failure_reason"]
+        == "full_rerun_safety_cap_exceeded"
+    )
+
+
 def test_artifact_postprocessing_runs_before_exception_logging(caplog):
     agg = _make_aggregator(aggregation_prompt_processor=_MappingAwareProcessor())
     agg.request_context.prompt_manager.render_prompt.return_value = "prompt"
@@ -1839,6 +1867,8 @@ class TestProcessAggregationResponse:
 
     def test_batch_preserves_one_tagged_outcome_per_cluster(self):
         agg = _make_aggregator()
+        cluster_a = [_raw(1)]
+        cluster_b = [_raw(2)]
         agg._generate_playbook_from_cluster_outcome = MagicMock(  # type: ignore[method-assign]
             side_effect=[
                 aggregator_module.AggregationGenerationOutcome(
@@ -1851,13 +1881,16 @@ class TestProcessAggregationResponse:
         )
 
         outcomes = agg._generate_playbook_outcomes_with_source_clusters(
-            {0: [_raw(1)], 1: [_raw(2)]}, []
+            {0: cluster_a, 1: cluster_b}, []
         )
 
         assert [item.status for item in outcomes] == [
             "semantic_null",
             "retryable_failure",
         ]
+        assert [item.source_cluster for item in outcomes] == [cluster_a, cluster_b]
+        assert outcomes[0].source_cluster[0] is cluster_a[0]
+        assert outcomes[1].source_cluster[0] is cluster_b[0]
 
 
 # ---------------------------------------------------------------------------
