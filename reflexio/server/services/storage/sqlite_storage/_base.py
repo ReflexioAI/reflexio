@@ -844,7 +844,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                 embedding float[{dim}]
             );
             CREATE VIRTUAL TABLE IF NOT EXISTS playbook_aggregation_clusters_vec USING vec0(
-                embedding float[{dim}]
+                embedding float[{dim}] distance_metric=cosine
             );
         """
         with self._lock:

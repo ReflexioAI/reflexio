@@ -38,7 +38,7 @@ Interactions
         -> Durable aggregation signal
           -> PlaybookAggregationScheduler (hourly cadence, bounded work)
             -> PlaybookAggregator (incremental clustering)
-          -> AgentPlaybook (aggregated insights) -> Storage
+              -> AgentPlaybook (aggregated insights) -> Storage
 ```
 
 ### Playbook Extraction (`components/extractor.py`)

@@ -1,3 +1,4 @@
+import logging
 import uuid
 from typing import Any
 
@@ -16,6 +17,8 @@ from reflexio.models.api_schema.service_schemas import (
     RerunProfileGenerationRequest,
     RerunProfileGenerationResponse,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class GenerationMixin(ReflexioBase):
@@ -44,6 +47,10 @@ class GenerationMixin(ReflexioBase):
             AGGREGATION_PROMPT_PROCESSOR,
         )
         from reflexio.server.services.playbook.aggregation_scheduler import (
+            AGGREGATION_BACKLOG_RETRY_SECONDS,
+            AGGREGATION_LEASE_SECONDS,
+            AGGREGATION_RETRY_SECONDS,
+            AggregationLeaseHeartbeat,
             aggregation_min_interval_seconds,
         )
         from reflexio.server.services.playbook.components.aggregator import (
@@ -73,14 +80,16 @@ class GenerationMixin(ReflexioBase):
             storage.schedule_playbook_aggregation(agent_version)
             claim = storage.claim_due_playbook_aggregation(
                 owner=f"admin-rerun:{uuid.uuid4().hex}",
-                lease_seconds=1800,
+                lease_seconds=AGGREGATION_LEASE_SECONDS,
                 agent_version=agent_version,
             )
             if claim is None:
                 raise RuntimeError(
                     "another playbook aggregation is already running for this organization"
                 )
+        heartbeat = None
         if claim is not None:
+            heartbeat = AggregationLeaseHeartbeat(storage, claim)
             aggregator_kwargs["aggregation_claim"] = claim
         playbook_aggregator = PlaybookAggregator(
             llm_client=self.llm_client,
@@ -89,22 +98,34 @@ class GenerationMixin(ReflexioBase):
             **aggregator_kwargs,
         )
         try:
+            if heartbeat is not None:
+                heartbeat.start()
             result = playbook_aggregator.run(aggregator_request)
+            if heartbeat is not None:
+                heartbeat.stop()
+                heartbeat.require_live()
         except Exception:
-            if claim is not None:
-                storage.finish_playbook_aggregation_claim(
-                    claim,
-                    success=False,
-                    retry_after_seconds=60,
-                    backlog_retry_after_seconds=1,
-                    min_interval_seconds=min_interval_seconds,
-                )
+            if heartbeat is not None:
+                heartbeat.stop()
+                try:
+                    storage.finish_playbook_aggregation_claim(
+                        heartbeat.claim,
+                        success=False,
+                        retry_after_seconds=AGGREGATION_RETRY_SECONDS,
+                        backlog_retry_after_seconds=(AGGREGATION_BACKLOG_RETRY_SECONDS),
+                        min_interval_seconds=min_interval_seconds,
+                    )
+                except Exception:
+                    logger.exception(
+                        "failed to release playbook aggregation claim after admin "
+                        "rerun failure"
+                    )
             raise
-        if claim is not None and not storage.finish_playbook_aggregation_claim(
-            claim,
+        if heartbeat is not None and not storage.finish_playbook_aggregation_claim(
+            heartbeat.claim,
             success=True,
-            retry_after_seconds=60,
-            backlog_retry_after_seconds=1,
+            retry_after_seconds=AGGREGATION_RETRY_SECONDS,
+            backlog_retry_after_seconds=AGGREGATION_BACKLOG_RETRY_SECONDS,
             min_interval_seconds=min_interval_seconds,
         ):
             raise RuntimeError("playbook aggregation rerun lost its database fence")

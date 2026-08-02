@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import ast
+import json
+import sqlite3
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -35,6 +38,14 @@ def _store(tmp_path) -> SQLiteStorage:
     return SQLiteStorage(org_id="aggregation-org", db_path=str(tmp_path / "state.db"))
 
 
+@pytest.fixture
+def vec_store(tmp_path) -> SQLiteStorage:
+    store = _store(tmp_path)
+    if not store._has_sqlite_vec:
+        pytest.skip("sqlite-vec is unavailable")
+    return store
+
+
 def test_lineage_silent_bulk_delete_callers_only_remove_ineligible_rows() -> None:
     package_root = Path(reflexio.__file__).parent
     call_sites: list[tuple[str, str]] = []
@@ -60,7 +71,10 @@ def test_lineage_silent_bulk_delete_callers_only_remove_ineligible_rows() -> Non
         def visit_Call(self, node: ast.Call) -> None:
             if isinstance(node.func, ast.Attribute):
                 if node.func.attr == "delete_all_user_playbooks_by_status":
-                    call_sites.append((self.relative_path, self.function_stack[-1]))
+                    function_name = (
+                        self.function_stack[-1] if self.function_stack else "<module>"
+                    )
+                    call_sites.append((self.relative_path, function_name))
                 elif node.func.attr == "_delete_items_by_status" and node.args:
                     argument = node.args[0]
                     if isinstance(argument, ast.Attribute):
@@ -75,7 +89,7 @@ def test_lineage_silent_bulk_delete_callers_only_remove_ineligible_rows() -> Non
         ("server/services/playbook/service.py", "_delete_items_by_status"),
         ("server/services/playbook/service.py", "_pre_process_rerun"),
     ]
-    assert cleanup_statuses == ["ARCHIVED"]
+    assert sorted(cleanup_statuses) == ["ARCHIVED"]
 
 
 def _insert_current(
@@ -123,6 +137,11 @@ def test_org_claim_is_fenced_and_fence_is_monotonic(tmp_path) -> None:
     store = _store(tmp_path)
     store.schedule_playbook_aggregation("v2")
     store.schedule_playbook_aggregation("v1")
+    store.conn.execute(
+        "UPDATE playbook_aggregation_state SET next_attempt_at="
+        "(SELECT min(next_attempt_at) FROM playbook_aggregation_state)"
+    )
+    store.conn.commit()
 
     first = store.claim_due_playbook_aggregation(owner="worker-a", lease_seconds=30)
     assert first is not None
@@ -149,6 +168,42 @@ def test_org_claim_is_fenced_and_fence_is_monotonic(tmp_path) -> None:
         backlog_retry_after_seconds=1,
         min_interval_seconds=60,
     )
+
+
+def test_failed_finish_cas_rolls_back_owned_sqlite_transaction(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = _store(tmp_path)
+    store.schedule_playbook_aggregation("v1")
+    claim = store.claim_due_playbook_aggregation(owner="worker", lease_seconds=30)
+    assert claim is not None
+    external = sqlite3.connect(str(tmp_path / "state.db"), timeout=0.1)
+    original_is_live = store._aggregation_claim_is_live
+
+    def race_state_version(candidate) -> bool:
+        is_live = original_is_live(candidate)
+        external.execute(
+            "UPDATE playbook_aggregation_state SET state_version=state_version+1 "
+            "WHERE agent_version='v1'"
+        )
+        external.commit()
+        return is_live
+
+    monkeypatch.setattr(store, "_aggregation_claim_is_live", race_state_version)
+
+    assert not store.finish_playbook_aggregation_claim(
+        claim,
+        success=False,
+        retry_after_seconds=60,
+        backlog_retry_after_seconds=1,
+        min_interval_seconds=3600,
+    )
+    assert store.conn.in_transaction is False
+    external.execute(
+        "UPDATE playbook_aggregation_state SET pending=1 WHERE agent_version='v1'"
+    )
+    external.commit()
+    external.close()
 
 
 def test_successful_bounded_run_with_backlog_is_due_again_immediately(tmp_path) -> None:
@@ -185,7 +240,7 @@ def test_new_signal_advances_an_idle_version_to_due_now(tmp_path) -> None:
         retry_after_seconds=60,
         backlog_retry_after_seconds=1,
         min_interval_seconds=3600,
-        backlog=PlaybookAggregationBacklog(0, 0, 0),
+        backlog=PlaybookAggregationBacklog(undisposed=0, residual=0, invalidations=0),
     )
 
     store.schedule_playbook_aggregation("v1")
@@ -197,17 +252,11 @@ def test_new_signal_advances_an_idle_version_to_due_now(tmp_path) -> None:
 
 
 def test_stale_claim_cannot_commit_incremental_effect(
-    tmp_path, monkeypatch: pytest.MonkeyPatch
+    vec_store, tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from unittest.mock import MagicMock
-
-    store = _store(tmp_path)
-    if not store._has_sqlite_vec:
-        pytest.skip("sqlite-vec is unavailable")
+    store = vec_store
     embedding = [0.0] * store.embedding_dimensions
     embedding[0] = 1.0
-    import json
-
     encoded = json.dumps(embedding)
     _insert_current(store, 1, embedding=encoded, trigger="same trigger")
     _insert_current(store, 2, embedding=encoded, trigger="same trigger")
@@ -339,6 +388,26 @@ def test_residual_retry_is_deferred_until_identical_work_cools_down(tmp_path) ->
     assert backlog.continuation_delay_seconds == backlog.residual_retry_after_seconds
 
 
+def test_residual_retry_cooldown_is_aggregated_in_sql(tmp_path) -> None:
+    store = _store(tmp_path)
+    for item_id in range(1, 101):
+        _insert_current(store, item_id)
+    store.stage_playbook_aggregation_intake("v1", limit=100)
+    store.conn.execute(
+        "UPDATE playbook_aggregation_item SET attempt_count=2, "
+        "last_attempt_at=unixepoch() WHERE agent_version='v1'"
+    )
+    store.conn.commit()
+    statements: list[str] = []
+    store.conn.set_trace_callback(statements.append)
+
+    backlog = store.get_playbook_aggregation_backlog("v1")
+
+    store.conn.set_trace_callback(None)
+    assert 61 <= backlog.residual_retry_after_seconds <= 120
+    assert any("COALESCE(MAX(0, MIN(CASE" in statement for statement in statements)
+
+
 def test_discovery_repairs_lost_post_commit_signal(tmp_path) -> None:
     store = _store(tmp_path)
     _insert_current(store, 42, version="lost-signal")
@@ -377,10 +446,8 @@ def test_dirty_cluster_keeps_aggregation_pending() -> None:
     assert backlog.pending is True
 
 
-def test_sqlite_vec_centroid_lookup_and_attachment(tmp_path) -> None:
-    store = _store(tmp_path)
-    if not store._has_sqlite_vec:
-        pytest.skip("sqlite-vec is unavailable")
+def test_sqlite_vec_centroid_lookup_and_attachment(vec_store) -> None:
+    store = vec_store
     for item_id in (1, 2, 3):
         _insert_current(store, item_id)
     store.stage_playbook_aggregation_intake("v1", limit=10)
@@ -397,10 +464,15 @@ def test_sqlite_vec_centroid_lookup_and_attachment(tmp_path) -> None:
     store.set_playbook_aggregation_disposition(
         "v1", [1, 2], disposition="cluster_member", cluster_id=cluster_id
     )
+    vec_schema = store.conn.execute(
+        "SELECT sql FROM sqlite_master WHERE name='playbook_aggregation_clusters_vec'"
+    ).fetchone()[0]
+    assert "distance_metric=cosine" in vec_schema
+    scaled_embedding = [value * 10 for value in embedding]
 
     matches = store.find_nearest_playbook_aggregation_clusters(
         "v1",
-        [(3, embedding)],
+        [(3, scaled_embedding)],
         embedding_model=store.embedding_model_name,
         limit=10,
     )
@@ -410,7 +482,7 @@ def test_sqlite_vec_centroid_lookup_and_attachment(tmp_path) -> None:
     assert match.similarity > 0.99
     store.attach_playbook_aggregation_items(
         agent_version="v1",
-        attachments=[(3, cluster_id, embedding)],
+        attachments=[(3, cluster_id, scaled_embedding)],
     )
     assert (
         store.conn.execute(
@@ -421,10 +493,8 @@ def test_sqlite_vec_centroid_lookup_and_attachment(tmp_path) -> None:
     )
 
 
-def test_centroid_batches_are_strictly_isolated_by_agent_version(tmp_path) -> None:
-    store = _store(tmp_path)
-    if not store._has_sqlite_vec:
-        pytest.skip("sqlite-vec is unavailable")
+def test_centroid_batches_are_strictly_isolated_by_agent_version(vec_store) -> None:
+    store = vec_store
     embedding = [0.0] * store.embedding_dimensions
     embedding[0] = 1.0
     other_embedding = [0.0] * store.embedding_dimensions
@@ -473,11 +543,9 @@ def test_centroid_batches_are_strictly_isolated_by_agent_version(tmp_path) -> No
 
 
 def test_invalidation_dissolves_cluster_and_requeues_unaffected_members(
-    tmp_path,
+    vec_store,
 ) -> None:
-    store = _store(tmp_path)
-    if not store._has_sqlite_vec:
-        pytest.skip("sqlite-vec is unavailable")
+    store = vec_store
     for item_id in (1, 2):
         _insert_current(store, item_id)
     store.stage_playbook_aggregation_intake("v1", limit=10)
@@ -575,6 +643,42 @@ def test_archive_with_blank_agent_version_does_not_arm_aggregation(tmp_path) -> 
         ).fetchone()[0]
         == 0
     )
+
+
+def test_nonnumeric_lineage_entity_does_not_abort_on_numeric_source(tmp_path) -> None:
+    from reflexio.server.services.storage.sqlite_storage._lineage import (
+        _append_event_stmt,
+    )
+
+    store = _store(tmp_path)
+    _insert_current(store, 1)
+
+    _append_event_stmt(
+        store.conn,
+        org_id=store.org_id,
+        entity_type="user_playbook",
+        entity_id="external-id",
+        op="revise",
+        prov="wasRevisionOf",
+        source_ids=["1"],
+        actor="test",
+        request_id="nonnumeric-entity",
+        reason="regression",
+    )
+    store.conn.commit()
+
+    assert (
+        store.conn.execute(
+            "SELECT count(*) FROM lineage_event WHERE entity_id='external-id'"
+        ).fetchone()[0]
+        == 1
+    )
+    assert (
+        store.conn.execute(
+            "SELECT count(*) FROM playbook_aggregation_invalidation"
+        ).fetchone()[0]
+        == 0
+    )
     assert (
         store.conn.execute(
             "SELECT count(*) FROM playbook_aggregation_state"
@@ -584,17 +688,11 @@ def test_archive_with_blank_agent_version_does_not_arm_aggregation(tmp_path) -> 
 
 
 def test_incremental_run_creates_once_then_attaches_without_replacement(
-    tmp_path, monkeypatch: pytest.MonkeyPatch
+    vec_store, tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from unittest.mock import MagicMock
-
-    store = _store(tmp_path)
-    if not store._has_sqlite_vec:
-        pytest.skip("sqlite-vec is unavailable")
+    store = vec_store
     embedding = [0.0] * store.embedding_dimensions
     embedding[0] = 1.0
-    import json
-
     encoded = json.dumps(embedding)
     _insert_current(store, 1, embedding=encoded, trigger="same trigger")
     _insert_current(store, 2, embedding=encoded, trigger="same trigger")
@@ -676,17 +774,11 @@ def test_incremental_run_creates_once_then_attaches_without_replacement(
 
 
 def test_incremental_run_commits_healthy_clusters_when_one_llm_outcome_fails(
-    tmp_path, monkeypatch: pytest.MonkeyPatch
+    vec_store, tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from unittest.mock import MagicMock
-
-    store = _store(tmp_path)
-    if not store._has_sqlite_vec:
-        pytest.skip("sqlite-vec is unavailable")
+    store = vec_store
     embedding = [0.0] * store.embedding_dimensions
     embedding[0] = 1.0
-    import json
-
     encoded = json.dumps(embedding)
     for item_id in range(1, 5):
         _insert_current(store, item_id, embedding=encoded, trigger=f"trigger-{item_id}")
@@ -760,13 +852,9 @@ def test_incremental_run_commits_healthy_clusters_when_one_llm_outcome_fails(
 
 
 def test_legacy_fingerprint_is_reembedded_and_adopted_without_regeneration(
-    tmp_path, monkeypatch: pytest.MonkeyPatch
+    vec_store, tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from unittest.mock import MagicMock
-
-    store = _store(tmp_path)
-    if not store._has_sqlite_vec:
-        pytest.skip("sqlite-vec is unavailable")
+    store = vec_store
     embedding = [0.0] * store.embedding_dimensions
     embedding[0] = 1.0
     monkeypatch.setattr(store, "_get_embedding", lambda _text: embedding)
@@ -830,17 +918,11 @@ def test_legacy_fingerprint_is_reembedded_and_adopted_without_regeneration(
 
 
 def test_fenced_full_rerun_rebuilds_typed_cluster_state(
-    tmp_path, monkeypatch: pytest.MonkeyPatch
+    vec_store, tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from unittest.mock import MagicMock
-
-    store = _store(tmp_path)
-    if not store._has_sqlite_vec:
-        pytest.skip("sqlite-vec is unavailable")
+    store = vec_store
     embedding = [0.0] * store.embedding_dimensions
     embedding[0] = 1.0
-    import json
-
     encoded = json.dumps(embedding)
     _insert_current(store, 1, embedding=encoded, trigger="same trigger")
     _insert_current(store, 2, embedding=encoded, trigger="same trigger")
@@ -900,6 +982,7 @@ def test_rerun_snapshot_finishes_only_materialized_work(tmp_path) -> None:
     store.append_playbook_aggregation_invalidation(
         agent_version="v1", operation="create", entity_id=2
     )
+    # Intentionally exercise the BEFORE DELETE aggregation-invalidation trigger.
     store.conn.execute("DELETE FROM user_playbooks WHERE user_playbook_id=1")
     store.conn.commit()
 

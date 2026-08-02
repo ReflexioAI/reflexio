@@ -8,6 +8,9 @@ from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.services.playbook.aggregation_scheduler import (
     ensure_local_playbook_aggregation_scheduler,
 )
+from reflexio.server.services.playbook.aggregation_scheduler import (
+    logger as aggregation_progress_logger,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -78,9 +81,7 @@ def maybe_trigger_user_playbook_aggregation(
             raise RuntimeError("playbook aggregation requires configured storage")
         storage.schedule_playbook_aggregation(agent_version)
         ensure_local_playbook_aggregation_scheduler(request_context)
-        logging.getLogger(
-            "reflexio.server.services.playbook.aggregation_scheduler"
-        ).info(
+        aggregation_progress_logger.info(
             "event=playbook_aggregation_progress state=scheduled org_id=%s "
             "agent_version=%s reason=%s pending=true",
             request_context.org_id,
