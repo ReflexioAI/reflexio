@@ -628,17 +628,6 @@ class PlaybookAggregator:
             duration_ms=int((time.perf_counter() - aggregation_start) * 1000),
             metadata=stats,
         )
-        self._record_learnings_generated(
-            learning_ids=[
-                str(item.agent_playbook_id)
-                for item in saved_playbooks
-                if item.agent_playbook_id is not None
-            ],
-            playbook_name=SINGLETON_USER_PLAYBOOK_NAME,
-            request_id=run_id,
-            metadata=stats,
-            total_count=len(saved_playbooks),
-        )
         return stats
 
     def _stable_aggregation_cluster_id(self, fingerprint: str) -> str:
