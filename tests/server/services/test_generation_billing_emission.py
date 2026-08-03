@@ -15,7 +15,14 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import MagicMock, patch
 
-from reflexio.models.api_schema.service_schemas import Interaction, Request
+import pytest
+
+from reflexio.models.api_schema.domain.entities import UserProfile
+from reflexio.models.api_schema.service_schemas import (
+    Interaction,
+    Request,
+    UserPlaybook,
+)
 from reflexio.models.config_schema import (
     Config,
     ProfileExtractorConfig,
@@ -27,6 +34,14 @@ from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 from reflexio.server.services.base_generation_service import (
     BaseGenerationService,
     PreparedGenerationRun,
+)
+from reflexio.server.services.deferred_learning_plan import (
+    PlaybookWritePlan,
+    ProfileWritePlan,
+)
+from reflexio.server.services.playbook.service import (
+    PlaybookGenerationService,
+    PlaybookGenerationServiceConfig,
 )
 from reflexio.server.services.profile.profile_generation_service_utils import (
     ProfileGenerationRequest,
@@ -165,10 +180,121 @@ def test_real_extraction_emits_tokens_and_learnings(tmp_path):
     assert tok.billing_input_tokens == tok.count_value
     assert tok.platform_llm is True  # no api_key_config in the seeded Config
 
-    # learnings_generated.count_value must equal the existing generation_succeeded count.
+    # This fixture retains every generated output, so billing and success telemetry
+    # have equal counts here.
     gen = next(e for e in learning if e.event_name == "learnings_generated")
     succ = next(e for e in events if e.event_name == "generation_succeeded")
     assert gen.count_value == succ.count_value
+
+
+def test_online_learning_bills_survivors_but_telemetry_counts_raw_results(tmp_path):
+    """Telemetry counts raw output while billing counts retained write-plan items."""
+    storage = _build_sqlite_storage(tmp_path)
+    service = _build_profile_service(storage)
+    extracted_profiles = [
+        UserProfile(
+            profile_id=profile_id,
+            user_id=_USER_ID,
+            content=profile_id,
+            last_modified_timestamp=1_000,
+            generated_from_request_id=_REQUEST_ID,
+        )
+        for profile_id in ("retained", "dropped")
+    ]
+    write_plan = ProfileWritePlan(
+        user_id=_USER_ID,
+        request_id=_REQUEST_ID,
+        new_profiles=extracted_profiles[:1],
+        superseded_ids=[],
+    )
+
+    events: list[UsageEvent] = []
+    configure_usage_event_recorder(events.append)
+    try:
+        with (
+            patch.object(service, "_prepare_generation_run", return_value=_prepared()),
+            patch.object(
+                service, "_execute_extractor", return_value=extracted_profiles
+            ),
+            patch.object(service, "_resolve_write_plan", return_value=write_plan),
+            patch.object(service, "_finalize_extraction_runs"),
+            patch.object(service, "_persist_write_plan"),
+            patch.object(service, "_extraction_input_text", return_value=""),
+        ):
+            plan = service.compute_generation(MagicMock())
+            assert plan is not None
+            assert plan.generated_count == 2
+            assert plan.billable_count == 1
+            service.persist_generation(plan)
+            service.emit_generation_side_effects(plan)
+    finally:
+        configure_usage_event_recorder(None)
+
+    billed = [event for event in events if event.event_name == "learnings_generated"]
+    assert [event.count_value for event in billed] == [1]
+    succeeded = [
+        event for event in events if event.event_name == "generation_succeeded"
+    ]
+    assert [event.count_value for event in succeeded] == [2]
+
+
+def test_online_playbook_bills_only_write_plan_survivors(tmp_path):
+    """Playbook candidates removed during write-plan resolution are not billable."""
+    storage = _build_sqlite_storage(tmp_path)
+    context = _request_context(storage)
+    service = PlaybookGenerationService(
+        llm_client=LiteLLMClient(LiteLLMConfig(model="gpt-4o-mini")),
+        request_context=context,
+    )
+    service.service_config = PlaybookGenerationServiceConfig(
+        request_id=_REQUEST_ID,
+        agent_version="v1",
+        user_id=_USER_ID,
+        source="api",
+        auto_run=True,
+    )
+    extracted_playbooks = [
+        UserPlaybook(
+            user_playbook_id=playbook_id,
+            agent_version="v1",
+            request_id=_REQUEST_ID,
+            content=f"content-{playbook_id}",
+            trigger=f"trigger-{playbook_id}",
+        )
+        for playbook_id in (1, 2)
+    ]
+    write_plan = PlaybookWritePlan(
+        request_id=_REQUEST_ID,
+        output_pending_status=False,
+        skip_aggregation=True,
+        new_playbooks=extracted_playbooks[:1],
+        superseded_ids=[],
+        merge_groups=[],
+    )
+
+    events: list[UsageEvent] = []
+    configure_usage_event_recorder(events.append)
+    try:
+        with (
+            patch.object(service, "_prepare_generation_run", return_value=_prepared()),
+            patch.object(
+                service, "_execute_extractor", return_value=extracted_playbooks
+            ),
+            patch.object(service, "_resolve_write_plan", return_value=write_plan),
+            patch.object(service, "_finalize_extraction_runs"),
+            patch.object(service, "_persist_write_plan"),
+            patch.object(service, "_extraction_input_text", return_value=""),
+            patch.object(service, "_dispatch_playbook_schedulers"),
+        ):
+            plan = service.compute_generation(MagicMock())
+            assert plan is not None
+            service.persist_generation(plan)
+            service.emit_generation_side_effects(plan)
+    finally:
+        configure_usage_event_recorder(None)
+
+    billed = [event for event in events if event.event_name == "learnings_generated"]
+    assert [event.count_value for event in billed] == [1]
 
 
 def test_should_run_skip_emits_no_learning_billing(tmp_path, monkeypatch):
@@ -374,6 +500,25 @@ def test_non_learning_service_emits_no_learning_billing_events():
     assert learning_events == [], (
         f"EMITS_LEARNING_BILLING=False service must not emit learning events; got: {learning_events}"
     )
+
+
+def test_base_finalization_requires_receipt_aware_override_for_run_id():
+    """A receipt-less service cannot finalize a resumable extraction run."""
+    service = _StubService(
+        llm_client=LiteLLMClient(LiteLLMConfig(model="gpt-4o-mini")),
+        request_context=_make_minimal_request_context(),
+    )
+
+    with patch.object(service, "_process_results") as process_results:
+        assert service._finalize_extracted_items(["legacy-item"]) is None
+        process_results.assert_called_once_with([["legacy-item"]])
+
+        with pytest.raises(NotImplementedError, match=r"(?i)receipt-aware"):
+            service._finalize_extracted_items(
+                ["resumable-item"], finalization_run_id="run-1"
+            )
+
+        process_results.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

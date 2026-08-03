@@ -29,6 +29,7 @@ from reflexio.server.services.storage.sqlite_storage import (
     _true_rrf_merge,
     _vector_rank_rows,
 )
+from reflexio.server.services.storage.sqlite_storage import _base as sqlite_storage_base
 from reflexio.server.services.storage.sqlite_storage._base import (
     _epoch_to_iso,
     _iso_to_epoch,
@@ -53,6 +54,42 @@ def storage():
         patch.object(SQLiteStorage, "_get_embedding", return_value=[0.0] * 512),
     ):
         yield SQLiteStorage(org_id="0", db_path=f"{temp_dir}/reflexio.db")
+
+
+def test_sqlite_storage_rejects_sqlite_before_returning_support(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr(sqlite_storage_base.sqlite3, "sqlite_version_info", (3, 34, 99))
+    db_path = tmp_path / "missing" / "nested" / "old.db"
+
+    with (
+        patch.object(SQLiteStorage, "_get_embedding", return_value=[0.0] * 512),
+        pytest.raises(
+            RuntimeError,
+            match=r"SQLite 3\.35\.0 or newer is required; detected 3\.34\.99",
+        ),
+    ):
+        SQLiteStorage(org_id="version-check", db_path=str(db_path))
+
+    assert not db_path.parent.exists()
+    assert not db_path.exists()
+
+
+def test_sqlite_storage_accepts_sqlite_with_returning_support(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr(sqlite_storage_base.sqlite3, "sqlite_version_info", (3, 35, 0))
+
+    with patch.object(SQLiteStorage, "_get_embedding", return_value=[0.0] * 512):
+        storage = SQLiteStorage(
+            org_id="version-check", db_path=str(tmp_path / "supported.db")
+        )
+    try:
+        assert storage.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'purge_operations'"
+        ).fetchone()
+    finally:
+        storage.conn.close()
 
 
 # ---------------------------------------------------------------------------

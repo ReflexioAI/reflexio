@@ -5,6 +5,8 @@ from unittest.mock import patch
 
 import pytest
 
+from reflexio.models.api_schema.service_schemas import UserProfile
+from reflexio.server.services.storage.error import StorageError
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 from reflexio.server.services.storage.sqlite_storage._agent_run import _dt
 from reflexio.server.services.storage.storage_base import (
@@ -95,6 +97,210 @@ def test_sqlite_agent_run_crud_round_trip(storage):
     assert loaded.max_steps_remaining == 8
     assert loaded.binding.source_interaction_ids == [1, 2]
     assert loaded.generation_request_snapshot == {"request_id": "request_1"}
+
+
+def test_finalization_receipt_accepts_empty_ids_idempotently(storage):
+    storage.create_agent_run(_agent_run("run_empty", AgentRunStatus.FINALIZING))
+
+    storage.save_agent_run_finalization_receipt(
+        run_id="run_empty", entity_type="profile", learning_ids=[]
+    )
+    storage.save_agent_run_finalization_receipt(
+        run_id="run_empty", entity_type="profile", learning_ids=[]
+    )
+
+    assert (
+        storage.get_agent_run_finalization_receipt(
+            run_id="run_empty", entity_type="profile"
+        )
+        == []
+    )
+    assert (
+        storage.conn.execute(
+            "SELECT COUNT(*) FROM _agent_run_finalization_receipts "
+            "WHERE run_id = 'run_empty'"
+        ).fetchone()[0]
+        == 1
+    )
+
+
+@pytest.mark.parametrize("malformed_id", [1, None, "", "   "])
+def test_finalization_receipt_rejects_malformed_id_before_insert(
+    storage,
+    malformed_id,
+):
+    storage.create_agent_run(_agent_run("run_invalid", AgentRunStatus.FINALIZING))
+
+    with pytest.raises(StorageError, match="non-empty strings"):
+        storage.save_agent_run_finalization_receipt(
+            run_id="run_invalid",
+            entity_type="profile",
+            learning_ids=[malformed_id],  # type: ignore[list-item]
+        )
+
+    assert (
+        storage.get_agent_run_finalization_receipt(
+            run_id="run_invalid", entity_type="profile"
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize("encoded_ids", ["[1]", '["   "]', "null"])
+def test_finalization_receipt_rejects_corrupt_persisted_ids(storage, encoded_ids):
+    storage.create_agent_run(_agent_run("run_corrupt", AgentRunStatus.FINALIZING))
+    storage.conn.execute(
+        """
+        INSERT INTO _agent_run_finalization_receipts
+            (run_id, entity_type, learning_ids)
+        VALUES (?, ?, ?)
+        """,
+        ("run_corrupt", "profile", encoded_ids),
+    )
+    storage.conn.commit()
+
+    with pytest.raises(StorageError, match="corrupt"):
+        storage.get_agent_run_finalization_receipt(
+            run_id="run_corrupt", entity_type="profile"
+        )
+
+
+def test_finalization_receipt_rolls_back_with_learning(storage):
+    storage.create_agent_run(_agent_run("run_rollback", AgentRunStatus.FINALIZING))
+    profile = UserProfile(
+        profile_id="profile-rollback",
+        user_id="user_1",
+        content="This row must roll back with its receipt.",
+        last_modified_timestamp=1_000,
+        generated_from_request_id="request_1",
+    )
+
+    with (
+        pytest.raises(RuntimeError, match="force rollback"),
+        storage.commit_scope(),
+    ):
+        storage.add_user_profile("user_1", [profile])
+        storage.save_agent_run_finalization_receipt(
+            run_id="run_rollback",
+            entity_type="profile",
+            learning_ids=[profile.profile_id],
+        )
+        raise RuntimeError("force rollback")
+
+    assert storage.get_user_profile("user_1") == []
+    assert (
+        storage.get_agent_run_finalization_receipt(
+            run_id="run_rollback", entity_type="profile"
+        )
+        is None
+    )
+
+
+def test_finalization_receipt_rejects_conflicting_immutable_value(storage):
+    storage.create_agent_run(_agent_run("run_immutable", AgentRunStatus.FINALIZING))
+    storage.save_agent_run_finalization_receipt(
+        run_id="run_immutable",
+        entity_type="profile",
+        learning_ids=["profile-1"],
+    )
+
+    with pytest.raises(StorageError, match="immutable"):
+        storage.save_agent_run_finalization_receipt(
+            run_id="run_immutable",
+            entity_type="profile",
+            learning_ids=["profile-2"],
+        )
+
+    assert storage.get_agent_run_finalization_receipt(
+        run_id="run_immutable", entity_type="profile"
+    ) == ["profile-1"]
+
+
+def test_finalization_receipt_rejects_get_for_changed_entity_type(storage):
+    storage.create_agent_run(_agent_run("run_get_type", AgentRunStatus.FINALIZING))
+    storage.save_agent_run_finalization_receipt(
+        run_id="run_get_type",
+        entity_type="profile",
+        learning_ids=["profile-1"],
+    )
+
+    with pytest.raises(StorageError, match="entity type changed"):
+        storage.get_agent_run_finalization_receipt(
+            run_id="run_get_type", entity_type="user_playbook"
+        )
+
+    assert storage.get_agent_run_finalization_receipt(
+        run_id="run_get_type", entity_type="profile"
+    ) == ["profile-1"]
+
+
+def test_finalization_receipt_rejects_save_for_conflicting_extractor_type(storage):
+    storage.create_agent_run(_agent_run("run_save_type", AgentRunStatus.FINALIZING))
+    storage.save_agent_run_finalization_receipt(
+        run_id="run_save_type",
+        entity_type="profile",
+        learning_ids=["profile-1"],
+    )
+
+    with pytest.raises(StorageError, match="entity type is invalid"):
+        storage.save_agent_run_finalization_receipt(
+            run_id="run_save_type",
+            entity_type="user_playbook",
+            learning_ids=["playbook-1"],
+        )
+
+    assert storage.get_agent_run_finalization_receipt(
+        run_id="run_save_type", entity_type="profile"
+    ) == ["profile-1"]
+
+
+def test_finalization_receipt_isolated_by_org(tmp_path):
+    db_path = str(tmp_path / "receipt-orgs.db")
+    with patch.object(SQLiteStorage, "_get_embedding", return_value=[0.0] * 512):
+        owner = SQLiteStorage(org_id="org_1", db_path=db_path)
+        peer = SQLiteStorage(org_id="org_2", db_path=db_path)
+    owner.create_agent_run(_agent_run("run_owned", AgentRunStatus.FINALIZING))
+    owner.save_agent_run_finalization_receipt(
+        run_id="run_owned",
+        entity_type="profile",
+        learning_ids=["profile-owned"],
+    )
+
+    assert (
+        peer.get_agent_run_finalization_receipt(
+            run_id="run_owned", entity_type="profile"
+        )
+        is None
+    )
+    with pytest.raises(StorageError, match="owner"):
+        peer.save_agent_run_finalization_receipt(
+            run_id="run_owned",
+            entity_type="profile",
+            learning_ids=["profile-peer"],
+        )
+    assert owner.get_agent_run_finalization_receipt(
+        run_id="run_owned", entity_type="profile"
+    ) == ["profile-owned"]
+
+
+def test_finalization_receipt_survives_reopen_and_repeated_migration(tmp_path):
+    db_path = str(tmp_path / "receipt-reopen.db")
+    with patch.object(SQLiteStorage, "_get_embedding", return_value=[0.0] * 512):
+        first = SQLiteStorage(org_id="org_1", db_path=db_path)
+        first.create_agent_run(_agent_run("run_reopen", AgentRunStatus.FINALIZING))
+        first.save_agent_run_finalization_receipt(
+            run_id="run_reopen",
+            entity_type="profile",
+            learning_ids=["profile-reopen"],
+        )
+        first.conn.close()
+
+        reopened = SQLiteStorage(org_id="org_1", db_path=db_path)
+        reopened.migrate()
+
+    assert reopened.get_agent_run_finalization_receipt(
+        run_id="run_reopen", entity_type="profile"
+    ) == ["profile-reopen"]
 
 
 def test_sqlite_get_latest_finalized_agent_run_for_request_filters_binding(storage):

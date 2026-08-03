@@ -49,6 +49,12 @@ RETENTION_TARGETS: tuple[RetentionTarget, ...] = (
     RetentionTarget("interactions", "interactions", "created_at", ("interaction_id",)),
     RetentionTarget("requests", "requests", "created_at", ("request_id",)),
     RetentionTarget(
+        "session_outcomes",
+        "session_outcomes",
+        "created_at",
+        ("user_id", "session_id"),
+    ),
+    RetentionTarget(
         "user_playbooks",
         "user_playbooks",
         "created_at",
@@ -129,6 +135,12 @@ RETENTION_TARGETS: tuple[RetentionTarget, ...] = (
         "playbook_retrieval_logs",
         "created_at",
         ("retrieval_log_id",),
+    ),
+    RetentionTarget(
+        "user_playbook_exposure_events",
+        "user_playbook_exposure_events",
+        "ingested_at",
+        ("exposure_event_id",),
     ),
     RetentionTarget("skills", "skills", "created_at", ("skill_id",)),
 )

@@ -17,10 +17,12 @@ import sqlite3
 import threading
 from collections.abc import Callable, Generator, Sequence
 from datetime import UTC, datetime
+from hashlib import sha256
 from pathlib import Path
 from typing import Any, ClassVar, Literal
 
 from reflexio.models.api_schema.common import BlockingIssue
+from reflexio.models.api_schema.domain import SessionOutcomeKind
 from reflexio.models.api_schema.service_schemas import (
     AgentPlaybook,
     AgentSuccessEvaluationResult,
@@ -57,6 +59,13 @@ from reflexio.server.services.storage.error import (
     require_non_empty_session_id,
 )
 from reflexio.server.services.storage.retention_mixin import RetentionMixin
+from reflexio.server.services.storage.session_outcome_identity import (
+    CanonicalSessionTrajectory,
+    canonical_json_bytes,
+    canonical_session_trajectory,
+    outcome_contract_digest,
+    trajectory_digest,
+)
 from reflexio.server.services.storage.storage_base import BaseStorage
 from reflexio.server.site_var.site_var_manager import SiteVarManager
 
@@ -64,6 +73,9 @@ from ._governance import init_governance_tables
 from ._stall_state import init_stall_state_table
 
 logger = logging.getLogger(__name__)
+
+_OUTCOME_ALLOWED_VALUES = tuple(kind.value for kind in SessionOutcomeKind)
+_MINIMUM_SQLITE_VERSION = (3, 35, 0)
 
 
 # ---------------------------------------------------------------------------
@@ -83,6 +95,47 @@ def _json_loads(text: str | None) -> Any:
     if not text:
         return None
     return json.loads(text)
+
+
+def _canonical_session_snapshot(
+    conn: sqlite3.Connection, session_id: str
+) -> CanonicalSessionTrajectory:
+    """Return the durable session state used to bind an outcome finalization."""
+    request_rows = conn.execute(
+        """SELECT request_id, user_id, created_at, source, agent_version, session_id,
+                  evaluation_only, retrieval_experiment_id, retrieval_experiment_arm
+           FROM requests WHERE session_id = ?
+           ORDER BY created_at ASC, request_id ASC""",
+        (session_id,),
+    ).fetchall()
+    request_payloads = [dict(request) for request in request_rows]
+    interactions_by_request: dict[str, list[dict[str, object]]] = {
+        str(request["request_id"]): [] for request in request_rows
+    }
+    interaction_rows = conn.execute(
+        """SELECT interaction_id, user_id, request_id, created_at, content, role,
+                  token_count, user_action, user_action_description,
+                  interacted_image_url, image_encoding, shadow_content,
+                  expert_content, tools_used, citations, retrieved_learnings
+           FROM interactions
+           WHERE request_id IN (
+               SELECT request_id FROM requests WHERE session_id = ?
+           )
+           ORDER BY request_id ASC, created_at ASC, interaction_id ASC""",
+        (session_id,),
+    ).fetchall()
+    for interaction in interaction_rows:
+        interactions_by_request[str(interaction["request_id"])].append(
+            dict(interaction)
+        )
+    return canonical_session_trajectory(
+        session_id, request_payloads, interactions_by_request
+    )
+
+
+def _legacy_session_outcome_id(user_id: str, session_id: str) -> str:
+    """Return a delimiter-safe immutable identity for a migrated legacy outcome."""
+    return sha256(canonical_json_bytes([user_id, session_id])).hexdigest()
 
 
 _FTS5_OPERATORS = frozenset({"OR", "AND", "NOT"})
@@ -663,6 +716,12 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
 
         logger.info("SQLite Storage for org %s using db_path: %s", org_id, db_path)
 
+        if sqlite3.sqlite_version_info < _MINIMUM_SQLITE_VERSION:
+            detected_version = ".".join(map(str, sqlite3.sqlite_version_info))
+            raise RuntimeError(
+                f"SQLite 3.35.0 or newer is required; detected {detected_version}"
+            )
+
         # Ensure parent directory exists
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
 
@@ -767,10 +826,25 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         # before executescript so index creation cannot fail on missing columns.
         self._migrate_request_retrieval_experiment()
         with self._lock:
+            session_outcome_columns = {
+                row["name"]
+                for row in self.conn.execute(
+                    "PRAGMA table_info(session_outcomes)"
+                ).fetchall()
+            }
+            if (
+                session_outcome_columns
+                and "governance_subject_ref" not in session_outcome_columns
+            ):
+                self.conn.execute(
+                    "ALTER TABLE session_outcomes "
+                    "ADD COLUMN governance_subject_ref TEXT"
+                )
             cur = self.conn.cursor()
             cur.executescript(_DDL)
             init_governance_tables(self.conn)
             self.conn.commit()
+        self._migrate_session_outcomes_schema()
         if self._has_sqlite_vec:
             self._create_vec_tables()
             self._migrate_vec_tables()
@@ -862,6 +936,139 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                 emb = _json_loads(r["embedding"])
                 if emb:
                     self._vec_upsert(vec_table, r["rid"], emb)
+
+    def _migrate_session_outcomes_schema(self) -> None:
+        """Rebuild legacy outcome rows with immutable v1 finalization identities."""
+        with self._lock:
+            self.conn.execute("BEGIN IMMEDIATE")
+            try:
+                columns = {
+                    row["name"]
+                    for row in self.conn.execute(
+                        "PRAGMA table_info(session_outcomes)"
+                    ).fetchall()
+                }
+                table = self.conn.execute(
+                    "SELECT sql FROM sqlite_master WHERE type = 'table' "
+                    "AND name = 'session_outcomes'"
+                ).fetchone()
+                table_sql = (table["sql"] if table is not None else "") or ""
+                required = {
+                    "outcome_id",
+                    "outcome_revision",
+                    "outcome_contract_digest",
+                    "finalized_trajectory_digest",
+                }
+                if required.issubset(columns) and "'unknown'" in table_sql:
+                    rows_missing_subject_ref = self.conn.execute(
+                        """SELECT user_id, session_id FROM session_outcomes
+                           WHERE governance_subject_ref IS NULL
+                              OR trim(governance_subject_ref) = ''"""
+                    ).fetchall()
+                    self.conn.executemany(
+                        """UPDATE session_outcomes SET governance_subject_ref = ?
+                           WHERE user_id = ? AND session_id = ?""",
+                        [
+                            (
+                                self._subject_ref_for_user_id(str(row["user_id"])),
+                                row["user_id"],
+                                row["session_id"],
+                            )
+                            for row in rows_missing_subject_ref
+                        ],
+                    )
+                    self.conn.commit()
+                    return
+
+                legacy_rows = self.conn.execute(
+                    "SELECT * FROM session_outcomes"
+                ).fetchall()
+                self.conn.execute(
+                    "ALTER TABLE session_outcomes RENAME TO session_outcomes_legacy"
+                )
+                self.conn.execute(
+                    """CREATE TABLE session_outcomes (
+                        outcome_id TEXT NOT NULL UNIQUE,
+                        outcome_revision INTEGER NOT NULL CHECK (outcome_revision >= 1),
+                        user_id TEXT NOT NULL,
+                        session_id TEXT NOT NULL,
+                        outcome TEXT NOT NULL CHECK (outcome IN ('success', 'failure', 'unknown')),
+                        occurred_at INTEGER NOT NULL,
+                        source TEXT NOT NULL,
+                        label TEXT,
+                        value REAL,
+                        metadata TEXT,
+                        outcome_contract_digest TEXT NOT NULL,
+                        finalized_trajectory_digest TEXT NOT NULL,
+                        governance_subject_ref TEXT NOT NULL,
+                        created_at INTEGER NOT NULL,
+                        PRIMARY KEY (user_id, session_id)
+                    )"""
+                )
+                for row in legacy_rows:
+                    source = str(row["source"])
+                    subject_ref = row["governance_subject_ref"]
+                    if subject_ref is None or not str(subject_ref).strip():
+                        subject_ref = self._subject_ref_for_user_id(str(row["user_id"]))
+                    self.conn.execute(
+                        """INSERT INTO session_outcomes (
+                            outcome_id, outcome_revision, user_id, session_id, outcome,
+                            occurred_at, source, label, value, metadata,
+                            outcome_contract_digest, finalized_trajectory_digest,
+                            governance_subject_ref, created_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (
+                            _legacy_session_outcome_id(
+                                str(row["user_id"]), str(row["session_id"])
+                            ),
+                            1,
+                            row["user_id"],
+                            row["session_id"],
+                            row["outcome"],
+                            row["occurred_at"],
+                            source,
+                            row["label"],
+                            row["value"],
+                            row["metadata"],
+                            outcome_contract_digest(
+                                source=source,
+                                schema_version=1,
+                                allowed_values=_OUTCOME_ALLOWED_VALUES,
+                                finalization_rule="first_write",
+                            ),
+                            trajectory_digest(
+                                _canonical_session_snapshot(
+                                    self.conn, str(row["session_id"])
+                                )
+                            ),
+                            subject_ref,
+                            row["created_at"],
+                        ),
+                    )
+                self.conn.execute("DROP TABLE session_outcomes_legacy")
+                self.conn.execute(
+                    "CREATE INDEX idx_session_outcomes_occurred_at "
+                    "ON session_outcomes(occurred_at)"
+                )
+                self.conn.execute(
+                    "CREATE INDEX idx_session_outcomes_session_id "
+                    "ON session_outcomes(session_id)"
+                )
+                self.conn.execute(
+                    "CREATE INDEX idx_session_outcomes_source_outcome "
+                    "ON session_outcomes(source, outcome)"
+                )
+                self.conn.execute(
+                    "CREATE INDEX idx_session_outcomes_label ON session_outcomes(label)"
+                )
+                self.conn.execute(
+                    "CREATE INDEX idx_session_outcomes_subject_ref "
+                    "ON session_outcomes(governance_subject_ref)"
+                )
+                self.conn.commit()
+            except Exception:
+                self.conn.rollback()
+                raise
 
     def _migrate_interactions_schema(self) -> None:
         """Add new columns to existing interactions table if missing."""
@@ -1895,6 +2102,9 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         retrieval_experiment_arm_expr = (
             "retrieval_experiment_arm" if "retrieval_experiment_arm" in cols else "NULL"
         )
+        governance_subject_ref_expr = (
+            "governance_subject_ref" if "governance_subject_ref" in cols else "NULL"
+        )
         # NOTE: this rebuild hardcodes the full `requests` column set. If a
         # future migration adds a column to `requests`, it MUST be added here
         # too (and to the SELECT below) or the rebuild will silently drop it.
@@ -1909,7 +2119,8 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                 session_id TEXT NOT NULL CHECK (trim(session_id) != ''),
                 evaluation_only INTEGER NOT NULL DEFAULT 0,
                 retrieval_experiment_id TEXT,
-                retrieval_experiment_arm TEXT
+                retrieval_experiment_arm TEXT,
+                governance_subject_ref TEXT
             );
             INSERT INTO requests_new
                 (
@@ -1921,7 +2132,8 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                     session_id,
                     evaluation_only,
                     retrieval_experiment_id,
-                    retrieval_experiment_arm
+                    retrieval_experiment_arm,
+                    governance_subject_ref
                 )
             SELECT
                 request_id,
@@ -1936,7 +2148,8 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                 END,
                 {evaluation_only_expr},
                 {retrieval_experiment_id_expr},
-                {retrieval_experiment_arm_expr}
+                {retrieval_experiment_arm_expr},
+                {governance_subject_ref_expr}
             FROM requests;
             DROP TABLE requests;
             ALTER TABLE requests_new RENAME TO requests;
@@ -1945,6 +2158,8 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             CREATE INDEX IF NOT EXISTS idx_requests_created_at ON requests(created_at);
             CREATE INDEX IF NOT EXISTS idx_requests_retrieval_experiment
                 ON requests(retrieval_experiment_id, user_id, session_id, created_at, request_id);
+            CREATE INDEX IF NOT EXISTS idx_requests_governance_subject_ref
+                ON requests(governance_subject_ref);
             """
         )
         self.conn.commit()
@@ -2212,7 +2427,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
 
         Returns:
             dict[str, int]: Per-entity counts with keys ``interactions``,
-                ``user_playbooks``, ``profiles``, ``requests``,
+                ``session_outcomes``, ``user_playbooks``, ``profiles``, ``requests``,
                 ``purged_profiles``, and ``purged_user_playbooks``.
                 ``profiles`` and ``user_playbooks`` reflect hard-deleted counts;
                 purged rows are counted separately.
@@ -2239,7 +2454,6 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                 "SELECT rowid, profile_id FROM profiles WHERE user_id = ?",
                 (user_id,),
             ).fetchall()
-            subject_ref = self._subject_ref_for_user_id(user_id)
 
             # Build a rowid lookup for FTS/vec cleanup (SQLite-specific need).
             profile_rowid_by_id: dict[str, int] = {
@@ -2289,9 +2503,9 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             interactions_cur = self.conn.execute(
                 "DELETE FROM interactions WHERE user_id = ?", (user_id,)
             )
-            self.conn.execute(
-                "DELETE FROM session_outcomes WHERE governance_subject_ref = ?",
-                (subject_ref,),
+            session_outcomes_cur = self.conn.execute(
+                "DELETE FROM session_outcomes WHERE user_id = ?",
+                (user_id,),
             )
             requests_cur = self.conn.execute(
                 "DELETE FROM requests WHERE user_id = ?", (user_id,)
@@ -2328,6 +2542,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                 self.purge_content(entity_type="user_playbook", entity_id=str(upid))
 
         return {
+            "session_outcomes": session_outcomes_cur.rowcount,
             "interactions": interactions_cur.rowcount,
             "user_playbooks": upb_deleted_count,
             "profiles": profile_deleted_count,
@@ -2419,14 +2634,18 @@ CREATE INDEX IF NOT EXISTS idx_requests_retrieval_experiment
     ON requests(retrieval_experiment_id, user_id, session_id, created_at, request_id);
 
 CREATE TABLE IF NOT EXISTS session_outcomes (
+    outcome_id TEXT NOT NULL UNIQUE,
+    outcome_revision INTEGER NOT NULL CHECK (outcome_revision >= 1),
     user_id TEXT NOT NULL,
     session_id TEXT NOT NULL,
-    outcome TEXT NOT NULL CHECK (outcome IN ('success', 'failure')),
+    outcome TEXT NOT NULL CHECK (outcome IN ('success', 'failure', 'unknown')),
     occurred_at INTEGER NOT NULL,
     source TEXT NOT NULL,
     label TEXT,
     value REAL,
     metadata TEXT,
+    outcome_contract_digest TEXT NOT NULL,
+    finalized_trajectory_digest TEXT NOT NULL,
     governance_subject_ref TEXT NOT NULL,
     created_at INTEGER NOT NULL,
     PRIMARY KEY (user_id, session_id)
@@ -2804,6 +3023,14 @@ CREATE TABLE IF NOT EXISTS _agent_runs (
 );
 CREATE INDEX IF NOT EXISTS idx_agent_runs_ready ON _agent_runs(status, next_resume_at, updated_at);
 CREATE INDEX IF NOT EXISTS idx_agent_runs_binding ON _agent_runs(org_id, extractor_kind, user_id);
+
+CREATE TABLE IF NOT EXISTS _agent_run_finalization_receipts (
+    run_id TEXT PRIMARY KEY,
+    entity_type TEXT NOT NULL CHECK (entity_type IN ('profile', 'user_playbook')),
+    learning_ids TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    FOREIGN KEY (run_id) REFERENCES _agent_runs(id) ON DELETE CASCADE
+);
 
 CREATE TABLE IF NOT EXISTS _pending_tool_calls (
     id TEXT PRIMARY KEY,
