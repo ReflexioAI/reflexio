@@ -296,6 +296,14 @@ def test_worker_scope_wraps_only_persist(monkeypatch):
             return _Tracker()
 
         monkeypatch.setattr(storage, "commit_scope", wrapped_scope)
+        # This test owns the durable-learning phase boundary, not the local
+        # aggregation daemon. Keep the durable scheduling signal while avoiding
+        # a second thread opening commit_scope after emit and racing the tracker.
+        monkeypatch.setattr(
+            "reflexio.server.services.playbook.aggregation_trigger."
+            "ensure_local_playbook_aggregation_scheduler",
+            lambda _context: None,
+        )
 
         def wrap(name, fn):
             def _inner(self, *a, **k):
