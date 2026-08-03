@@ -972,15 +972,18 @@ def test_empty_playbook_receipt_retries_without_redispatch(storage):
             failed = worker.run_once()
             assert failed is not None
             assert failed.status == AgentRunStatus.FINALIZATION_FAILED
+            schedule_tagging.assert_called_once()
             storage.update_agent_run_status(
                 run.id,
                 AgentRunStatus.FINALIZATION_FAILED,
                 next_resume_at=datetime(2000, 1, 1, tzinfo=UTC),
             )
             retried = worker.run_once()
+            schedule_tagging.assert_called_once()
             wrapper_ids = _playbook_service(
                 context, request_id=run.binding.request_id
             )._finalize_extracted_items([], finalization_run_id=run.id)
+            schedule_tagging.assert_called_once()
 
         assert retried is not None
         assert retried.status == AgentRunStatus.FINALIZED
@@ -993,7 +996,6 @@ def test_empty_playbook_receipt_retries_without_redispatch(storage):
         resolve.assert_called_once()
         optimize.assert_not_called()
         aggregate.assert_not_called()
-        schedule_tagging.assert_called_once()
         assert (
             storage.get_agent_run_finalization_receipt(
                 run_id=run.id, entity_type="user_playbook"
