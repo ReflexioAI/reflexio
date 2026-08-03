@@ -39,8 +39,8 @@ class AgentRunStoreABC:
         run_id: str,
         entity_type: str,
         learning_ids: list[str],
-    ) -> None:
-        """Persist an immutable run-to-learning binding with the learning writes."""
+    ) -> bool:
+        """Persist an immutable run-to-learning binding and report insert ownership."""
         raise NotImplementedError(f"{type(self).__name__} does not support agent runs")
 
     def get_latest_finalized_agent_run_for_request(

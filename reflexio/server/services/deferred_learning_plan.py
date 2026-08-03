@@ -27,6 +27,24 @@ if TYPE_CHECKING:
 
 
 @dataclass(frozen=True)
+class FinalizationResult:
+    """Internal outcome of resumable learning finalization.
+
+    ``won_receipt`` is true only for the caller whose learning writes and
+    immutable finalization receipt committed together. Receipt-reuse callers
+    still receive the winner's ordered ids but must not replay billing or other
+    winner-only side effects.
+    """
+
+    learning_ids: list[str]
+    won_receipt: bool
+
+
+class _FinalizationReceiptAlreadyExistsError(Exception):
+    """Rollback signal for a finalization transaction that lost receipt ownership."""
+
+
+@dataclass(frozen=True)
 class ExtractorBookmarkAdvance:
     """The extractor stride-bookmark advance, deferred out of the extractor (F1).
 
