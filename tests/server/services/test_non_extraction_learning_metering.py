@@ -7,6 +7,7 @@ import pytest
 from reflexio.models.api_schema.service_schemas import AgentPlaybook, UserPlaybook
 from reflexio.models.config_schema import PlaybookAggregatorConfig, PlaybookConfig
 from reflexio.server.api_endpoints.request_context import RequestContext
+from reflexio.server.services.deferred_learning_plan import FinalizationResult
 from reflexio.server.services.extraction.resume_worker import ExtractionResumeWorker
 from reflexio.server.services.playbook.components.aggregator import PlaybookAggregator
 from reflexio.server.services.playbook.playbook_service_utils import (
@@ -66,9 +67,13 @@ def test_resumable_profile_bills_only_ids_returned_by_finalization() -> None:
     with patch(
         "reflexio.server.services.extraction.resume_worker.ProfileGenerationService"
     ) as service_class:
-        service_class.return_value._finalize_extracted_items.return_value = []
+        finalizer = service_class.return_value._finalize_extracted_items_with_outcome
+        finalizer.return_value = FinalizationResult([], won_receipt=True)
         worker._finalize_items(run, [dropped_candidate])
 
+    finalizer.assert_called_once_with(
+        [dropped_candidate], model_provenance=None, finalization_run_id=run.id
+    )
     assert events == []
 
 
@@ -146,9 +151,13 @@ def test_resumable_playbook_bills_consolidation_replacement_id() -> None:
     with patch(
         "reflexio.server.services.extraction.resume_worker.PlaybookGenerationService"
     ) as service_class:
-        service_class.return_value._finalize_extracted_items.return_value = ["88"]
+        finalizer = service_class.return_value._finalize_extracted_items_with_outcome
+        finalizer.return_value = FinalizationResult(["88"], won_receipt=True)
         worker._finalize_items(run, [original_candidate])
 
+    finalizer.assert_called_once_with(
+        [original_candidate], model_provenance=None, finalization_run_id=run.id
+    )
     assert len(events) == 1
     assert events[0].count_value == 1
     assert events[0].event_key == "learn:user_playbook:88"

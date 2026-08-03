@@ -19,6 +19,7 @@ from reflexio.server.error_reporting import error_tags
 from reflexio.server.llm._litellm_types import ModelProvenance
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 from reflexio.server.llm.model_defaults import ModelRole, resolve_model_name
+from reflexio.server.services.deferred_learning_plan import FinalizationResult
 from reflexio.server.services.extraction.agent_run_records import build_scope_hash
 from reflexio.server.services.extraction.pending_tool_call_dispatch import (
     PendingToolCallToolContext,
@@ -317,8 +318,9 @@ class ExtractionResumeWorker:
 
         try:
             self.storage.update_agent_run_status(run.id, AgentRunStatus.FINALIZING)
-            self._finalize_items(run, items, model_provenance=model_provenance)
-            self._schedule_finalized_tagging(run)
+            result = self._finalize_items(run, items, model_provenance=model_provenance)
+            if result.won_receipt:
+                self._schedule_finalized_tagging(run)
             self.storage.consume_run_tool_dependencies(run.id)
             finalized_status = (
                 AgentRunStatus.FINALIZED_PENDING_TOOL
@@ -363,8 +365,9 @@ class ExtractionResumeWorker:
             items, pending_tool_call_ids, model_provenance = (
                 self._items_from_committed_output(run)
             )
-            self._finalize_items(run, items, model_provenance=model_provenance)
-            self._schedule_finalized_tagging(run)
+            result = self._finalize_items(run, items, model_provenance=model_provenance)
+            if result.won_receipt:
+                self._schedule_finalized_tagging(run)
             self.storage.consume_run_tool_dependencies(run.id)
             finalized_status = (
                 AgentRunStatus.FINALIZED_PENDING_TOOL
@@ -871,7 +874,7 @@ class ExtractionResumeWorker:
         items: list[Any],
         *,
         model_provenance: ModelProvenance | None = None,
-    ) -> None:
+    ) -> FinalizationResult:
         if run.binding.extractor_kind == "profile":
             service = ProfileGenerationService(
                 llm_client=self.client,
@@ -884,13 +887,16 @@ class ExtractionResumeWorker:
                 auto_run=False,
                 force_extraction=True,
             )
-            learning_ids = service._finalize_extracted_items(
+            result = service._finalize_extracted_items_with_outcome(
                 items,
                 model_provenance=model_provenance,
                 finalization_run_id=run.id,
             )
-            self._record_finalized_learnings(run, learning_ids, entity_type="profile")
-            return
+            if result.won_receipt:
+                self._record_finalized_learnings(
+                    run, result.learning_ids, entity_type="profile"
+                )
+            return result
         if run.binding.extractor_kind == "playbook":
             service = PlaybookGenerationService(
                 llm_client=self.client,
@@ -904,15 +910,16 @@ class ExtractionResumeWorker:
                 auto_run=False,
                 force_extraction=True,
             )
-            learning_ids = service._finalize_extracted_items(
+            result = service._finalize_extracted_items_with_outcome(
                 items,
                 model_provenance=model_provenance,
                 finalization_run_id=run.id,
             )
-            self._record_finalized_learnings(
-                run, learning_ids, entity_type="user_playbook"
-            )
-            return
+            if result.won_receipt:
+                self._record_finalized_learnings(
+                    run, result.learning_ids, entity_type="user_playbook"
+                )
+            return result
         raise ResumeWorkerError(
             f"Unsupported extractor kind {run.binding.extractor_kind!r}"
         )
