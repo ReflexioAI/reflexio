@@ -569,6 +569,34 @@ def test_artifact_postprocessing_warning_does_not_write_usage_event(caplog):
     mock_record_usage_event.assert_not_called()
 
 
+def test_oversized_full_rerun_records_failed_gate(monkeypatch) -> None:
+    monkeypatch.setenv("REFLEXIO_MAX_CLUSTERING_PLAYBOOKS", "1")
+    agg = _make_aggregator()
+    agg.configurator.get_config.return_value.user_playbook_extractor_config = (
+        PlaybookConfig(
+            extractor_name="playbook",
+            extraction_definition_prompt="test",
+            aggregation_config=PlaybookAggregatorConfig(min_cluster_size=2),
+        )
+    )
+    agg.storage.count_user_playbooks.return_value = 2
+    agg.storage.get_agent_playbooks.return_value = []
+
+    with (
+        patch(
+            "reflexio.server.services.playbook.components.aggregator.record_usage_event"
+        ) as record_usage,
+        pytest.raises(RuntimeError, match="exceeds the safety cap"),
+    ):
+        agg.run(PlaybookAggregatorRequest(agent_version="v1", rerun=True))
+
+    assert record_usage.call_args.kwargs["outcome"] == "failed"
+    assert (
+        record_usage.call_args.kwargs["metadata"]["failure_reason"]
+        == "full_rerun_safety_cap_exceeded"
+    )
+
+
 def test_artifact_postprocessing_runs_before_exception_logging(caplog):
     agg = _make_aggregator(aggregation_prompt_processor=_MappingAwareProcessor())
     agg.request_context.prompt_manager.render_prompt.return_value = "prompt"
@@ -1034,6 +1062,7 @@ class TestRun:
         agg.storage.get_agent_playbooks.assert_called_once_with(
             limit=page_size,
             max_agent_playbook_id=aggregator_module._SIGNED_BIGINT_MAX,
+            agent_version="v1",
             status_filter=[None],
             playbook_status_filter=[
                 PlaybookStatus.APPROVED,
@@ -1757,6 +1786,10 @@ class TestProcessAggregationResponse:
         response = PlaybookAggregationOutput(playbook=None)
         assert agg._process_aggregation_response(response, [_raw()]) is None
 
+        outcome = agg._process_aggregation_response_outcome(response, [_raw()])
+        assert outcome.status == "semantic_null"
+        assert outcome.playbook is None
+
     def test_valid_response_returns_playbook(self):
         from reflexio.server.services.playbook.playbook_service_utils import (
             PlaybookAggregationOutput,
@@ -1827,6 +1860,37 @@ class TestProcessAggregationResponse:
         )
 
         assert agg._process_aggregation_response(response, [_raw()]) is None
+        assert (
+            agg._process_aggregation_response_outcome(response, [_raw()]).status
+            == "retryable_failure"
+        )
+
+    def test_batch_preserves_one_tagged_outcome_per_cluster(self):
+        agg = _make_aggregator()
+        cluster_a = [_raw(1)]
+        cluster_b = [_raw(2)]
+        agg._generate_playbook_from_cluster_outcome = MagicMock(  # type: ignore[method-assign]
+            side_effect=[
+                aggregator_module.AggregationGenerationOutcome(
+                    "semantic_null", [_raw(1)]
+                ),
+                aggregator_module.AggregationGenerationOutcome(
+                    "retryable_failure", [_raw(2)]
+                ),
+            ]
+        )
+
+        outcomes = agg._generate_playbook_outcomes_with_source_clusters(
+            {0: cluster_a, 1: cluster_b}, []
+        )
+
+        assert [item.status for item in outcomes] == [
+            "semantic_null",
+            "retryable_failure",
+        ]
+        assert [item.source_cluster for item in outcomes] == [cluster_a, cluster_b]
+        assert outcomes[0].source_cluster[0] is cluster_a[0]
+        assert outcomes[1].source_cluster[0] is cluster_b[0]
 
 
 # ---------------------------------------------------------------------------
@@ -1890,6 +1954,39 @@ def test_aggregator_groups_by_content_similarity_not_polarity():
         f"high-overlap content must group together (no polarity gate), got {groups}"
     )
     assert len(groups[0]) == 2
+
+
+def test_large_prompt_cluster_skips_quadratic_direction_grouping(monkeypatch):
+    raws = [_make_pb(f"rule {index}", rid=index) for index in range(257)]
+    monkeypatch.setattr(
+        aggregator_module.aggregator_prompt_formatting,
+        "group_playbooks_by_direction",
+        MagicMock(side_effect=AssertionError("quadratic grouping should be bounded")),
+    )
+
+    rendered = (
+        aggregator_module.aggregator_prompt_formatting.format_structured_cluster_input(
+            raws
+        )
+    )
+
+    assert "TRIGGER conditions: (none specified)" in rendered
+
+
+def test_existing_prompt_context_is_embedding_ranked_and_bounded():
+    cluster = [_raw(1).model_copy(update={"embedding": [1.0, 0.0]})]
+    irrelevant = [
+        _agent_playbook(index).model_copy(update={"embedding": [0.0, 1.0]})
+        for index in range(1, 22)
+    ]
+    relevant = _agent_playbook(99).model_copy(update={"embedding": [1.0, 0.0]})
+
+    selected = aggregator_module._select_relevant_existing_playbooks(
+        cluster, [*irrelevant, relevant]
+    )
+
+    assert len(selected) == 20
+    assert selected[0].agent_playbook_id == 99
 
 
 def test_aggregation_preserves_distinct_do_and_avoid_rules():

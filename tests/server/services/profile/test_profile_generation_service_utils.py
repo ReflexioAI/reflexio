@@ -1,6 +1,7 @@
 """Tests for profile generation service utility functions."""
 
 import tempfile
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
@@ -262,6 +263,27 @@ def test_calculate_expiration_timestamp_finite_ttls(ttl, expected_delta_seconds)
     now = int(datetime.now(UTC).timestamp())
     expiration = calculate_expiration_timestamp(now, ttl)
     assert expiration == now + expected_delta_seconds
+
+
+def test_calculate_expiration_timestamp_ignores_local_dst(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tzset = getattr(time, "tzset", None)
+    if tzset is None:
+        pytest.skip("timezone switching is unavailable")
+    before_pacific_dst_end = int(datetime(2026, 8, 3, 12, tzinfo=UTC).timestamp())
+
+    try:
+        with monkeypatch.context() as context:
+            context.setenv("TZ", "America/Los_Angeles")
+            tzset()
+            expiration = calculate_expiration_timestamp(
+                before_pacific_dst_end, ProfileTimeToLive.ONE_QUARTER
+            )
+    finally:
+        tzset()
+
+    assert expiration == before_pacific_dst_end + 90 * 24 * 3600
 
 
 if __name__ == "__main__":

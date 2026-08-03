@@ -5,7 +5,7 @@ rerun_profile_generation, manual_profile_generation, rerun_playbook_generation,
 manual_playbook_generation, and storage-not-configured error handling.
 """
 
-from typing import Any
+from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -121,6 +121,88 @@ class TestRunPlaybookAggregation:
 
         with pytest.raises(ValueError, match=STORAGE_NOT_CONFIGURED_MSG):
             mixin.run_playbook_aggregation(agent_version="v1", playbook_name="fb")
+
+    @patch("reflexio.server.services.playbook.components.aggregator.PlaybookAggregator")
+    def test_admin_rerun_uses_configured_min_interval(
+        self, mock_agg_cls, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("REFLEXIO_AGGREGATION_MIN_INTERVAL_SECONDS", "123")
+        mixin = _make_mixin()
+        storage = cast(Any, mixin.request_context.storage)
+        storage.supports_incremental_playbook_aggregation = True
+        storage.claim_due_playbook_aggregation.return_value = MagicMock()
+        storage.finish_playbook_aggregation_claim.return_value = True
+
+        mixin.run_playbook_aggregation(agent_version="v1")
+
+        assert storage.finish_playbook_aggregation_claim.call_args.kwargs == {
+            "success": True,
+            "retry_after_seconds": 60,
+            "backlog_retry_after_seconds": 1,
+            "min_interval_seconds": 123,
+        }
+
+    @patch("reflexio.server.services.playbook.components.aggregator.PlaybookAggregator")
+    def test_failed_admin_rerun_uses_configured_min_interval(
+        self, mock_agg_cls, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("REFLEXIO_AGGREGATION_MIN_INTERVAL_SECONDS", "123")
+        mixin = _make_mixin()
+        storage = cast(Any, mixin.request_context.storage)
+        storage.supports_incremental_playbook_aggregation = True
+        storage.claim_due_playbook_aggregation.return_value = MagicMock()
+        mock_agg_cls.return_value.run.side_effect = RuntimeError("boom")
+
+        with pytest.raises(RuntimeError, match="boom"):
+            mixin.run_playbook_aggregation(agent_version="v1")
+
+        assert storage.finish_playbook_aggregation_claim.call_args.kwargs == {
+            "success": False,
+            "retry_after_seconds": 60,
+            "backlog_retry_after_seconds": 1,
+            "min_interval_seconds": 123,
+        }
+
+    @patch("reflexio.server.services.playbook.components.aggregator.PlaybookAggregator")
+    @patch(
+        "reflexio.server.services.playbook.aggregation_scheduler.AggregationLeaseHeartbeat"
+    )
+    def test_admin_rerun_finishes_with_heartbeat_renewed_claim(
+        self, heartbeat_cls, mock_agg_cls
+    ) -> None:
+        mixin = _make_mixin()
+        storage = cast(Any, mixin.request_context.storage)
+        storage.supports_incremental_playbook_aggregation = True
+        original_claim = MagicMock(name="original_claim")
+        renewed_claim = MagicMock(name="renewed_claim")
+        storage.claim_due_playbook_aggregation.return_value = original_claim
+        storage.finish_playbook_aggregation_claim.return_value = True
+        heartbeat_cls.return_value.claim = renewed_claim
+
+        mixin.run_playbook_aggregation(agent_version="v1")
+
+        heartbeat_cls.return_value.start.assert_called_once_with()
+        heartbeat_cls.return_value.stop.assert_called_once_with()
+        heartbeat_cls.return_value.require_live.assert_called_once_with()
+        assert storage.finish_playbook_aggregation_claim.call_args.args == (
+            renewed_claim,
+        )
+
+    @patch("reflexio.server.services.playbook.components.aggregator.PlaybookAggregator")
+    def test_admin_rerun_preserves_original_error_when_claim_cleanup_fails(
+        self, mock_agg_cls
+    ) -> None:
+        mixin = _make_mixin()
+        storage = cast(Any, mixin.request_context.storage)
+        storage.supports_incremental_playbook_aggregation = True
+        storage.claim_due_playbook_aggregation.return_value = MagicMock()
+        storage.finish_playbook_aggregation_claim.side_effect = RuntimeError(
+            "cleanup failed"
+        )
+        mock_agg_cls.return_value.run.side_effect = ValueError("aggregation failed")
+
+        with pytest.raises(ValueError, match="aggregation failed"):
+            mixin.run_playbook_aggregation(agent_version="v1")
 
 
 # ---------------------------------------------------------------------------

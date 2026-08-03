@@ -34,7 +34,7 @@ strings before deleting old import paths in the same PR.
 | Directory | Entry class | Key files |
 |-----------|-------------|-----------|
 | `profile/` | `ProfileGenerationService` | `service.py`, `components/extractor.py`, `components/consolidator.py` |
-| `playbook/` | `PlaybookGenerationService` | `components/extractor.py`, `components/consolidator.py`, `components/aggregator.py` (cluster-fingerprint change detection) — has its own [README](playbook/README.md) |
+| `playbook/` | `PlaybookGenerationService` | `aggregation_trigger.py` durably signals work; `aggregation_scheduler.py` claims fenced bounded units; `components/aggregator.py` performs same-version centroid matching and residual clustering — see [README](playbook/README.md) |
 | `agent_success_evaluation/` | `AgentSuccessEvaluationService` | `service.py` (session-level service), `runner.py` (`run_group_evaluation`), `scheduler.py` (`GroupEvaluationScheduler`, 10-min defer), `regen_jobs.py`, `components/evaluator.py` |
 
 ## Durable and Async Extraction
@@ -63,7 +63,7 @@ strings before deleting old import paths in the same PR.
 
 | Path | Purpose |
 |------|---------|
-| `storage/` | `storage_base/` and `sqlite_storage/` keep legacy domain facades while focused subpackages own `profiles/`, `playbook/`, `agent_run/`, `governance/`, durable `learning_jobs`, and SQLite `base/` helpers; plus `governance_validation.py` and `retention*.py`. Access via `request_context.storage` only. |
+| `storage/` | `storage_base/` and `sqlite_storage/` keep legacy domain facades while focused subpackages own `profiles/`, `playbook/`, `agent_run/`, `governance/`, durable `learning_jobs`, and SQLite `base/` helpers. `storage_base/playbook/_aggregation.py` defines fenced aggregation state; SQLite implements it in the matching playbook package. Access via `request_context.storage` only. |
 | `configurator/` | `DefaultConfigurator` — loads YAML config and creates the storage backend. |
 
 ## Key Rules
@@ -73,5 +73,6 @@ strings before deleting old import paths in the same PR.
 - **ALWAYS use `LiteLLMClient`** for completions/embeddings and `request_context.prompt_manager.render_prompt(...)` for prompts — no hardcoded prompts, no direct OpenAI/Claude clients.
 - **All `_operation_state` writes go through `OperationStateManager`** — don't touch the table directly (it backs locks, bookmarks, progress, and cancellation).
 - **All durable queue claims go through `LearningJobStoreABC`** — do not update `learning_jobs` directly; completion is fenced by `claim_token` and must roll back the surrounding `commit_scope` when superseded.
+- **Aggregation state is per agent version** — scheduled intake, centroid matching, cluster membership, invalidation, and agent-playbook generation must never cross versions; keep LLM and clustering work outside `commit_scope()`.
 - **`tool_can_use` lives at root `Config`** — shared by playbook extraction and success evaluation, not per-service.
 - **Preserve governance subject refs/barriers** — route validation through `services/governance/` and `storage/governance_validation.py`; do not bypass retention or subject-write checks in storage implementations.

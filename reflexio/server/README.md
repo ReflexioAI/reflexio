@@ -208,7 +208,7 @@ Access: `SiteVarManager().get_site_var(key)` for raw values, `feature_flags.is_f
 **Encapsulated Components**:
 - **Publish pipeline**: `generation_service.py` coordinates interaction persistence, profile generation, playbook generation, and deferred evaluation scheduling.
 - **Profile memory**: `profile/` extracts, deduplicates, and applies user profile updates.
-- **Playbook memory**: `playbook/` extracts user playbooks, consolidates them against existing rows, aggregates them into agent playbooks, and tracks aggregation change logs.
+- **Playbook memory**: `playbook/` extracts and consolidates user playbooks, durably schedules bounded same-version aggregation, and reconstructs aggregation change logs from lineage.
 - **Evaluation**: `agent_success_evaluation/service.py`, `agent_success_evaluation/runner.py`, `agent_success_evaluation/scheduler.py`, `agent_success_evaluation/components/evaluator.py`, `shadow_comparison/`, and `evaluation_overview/` handle session grading, per-turn shadow verdicts, regeneration jobs, and dashboard-facing rollups.
 - **Durable learning queue**: `durable_learning/scheduler.py` and `durable_learning/worker.py` drain `learning_jobs` after deferred publishes and report coverage through `GET /api/learning_status`.
 - **Async clarification**: `extraction/` manages resumable agent runs, pending tool calls, and prior-answer search.
@@ -342,35 +342,30 @@ Users can regenerate and manage profile versions using a four-state system:
 Key files:
 - `service.py`: Service orchestrator
 - `components/extractor.py`: Extractor that extracts user playbooks
-- `components/aggregator.py`: Aggregates similar user playbooks (with cluster-level change detection to skip unchanged clusters)
+- `aggregation_trigger.py` / `aggregation_scheduler.py`: Durably signal, claim, lease, and retry bounded per-version aggregation work
+- `components/aggregator.py`: Matches same-version centroids, clusters unmatched residuals, and generates agent playbooks
 - `components/consolidator.py`: Reconciles newly extracted playbooks against existing DB playbooks using LLM
 - `review_service.py`: Re-reviews current user playbooks selected by created-at bounds and commits each completed decision newest-first
 
 **Flow**:
 - Interactions → PlaybookExtractor (extraction-only) → PlaybookConsolidator (consolidates new vs existing DB playbooks) → UserPlaybook (with optional `blocking_issue`) → Storage
-- UserPlaybook (manual trigger) → PlaybookAggregator → cluster fingerprint comparison → LLM only for changed clusters → AgentPlaybook (with optional `blocking_issue`) → Storage
+- UserPlaybook write → durable due-now signal → PlaybookAggregationScheduler → same-version centroid match → bounded residual clustering → AgentPlaybook → Storage
+- `POST /api/run_playbook_aggregation` → fenced, capped administrative full rerun
 
 **Tool Analysis**: PlaybookExtractor reads `tool_can_use` from root `Config` and passes it to prompts for tool usage analysis and blocking issue detection.
 
 **Rerun Behavior**: Groups interactions by `user_id` for per-user playbook extraction (fetches all users, then processes each user's interactions together)
 
-**Playbook Aggregation with Cluster Change Detection** (`components/aggregator.py`):
+**Durable Playbook Aggregation** (`aggregation_scheduler.py`, `components/aggregator.py`):
 
-Aggregation clusters user playbooks by embedding similarity, then calls LLM per cluster to produce aggregated agent playbooks. Cluster-level change detection avoids redundant LLM calls on subsequent runs:
-
-1. Cluster all user playbooks (agglomerative for <50, HDBSCAN for >=50)
-2. Compute fingerprint per cluster (SHA-256 of sorted `raw_feedback_id`s, 16 hex chars)
-3. Compare against stored fingerprints from previous run (via `OperationStateManager.get_cluster_fingerprints`)
-4. Only call LLM for changed/new clusters; carry forward existing agent playbooks for unchanged clusters
-5. Archive old agent playbooks only for changed/disappeared clusters (via `archive_feedbacks_by_ids`)
-6. Store new fingerprints with feedback_id mapping (via `OperationStateManager.update_cluster_fingerprints`)
-
-| Scenario | Behavior |
-|---|---|
-| First run (no stored fingerprints) | All clusters treated as changed, full LLM run |
-| `rerun=True` | Bypasses fingerprint comparison, full archive/regenerate |
-| No changes | Logs skip message, updates bookmark, returns early |
-| Error during save | Restores only selectively archived playbooks |
+Automatic aggregation never rescans the full corpus. Each fenced unit admits
+undisposed CURRENT rows, attaches compatible rows to existing centroids for the
+same `agent_version`, and clusters only unmatched residuals. A drained version
+uses the configured one-hour idle minimum; new writes pull it due immediately,
+and unfinished backlog continues promptly. `REFLEXIO_MAX_CLUSTERING_PLAYBOOKS`
+is the scheduled unit budget and the administrative rerun safety cap, not a
+maximum supported corpus size. See the [playbook service map](services/playbook/README.md)
+for storage contracts and failure dispositions.
 
 **Change Log Tracking**: The legacy `playbook_aggregation_change_logs` table is retired (Track B, 2026-06-24) — the aggregator no longer writes it. The change-log view served by `GET /api/playbook_aggregation_change_logs` is reconstructed on demand from `lineage_event` rows via `reconstruct_playbook_aggregation_change_log` (`lib/_agent_playbook.py`): each run's `op=aggregate` events form the "added" side and its `status_change→superseded` events form the "removed" side, grouped by `request_id`. Per-row `updated` pairing is not reconstructed (`updated_agent_playbooks=[]`, a tolerated parity delta).
 
@@ -522,7 +517,7 @@ Pre-computed embeddings passed to storage methods via `query_embedding` paramete
 | File | Purpose |
 |------|---------|
 | `storage_base/` | BaseStorage interface split by domain. Legacy facades (`_profiles.py`, `_playbook.py`, `_agent_run.py`, etc.) preserve imports while subpackages (`profiles/`, `playbook/`, `agent_run/`, `governance/`) hold focused abstract store contracts. |
-| `sqlite_storage/` | SQLite-backed implementation split across matching facades and subpackages (`profiles/`, `playbook/`, `agent_run/`, `governance/`, `base/`), including governance-aware retention/barrier handling and lineage/tombstone support. |
+| `sqlite_storage/` | SQLite-backed implementation split across matching facades and subpackages (`profiles/`, `playbook/`, `agent_run/`, `governance/`, `base/`), including governance-aware retention/barrier handling, lineage/tombstone support, and durable incremental playbook-aggregation state. |
 | `governance_validation.py` | Shared validation helpers for subject references and governance contracts before storage writes. |
 | `retention.py`, `retention_mixin.py` | Data retention and cleanup helpers |
 | `constants.py`, `error.py` | Storage constants and shared errors |

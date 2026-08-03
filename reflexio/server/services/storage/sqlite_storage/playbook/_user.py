@@ -178,6 +178,7 @@ class UserPlaybookStoreMixin:
     _assert_subject_writable_locked: Any
     _own_transaction: Any
     commit_scope: Any
+    append_playbook_aggregation_invalidation: Any
     _has_sqlite_vec: bool
 
     @SQLiteStorageBase.handle_exceptions
@@ -1211,9 +1212,10 @@ class UserPlaybookStoreMixin:
         playbook_name: str | None = None,
     ) -> int:
         # Bulk delete-by-status emits no hard_delete lineage events (parity with
-        # the Supabase backend, which routes this through _hard_delete_and_log with
-        # emit_hard_delete=False). Accepts any status: the upgrade flow legitimately
-        # deletes old ARCHIVED playbooks via _delete_items_by_status(Status.ARCHIVED).
+        # the Supabase backend's emit_hard_delete=False path). SQLite's aggregation
+        # invalidation trigger still runs before each physical delete. Accepts any
+        # status: the upgrade flow legitimately deletes old ARCHIVED playbooks via
+        # _delete_items_by_status(Status.ARCHIVED).
         where = "status = ?"
         params: list[Any] = [status.value]
         if agent_version is not None:
@@ -1276,9 +1278,10 @@ class UserPlaybookStoreMixin:
 
     @SQLiteStorageBase.handle_exceptions
     def archive_user_playbook_by_id(self, user_id: str, user_playbook_id: int) -> bool:
-        with self._lock:
+        with self.commit_scope(), self._lock:
             row = self.conn.execute(
-                "SELECT user_id, governance_subject_ref FROM user_playbooks WHERE user_playbook_id = ? AND user_id = ?",
+                "SELECT user_id, governance_subject_ref, agent_version "
+                "FROM user_playbooks WHERE user_playbook_id = ? AND user_id = ?",
                 (user_playbook_id, user_id),
             ).fetchone()
             if row is None:
@@ -1291,9 +1294,14 @@ class UserPlaybookStoreMixin:
                 "WHERE user_playbook_id = ? AND user_id = ? AND status IS NULL",
                 (Status.ARCHIVED.value, _epoch_now(), user_playbook_id, user_id),
             )
-            if self._own_transaction():
-                self.conn.commit()
-        return cur.rowcount > 0
+            agent_version = str(row["agent_version"] or "").strip()
+            if cur.rowcount > 0 and agent_version:
+                self.append_playbook_aggregation_invalidation(
+                    agent_version=agent_version,
+                    operation="archive",
+                    entity_id=user_playbook_id,
+                )
+            return cur.rowcount > 0
 
     @SQLiteStorageBase.handle_exceptions
     def has_user_playbooks_with_status(
@@ -1475,6 +1483,8 @@ class UserPlaybookStoreMixin:
         self,
         user_playbook_ids: list[int],
         status_filter: list[Status | None] | None = None,
+        *,
+        include_embedding: bool = False,
     ) -> list[UserPlaybook]:
         if not user_playbook_ids:
             return []
@@ -1486,10 +1496,11 @@ class UserPlaybookStoreMixin:
             sql += f" AND {frag}"
             params.extend(sparams)
         rows = self._fetchall(sql, params)
-        by_id = {
-            _row_to_user_playbook(row).user_playbook_id: _row_to_user_playbook(row)
+        converted = [
+            _row_to_user_playbook(row, include_embedding=include_embedding)
             for row in rows
-        }
+        ]
+        by_id = {item.user_playbook_id: item for item in converted}
         return [by_id[upid] for upid in user_playbook_ids if upid in by_id]
 
     @SQLiteStorageBase.handle_exceptions

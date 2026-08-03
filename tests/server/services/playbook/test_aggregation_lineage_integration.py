@@ -607,6 +607,9 @@ def test_e2e_reconstruct_incremental_run_mode(
     )
 
     # Run 2 — incremental (rerun=False, prev fingerprints now present).
+    # This test exercises reconstruction of the legacy fingerprint path. The
+    # durable incremental engine has its own typed-state integration coverage.
+    storage.supports_incremental_playbook_aggregation = False
     with (
         patch.object(
             PlaybookAggregator, "get_clusters", return_value={0: cluster_run2}

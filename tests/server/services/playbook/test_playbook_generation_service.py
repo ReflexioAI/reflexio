@@ -1,6 +1,5 @@
 import datetime
 import tempfile
-from contextlib import nullcontext
 from datetime import UTC
 from typing import Any, cast
 from unittest.mock import MagicMock, patch
@@ -22,13 +21,8 @@ from reflexio.models.config_schema import (
     StorageConfigSQLite,
 )
 from reflexio.server.api_endpoints.request_context import RequestContext
-from reflexio.server.extensions import register_service
 from reflexio.server.llm._litellm_types import ModelProvenance
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
-from reflexio.server.services.playbook.aggregation_prompt_processing import (
-    AGGREGATION_PROMPT_PROCESSOR,
-    PassthroughPromptProcessor,
-)
 from reflexio.server.services.playbook.playbook_service_utils import (
     PlaybookGenerationRequest,
 )
@@ -85,145 +79,36 @@ def _service_for_inline_aggregation(configurator: Any) -> PlaybookGenerationServ
     return service
 
 
-def test_inline_aggregation_default_path_does_not_inject_processor():
+def test_inline_aggregation_default_path_schedules_durably():
     configurator = MagicMock()
     configurator.get_config.return_value = _aggregation_enabled_config()
     service = _service_for_inline_aggregation(configurator)
-    created_kwargs: list[dict[str, Any]] = []
-
-    class FakeAggregator:
-        def __init__(self, **kwargs: Any) -> None:
-            created_kwargs.append(kwargs)
-
-        def run(self, _request: Any) -> dict[str, int]:
-            return {"playbooks_generated": 0}
-
-    with (
-        patch(
-            "reflexio.server.services.playbook.aggregation_trigger.PlaybookAggregator",
-            FakeAggregator,
-        ),
-        patch(
-            "reflexio.server.services.playbook.aggregation_trigger.run_with_operation_limit",
-            side_effect=lambda **kwargs: kwargs["fn"](),
-        ),
-        patch(
-            "reflexio.server.services.playbook.aggregation_trigger._start_aggregation_thread",
-            side_effect=lambda task: task(),
-        ),
+    with patch(
+        "reflexio.server.services.playbook.aggregation_trigger."
+        "ensure_local_playbook_aggregation_scheduler"
     ):
         service._trigger_playbook_aggregation()
 
-    assert len(created_kwargs) == 1
-    assert "aggregation_prompt_processor" not in created_kwargs[0]
+    _storage(service).schedule_playbook_aggregation.assert_called_once_with("v1")
 
 
-def test_inline_aggregation_injects_registered_processor():
-    processor = PassthroughPromptProcessor()
-    register_service(AGGREGATION_PROMPT_PROCESSOR, processor, override=True)
-
-    configurator = MagicMock()
-    configurator.get_config.return_value = _aggregation_enabled_config()
-    service = _service_for_inline_aggregation(configurator)
-    created_kwargs: list[dict[str, Any]] = []
-
-    class FakeAggregator:
-        def __init__(self, **kwargs: Any) -> None:
-            created_kwargs.append(kwargs)
-
-        def run(self, _request: Any) -> dict[str, int]:
-            return {"playbooks_generated": 0}
-
-    with (
-        patch(
-            "reflexio.server.services.playbook.aggregation_trigger.PlaybookAggregator",
-            FakeAggregator,
-        ),
-        patch(
-            "reflexio.server.services.playbook.aggregation_trigger.run_with_operation_limit",
-            side_effect=lambda **kwargs: kwargs["fn"](),
-        ),
-    ):
-        service._trigger_playbook_aggregation()
-
-    assert len(created_kwargs) == 1
-    assert created_kwargs[0]["aggregation_prompt_processor"] is processor
-
-
-def test_inline_aggregation_does_not_thread_processor_prompt_text_separately():
-    processor: Any = PassthroughPromptProcessor()
-    processor.prompt_extra_instructions = "Extra aggregation instruction."
-    register_service(AGGREGATION_PROMPT_PROCESSOR, processor, override=True)
-
-    configurator = MagicMock()
-    configurator.get_config.return_value = _aggregation_enabled_config()
-    service = _service_for_inline_aggregation(configurator)
-    created_kwargs: list[dict[str, Any]] = []
-
-    class FakeAggregator:
-        def __init__(self, **kwargs: Any) -> None:
-            created_kwargs.append(kwargs)
-
-        def run(self, _request: Any) -> dict[str, int]:
-            return {"playbooks_generated": 0}
-
-    with (
-        patch(
-            "reflexio.server.services.playbook.aggregation_trigger.PlaybookAggregator",
-            FakeAggregator,
-        ),
-        patch(
-            "reflexio.server.services.playbook.aggregation_trigger.run_with_operation_limit",
-            side_effect=lambda **kwargs: kwargs["fn"](),
-        ),
-    ):
-        service._trigger_playbook_aggregation()
-
-    assert len(created_kwargs) == 1
-    assert created_kwargs[0]["aggregation_prompt_processor"] is processor
-    assert "aggregation_prompt_extra_instructions" not in created_kwargs[0]
-
-
-def test_maybe_trigger_user_playbook_aggregation_uses_limiter_and_processor():
+def test_maybe_trigger_user_playbook_aggregation_durably_schedules():
     from reflexio.server.services.playbook.aggregation_trigger import (
         maybe_trigger_user_playbook_aggregation,
     )
-
-    processor = PassthroughPromptProcessor()
-    register_service(AGGREGATION_PROMPT_PROCESSOR, processor, override=True)
 
     configurator = MagicMock()
     configurator.get_config.return_value = _aggregation_enabled_config()
     ctx = MagicMock()
     ctx.configurator = configurator
     ctx.org_id = "test-org"
+    ctx.storage = MagicMock()
     llm_client = MagicMock()
-    created_kwargs: list[dict[str, Any]] = []
-    requests: list[Any] = []
-    task_results: list[Any] = []
 
-    class FakeAggregator:
-        def __init__(self, **kwargs: Any) -> None:
-            created_kwargs.append(kwargs)
-
-        def run(self, request: Any) -> dict[str, int]:
-            requests.append(request)
-            return {"playbooks_generated": 0}
-
-    with (
-        patch(
-            "reflexio.server.services.playbook.aggregation_trigger.PlaybookAggregator",
-            FakeAggregator,
-        ),
-        patch(
-            "reflexio.server.services.playbook.aggregation_trigger.run_with_operation_limit",
-            side_effect=lambda **kwargs: kwargs["fn"](),
-        ) as limiter,
-        patch(
-            "reflexio.server.services.playbook.aggregation_trigger._start_aggregation_thread",
-            side_effect=lambda task: task_results.append(task()),
-        ),
-    ):
+    with patch(
+        "reflexio.server.services.playbook.aggregation_trigger."
+        "ensure_local_playbook_aggregation_scheduler"
+    ) as ensure_scheduler:
         result = maybe_trigger_user_playbook_aggregation(
             request_context=ctx,
             llm_client=llm_client,
@@ -231,17 +116,11 @@ def test_maybe_trigger_user_playbook_aggregation_uses_limiter_and_processor():
             reason="unit_test",
         )
 
-    assert result.status == "queued"
+    assert result.status == "scheduled"
     assert result.reason == "unit_test"
     assert result.agent_version == "v1"
-    assert task_results[0].status == "triggered"
-    assert limiter.call_args.kwargs["org_id"] == "test-org"
-    assert limiter.call_args.kwargs["operation"] == "aggregation"
-    assert created_kwargs[0]["llm_client"] is llm_client
-    assert created_kwargs[0]["request_context"] is ctx
-    assert created_kwargs[0]["agent_version"] == "v1"
-    assert created_kwargs[0]["aggregation_prompt_processor"] is processor
-    assert requests[0].agent_version == "v1"
+    ctx.storage.schedule_playbook_aggregation.assert_called_once_with("v1")
+    ensure_scheduler.assert_called_once_with(ctx)
 
 
 def test_maybe_trigger_user_playbook_aggregation_reports_no_config():
@@ -268,7 +147,7 @@ def test_maybe_trigger_user_playbook_aggregation_reports_no_config():
     assert result.agent_version == "v1"
 
 
-def test_maybe_trigger_user_playbook_aggregation_reports_failure_without_raising():
+def test_maybe_trigger_user_playbook_aggregation_reports_schedule_failure():
     from reflexio.server.services.playbook.aggregation_trigger import (
         maybe_trigger_user_playbook_aggregation,
     )
@@ -276,130 +155,17 @@ def test_maybe_trigger_user_playbook_aggregation_reports_failure_without_raising
     configurator = MagicMock()
     configurator.get_config.return_value = _aggregation_enabled_config()
     ctx = MagicMock(configurator=configurator, org_id="test-org")
-    task_results: list[Any] = []
+    ctx.storage.schedule_playbook_aggregation.side_effect = RuntimeError("boom")
 
-    class FailingAggregator:
-        def __init__(self, **_kwargs: Any) -> None:
-            pass
-
-        def run(self, _request: Any) -> dict[str, int]:
-            raise RuntimeError("boom")
-
-    with (
-        patch(
-            "reflexio.server.services.playbook.aggregation_trigger.PlaybookAggregator",
-            FailingAggregator,
-        ),
-        patch(
-            "reflexio.server.services.playbook.aggregation_trigger.run_with_operation_limit",
-            side_effect=lambda **kwargs: kwargs["fn"](),
-        ),
-        patch(
-            "reflexio.server.services.playbook.aggregation_trigger._start_aggregation_thread",
-            side_effect=lambda task: task_results.append(task()),
-        ),
-    ):
-        result = maybe_trigger_user_playbook_aggregation(
-            request_context=ctx,
-            llm_client=MagicMock(),
-            agent_version="v1",
-            reason="post_commit",
-        )
-
-    assert result.status == "queued"
-    assert task_results[0].status == "failed"
-    assert task_results[0].error_type == "RuntimeError"
-
-
-def test_maybe_trigger_user_playbook_aggregation_reports_timeout_saturation():
-    from reflexio.server.services.playbook.aggregation_trigger import (
-        maybe_trigger_user_playbook_aggregation,
+    result = maybe_trigger_user_playbook_aggregation(
+        request_context=ctx,
+        llm_client=MagicMock(),
+        agent_version="v1",
+        reason="post_commit",
     )
-
-    configurator = MagicMock()
-    configurator.get_config.return_value = _aggregation_enabled_config()
-    ctx = MagicMock(configurator=configurator, org_id="test-org")
-    task_results: list[Any] = []
-
-    with (
-        patch(
-            "reflexio.server.services.playbook.aggregation_trigger.run_with_operation_limit",
-            side_effect=TimeoutError("aggregation limiter saturated"),
-        ),
-        patch(
-            "reflexio.server.services.playbook.aggregation_trigger._start_aggregation_thread",
-            side_effect=lambda task: task_results.append(task()),
-        ),
-    ):
-        result = maybe_trigger_user_playbook_aggregation(
-            request_context=ctx,
-            llm_client=MagicMock(),
-            agent_version="v1",
-            reason="post_commit",
-        )
-
-    assert result.status == "queued"
-    assert task_results[0].status == "skipped_saturated"
-    assert task_results[0].error_type == "TimeoutError"
-
-
-@pytest.mark.parametrize(
-    ("patch_target", "error_type"),
-    [
-        (None, "RuntimeError"),
-        (
-            "reflexio.server.services.playbook.aggregation_trigger.get_service",
-            "LookupError",
-        ),
-        (
-            "reflexio.server.services.playbook.aggregation_trigger.PlaybookAggregator",
-            "ValueError",
-        ),
-        (
-            "reflexio.server.services.playbook.aggregation_trigger.PlaybookAggregatorRequest",
-            "TypeError",
-        ),
-    ],
-)
-def test_maybe_trigger_user_playbook_aggregation_reports_setup_failure_without_raising(
-    patch_target: str | None, error_type: str
-):
-    from reflexio.server.services.playbook.aggregation_trigger import (
-        maybe_trigger_user_playbook_aggregation,
-    )
-
-    configurator = MagicMock()
-    configurator.get_config.return_value = _aggregation_enabled_config()
-    ctx = MagicMock(configurator=configurator, org_id="test-org")
-
-    expected_error = {
-        "RuntimeError": RuntimeError("config failed"),
-        "LookupError": LookupError("processor failed"),
-        "ValueError": ValueError("aggregator failed"),
-        "TypeError": TypeError("request failed"),
-    }[error_type]
-    if patch_target is None:
-        configurator.get_config.side_effect = expected_error
-        failure_context = nullcontext()
-    else:
-        failure_context = patch(patch_target, side_effect=expected_error)
-
-    with (
-        failure_context,
-        patch(
-            "reflexio.server.services.playbook.aggregation_trigger.run_with_operation_limit"
-        ) as limiter,
-    ):
-        result = maybe_trigger_user_playbook_aggregation(
-            request_context=ctx,
-            llm_client=MagicMock(),
-            agent_version="v1",
-            reason="post_commit",
-        )
 
     assert result.status == "failed"
-    assert result.error_type == error_type
-    limiter.assert_not_called()
+    assert result.error_type == "RuntimeError"
 
 
 @pytest.fixture

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from reflexio.models.api_schema.service_schemas import UserPlaybook
 
+MAX_EXACT_DIRECTION_GROUPING_ITEMS = 256
+
 
 def get_direction_key(fb: UserPlaybook) -> str:
     """
@@ -118,6 +120,11 @@ def format_structured_cluster_input(
     Returns:
         str: Formatted input for the aggregation prompt
     """
+    # Exact greedy grouping compares members pairwise. Preserve that useful hint
+    # for normal prompt-sized clusters, but keep formatting work linear once a
+    # cluster is large enough for the quadratic pass to matter.
+    if len(cluster_playbooks) > MAX_EXACT_DIRECTION_GROUPING_ITEMS:
+        return format_flat(cluster_playbooks)
     groups = group_playbooks_by_direction(
         cluster_playbooks, threshold=direction_overlap_threshold
     )

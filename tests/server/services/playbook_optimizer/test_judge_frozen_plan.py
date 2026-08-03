@@ -113,7 +113,7 @@ def test_pairwise_judge_rejects_frozen_plan_drift_before_provider_execution(
 def test_pairwise_judge_provider_params_match_frozen_sanitized_plan(monkeypatch):
     monkeypatch.setenv("REFLEXIO_LLM_SEED", "47")
     monkeypatch.setenv("REFLEXIO_LLM_HARD_TIMEOUT_GRACE_SECONDS", "7")
-    endpoint = "https://azure-one.example.test/"
+    endpoint = "https://example.com:4443/"
     secret = "azure-secret"
     client = LiteLLMClient(
         LiteLLMConfig(

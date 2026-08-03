@@ -266,7 +266,7 @@ def _canonical_authority(authority: dict[str, Any]) -> str:
 
 def _azure_client(
     *,
-    endpoint: str = "https://azure-one.example.test/",
+    endpoint: str = "https://example.com:4443/",
     api_version: str = "2024-02-15-preview",
     api_key: str = "azure-secret-one",
     model: str = "azure/judge-deployment",
@@ -662,7 +662,7 @@ def test_gepa_user_authority_changes_for_generation_settings(
     ("name", "client"),
     [
         ("provider", LiteLLMClient(LiteLLMConfig(model="gpt-4o-mini"))),
-        ("endpoint", _azure_client(endpoint="https://azure-two.example.test/")),
+        ("endpoint", _azure_client(endpoint="https://example.com:4444/")),
         ("api_version", _azure_client(api_version="2025-01-01-preview")),
     ],
 )
@@ -677,7 +677,7 @@ def test_gepa_user_authority_changes_for_independent_provider_identity(
 
 
 def test_gepa_user_authority_freezes_non_secret_provider_identity(tmp_path):
-    endpoint = "https://azure-one.example.test/"
+    endpoint = "https://example.com:4443/"
     authority = _judge_authority(tmp_path, llm_client=_azure_client(endpoint=endpoint))
     plan = authority["evaluator_identity"]["pairwise_judge_request_plan"]
     rung = plan["judge_generation_settings"]["rungs"][0]

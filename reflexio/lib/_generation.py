@@ -1,3 +1,5 @@
+import logging
+import uuid
 from typing import Any
 
 from reflexio.lib._base import (
@@ -15,6 +17,8 @@ from reflexio.models.api_schema.service_schemas import (
     RerunProfileGenerationRequest,
     RerunProfileGenerationResponse,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class GenerationMixin(ReflexioBase):
@@ -42,6 +46,13 @@ class GenerationMixin(ReflexioBase):
         from reflexio.server.services.playbook.aggregation_prompt_processing import (
             AGGREGATION_PROMPT_PROCESSOR,
         )
+        from reflexio.server.services.playbook.aggregation_scheduler import (
+            AGGREGATION_BACKLOG_RETRY_SECONDS,
+            AGGREGATION_LEASE_SECONDS,
+            AGGREGATION_RETRY_SECONDS,
+            AggregationLeaseHeartbeat,
+            aggregation_min_interval_seconds,
+        )
         from reflexio.server.services.playbook.components.aggregator import (
             PlaybookAggregator,
         )
@@ -50,23 +61,75 @@ class GenerationMixin(ReflexioBase):
         )
 
         aggregation_prompt_processor = get_service(AGGREGATION_PROMPT_PROCESSOR)
+        min_interval_seconds = aggregation_min_interval_seconds()
         aggregator_kwargs = {}
         if aggregation_prompt_processor is not None:
             aggregator_kwargs["aggregation_prompt_processor"] = (
                 aggregation_prompt_processor
             )
 
+        aggregator_request = PlaybookAggregatorRequest(
+            agent_version=agent_version,
+            rerun=True,
+        )
+        storage = self.request_context.storage
+        if storage is None:
+            raise ValueError(STORAGE_NOT_CONFIGURED_MSG)
+        claim = None
+        if getattr(storage, "supports_incremental_playbook_aggregation", False) is True:
+            storage.schedule_playbook_aggregation(agent_version)
+            claim = storage.claim_due_playbook_aggregation(
+                owner=f"admin-rerun:{uuid.uuid4().hex}",
+                lease_seconds=AGGREGATION_LEASE_SECONDS,
+                agent_version=agent_version,
+            )
+            if claim is None:
+                raise RuntimeError(
+                    "another playbook aggregation is already running for this organization"
+                )
+        heartbeat = None
+        if claim is not None:
+            heartbeat = AggregationLeaseHeartbeat(storage, claim)
+            aggregator_kwargs["aggregation_claim"] = claim
         playbook_aggregator = PlaybookAggregator(
             llm_client=self.llm_client,
             request_context=self.request_context,
             agent_version=agent_version,
             **aggregator_kwargs,
         )
-        aggregator_request = PlaybookAggregatorRequest(
-            agent_version=agent_version,
-            rerun=True,
-        )
-        return playbook_aggregator.run(aggregator_request)
+        try:
+            if heartbeat is not None:
+                heartbeat.start()
+            result = playbook_aggregator.run(aggregator_request)
+            if heartbeat is not None:
+                heartbeat.stop()
+                heartbeat.require_live()
+        except Exception:
+            if heartbeat is not None:
+                heartbeat.stop()
+                try:
+                    storage.finish_playbook_aggregation_claim(
+                        heartbeat.claim,
+                        success=False,
+                        retry_after_seconds=AGGREGATION_RETRY_SECONDS,
+                        backlog_retry_after_seconds=(AGGREGATION_BACKLOG_RETRY_SECONDS),
+                        min_interval_seconds=min_interval_seconds,
+                    )
+                except Exception:
+                    logger.exception(
+                        "failed to release playbook aggregation claim after admin "
+                        "rerun failure"
+                    )
+            raise
+        if heartbeat is not None and not storage.finish_playbook_aggregation_claim(
+            heartbeat.claim,
+            success=True,
+            retry_after_seconds=AGGREGATION_RETRY_SECONDS,
+            backlog_retry_after_seconds=AGGREGATION_BACKLOG_RETRY_SECONDS,
+            min_interval_seconds=min_interval_seconds,
+        ):
+            raise RuntimeError("playbook aggregation rerun lost its database fence")
+        return result
 
     def _run_generation_service(
         self,

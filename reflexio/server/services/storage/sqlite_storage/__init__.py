@@ -43,6 +43,7 @@ from .playbook import (
     AgentEvaluationResultStoreMixin,
     AgentPlaybookStoreMixin,
     OptimizationJobStoreMixin,
+    PlaybookAggregationStoreMixin,
     PlaybookSourceLinkageMixin,
     UserPlaybookStoreMixin,
 )
@@ -59,6 +60,7 @@ class SQLiteStorage(
     ProfileSearchMixin,
     RequestMixin,
     SessionOutcomeStoreMixin,
+    PlaybookAggregationStoreMixin,
     AgentPlaybookStoreMixin,
     UserPlaybookStoreMixin,
     PlaybookSourceLinkageMixin,

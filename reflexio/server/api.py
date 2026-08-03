@@ -349,7 +349,7 @@ def _resolve_app_profile(
     return resolve_profile(mount_data_plane=mount_data_plane, require_auth=require_auth)
 
 
-def create_app(
+def create_app(  # noqa: C901
     get_org_id: Callable[..., str] | None = None,
     additional_routers: list[APIRouter] | None = None,
     middleware_config: dict | None = None,
@@ -465,6 +465,7 @@ def create_app(
         scheduler = None
         gc_scheduler = None
         durable_learning_scheduler = None
+        aggregation_scheduler = None
         started_caps: list = []
         # D8 config guards + D5 warm-before-ready. Both are dormant unless the
         # deployment has flipped to the in-process local embedder
@@ -514,6 +515,30 @@ def create_app(
                 bootstrap_org_id=bootstrap_org_id,
                 org_ids_provider=durable_org_ids_provider,
             )
+            # Enterprise owns cross-org aggregation through its capability.
+            # OSS still needs a startup-owned scheduler so pending SQLite work
+            # drains after a restart even when no new publish arrives.
+            if capabilities is None:
+                from reflexio.server.services.playbook.aggregation_scheduler import (
+                    ensure_local_playbook_aggregation_scheduler,
+                )
+
+                try:
+                    aggregation_context = RequestContext(org_id=bootstrap_org_id)
+                    aggregation_scheduler = ensure_local_playbook_aggregation_scheduler(
+                        aggregation_context
+                    )
+                except Exception:  # noqa: BLE001
+                    # A composition root may intentionally install an enterprise
+                    # configurator while exercising the OSS app shape without
+                    # enterprise deployment settings. The post-persist trigger
+                    # still starts the same scheduler lazily once a real context
+                    # exists.
+                    logger.warning(
+                        "playbook aggregation scheduler startup deferred: "
+                        "bootstrap context is unavailable",
+                        exc_info=True,
+                    )
         try:
             if capabilities is not None:
                 ctx = (
@@ -535,7 +560,12 @@ def create_app(
                         cap,
                         exc_info=True,
                     )
-            for sched in (scheduler, gc_scheduler, durable_learning_scheduler):
+            for sched in (
+                scheduler,
+                gc_scheduler,
+                durable_learning_scheduler,
+                aggregation_scheduler,
+            ):
                 if sched is not None:
                     sched.stop()
             from reflexio.server.services.publish_learning_worker import (

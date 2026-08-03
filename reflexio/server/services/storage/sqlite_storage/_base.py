@@ -810,6 +810,10 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
     # ------------------------------------------------------------------
 
     def migrate(self) -> bool:
+        # Import lazily: the aggregation mixin shares this base and importing its
+        # package while ``_base`` is still initializing would create a cycle.
+        from .playbook._aggregation import init_playbook_aggregation_tables
+
         self._migrate_feedback_schema()
         self._migrate_interactions_schema()
         # Backfill columns that _DDL indexes depend on BEFORE running _DDL.
@@ -843,6 +847,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             cur = self.conn.cursor()
             cur.executescript(_DDL)
             init_governance_tables(self.conn)
+            init_playbook_aggregation_tables(self.conn)
             self.conn.commit()
         self._migrate_session_outcomes_schema()
         if self._has_sqlite_vec:
@@ -911,6 +916,9 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             );
             CREATE VIRTUAL TABLE IF NOT EXISTS agent_playbooks_vec USING vec0(
                 embedding float[{dim}]
+            );
+            CREATE VIRTUAL TABLE IF NOT EXISTS playbook_aggregation_clusters_vec USING vec0(
+                embedding float[{dim}] distance_metric=cosine
             );
         """
         with self._lock:

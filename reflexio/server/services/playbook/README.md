@@ -9,7 +9,8 @@ Description: Evidence-grounded playbook extraction, candidate review, aggregatio
 - **Playbook Extractor**: `components/extractor.py` - Extracts user playbooks from interactions via LLM
 - **Candidate Reviewer**: `components/reviewer.py` - Accepts, narrowly revises, or rejects validated normal-extraction candidates before consolidation
 - **Persisted Review Service**: `review_service.py` - Re-reviews a bounded created-at selection and optionally commits each completed decision newest-first
-- **Playbook Aggregator**: `components/aggregator.py` - Clusters similar user playbooks and generates aggregated insights
+- **Playbook Aggregator**: `components/aggregator.py` - Matches same-version cluster centroids, clusters residuals, and generates agent playbooks
+- **Aggregation Scheduler**: `aggregation_scheduler.py` - Claims fenced per-version work and runs one bounded aggregation unit
 - **Playbook Consolidator**: `components/consolidator.py` - Reconciles reviewed candidates against existing storage with evidence-aware accounting and overlap guards
 
 ## Supporting Files
@@ -20,6 +21,8 @@ Description: Evidence-grounded playbook extraction, candidate review, aggregatio
 | `playbook_service_utils.py` | Request dataclasses, Pydantic output schemas, message construction utilities |
 | `playbook_evidence.py` | Strict evidence validation, call-local reference checks, and persisted provenance helpers |
 | `review_service.py` | Time-window selection, persisted evidence reconstruction, reporting, and newest-first per-playbook apply |
+| `aggregation_trigger.py` | Converts post-generation activity into an idempotent durable scheduling signal |
+| `aggregation_scheduler.py` | Polling, fleet claim/lease handling, retries, and structured aggregation progress telemetry |
 | `aggregation_prompt_processing.py` | Optional aggregation-boundary interfaces and helpers for prompt preprocessing, contextual prompt guidance, and output post-processing |
 
 ## Architecture
@@ -32,8 +35,10 @@ Interactions
     -> PlaybookCandidateReviewer (normal strict-evidence candidates only)
       -> PlaybookConsolidator (consolidates reviewed vs existing DB playbooks)
         -> UserPlaybook (validated evidence + persisted provenance) -> Storage
-        -> PlaybookAggregator (manual trigger)
-          -> AgentPlaybook (aggregated insights) -> Storage
+        -> Durable aggregation signal (pulls new work due now)
+          -> PlaybookAggregationScheduler (bounded work; hourly idle minimum)
+            -> PlaybookAggregator (incremental clustering)
+              -> AgentPlaybook (aggregated insights) -> Storage
 ```
 
 ### Playbook Extraction (`components/extractor.py`)
@@ -93,11 +98,33 @@ earlier decisions.
 
 ### Playbook Aggregation (`components/aggregator.py`)
 
-Triggered manually via `/api/run_playbook_aggregation`. Clusters user playbooks and generates consolidated insights.
+Normal generation durably schedules bounded incremental aggregation through
+`aggregation_trigger.py`; `aggregation_scheduler.py` claims due work across
+processes. A successful drained run waits at least
+`REFLEXIO_AGGREGATION_MIN_INTERVAL_SECONDS` (default 3600) before an idle retry;
+a new durable signal pulls the version due immediately, and a remaining backlog
+continues in bounded follow-up units. The manual
+`/api/run_playbook_aggregation` route remains a fenced administrative full rerun.
 
-**Key Methods**:
-- `get_clusters(user_playbooks, config)` - HDBSCAN/Agglomerative clustering on embeddings
-- `aggregate()` - Full aggregation pipeline with LLM-based consolidation
+Incremental work is isolated by `agent_version`:
+
+1. Admit CURRENT, nonempty rows that have no durable disposition.
+2. Match embedded residuals against active centroids for that version only.
+3. Attach matches without regenerating their agent playbook.
+4. Cluster only unmatched residuals: agglomerative below 50 rows, HDBSCAN at 50 or more.
+5. Commit generated agent playbooks, lineage, cluster membership, centroid updates, and supersessions atomically.
+
+`REFLEXIO_MAX_CLUSTERING_PLAYBOOKS` (default 20,000) is the shared row budget
+for one scheduled unit, including intake and invalidations. It is also the
+fail-before-mutation total-input cap for an administrative full rerun; it no
+longer prevents an organization with a larger corpus from making incremental
+progress. Retryable LLM outcomes stay residual, semantic-null outcomes become
+terminal no-ops, and missing embeddings remain pending for a later unit.
+
+The portable state contract is
+`storage/storage_base/playbook/_aggregation.py`; SQLite implements it in
+`storage/sqlite_storage/playbook/_aggregation.py`. Claims are lease-fenced, and
+all multi-write effects must remain inside `storage.commit_scope()`.
 
 **Optional prompt processing**: deployments can register an
 `AggregationPromptProcessor` via the `AGGREGATION_PROMPT_PROCESSOR` ServiceKey
@@ -108,7 +135,12 @@ post-processes generated outputs before storage or model-response logging.
 
 **Change Log**: The legacy `playbook_aggregation_change_logs` table is retired (Track B, 2026-06-24) — the aggregator no longer writes it. The change-log view is reconstructed on demand from `lineage_event` via `reconstruct_playbook_aggregation_change_log` (`lib/_agent_playbook.py`): each run emits `op=aggregate` events (the "added" side) and `status_change→superseded` events from the supersede calls (the "removed" side), grouped by the run's `request_id`. Per-row `updated` pairing is not reconstructed (`updated_agent_playbooks=[]`, a tolerated parity delta).
 
-**Clustering**: Embeds user playbooks -> HDBSCAN clustering -> falls back to Agglomerative if too few clusters
+**Requirements / Problems to Avoid**:
+
+- Never cluster, centroid-match, or attach rows across agent versions.
+- Never rediscover the full corpus on the scheduled path; use durable dispositions and bounded anti-join intake.
+- Never hold `commit_scope()` while embedding, clustering, or calling the LLM.
+- Do not clear pending state on partial failure, limiter deferral, or a lost lease.
 
 ### Playbook Consolidation (`components/consolidator.py`)
 

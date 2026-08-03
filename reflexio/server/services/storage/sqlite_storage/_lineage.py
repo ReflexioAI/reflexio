@@ -68,7 +68,7 @@ def _append_event_stmt(
 
     Returns the cursor so callers can inspect ``rowcount``/``lastrowid``.
     """
-    return conn.execute(
+    cursor = conn.execute(
         "INSERT OR IGNORE INTO lineage_event "
         "(org_id, entity_type, entity_id, op, prov_relation, source_ids, "
         "actor, request_id, reason, created_at, "
@@ -93,6 +93,55 @@ def _append_event_stmt(
             provider,
         ),
     )
+    if (
+        cursor.rowcount > 0
+        and entity_type == "user_playbook"
+        and op in {"create", "merge", "revise", "status_change", "purge"}
+    ):
+        if not str(entity_id).isdigit():
+            return cursor
+        parsed_entity_id = int(entity_id)
+        candidate_ids = sorted(
+            {
+                int(value)
+                for value in [parsed_entity_id, *source_ids]
+                if str(value).isdigit()
+            }
+        )
+        if not candidate_ids:
+            return cursor
+        placeholders = ",".join("?" for _ in candidate_ids)
+        version_rows = conn.execute(
+            "SELECT user_playbook_id, agent_version FROM user_playbooks "
+            f"WHERE user_playbook_id IN ({placeholders}) "
+            "AND trim(agent_version) <> '' "
+            "ORDER BY agent_version, user_playbook_id",
+            candidate_ids,
+        ).fetchall()
+        candidate_version_by_id = {
+            int(row[0]): str(row[1]).strip() for row in version_rows
+        }
+        source_id_values = [int(value) for value in source_ids if str(value).isdigit()]
+        for agent_version in sorted(set(candidate_version_by_id.values())):
+            version_source_ids = [
+                value
+                for value in source_id_values
+                if candidate_version_by_id.get(value) == agent_version
+            ]
+            conn.execute(
+                "INSERT INTO playbook_aggregation_invalidation "
+                "(agent_version, operation, entity_id, source_ids) VALUES (?, ?, ?, ?)",
+                (agent_version, op, parsed_entity_id, json.dumps(version_source_ids)),
+            )
+            conn.execute(
+                "INSERT INTO playbook_aggregation_state "
+                "(agent_version, pending, next_attempt_at) VALUES (?, 1, unixepoch()) "
+                "ON CONFLICT(agent_version) DO UPDATE SET pending=1, "
+                "next_attempt_at=min(playbook_aggregation_state.next_attempt_at, "
+                "excluded.next_attempt_at)",
+                (agent_version,),
+            )
+    return cursor
 
 
 # Per-entity purge SQL: blank every PII/content column.
