@@ -30,7 +30,10 @@ from reflexio.server.services.base_generation_service import (
     BaseGenerationService,
     StatusChangeOperation,
 )
-from reflexio.server.services.deferred_learning_plan import PlaybookWritePlan
+from reflexio.server.services.deferred_learning_plan import (
+    FinalizationResult,
+    PlaybookWritePlan,
+)
 from reflexio.server.services.playbook.aggregation_trigger import (
     maybe_trigger_user_playbook_aggregation,
 )
@@ -636,6 +639,20 @@ class PlaybookGenerationService(
         finalization receipt is found, the method intentionally returns its
         learning ids without replaying those schedulers.
         """
+        return self._finalize_extracted_items_with_outcome(
+            all_playbooks,
+            model_provenance=model_provenance,
+            finalization_run_id=finalization_run_id,
+        ).learning_ids
+
+    def _finalize_extracted_items_with_outcome(
+        self,
+        all_playbooks: list[UserPlaybook],
+        *,
+        model_provenance: ModelProvenance | None = None,
+        finalization_run_id: str | None = None,
+    ) -> FinalizationResult:
+        """Finalize playbooks and expose the atomic receipt winner internally."""
         entity_type = "user_playbook"
         if finalization_run_id is not None:
             receipt = self.storage.get_agent_run_finalization_receipt(  # type: ignore[reportOptionalMemberAccess]
@@ -645,7 +662,7 @@ class PlaybookGenerationService(
             if receipt is not None:
                 # Receipts make persistence/billing idempotent. Derived schedulers
                 # are best-effort at-most-once and lack durable replay idempotency.
-                return receipt
+                return FinalizationResult(receipt, won_receipt=False)
         if model_provenance is not None:
             self._last_model_provenance = model_provenance
         plan = self._resolve_write_plan([all_playbooks])
@@ -654,14 +671,17 @@ class PlaybookGenerationService(
             if plan is not None:
                 self._persist_write_plan(plan)
                 self._dispatch_playbook_schedulers(plan)
-            return (
-                [
-                    str(playbook.user_playbook_id)
-                    for playbook in plan.new_playbooks
-                    if playbook.user_playbook_id
-                ]
-                if plan is not None
-                else []
+            return FinalizationResult(
+                learning_ids=(
+                    [
+                        str(playbook.user_playbook_id)
+                        for playbook in plan.new_playbooks
+                        if playbook.user_playbook_id
+                    ]
+                    if plan is not None
+                    else []
+                ),
+                won_receipt=False,
             )
 
         with self.storage.commit_scope():  # type: ignore[reportOptionalMemberAccess]
@@ -670,7 +690,7 @@ class PlaybookGenerationService(
                 entity_type=entity_type,
             )
             if receipt is not None:
-                return receipt
+                return FinalizationResult(receipt, won_receipt=False)
             if plan is not None:
                 self._persist_write_plan(plan)
                 learning_ids = [
@@ -685,7 +705,7 @@ class PlaybookGenerationService(
             )
         if plan is not None:
             self._dispatch_playbook_schedulers(plan)
-        return learning_ids
+        return FinalizationResult(learning_ids, won_receipt=True)
 
     def _apply_consolidation_lineage(
         self,

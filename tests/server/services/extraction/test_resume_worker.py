@@ -23,6 +23,7 @@ from reflexio.models.config_schema import (
     StorageConfigSQLite,
 )
 from reflexio.server.api_endpoints.request_context import RequestContext
+from reflexio.server.services.deferred_learning_plan import FinalizationResult
 from reflexio.server.services.extraction.resume_worker import (
     ExtractionResumeWorker,
     _run_playbook_contract_selection,
@@ -33,10 +34,6 @@ from reflexio.server.services.playbook.components.consolidator import (
     UnifyDecision,
 )
 from reflexio.server.services.playbook.service import PlaybookGenerationService
-from reflexio.server.services.profile.service import (
-    ProfileGenerationService,
-    ProfileGenerationServiceConfig,
-)
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 from reflexio.server.services.storage.storage_base import (
     AgentBinding,
@@ -317,7 +314,7 @@ def test_resume_worker_retries_finalization_without_rerunning_agent(
         patch("litellm.completion", side_effect=[response]),
         patch(
             "reflexio.server.services.profile.service."
-            "ProfileGenerationService._finalize_extracted_items",
+            "ProfileGenerationService._finalize_extracted_items_with_outcome",
             side_effect=RuntimeError("storage write failed"),
         ),
     ):
@@ -344,8 +341,8 @@ def test_resume_worker_retries_finalization_without_rerunning_agent(
         ),
         patch(
             "reflexio.server.services.profile.service."
-            "ProfileGenerationService._finalize_extracted_items",
-            return_value=None,
+            "ProfileGenerationService._finalize_extracted_items_with_outcome",
+            return_value=FinalizationResult([], won_receipt=False),
         ) as finalize,
     ):
         resumed = worker.drain(max_runs=1)
@@ -649,22 +646,22 @@ def test_retry_after_billing_reuses_ids_without_replaying_playbook_schedulers(
     }
     assert observed == {
         "profile_persisted": 1,
-        "profile_events": 2,
+        "profile_events": 1,
         "profile_distinct_keys": 1,
         "playbook_persisted": 1,
         "playbook_lineage_events": 1,
-        "playbook_events": 2,
+        "playbook_events": 1,
         "playbook_distinct_keys": 1,
     }
     assert profile_receipt_ids == profile_survivor_ids
-    assert profile_event_ids == profile_survivor_ids * 2
-    assert profile_keys == [f"learn:profile:{profile_survivor_ids[0]}"] * 2
+    assert profile_event_ids == profile_survivor_ids
+    assert profile_keys == [f"learn:profile:{profile_survivor_ids[0]}"]
     assert playbook_receipt_ids == playbook_survivor_ids
-    assert playbook_event_ids == playbook_survivor_ids * 2
-    assert playbook_keys == [f"learn:user_playbook:{playbook_survivor_ids[0]}"] * 2
+    assert playbook_event_ids == playbook_survivor_ids
+    assert playbook_keys == [f"learn:user_playbook:{playbook_survivor_ids[0]}"]
 
 
-def test_two_stale_sqlite_workers_share_one_finalization_receipt(tmp_path):
+def test_two_stale_sqlite_workers_bill_only_the_receipt_winner(tmp_path):
     db_path = str(tmp_path / "stale-finalizers.db")
     with patch.object(SQLiteStorage, "_get_embedding", return_value=[0.0] * 512):
         storage_a = SQLiteStorage(org_id="org_1", db_path=db_path)
@@ -686,7 +683,7 @@ def test_two_stale_sqlite_workers_share_one_finalization_receipt(tmp_path):
     )
     barrier = threading.Barrier(2)
 
-    def _service(storage_instance: SQLiteStorage) -> ProfileGenerationService:
+    def _context(storage_instance: SQLiteStorage) -> RequestContext:
         context = RequestContext.__new__(RequestContext)
         context.org_id = "org_1"
         context.storage = storage_instance
@@ -697,18 +694,7 @@ def test_two_stale_sqlite_workers_share_one_finalization_receipt(tmp_path):
                 extraction_definition_prompt="Extract durable user facts.",
             ),
         )
-        service = ProfileGenerationService(
-            llm_client=MagicMock(),
-            request_context=context,
-        )
-        service.service_config = ProfileGenerationServiceConfig(
-            user_id="user_1",
-            request_id="request_race",
-            source="api",
-            auto_run=False,
-            force_extraction=True,
-        )
-        return service
+        return context
 
     def _gate_first_receipt_read(storage_instance: SQLiteStorage) -> None:
         original = storage_instance.get_agent_run_finalization_receipt
@@ -728,7 +714,25 @@ def test_two_stale_sqlite_workers_share_one_finalization_receipt(tmp_path):
 
     _gate_first_receipt_read(storage_a)
     _gate_first_receipt_read(storage_b)
-    services = [_service(storage_a), _service(storage_b)]
+    resume_workers = [
+        ExtractionResumeWorker(
+            request_context=_context(storage), llm_client=MagicMock()
+        )
+        for storage in (storage_a, storage_b)
+    ]
+    run = AgentRunRecord(
+        id="run_race",
+        binding=AgentBinding(
+            org_id="org_1",
+            extractor_kind="profile",
+            user_id="user_1",
+            request_id="request_race",
+            agent_version="v1",
+            source="api",
+        ),
+        status=AgentRunStatus.FINALIZING,
+        generation_request_snapshot={"request_id": "request_race"},
+    )
     candidates = [
         UserProfile(
             profile_id=f"profile-race-{index}",
@@ -739,32 +743,31 @@ def test_two_stale_sqlite_workers_share_one_finalization_receipt(tmp_path):
         )
         for index in range(2)
     ]
-    results: list[list[str]] = []
     errors: list[BaseException] = []
 
     def finalize(index: int) -> None:
         try:
-            results.append(
-                services[index]._finalize_extracted_items(
-                    [candidates[index]],
-                    finalization_run_id="run_race",
-                )
-            )
+            resume_workers[index]._finalize_items(run, [candidates[index]])
         except BaseException as exc:  # noqa: BLE001 - intentional thread error capture
             errors.append(exc)
 
-    with patch(
-        "reflexio.server.services.profile.components.consolidator."
-        "ProfileConsolidator.deduplicate",
-        side_effect=lambda profiles, _user_id, _request_id: (profiles, [], []),
-    ):
-        workers = [
-            threading.Thread(target=finalize, args=(index,)) for index in range(2)
-        ]
-        for worker in workers:
-            worker.start()
-        for worker in workers:
-            worker.join(timeout=10)
+    events: list[UsageEvent] = []
+    configure_usage_event_recorder(events.append)
+    try:
+        with patch(
+            "reflexio.server.services.profile.components.consolidator."
+            "ProfileConsolidator.deduplicate",
+            side_effect=lambda profiles, _user_id, _request_id: (profiles, [], []),
+        ):
+            workers = [
+                threading.Thread(target=finalize, args=(index,)) for index in range(2)
+            ]
+            for worker in workers:
+                worker.start()
+            for worker in workers:
+                worker.join(timeout=10)
+    finally:
+        configure_usage_event_recorder(None)
 
     assert all(not worker.is_alive() for worker in workers)
     assert errors == []
@@ -776,7 +779,12 @@ def test_two_stale_sqlite_workers_share_one_finalization_receipt(tmp_path):
     )
     assert len(persisted_ids) == 1
     assert receipt_ids == persisted_ids
-    assert results == [persisted_ids, persisted_ids]
+    billing_events = [
+        event
+        for event in events
+        if event.event_name == "learnings_generated" and event.entity_type == "profile"
+    ]
+    assert [event.entity_id for event in billing_events] == persisted_ids
 
 
 def test_resume_worker_fails_run_when_step_budget_exhausted(

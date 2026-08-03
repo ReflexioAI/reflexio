@@ -30,7 +30,10 @@ from reflexio.server.services.base_generation_service import (
     BaseGenerationService,
     StatusChangeOperation,
 )
-from reflexio.server.services.deferred_learning_plan import ProfileWritePlan
+from reflexio.server.services.deferred_learning_plan import (
+    FinalizationResult,
+    ProfileWritePlan,
+)
 from reflexio.server.services.profile.components.extractor import ProfileExtractor
 from reflexio.server.services.profile.profile_generation_service_utils import (
     ProfileGenerationRequest,
@@ -347,6 +350,20 @@ class ProfileGenerationService(
         (persist) split the durable worker uses — with no external
         ``commit_scope`` — so the result is identical to the pre-split monolith.
         """
+        return self._finalize_extracted_items_with_outcome(
+            all_new_profiles,
+            model_provenance=model_provenance,
+            finalization_run_id=finalization_run_id,
+        ).learning_ids
+
+    def _finalize_extracted_items_with_outcome(
+        self,
+        all_new_profiles: list[UserProfile],
+        *,
+        model_provenance: ModelProvenance | None = None,
+        finalization_run_id: str | None = None,
+    ) -> FinalizationResult:
+        """Finalize profiles and expose the atomic receipt winner internally."""
         entity_type = "profile"
         if finalization_run_id is not None:
             receipt = self.storage.get_agent_run_finalization_receipt(  # type: ignore[reportOptionalMemberAccess]
@@ -354,7 +371,7 @@ class ProfileGenerationService(
                 entity_type=entity_type,
             )
             if receipt is not None:
-                return receipt
+                return FinalizationResult(receipt, won_receipt=False)
         if model_provenance is not None:
             self._last_model_provenance = model_provenance
         plan = self._resolve_write_plan([all_new_profiles])
@@ -371,7 +388,7 @@ class ProfileGenerationService(
         if finalization_run_id is None:
             if plan is not None:
                 self._persist_write_plan(plan)
-            return learning_ids
+            return FinalizationResult(learning_ids, won_receipt=False)
 
         with self.storage.commit_scope():  # type: ignore[reportOptionalMemberAccess]
             receipt = self.storage.get_agent_run_finalization_receipt(  # type: ignore[reportOptionalMemberAccess]
@@ -379,7 +396,7 @@ class ProfileGenerationService(
                 entity_type=entity_type,
             )
             if receipt is not None:
-                return receipt
+                return FinalizationResult(receipt, won_receipt=False)
             if plan is not None:
                 self._persist_write_plan(plan)
             self.storage.save_agent_run_finalization_receipt(  # type: ignore[reportOptionalMemberAccess]
@@ -387,7 +404,7 @@ class ProfileGenerationService(
                 entity_type=entity_type,
                 learning_ids=learning_ids,
             )
-        return learning_ids
+        return FinalizationResult(learning_ids, won_receipt=True)
 
     def check_and_update_profiles(self, profiles: list[UserProfile]) -> None:
         """check if the profiles are expired and update them if they are"""
