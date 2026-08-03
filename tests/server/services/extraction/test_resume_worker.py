@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import tempfile
 import threading
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
@@ -420,11 +421,11 @@ def test_resumable_finalization_bills_only_durable_ids_idempotently_on_retry(
     ]
 
 
-def test_retry_after_billing_reuses_persisted_profile_and_playbook_ids(
+def test_retry_after_billing_reuses_ids_without_replaying_playbook_schedulers(
     request_context,
     storage,
 ):
-    """A post-billing failure must not create or bill a second learning."""
+    """A post-billing retry reuses durable IDs and skips derived schedulers."""
     _seed_interactions(storage)
     request_context.configurator.get_config.return_value = Config(
         storage_config=StorageConfigSQLite(),
@@ -439,7 +440,11 @@ def test_retry_after_billing_reuses_persisted_profile_and_playbook_ids(
     events: list[UsageEvent] = []
     configure_usage_event_recorder(events.append)
 
-    def _run_failed_then_retried(run_id: str) -> None:
+    def _run_failed_then_retried(
+        run_id: str,
+        *,
+        assert_scheduler_calls: Callable[[], None] | None = None,
+    ) -> None:
         worker = ExtractionResumeWorker(
             request_context=request_context,
             llm_client=MagicMock(),
@@ -453,6 +458,8 @@ def test_retry_after_billing_reuses_persisted_profile_and_playbook_ids(
             ),
         ):
             first_attempt = worker.run_once()
+            if assert_scheduler_calls is not None:
+                assert_scheduler_calls()
             assert first_attempt is not None
             assert first_attempt.status == AgentRunStatus.FINALIZATION_FAILED
             storage.update_agent_run_status(
@@ -461,6 +468,8 @@ def test_retry_after_billing_reuses_persisted_profile_and_playbook_ids(
                 next_resume_at=datetime(2000, 1, 1, tzinfo=UTC),
             )
             retry = worker.run_once()
+            if assert_scheduler_calls is not None:
+                assert_scheduler_calls()
             assert retry is not None
             assert retry.status == AgentRunStatus.FINALIZED
 
@@ -574,10 +583,22 @@ def test_retry_after_billing_reuses_persisted_profile_and_playbook_ids(
             ),
             patch.object(
                 PlaybookGenerationService,
-                "_dispatch_playbook_schedulers",
-            ),
+                "_enqueue_user_playbook_optimization",
+            ) as enqueue_optimization,
+            patch.object(
+                PlaybookGenerationService,
+                "_trigger_playbook_aggregation",
+            ) as trigger_aggregation,
         ):
-            _run_failed_then_retried("run_playbook_retry")
+
+            def assert_playbook_scheduler_calls() -> None:
+                enqueue_optimization.assert_called_once()
+                trigger_aggregation.assert_called_once()
+
+            _run_failed_then_retried(
+                "run_playbook_retry",
+                assert_scheduler_calls=assert_playbook_scheduler_calls,
+            )
     finally:
         configure_usage_event_recorder(None)
 
@@ -613,11 +634,16 @@ def test_retry_after_billing_reuses_persisted_profile_and_playbook_ids(
     playbook_receipt_ids = storage.get_agent_run_finalization_receipt(
         run_id="run_playbook_retry", entity_type="user_playbook"
     )
+    playbook_lineage_ids = [
+        event.event_id
+        for event in storage.get_lineage_events(request_id=playbook_request_id)
+    ]
     observed = {
         "profile_persisted": len(profile_survivor_ids),
         "profile_events": len(profile_keys),
         "profile_distinct_keys": len(set(profile_keys)),
         "playbook_persisted": len(playbook_survivor_ids),
+        "playbook_lineage_events": len(playbook_lineage_ids),
         "playbook_events": len(playbook_keys),
         "playbook_distinct_keys": len(set(playbook_keys)),
     }
@@ -626,6 +652,7 @@ def test_retry_after_billing_reuses_persisted_profile_and_playbook_ids(
         "profile_events": 2,
         "profile_distinct_keys": 1,
         "playbook_persisted": 1,
+        "playbook_lineage_events": 1,
         "playbook_events": 2,
         "playbook_distinct_keys": 1,
     }
@@ -723,7 +750,7 @@ def test_two_stale_sqlite_workers_share_one_finalization_receipt(tmp_path):
                     finalization_run_id="run_race",
                 )
             )
-        except BaseException as exc:  # pragma: no cover - assertion reports it
+        except BaseException as exc:  # noqa: BLE001 - intentional thread error capture
             errors.append(exc)
 
     with patch(

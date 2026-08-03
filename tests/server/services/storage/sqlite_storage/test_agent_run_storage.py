@@ -216,6 +216,44 @@ def test_finalization_receipt_rejects_conflicting_immutable_value(storage):
     ) == ["profile-1"]
 
 
+def test_finalization_receipt_rejects_get_for_changed_entity_type(storage):
+    storage.create_agent_run(_agent_run("run_get_type", AgentRunStatus.FINALIZING))
+    storage.save_agent_run_finalization_receipt(
+        run_id="run_get_type",
+        entity_type="profile",
+        learning_ids=["profile-1"],
+    )
+
+    with pytest.raises(StorageError, match="entity type changed"):
+        storage.get_agent_run_finalization_receipt(
+            run_id="run_get_type", entity_type="user_playbook"
+        )
+
+    assert storage.get_agent_run_finalization_receipt(
+        run_id="run_get_type", entity_type="profile"
+    ) == ["profile-1"]
+
+
+def test_finalization_receipt_rejects_save_for_conflicting_extractor_type(storage):
+    storage.create_agent_run(_agent_run("run_save_type", AgentRunStatus.FINALIZING))
+    storage.save_agent_run_finalization_receipt(
+        run_id="run_save_type",
+        entity_type="profile",
+        learning_ids=["profile-1"],
+    )
+
+    with pytest.raises(StorageError, match="entity type is invalid"):
+        storage.save_agent_run_finalization_receipt(
+            run_id="run_save_type",
+            entity_type="user_playbook",
+            learning_ids=["playbook-1"],
+        )
+
+    assert storage.get_agent_run_finalization_receipt(
+        run_id="run_save_type", entity_type="profile"
+    ) == ["profile-1"]
+
+
 def test_finalization_receipt_isolated_by_org(tmp_path):
     db_path = str(tmp_path / "receipt-orgs.db")
     with patch.object(SQLiteStorage, "_get_embedding", return_value=[0.0] * 512):

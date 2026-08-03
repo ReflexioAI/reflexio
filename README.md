@@ -104,6 +104,7 @@ Publish conversations from your agent, and Reflexio closes the self-improvement 
 | Tool | Description |
 | --- | --- |
 | [uv](https://docs.astral.sh/uv/getting-started/installation/) | Python package manager |
+| SQLite runtime | >= 3.35.0 (required for local SQLite storage) |
 | [Node.js](https://nodejs.org/) >= 18 | Frontend runtime |
 
 <p align="center">

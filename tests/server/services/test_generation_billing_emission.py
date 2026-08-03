@@ -15,6 +15,8 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from reflexio.models.api_schema.domain.entities import UserProfile
 from reflexio.models.api_schema.service_schemas import (
     Interaction,
@@ -178,14 +180,15 @@ def test_real_extraction_emits_tokens_and_learnings(tmp_path):
     assert tok.billing_input_tokens == tok.count_value
     assert tok.platform_llm is True  # no api_key_config in the seeded Config
 
-    # learnings_generated.count_value must equal the existing generation_succeeded count.
+    # This fixture retains every generated output, so billing and success telemetry
+    # have equal counts here.
     gen = next(e for e in learning if e.event_name == "learnings_generated")
     succ = next(e for e in events if e.event_name == "generation_succeeded")
     assert gen.count_value == succ.count_value
 
 
-def test_online_learning_bills_only_write_plan_survivors(tmp_path):
-    """Candidates removed during write-plan resolution are not billable."""
+def test_online_learning_bills_survivors_but_telemetry_counts_raw_results(tmp_path):
+    """Telemetry counts raw output while billing counts retained write-plan items."""
     storage = _build_sqlite_storage(tmp_path)
     service = _build_profile_service(storage)
     extracted_profiles = [
@@ -220,6 +223,8 @@ def test_online_learning_bills_only_write_plan_survivors(tmp_path):
         ):
             plan = service.compute_generation(MagicMock())
             assert plan is not None
+            assert plan.generated_count == 2
+            assert plan.billable_count == 1
             service.persist_generation(plan)
             service.emit_generation_side_effects(plan)
     finally:
@@ -227,6 +232,10 @@ def test_online_learning_bills_only_write_plan_survivors(tmp_path):
 
     billed = [event for event in events if event.event_name == "learnings_generated"]
     assert [event.count_value for event in billed] == [1]
+    succeeded = [
+        event for event in events if event.event_name == "generation_succeeded"
+    ]
+    assert [event.count_value for event in succeeded] == [2]
 
 
 def test_online_playbook_bills_only_write_plan_survivors(tmp_path):
@@ -491,6 +500,25 @@ def test_non_learning_service_emits_no_learning_billing_events():
     assert learning_events == [], (
         f"EMITS_LEARNING_BILLING=False service must not emit learning events; got: {learning_events}"
     )
+
+
+def test_base_finalization_requires_receipt_aware_override_for_run_id():
+    """A receipt-less service cannot finalize a resumable extraction run."""
+    service = _StubService(
+        llm_client=LiteLLMClient(LiteLLMConfig(model="gpt-4o-mini")),
+        request_context=_make_minimal_request_context(),
+    )
+
+    with patch.object(service, "_process_results") as process_results:
+        assert service._finalize_extracted_items(["legacy-item"]) is None
+        process_results.assert_called_once_with([["legacy-item"]])
+
+        with pytest.raises(NotImplementedError, match="(?i)receipt-aware"):
+            service._finalize_extracted_items(
+                ["resumable-item"], finalization_run_id="run-1"
+            )
+
+        process_results.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

@@ -195,7 +195,7 @@ class UsageBillingMixin(Generic[TExtractorConfig, TGenerationServiceConfig]):  #
 
         Args:
             prepared: The prepared generation run (used for input-text computation).
-            generated_count: Number of learnings produced by this extraction run.
+            generated_count: Number of retained write-plan learnings eligible for billing.
         """
         if not self.EMITS_LEARNING_BILLING:
             return

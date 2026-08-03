@@ -358,6 +358,7 @@ class ProfileGenerationService(
         if model_provenance is not None:
             self._last_model_provenance = model_provenance
         plan = self._resolve_write_plan([all_new_profiles])
+        # Profile IDs are assigned before persistence, unlike database-assigned playbook IDs.
         learning_ids = (
             [
                 str(profile.profile_id)

@@ -75,6 +75,7 @@ from ._stall_state import init_stall_state_table
 logger = logging.getLogger(__name__)
 
 _OUTCOME_ALLOWED_VALUES = tuple(kind.value for kind in SessionOutcomeKind)
+_MINIMUM_SQLITE_VERSION = (3, 35, 0)
 
 
 # ---------------------------------------------------------------------------
@@ -720,6 +721,12 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
 
         # Open connection
         self.conn = sqlite3.connect(db_path, check_same_thread=False)
+        if sqlite3.sqlite_version_info < _MINIMUM_SQLITE_VERSION:
+            self.conn.close()
+            detected_version = ".".join(map(str, sqlite3.sqlite_version_info))
+            raise RuntimeError(
+                f"SQLite 3.35.0 or newer is required; detected {detected_version}"
+            )
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA foreign_keys=ON")

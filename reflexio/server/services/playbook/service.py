@@ -642,6 +642,8 @@ class PlaybookGenerationService(
                 entity_type=entity_type,
             )
             if receipt is not None:
+                # Receipts make persistence/billing idempotent. Derived schedulers
+                # are best-effort at-most-once and lack durable replay idempotency.
                 return receipt
         if model_provenance is not None:
             self._last_model_provenance = model_provenance

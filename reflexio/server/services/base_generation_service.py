@@ -346,9 +346,13 @@ class BaseGenerationService(
         self,
         items: list,
         *,
-        finalization_run_id: str | None = None,  # noqa: ARG002
+        finalization_run_id: str | None = None,
     ) -> list[str] | None:
         """Persist already-flattened extracted items through the service path."""
+        if finalization_run_id is not None:
+            raise NotImplementedError(
+                "Receipt-aware finalization must be implemented by resumable services"
+            )
         if items:
             self._process_results([items])
         return None
@@ -647,15 +651,17 @@ class BaseGenerationService(
             self._mark_extraction_runs_finalization_failed(exc)
             raise
 
-        generated_count = (
+        generated_count = self._count_generated_results(result)
+        billable_count = (
             self._count_retained_online_learnings(write_plan)
             if self.EMITS_LEARNING_BILLING
-            else self._count_generated_results(result)
+            else 0
         )
 
         return GenerationComputePlan(
             prepared=prepared,
             generated_count=generated_count,
+            billable_count=billable_count,
             write_plan=write_plan,
             bookmark_advance=self._last_bookmark_advance,
             generation_start=generation_start,
@@ -686,7 +692,8 @@ class BaseGenerationService(
 
         Runs only for a fence-winning job (the durable worker calls it after the
         scope commits; ``.run()`` calls it inline). Reads the plan's compute-time
-        snapshot (``generated_count`` / ``prepared`` / ``generation_start``) so a
+        snapshot (``generated_count`` / ``billable_count`` / ``prepared`` /
+        ``generation_start``) so a
         fence-lost job never emits.
 
         Billing purity note (round-2 finding): ``_record_billing_learning_events``
@@ -718,7 +725,7 @@ class BaseGenerationService(
             },
         )
         self._record_billing_learning_events(
-            prepared=plan.prepared, generated_count=plan.generated_count
+            prepared=plan.prepared, generated_count=plan.billable_count
         )
 
     @abstractmethod
