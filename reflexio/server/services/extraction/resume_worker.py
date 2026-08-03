@@ -19,6 +19,7 @@ from reflexio.server.error_reporting import error_tags
 from reflexio.server.llm._litellm_types import ModelProvenance
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 from reflexio.server.llm.model_defaults import ModelRole, resolve_model_name
+from reflexio.server.services.deferred_learning_plan import FinalizationResult
 from reflexio.server.services.extraction.agent_run_records import build_scope_hash
 from reflexio.server.services.extraction.pending_tool_call_dispatch import (
     PendingToolCallToolContext,
@@ -871,7 +872,7 @@ class ExtractionResumeWorker:
         items: list[Any],
         *,
         model_provenance: ModelProvenance | None = None,
-    ) -> None:
+    ) -> FinalizationResult:
         if run.binding.extractor_kind == "profile":
             service = ProfileGenerationService(
                 llm_client=self.client,
@@ -893,7 +894,7 @@ class ExtractionResumeWorker:
                 self._record_finalized_learnings(
                     run, result.learning_ids, entity_type="profile"
                 )
-            return
+            return result
         if run.binding.extractor_kind == "playbook":
             service = PlaybookGenerationService(
                 llm_client=self.client,
@@ -916,7 +917,7 @@ class ExtractionResumeWorker:
                 self._record_finalized_learnings(
                     run, result.learning_ids, entity_type="user_playbook"
                 )
-            return
+            return result
         raise ResumeWorkerError(
             f"Unsupported extractor kind {run.binding.extractor_kind!r}"
         )

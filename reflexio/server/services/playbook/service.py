@@ -604,10 +604,16 @@ class PlaybookGenerationService(
         committed finalization attempt; derived scheduler work has no durable
         replay idempotency.
         """
-        self._enqueue_user_playbook_optimization(plan.new_playbooks)
+        try:
+            self._enqueue_user_playbook_optimization(plan.new_playbooks)
+        except Exception:
+            logger.exception("Failed to schedule user playbook optimization")
         if not plan.output_pending_status and not plan.skip_aggregation:
-            logger.info("Trigger playbook aggregation")
-            self._trigger_playbook_aggregation()
+            try:
+                logger.info("Trigger playbook aggregation")
+                self._trigger_playbook_aggregation()
+            except Exception:
+                logger.exception("Failed to schedule user playbook aggregation")
 
     def emit_generation_side_effects(self, plan: GenerationComputePlan) -> None:
         """Post-commit side-effects — base telemetry/billing + playbook schedulers.
@@ -631,13 +637,12 @@ class PlaybookGenerationService(
     ) -> list[str]:
         """Finalize extracted playbooks for synchronous resume/manual callers.
 
-        Kept for the synchronous resume/manual callers
-        (``ExtractionResumeWorker`` calls this directly). Routes them through the
-        same ``_resolve_write_plan`` (compute) + ``_persist_write_plan``
-        (persist) split the durable worker uses. Derived schedulers dispatch
-        best-effort after the finalization transaction commits. When an existing
-        finalization receipt is found, the method intentionally returns its
-        learning ids without replaying those schedulers.
+        Compatibility surface for synchronous callers that expect ordered
+        learning ids. Routes them through the same ``_resolve_write_plan``
+        (compute) + ``_persist_write_plan`` (persist) split the durable worker
+        uses. Derived schedulers dispatch best-effort after the finalization
+        transaction commits. When an existing finalization receipt is found,
+        the method returns its learning ids without replaying those schedulers.
         """
         return self._finalize_extracted_items_with_outcome(
             all_playbooks,

@@ -33,7 +33,14 @@ from reflexio.server.services.playbook.components.consolidator import (
     PlaybookConsolidationOutput,
     UnifyDecision,
 )
-from reflexio.server.services.playbook.service import PlaybookGenerationService
+from reflexio.server.services.playbook.service import (
+    PlaybookGenerationService,
+    PlaybookGenerationServiceConfig,
+)
+from reflexio.server.services.profile.service import (
+    ProfileGenerationService,
+    ProfileGenerationServiceConfig,
+)
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 from reflexio.server.services.storage.storage_base import (
     AgentBinding,
@@ -81,6 +88,115 @@ def request_context(storage):
         f"{prompt_id}: {variables}"
     )
     return ctx
+
+
+def _finalization_context(storage: SQLiteStorage) -> RequestContext:
+    context = RequestContext.__new__(RequestContext)
+    context.org_id = "org_1"
+    context.storage = storage
+    context.storage_base_dir = None
+    context.configurator = MagicMock()
+    context.configurator.get_config.return_value = Config(
+        storage_config=StorageConfigSQLite(),
+        profile_extractor_config=ProfileExtractorConfig(
+            extraction_definition_prompt="Extract durable user facts.",
+        ),
+        user_playbook_extractor_config=PlaybookConfig(
+            extraction_definition_prompt="Extract durable operating rules.",
+        ),
+        pending_tool_call_config=PendingToolCallConfig(enabled=True),
+    )
+    context.prompt_manager = MagicMock()
+    context.prompt_manager.get_active_version.return_value = None
+    return context
+
+
+def _finalizing_run(
+    *, run_id: str, extractor_kind: str, request_id: str
+) -> AgentRunRecord:
+    return AgentRunRecord(
+        id=run_id,
+        binding=AgentBinding(
+            org_id="org_1",
+            extractor_kind=extractor_kind,
+            user_id="user_1",
+            request_id=request_id,
+            agent_version="v1",
+            source="api",
+        ),
+        status=AgentRunStatus.FINALIZING,
+        generation_request_snapshot={"request_id": request_id},
+    )
+
+
+def _gate_initial_receipt_reads(
+    storages: tuple[SQLiteStorage, SQLiteStorage],
+) -> None:
+    barrier = threading.Barrier(len(storages))
+
+    def install_gate(storage: SQLiteStorage) -> None:
+        original = storage.get_agent_run_finalization_receipt
+        first_read = True
+
+        def gated_read(*, run_id: str, entity_type: str) -> list[str] | None:
+            nonlocal first_read
+            receipt = original(run_id=run_id, entity_type=entity_type)
+            if first_read:
+                first_read = False
+                barrier.wait(timeout=5)
+            return receipt
+
+        storage.get_agent_run_finalization_receipt = MagicMock(  # type: ignore[method-assign]
+            side_effect=gated_read
+        )
+
+    for storage in storages:
+        install_gate(storage)
+
+
+def _profile_service(
+    context: RequestContext, *, request_id: str
+) -> ProfileGenerationService:
+    service = ProfileGenerationService(llm_client=MagicMock(), request_context=context)
+    service.service_config = ProfileGenerationServiceConfig(
+        user_id="user_1",
+        request_id=request_id,
+        source="api",
+        auto_run=False,
+        force_extraction=True,
+    )
+    return service
+
+
+def _playbook_service(
+    context: RequestContext, *, request_id: str
+) -> PlaybookGenerationService:
+    service = PlaybookGenerationService(llm_client=MagicMock(), request_context=context)
+    service.service_config = PlaybookGenerationServiceConfig(
+        request_id=request_id,
+        agent_version="v1",
+        user_id="user_1",
+        source="api",
+        auto_run=False,
+        force_extraction=True,
+    )
+    return service
+
+
+def _playbook_candidates(*, request_id: str, prefix: str) -> list[UserPlaybook]:
+    return [
+        UserPlaybook(
+            user_id="user_1",
+            agent_version="v1",
+            request_id=request_id,
+            content=f"Use deployment procedure {prefix}-{index}.",
+            trigger=f"when deployment condition {prefix}-{index} occurs",
+            rationale=f"Procedure {prefix}-{index} is required.",
+            source="api",
+            source_interaction_ids=[1, 2],
+        )
+        for index in range(2)
+    ]
 
 
 @pytest.mark.parametrize(
@@ -661,93 +777,158 @@ def test_retry_after_billing_reuses_ids_without_replaying_playbook_schedulers(
     assert playbook_keys == [f"learn:user_playbook:{playbook_survivor_ids[0]}"]
 
 
-def test_two_stale_sqlite_workers_bill_only_the_receipt_winner(tmp_path):
+@pytest.mark.parametrize("failing_scheduler", ["optimizer", "aggregation"])
+def test_playbook_scheduler_failure_preserves_billing_and_isolated_retry(
+    storage,
+    failing_scheduler,
+):
+    run = _finalizing_run(
+        run_id=f"run_scheduler_failure_{failing_scheduler}",
+        extractor_kind="playbook",
+        request_id=f"request_scheduler_failure_{failing_scheduler}",
+    )
+    storage.create_agent_run(run)
+    worker = ExtractionResumeWorker(
+        request_context=_finalization_context(storage),
+        llm_client=MagicMock(),
+    )
+    candidates = _playbook_candidates(
+        request_id=run.binding.request_id,
+        prefix=failing_scheduler,
+    )
+    events: list[UsageEvent] = []
+    configure_usage_event_recorder(events.append)
+    try:
+        with (
+            patch.object(
+                PlaybookGenerationService,
+                "_configured_playbook_config",
+                return_value=None,
+            ),
+            patch(
+                "reflexio.server.services.playbook.components.consolidator."
+                "PlaybookConsolidator.deduplicate",
+                side_effect=lambda results, *_args, **_kwargs: (
+                    [playbook for result in results for playbook in result],
+                    [],
+                    [],
+                ),
+            ) as deduplicate,
+            patch.object(
+                PlaybookGenerationService,
+                "_enqueue_user_playbook_optimization",
+                side_effect=(
+                    RuntimeError("optimizer unavailable")
+                    if failing_scheduler == "optimizer"
+                    else None
+                ),
+            ) as optimize,
+            patch.object(
+                PlaybookGenerationService,
+                "_trigger_playbook_aggregation",
+                side_effect=(
+                    RuntimeError("aggregation unavailable")
+                    if failing_scheduler == "aggregation"
+                    else None
+                ),
+            ) as aggregate,
+        ):
+            winner = worker._finalize_items(run, candidates)
+            retry = worker._finalize_items(run, candidates)
+    finally:
+        configure_usage_event_recorder(None)
+
+    assert winner.won_receipt is True
+    assert retry == FinalizationResult(winner.learning_ids, won_receipt=False)
+    assert deduplicate.call_count == 1
+    optimize.assert_called_once()
+    aggregate.assert_called_once()
+    billing_ids = [
+        event.entity_id
+        for event in events
+        if event.event_name == "learnings_generated"
+        and event.entity_type == "user_playbook"
+    ]
+    assert billing_ids == winner.learning_ids
+
+
+def test_empty_profile_receipt_wins_once_without_billing_or_recompute(storage):
+    run = _finalizing_run(
+        run_id="run_empty_profile",
+        extractor_kind="profile",
+        request_id="request_empty_profile",
+    )
+    storage.create_agent_run(run)
+    context = _finalization_context(storage)
+    worker = ExtractionResumeWorker(request_context=context, llm_client=MagicMock())
+    events: list[UsageEvent] = []
+    configure_usage_event_recorder(events.append)
+    try:
+        with patch.object(
+            ProfileGenerationService,
+            "_resolve_write_plan",
+            return_value=None,
+        ) as resolve:
+            winner = worker._finalize_items(run, [])
+            retry = worker._finalize_items(run, [])
+            wrapper_ids = _profile_service(
+                context, request_id=run.binding.request_id
+            )._finalize_extracted_items([], finalization_run_id=run.id)
+    finally:
+        configure_usage_event_recorder(None)
+
+    assert winner == FinalizationResult([], won_receipt=True)
+    assert retry == FinalizationResult([], won_receipt=False)
+    assert type(wrapper_ids) is list
+    assert wrapper_ids == []
+    resolve.assert_called_once()
+    assert (
+        storage.get_agent_run_finalization_receipt(run_id=run.id, entity_type="profile")
+        == []
+    )
+    assert [
+        event for event in events if event.event_name == "learnings_generated"
+    ] == []
+
+
+def test_two_stale_profile_workers_preserve_order_and_bill_only_winner(tmp_path):
     db_path = str(tmp_path / "stale-finalizers.db")
     with patch.object(SQLiteStorage, "_get_embedding", return_value=[0.0] * 512):
         storage_a = SQLiteStorage(org_id="org_1", db_path=db_path)
         storage_b = SQLiteStorage(org_id="org_1", db_path=db_path)
-    storage_a.create_agent_run(
-        AgentRunRecord(
-            id="run_race",
-            binding=AgentBinding(
-                org_id="org_1",
-                extractor_kind="profile",
-                user_id="user_1",
-                request_id="request_race",
-                agent_version="v1",
-                source="api",
-            ),
-            status=AgentRunStatus.FINALIZING,
-            generation_request_snapshot={"request_id": "request_race"},
-        )
+    run = _finalizing_run(
+        run_id="run_profile_race",
+        extractor_kind="profile",
+        request_id="request_profile_race",
     )
-    barrier = threading.Barrier(2)
-
-    def _context(storage_instance: SQLiteStorage) -> RequestContext:
-        context = RequestContext.__new__(RequestContext)
-        context.org_id = "org_1"
-        context.storage = storage_instance
-        context.configurator = MagicMock()
-        context.configurator.get_config.return_value = Config(
-            storage_config=StorageConfigSQLite(),
-            profile_extractor_config=ProfileExtractorConfig(
-                extraction_definition_prompt="Extract durable user facts.",
-            ),
-        )
-        return context
-
-    def _gate_first_receipt_read(storage_instance: SQLiteStorage) -> None:
-        original = storage_instance.get_agent_run_finalization_receipt
-        first_read = True
-
-        def gated_read(*, run_id: str, entity_type: str) -> list[str] | None:
-            nonlocal first_read
-            receipt = original(run_id=run_id, entity_type=entity_type)
-            if first_read:
-                first_read = False
-                barrier.wait(timeout=5)
-            return receipt
-
-        storage_instance.get_agent_run_finalization_receipt = MagicMock(  # type: ignore[method-assign]
-            side_effect=gated_read
-        )
-
-    _gate_first_receipt_read(storage_a)
-    _gate_first_receipt_read(storage_b)
+    storage_a.create_agent_run(run)
+    _gate_initial_receipt_reads((storage_a, storage_b))
+    contexts = [_finalization_context(storage) for storage in (storage_a, storage_b)]
     resume_workers = [
-        ExtractionResumeWorker(
-            request_context=_context(storage), llm_client=MagicMock()
-        )
-        for storage in (storage_a, storage_b)
+        ExtractionResumeWorker(request_context=context, llm_client=MagicMock())
+        for context in contexts
     ]
-    run = AgentRunRecord(
-        id="run_race",
-        binding=AgentBinding(
-            org_id="org_1",
-            extractor_kind="profile",
-            user_id="user_1",
-            request_id="request_race",
-            agent_version="v1",
-            source="api",
-        ),
-        status=AgentRunStatus.FINALIZING,
-        generation_request_snapshot={"request_id": "request_race"},
-    )
-    candidates = [
-        UserProfile(
-            profile_id=f"profile-race-{index}",
-            user_id="user_1",
-            content="User deployment target is AWS ECS.",
-            last_modified_timestamp=1_000,
-            generated_from_request_id="request_race",
-        )
-        for index in range(2)
+    candidate_batches = [
+        [
+            UserProfile(
+                profile_id=f"profile-{worker_index}-{item_index}",
+                user_id="user_1",
+                content=f"Profile candidate {worker_index}-{item_index}.",
+                last_modified_timestamp=1_000 + item_index,
+                generated_from_request_id="request_profile_race",
+            )
+            for item_index in range(2)
+        ]
+        for worker_index in range(2)
     ]
+    outcomes: list[FinalizationResult] = []
     errors: list[BaseException] = []
 
     def finalize(index: int) -> None:
         try:
-            resume_workers[index]._finalize_items(run, [candidates[index]])
+            outcomes.append(
+                resume_workers[index]._finalize_items(run, candidate_batches[index])
+            )
         except BaseException as exc:  # noqa: BLE001 - intentional thread error capture
             errors.append(exc)
 
@@ -775,16 +956,141 @@ def test_two_stale_sqlite_workers_bill_only_the_receipt_winner(tmp_path):
         profile.profile_id for profile in storage_a.get_user_profile("user_1")
     ]
     receipt_ids = storage_a.get_agent_run_finalization_receipt(
-        run_id="run_race", entity_type="profile"
+        run_id=run.id, entity_type="profile"
     )
-    assert len(persisted_ids) == 1
+    assert len(persisted_ids) == 2
     assert receipt_ids == persisted_ids
+    assert [outcome.won_receipt for outcome in outcomes].count(True) == 1
+    assert [outcome.won_receipt for outcome in outcomes].count(False) == 1
+    assert all(outcome.learning_ids == receipt_ids for outcome in outcomes)
+    assert receipt_ids in [
+        [profile.profile_id for profile in batch] for batch in candidate_batches
+    ]
+    wrapper_ids = _profile_service(
+        contexts[0], request_id=run.binding.request_id
+    )._finalize_extracted_items(
+        candidate_batches[1],
+        finalization_run_id=run.id,
+    )
+    assert type(wrapper_ids) is list
+    assert wrapper_ids == receipt_ids
     billing_events = [
         event
         for event in events
         if event.event_name == "learnings_generated" and event.entity_type == "profile"
     ]
     assert [event.entity_id for event in billing_events] == persisted_ids
+
+
+def test_two_stale_playbook_workers_preserve_order_and_dispatch_once(tmp_path):
+    db_path = str(tmp_path / "stale-playbook-finalizers.db")
+    with patch.object(SQLiteStorage, "_get_embedding", return_value=[0.0] * 512):
+        storage_a = SQLiteStorage(org_id="org_1", db_path=db_path)
+        storage_b = SQLiteStorage(org_id="org_1", db_path=db_path)
+    run = _finalizing_run(
+        run_id="run_playbook_race",
+        extractor_kind="playbook",
+        request_id="request_playbook_race",
+    )
+    storage_a.create_agent_run(run)
+    _gate_initial_receipt_reads((storage_a, storage_b))
+    contexts = [_finalization_context(storage) for storage in (storage_a, storage_b)]
+    resume_workers = [
+        ExtractionResumeWorker(request_context=context, llm_client=MagicMock())
+        for context in contexts
+    ]
+    candidate_batches = [
+        _playbook_candidates(
+            request_id=run.binding.request_id,
+            prefix=f"worker-{worker_index}",
+        )
+        for worker_index in range(2)
+    ]
+    outcomes: list[FinalizationResult] = []
+    errors: list[BaseException] = []
+
+    def finalize(index: int) -> None:
+        try:
+            outcomes.append(
+                resume_workers[index]._finalize_items(run, candidate_batches[index])
+            )
+        except BaseException as exc:  # noqa: BLE001 - intentional thread error capture
+            errors.append(exc)
+
+    events: list[UsageEvent] = []
+    configure_usage_event_recorder(events.append)
+    try:
+        with (
+            patch.object(
+                PlaybookGenerationService,
+                "_configured_playbook_config",
+                return_value=None,
+            ),
+            patch(
+                "reflexio.server.services.playbook.components.consolidator."
+                "PlaybookConsolidator.deduplicate",
+                side_effect=lambda results, *_args, **_kwargs: (
+                    [playbook for result in results for playbook in result],
+                    [],
+                    [],
+                ),
+            ),
+            patch.object(
+                PlaybookGenerationService,
+                "_enqueue_user_playbook_optimization",
+            ) as optimize,
+            patch.object(
+                PlaybookGenerationService,
+                "_trigger_playbook_aggregation",
+            ) as aggregate,
+        ):
+            threads = [
+                threading.Thread(target=finalize, args=(index,)) for index in range(2)
+            ]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=10)
+
+            assert all(not thread.is_alive() for thread in threads)
+            assert errors == []
+            receipt_ids = storage_a.get_agent_run_finalization_receipt(
+                run_id=run.id,
+                entity_type="user_playbook",
+            )
+            persisted_ids = [
+                str(row[0])
+                for row in storage_a.conn.execute(
+                    "SELECT user_playbook_id FROM user_playbooks "
+                    "WHERE request_id = ? ORDER BY user_playbook_id ASC",
+                    (run.binding.request_id,),
+                ).fetchall()
+            ]
+            wrapper_ids = _playbook_service(
+                contexts[0], request_id=run.binding.request_id
+            )._finalize_extracted_items(
+                candidate_batches[1],
+                finalization_run_id=run.id,
+            )
+
+            assert len(persisted_ids) == 2
+            assert receipt_ids == persisted_ids
+            assert [outcome.won_receipt for outcome in outcomes].count(True) == 1
+            assert [outcome.won_receipt for outcome in outcomes].count(False) == 1
+            assert all(outcome.learning_ids == receipt_ids for outcome in outcomes)
+            assert type(wrapper_ids) is list
+            assert wrapper_ids == receipt_ids
+            optimize.assert_called_once()
+            aggregate.assert_called_once()
+            billing_ids = [
+                event.entity_id
+                for event in events
+                if event.event_name == "learnings_generated"
+                and event.entity_type == "user_playbook"
+            ]
+            assert billing_ids == receipt_ids
+    finally:
+        configure_usage_event_recorder(None)
 
 
 def test_resume_worker_fails_run_when_step_budget_exhausted(

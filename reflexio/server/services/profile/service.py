@@ -344,11 +344,11 @@ class ProfileGenerationService(
     ) -> list[str]:
         """Permanent V3 wrapper: compute-then-persist together (no external fence).
 
-        Kept for the synchronous resume/manual callers
-        (``ExtractionResumeWorker`` calls this directly). Routes them through the
-        same ``_resolve_write_plan`` (compute) + ``_persist_write_plan``
-        (persist) split the durable worker uses — with no external
-        ``commit_scope`` — so the result is identical to the pre-split monolith.
+        Compatibility surface for synchronous callers that expect ordered
+        learning ids. Routes them through the same ``_resolve_write_plan``
+        (compute) + ``_persist_write_plan`` (persist) split the durable worker
+        uses, with no external ``commit_scope``, so the result is identical to
+        the pre-split monolith.
         """
         return self._finalize_extracted_items_with_outcome(
             all_new_profiles,
