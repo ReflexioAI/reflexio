@@ -34,6 +34,7 @@ class SearchExposureBatch:
         object.__setattr__(
             self, "session_id", _normalize_correlation_id(self.session_id)
         )
+        object.__setattr__(self, "user_id", _normalize_correlation_id(self.user_id))
         if self.interaction_id is not None and self.interaction_id <= 0:
             object.__setattr__(self, "interaction_id", None)
 

@@ -126,6 +126,26 @@ def test_unscoped_exposure_keeps_unknown_subject_separate_from_playbook_owner() 
     assert event.playbook_owner_governance_subject_ref == "owner:user-1"
 
 
+@pytest.mark.parametrize("user_id", ["", " \t\n"], ids=["empty", "whitespace"])
+def test_blank_retrieval_subject_normalizes_to_unscoped(user_id: str) -> None:
+    playbook = _playbook()
+    batch = replace(_batch(playbook), user_id=user_id)
+
+    event = build_user_playbook_exposure_event(
+        batch,
+        playbook,
+        exposed_at=1_700_000_100,
+        ingested_at=1_700_000_101,
+        governance_subject_ref=None,
+        playbook_owner_governance_subject_ref="owner:user-1",
+    )
+
+    assert batch.user_id is None
+    assert event.user_id is None
+    assert event.governance_subject_ref is None
+    assert event.playbook_owner_user_id == "user-1"
+
+
 def test_scoped_exposure_rejects_a_playbook_owned_by_another_user() -> None:
     playbook = _playbook().model_copy(update={"user_id": "user-2"})
     batch = _batch(playbook)
