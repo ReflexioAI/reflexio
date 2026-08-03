@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -168,7 +168,7 @@ def calculate_expiration_timestamp(
     if profile_time_to_live == ProfileTimeToLive.INFINITY:
         return NEVER_EXPIRES_TIMESTAMP
 
-    last_modified_datetime = datetime.fromtimestamp(last_modified_timestamp)
+    last_modified_datetime = datetime.fromtimestamp(last_modified_timestamp, tz=UTC)
     if profile_time_to_live == ProfileTimeToLive.ONE_DAY:
         expiration_timestamp = last_modified_datetime + timedelta(days=1)
     elif profile_time_to_live == ProfileTimeToLive.ONE_WEEK:
