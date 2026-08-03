@@ -971,6 +971,58 @@ def test_legacy_fingerprint_is_reembedded_and_adopted_without_regeneration(
     assert store.get_playbook_aggregation_bootstrap_status("v1") == "complete"
 
 
+def test_empty_legacy_fingerprint_is_not_activated(vec_store, tmp_path) -> None:
+    store = vec_store
+    existing = store.save_agent_playbooks(
+        [
+            AgentPlaybook(
+                playbook_name="playbook",
+                agent_version="v1",
+                content="Legacy aggregate without sources",
+                playbook_status=PlaybookStatus.PENDING,
+            )
+        ]
+    )[0]
+    OperationStateManager(
+        store, "aggregation-org", "playbook_aggregator"
+    ).update_cluster_fingerprints(
+        name="playbook",
+        version="v1",
+        fingerprints={
+            "empty-legacy-fingerprint": {
+                "agent_playbook_id": existing.agent_playbook_id,
+                "user_playbook_ids": [],
+            }
+        },
+    )
+    config = Config(
+        storage_config=StorageConfigSQLite(db_path=str(tmp_path / "state.db")),
+        user_playbook_extractor_config=PlaybookConfig(
+            extractor_name="playbook",
+            extraction_definition_prompt="test",
+            aggregation_config=PlaybookAggregatorConfig(min_cluster_size=2),
+        ),
+    )
+    configurator = MagicMock()
+    configurator.get_config.return_value = config
+    aggregator = PlaybookAggregator(
+        llm_client=MagicMock(),
+        request_context=MagicMock(
+            org_id="aggregation-org", storage=store, configurator=configurator
+        ),
+        agent_version="v1",
+    )
+
+    assert aggregator._adopt_legacy_aggregation_state(budget=10) == (0, True)
+    assert store.get_playbook_aggregation_bootstrap_status("v1") == "complete"
+    assert (
+        store.conn.execute(
+            "SELECT count(*) FROM playbook_aggregation_cluster"
+        ).fetchone()[0]
+        == 0
+    )
+
+
 def test_fenced_full_rerun_rebuilds_typed_cluster_state(
     vec_store, tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

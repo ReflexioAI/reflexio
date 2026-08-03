@@ -669,6 +669,10 @@ class PlaybookAggregator:
                 )
             except (TypeError, ValueError):
                 continue
+            if not member_ids:
+                # Empty legacy fingerprints have no centroid to adopt and must not
+                # become active clusters that nearest-centroid lookup cannot find.
+                continue
             cluster_id = self._stable_aggregation_cluster_id(fingerprint)
             progress = self.storage.get_playbook_aggregation_cluster_rebuild_cursor(  # type: ignore[attr-defined]
                 cluster_id
