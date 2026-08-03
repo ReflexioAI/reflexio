@@ -104,8 +104,14 @@ Publish conversations from your agent, and Reflexio closes the self-improvement 
 | Tool | Description |
 | --- | --- |
 | [uv](https://docs.astral.sh/uv/getting-started/installation/) | Python package manager |
-| SQLite runtime | >= 3.35.0 (required for local SQLite storage) |
+| Python's linked SQLite runtime | >= 3.35.0 (required for local SQLite storage; not the standalone `sqlite3` CLI) |
 | [Node.js](https://nodejs.org/) >= 18 | Frontend runtime |
+
+Check the SQLite runtime linked to Python with:
+
+```shell
+uv run python -c "import sqlite3; print(sqlite3.sqlite_version_info)"
+```
 
 <p align="center">
   <img src="docs/images/demo.gif" width="800px" alt="Reflexio Demo">

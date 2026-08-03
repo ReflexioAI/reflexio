@@ -513,7 +513,7 @@ def test_base_finalization_requires_receipt_aware_override_for_run_id():
         assert service._finalize_extracted_items(["legacy-item"]) is None
         process_results.assert_called_once_with([["legacy-item"]])
 
-        with pytest.raises(NotImplementedError, match="(?i)receipt-aware"):
+        with pytest.raises(NotImplementedError, match=r"(?i)receipt-aware"):
             service._finalize_extracted_items(
                 ["resumable-item"], finalization_run_id="run-1"
             )
