@@ -60,6 +60,7 @@ def test_sqlite_storage_rejects_sqlite_before_returning_support(
     tmp_path, monkeypatch
 ) -> None:
     monkeypatch.setattr(sqlite_storage_base.sqlite3, "sqlite_version_info", (3, 34, 99))
+    db_path = tmp_path / "missing" / "nested" / "old.db"
 
     with (
         patch.object(SQLiteStorage, "_get_embedding", return_value=[0.0] * 512),
@@ -68,7 +69,10 @@ def test_sqlite_storage_rejects_sqlite_before_returning_support(
             match=r"SQLite 3\.35\.0 or newer is required; detected 3\.34\.99",
         ),
     ):
-        SQLiteStorage(org_id="version-check", db_path=str(tmp_path / "old.db"))
+        SQLiteStorage(org_id="version-check", db_path=str(db_path))
+
+    assert not db_path.parent.exists()
+    assert not db_path.exists()
 
 
 def test_sqlite_storage_accepts_sqlite_with_returning_support(

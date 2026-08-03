@@ -716,17 +716,17 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
 
         logger.info("SQLite Storage for org %s using db_path: %s", org_id, db_path)
 
+        if sqlite3.sqlite_version_info < _MINIMUM_SQLITE_VERSION:
+            detected_version = ".".join(map(str, sqlite3.sqlite_version_info))
+            raise RuntimeError(
+                f"SQLite 3.35.0 or newer is required; detected {detected_version}"
+            )
+
         # Ensure parent directory exists
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
 
         # Open connection
         self.conn = sqlite3.connect(db_path, check_same_thread=False)
-        if sqlite3.sqlite_version_info < _MINIMUM_SQLITE_VERSION:
-            self.conn.close()
-            detected_version = ".".join(map(str, sqlite3.sqlite_version_info))
-            raise RuntimeError(
-                f"SQLite 3.35.0 or newer is required; detected {detected_version}"
-            )
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA foreign_keys=ON")

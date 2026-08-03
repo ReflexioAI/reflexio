@@ -596,10 +596,10 @@ class PlaybookGenerationService(
         Phantom-billing gate: on the durable / ``.run()`` path this is invoked
         from ``emit_generation_side_effects`` (post-commit), so a fence-lost
         (superseded) job never enqueues optimization or triggers aggregation. On
-        the synchronous resume/manual path the permanent
-        ``_finalize_extracted_items`` wrapper invokes it right after persist,
-        keeping that path identical to the pre-split monolith. The two callers
-        are mutually exclusive, so the schedulers fire exactly once per run.
+        the synchronous resume/manual path ``_finalize_extracted_items`` invokes
+        it after persistence. Dispatch is best-effort and at most once per
+        committed finalization attempt; derived scheduler work has no durable
+        replay idempotency.
         """
         self._enqueue_user_playbook_optimization(plan.new_playbooks)
         if not plan.output_pending_status and not plan.skip_aggregation:
@@ -626,14 +626,15 @@ class PlaybookGenerationService(
         model_provenance: ModelProvenance | None = None,
         finalization_run_id: str | None = None,
     ) -> list[str]:
-        """Permanent V3 wrapper: compute→persist→schedulers together (no fence).
+        """Finalize extracted playbooks for synchronous resume/manual callers.
 
         Kept for the synchronous resume/manual callers
         (``ExtractionResumeWorker`` calls this directly). Routes them through the
         same ``_resolve_write_plan`` (compute) + ``_persist_write_plan``
-        (persist) split the durable worker uses — with no external
-        ``commit_scope`` — then dispatches the same off-thread schedulers, so the
-        result is identical to the pre-split monolith.
+        (persist) split the durable worker uses. Derived schedulers dispatch
+        best-effort after the finalization transaction commits. When an existing
+        finalization receipt is found, the method intentionally returns its
+        learning ids without replaying those schedulers.
         """
         entity_type = "user_playbook"
         if finalization_run_id is not None:
