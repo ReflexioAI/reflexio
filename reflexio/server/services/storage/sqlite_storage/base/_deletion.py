@@ -50,16 +50,21 @@ class SQLiteDeletionMixin:
         target: RetentionTarget,
         count: int,
         statuses: tuple[str, ...] | None = None,
+        older_than_epoch: int | None = None,
     ) -> list[tuple[Any, ...]]:
         if statuses is not None and not statuses:
             return []
         id_sql = ", ".join(target.id_columns)
-        where_sql = ""
+        predicates: list[str] = []
         params: list[Any] = []
         if statuses:
             placeholders = ", ".join("?" for _ in statuses)
-            where_sql = f"WHERE status IN ({placeholders}) "
+            predicates.append(f"status IN ({placeholders})")
             params.extend(statuses)
+        if older_than_epoch is not None:
+            predicates.append(f"{target.order_column} < ?")
+            params.append(older_than_epoch)
+        where_sql = f"WHERE {' AND '.join(predicates)} " if predicates else ""
         params.append(count)
         rows = self._fetchall(
             f"SELECT {id_sql} FROM {target.table_name} {where_sql}"  # noqa: S608

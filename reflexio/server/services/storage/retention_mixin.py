@@ -9,6 +9,7 @@ delete — cannot drift across the three backends.
 
 from __future__ import annotations
 
+import time
 from abc import ABC, abstractmethod
 from collections.abc import Iterator, Sequence
 from typing import Any
@@ -98,7 +99,16 @@ class RetentionMixin(ABC):
         target = get_retention_target(target_name)
         if not self._retention_table_exists(target.table_name):
             return 0
-        keys = self._retention_select_keys(target, count)
+        older_than_epoch = (
+            int(time.time()) - target.minimum_age_seconds
+            if target.minimum_age_seconds > 0
+            else None
+        )
+        keys = self._retention_select_keys(
+            target,
+            count,
+            older_than_epoch=older_than_epoch,
+        )
         if not keys:
             return 0
         self._retention_perform_delete(target, keys)
@@ -137,7 +147,11 @@ class RetentionMixin(ABC):
         return 0
 
     def _retention_select_keys(
-        self, target: RetentionTarget, count: int
+        self,
+        target: RetentionTarget,
+        count: int,
+        *,
+        older_than_epoch: int | None,
     ) -> list[tuple[Any, ...]]:
         """Select tombstones first, then oldest rows when a target opts in.
 
@@ -147,16 +161,27 @@ class RetentionMixin(ABC):
         table holds that many rows.
         """
         if not target.priority_statuses:
-            return self._retention_select_oldest_keys(target, count)
+            return self._retention_select_oldest_keys(
+                target,
+                count,
+                older_than_epoch=older_than_epoch,
+            )
 
         keys = self._retention_select_oldest_keys(
-            target, count, statuses=target.priority_statuses
+            target,
+            count,
+            statuses=target.priority_statuses,
+            older_than_epoch=older_than_epoch,
         )
         if len(keys) >= count:
             return keys
 
         seen = set(keys)
-        for key in self._retention_select_oldest_keys(target, count):
+        for key in self._retention_select_oldest_keys(
+            target,
+            count,
+            older_than_epoch=older_than_epoch,
+        ):
             if key not in seen:
                 keys.append(key)
                 seen.add(key)
@@ -194,6 +219,7 @@ class RetentionMixin(ABC):
         target: RetentionTarget,
         count: int,
         statuses: tuple[str, ...] | None = None,
+        older_than_epoch: int | None = None,
     ) -> list[tuple[Any, ...]]:
         """Return up to ``count`` oldest key tuples for ``target``.
 

@@ -69,6 +69,7 @@ def _event(batch: SearchExposureBatch, playbook: UserPlaybook):
         exposed_at=1_700_000_100,
         ingested_at=1_700_000_101,
         governance_subject_ref="user:user-1",
+        playbook_owner_governance_subject_ref="owner:user-1",
     )
 
 
@@ -104,6 +105,33 @@ def test_correlation_free_invocations_get_distinct_exposure_event_ids() -> None:
     )
 
     assert first.exposure_event_id != second.exposure_event_id
+
+
+def test_unscoped_exposure_keeps_unknown_subject_separate_from_playbook_owner() -> None:
+    playbook = _playbook()
+    batch = replace(_batch(playbook), user_id=None)
+
+    event = build_user_playbook_exposure_event(
+        batch,
+        playbook,
+        exposed_at=1_700_000_100,
+        ingested_at=1_700_000_101,
+        governance_subject_ref=None,
+        playbook_owner_governance_subject_ref="owner:user-1",
+    )
+
+    assert event.user_id is None
+    assert event.governance_subject_ref is None
+    assert event.playbook_owner_user_id == "user-1"
+    assert event.playbook_owner_governance_subject_ref == "owner:user-1"
+
+
+def test_scoped_exposure_rejects_a_playbook_owned_by_another_user() -> None:
+    playbook = _playbook().model_copy(update={"user_id": "user-2"})
+    batch = _batch(playbook)
+
+    with pytest.raises(ValueError, match="does not match retrieval subject"):
+        _event(batch, playbook)
 
 
 def test_request_and_session_correlation_ids_normalize_whitespace_consistently() -> (
