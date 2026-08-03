@@ -43,6 +43,9 @@ from reflexio.server.services.playbook.playbook_service_utils import (
     PlaybookAggregatorRequest,
     StructuredPlaybookContent,
 )
+from reflexio.server.services.storage.storage_base.playbook import (
+    PlaybookAggregationRebuildSample,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -1891,6 +1894,62 @@ class TestProcessAggregationResponse:
         assert [item.source_cluster for item in outcomes] == [cluster_a, cluster_b]
         assert outcomes[0].source_cluster[0] is cluster_a[0]
         assert outcomes[1].source_cluster[0] is cluster_b[0]
+
+    def test_generation_prompt_is_bounded_without_truncating_membership(self):
+        agg = _make_aggregator()
+        cluster = [_raw(item_id) for item_id in range(1, 151)]
+        captured: list[UserPlaybook] = []
+
+        def generate(prompt_sources, *_args, **_kwargs):
+            captured.extend(prompt_sources)
+            return aggregator_module.AggregationGenerationOutcome(
+                "semantic_null", prompt_sources
+            )
+
+        agg._generate_playbook_from_cluster_outcome = generate  # type: ignore[method-assign]
+        outcomes = agg._generate_playbook_outcomes_with_source_clusters(
+            {0: cluster},
+            [],
+            current_agent_playbooks={0: _agent_playbook()},
+        )
+
+        assert len(captured) == 100
+        assert [item.user_playbook_id for item in captured] == list(range(150, 50, -1))
+        assert outcomes[0].source_cluster == cluster
+
+    def test_rebuild_retry_defers_the_cluster_not_individual_members(self):
+        storage = MagicMock()
+        agg = _make_aggregator(storage=storage)
+        source = _raw(1)
+        work = aggregator_module._RebuildWork(
+            sample=PlaybookAggregationRebuildSample(
+                cluster_id="cluster-a",
+                agent_playbook_id=42,
+                member_ids=(1,),
+            ),
+            members=[source],
+        )
+
+        saved, replaced, rebuilt = agg._apply_rebuild_outcomes(
+            [work],
+            [
+                aggregator_module.AggregationGenerationOutcome(
+                    "retryable_failure", [source]
+                )
+            ],
+            MagicMock(),
+        )
+
+        assert saved == []
+        assert replaced == set()
+        assert rebuilt == 0
+        storage.defer_playbook_aggregation_cluster_rebuild.assert_called_once_with(
+            cluster_id="cluster-a",
+            agent_version="v1",
+            expected_agent_playbook_id=42,
+            reason="llm_retryable_failure",
+        )
+        storage.set_playbook_aggregation_disposition.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

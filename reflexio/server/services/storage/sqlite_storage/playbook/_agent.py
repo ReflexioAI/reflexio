@@ -36,6 +36,7 @@ from .._base import (
     _epoch_now,
     _epoch_to_iso,
     _json_dumps,
+    _json_loads,
     _row_to_agent_playbook,
     _sanitize_fts_query,
     _true_rrf_merge,
@@ -340,6 +341,7 @@ class AgentPlaybookStoreMixin:
         status_filter: list[Status | None] | None = None,
         playbook_status_filter: list[PlaybookStatus] | None = None,
         include_inactive: bool = False,
+        include_embedding: bool = False,
     ) -> list[AgentPlaybook]:
         validate_include_inactive(
             include_inactive=include_inactive,
@@ -370,7 +372,11 @@ class AgentPlaybookStoreMixin:
                     query += f" AND playbook_status IN ({status_placeholders})"
                     params.extend(status.value for status in playbook_status_filter)
             rows.extend(self._fetchall(query, params))
-        return [_row_to_agent_playbook(row) for row in rows]
+        result = [_row_to_agent_playbook(row) for row in rows]
+        if include_embedding:
+            for playbook, row in zip(result, rows, strict=True):
+                playbook.embedding = _json_loads(row["embedding"]) or []
+        return result
 
     @SQLiteStorageBase.handle_exceptions
     def delete_all_agent_playbooks(self) -> None:

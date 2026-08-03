@@ -853,6 +853,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         if self._has_sqlite_vec:
             self._create_vec_tables()
             self._migrate_vec_tables()
+            self._migrate_playbook_aggregation_agent_centroids()
         # Run after DDL so tables exist on fresh databases
         self._migrate_agent_runs_schema()
         self._migrate_pending_tool_calls_schema()
@@ -923,6 +924,36 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         """
         with self._lock:
             self.conn.executescript(vec_ddl)
+            self.conn.commit()
+
+    def _migrate_playbook_aggregation_agent_centroids(self) -> None:
+        """Replace legacy user-vector means with canonical agent embeddings."""
+        rows = self.conn.execute(
+            "SELECT c.cluster_id, c.index_rowid, a.embedding "
+            "FROM playbook_aggregation_cluster c JOIN agent_playbooks a "
+            "ON a.agent_playbook_id=c.agent_playbook_id "
+            "WHERE c.vector_sum IS NOT NULL AND a.embedding IS NOT NULL "
+            "AND trim(a.embedding) NOT IN ('', '[]')"
+        ).fetchall()
+        with self._lock:
+            for row in rows:
+                embedding = json.loads(row[2])
+                if not embedding:
+                    continue
+                self.conn.execute(
+                    "UPDATE playbook_aggregation_cluster SET centroid=?, "
+                    "vector_sum=NULL, embedding_dimension=? WHERE cluster_id=?",
+                    (json.dumps(embedding), len(embedding), str(row[0])),
+                )
+                self.conn.execute(
+                    "DELETE FROM playbook_aggregation_clusters_vec WHERE rowid=?",
+                    (int(row[1]),),
+                )
+                self.conn.execute(
+                    "INSERT INTO playbook_aggregation_clusters_vec(rowid, embedding) "
+                    "VALUES (?, ?)",
+                    (int(row[1]), json.dumps(embedding)),
+                )
             self.conn.commit()
 
     def _migrate_vec_tables(self) -> None:

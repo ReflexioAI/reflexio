@@ -35,7 +35,7 @@ Interactions
     -> PlaybookCandidateReviewer (normal strict-evidence candidates only)
       -> PlaybookConsolidator (consolidates reviewed vs existing DB playbooks)
         -> UserPlaybook (validated evidence + persisted provenance) -> Storage
-        -> Durable aggregation signal (pulls new work due now)
+        -> Durable aggregation signal (coalesces new work into the hourly window)
           -> PlaybookAggregationScheduler (bounded work; hourly idle minimum)
             -> PlaybookAggregator (incremental clustering)
               -> AgentPlaybook (aggregated insights) -> Storage
@@ -101,25 +101,43 @@ earlier decisions.
 Normal generation durably schedules bounded incremental aggregation through
 `aggregation_trigger.py`; `aggregation_scheduler.py` claims due work across
 processes. A successful drained run waits at least
-`REFLEXIO_AGGREGATION_MIN_INTERVAL_SECONDS` (default 3600) before an idle retry;
-a new durable signal pulls the version due immediately, and a remaining backlog
-continues in bounded follow-up units. The manual
+`REFLEXIO_AGGREGATION_MIN_INTERVAL_SECONDS` (default 3600) before the next
+scheduled cycle; new durable signals preserve that due time so changes coalesce,
+while a remaining backlog continues in bounded follow-up units. The manual
 `/api/run_playbook_aggregation` route remains a fenced administrative full rerun.
 
 Incremental work is isolated by `agent_version`:
 
-1. Admit CURRENT, nonempty rows that have no durable disposition.
+1. Admit only the newest configured window of CURRENT, nonempty rows that have
+   no durable disposition; rows that fall below its monotonic cutoff never re-enter.
 2. Match embedded residuals against active centroids for that version only.
-3. Attach matches without regenerating their agent playbook.
+3. Group matches per cluster and make one LLM call with the current agent
+   playbook plus at most the 100 newest members of that run's newly matched
+   delta; the complete delta still receives durable membership.
 4. Cluster only unmatched residuals: agglomerative below 50 rows, HDBSCAN at 50 or more.
-5. Commit generated agent playbooks, lineage, cluster membership, centroid updates, and supersessions atomically.
+5. Embed each generated agent playbook and use that embedding—not a mean of user
+   embeddings—as the cluster centroid for future matches.
+6. Commit replacement, lineage, membership, centroid swap, and supersession atomically.
 
-`REFLEXIO_MAX_CLUSTERING_PLAYBOOKS` (default 20,000) is the shared row budget
-for one scheduled unit, including intake and invalidations. It is also the
-fail-before-mutation total-input cap for an administrative full rerun; it no
-longer prevents an organization with a larger corpus from making incremental
-progress. Retryable LLM outcomes stay residual, semantic-null outcomes become
-terminal no-ops, and missing embeddings remain pending for a later unit.
+`REFLEXIO_MAX_CLUSTERING_PLAYBOOKS` (default 20,000) is the maximum recent
+unclustered discovery window for scheduled work. Older unclustered rows are
+intentionally ignored rather than backfilled later. Invalidation repair is a
+separate path whose generation input is capped at the 100 most recent retained
+sources per affected cluster. New-cluster generation similarly uses at most 100
+centroid-representative sources while retaining the complete discovered
+membership. The setting is also the fail-before-mutation
+total-input cap for an administrative full rerun; it no longer prevents an
+organization with a larger corpus from making incremental progress. Retryable
+LLM outcomes stay residual. A semantic-null update attaches the delta but keeps
+the current agent playbook and centroid; semantic-null output for a new cluster
+becomes a terminal no-op. Missing embeddings remain pending.
+
+Creating a user playbook only arms intake discovery; it does not add a no-op
+invalidation event. If the current agent playbook for an active cluster is
+edited, rejected, archived, or deleted outside aggregation, that cluster is
+retired atomically and its members return to residual discovery. This prevents
+a stale centroid or rejected canonical rule from becoming the base of a later
+incremental refresh.
 
 The portable state contract is
 `storage/storage_base/playbook/_aggregation.py`; SQLite implements it in
@@ -138,9 +156,15 @@ post-processes generated outputs before storage or model-response logging.
 **Requirements / Problems to Avoid**:
 
 - Never cluster, centroid-match, or attach rows across agent versions.
+- Always keep an active cluster's centroid equal to its current agent playbook embedding.
+- Rebuild lifecycle-invalidated clusters from the 100 most recent remaining
+  CURRENT members (including a single member), never from the invalidated agent
+  text, then restore every retained membership before superseding the prior agent.
 - Never rediscover the full corpus on the scheduled path; use durable dispositions and bounded anti-join intake.
 - Never hold `commit_scope()` while embedding, clustering, or calling the LLM.
 - Do not clear pending state on partial failure, limiter deferral, or a lost lease.
+- Drain lifecycle invalidations in fixed 100-event pages before model work, and
+  retry failed repairs on the cluster clock rather than member clocks.
 
 ### Playbook Consolidation (`components/consolidator.py`)
 

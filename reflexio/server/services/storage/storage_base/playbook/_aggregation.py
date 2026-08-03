@@ -35,6 +35,7 @@ class PlaybookAggregationBacklog:
     oldest_residual_age_seconds: int | None = None
     dirty_repairs: int = 0
     residual_retry_after_seconds: int = 0
+    repair_retry_after_seconds: int = 0
 
     @property
     def pending(self) -> bool:
@@ -44,10 +45,15 @@ class PlaybookAggregationBacklog:
 
     @property
     def continuation_delay_seconds(self) -> int:
-        """Delay residual-only work until its durable retry cooldown expires."""
-        if self.undisposed or self.invalidations or self.dirty_repairs:
+        """Delay retry-only work until its earliest durable cooldown expires."""
+        if self.undisposed or self.invalidations:
             return 0
-        return max(0, self.residual_retry_after_seconds) if self.residual else 0
+        delays: list[int] = []
+        if self.residual:
+            delays.append(max(0, self.residual_retry_after_seconds))
+        if self.dirty_repairs:
+            delays.append(max(0, self.repair_retry_after_seconds))
+        return min(delays, default=0)
 
 
 @dataclass(frozen=True)
@@ -63,6 +69,7 @@ class PlaybookAggregationInvalidation:
 class PlaybookAggregationClusterMatch:
     cluster_id: str
     similarity: float
+    agent_playbook_id: int
 
 
 @dataclass(frozen=True)
@@ -73,6 +80,15 @@ class PlaybookAggregationRerunSnapshot:
     invalidation_ids: tuple[int, ...]
     user_high_watermark: int | None
     invalidation_high_watermark: int | None
+
+
+@dataclass(frozen=True)
+class PlaybookAggregationRebuildSample:
+    """Bounded prompt inputs for one invalidated cluster rebuild."""
+
+    cluster_id: str
+    agent_playbook_id: int
+    member_ids: tuple[int, ...]
 
 
 class PlaybookAggregationStoreMixin:
@@ -128,9 +144,9 @@ class PlaybookAggregationStoreMixin:
         raise NotImplementedError
 
     def stage_playbook_aggregation_intake(
-        self, agent_version: str, *, limit: int
+        self, agent_version: str, *, limit: int, window_limit: int = 20_000
     ) -> list[int]:
-        """Anti-join eligible CURRENT rows and durably stage them as residual."""
+        """Stage new rows from the durable newest-N unclustered window."""
         raise NotImplementedError
 
     def get_playbook_aggregation_bootstrap_status(self, agent_version: str) -> str:
@@ -155,6 +171,7 @@ class PlaybookAggregationStoreMixin:
         cluster_id: str,
         agent_version: str,
         agent_playbook_id: int,
+        centroid_embedding: list[float],
         member_embeddings: list[tuple[int, list[float]]],
         embedding_model: str,
         embedding_dimension: int,
@@ -237,14 +254,57 @@ class PlaybookAggregationStoreMixin:
         """Fenced, idempotent removal plus invalidation completion."""
         raise NotImplementedError
 
-    def get_playbook_aggregation_replacement_agent_ids(
+    def get_playbook_aggregation_rebuild_cluster_ids(
         self, agent_version: str, user_playbook_ids: list[int]
-    ) -> list[int]:
-        """Return prior agents for rebuilding clusters touched by these members."""
+    ) -> dict[int, str]:
+        """Map selected residual members back to their rebuilding cluster."""
         raise NotImplementedError
 
-    def delete_orphaned_playbook_aggregation_clusters(self, agent_version: str) -> None:
-        """Delete rebuilding clusters after no item retains their provenance."""
+    def get_playbook_aggregation_rebuild_samples(
+        self, agent_version: str, cluster_ids: list[str], *, limit_per_cluster: int
+    ) -> list[PlaybookAggregationRebuildSample]:
+        """Return recent CURRENT members for each requested rebuilding cluster."""
+        raise NotImplementedError
+
+    def defer_playbook_aggregation_cluster_rebuild(
+        self,
+        *,
+        cluster_id: str,
+        agent_version: str,
+        expected_agent_playbook_id: int,
+        reason: str,
+    ) -> None:
+        """Apply one durable retry cooldown to an entire rebuilding cluster."""
+        raise NotImplementedError
+
+    def complete_playbook_aggregation_cluster_rebuild(
+        self,
+        *,
+        cluster_id: str,
+        agent_version: str,
+        expected_agent_playbook_id: int,
+        replacement_agent_playbook_id: int,
+        centroid_embedding: list[float],
+        embedding_model: str,
+    ) -> int:
+        """Activate a rebuilt cluster and restore all remaining memberships."""
+        raise NotImplementedError
+
+    def discard_playbook_aggregation_cluster_rebuild(
+        self,
+        *,
+        cluster_id: str,
+        agent_version: str,
+        expected_agent_playbook_id: int,
+        reason: str,
+    ) -> int:
+        """Terminalize all remaining members and delete a redundant rebuild."""
+        raise NotImplementedError
+
+    def delete_orphaned_playbook_aggregation_clusters(
+        self, agent_version: str
+    ) -> list[int]:
+        """Delete empty rebuilding clusters and return their former agent IDs."""
         raise NotImplementedError
 
     def find_nearest_playbook_aggregation_clusters(
@@ -264,17 +324,31 @@ class PlaybookAggregationStoreMixin:
         cluster_id: str,
         agent_version: str,
         agent_playbook_id: int | None,
-        embeddings: list[list[float]],
+        centroid_embedding: list[float],
+        member_count: int,
         embedding_model: str,
     ) -> None:
-        """Persist a stable cluster and assign its staged members separately."""
+        """Persist a cluster whose centroid is its current agent embedding."""
         raise NotImplementedError
 
     def attach_playbook_aggregation_items(
         self,
         *,
         agent_version: str,
-        attachments: list[tuple[int, str, list[float]]],
+        attachments: list[tuple[int, str]],
     ) -> None:
-        """Atomically attach residuals and update each affected centroid once."""
+        """Attach residuals without changing the current agent centroid."""
+        raise NotImplementedError
+
+    def replace_playbook_aggregation_cluster_agent(
+        self,
+        *,
+        cluster_id: str,
+        agent_version: str,
+        expected_agent_playbook_id: int,
+        replacement_agent_playbook_id: int,
+        centroid_embedding: list[float],
+        embedding_model: str,
+    ) -> None:
+        """CAS the current agent and its embedding-backed centroid."""
         raise NotImplementedError

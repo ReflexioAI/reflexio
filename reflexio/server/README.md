@@ -349,7 +349,7 @@ Key files:
 
 **Flow**:
 - Interactions → PlaybookExtractor (extraction-only) → PlaybookConsolidator (consolidates new vs existing DB playbooks) → UserPlaybook (with optional `blocking_issue`) → Storage
-- UserPlaybook write → durable due-now signal → PlaybookAggregationScheduler → same-version centroid match → bounded residual clustering → AgentPlaybook → Storage
+- UserPlaybook write → durable hourly-coalesced signal → PlaybookAggregationScheduler → fixed-page invalidation drain → same-version centroid match → one current-agent-plus-bounded-delta refresh per changed cluster → bounded residual clustering → AgentPlaybook → Storage
 - `POST /api/run_playbook_aggregation` → fenced, capped administrative full rerun
 
 **Tool Analysis**: PlaybookExtractor reads `tool_can_use` from root `Config` and passes it to prompts for tool usage analysis and blocking issue detection.
@@ -359,10 +359,13 @@ Key files:
 **Durable Playbook Aggregation** (`aggregation_scheduler.py`, `components/aggregator.py`):
 
 Automatic aggregation never rescans the full corpus. Each fenced unit admits
-undisposed CURRENT rows, attaches compatible rows to existing centroids for the
-same `agent_version`, and clusters only unmatched residuals. A drained version
-uses the configured one-hour idle minimum; new writes pull it due immediately,
-and unfinished backlog continues promptly. `REFLEXIO_MAX_CLUSTERING_PLAYBOOKS`
+undisposed CURRENT rows, batches compatible rows by same-version agent-playbook
+centroid, regenerates each changed agent playbook once from its current text plus
+at most 100 newest delta members, attaches the complete delta, and clusters only
+unmatched residuals. The replacement embedding
+becomes the next centroid. A drained version uses the configured one-hour
+minimum; new writes preserve that due time and coalesce, while unfinished backlog
+continues promptly. `REFLEXIO_MAX_CLUSTERING_PLAYBOOKS`
 is the scheduled unit budget and the administrative rerun safety cap, not a
 maximum supported corpus size. See the [playbook service map](services/playbook/README.md)
 for storage contracts and failure dispositions.
