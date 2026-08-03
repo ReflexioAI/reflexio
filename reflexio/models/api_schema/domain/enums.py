@@ -52,9 +52,11 @@ ReviewUserPlaybookReasonCode = Literal[PlaybookReviewReasonCode, "evidence_unava
 class SessionOutcomeKind(StrEnum):
     SUCCESS = "success"
     FAILURE = "failure"
+    UNKNOWN = "unknown"
 
 
 class SessionOutcomeFailureReason(StrEnum):
+    CONFLICTING_FINALIZATION = "conflicting_finalization"
     UNKNOWN_SESSION = "unknown_session"
     OCCURRED_BEFORE_SESSION = "occurred_before_session"
     OCCURRED_IN_FUTURE = "occurred_in_future"

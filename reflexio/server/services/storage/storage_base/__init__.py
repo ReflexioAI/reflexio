@@ -147,7 +147,7 @@ class BaseStorage(
     def clear_user_data(self, user_id: str) -> dict[str, int]:
         """Delete all rows scoped to a single ``user_id``.
 
-        Removes the user's interactions, session outcomes, user playbooks,
+        Removes the user's session outcomes, interactions, user playbooks,
         profiles, and requests. Intentionally does NOT touch
         ``agent_playbooks`` — those are the cross-project rollup of skills and
         have no ``user_id`` column. This is the data-isolation primitive used

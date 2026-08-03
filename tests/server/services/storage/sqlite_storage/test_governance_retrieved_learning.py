@@ -117,11 +117,26 @@ def _erase(storage: SQLiteStorage, user_id: str, purge_id: str) -> dict[str, int
         idempotency_key=f"idem_{purge_id}",
         operation_type="user_erasure",
         scope_type="user",
-        subject_ref=SUBJECT_REF,
+        authoritative_user_id=user_id,
+        subject_ref=storage._subject_ref_for_user_id(user_id),
         request_ref=REQUEST_REF,
     )
-    storage.prepare_governance_erase_targets(purge_id, user_id)
-    return storage.apply_governance_user_data_delete(purge_id, user_id)
+    claim = storage.claim_purge_operation_execution(
+        purge_id,
+        lease_owner=f"test-{purge_id}",
+        lease_ttl_seconds=30,
+    )
+    assert claim is not None
+    storage.prepare_governance_erase_targets(
+        purge_id,
+        user_id,
+        execution_claim=claim,
+    )
+    return storage.apply_governance_user_data_delete(
+        purge_id,
+        user_id,
+        execution_claim=claim,
+    )
 
 
 def test_erase_scrubs_rle_rows_and_all_state_namespaces(storage) -> None:

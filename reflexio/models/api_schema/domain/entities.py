@@ -825,6 +825,8 @@ class DeleteSessionResponse(BaseModel):
 
 
 class SessionOutcomeRecord(BaseModel):
+    outcome_id: NonEmptyStr | None = None
+    outcome_revision: int | None = Field(default=None, ge=1)
     user_id: str
     session_id: NonEmptyStr
     outcome: SessionOutcomeKind
@@ -833,7 +835,34 @@ class SessionOutcomeRecord(BaseModel):
     label: str | None = Field(default=None, max_length=128)
     value: float | None = Field(default=None, allow_inf_nan=False)
     metadata: dict[str, Any] | None = None
+    outcome_contract_digest: Sha256Digest | None = None
+    finalized_trajectory_digest: Sha256Digest | None = None
     created_at: int = Field(ge=0)
+
+    @field_validator("outcome_contract_digest", "finalized_trajectory_digest")
+    @classmethod
+    def validate_sha256_digest(cls, value: str | None) -> str | None:
+        if value is not None and (
+            len(value) != 64 or any(char not in "0123456789abcdef" for char in value)
+        ):
+            raise ValueError("outcome identity digests must be lowercase SHA-256 hex")
+        return value
+
+    @model_validator(mode="after")
+    def validate_identity_shape(self) -> Self:
+        identity = (
+            self.outcome_id,
+            self.outcome_revision,
+            self.outcome_contract_digest,
+            self.finalized_trajectory_digest,
+        )
+        if any(value is None for value in identity) and not all(
+            value is None for value in identity
+        ):
+            raise ValueError(
+                "outcome identity fields must be all populated or all null"
+            )
+        return self
 
 
 class SetSessionOutcomeRequest(CapturesUnknownFields):
@@ -880,6 +909,35 @@ class SetSessionOutcomeResponse(BaseModel):
     message: str = ""
     user_id: str | None = None
     source: str | None = None
+    outcome_id: NonEmptyStr | None = None
+    outcome_revision: int | None = Field(default=None, ge=1)
+    outcome_contract_digest: Sha256Digest | None = None
+    finalized_trajectory_digest: Sha256Digest | None = None
+
+    @field_validator("outcome_contract_digest", "finalized_trajectory_digest")
+    @classmethod
+    def validate_sha256_digest(cls, value: str | None) -> str | None:
+        if value is not None and (
+            len(value) != 64 or any(char not in "0123456789abcdef" for char in value)
+        ):
+            raise ValueError("outcome identity digests must be lowercase SHA-256 hex")
+        return value
+
+    @model_validator(mode="after")
+    def validate_identity_shape(self) -> Self:
+        identity = (
+            self.outcome_id,
+            self.outcome_revision,
+            self.outcome_contract_digest,
+            self.finalized_trajectory_digest,
+        )
+        if any(value is None for value in identity) and not all(
+            value is None for value in identity
+        ):
+            raise ValueError(
+                "outcome identity fields must be all populated or all null"
+            )
+        return self
 
 
 class GetSessionOutcomesRequest(CapturesUnknownFields):
@@ -956,8 +1014,8 @@ class DeleteUserPlaybooksByIdsRequest(BaseModel):
     user_playbook_ids: list[int] = Field(min_length=1, max_length=10_000)
 
 
-# Clear all data scoped to a single user_id (interactions, requests, session
-# outcomes, user playbooks, profiles). Used by paired-protocol harnesses (e.g. SWE-bench) to
+# Clear all data scoped to a single user_id (session outcomes, interactions,
+# requests, user playbooks, profiles). Used by paired-protocol harnesses (e.g. SWE-bench) to
 # isolate per-task data on a shared storage backend without nuking sibling
 # tasks' rows. Intentionally does NOT touch agent_playbooks — they are the
 # cross-project rollup of skills and have no user_id column.
