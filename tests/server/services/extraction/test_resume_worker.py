@@ -2,15 +2,23 @@ from __future__ import annotations
 
 import json
 import tempfile
+import threading
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from reflexio.models.api_schema.service_schemas import Interaction, Request
+from reflexio.models.api_schema.service_schemas import (
+    Interaction,
+    Request,
+    UserPlaybook,
+    UserProfile,
+)
 from reflexio.models.config_schema import (
     Config,
     PendingToolCallConfig,
+    PlaybookConfig,
     ProfileExtractorConfig,
     StorageConfigSQLite,
 )
@@ -19,6 +27,15 @@ from reflexio.server.services.extraction.resume_worker import (
     ExtractionResumeWorker,
     _run_playbook_contract_selection,
     _run_uses_strict_playbook_evidence,
+)
+from reflexio.server.services.playbook.components.consolidator import (
+    PlaybookConsolidationOutput,
+    UnifyDecision,
+)
+from reflexio.server.services.playbook.service import PlaybookGenerationService
+from reflexio.server.services.profile.service import (
+    ProfileGenerationService,
+    ProfileGenerationServiceConfig,
 )
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 from reflexio.server.services.storage.storage_base import (
@@ -31,6 +48,10 @@ from reflexio.server.services.storage.storage_base import (
     build_pending_tool_call_dedup_key,
     build_scope_hash,
     human_feedback_scope,
+)
+from reflexio.server.usage_metrics import (
+    UsageEvent,
+    configure_usage_event_recorder,
 )
 
 
@@ -480,6 +501,402 @@ def test_resume_worker_tagging_schedule_failure_is_best_effort(
         side_effect=RuntimeError("scheduler unavailable"),
     ):
         worker._schedule_finalized_tagging(run)
+
+
+def test_resumable_finalization_bills_only_durable_ids_idempotently_on_retry(
+    request_context,
+):
+    """A mixed batch charges its persisted profile once across finalization retries."""
+    run = AgentRunRecord(
+        id="run_mixed_billing",
+        binding=AgentBinding(
+            org_id="org_1",
+            extractor_kind="profile",
+            user_id="user_1",
+            request_id="request_1",
+            agent_version="v1",
+            source="api",
+        ),
+        status=AgentRunStatus.FINALIZATION_FAILED,
+        generation_request_snapshot={"request_id": "request_1"},
+    )
+    learning_ids = ["profile_1"]
+    worker = ExtractionResumeWorker(request_context=request_context)
+
+    with patch("reflexio.server.billing_meter.record_usage_event") as record_event:
+        worker._record_finalized_learnings(run, learning_ids, entity_type="profile")
+        worker._record_finalized_learnings(run, learning_ids, entity_type="profile")
+
+    assert [call.kwargs["event_key"] for call in record_event.call_args_list] == [
+        "learn:profile:profile_1",
+        "learn:profile:profile_1",
+    ]
+    assert [call.kwargs["count_value"] for call in record_event.call_args_list] == [
+        1,
+        1,
+    ]
+    assert [call.kwargs["entity_id"] for call in record_event.call_args_list] == [
+        "profile_1",
+        "profile_1",
+    ]
+
+
+def test_retry_after_billing_reuses_ids_without_replaying_playbook_schedulers(
+    request_context,
+    storage,
+):
+    """A post-billing retry reuses durable IDs and skips derived schedulers."""
+    _seed_interactions(storage)
+    request_context.configurator.get_config.return_value = Config(
+        storage_config=StorageConfigSQLite(),
+        profile_extractor_config=ProfileExtractorConfig(
+            extraction_definition_prompt="Extract durable user facts.",
+        ),
+        user_playbook_extractor_config=PlaybookConfig(
+            extraction_definition_prompt="Extract durable operating rules.",
+        ),
+        pending_tool_call_config=PendingToolCallConfig(enabled=True),
+    )
+    events: list[UsageEvent] = []
+    configure_usage_event_recorder(events.append)
+
+    def _run_failed_then_retried(
+        run_id: str,
+        *,
+        assert_scheduler_calls: Callable[[], None] | None = None,
+    ) -> None:
+        worker = ExtractionResumeWorker(
+            request_context=request_context,
+            llm_client=MagicMock(),
+        )
+        with (
+            patch.object(worker, "_schedule_finalized_tagging"),
+            patch.object(
+                storage,
+                "consume_run_tool_dependencies",
+                side_effect=[RuntimeError("failed after billing"), 0],
+            ),
+        ):
+            first_attempt = worker.run_once()
+            if assert_scheduler_calls is not None:
+                assert_scheduler_calls()
+            assert first_attempt is not None
+            assert first_attempt.status == AgentRunStatus.FINALIZATION_FAILED
+            storage.update_agent_run_status(
+                run_id,
+                AgentRunStatus.FINALIZATION_FAILED,
+                next_resume_at=datetime(2000, 1, 1, tzinfo=UTC),
+            )
+            retry = worker.run_once()
+            if assert_scheduler_calls is not None:
+                assert_scheduler_calls()
+            assert retry is not None
+            assert retry.status == AgentRunStatus.FINALIZED
+
+    try:
+        profile_request_id = "request_profile_retry"
+        storage.create_agent_run(
+            AgentRunRecord(
+                id="run_profile_retry",
+                binding=AgentBinding(
+                    org_id="org_1",
+                    extractor_kind="profile",
+                    user_id="user_1",
+                    request_id=profile_request_id,
+                    agent_version="v1",
+                    source="api",
+                    source_interaction_ids=[1, 2],
+                ),
+                status=AgentRunStatus.FINALIZATION_FAILED,
+                generation_request_snapshot={"request_id": profile_request_id},
+                committed_output={
+                    "profiles": [
+                        {
+                            "content": "User deployment target is AWS ECS.",
+                            "time_to_live": "infinity",
+                        }
+                    ]
+                },
+                next_resume_at=datetime(2000, 1, 1, tzinfo=UTC),
+            )
+        )
+        with patch(
+            "reflexio.server.services.profile.components.consolidator."
+            "ProfileConsolidator.deduplicate",
+            side_effect=lambda profiles, _user_id, _request_id: (
+                profiles,
+                [],
+                [],
+            ),
+        ):
+            _run_failed_then_retried("run_profile_retry")
+
+        seed = UserPlaybook(
+            user_id="user_1",
+            agent_version="v1",
+            request_id="seed_request",
+            content="Prefer the current deployment default.",
+            trigger="when selecting a deployment target",
+            rationale="Existing operating rule.",
+            source="api",
+        )
+        storage.save_user_playbooks([seed])
+        playbook_request_id = "request_playbook_retry"
+        storage.create_agent_run(
+            AgentRunRecord(
+                id="run_playbook_retry",
+                binding=AgentBinding(
+                    org_id="org_1",
+                    extractor_kind="playbook",
+                    user_id="user_1",
+                    request_id=playbook_request_id,
+                    agent_version="v1",
+                    source="api",
+                    source_interaction_ids=[1, 2],
+                ),
+                status=AgentRunStatus.FINALIZATION_FAILED,
+                generation_request_snapshot={
+                    "request_id": playbook_request_id,
+                    "output_schema_name": "StructuredPlaybookList",
+                },
+                committed_output={
+                    "playbooks": [
+                        {
+                            "content": "Prefer AWS ECS as the deployment target.",
+                            "trigger": "when selecting a deployment target",
+                            "rationale": "The team standardizes on AWS.",
+                        }
+                    ]
+                },
+                next_resume_at=datetime(2000, 1, 1, tzinfo=UTC),
+            )
+        )
+        consolidation = PlaybookConsolidationOutput(
+            decisions=[
+                UnifyDecision(
+                    new_id="NEW-0",
+                    archive_existing_ids=[0],
+                    content="Prefer AWS ECS as the deployment target.",
+                    trigger="when selecting a deployment target",
+                    rationale="The team standardizes on AWS.",
+                )
+            ]
+        )
+        with (
+            patch.object(
+                PlaybookGenerationService,
+                "_configured_playbook_config",
+                return_value=None,
+            ),
+            patch(
+                "reflexio.server.services.playbook.components.consolidator."
+                "PlaybookConsolidator.retrieve_existing_playbooks",
+                side_effect=lambda _new, **_kwargs: storage.get_user_playbooks(
+                    user_id="user_1",
+                    agent_version="v1",
+                ),
+            ),
+            patch(
+                "reflexio.server.services.playbook.components.consolidator."
+                "PlaybookConsolidator._consolidation_decisions",
+                return_value=consolidation,
+            ),
+            patch.object(
+                PlaybookGenerationService,
+                "_enqueue_user_playbook_optimization",
+            ) as enqueue_optimization,
+            patch.object(
+                PlaybookGenerationService,
+                "_trigger_playbook_aggregation",
+            ) as trigger_aggregation,
+        ):
+
+            def assert_playbook_scheduler_calls() -> None:
+                enqueue_optimization.assert_called_once()
+                trigger_aggregation.assert_called_once()
+
+            _run_failed_then_retried(
+                "run_playbook_retry",
+                assert_scheduler_calls=assert_playbook_scheduler_calls,
+            )
+    finally:
+        configure_usage_event_recorder(None)
+
+    profile_keys = [
+        event.event_key for event in events if event.entity_type == "profile"
+    ]
+    profile_event_ids = [
+        event.entity_id for event in events if event.entity_type == "profile"
+    ]
+    playbook_keys = [
+        event.event_key for event in events if event.entity_type == "user_playbook"
+    ]
+    playbook_event_ids = [
+        event.entity_id for event in events if event.entity_type == "user_playbook"
+    ]
+    profile_survivor_ids = [
+        row[0]
+        for row in storage.conn.execute(
+            "SELECT profile_id FROM profiles WHERE generated_from_request_id = ?",
+            (profile_request_id,),
+        ).fetchall()
+    ]
+    playbook_survivor_ids = [
+        str(row[0])
+        for row in storage.conn.execute(
+            "SELECT user_playbook_id FROM user_playbooks WHERE request_id = ?",
+            (playbook_request_id,),
+        ).fetchall()
+    ]
+    profile_receipt_ids = storage.get_agent_run_finalization_receipt(
+        run_id="run_profile_retry", entity_type="profile"
+    )
+    playbook_receipt_ids = storage.get_agent_run_finalization_receipt(
+        run_id="run_playbook_retry", entity_type="user_playbook"
+    )
+    playbook_lineage_ids = [
+        event.event_id
+        for event in storage.get_lineage_events(request_id=playbook_request_id)
+    ]
+    observed = {
+        "profile_persisted": len(profile_survivor_ids),
+        "profile_events": len(profile_keys),
+        "profile_distinct_keys": len(set(profile_keys)),
+        "playbook_persisted": len(playbook_survivor_ids),
+        "playbook_lineage_events": len(playbook_lineage_ids),
+        "playbook_events": len(playbook_keys),
+        "playbook_distinct_keys": len(set(playbook_keys)),
+    }
+    assert observed == {
+        "profile_persisted": 1,
+        "profile_events": 2,
+        "profile_distinct_keys": 1,
+        "playbook_persisted": 1,
+        "playbook_lineage_events": 1,
+        "playbook_events": 2,
+        "playbook_distinct_keys": 1,
+    }
+    assert profile_receipt_ids == profile_survivor_ids
+    assert profile_event_ids == profile_survivor_ids * 2
+    assert profile_keys == [f"learn:profile:{profile_survivor_ids[0]}"] * 2
+    assert playbook_receipt_ids == playbook_survivor_ids
+    assert playbook_event_ids == playbook_survivor_ids * 2
+    assert playbook_keys == [f"learn:user_playbook:{playbook_survivor_ids[0]}"] * 2
+
+
+def test_two_stale_sqlite_workers_share_one_finalization_receipt(tmp_path):
+    db_path = str(tmp_path / "stale-finalizers.db")
+    with patch.object(SQLiteStorage, "_get_embedding", return_value=[0.0] * 512):
+        storage_a = SQLiteStorage(org_id="org_1", db_path=db_path)
+        storage_b = SQLiteStorage(org_id="org_1", db_path=db_path)
+    storage_a.create_agent_run(
+        AgentRunRecord(
+            id="run_race",
+            binding=AgentBinding(
+                org_id="org_1",
+                extractor_kind="profile",
+                user_id="user_1",
+                request_id="request_race",
+                agent_version="v1",
+                source="api",
+            ),
+            status=AgentRunStatus.FINALIZING,
+            generation_request_snapshot={"request_id": "request_race"},
+        )
+    )
+    barrier = threading.Barrier(2)
+
+    def _service(storage_instance: SQLiteStorage) -> ProfileGenerationService:
+        context = RequestContext.__new__(RequestContext)
+        context.org_id = "org_1"
+        context.storage = storage_instance
+        context.configurator = MagicMock()
+        context.configurator.get_config.return_value = Config(
+            storage_config=StorageConfigSQLite(),
+            profile_extractor_config=ProfileExtractorConfig(
+                extraction_definition_prompt="Extract durable user facts.",
+            ),
+        )
+        service = ProfileGenerationService(
+            llm_client=MagicMock(),
+            request_context=context,
+        )
+        service.service_config = ProfileGenerationServiceConfig(
+            user_id="user_1",
+            request_id="request_race",
+            source="api",
+            auto_run=False,
+            force_extraction=True,
+        )
+        return service
+
+    def _gate_first_receipt_read(storage_instance: SQLiteStorage) -> None:
+        original = storage_instance.get_agent_run_finalization_receipt
+        first_read = True
+
+        def gated_read(*, run_id: str, entity_type: str) -> list[str] | None:
+            nonlocal first_read
+            receipt = original(run_id=run_id, entity_type=entity_type)
+            if first_read:
+                first_read = False
+                barrier.wait(timeout=5)
+            return receipt
+
+        storage_instance.get_agent_run_finalization_receipt = MagicMock(  # type: ignore[method-assign]
+            side_effect=gated_read
+        )
+
+    _gate_first_receipt_read(storage_a)
+    _gate_first_receipt_read(storage_b)
+    services = [_service(storage_a), _service(storage_b)]
+    candidates = [
+        UserProfile(
+            profile_id=f"profile-race-{index}",
+            user_id="user_1",
+            content="User deployment target is AWS ECS.",
+            last_modified_timestamp=1_000,
+            generated_from_request_id="request_race",
+        )
+        for index in range(2)
+    ]
+    results: list[list[str]] = []
+    errors: list[BaseException] = []
+
+    def finalize(index: int) -> None:
+        try:
+            results.append(
+                services[index]._finalize_extracted_items(
+                    [candidates[index]],
+                    finalization_run_id="run_race",
+                )
+            )
+        except BaseException as exc:  # noqa: BLE001 - intentional thread error capture
+            errors.append(exc)
+
+    with patch(
+        "reflexio.server.services.profile.components.consolidator."
+        "ProfileConsolidator.deduplicate",
+        side_effect=lambda profiles, _user_id, _request_id: (profiles, [], []),
+    ):
+        workers = [
+            threading.Thread(target=finalize, args=(index,)) for index in range(2)
+        ]
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join(timeout=10)
+
+    assert all(not worker.is_alive() for worker in workers)
+    assert errors == []
+    persisted_ids = [
+        profile.profile_id for profile in storage_a.get_user_profile("user_1")
+    ]
+    receipt_ids = storage_a.get_agent_run_finalization_receipt(
+        run_id="run_race", entity_type="profile"
+    )
+    assert len(persisted_ids) == 1
+    assert receipt_ids == persisted_ids
+    assert results == [persisted_ids, persisted_ids]
 
 
 def test_resume_worker_fails_run_when_step_budget_exhausted(

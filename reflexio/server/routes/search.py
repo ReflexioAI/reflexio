@@ -49,6 +49,10 @@ from reflexio.server.services.retrieval_experiment import (
     active_retrieval_experiment_assignment,
 )
 from reflexio.server.services.search_metering_worker import enqueue_search_metering
+from reflexio.server.services.search_exposure import (
+    SearchExposureBatch,
+    record_search_exposures,
+)
 from reflexio.server.tracing import profile_step
 
 logger = logging.getLogger(__name__)
@@ -412,6 +416,16 @@ def unified_search_endpoint(
                 rehydrated_text=response.rehydrated_text,
                 experiment=assignment,
             )
+        record_search_exposures(
+            SearchExposureBatch(
+                org_id=org_id,
+                request_id=payload.request_id,
+                session_id=payload.session_id,
+                interaction_id=payload.interaction_id,
+                user_id=payload.user_id,
+                user_playbooks=tuple(response.user_playbooks),
+            )
+        )
         enqueue_search_metering(
             org_id=org_id,
             caller_type=caller_type,

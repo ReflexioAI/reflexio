@@ -5,7 +5,7 @@ import math
 import os
 import time
 import uuid
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
@@ -1989,17 +1989,6 @@ class PlaybookAggregator:
                 duration_ms=int((time.perf_counter() - aggregation_start) * 1000),
                 metadata=stats,
             )
-            self._record_learnings_generated(
-                learning_ids=[
-                    str(saved.agent_playbook_id)
-                    for saved in saved_playbook_list
-                    if getattr(saved, "agent_playbook_id", None)
-                ],
-                playbook_name=playbook_name,
-                request_id=_run_id,
-                metadata=stats,
-                total_count=len(saved_playbook_list),
-            )
             return stats
 
         except Exception as e:
@@ -2041,61 +2030,6 @@ class PlaybookAggregator:
                 )
             # Re-raise the exception after restoring
             raise
-
-    def _record_learnings_generated(
-        self,
-        *,
-        learning_ids: list[str],
-        playbook_name: str,
-        request_id: str,
-        metadata: Mapping[str, Any],
-        total_count: int | None = None,
-    ) -> None:
-        """Emit ``learnings_generated`` for a completed aggregation run.
-
-        Prefers one event per learning id (entity-backed) when every saved
-        playbook in this run carries a durable ``agent_playbook_id`` — the
-        common case, since ``save_agent_playbooks``
-        raises rather than returning a partial row. Falls back to the
-        count-based aggregate event when ``learning_ids`` is short of
-        ``total_count`` (a falsy/unset id slipped through), mirroring
-        ``ExtractionResumeWorker._record_finalized_learnings`` — this avoids
-        emitting a colliding ``learn:agent_playbook:0`` key. ``total_count``
-        defaults to ``len(learning_ids)`` so callers that already guarantee a
-        complete id list (e.g. existing tests) are unaffected.
-        """
-        from reflexio.server.billing_meter import (
-            emit_learnings_generated,
-            emit_learnings_generated_records,
-        )
-
-        total = len(learning_ids) if total_count is None else total_count
-        if len(learning_ids) == total:
-            emit_learnings_generated_records(
-                org_id=self.request_context.org_id,
-                configurator=self.configurator,
-                learning_ids=learning_ids,
-                source="aggregation",
-                pipeline="playbook",
-                request_id=request_id,
-                agent_version=self.agent_version,
-                playbook_name=playbook_name,
-                entity_type="agent_playbook",
-                metadata=metadata,
-            )
-            return
-        emit_learnings_generated(
-            org_id=self.request_context.org_id,
-            configurator=self.configurator,
-            count=total,
-            source="aggregation",
-            pipeline="playbook",
-            request_id=request_id,
-            agent_version=self.agent_version,
-            playbook_name=playbook_name,
-            entity_type="agent_playbook",
-            metadata=metadata,
-        )
 
     def get_clusters(
         self,
