@@ -40,6 +40,10 @@ class FinalizationResult:
     won_receipt: bool
 
 
+class _FinalizationReceiptAlreadyExistsError(Exception):
+    """Rollback signal for a finalization transaction that lost receipt ownership."""
+
+
 @dataclass(frozen=True)
 class ExtractorBookmarkAdvance:
     """The extractor stride-bookmark advance, deferred out of the extractor (F1).

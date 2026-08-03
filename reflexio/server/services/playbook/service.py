@@ -33,6 +33,7 @@ from reflexio.server.services.base_generation_service import (
 from reflexio.server.services.deferred_learning_plan import (
     FinalizationResult,
     PlaybookWritePlan,
+    _FinalizationReceiptAlreadyExistsError,
 )
 from reflexio.server.services.playbook.aggregation_trigger import (
     maybe_trigger_user_playbook_aggregation,
@@ -689,25 +690,38 @@ class PlaybookGenerationService(
                 won_receipt=False,
             )
 
-        with self.storage.commit_scope():  # type: ignore[reportOptionalMemberAccess]
+        try:
+            with self.storage.commit_scope():  # type: ignore[reportOptionalMemberAccess]
+                receipt = self.storage.get_agent_run_finalization_receipt(  # type: ignore[reportOptionalMemberAccess]
+                    run_id=finalization_run_id,
+                    entity_type=entity_type,
+                )
+                if receipt is not None:
+                    return FinalizationResult(receipt, won_receipt=False)
+                if plan is not None:
+                    self._persist_write_plan(plan)
+                    learning_ids = [
+                        str(playbook.user_playbook_id)
+                        for playbook in plan.new_playbooks
+                        if playbook.user_playbook_id
+                    ]
+                inserted = self.storage.save_agent_run_finalization_receipt(  # type: ignore[reportOptionalMemberAccess]
+                    run_id=finalization_run_id,
+                    entity_type=entity_type,
+                    learning_ids=learning_ids,
+                )
+                if not inserted:
+                    raise _FinalizationReceiptAlreadyExistsError
+        except _FinalizationReceiptAlreadyExistsError:
             receipt = self.storage.get_agent_run_finalization_receipt(  # type: ignore[reportOptionalMemberAccess]
                 run_id=finalization_run_id,
                 entity_type=entity_type,
             )
-            if receipt is not None:
-                return FinalizationResult(receipt, won_receipt=False)
-            if plan is not None:
-                self._persist_write_plan(plan)
-                learning_ids = [
-                    str(playbook.user_playbook_id)
-                    for playbook in plan.new_playbooks
-                    if playbook.user_playbook_id
-                ]
-            self.storage.save_agent_run_finalization_receipt(  # type: ignore[reportOptionalMemberAccess]
-                run_id=finalization_run_id,
-                entity_type=entity_type,
-                learning_ids=learning_ids,
-            )
+            if receipt is None:
+                raise RuntimeError(
+                    "finalization receipt disappeared after insert conflict"
+                ) from None
+            return FinalizationResult(receipt, won_receipt=False)
         if plan is not None:
             self._dispatch_playbook_schedulers(plan)
         return FinalizationResult(learning_ids, won_receipt=True)

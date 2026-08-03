@@ -318,8 +318,9 @@ class ExtractionResumeWorker:
 
         try:
             self.storage.update_agent_run_status(run.id, AgentRunStatus.FINALIZING)
-            self._finalize_items(run, items, model_provenance=model_provenance)
-            self._schedule_finalized_tagging(run)
+            result = self._finalize_items(run, items, model_provenance=model_provenance)
+            if result.won_receipt:
+                self._schedule_finalized_tagging(run)
             self.storage.consume_run_tool_dependencies(run.id)
             finalized_status = (
                 AgentRunStatus.FINALIZED_PENDING_TOOL
@@ -364,8 +365,9 @@ class ExtractionResumeWorker:
             items, pending_tool_call_ids, model_provenance = (
                 self._items_from_committed_output(run)
             )
-            self._finalize_items(run, items, model_provenance=model_provenance)
-            self._schedule_finalized_tagging(run)
+            result = self._finalize_items(run, items, model_provenance=model_provenance)
+            if result.won_receipt:
+                self._schedule_finalized_tagging(run)
             self.storage.consume_run_tool_dependencies(run.id)
             finalized_status = (
                 AgentRunStatus.FINALIZED_PENDING_TOOL

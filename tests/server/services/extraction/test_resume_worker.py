@@ -154,6 +154,22 @@ def _gate_initial_receipt_reads(
         install_gate(storage)
 
 
+def _hide_next_receipt_reads(storage: SQLiteStorage, *, count: int = 2) -> None:
+    original = storage.get_agent_run_finalization_receipt
+    remaining = count
+
+    def stale_read(*, run_id: str, entity_type: str) -> list[str] | None:
+        nonlocal remaining
+        if remaining > 0:
+            remaining -= 1
+            return None
+        return original(run_id=run_id, entity_type=entity_type)
+
+    storage.get_agent_run_finalization_receipt = MagicMock(  # type: ignore[method-assign]
+        side_effect=stale_read
+    )
+
+
 def _profile_service(
     context: RequestContext, *, request_id: str
 ) -> ProfileGenerationService:
@@ -889,6 +905,255 @@ def test_empty_profile_receipt_wins_once_without_billing_or_recompute(storage):
     assert [
         event for event in events if event.event_name == "learnings_generated"
     ] == []
+
+
+def test_empty_playbook_receipt_retries_without_redispatch(storage):
+    run = AgentRunRecord(
+        id="run_empty_playbook",
+        binding=AgentBinding(
+            org_id="org_1",
+            extractor_kind="playbook",
+            user_id="user_1",
+            request_id="request_empty_playbook",
+            agent_version="v1",
+            source="api",
+        ),
+        status=AgentRunStatus.RESUME_READY,
+        generation_request_snapshot={"output_schema_name": "StructuredPlaybookList"},
+        committed_output={"playbooks": []},
+        next_resume_at=datetime(2000, 1, 1, tzinfo=UTC),
+    )
+    storage.create_agent_run(run)
+    context = _finalization_context(storage)
+    worker = ExtractionResumeWorker(request_context=context, llm_client=MagicMock())
+    original_finalize = worker._finalize_items
+    outcomes: list[FinalizationResult] = []
+
+    def tracked_finalize(*args, **kwargs) -> FinalizationResult:
+        outcome = original_finalize(*args, **kwargs)
+        outcomes.append(outcome)
+        return outcome
+
+    events: list[UsageEvent] = []
+    configure_usage_event_recorder(events.append)
+    try:
+        with (
+            patch.object(storage, "claim_ready_agent_run", return_value=run),
+            patch.object(
+                worker, "_load_resolved_tool_calls", return_value=[MagicMock()]
+            ),
+            patch.object(worker, "_resume_run", return_value=([], [], None)),
+            patch.object(
+                worker, "_items_from_committed_output", return_value=([], [], None)
+            ),
+            patch.object(worker, "_finalize_items", side_effect=tracked_finalize),
+            patch.object(
+                PlaybookGenerationService,
+                "_resolve_write_plan",
+                return_value=None,
+            ) as resolve,
+            patch.object(
+                PlaybookGenerationService,
+                "_enqueue_user_playbook_optimization",
+            ) as optimize,
+            patch.object(
+                PlaybookGenerationService,
+                "_trigger_playbook_aggregation",
+            ) as aggregate,
+            patch(
+                "reflexio.server.services.extraction.resume_worker.schedule_tagging"
+            ) as schedule_tagging,
+            patch.object(
+                storage,
+                "consume_run_tool_dependencies",
+                side_effect=[RuntimeError("failed after finalization"), 0],
+            ),
+        ):
+            failed = worker.run_once()
+            assert failed is not None
+            assert failed.status == AgentRunStatus.FINALIZATION_FAILED
+            storage.update_agent_run_status(
+                run.id,
+                AgentRunStatus.FINALIZATION_FAILED,
+                next_resume_at=datetime(2000, 1, 1, tzinfo=UTC),
+            )
+            retried = worker.run_once()
+            wrapper_ids = _playbook_service(
+                context, request_id=run.binding.request_id
+            )._finalize_extracted_items([], finalization_run_id=run.id)
+
+        assert retried is not None
+        assert retried.status == AgentRunStatus.FINALIZED
+        assert outcomes == [
+            FinalizationResult([], won_receipt=True),
+            FinalizationResult([], won_receipt=False),
+        ]
+        assert type(wrapper_ids) is list
+        assert wrapper_ids == []
+        resolve.assert_called_once()
+        optimize.assert_not_called()
+        aggregate.assert_not_called()
+        schedule_tagging.assert_called_once()
+        assert (
+            storage.get_agent_run_finalization_receipt(
+                run_id=run.id, entity_type="user_playbook"
+            )
+            == []
+        )
+        assert [
+            event for event in events if event.event_name == "learnings_generated"
+        ] == []
+    finally:
+        configure_usage_event_recorder(None)
+
+
+def test_identical_profile_ids_use_atomic_receipt_owner(tmp_path):
+    db_path = str(tmp_path / "identical-profile-receipt.db")
+    with patch.object(SQLiteStorage, "_get_embedding", return_value=[0.0] * 512):
+        storage_a = SQLiteStorage(org_id="org_1", db_path=db_path)
+        storage_b = SQLiteStorage(org_id="org_1", db_path=db_path)
+    run = _finalizing_run(
+        run_id="run_identical_profile",
+        extractor_kind="profile",
+        request_id="request_identical_profile",
+    )
+    storage_a.create_agent_run(run)
+    contexts = [_finalization_context(item) for item in (storage_a, storage_b)]
+    workers = [
+        ExtractionResumeWorker(request_context=context, llm_client=MagicMock())
+        for context in contexts
+    ]
+    candidate_batches = [
+        [
+            UserProfile(
+                profile_id="profile-shared",
+                user_id="user_1",
+                content=f"Profile content from attempt {index}.",
+                last_modified_timestamp=1_000 + index,
+                generated_from_request_id=run.binding.request_id,
+            )
+        ]
+        for index in range(2)
+    ]
+    events: list[UsageEvent] = []
+    configure_usage_event_recorder(events.append)
+    try:
+        with patch(
+            "reflexio.server.services.profile.components.consolidator."
+            "ProfileConsolidator.deduplicate",
+            side_effect=lambda profiles, _user_id, _request_id: (profiles, [], []),
+        ):
+            winner = workers[0]._finalize_items(run, candidate_batches[0])
+            _hide_next_receipt_reads(storage_b)
+            loser = workers[1]._finalize_items(run, candidate_batches[1])
+    finally:
+        configure_usage_event_recorder(None)
+
+    assert winner == FinalizationResult(["profile-shared"], won_receipt=True)
+    assert loser == FinalizationResult(["profile-shared"], won_receipt=False)
+    assert [profile.content for profile in storage_a.get_user_profile("user_1")] == [
+        "Profile content from attempt 0."
+    ]
+    assert [
+        event.entity_id
+        for event in events
+        if event.event_name == "learnings_generated" and event.entity_type == "profile"
+    ] == ["profile-shared"]
+
+
+def test_identical_playbook_ids_use_atomic_receipt_owner(tmp_path):
+    db_path = str(tmp_path / "identical-playbook-receipt.db")
+    with patch.object(SQLiteStorage, "_get_embedding", return_value=[0.0] * 512):
+        storage_a = SQLiteStorage(org_id="org_1", db_path=db_path)
+        storage_b = SQLiteStorage(org_id="org_1", db_path=db_path)
+    storage_a.conn.execute(
+        "CREATE TABLE receipt_race_writes (attempt INTEGER NOT NULL, content TEXT NOT NULL)"
+    )
+    storage_a.conn.commit()
+    run = _finalizing_run(
+        run_id="run_identical_playbook",
+        extractor_kind="playbook",
+        request_id="request_identical_playbook",
+    )
+    storage_a.create_agent_run(run)
+    contexts = [_finalization_context(item) for item in (storage_a, storage_b)]
+    workers = [
+        ExtractionResumeWorker(request_context=context, llm_client=MagicMock())
+        for context in contexts
+    ]
+    candidate_batches = [
+        _playbook_candidates(
+            request_id=run.binding.request_id, prefix=f"attempt-{index}"
+        )
+        for index in range(2)
+    ]
+    persist_attempts = iter(range(2))
+
+    def persist_fixed_ids(service, plan) -> None:
+        attempt = next(persist_attempts)
+        for index, playbook in enumerate(plan.new_playbooks):
+            playbook.user_playbook_id = 88 + index
+            service.storage.conn.execute(
+                "INSERT INTO receipt_race_writes (attempt, content) VALUES (?, ?)",
+                (attempt, playbook.content),
+            )
+
+    events: list[UsageEvent] = []
+    configure_usage_event_recorder(events.append)
+    try:
+        with (
+            patch.object(
+                PlaybookGenerationService,
+                "_configured_playbook_config",
+                return_value=None,
+            ),
+            patch(
+                "reflexio.server.services.playbook.components.consolidator."
+                "PlaybookConsolidator.deduplicate",
+                side_effect=lambda results, *_args, **_kwargs: (
+                    [playbook for result in results for playbook in result],
+                    [],
+                    [],
+                ),
+            ),
+            patch.object(
+                PlaybookGenerationService,
+                "_persist_write_plan",
+                autospec=True,
+                side_effect=persist_fixed_ids,
+            ),
+            patch.object(
+                PlaybookGenerationService,
+                "_enqueue_user_playbook_optimization",
+            ) as optimize,
+            patch.object(
+                PlaybookGenerationService,
+                "_trigger_playbook_aggregation",
+            ) as aggregate,
+        ):
+            winner = workers[0]._finalize_items(run, candidate_batches[0])
+            _hide_next_receipt_reads(storage_b)
+            loser = workers[1]._finalize_items(run, candidate_batches[1])
+    finally:
+        configure_usage_event_recorder(None)
+
+    assert winner == FinalizationResult(["88", "89"], won_receipt=True)
+    assert loser == FinalizationResult(["88", "89"], won_receipt=False)
+    persisted_writes = storage_a.conn.execute(
+        "SELECT attempt, content FROM receipt_race_writes ORDER BY content"
+    ).fetchall()
+    assert [(row["attempt"], row["content"]) for row in persisted_writes] == [
+        (0, "Use deployment procedure attempt-0-0."),
+        (0, "Use deployment procedure attempt-0-1."),
+    ]
+    optimize.assert_called_once()
+    aggregate.assert_called_once()
+    assert [
+        event.entity_id
+        for event in events
+        if event.event_name == "learnings_generated"
+        and event.entity_type == "user_playbook"
+    ] == ["88", "89"]
 
 
 def test_two_stale_profile_workers_preserve_order_and_bill_only_winner(tmp_path):

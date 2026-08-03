@@ -254,7 +254,7 @@ class SQLiteAgentRunStoreMixin:
         run_id: str,
         entity_type: str,
         learning_ids: list[str],
-    ) -> None:
+    ) -> bool:
         expected_by_extractor = {
             "profile": "profile",
             "playbook": "user_playbook",
@@ -275,13 +275,16 @@ class SQLiteAgentRunStoreMixin:
                 raise ValueError(
                     "agent-run finalization receipt entity type is invalid"
                 )
-            self.conn.execute(
-                """
+            inserted = (
+                self.conn.execute(
+                    """
                 INSERT OR IGNORE INTO _agent_run_finalization_receipts
                     (run_id, entity_type, learning_ids)
                 VALUES (?, ?, ?)
                 """,
-                (run_id, entity_type, encoded_ids),
+                    (run_id, entity_type, encoded_ids),
+                ).rowcount
+                == 1
             )
             stored = self.conn.execute(
                 """
@@ -291,14 +294,14 @@ class SQLiteAgentRunStoreMixin:
                 """,
                 (run_id,),
             ).fetchone()
-            if (
-                stored is None
-                or stored["entity_type"] != entity_type
-                or json.loads(stored["learning_ids"]) != learning_ids
-            ):
+            if stored is None or stored["entity_type"] != entity_type:
                 raise ValueError("agent-run finalization receipt is immutable")
+            stored_ids = json.loads(stored["learning_ids"])
+            if not _valid_finalized_learning_ids(stored_ids):
+                raise ValueError("agent-run finalization receipt is corrupt")
             if self._own_transaction():
                 self.conn.commit()
+            return inserted
 
     @SQLiteStorageBase.handle_exceptions
     def get_latest_finalized_agent_run_for_request(

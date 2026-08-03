@@ -33,6 +33,7 @@ from reflexio.server.services.base_generation_service import (
 from reflexio.server.services.deferred_learning_plan import (
     FinalizationResult,
     ProfileWritePlan,
+    _FinalizationReceiptAlreadyExistsError,
 )
 from reflexio.server.services.profile.components.extractor import ProfileExtractor
 from reflexio.server.services.profile.profile_generation_service_utils import (
@@ -390,20 +391,33 @@ class ProfileGenerationService(
                 self._persist_write_plan(plan)
             return FinalizationResult(learning_ids, won_receipt=False)
 
-        with self.storage.commit_scope():  # type: ignore[reportOptionalMemberAccess]
+        try:
+            with self.storage.commit_scope():  # type: ignore[reportOptionalMemberAccess]
+                receipt = self.storage.get_agent_run_finalization_receipt(  # type: ignore[reportOptionalMemberAccess]
+                    run_id=finalization_run_id,
+                    entity_type=entity_type,
+                )
+                if receipt is not None:
+                    return FinalizationResult(receipt, won_receipt=False)
+                if plan is not None:
+                    self._persist_write_plan(plan)
+                inserted = self.storage.save_agent_run_finalization_receipt(  # type: ignore[reportOptionalMemberAccess]
+                    run_id=finalization_run_id,
+                    entity_type=entity_type,
+                    learning_ids=learning_ids,
+                )
+                if not inserted:
+                    raise _FinalizationReceiptAlreadyExistsError
+        except _FinalizationReceiptAlreadyExistsError:
             receipt = self.storage.get_agent_run_finalization_receipt(  # type: ignore[reportOptionalMemberAccess]
                 run_id=finalization_run_id,
                 entity_type=entity_type,
             )
-            if receipt is not None:
-                return FinalizationResult(receipt, won_receipt=False)
-            if plan is not None:
-                self._persist_write_plan(plan)
-            self.storage.save_agent_run_finalization_receipt(  # type: ignore[reportOptionalMemberAccess]
-                run_id=finalization_run_id,
-                entity_type=entity_type,
-                learning_ids=learning_ids,
-            )
+            if receipt is None:
+                raise RuntimeError(
+                    "finalization receipt disappeared after insert conflict"
+                ) from None
+            return FinalizationResult(receipt, won_receipt=False)
         return FinalizationResult(learning_ids, won_receipt=True)
 
     def check_and_update_profiles(self, profiles: list[UserProfile]) -> None:
