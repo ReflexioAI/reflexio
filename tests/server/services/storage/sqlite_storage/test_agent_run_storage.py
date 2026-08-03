@@ -102,13 +102,15 @@ def test_sqlite_agent_run_crud_round_trip(storage):
 def test_finalization_receipt_accepts_empty_ids_idempotently(storage):
     storage.create_agent_run(_agent_run("run_empty", AgentRunStatus.FINALIZING))
 
-    storage.save_agent_run_finalization_receipt(
+    inserted = storage.save_agent_run_finalization_receipt(
         run_id="run_empty", entity_type="profile", learning_ids=[]
     )
-    storage.save_agent_run_finalization_receipt(
+    reused = storage.save_agent_run_finalization_receipt(
         run_id="run_empty", entity_type="profile", learning_ids=[]
     )
 
+    assert inserted is True
+    assert reused is False
     assert (
         storage.get_agent_run_finalization_receipt(
             run_id="run_empty", entity_type="profile"
@@ -196,21 +198,22 @@ def test_finalization_receipt_rolls_back_with_learning(storage):
     )
 
 
-def test_finalization_receipt_rejects_conflicting_immutable_value(storage):
+def test_finalization_receipt_reports_existing_immutable_value(storage):
     storage.create_agent_run(_agent_run("run_immutable", AgentRunStatus.FINALIZING))
-    storage.save_agent_run_finalization_receipt(
+    inserted = storage.save_agent_run_finalization_receipt(
         run_id="run_immutable",
         entity_type="profile",
         learning_ids=["profile-1"],
     )
 
-    with pytest.raises(StorageError, match="immutable"):
-        storage.save_agent_run_finalization_receipt(
-            run_id="run_immutable",
-            entity_type="profile",
-            learning_ids=["profile-2"],
-        )
+    reused = storage.save_agent_run_finalization_receipt(
+        run_id="run_immutable",
+        entity_type="profile",
+        learning_ids=["profile-2"],
+    )
 
+    assert inserted is True
+    assert reused is False
     assert storage.get_agent_run_finalization_receipt(
         run_id="run_immutable", entity_type="profile"
     ) == ["profile-1"]
