@@ -8,6 +8,7 @@ from dataclasses import dataclass
 
 DEFAULT_ROW_RETENTION_LIMIT = 250_000
 ROW_RETENTION_DELETE_FRACTION = 0.20
+OPEN_WORLD_EVIDENCE_RETENTION_WINDOW_SECONDS = 14 * 24 * 60 * 60
 TOMBSTONE_STATUSES = ("archived", "merged", "superseded", "expired")
 
 
@@ -20,6 +21,7 @@ class RetentionTarget:
     order_column: str
     id_columns: tuple[str, ...]
     priority_statuses: tuple[str, ...] = ()
+    minimum_age_seconds: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,6 +143,7 @@ RETENTION_TARGETS: tuple[RetentionTarget, ...] = (
         "user_playbook_exposure_events",
         "ingested_at",
         ("exposure_event_id",),
+        minimum_age_seconds=OPEN_WORLD_EVIDENCE_RETENTION_WINDOW_SECONDS,
     ),
     RetentionTarget("skills", "skills", "created_at", ("skill_id",)),
 )
