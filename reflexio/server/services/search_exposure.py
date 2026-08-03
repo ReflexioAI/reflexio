@@ -34,6 +34,7 @@ class SearchExposureBatch:
         object.__setattr__(
             self, "session_id", _normalize_correlation_id(self.session_id)
         )
+        object.__setattr__(self, "user_id", _normalize_correlation_id(self.user_id))
         if self.interaction_id is not None and self.interaction_id <= 0:
             object.__setattr__(self, "interaction_id", None)
 
@@ -46,12 +47,14 @@ class UserPlaybookExposureEvent:
     request_id: str | None
     session_id: str | None
     user_id: str | None
+    playbook_owner_user_id: str | None
     user_playbook_id: int | None
     served_semantic_digest: str | None
     served_full_version_fingerprint: str | None
     exposed_at: int | None
     ingested_at: int
     governance_subject_ref: str | None
+    playbook_owner_governance_subject_ref: str | None
 
 
 @dataclass(frozen=True)
@@ -107,8 +110,14 @@ def build_user_playbook_exposure_event(
     exposed_at: int,
     ingested_at: int,
     governance_subject_ref: str | None,
+    playbook_owner_governance_subject_ref: str | None,
 ) -> UserPlaybookExposureEvent:
     """Build one deterministic event identity from retrieval-owned correlation."""
+    if batch.user_id is not None and playbook.user_id != batch.user_id:
+        raise ValueError(
+            "served playbook owner does not match retrieval subject: "
+            f"user_playbook_id={playbook.user_playbook_id}"
+        )
     identity: dict[str, object] = {
         "schema_version": "user-playbook-exposure-event-v1",
         "org_id": batch.org_id,
@@ -128,7 +137,8 @@ def build_user_playbook_exposure_event(
         exposure_event_id=sha256(canonical_json_bytes(identity)).hexdigest(),
         request_id=batch.request_id,
         session_id=batch.session_id,
-        user_id=playbook.user_id,
+        user_id=batch.user_id,
+        playbook_owner_user_id=playbook.user_id,
         user_playbook_id=playbook.user_playbook_id,
         served_semantic_digest=incumbent_user_playbook_semantic_digest(
             content_digest=content_digest,
@@ -140,6 +150,7 @@ def build_user_playbook_exposure_event(
         exposed_at=exposed_at,
         ingested_at=ingested_at,
         governance_subject_ref=governance_subject_ref,
+        playbook_owner_governance_subject_ref=(playbook_owner_governance_subject_ref),
     )
 
 

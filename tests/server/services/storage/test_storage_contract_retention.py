@@ -1,6 +1,8 @@
 """Contract tests for generic row-retention storage methods."""
 
 from datetime import UTC, datetime
+from typing import Any, cast
+from unittest.mock import patch
 
 import pytest
 
@@ -186,6 +188,50 @@ def test_retention_request_cascade_cleans_interaction_fts(
         "SELECT rowid FROM interactions_fts WHERE rowid = 3"
     ).fetchall()
     assert len(fts_kept) == 1, "fts row for surviving interaction must remain"
+
+
+def test_retention_exposure_age_boundary_is_strict(storage: BaseStorage) -> None:
+    """Only exposure evidence strictly older than 14 days is row-cap eligible."""
+    from reflexio.server.services.storage.retention import (
+        OPEN_WORLD_EVIDENCE_RETENTION_WINDOW_SECONDS,
+    )
+
+    now = 2_000_000_000
+    cutoff = now - OPEN_WORLD_EVIDENCE_RETENTION_WINDOW_SECONDS
+    conn = storage.conn  # type: ignore[attr-defined]
+    conn.execute(
+        """CREATE TABLE user_playbook_exposure_events (
+            exposure_event_id TEXT PRIMARY KEY,
+            ingested_at INTEGER NOT NULL
+        )"""
+    )
+    conn.executemany(
+        """INSERT INTO user_playbook_exposure_events
+           (exposure_event_id, ingested_at)
+           VALUES (?, ?)""",
+        [
+            ("older", cutoff - 1),
+            ("exact", cutoff),
+            ("newer", cutoff + 1),
+        ],
+    )
+    conn.commit()
+
+    retention_storage = cast(Any, storage)
+    with patch(
+        "reflexio.server.services.storage.retention_mixin.time.time",
+        return_value=now,
+    ):
+        deleted = retention_storage.delete_oldest_retention_target_rows(
+            "user_playbook_exposure_events", 3
+        )
+
+    assert deleted == 1
+    remaining = conn.execute(
+        "SELECT exposure_event_id FROM user_playbook_exposure_events "
+        "ORDER BY exposure_event_id"
+    ).fetchall()
+    assert [row["exposure_event_id"] for row in remaining] == ["exact", "newer"]
 
 
 # ---------------------------------------------------------------------------
