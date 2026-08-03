@@ -90,8 +90,7 @@ CREATE TABLE IF NOT EXISTS playbook_aggregation_invalidation (
     created_at INTEGER NOT NULL DEFAULT (unixepoch()),
     processed_at INTEGER
 );
-DROP INDEX IF EXISTS idx_playbook_aggregation_invalidation_pending;
-CREATE INDEX idx_playbook_aggregation_invalidation_pending
+CREATE INDEX IF NOT EXISTS idx_playbook_aggregation_invalidation_pending
     ON playbook_aggregation_invalidation(agent_version, invalidation_id)
     WHERE processed_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_playbook_aggregation_invalidation_retention
@@ -992,17 +991,19 @@ class PlaybookAggregationStoreMixin:
                 row = self.conn.execute(
                     "SELECT c.cluster_id, v.distance FROM ("
                     "SELECT rowid, distance FROM playbook_aggregation_clusters_vec "
-                    "WHERE embedding MATCH ? ORDER BY distance LIMIT ?) v "
+                    "WHERE embedding MATCH ? AND rowid IN ("
+                    "SELECT index_rowid FROM playbook_aggregation_cluster "
+                    "WHERE agent_version=? AND embedding_model=? "
+                    "AND embedding_dimension=? AND state='active') "
+                    "ORDER BY distance LIMIT ?) v "
                     "JOIN playbook_aggregation_cluster c ON c.index_rowid=v.rowid "
-                    "WHERE c.agent_version=? AND c.embedding_model=? "
-                    "AND c.embedding_dimension=? AND c.state='active' "
                     "ORDER BY v.distance, c.cluster_id LIMIT 1",
                     (
                         json.dumps(embedding),
-                        candidate_limit,
                         agent_version,
                         embedding_model,
                         len(embedding),
+                        candidate_limit,
                     ),
                 ).fetchone()
                 if row is not None:

@@ -101,26 +101,37 @@ def _append_event_stmt(
         if not str(entity_id).isdigit():
             return cursor
         parsed_entity_id = int(entity_id)
-        candidate_ids = [
-            int(value)
-            for value in [parsed_entity_id, *source_ids]
-            if str(value).isdigit()
-        ]
+        candidate_ids = sorted(
+            {
+                int(value)
+                for value in [parsed_entity_id, *source_ids]
+                if str(value).isdigit()
+            }
+        )
         if not candidate_ids:
             return cursor
         placeholders = ",".join("?" for _ in candidate_ids)
-        version_row = conn.execute(
-            "SELECT agent_version FROM user_playbooks "
+        version_rows = conn.execute(
+            "SELECT user_playbook_id, agent_version FROM user_playbooks "
             f"WHERE user_playbook_id IN ({placeholders}) "
-            "AND trim(agent_version) <> '' LIMIT 1",
+            "AND trim(agent_version) <> '' "
+            "ORDER BY agent_version, user_playbook_id",
             candidate_ids,
-        ).fetchone()
-        if version_row is not None:
-            agent_version = str(version_row[0])
+        ).fetchall()
+        candidate_version_by_id = {
+            int(row[0]): str(row[1]).strip() for row in version_rows
+        }
+        source_id_values = [int(value) for value in source_ids if str(value).isdigit()]
+        for agent_version in sorted(set(candidate_version_by_id.values())):
+            version_source_ids = [
+                value
+                for value in source_id_values
+                if candidate_version_by_id.get(value) == agent_version
+            ]
             conn.execute(
                 "INSERT INTO playbook_aggregation_invalidation "
                 "(agent_version, operation, entity_id, source_ids) VALUES (?, ?, ?, ?)",
-                (agent_version, op, parsed_entity_id, json.dumps(source_ids)),
+                (agent_version, op, parsed_entity_id, json.dumps(version_source_ids)),
             )
             conn.execute(
                 "INSERT INTO playbook_aggregation_state "

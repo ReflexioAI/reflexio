@@ -9,6 +9,7 @@ from unittest.mock import MagicMock
 import pytest
 
 import reflexio
+from reflexio.models.api_schema.domain.entities import LineageContext
 from reflexio.models.api_schema.service_schemas import (
     AgentPlaybook,
     PlaybookStatus,
@@ -29,6 +30,9 @@ from reflexio.server.services.playbook.playbook_service_utils import (
     PlaybookAggregatorRequest,
 )
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
+from reflexio.server.services.storage.sqlite_storage.playbook._aggregation import (
+    init_playbook_aggregation_tables,
+)
 from reflexio.server.services.storage.storage_base.playbook import (
     PlaybookAggregationBacklog,
 )
@@ -334,6 +338,56 @@ def test_archive_rolls_back_when_invalidation_fails(
     assert status is None
 
 
+def test_merge_invalidates_every_source_agent_version(tmp_path) -> None:
+    store = _store(tmp_path)
+    for item_id, version in ((1, "v2"), (2, "v1"), (3, "v2")):
+        _insert_current(store, item_id, version=version)
+
+    store.merge_records(
+        entity_type="user_playbook",
+        survivor_id="1",
+        source_ids=["2", "3"],
+        context=LineageContext(
+            op_kind="merge", actor="test", request_id="mixed-version-merge"
+        ),
+    )
+
+    invalidations = store.conn.execute(
+        "SELECT agent_version, entity_id, source_ids "
+        "FROM playbook_aggregation_invalidation ORDER BY agent_version"
+    ).fetchall()
+    assert [tuple(row) for row in invalidations] == [
+        ("v1", 1, "[2]"),
+        ("v2", 1, "[3]"),
+    ]
+    armed_versions = store.conn.execute(
+        "SELECT agent_version FROM playbook_aggregation_state "
+        "WHERE pending=1 ORDER BY agent_version"
+    ).fetchall()
+    assert [str(row[0]) for row in armed_versions] == ["v1", "v2"]
+
+
+def test_aggregation_schema_init_does_not_rebuild_pending_index(tmp_path) -> None:
+    store = _store(tmp_path)
+    statements: list[str] = []
+    store.conn.set_trace_callback(statements.append)
+    try:
+        init_playbook_aggregation_tables(store.conn)
+    finally:
+        store.conn.set_trace_callback(None)
+
+    assert not any(
+        "DROP INDEX" in statement
+        and "idx_playbook_aggregation_invalidation_pending" in statement
+        for statement in statements
+    )
+    index_sql = store.conn.execute(
+        "SELECT sql FROM sqlite_master "
+        "WHERE type='index' AND name='idx_playbook_aggregation_invalidation_pending'"
+    ).fetchone()[0]
+    assert "WHERE processed_at IS NULL" in index_sql
+
+
 def test_semantic_dispositions_are_unique_per_version_and_item(tmp_path) -> None:
     store = _store(tmp_path)
     _insert_current(store, 1)
@@ -527,7 +581,7 @@ def test_centroid_batches_are_strictly_isolated_by_agent_version(vec_store) -> N
         "v2",
         [(3, embedding)],
         embedding_model=store.embedding_model_name,
-        limit=10,
+        limit=1,
     )
     assert matches[3].cluster_id == "cluster-v2"
     with pytest.raises(RuntimeError, match="not active for agent version"):
