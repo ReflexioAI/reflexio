@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-import threading
-import time
-import uuid
 from contextlib import suppress
 from typing import Any, Literal, Protocol, TypedDict
 
@@ -19,7 +16,6 @@ from reflexio.server.services.governance.config import (
     governance_subject_ref,
 )
 from reflexio.server.services.governance.subject_refs import stable_id
-from reflexio.server.services.storage.governance_claims import PurgeExecutionClaim
 
 _DELETE_TARGET_NAME_TO_RESULT_KEY = {
     "interaction": "interactions",
@@ -33,18 +29,12 @@ _DELETE_TARGET_NAME_TO_RESULT_KEY = {
     "offline_tuner_reward_label_target_by_target_owner": (
         "offline_tuner_reward_label_targets_by_target_owner"
     ),
-    "session_outcome": "session_outcomes",
     "profile_purge": "purged_profiles",
     "user_playbook_purge": "purged_user_playbooks",
 }
 _REQUIRED_DELETE_TARGET_NAMES = tuple(_DELETE_TARGET_NAME_TO_RESULT_KEY)
 _USER_PLAYBOOK_PAGE_SIZE = 1000
 _LIFECYCLE_COMPLETION_STATUS = "complete"
-_DUPLICATE_ERASE_POLL_SECONDS = 0.05
-_DUPLICATE_ERASE_MAX_POLL_SECONDS = 1.0
-_DUPLICATE_ERASE_WAIT_SECONDS = 5.0
-_PURGE_EXECUTION_LEASE_SECONDS = 300
-_PURGE_EXECUTION_HEARTBEAT_SECONDS = 30
 
 
 class GovernanceActorContext(TypedDict):
@@ -53,7 +43,7 @@ class GovernanceActorContext(TypedDict):
 
 
 class SubjectErasureLifecycle(Protocol):
-    """External erasure work invoked only after a synchronous live-claim check."""
+    """Deployment-specific erasure work that must precede barrier completion."""
 
     def erase_subject(
         self,
@@ -61,76 +51,7 @@ class SubjectErasureLifecycle(Protocol):
         storage: Any,
         subject_ref: str,
         purge_id: str,
-        execution_claim: PurgeExecutionClaim,
     ) -> None: ...
-
-
-class _PurgeExecutionHeartbeatLostError(ValueError):
-    pass
-
-
-class GovernanceEraseRetryLaterError(RuntimeError):
-    pass
-
-
-class _PurgeExecutionHeartbeat:
-    def __init__(
-        self,
-        *,
-        storage: Any,
-        purge_id: str,
-        execution_claim: PurgeExecutionClaim,
-    ) -> None:
-        self._storage = storage
-        self._purge_id = purge_id
-        self._claim = execution_claim
-        self._lock = threading.Lock()
-        self._renewal_error: Exception | None = None
-        self._stop = threading.Event()
-        self._thread = threading.Thread(target=self._run, daemon=True)
-
-    def __enter__(self) -> _PurgeExecutionHeartbeat:
-        self.renew_now()
-        self._thread.start()
-        return self
-
-    def __exit__(self, *_exc: object) -> None:
-        self._stop.set()
-        self._thread.join(timeout=1)
-
-    def claim(self) -> PurgeExecutionClaim:
-        with self._lock:
-            if self._renewal_error is not None:
-                raise _PurgeExecutionHeartbeatLostError(
-                    "purge execution heartbeat renewal was lost"
-                ) from self._renewal_error
-            return self._claim
-
-    def renew_now(self) -> PurgeExecutionClaim:
-        try:
-            renewed = self._storage.renew_purge_operation_execution_claim(
-                self._purge_id,
-                self.claim(),
-                lease_ttl_seconds=_PURGE_EXECUTION_LEASE_SECONDS,
-            )
-        except _PurgeExecutionHeartbeatLostError:
-            raise
-        except Exception as exc:
-            with self._lock:
-                self._renewal_error = exc
-            raise _PurgeExecutionHeartbeatLostError(
-                "purge execution heartbeat renewal was lost"
-            ) from exc
-        with self._lock:
-            self._claim = renewed
-        return renewed
-
-    def _run(self) -> None:
-        while not self._stop.wait(_PURGE_EXECUTION_HEARTBEAT_SECONDS):
-            try:
-                self.renew_now()
-            except _PurgeExecutionHeartbeatLostError:
-                return
 
 
 class GovernanceService:
@@ -208,145 +129,84 @@ class GovernanceService:
             f"{self.org_id}:user_erasure:{subref}:{reqref}",
         )
         purge_id = stable_id("purge", idempotency_key)
-        try:
-            purge = self.storage.begin_purge_operation(
-                purge_id=purge_id,
-                idempotency_key=idempotency_key,
-                operation_type="user_erasure",
-                scope_type="user",
-                subject_ref=subref,
-                request_ref=reqref,
-                authoritative_user_id=user_id,
-            )
-        except Exception as begin_exc:
-            try:
-                purge = self._matching_user_erasure_purge_for_retry(
-                    purge_id=purge_id,
-                    operation_type="user_erasure",
-                    scope_type="user",
-                    subject_ref=subref,
-                    request_ref=reqref,
-                    authoritative_user_id=user_id,
-                )
-            except Exception:
-                raise begin_exc from None
-            if purge.status == "complete":
-                raise begin_exc from None
+        purge = self.storage.begin_purge_operation(
+            purge_id=purge_id,
+            idempotency_key=idempotency_key,
+            operation_type="user_erasure",
+            scope_type="user",
+            subject_ref=subref,
+            request_ref=reqref,
+        )
         if purge.status == "complete":
-            return self._completed_erase_result_for_retry(
+            barrier = self._completed_barrier_for_retry(
                 subject_ref=subref, purge_id=purge_id
             )
-        lease_owner = f"governance-erase-{uuid.uuid4().hex}"
-        execution_claim: PurgeExecutionClaim | None = None
-        claim_deadline = self._monotonic() + _DUPLICATE_ERASE_WAIT_SECONDS
-        poll_seconds = _DUPLICATE_ERASE_POLL_SECONDS
-        while execution_claim is None:
-            execution_claim = self.storage.claim_purge_operation_execution(
-                purge_id,
-                lease_owner=lease_owner,
-                lease_ttl_seconds=_PURGE_EXECUTION_LEASE_SECONDS,
+            if barrier.status != "erased":
+                raise ValueError(
+                    "Completed purge retry requires an erased subject barrier"
+                )
+            return UserEraseResult(
+                subject_ref=subref,
+                purge_id=purge_id,
+                status="complete",
+                deleted_counts=self._deleted_counts_from_targets(purge_id),
+                rebuilt_agent_playbook_ids=(
+                    self._rebuilt_agent_playbook_ids_from_targets(purge_id)
+                ),
             )
-            if execution_claim is not None:
-                break
-            purge = self.storage.get_purge_operation(purge_id)
-            if purge.status == "complete":
-                return self._completed_erase_result_for_retry(
+        try:
+            self.storage.begin_subject_erasure_barrier(subref, purge_id)
+            if not self.storage.purge_targets_prepared(purge_id):
+                self.storage.prepare_governance_erase_targets(
+                    purge_id,
+                    user_id,
+                )
+
+            if not self._delete_targets_complete(purge_id):
+                self.storage.apply_governance_user_data_delete(purge_id, user_id)
+            if (
+                self.subject_erasure_lifecycle is not None
+                and not self._subject_erasure_lifecycle_complete(purge_id)
+            ):
+                self.subject_erasure_lifecycle.erase_subject(
+                    storage=self.storage,
                     subject_ref=subref,
                     purge_id=purge_id,
                 )
-            if purge.status not in {"pending", "running", "failed"}:
-                raise ValueError(f"Unsupported purge operation status: {purge.status}")
-            remaining_seconds = claim_deadline - self._monotonic()
-            if remaining_seconds <= 0:
-                raise GovernanceEraseRetryLaterError(
-                    "Another erase request still owns the execution claim; retry later"
-                )
-            self._sleep(min(poll_seconds, remaining_seconds))
-            poll_seconds = min(
-                poll_seconds * 2,
-                _DUPLICATE_ERASE_MAX_POLL_SECONDS,
+                self._record_subject_erasure_lifecycle_complete(purge_id)
+            deleted_counts = self._deleted_counts_from_targets(purge_id)
+
+            rebuilt_agent_playbook_ids: list[int] = []
+            completed = self.storage.complete_subject_erasure_barrier_after_empty_check(
+                purge_id,
+                AuditEvent(
+                    org_id=self.org_id,
+                    actor_type=actor_type,
+                    actor_ref=actor_ref,
+                    operation="ERASE",
+                    entity_type="request",
+                    subject_ref=subref,
+                    request_ref=reqref,
+                    idempotency_key=purge_id,
+                    detail={
+                        "deleted_counts": deleted_counts,
+                        "rebuilt_agent_playbook_ids": rebuilt_agent_playbook_ids,
+                    },
+                ),
             )
-        try:
-            with _PurgeExecutionHeartbeat(
-                storage=self.storage,
-                purge_id=purge_id,
-                execution_claim=execution_claim,
-            ) as heartbeat:
-                self.storage.begin_subject_erasure_barrier(
-                    subref,
-                    purge_id,
-                    execution_claim=heartbeat.claim(),
-                )
-                if not self.storage.purge_targets_prepared(purge_id):
-                    self.storage.prepare_governance_erase_targets(
-                        purge_id,
-                        user_id,
-                        execution_claim=heartbeat.claim(),
-                    )
-
-                if not self._delete_targets_complete(purge_id):
-                    self.storage.apply_governance_user_data_delete(
-                        purge_id,
-                        user_id,
-                        execution_claim=heartbeat.claim(),
-                    )
-                if (
-                    self.subject_erasure_lifecycle is not None
-                    and not self._subject_erasure_lifecycle_complete(purge_id)
-                ):
-                    heartbeat.renew_now()
-                    self._assert_execution_claim(purge_id, heartbeat.claim())
-                    self.subject_erasure_lifecycle.erase_subject(
-                        storage=self.storage,
-                        subject_ref=subref,
-                        purge_id=purge_id,
-                        execution_claim=heartbeat.claim(),
-                    )
-                    self._record_subject_erasure_lifecycle_complete(
-                        purge_id,
-                        execution_claim=heartbeat.claim(),
-                    )
-                deleted_counts = self._deleted_counts_from_targets(purge_id)
-
-                rebuilt_agent_playbook_ids: list[int] = []
-                completed = self.storage.complete_subject_erasure_barrier_after_empty_check(
-                    purge_id,
-                    AuditEvent(
-                        org_id=self.org_id,
-                        actor_type=actor_type,
-                        actor_ref=actor_ref,
-                        operation="ERASE",
-                        entity_type="request",
-                        subject_ref=subref,
-                        request_ref=reqref,
-                        idempotency_key=purge_id,
-                        detail={
-                            "deleted_counts": deleted_counts,
-                            "rebuilt_agent_playbook_ids": rebuilt_agent_playbook_ids,
-                        },
-                    ),
-                    authoritative_user_id=user_id,
-                    execution_claim=heartbeat.claim(),
-                )
         except Exception as exc:
-            if isinstance(exc, _PurgeExecutionHeartbeatLostError):
-                raise
-            if not self._execution_claim_is_current(purge_id, execution_claim):
-                raise
             with suppress(Exception):
                 self.storage.fail_subject_erasure_barrier(
                     subref,
                     purge_id,
                     error_code="governance_erase_failed",
                     error_detail=type(exc).__name__,
-                    execution_claim=execution_claim,
                 )
             with suppress(Exception):
                 self.storage.fail_purge_operation(
                     purge_id,
                     error_code="governance_erase_failed",
                     error_detail=type(exc).__name__,
-                    execution_claim=execution_claim,
                 )
             raise
         return UserEraseResult(
@@ -356,28 +216,6 @@ class GovernanceService:
             deleted_counts=deleted_counts,
             rebuilt_agent_playbook_ids=rebuilt_agent_playbook_ids,
         )
-
-    @staticmethod
-    def _monotonic() -> float:
-        return time.monotonic()
-
-    @staticmethod
-    def _sleep(seconds: float) -> None:
-        time.sleep(seconds)
-
-    def _assert_execution_claim(
-        self, purge_id: str, execution_claim: PurgeExecutionClaim
-    ) -> None:
-        self.storage.assert_purge_operation_execution_claim(purge_id, execution_claim)
-
-    def _execution_claim_is_current(
-        self, purge_id: str, execution_claim: PurgeExecutionClaim
-    ) -> bool:
-        try:
-            self._assert_execution_claim(purge_id, execution_claim)
-        except Exception:
-            return False
-        return True
 
     def _assert_storage_ref_secret_matches(self) -> None:
         storage_secret = get_governance_ref_secret()
@@ -396,57 +234,6 @@ class GovernanceService:
                 "Completed purge retry requires the matching subject barrier"
             )
         return barrier
-
-    def _completed_erase_result_for_retry(
-        self, *, subject_ref: str, purge_id: str
-    ) -> UserEraseResult:
-        barrier = self._completed_barrier_for_retry(
-            subject_ref=subject_ref, purge_id=purge_id
-        )
-        if barrier.status != "erased":
-            raise ValueError("Completed purge retry requires an erased subject barrier")
-        return UserEraseResult(
-            subject_ref=subject_ref,
-            purge_id=purge_id,
-            status="complete",
-            deleted_counts=self._deleted_counts_from_targets(purge_id),
-            rebuilt_agent_playbook_ids=(
-                self._rebuilt_agent_playbook_ids_from_targets(purge_id)
-            ),
-        )
-
-    def _matching_user_erasure_purge_for_retry(
-        self,
-        *,
-        purge_id: str,
-        operation_type: str,
-        scope_type: str,
-        subject_ref: str,
-        request_ref: str,
-        authoritative_user_id: str,
-    ) -> Any:
-        purge = self.storage.get_purge_operation(purge_id)
-        expected_identity = {
-            "purge_id": purge_id,
-            "operation_type": operation_type,
-            "scope_type": scope_type,
-            "subject_ref": subject_ref,
-            "request_ref": request_ref,
-        }
-        for field_name, expected_value in expected_identity.items():
-            if getattr(purge, field_name) != expected_value:
-                raise ValueError(
-                    "Existing purge operation for idempotency_key has "
-                    f"mismatched {field_name}"
-                )
-        if (
-            governance_subject_ref(self.org_id, authoritative_user_id, self.ref_secret)
-            != purge.subject_ref
-        ):
-            raise ValueError(
-                "Existing purge operation has mismatched authoritative user"
-            )
-        return purge
 
     def _load_user_requests_and_sessions(
         self, user_id: str
@@ -523,11 +310,7 @@ class GovernanceService:
             and (snapshot.detail or {}).get("status") == _LIFECYCLE_COMPLETION_STATUS
         )
 
-    def _record_subject_erasure_lifecycle_complete(
-        self,
-        purge_id: str,
-        execution_claim: PurgeExecutionClaim,
-    ) -> None:
+    def _record_subject_erasure_lifecycle_complete(self, purge_id: str) -> None:
         snapshot = self._prepared_target_snapshot(purge_id)
         if snapshot is None or snapshot.status != "complete":
             raise ValueError(
@@ -544,7 +327,6 @@ class GovernanceService:
             detail=detail,
             deleted_count=snapshot.deleted_count,
             error_detail=snapshot.error_detail,
-            execution_claim=execution_claim,
         )
 
     def _prepared_target_snapshot(self, purge_id: str) -> PurgeOperationTarget | None:

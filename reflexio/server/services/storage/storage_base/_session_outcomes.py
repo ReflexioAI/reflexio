@@ -18,24 +18,6 @@ class SessionOutcomeWriteResult:
     source: str | None = None
     reason: SessionOutcomeFailureReason | None = None
     context_changed: bool = False
-    outcome_id: str | None = None
-    outcome_revision: int | None = None
-    outcome_contract_digest: str | None = None
-    finalized_trajectory_digest: str | None = None
-
-    def __post_init__(self) -> None:
-        identity = (
-            self.outcome_id,
-            self.outcome_revision,
-            self.outcome_contract_digest,
-            self.finalized_trajectory_digest,
-        )
-        if any(value is None for value in identity) and not all(
-            value is None for value in identity
-        ):
-            raise ValueError(
-                "outcome identity fields must be all populated or all null"
-            )
 
 
 @dataclass(frozen=True)

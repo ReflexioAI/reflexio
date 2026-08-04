@@ -30,11 +30,7 @@ from reflexio.server.services.base_generation_service import (
     BaseGenerationService,
     StatusChangeOperation,
 )
-from reflexio.server.services.deferred_learning_plan import (
-    FinalizationResult,
-    PlaybookWritePlan,
-    _FinalizationReceiptAlreadyExistsError,
-)
+from reflexio.server.services.deferred_learning_plan import PlaybookWritePlan
 from reflexio.server.services.playbook.aggregation_trigger import (
     maybe_trigger_user_playbook_aggregation,
 )
@@ -600,21 +596,15 @@ class PlaybookGenerationService(
         Phantom-billing gate: on the durable / ``.run()`` path this is invoked
         from ``emit_generation_side_effects`` (post-commit), so a fence-lost
         (superseded) job never enqueues optimization or triggers aggregation. On
-        the synchronous resume/manual path ``_finalize_extracted_items`` invokes
-        it after persistence. Dispatch is best-effort and at most once per
-        committed finalization attempt; derived scheduler work has no durable
-        replay idempotency.
+        the synchronous resume/manual path the permanent
+        ``_finalize_extracted_items`` wrapper invokes it right after persist,
+        keeping that path identical to the pre-split monolith. The two callers
+        are mutually exclusive, so the schedulers fire exactly once per run.
         """
-        try:
-            self._enqueue_user_playbook_optimization(plan.new_playbooks)
-        except Exception:
-            logger.exception("Failed to schedule user playbook optimization")
+        self._enqueue_user_playbook_optimization(plan.new_playbooks)
         if not plan.output_pending_status and not plan.skip_aggregation:
-            try:
-                logger.info("Trigger playbook aggregation")
-                self._trigger_playbook_aggregation()
-            except Exception:
-                logger.exception("Failed to schedule user playbook aggregation")
+            logger.info("Trigger playbook aggregation")
+            self._trigger_playbook_aggregation()
 
     def emit_generation_side_effects(self, plan: GenerationComputePlan) -> None:
         """Post-commit side-effects — base telemetry/billing + playbook schedulers.
@@ -634,97 +624,23 @@ class PlaybookGenerationService(
         all_playbooks: list[UserPlaybook],
         *,
         model_provenance: ModelProvenance | None = None,
-        finalization_run_id: str | None = None,
-    ) -> list[str]:
-        """Finalize extracted playbooks for synchronous resume/manual callers.
+    ) -> None:
+        """Permanent V3 wrapper: compute→persist→schedulers together (no fence).
 
-        Compatibility surface for synchronous callers that expect ordered
-        learning ids. Routes them through the same ``_resolve_write_plan``
-        (compute) + ``_persist_write_plan`` (persist) split the durable worker
-        uses. Derived schedulers dispatch best-effort after the finalization
-        transaction commits. When an existing finalization receipt is found,
-        the method returns its learning ids without replaying those schedulers.
+        Kept for the synchronous resume/manual callers
+        (``ExtractionResumeWorker`` calls this directly). Routes them through the
+        same ``_resolve_write_plan`` (compute) + ``_persist_write_plan``
+        (persist) split the durable worker uses — with no external
+        ``commit_scope`` — then dispatches the same off-thread schedulers, so the
+        result is identical to the pre-split monolith.
         """
-        return self._finalize_extracted_items_with_outcome(
-            all_playbooks,
-            model_provenance=model_provenance,
-            finalization_run_id=finalization_run_id,
-        ).learning_ids
-
-    def _finalize_extracted_items_with_outcome(
-        self,
-        all_playbooks: list[UserPlaybook],
-        *,
-        model_provenance: ModelProvenance | None = None,
-        finalization_run_id: str | None = None,
-    ) -> FinalizationResult:
-        """Finalize playbooks and expose the atomic receipt winner internally."""
-        entity_type = "user_playbook"
-        if finalization_run_id is not None:
-            receipt = self.storage.get_agent_run_finalization_receipt(  # type: ignore[reportOptionalMemberAccess]
-                run_id=finalization_run_id,
-                entity_type=entity_type,
-            )
-            if receipt is not None:
-                # Receipts make persistence/billing idempotent. Derived schedulers
-                # are best-effort at-most-once and lack durable replay idempotency.
-                return FinalizationResult(receipt, won_receipt=False)
         if model_provenance is not None:
             self._last_model_provenance = model_provenance
         plan = self._resolve_write_plan([all_playbooks])
-        learning_ids: list[str] = []
-        if finalization_run_id is None:
-            if plan is not None:
-                self._persist_write_plan(plan)
-                self._dispatch_playbook_schedulers(plan)
-            return FinalizationResult(
-                learning_ids=(
-                    [
-                        str(playbook.user_playbook_id)
-                        for playbook in plan.new_playbooks
-                        if playbook.user_playbook_id
-                    ]
-                    if plan is not None
-                    else []
-                ),
-                won_receipt=False,
-            )
-
-        try:
-            with self.storage.commit_scope():  # type: ignore[reportOptionalMemberAccess]
-                receipt = self.storage.get_agent_run_finalization_receipt(  # type: ignore[reportOptionalMemberAccess]
-                    run_id=finalization_run_id,
-                    entity_type=entity_type,
-                )
-                if receipt is not None:
-                    return FinalizationResult(receipt, won_receipt=False)
-                if plan is not None:
-                    self._persist_write_plan(plan)
-                    learning_ids = [
-                        str(playbook.user_playbook_id)
-                        for playbook in plan.new_playbooks
-                        if playbook.user_playbook_id
-                    ]
-                inserted = self.storage.save_agent_run_finalization_receipt(  # type: ignore[reportOptionalMemberAccess]
-                    run_id=finalization_run_id,
-                    entity_type=entity_type,
-                    learning_ids=learning_ids,
-                )
-                if not inserted:
-                    raise _FinalizationReceiptAlreadyExistsError
-        except _FinalizationReceiptAlreadyExistsError:
-            receipt = self.storage.get_agent_run_finalization_receipt(  # type: ignore[reportOptionalMemberAccess]
-                run_id=finalization_run_id,
-                entity_type=entity_type,
-            )
-            if receipt is None:
-                raise RuntimeError(
-                    "finalization receipt disappeared after insert conflict"
-                ) from None
-            return FinalizationResult(receipt, won_receipt=False)
-        if plan is not None:
-            self._dispatch_playbook_schedulers(plan)
-        return FinalizationResult(learning_ids, won_receipt=True)
+        if plan is None:
+            return
+        self._persist_write_plan(plan)
+        self._dispatch_playbook_schedulers(plan)
 
     def _apply_consolidation_lineage(
         self,

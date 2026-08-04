@@ -188,14 +188,14 @@ class UsageBillingMixin(Generic[TExtractorConfig, TGenerationServiceConfig]):  #
         (cost facet) via the OSS emission helpers. ``platform_storage`` is left
         ``None`` here and resolved enterprise-side at rollup (Phase 1).
 
-        Gated by ``EMITS_LEARNING_BILLING`` — only online profile/playbook
-        extraction services opt in here. Resumable-extraction finalization emits
-        the same value facet separately. Derived mutation paths emit no additional
-        ``learnings_generated`` events.
+        Gated by ``EMITS_LEARNING_BILLING`` — only profile/playbook generation
+        services opt in here. Non-extraction learning mutation paths emit their
+        own ``learnings_generated`` value-facet events when they durably apply
+        revisions/successors.
 
         Args:
             prepared: The prepared generation run (used for input-text computation).
-            generated_count: Number of retained write-plan learnings eligible for billing.
+            generated_count: Number of learnings produced by this extraction run.
         """
         if not self.EMITS_LEARNING_BILLING:
             return
@@ -260,16 +260,3 @@ class UsageBillingMixin(Generic[TExtractorConfig, TGenerationServiceConfig]):  #
         if isinstance(result, list):
             return len(result)
         return 1 if result else 0
-
-    @staticmethod
-    def _count_retained_online_learnings(write_plan: Any) -> int:
-        from reflexio.server.services.deferred_learning_plan import (
-            PlaybookWritePlan,
-            ProfileWritePlan,
-        )
-
-        if isinstance(write_plan, ProfileWritePlan):
-            return len(write_plan.new_profiles)
-        if isinstance(write_plan, PlaybookWritePlan):
-            return len(write_plan.new_playbooks)
-        return 0
