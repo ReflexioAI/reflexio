@@ -58,7 +58,7 @@ class BoundedCallbackExecutor:
         self._cond = threading.Condition()
         self._active = 0
         self._drop_times: deque[float] = deque()
-        self._last_drop_anomaly = 0.0
+        self._last_drop_anomaly: float | None = None
         for i in range(workers):
             threading.Thread(
                 target=self._worker_loop,
@@ -113,9 +113,9 @@ class BoundedCallbackExecutor:
         while self._drop_times and now - self._drop_times[0] > 60.0:
             self._drop_times.popleft()
         drops_last_minute = len(self._drop_times)
-        fire_anomaly = (
-            drops_last_minute > _DROP_RATE_PER_MINUTE
-            and now - self._last_drop_anomaly > _DROP_ANOMALY_THROTTLE_SECONDS
+        fire_anomaly = drops_last_minute > _DROP_RATE_PER_MINUTE and (
+            self._last_drop_anomaly is None
+            or now - self._last_drop_anomaly > _DROP_ANOMALY_THROTTLE_SECONDS
         )
         if fire_anomaly:
             self._last_drop_anomaly = now
