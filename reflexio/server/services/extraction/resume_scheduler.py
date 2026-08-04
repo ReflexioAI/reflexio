@@ -15,6 +15,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 
 from reflexio.server.api_endpoints.request_context import RequestContext
+from reflexio.server.auth import DEFAULT_ORG_ID
 from reflexio.server.error_reporting import error_tags
 from reflexio.server.scheduling import ThreadedScheduler
 from reflexio.server.services.extraction.resumable_agent import (
@@ -35,11 +36,13 @@ class ExtractionResumeScheduler(ThreadedScheduler):
         *,
         request_context_factory: Callable[[str], RequestContext],
         bootstrap_org_id: str,
+        org_id_provider: Callable[[], list[str]] | None = None,
         max_runs_per_tick: int = 10,
     ) -> None:
         super().__init__(thread_name="reflexio-extraction-resume-scheduler")
         self.request_context_factory = request_context_factory
         self.bootstrap_org_id = bootstrap_org_id
+        self.org_id_provider = org_id_provider
         self.max_runs_per_tick = max_runs_per_tick
 
     def _on_started(self) -> None:
@@ -105,6 +108,18 @@ class ExtractionResumeScheduler(ThreadedScheduler):
     def _run_once(self) -> float:
         poll_interval = _DEFAULT_POLL_INTERVAL_SECONDS
         try:
+            if (
+                self.bootstrap_org_id == DEFAULT_ORG_ID
+                and self.org_id_provider is not None
+            ):
+                org_ids = [
+                    org_id
+                    for org_id in self.org_id_provider()
+                    if org_id != DEFAULT_ORG_ID
+                ]
+                if not org_ids:
+                    return poll_interval
+                self.bootstrap_org_id = org_ids[0]
             bootstrap_ctx = self.request_context_factory(self.bootstrap_org_id)
             config = bootstrap_ctx.configurator.get_config()
             poll_interval = config.pending_tool_call_config.resume_poll_interval_seconds
@@ -127,6 +142,7 @@ def maybe_start_resume_scheduler(
     request_context_factory: Callable[[str], RequestContext],
     *,
     bootstrap_org_id: str,
+    org_id_provider: Callable[[], list[str]] | None = None,
 ) -> ExtractionResumeScheduler | None:
     """Start the scheduler only when the bootstrap-org config enables the feature.
 
@@ -139,16 +155,23 @@ def maybe_start_resume_scheduler(
         if not pending_tool_calls_enabled(ctx):
             return None
     except Exception as exc:
-        logger.warning(
-            "event=extraction_resume_scheduler_start_skipped error_type=%s error=%s",
-            type(exc).__name__,
-            exc,
-        )
-        return None
+        if bootstrap_org_id == DEFAULT_ORG_ID and org_id_provider is not None:
+            logger.info(
+                "event=extraction_resume_scheduler_start_deferred "
+                "reason=no_organizations"
+            )
+        else:
+            logger.warning(
+                "event=extraction_resume_scheduler_start_skipped error_type=%s error=%s",
+                type(exc).__name__,
+                exc,
+            )
+            return None
 
     scheduler = ExtractionResumeScheduler(
         request_context_factory=request_context_factory,
         bootstrap_org_id=bootstrap_org_id,
+        org_id_provider=org_id_provider,
     )
     scheduler.start()
     return scheduler

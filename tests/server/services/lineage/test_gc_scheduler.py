@@ -11,11 +11,13 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from reflexio.models.config_schema import LineageGCConfig
+from reflexio.server.auth import DEFAULT_ORG_ID
 from reflexio.server.scheduling import LeaderGate
 from reflexio.server.services.lineage import gc_scheduler
 from reflexio.server.services.lineage import gc_scheduler as gc_mod
 from reflexio.server.services.lineage.gc_scheduler import (
     _DEFAULT_ORG_FANOUT_WORKERS,
+    _DEFAULT_POLL_INTERVAL_SECONDS,
     _ENTITY_TYPES,
     _HIGH_VOLUME_THRESHOLD,
     _MIN_POLL_SECONDS,
@@ -313,6 +315,32 @@ def test_maybe_start_lineage_gc_returns_scheduler_when_enabled():
     sched.stop(timeout_seconds=1.0)
 
 
+def test_gc_scheduler_recovers_when_first_org_appears():
+    org_ids = [DEFAULT_ORG_ID]
+    factory_calls: list[str] = []
+
+    def factory(org_id: str):
+        factory_calls.append(org_id)
+        return _make_ctx(org_id, lineage_gc=LineageGCConfig(enabled=True))
+
+    scheduler = LineageGCScheduler(
+        request_context_factory=factory,  # type: ignore[arg-type]
+        bootstrap_org_id=DEFAULT_ORG_ID,
+        org_id_provider=lambda: list(org_ids),
+    )
+    scheduler._gc_tick = MagicMock()  # type: ignore[method-assign]
+    scheduler._run_global_sweeps = MagicMock()  # type: ignore[method-assign]
+
+    assert scheduler._run_once() == 5
+    assert factory_calls == []
+
+    org_ids[:] = ["org_1"]
+    assert scheduler._run_once() == _DEFAULT_POLL_INTERVAL_SECONDS
+    assert scheduler.bootstrap_org_id == "org_1"
+    assert factory_calls == ["org_1"]
+    scheduler._gc_tick.assert_called_once()  # type: ignore[attr-defined]
+
+
 def test_maybe_start_lineage_gc_returns_none_on_factory_error():
     def bad_factory(org_id: str):
         raise RuntimeError("can't build context")
@@ -346,6 +374,30 @@ def test_maybe_start_lineage_gc_starts_when_config_unreadable_but_sweeps_registe
 
     assert "lineage_gc_config_read_failed" in caplog.text
     assert "lineage_gc_scheduler_start_skipped" not in caplog.text
+
+
+def test_maybe_start_lineage_gc_defers_empty_enterprise_fleet(caplog):
+    def bad_factory(_org_id: str):
+        raise RuntimeError("Organization self-host-org not found")
+
+    register_per_org_sweep(lambda _org_id, _budget: 0)
+    gc_scheduler.set_org_id_provider(lambda: [DEFAULT_ORG_ID])
+    try:
+        with (
+            patch.object(LineageGCScheduler, "start"),
+            caplog.at_level(logging.INFO),
+        ):
+            scheduler = maybe_start_lineage_gc(
+                bad_factory,
+                bootstrap_org_id=DEFAULT_ORG_ID,
+            )
+        assert scheduler is not None
+    finally:
+        gc_scheduler.set_org_id_provider(None)
+        clear_per_org_sweeps()
+
+    assert "lineage_gc_scheduler_start_deferred" in caplog.text
+    assert "lineage_gc_config_read_failed" not in caplog.text
 
 
 # ---------------------------------------------------------------------------
