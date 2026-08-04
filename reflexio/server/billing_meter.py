@@ -13,7 +13,7 @@ import uuid
 from collections.abc import Mapping
 from typing import Any
 
-from reflexio.server.usage_metrics import record_usage_event
+from reflexio.server.usage_metrics import record_usage_event, record_usage_event_strict
 
 logger = logging.getLogger(__name__)
 
@@ -193,9 +193,79 @@ def record_learnings_generated_records(
         entity_type: Optional entity type (e.g. ``"profile"``).
         metadata: Optional path-specific usage metadata (shared across events).
     """
+    _record_learnings_generated_records(
+        record_event=record_usage_event,
+        org_id=org_id,
+        learning_ids=learning_ids,
+        platform_llm=platform_llm,
+        platform_storage=platform_storage,
+        pipeline=pipeline,
+        user_id=user_id,
+        request_id=request_id,
+        session_id=session_id,
+        source=source,
+        agent_version=agent_version,
+        playbook_name=playbook_name,
+        entity_type=entity_type,
+        metadata=metadata,
+    )
+
+
+def record_learnings_generated_records_strict(
+    *,
+    org_id: str,
+    learning_ids: list[str],
+    platform_llm: bool | None,
+    platform_storage: bool | None,
+    pipeline: str | None = None,
+    user_id: str | None = None,
+    request_id: str | None = None,
+    session_id: str | None = None,
+    source: str | None = None,
+    agent_version: str | None = None,
+    playbook_name: str | None = None,
+    entity_type: str | None = None,
+    metadata: Mapping[str, Any] | None = None,
+) -> None:
+    """Strict per-record emission for receipt-backed finalization only."""
+    _record_learnings_generated_records(
+        record_event=record_usage_event_strict,
+        org_id=org_id,
+        learning_ids=learning_ids,
+        platform_llm=platform_llm,
+        platform_storage=platform_storage,
+        pipeline=pipeline,
+        user_id=user_id,
+        request_id=request_id,
+        session_id=session_id,
+        source=source,
+        agent_version=agent_version,
+        playbook_name=playbook_name,
+        entity_type=entity_type,
+        metadata=metadata,
+    )
+
+
+def _record_learnings_generated_records(
+    *,
+    record_event: Any,
+    org_id: str,
+    learning_ids: list[str],
+    platform_llm: bool | None,
+    platform_storage: bool | None,
+    pipeline: str | None,
+    user_id: str | None,
+    request_id: str | None,
+    session_id: str | None,
+    source: str | None,
+    agent_version: str | None,
+    playbook_name: str | None,
+    entity_type: str | None,
+    metadata: Mapping[str, Any] | None,
+) -> None:
     key_entity_type = entity_type or "_"
     for learning_id in learning_ids:
-        record_usage_event(
+        record_event(
             org_id=org_id,
             event_name="learnings_generated",
             event_category="learning",
@@ -354,6 +424,42 @@ def emit_learnings_generated_records(
             org_id,
             exc_info=True,
         )
+
+
+def emit_learnings_generated_records_strict(
+    *,
+    org_id: str,
+    configurator: Any,
+    learning_ids: list[str],
+    source: str,
+    pipeline: str | None = None,
+    user_id: str | None = None,
+    request_id: str | None = None,
+    agent_version: str | None = None,
+    playbook_name: str | None = None,
+    entity_type: str | None = None,
+    metadata: Mapping[str, Any] | None = None,
+) -> None:
+    """Strict receipt-backed counterpart to the ordinary fail-open emitter."""
+    if not learning_ids:
+        return
+    from reflexio.server.billing_signals import platform_llm_from_config
+
+    config = configurator.get_config()
+    record_learnings_generated_records_strict(
+        org_id=org_id,
+        learning_ids=learning_ids,
+        platform_llm=platform_llm_from_config(config),
+        platform_storage=None,
+        pipeline=pipeline,
+        user_id=user_id,
+        request_id=request_id,
+        source=source,
+        agent_version=agent_version,
+        playbook_name=playbook_name,
+        entity_type=entity_type,
+        metadata=metadata,
+    )
 
 
 def record_applied_learnings(
