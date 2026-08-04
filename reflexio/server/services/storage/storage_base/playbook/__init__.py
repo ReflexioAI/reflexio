@@ -8,6 +8,7 @@ from ._aggregation import (
     PlaybookAggregationClaim,
     PlaybookAggregationClusterMatch,
     PlaybookAggregationInvalidation,
+    PlaybookAggregationRebuildSample,
     PlaybookAggregationRerunSnapshot,
     PlaybookAggregationStoreMixin,
 )
@@ -27,6 +28,7 @@ __all__ = [
     "PlaybookAggregationClaim",
     "PlaybookAggregationClusterMatch",
     "PlaybookAggregationInvalidation",
+    "PlaybookAggregationRebuildSample",
     "PlaybookAggregationRerunSnapshot",
     "PlaybookAggregationStoreMixin",
     "OptimizationJobStoreMixin",

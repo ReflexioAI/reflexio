@@ -15,7 +15,7 @@ from reflexio.server.services.storage.storage_base.playbook import (
 )
 
 
-def _context(storage: MagicMock) -> Any:
+def _context(storage: Any) -> Any:
     aggregation_config = SimpleNamespace()
     config = SimpleNamespace(
         user_playbook_extractor_config=SimpleNamespace(
@@ -29,7 +29,7 @@ def _context(storage: MagicMock) -> Any:
     )
 
 
-def test_scheduler_passes_claim_and_remaining_shared_budget(
+def test_scheduler_keeps_invalidation_and_clustering_budgets_separate(
     monkeypatch, caplog
 ) -> None:
     claim = PlaybookAggregationClaim("v1", "owner", 7, 3, 10_000)
@@ -72,7 +72,7 @@ def test_scheduler_passes_claim_and_remaining_shared_budget(
     scheduler._run_context(_context(storage))
 
     assert captured["aggregation_claim"] == claim
-    assert captured["work_budget"] == 6
+    assert captured["residual_batch_limit"] == 8
     storage.finish_playbook_aggregation_claim.assert_called_once()
     assert storage.finish_playbook_aggregation_claim.call_args.kwargs["success"] is True
     assert (
@@ -86,6 +86,45 @@ def test_scheduler_passes_claim_and_remaining_shared_budget(
     )
     storage.get_playbook_aggregation_backlog.assert_called_once_with("v1")
     assert "state=succeeded" in caplog.text
+
+
+def test_scheduler_drains_invalidation_page_before_llm_work(
+    monkeypatch, caplog
+) -> None:
+    claim = PlaybookAggregationClaim("v1", "owner", 7, 3, 10_000)
+    storage = MagicMock(supports_incremental_playbook_aggregation=True)
+    storage.repair_playbook_aggregation_pending_state.return_value = []
+    storage.claim_due_playbook_aggregation.return_value = claim
+    storage.get_playbook_aggregation_invalidations.return_value = [
+        SimpleNamespace(invalidation_id=value)
+        for value in range(
+            1, aggregation_scheduler.AGGREGATION_INVALIDATION_BATCH_SIZE + 2
+        )
+    ]
+    storage.apply_playbook_aggregation_invalidations.return_value = True
+    after = PlaybookAggregationBacklog(0, 0, 1)
+    storage.get_playbook_aggregation_backlog.return_value = after
+    storage.finish_playbook_aggregation_claim.return_value = True
+    run = MagicMock()
+    monkeypatch.setattr(aggregation_scheduler, "run_with_operation_limit", run)
+    caplog.set_level(logging.INFO, logger=aggregation_scheduler.logger.name)
+
+    scheduler = aggregation_scheduler.PlaybookAggregationScheduler(
+        context_provider=lambda: [], worker_id="worker"
+    )
+    scheduler._run_context(_context(storage))
+
+    requested = storage.get_playbook_aggregation_invalidations.call_args.kwargs
+    assert requested["limit"] == (
+        aggregation_scheduler.AGGREGATION_INVALIDATION_BATCH_SIZE + 1
+    )
+    applied_ids = storage.apply_playbook_aggregation_invalidations.call_args.args[1]
+    assert applied_ids == list(
+        range(1, aggregation_scheduler.AGGREGATION_INVALIDATION_BATCH_SIZE + 1)
+    )
+    run.assert_not_called()
+    assert storage.finish_playbook_aggregation_claim.call_args.kwargs["success"] is True
+    assert "state=draining_invalidations" in caplog.text
 
 
 def test_scheduler_keeps_pending_on_limiter_deferral(monkeypatch) -> None:

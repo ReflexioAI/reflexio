@@ -101,6 +101,7 @@ class AgentPlaybookStoreMixin:
         status_filter: list[Status | None] | None = None,
         playbook_status_filter: list[PlaybookStatus] | None = None,
         include_inactive: bool = False,
+        include_embedding: bool = False,
     ) -> list[AgentPlaybook]:
         """Fetch agent playbooks in bulk with lifecycle filters.
 
@@ -120,6 +121,8 @@ class AgentPlaybookStoreMixin:
                 on ``get_agent_playbook_by_id``, which only unhides
                 MERGED/SUPERSEDED for lineage walks. The default preserves
                 retrieval behavior.
+            include_embedding (bool): Hydrate stored embeddings for callers
+                that need the canonical vector. Defaults to False.
 
         Returns:
             list[AgentPlaybook]: Matching playbooks. Order is unspecified.

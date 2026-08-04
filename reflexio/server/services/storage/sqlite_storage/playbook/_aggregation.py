@@ -16,6 +16,7 @@ from reflexio.server.services.storage.storage_base.playbook import (
     PlaybookAggregationClaim,
     PlaybookAggregationClusterMatch,
     PlaybookAggregationInvalidation,
+    PlaybookAggregationRebuildSample,
     PlaybookAggregationRerunSnapshot,
 )
 
@@ -27,7 +28,8 @@ CREATE TABLE IF NOT EXISTS playbook_aggregation_state (
     next_attempt_at INTEGER NOT NULL DEFAULT (unixepoch()),
     state_version INTEGER NOT NULL DEFAULT 0,
     retry_cursor INTEGER NOT NULL DEFAULT 0,
-    bootstrap_status TEXT NOT NULL DEFAULT 'pending'
+    bootstrap_status TEXT NOT NULL DEFAULT 'pending',
+    intake_floor_user_playbook_id INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_playbook_aggregation_state_due
     ON playbook_aggregation_state(pending, next_attempt_at, agent_version);
@@ -53,10 +55,15 @@ CREATE TABLE IF NOT EXISTS playbook_aggregation_cluster (
     normalization TEXT NOT NULL DEFAULT 'l2',
     state TEXT NOT NULL DEFAULT 'active' CHECK (state IN ('active', 'rebuilding')),
     dirty INTEGER NOT NULL DEFAULT 0 CHECK (dirty IN (0, 1)),
-    rebuild_cursor INTEGER NOT NULL DEFAULT 0
+    rebuild_cursor INTEGER NOT NULL DEFAULT 0,
+    rebuild_attempt_count INTEGER NOT NULL DEFAULT 0,
+    rebuild_next_attempt_at INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_playbook_aggregation_cluster_version
     ON playbook_aggregation_cluster(agent_version, state, cluster_id);
+CREATE INDEX IF NOT EXISTS idx_playbook_aggregation_cluster_agent
+    ON playbook_aggregation_cluster(agent_playbook_id)
+    WHERE agent_playbook_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS playbook_aggregation_item (
     agent_version TEXT NOT NULL,
@@ -80,6 +87,12 @@ CREATE INDEX IF NOT EXISTS idx_playbook_aggregation_item_residual
 CREATE INDEX IF NOT EXISTS idx_user_playbooks_aggregation_intake
     ON user_playbooks(agent_version, user_playbook_id)
     WHERE status IS NULL AND trim(content) <> '' AND trim(agent_version) <> '';
+CREATE INDEX IF NOT EXISTS idx_user_playbooks_aggregation_rebuild
+    ON user_playbooks(agent_version, created_at DESC, user_playbook_id DESC)
+    WHERE status IS NULL AND trim(content) <> '' AND trim(agent_version) <> '';
+CREATE INDEX IF NOT EXISTS idx_playbook_aggregation_item_rebuild
+    ON playbook_aggregation_item(agent_version, cluster_id, user_playbook_id DESC)
+    WHERE disposition = 'residual' AND cluster_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS playbook_aggregation_invalidation (
     invalidation_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -97,7 +110,8 @@ CREATE INDEX IF NOT EXISTS idx_playbook_aggregation_invalidation_retention
     ON playbook_aggregation_invalidation(processed_at)
     WHERE processed_at IS NOT NULL;
 
-CREATE TRIGGER IF NOT EXISTS capture_playbook_aggregation_hard_delete
+DROP TRIGGER IF EXISTS capture_playbook_aggregation_hard_delete;
+CREATE TRIGGER capture_playbook_aggregation_hard_delete
 BEFORE DELETE ON user_playbooks
 WHEN OLD.status IS NULL AND trim(OLD.agent_version) <> ''
 BEGIN
@@ -107,15 +121,109 @@ BEGIN
     INSERT INTO playbook_aggregation_state(
         agent_version, pending, next_attempt_at
     ) VALUES (OLD.agent_version, 1, unixepoch())
-    ON CONFLICT(agent_version) DO UPDATE SET pending=1,
-        next_attempt_at=min(playbook_aggregation_state.next_attempt_at,
-                            excluded.next_attempt_at);
+    ON CONFLICT(agent_version) DO UPDATE SET pending=1;
+END;
+
+DROP TRIGGER IF EXISTS retire_playbook_aggregation_cluster_on_agent_update;
+CREATE TRIGGER retire_playbook_aggregation_cluster_on_agent_update
+AFTER UPDATE OF status, playbook_status, content, trigger, rationale, embedding
+ON agent_playbooks
+WHEN (
+    (NEW.status IS NOT OLD.status AND NEW.status IS NOT NULL)
+    OR (
+        NEW.playbook_status IS NOT OLD.playbook_status
+        AND NEW.playbook_status = 'rejected'
+    )
+    OR NEW.content IS NOT OLD.content
+    OR NEW.trigger IS NOT OLD.trigger
+    OR NEW.rationale IS NOT OLD.rationale
+    OR NEW.embedding IS NOT OLD.embedding
+)
+BEGIN
+    UPDATE playbook_aggregation_item
+    SET disposition = 'residual', cluster_id = NULL,
+        reason = 'agent_playbook_changed', attempt_count = 0,
+        last_attempt_at = NULL, updated_at = unixepoch()
+    WHERE cluster_id IN (
+        SELECT cluster_id FROM playbook_aggregation_cluster
+        WHERE agent_playbook_id = OLD.agent_playbook_id
+    );
+    INSERT OR IGNORE INTO playbook_aggregation_state(
+        agent_version, pending, next_attempt_at
+    )
+    SELECT DISTINCT agent_version, 1, unixepoch()
+    FROM playbook_aggregation_cluster
+    WHERE agent_playbook_id = OLD.agent_playbook_id;
+    UPDATE playbook_aggregation_state
+    SET pending = 1
+    WHERE agent_version IN (
+        SELECT agent_version FROM playbook_aggregation_cluster
+        WHERE agent_playbook_id = OLD.agent_playbook_id
+    );
+    DELETE FROM playbook_aggregation_cluster
+    WHERE agent_playbook_id = OLD.agent_playbook_id;
+END;
+
+DROP TRIGGER IF EXISTS retire_playbook_aggregation_cluster_on_agent_delete;
+CREATE TRIGGER retire_playbook_aggregation_cluster_on_agent_delete
+BEFORE DELETE ON agent_playbooks
+BEGIN
+    UPDATE playbook_aggregation_item
+    SET disposition = 'residual', cluster_id = NULL,
+        reason = 'agent_playbook_deleted', attempt_count = 0,
+        last_attempt_at = NULL, updated_at = unixepoch()
+    WHERE cluster_id IN (
+        SELECT cluster_id FROM playbook_aggregation_cluster
+        WHERE agent_playbook_id = OLD.agent_playbook_id
+    );
+    INSERT OR IGNORE INTO playbook_aggregation_state(
+        agent_version, pending, next_attempt_at
+    )
+    SELECT DISTINCT agent_version, 1, unixepoch()
+    FROM playbook_aggregation_cluster
+    WHERE agent_playbook_id = OLD.agent_playbook_id;
+    UPDATE playbook_aggregation_state
+    SET pending = 1
+    WHERE agent_version IN (
+        SELECT agent_version FROM playbook_aggregation_cluster
+        WHERE agent_playbook_id = OLD.agent_playbook_id
+    );
+    DELETE FROM playbook_aggregation_cluster
+    WHERE agent_playbook_id = OLD.agent_playbook_id;
 END;
 """
 
 
 def init_playbook_aggregation_tables(conn: sqlite3.Connection) -> None:
     conn.executescript(AGGREGATION_DDL)
+    state_columns = {
+        str(row[1])
+        for row in conn.execute("PRAGMA table_info(playbook_aggregation_state)")
+    }
+    if "intake_floor_user_playbook_id" not in state_columns:
+        conn.execute(
+            "ALTER TABLE playbook_aggregation_state ADD COLUMN "
+            "intake_floor_user_playbook_id INTEGER NOT NULL DEFAULT 0"
+        )
+    cluster_columns = {
+        str(row[1])
+        for row in conn.execute("PRAGMA table_info(playbook_aggregation_cluster)")
+    }
+    if "rebuild_attempt_count" not in cluster_columns:
+        conn.execute(
+            "ALTER TABLE playbook_aggregation_cluster ADD COLUMN "
+            "rebuild_attempt_count INTEGER NOT NULL DEFAULT 0"
+        )
+    if "rebuild_next_attempt_at" not in cluster_columns:
+        conn.execute(
+            "ALTER TABLE playbook_aggregation_cluster ADD COLUMN "
+            "rebuild_next_attempt_at INTEGER NOT NULL DEFAULT 0"
+        )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_playbook_aggregation_cluster_rebuild_due "
+        "ON playbook_aggregation_cluster(agent_version, rebuild_next_attempt_at, "
+        "cluster_id) WHERE state = 'rebuilding'"
+    )
 
 
 class PlaybookAggregationStoreMixin:
@@ -149,9 +257,7 @@ class PlaybookAggregationStoreMixin:
                 "INSERT INTO playbook_aggregation_state "
                 "(agent_version, pending, next_attempt_at) "
                 "VALUES (?, 1, unixepoch()) "
-                "ON CONFLICT(agent_version) DO UPDATE SET pending=1, "
-                "next_attempt_at=min(playbook_aggregation_state.next_attempt_at, "
-                "excluded.next_attempt_at)",
+                "ON CONFLICT(agent_version) DO UPDATE SET pending=1",
                 (agent_version,),
             )
             if self._own_transaction():
@@ -163,6 +269,18 @@ class PlaybookAggregationStoreMixin:
         if limit <= 0:
             return []
         with self._lock:
+            if self._has_sqlite_vec:
+                orphaned_vectors = self.conn.execute(
+                    "SELECT rowid FROM playbook_aggregation_clusters_vec "
+                    "WHERE rowid NOT IN (SELECT index_rowid FROM "
+                    "playbook_aggregation_cluster WHERE index_rowid IS NOT NULL) "
+                    "LIMIT ?",
+                    (limit,),
+                ).fetchall()
+                self.conn.executemany(
+                    "DELETE FROM playbook_aggregation_clusters_vec WHERE rowid=?",
+                    [(int(row[0]),) for row in orphaned_vectors],
+                )
             self.conn.execute(
                 "DELETE FROM playbook_aggregation_invalidation "
                 "WHERE processed_at IS NOT NULL AND processed_at < unixepoch()-?",
@@ -170,8 +288,12 @@ class PlaybookAggregationStoreMixin:
             )
             rows = self.conn.execute(
                 "WITH work(agent_version) AS ("
-                "SELECT p.agent_version FROM user_playbooks p WHERE p.status IS NULL "
+                "SELECT p.agent_version FROM user_playbooks p LEFT JOIN "
+                "playbook_aggregation_state ps ON ps.agent_version=p.agent_version "
+                "WHERE p.status IS NULL "
                 "AND trim(p.content) <> '' AND trim(p.agent_version) <> '' "
+                "AND p.user_playbook_id >= "
+                "COALESCE(ps.intake_floor_user_playbook_id, 0) "
                 "AND NOT EXISTS (SELECT 1 FROM playbook_aggregation_item i WHERE "
                 "i.agent_version=p.agent_version AND "
                 "i.user_playbook_id=p.user_playbook_id) UNION "
@@ -190,9 +312,7 @@ class PlaybookAggregationStoreMixin:
             self.conn.executemany(
                 "INSERT INTO playbook_aggregation_state "
                 "(agent_version, pending, next_attempt_at) VALUES (?, 1, unixepoch()) "
-                "ON CONFLICT(agent_version) DO UPDATE SET pending=1, "
-                "next_attempt_at=min(playbook_aggregation_state.next_attempt_at, "
-                "excluded.next_attempt_at)",
+                "ON CONFLICT(agent_version) DO UPDATE SET pending=1",
                 [(version,) for version in versions],
             )
             if self._own_transaction():
@@ -382,20 +502,62 @@ class PlaybookAggregationStoreMixin:
             return True
 
     def stage_playbook_aggregation_intake(
-        self, agent_version: str, *, limit: int
+        self, agent_version: str, *, limit: int, window_limit: int = 20_000
     ) -> list[int]:
-        if limit <= 0:
+        if limit <= 0 or window_limit <= 0:
             return []
         with self._lock:
+            self.conn.execute(
+                "INSERT INTO playbook_aggregation_state "
+                "(agent_version, pending, next_attempt_at) VALUES (?, 1, unixepoch()) "
+                "ON CONFLICT(agent_version) DO NOTHING",
+                (agent_version,),
+            )
+            old_floor = int(
+                self.conn.execute(
+                    "SELECT intake_floor_user_playbook_id FROM "
+                    "playbook_aggregation_state WHERE agent_version=?",
+                    (agent_version,),
+                ).fetchone()[0]
+            )
+            cutoff_row = self.conn.execute(
+                "SELECT p.user_playbook_id FROM user_playbooks p LEFT JOIN "
+                "playbook_aggregation_item i ON i.agent_version=? AND "
+                "i.user_playbook_id=p.user_playbook_id WHERE p.agent_version=? "
+                "AND p.status IS NULL AND trim(p.content) <> '' "
+                "AND p.user_playbook_id>=? AND (i.user_playbook_id IS NULL OR "
+                "(i.disposition='residual' AND i.cluster_id IS NULL)) "
+                "ORDER BY p.user_playbook_id DESC LIMIT 1 OFFSET ?",
+                (agent_version, agent_version, old_floor, window_limit - 1),
+            ).fetchone()
+            intake_floor = max(
+                old_floor, int(cutoff_row[0]) if cutoff_row is not None else old_floor
+            )
+            if intake_floor != old_floor:
+                self.conn.execute(
+                    "UPDATE playbook_aggregation_state SET "
+                    "intake_floor_user_playbook_id=? WHERE agent_version=?",
+                    (intake_floor, agent_version),
+                )
+                self.conn.execute(
+                    "UPDATE playbook_aggregation_item SET "
+                    "disposition='terminal_noop', cluster_id=NULL, "
+                    "reason='outside_recent_clustering_window', "
+                    "updated_at=unixepoch() WHERE agent_version=? "
+                    "AND disposition='residual' AND cluster_id IS NULL "
+                    "AND user_playbook_id<?",
+                    (agent_version, intake_floor),
+                )
             rows = self.conn.execute(
                 "SELECT p.user_playbook_id FROM user_playbooks p "
                 "WHERE p.agent_version=? AND p.status IS NULL "
-                "AND trim(p.content) <> '' AND NOT EXISTS ("
+                "AND trim(p.content) <> '' AND p.user_playbook_id>=? "
+                "AND NOT EXISTS ("
                 " SELECT 1 FROM playbook_aggregation_item i "
                 " WHERE i.agent_version=? "
                 " AND i.user_playbook_id=p.user_playbook_id) "
-                "ORDER BY p.user_playbook_id LIMIT ?",
-                (agent_version, agent_version, limit),
+                "ORDER BY p.user_playbook_id DESC LIMIT ?",
+                (agent_version, intake_floor, agent_version, limit),
             ).fetchall()
             ids = [int(row[0]) for row in rows]
             self.conn.executemany(
@@ -452,17 +614,20 @@ class PlaybookAggregationStoreMixin:
         cluster_id: str,
         agent_version: str,
         agent_playbook_id: int,
+        centroid_embedding: list[float],
         member_embeddings: list[tuple[int, list[float]]],
         embedding_model: str,
         embedding_dimension: int,
         rebuild_cursor: int,
         complete: bool,
     ) -> None:
-        if any(len(value) != embedding_dimension for _, value in member_embeddings):
+        if len(centroid_embedding) != embedding_dimension or any(
+            len(value) != embedding_dimension for _, value in member_embeddings
+        ):
             raise ValueError("legacy cluster embedding dimension changed")
         with self._lock:
             row = self.conn.execute(
-                "SELECT index_rowid, vector_sum, member_count, state, "
+                "SELECT index_rowid, member_count, state, "
                 "embedding_model, embedding_dimension "
                 "FROM playbook_aggregation_cluster WHERE cluster_id=?",
                 (cluster_id,),
@@ -489,21 +654,15 @@ class PlaybookAggregationStoreMixin:
                     ),
                 )
                 index_rowid = next_rowid
-                vector_sum = [0.0] * embedding_dimension
                 member_count = 0
             else:
-                if str(row[3]) == "active":
+                if str(row[2]) == "active":
                     return
-                if row[4] != embedding_model or int(row[5]) != embedding_dimension:
+                if row[3] != embedding_model or int(row[4]) != embedding_dimension:
                     raise RuntimeError("legacy cluster embedding provenance changed")
                 index_rowid = int(row[0])
-                vector_sum = (
-                    [float(value) for value in json.loads(row[1])]
-                    if row[1]
-                    else [0.0] * embedding_dimension
-                )
-                member_count = int(row[2])
-            for user_playbook_id, embedding in member_embeddings:
+                member_count = int(row[1])
+            for user_playbook_id, _embedding in member_embeddings:
                 inserted = self.conn.execute(
                     "INSERT OR IGNORE INTO playbook_aggregation_item "
                     "(agent_version, user_playbook_id, disposition, cluster_id, reason) "
@@ -511,19 +670,12 @@ class PlaybookAggregationStoreMixin:
                     (agent_version, user_playbook_id, cluster_id),
                 )
                 if inserted.rowcount == 1:
-                    vector_sum = [
-                        left + right
-                        for left, right in zip(vector_sum, embedding, strict=True)
-                    ]
                     member_count += 1
-            centroid = (
-                [value / member_count for value in vector_sum] if member_count else None
-            )
+            centroid = centroid_embedding if complete and member_count else None
             self.conn.execute(
-                "UPDATE playbook_aggregation_cluster SET vector_sum=?, centroid=?, "
+                "UPDATE playbook_aggregation_cluster SET vector_sum=NULL, centroid=?, "
                 "member_count=?, rebuild_cursor=?, state=? WHERE cluster_id=?",
                 (
-                    json.dumps(vector_sum) if member_count else None,
                     json.dumps(centroid) if centroid is not None else None,
                     member_count,
                     rebuild_cursor,
@@ -566,6 +718,11 @@ class PlaybookAggregationStoreMixin:
             )
             self.conn.execute(
                 "DELETE FROM playbook_aggregation_cluster WHERE agent_version=?",
+                (agent_version,),
+            )
+            self.conn.execute(
+                "UPDATE playbook_aggregation_state SET "
+                "intake_floor_user_playbook_id=0 WHERE agent_version=?",
                 (agent_version,),
             )
             self.set_playbook_aggregation_bootstrap_status(agent_version, "complete")
@@ -659,17 +816,24 @@ class PlaybookAggregationStoreMixin:
             fresh_quota = (limit + 1) // 2
             retry_quota = limit - fresh_quota
             fresh_rows = self.conn.execute(
-                "SELECT user_playbook_id FROM playbook_aggregation_item "
-                "WHERE agent_version=? AND disposition='residual' AND attempt_count=0 "
-                "ORDER BY user_playbook_id LIMIT ?",
+                "SELECT i.user_playbook_id FROM playbook_aggregation_item i "
+                "WHERE i.agent_version=? AND i.disposition='residual' "
+                "AND i.attempt_count=0 AND NOT EXISTS (SELECT 1 FROM "
+                "playbook_aggregation_cluster c WHERE c.agent_version=i.agent_version "
+                "AND c.cluster_id=i.cluster_id AND c.state='rebuilding' "
+                "AND c.rebuild_next_attempt_at>unixepoch()) "
+                "ORDER BY i.user_playbook_id LIMIT ?",
                 (agent_version, fresh_quota),
             ).fetchall()
             retry_rows = self.conn.execute(
-                "SELECT user_playbook_id FROM playbook_aggregation_item "
-                "WHERE agent_version=? AND disposition='residual' AND attempt_count>0 "
-                "AND last_attempt_at+min(?, ?*(1 << min(max(attempt_count-1, 0), 6))) "
-                "<= unixepoch() "
-                "ORDER BY last_attempt_at, user_playbook_id LIMIT ?",
+                "SELECT i.user_playbook_id FROM playbook_aggregation_item i "
+                "WHERE i.agent_version=? AND i.disposition='residual' "
+                "AND i.attempt_count>0 AND i.last_attempt_at+min(?, ?*(1 << "
+                "min(max(i.attempt_count-1, 0), 6))) <= unixepoch() "
+                "AND NOT EXISTS (SELECT 1 FROM playbook_aggregation_cluster c "
+                "WHERE c.agent_version=i.agent_version AND c.cluster_id=i.cluster_id "
+                "AND c.state='rebuilding' AND c.rebuild_next_attempt_at>unixepoch()) "
+                "ORDER BY i.last_attempt_at, i.user_playbook_id LIMIT ?",
                 (
                     agent_version,
                     AGGREGATION_RETRY_MAX_SECONDS,
@@ -684,13 +848,17 @@ class PlaybookAggregationStoreMixin:
                     f"AND user_playbook_id NOT IN ({placeholders})" if ids else ""
                 )
                 fill = self.conn.execute(
-                    "SELECT user_playbook_id FROM playbook_aggregation_item "
-                    "WHERE agent_version=? AND disposition='residual' "
-                    "AND (attempt_count=0 OR last_attempt_at IS NULL OR "
-                    "last_attempt_at+min(?, ?*(1 << min(max(attempt_count-1, 0), 6))) "
-                    "<= unixepoch()) "
-                    f"{exclusion} ORDER BY COALESCE(last_attempt_at, 0), "
-                    "user_playbook_id LIMIT ?",
+                    "SELECT i.user_playbook_id FROM playbook_aggregation_item i "
+                    "WHERE i.agent_version=? AND i.disposition='residual' "
+                    "AND (i.attempt_count=0 OR i.last_attempt_at IS NULL OR "
+                    "i.last_attempt_at+min(?, ?*(1 << min(max(i.attempt_count-1, 0), "
+                    "6))) <= unixepoch()) AND NOT EXISTS (SELECT 1 FROM "
+                    "playbook_aggregation_cluster c WHERE "
+                    "c.agent_version=i.agent_version AND c.cluster_id=i.cluster_id "
+                    "AND c.state='rebuilding' AND "
+                    "c.rebuild_next_attempt_at>unixepoch()) "
+                    f"{exclusion} ORDER BY COALESCE(i.last_attempt_at, 0), "
+                    "i.user_playbook_id LIMIT ?",
                     (
                         agent_version,
                         AGGREGATION_RETRY_MAX_SECONDS,
@@ -740,11 +908,15 @@ class PlaybookAggregationStoreMixin:
         with self._lock:
             undisposed = int(
                 self.conn.execute(
-                    "SELECT count(*) FROM user_playbooks p WHERE p.agent_version=? "
+                    "SELECT count(*) FROM user_playbooks p LEFT JOIN "
+                    "playbook_aggregation_state s ON s.agent_version=p.agent_version "
+                    "WHERE p.agent_version=? "
                     "AND p.status IS NULL AND trim(p.content) <> '' AND NOT EXISTS ("
                     "SELECT 1 FROM playbook_aggregation_item i "
                     "WHERE i.agent_version=? "
-                    "AND i.user_playbook_id=p.user_playbook_id)",
+                    "AND i.user_playbook_id=p.user_playbook_id) "
+                    "AND p.user_playbook_id>=COALESCE("
+                    "s.intake_floor_user_playbook_id, 0)",
                     (agent_version, agent_version),
                 ).fetchone()[0]
             )
@@ -776,16 +948,25 @@ class PlaybookAggregationStoreMixin:
             )
             residual_retry_after = self.conn.execute(
                 "SELECT COALESCE(MAX(0, MIN(CASE "
-                "WHEN attempt_count <= 0 OR last_attempt_at IS NULL THEN 0 "
-                "ELSE last_attempt_at + MIN(?, ? * (1 << MIN(MAX("
-                "attempt_count - 1, 0), 6))) - unixepoch() END)), 0) "
-                "FROM playbook_aggregation_item WHERE agent_version=? "
-                "AND disposition='residual'",
+                "WHEN c.state='rebuilding' THEN c.rebuild_next_attempt_at-unixepoch() "
+                "WHEN i.attempt_count <= 0 OR i.last_attempt_at IS NULL THEN 0 "
+                "ELSE i.last_attempt_at + MIN(?, ? * (1 << MIN(MAX("
+                "i.attempt_count - 1, 0), 6))) - unixepoch() END)), 0) "
+                "FROM playbook_aggregation_item i LEFT JOIN "
+                "playbook_aggregation_cluster c ON c.agent_version=i.agent_version "
+                "AND c.cluster_id=i.cluster_id WHERE i.agent_version=? "
+                "AND i.disposition='residual'",
                 (
                     AGGREGATION_RETRY_MAX_SECONDS,
                     AGGREGATION_RETRY_BASE_SECONDS,
                     agent_version,
                 ),
+            ).fetchone()[0]
+            repair_retry_after = self.conn.execute(
+                "SELECT COALESCE(MAX(0, MIN(rebuild_next_attempt_at-unixepoch())), 0) "
+                "FROM playbook_aggregation_cluster WHERE agent_version=? "
+                "AND state='rebuilding'",
+                (agent_version,),
             ).fetchone()[0]
         return PlaybookAggregationBacklog(
             undisposed=undisposed,
@@ -796,6 +977,7 @@ class PlaybookAggregationStoreMixin:
             ),
             dirty_repairs=dirty_repairs,
             residual_retry_after_seconds=int(residual_retry_after),
+            repair_retry_after_seconds=int(repair_retry_after),
         )
 
     def append_playbook_aggregation_invalidation(
@@ -815,9 +997,7 @@ class PlaybookAggregationStoreMixin:
             self.conn.execute(
                 "INSERT INTO playbook_aggregation_state "
                 "(agent_version, pending, next_attempt_at) VALUES (?, 1, unixepoch()) "
-                "ON CONFLICT(agent_version) DO UPDATE SET pending=1, "
-                "next_attempt_at=min(playbook_aggregation_state.next_attempt_at, "
-                "excluded.next_attempt_at)",
+                "ON CONFLICT(agent_version) DO UPDATE SET pending=1",
                 (agent_version,),
             )
             if self._own_transaction():
@@ -864,7 +1044,8 @@ class PlaybookAggregationStoreMixin:
                 return False
             placeholders = ",".join("?" for _ in invalidation_ids)
             rows = self.conn.execute(
-                "SELECT entity_id, source_ids FROM playbook_aggregation_invalidation "
+                "SELECT operation, entity_id, source_ids "
+                "FROM playbook_aggregation_invalidation "
                 f"WHERE invalidation_id IN ({placeholders}) AND agent_version=? "
                 "AND processed_at IS NULL",
                 (*invalidation_ids, claim.agent_version),
@@ -872,7 +1053,7 @@ class PlaybookAggregationStoreMixin:
             affected = {
                 int(value)
                 for row in rows
-                for value in [int(row[0]), *json.loads(row[1] or "[]")]
+                for value in [int(row[1]), *json.loads(row[2] or "[]")]
             }
             if affected:
                 item_placeholders = ",".join("?" for _ in affected)
@@ -883,6 +1064,26 @@ class PlaybookAggregationStoreMixin:
                     (claim.agent_version, *sorted(affected)),
                 ).fetchall()
                 cluster_ids = [str(row[0]) for row in cluster_rows]
+                revision_cluster_by_entity: dict[int, str] = {}
+                for operation, entity_id, source_ids_json in rows:
+                    if operation != "revise":
+                        continue
+                    source_ids = [
+                        int(value) for value in json.loads(source_ids_json or "[]")
+                    ]
+                    if not source_ids:
+                        continue
+                    source_placeholders = ",".join("?" for _ in source_ids)
+                    source_clusters = self.conn.execute(
+                        "SELECT DISTINCT cluster_id FROM playbook_aggregation_item "
+                        f"WHERE agent_version=? AND user_playbook_id IN ({source_placeholders}) "
+                        "AND cluster_id IS NOT NULL",
+                        (claim.agent_version, *source_ids),
+                    ).fetchall()
+                    if len(source_clusters) == 1:
+                        revision_cluster_by_entity[int(entity_id)] = str(
+                            source_clusters[0][0]
+                        )
                 if cluster_ids:
                     cluster_placeholders = ",".join("?" for _ in cluster_ids)
                     index_rows = self.conn.execute(
@@ -906,7 +1107,8 @@ class PlaybookAggregationStoreMixin:
                     self.conn.execute(
                         "UPDATE playbook_aggregation_cluster SET state='rebuilding', "
                         "dirty=1, centroid=NULL, vector_sum=NULL, member_count=0, "
-                        "rebuild_cursor=0 "
+                        "rebuild_cursor=0, rebuild_attempt_count=0, "
+                        "rebuild_next_attempt_at=0 "
                         f"WHERE cluster_id IN ({cluster_placeholders})",
                         cluster_ids,
                     )
@@ -915,6 +1117,24 @@ class PlaybookAggregationStoreMixin:
                     f"WHERE agent_version=? AND user_playbook_id IN ({item_placeholders})",
                     (claim.agent_version, *sorted(affected)),
                 )
+                for entity_id, cluster_id in revision_cluster_by_entity.items():
+                    self.conn.execute(
+                        "INSERT INTO playbook_aggregation_item "
+                        "(agent_version, user_playbook_id, disposition, cluster_id, reason) "
+                        "SELECT ?, p.user_playbook_id, 'residual', ?, 'revision_rebuild' "
+                        "FROM user_playbooks p WHERE p.user_playbook_id=? "
+                        "AND p.agent_version=? AND p.status IS NULL "
+                        "AND trim(p.content) <> '' ON CONFLICT(agent_version, "
+                        "user_playbook_id) DO UPDATE SET disposition='residual', "
+                        "cluster_id=excluded.cluster_id, reason=excluded.reason, "
+                        "attempt_count=0, last_attempt_at=NULL, updated_at=unixepoch()",
+                        (
+                            claim.agent_version,
+                            cluster_id,
+                            entity_id,
+                            claim.agent_version,
+                        ),
+                    )
             self.conn.execute(
                 "UPDATE playbook_aggregation_invalidation SET processed_at=unixepoch() "
                 f"WHERE invalidation_id IN ({placeholders}) AND agent_version=? "
@@ -923,27 +1143,233 @@ class PlaybookAggregationStoreMixin:
             )
             return True
 
-    def get_playbook_aggregation_replacement_agent_ids(
+    def get_playbook_aggregation_rebuild_cluster_ids(
         self, agent_version: str, user_playbook_ids: list[int]
-    ) -> list[int]:
+    ) -> dict[int, str]:
         if not user_playbook_ids:
-            return []
+            return {}
         placeholders = ",".join("?" for _ in user_playbook_ids)
         with self._lock:
             rows = self.conn.execute(
-                "SELECT DISTINCT c.agent_playbook_id FROM playbook_aggregation_item i "
-                "JOIN playbook_aggregation_cluster c ON c.cluster_id=i.cluster_id "
-                f"WHERE i.agent_version=? AND i.user_playbook_id IN ({placeholders}) "
-                "AND c.state='rebuilding' AND c.agent_playbook_id IS NOT NULL "
-                "ORDER BY c.agent_playbook_id",
+                "SELECT i.user_playbook_id, i.cluster_id FROM "
+                "playbook_aggregation_item i JOIN playbook_aggregation_cluster c "
+                "ON c.cluster_id=i.cluster_id WHERE i.agent_version=? "
+                f"AND i.user_playbook_id IN ({placeholders}) "
+                "AND i.disposition='residual' AND c.state='rebuilding' "
+                "AND c.rebuild_next_attempt_at<=unixepoch()",
                 (agent_version, *user_playbook_ids),
             ).fetchall()
-        return [int(row[0]) for row in rows]
+        return {int(row[0]): str(row[1]) for row in rows}
 
-    def delete_orphaned_playbook_aggregation_clusters(self, agent_version: str) -> None:
+    def get_playbook_aggregation_rebuild_samples(
+        self, agent_version: str, cluster_ids: list[str], *, limit_per_cluster: int
+    ) -> list[PlaybookAggregationRebuildSample]:
+        if not cluster_ids or limit_per_cluster <= 0:
+            return []
+        placeholders = ",".join("?" for _ in cluster_ids)
+        with self._lock:
+            clusters = self.conn.execute(
+                "SELECT cluster_id, agent_playbook_id FROM "
+                "playbook_aggregation_cluster WHERE agent_version=? "
+                "AND state='rebuilding' AND agent_playbook_id IS NOT NULL "
+                "AND rebuild_next_attempt_at<=unixepoch() "
+                f"AND cluster_id IN ({placeholders}) ORDER BY cluster_id",
+                (agent_version, *cluster_ids),
+            ).fetchall()
+            samples: list[PlaybookAggregationRebuildSample] = []
+            for cluster_id, agent_playbook_id in clusters:
+                rows = self.conn.execute(
+                    "SELECT p.user_playbook_id FROM user_playbooks p INDEXED BY "
+                    "idx_user_playbooks_aggregation_rebuild WHERE p.agent_version=? "
+                    "AND trim(p.agent_version) <> '' AND p.status IS NULL AND "
+                    "trim(p.content) <> '' AND EXISTS (SELECT 1 FROM "
+                    "playbook_aggregation_item i WHERE i.agent_version=? AND "
+                    "i.user_playbook_id=p.user_playbook_id AND i.cluster_id=? AND "
+                    "i.disposition='residual') ORDER BY p.created_at DESC, "
+                    "p.user_playbook_id DESC LIMIT ?",
+                    (agent_version, agent_version, cluster_id, limit_per_cluster),
+                ).fetchall()
+                if rows:
+                    samples.append(
+                        PlaybookAggregationRebuildSample(
+                            cluster_id=str(cluster_id),
+                            agent_playbook_id=int(agent_playbook_id),
+                            member_ids=tuple(int(row[0]) for row in rows),
+                        )
+                    )
+        return samples
+
+    def defer_playbook_aggregation_cluster_rebuild(
+        self,
+        *,
+        cluster_id: str,
+        agent_version: str,
+        expected_agent_playbook_id: int,
+        reason: str,
+    ) -> None:
+        if self._own_transaction():
+            with self.commit_scope():
+                self.defer_playbook_aggregation_cluster_rebuild(
+                    cluster_id=cluster_id,
+                    agent_version=agent_version,
+                    expected_agent_playbook_id=expected_agent_playbook_id,
+                    reason=reason,
+                )
+            return
+        with self._lock:
+            updated = self.conn.execute(
+                "UPDATE playbook_aggregation_cluster SET "
+                "rebuild_attempt_count=rebuild_attempt_count+1, "
+                "rebuild_next_attempt_at=unixepoch()+min(?, ?*(1 << "
+                "min(rebuild_attempt_count, 6))) WHERE cluster_id=? "
+                "AND agent_version=? AND state='rebuilding' "
+                "AND agent_playbook_id=?",
+                (
+                    AGGREGATION_RETRY_MAX_SECONDS,
+                    AGGREGATION_RETRY_BASE_SECONDS,
+                    cluster_id,
+                    agent_version,
+                    expected_agent_playbook_id,
+                ),
+            )
+            if updated.rowcount != 1:
+                raise RuntimeError("aggregation rebuilding cluster changed")
+            self.conn.execute(
+                "UPDATE playbook_aggregation_item SET reason=?, attempt_count=0, "
+                "last_attempt_at=NULL, updated_at=unixepoch() WHERE agent_version=? "
+                "AND cluster_id=? AND disposition='residual'",
+                (reason, agent_version, cluster_id),
+            )
+
+    def complete_playbook_aggregation_cluster_rebuild(
+        self,
+        *,
+        cluster_id: str,
+        agent_version: str,
+        expected_agent_playbook_id: int,
+        replacement_agent_playbook_id: int,
+        centroid_embedding: list[float],
+        embedding_model: str,
+    ) -> int:
+        if not centroid_embedding:
+            raise ValueError("cluster centroid embedding must be non-empty")
+        if self._own_transaction():
+            with self.commit_scope():
+                return self.complete_playbook_aggregation_cluster_rebuild(
+                    cluster_id=cluster_id,
+                    agent_version=agent_version,
+                    expected_agent_playbook_id=expected_agent_playbook_id,
+                    replacement_agent_playbook_id=replacement_agent_playbook_id,
+                    centroid_embedding=centroid_embedding,
+                    embedding_model=embedding_model,
+                )
+        with self._lock:
+            row = self.conn.execute(
+                "SELECT index_rowid, embedding_dimension FROM "
+                "playbook_aggregation_cluster WHERE cluster_id=? AND agent_version=? "
+                "AND state='rebuilding' AND agent_playbook_id=?",
+                (cluster_id, agent_version, expected_agent_playbook_id),
+            ).fetchone()
+            if row is None:
+                raise RuntimeError("aggregation rebuilding cluster changed")
+            if int(row[1]) != len(centroid_embedding):
+                raise ValueError("aggregation embedding dimension changed")
+            member_count = int(
+                self.conn.execute(
+                    "SELECT count(*) FROM playbook_aggregation_item WHERE "
+                    "agent_version=? AND cluster_id=? AND disposition='residual'",
+                    (agent_version, cluster_id),
+                ).fetchone()[0]
+            )
+            if member_count <= 0:
+                raise RuntimeError("aggregation rebuilding cluster has no members")
+            self.conn.execute(
+                "UPDATE playbook_aggregation_item SET disposition='cluster_member', "
+                "reason='rebuild_complete', updated_at=unixepoch() WHERE "
+                "agent_version=? AND cluster_id=? AND disposition='residual'",
+                (agent_version, cluster_id),
+            )
+            updated = self.conn.execute(
+                "UPDATE playbook_aggregation_cluster SET agent_playbook_id=?, "
+                "centroid=?, vector_sum=NULL, member_count=?, embedding_model=?, "
+                "state='active', dirty=0, rebuild_cursor=0, "
+                "rebuild_attempt_count=0, rebuild_next_attempt_at=0 "
+                "WHERE cluster_id=? "
+                "AND agent_version=? AND state='rebuilding' AND agent_playbook_id=?",
+                (
+                    replacement_agent_playbook_id,
+                    json.dumps(centroid_embedding),
+                    member_count,
+                    embedding_model,
+                    cluster_id,
+                    agent_version,
+                    expected_agent_playbook_id,
+                ),
+            )
+            if updated.rowcount != 1:
+                raise RuntimeError("aggregation rebuilding cluster changed")
+            rowid = int(row[0])
+            self.conn.execute(
+                "DELETE FROM playbook_aggregation_clusters_vec WHERE rowid=?", (rowid,)
+            )
+            self.conn.execute(
+                "INSERT INTO playbook_aggregation_clusters_vec(rowid, embedding) "
+                "VALUES (?, ?)",
+                (rowid, json.dumps(centroid_embedding)),
+            )
+            return member_count
+
+    def discard_playbook_aggregation_cluster_rebuild(
+        self,
+        *,
+        cluster_id: str,
+        agent_version: str,
+        expected_agent_playbook_id: int,
+        reason: str,
+    ) -> int:
+        if self._own_transaction():
+            with self.commit_scope():
+                return self.discard_playbook_aggregation_cluster_rebuild(
+                    cluster_id=cluster_id,
+                    agent_version=agent_version,
+                    expected_agent_playbook_id=expected_agent_playbook_id,
+                    reason=reason,
+                )
+        with self._lock:
+            row = self.conn.execute(
+                "SELECT index_rowid FROM playbook_aggregation_cluster WHERE "
+                "cluster_id=? AND agent_version=? AND state='rebuilding' "
+                "AND agent_playbook_id=?",
+                (cluster_id, agent_version, expected_agent_playbook_id),
+            ).fetchone()
+            if row is None:
+                raise RuntimeError("aggregation rebuilding cluster changed")
+            updated = self.conn.execute(
+                "UPDATE playbook_aggregation_item SET disposition='terminal_noop', "
+                "cluster_id=NULL, reason=?, updated_at=unixepoch() WHERE "
+                "agent_version=? AND cluster_id=? AND disposition='residual'",
+                (reason, agent_version, cluster_id),
+            )
+            self.conn.execute(
+                "DELETE FROM playbook_aggregation_clusters_vec WHERE rowid=?",
+                (int(row[0]),),
+            )
+            deleted = self.conn.execute(
+                "DELETE FROM playbook_aggregation_cluster WHERE cluster_id=? "
+                "AND agent_version=? AND state='rebuilding' AND agent_playbook_id=?",
+                (cluster_id, agent_version, expected_agent_playbook_id),
+            )
+            if deleted.rowcount != 1:
+                raise RuntimeError("aggregation rebuilding cluster changed")
+            return int(updated.rowcount)
+
+    def delete_orphaned_playbook_aggregation_clusters(
+        self, agent_version: str
+    ) -> list[int]:
         with self._lock:
             rows = self.conn.execute(
-                "SELECT index_rowid FROM playbook_aggregation_cluster c "
+                "SELECT index_rowid, agent_playbook_id "
+                "FROM playbook_aggregation_cluster c "
                 "WHERE c.agent_version=? AND c.state='rebuilding' "
                 "AND NOT EXISTS (SELECT 1 FROM playbook_aggregation_item i "
                 "WHERE i.cluster_id=c.cluster_id)",
@@ -962,6 +1388,7 @@ class PlaybookAggregationStoreMixin:
             )
             if self._own_transaction():
                 self.conn.commit()
+        return [int(row[1]) for row in rows if row[1] is not None]
 
     def find_nearest_playbook_aggregation_clusters(
         self,
@@ -989,12 +1416,13 @@ class PlaybookAggregationStoreMixin:
         with self._lock:
             for item_id, embedding in candidates:
                 row = self.conn.execute(
-                    "SELECT c.cluster_id, v.distance FROM ("
+                    "SELECT c.cluster_id, v.distance, c.agent_playbook_id FROM ("
                     "SELECT rowid, distance FROM playbook_aggregation_clusters_vec "
                     "WHERE embedding MATCH ? AND rowid IN ("
                     "SELECT index_rowid FROM playbook_aggregation_cluster "
                     "WHERE agent_version=? AND embedding_model=? "
-                    "AND embedding_dimension=? AND state='active') "
+                    "AND embedding_dimension=? AND state='active' "
+                    "AND agent_playbook_id IS NOT NULL) "
                     "ORDER BY distance LIMIT ?) v "
                     "JOIN playbook_aggregation_cluster c ON c.index_rowid=v.rowid "
                     "ORDER BY v.distance, c.cluster_id LIMIT 1",
@@ -1008,7 +1436,7 @@ class PlaybookAggregationStoreMixin:
                 ).fetchone()
                 if row is not None:
                     matches[item_id] = PlaybookAggregationClusterMatch(
-                        str(row[0]), 1.0 - float(row[1])
+                        str(row[0]), 1.0 - float(row[1]), int(row[2])
                     )
         return matches
 
@@ -1018,16 +1446,15 @@ class PlaybookAggregationStoreMixin:
         cluster_id: str,
         agent_version: str,
         agent_playbook_id: int | None,
-        embeddings: list[list[float]],
+        centroid_embedding: list[float],
+        member_count: int,
         embedding_model: str,
     ) -> None:
-        if not embeddings:
-            raise ValueError("cluster embeddings must be non-empty")
-        dimension = len(embeddings[0])
-        if any(len(value) != dimension for value in embeddings):
-            raise ValueError("cluster embeddings must share one dimension")
-        vector_sum = [sum(values) for values in zip(*embeddings, strict=True)]
-        centroid = [value / len(embeddings) for value in vector_sum]
+        if not centroid_embedding:
+            raise ValueError("cluster centroid embedding must be non-empty")
+        if member_count <= 0:
+            raise ValueError("cluster member_count must be positive")
+        dimension = len(centroid_embedding)
         with self._lock:
             existing = self.conn.execute(
                 "SELECT index_rowid FROM playbook_aggregation_cluster "
@@ -1051,9 +1478,9 @@ class PlaybookAggregationStoreMixin:
                         next_rowid,
                         agent_version,
                         agent_playbook_id,
-                        json.dumps(centroid),
-                        json.dumps(vector_sum),
-                        len(embeddings),
+                        json.dumps(centroid_embedding),
+                        None,
+                        member_count,
                         embedding_model,
                         dimension,
                     ),
@@ -1068,9 +1495,9 @@ class PlaybookAggregationStoreMixin:
                     (
                         agent_version,
                         agent_playbook_id,
-                        json.dumps(centroid),
-                        json.dumps(vector_sum),
-                        len(embeddings),
+                        json.dumps(centroid_embedding),
+                        None,
+                        member_count,
                         embedding_model,
                         dimension,
                         cluster_id,
@@ -1083,7 +1510,7 @@ class PlaybookAggregationStoreMixin:
             self.conn.execute(
                 "INSERT INTO playbook_aggregation_clusters_vec(rowid, embedding) "
                 "VALUES (?, ?)",
-                (next_rowid, json.dumps(centroid)),
+                (next_rowid, json.dumps(centroid_embedding)),
             )
             if self._own_transaction():
                 self.conn.commit()
@@ -1092,16 +1519,16 @@ class PlaybookAggregationStoreMixin:
         self,
         *,
         agent_version: str,
-        attachments: list[tuple[int, str, list[float]]],
+        attachments: list[tuple[int, str]],
     ) -> None:
         if not attachments:
             return
-        item_ids = [item_id for item_id, _cluster_id, _embedding in attachments]
+        item_ids = [item_id for item_id, _cluster_id in attachments]
         if len(item_ids) != len(set(item_ids)):
             raise ValueError("aggregation attachment IDs must be unique")
-        grouped: dict[str, list[tuple[int, list[float]]]] = {}
-        for item_id, cluster_id, embedding in attachments:
-            grouped.setdefault(cluster_id, []).append((item_id, embedding))
+        grouped: dict[str, list[int]] = {}
+        for item_id, cluster_id in attachments:
+            grouped.setdefault(cluster_id, []).append(item_id)
         with self._lock:
             own_transaction = self._own_transaction()
             try:
@@ -1111,8 +1538,7 @@ class PlaybookAggregationStoreMixin:
                     page = cluster_ids[offset : offset + 500]
                     placeholders = ",".join("?" for _value in page)
                     rows = self.conn.execute(
-                        "SELECT cluster_id, index_rowid, vector_sum, member_count, "
-                        "embedding_dimension FROM playbook_aggregation_cluster "
+                        "SELECT cluster_id, member_count FROM playbook_aggregation_cluster "
                         f"WHERE agent_version=? AND state='active' AND cluster_id IN ({placeholders})",
                         (agent_version, *page),
                     ).fetchall()
@@ -1122,35 +1548,10 @@ class PlaybookAggregationStoreMixin:
                         "aggregation cluster is not active for agent version"
                     )
 
-                cluster_updates: list[tuple[str, str, int, str]] = []
-                vector_updates: list[tuple[int, str]] = []
+                cluster_updates: list[tuple[int, str]] = []
                 for cluster_id, members in grouped.items():
                     row = cluster_rows[cluster_id]
-                    vector_sum = [float(value) for value in json.loads(row[2])]
-                    dimension = int(row[4])
-                    if len(vector_sum) != dimension or any(
-                        len(embedding) != dimension for _item_id, embedding in members
-                    ):
-                        raise ValueError("aggregation embedding dimension changed")
-                    batch_sum = [
-                        sum(embedding[index] for _item_id, embedding in members)
-                        for index in range(dimension)
-                    ]
-                    updated_sum = [
-                        left + right
-                        for left, right in zip(vector_sum, batch_sum, strict=True)
-                    ]
-                    count = int(row[3]) + len(members)
-                    centroid = [value / count for value in updated_sum]
-                    cluster_updates.append(
-                        (
-                            json.dumps(updated_sum),
-                            json.dumps(centroid),
-                            count,
-                            cluster_id,
-                        )
-                    )
-                    vector_updates.append((int(row[1]), json.dumps(centroid)))
+                    cluster_updates.append((int(row[1]) + len(members), cluster_id))
 
                 before_changes = self.conn.total_changes
                 self.conn.executemany(
@@ -1160,24 +1561,74 @@ class PlaybookAggregationStoreMixin:
                     "AND disposition='residual'",
                     [
                         (cluster_id, agent_version, item_id)
-                        for item_id, cluster_id, _embedding in attachments
+                        for item_id, cluster_id in attachments
                     ],
                 )
                 if self.conn.total_changes - before_changes != len(attachments):
                     raise RuntimeError("aggregation residual attachment lost its state")
                 self.conn.executemany(
-                    "UPDATE playbook_aggregation_cluster SET vector_sum=?, centroid=?, "
-                    "member_count=? WHERE cluster_id=? AND agent_version=?",
+                    "UPDATE playbook_aggregation_cluster SET member_count=? "
+                    "WHERE cluster_id=? AND agent_version=? AND state='active'",
                     [(*update, agent_version) for update in cluster_updates],
                 )
-                self.conn.executemany(
-                    "DELETE FROM playbook_aggregation_clusters_vec WHERE rowid=?",
-                    [(rowid,) for rowid, _centroid in vector_updates],
+                if own_transaction:
+                    self.conn.commit()
+            except Exception:
+                if own_transaction:
+                    self.conn.rollback()
+                raise
+
+    def replace_playbook_aggregation_cluster_agent(
+        self,
+        *,
+        cluster_id: str,
+        agent_version: str,
+        expected_agent_playbook_id: int,
+        replacement_agent_playbook_id: int,
+        centroid_embedding: list[float],
+        embedding_model: str,
+    ) -> None:
+        if not centroid_embedding:
+            raise ValueError("cluster centroid embedding must be non-empty")
+        with self._lock:
+            own_transaction = self._own_transaction()
+            try:
+                row = self.conn.execute(
+                    "SELECT index_rowid, embedding_dimension FROM "
+                    "playbook_aggregation_cluster WHERE cluster_id=? "
+                    "AND agent_version=? AND state='active' "
+                    "AND agent_playbook_id=?",
+                    (cluster_id, agent_version, expected_agent_playbook_id),
+                ).fetchone()
+                if row is None:
+                    raise RuntimeError("aggregation cluster agent changed")
+                if int(row[1]) != len(centroid_embedding):
+                    raise ValueError("aggregation embedding dimension changed")
+                updated = self.conn.execute(
+                    "UPDATE playbook_aggregation_cluster SET agent_playbook_id=?, "
+                    "centroid=?, vector_sum=NULL, embedding_model=?, dirty=0 "
+                    "WHERE cluster_id=? AND agent_version=? AND state='active' "
+                    "AND agent_playbook_id=?",
+                    (
+                        replacement_agent_playbook_id,
+                        json.dumps(centroid_embedding),
+                        embedding_model,
+                        cluster_id,
+                        agent_version,
+                        expected_agent_playbook_id,
+                    ),
                 )
-                self.conn.executemany(
+                if updated.rowcount != 1:
+                    raise RuntimeError("aggregation cluster agent changed")
+                rowid = int(row[0])
+                self.conn.execute(
+                    "DELETE FROM playbook_aggregation_clusters_vec WHERE rowid=?",
+                    (rowid,),
+                )
+                self.conn.execute(
                     "INSERT INTO playbook_aggregation_clusters_vec(rowid, embedding) "
                     "VALUES (?, ?)",
-                    vector_updates,
+                    (rowid, json.dumps(centroid_embedding)),
                 )
                 if own_transaction:
                     self.conn.commit()

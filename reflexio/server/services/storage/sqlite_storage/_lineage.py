@@ -128,17 +128,25 @@ def _append_event_stmt(
                 for value in source_id_values
                 if candidate_version_by_id.get(value) == agent_version
             ]
-            conn.execute(
-                "INSERT INTO playbook_aggregation_invalidation "
-                "(agent_version, operation, entity_id, source_ids) VALUES (?, ?, ?, ?)",
-                (agent_version, op, parsed_entity_id, json.dumps(version_source_ids)),
-            )
+            # Creation only makes new intake discoverable. It cannot invalidate
+            # existing membership, so putting it on the invalidation queue would
+            # force the scheduler to drain one no-op event per new playbook.
+            if op != "create":
+                conn.execute(
+                    "INSERT INTO playbook_aggregation_invalidation "
+                    "(agent_version, operation, entity_id, source_ids) "
+                    "VALUES (?, ?, ?, ?)",
+                    (
+                        agent_version,
+                        op,
+                        parsed_entity_id,
+                        json.dumps(version_source_ids),
+                    ),
+                )
             conn.execute(
                 "INSERT INTO playbook_aggregation_state "
                 "(agent_version, pending, next_attempt_at) VALUES (?, 1, unixepoch()) "
-                "ON CONFLICT(agent_version) DO UPDATE SET pending=1, "
-                "next_attempt_at=min(playbook_aggregation_state.next_attempt_at, "
-                "excluded.next_attempt_at)",
+                "ON CONFLICT(agent_version) DO UPDATE SET pending=1",
                 (agent_version,),
             )
     return cursor

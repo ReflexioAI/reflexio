@@ -32,6 +32,7 @@ _POLL_SECONDS = 10.0
 AGGREGATION_LEASE_SECONDS = 300
 AGGREGATION_RETRY_SECONDS = 60
 AGGREGATION_BACKLOG_RETRY_SECONDS = 1
+AGGREGATION_INVALIDATION_BATCH_SIZE = 100
 _REPAIR_INTERVAL_SECONDS = 300.0
 
 
@@ -169,43 +170,56 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
         after = None
         try:
             budget = _aggregation_budget()
-            invalidations = storage.get_playbook_aggregation_invalidations(
-                claim.agent_version, limit=max(1, budget // 4)
+            invalidation_page = storage.get_playbook_aggregation_invalidations(
+                claim.agent_version, limit=AGGREGATION_INVALIDATION_BATCH_SIZE + 1
             )
+            invalidations = invalidation_page[:AGGREGATION_INVALIDATION_BATCH_SIZE]
             if invalidations and not storage.apply_playbook_aggregation_invalidations(
                 claim, [item.invalidation_id for item in invalidations]
             ):
                 raise RuntimeError("playbook aggregation invalidation fence was lost")
-            from reflexio.lib.generation_client import (
-                create_generation_litellm_client,
-            )
+            if len(invalidation_page) > AGGREGATION_INVALIDATION_BATCH_SIZE:
+                logger.info(
+                    "event=playbook_aggregation_progress "
+                    "state=draining_invalidations org_id=%s agent_version=%s "
+                    "fence=%s processed=%s",
+                    context.org_id,
+                    claim.agent_version,
+                    claim.fence,
+                    len(invalidations),
+                )
+                result = {"invalidations_processed": len(invalidations)}
+            else:
+                from reflexio.lib.generation_client import (
+                    create_generation_litellm_client,
+                )
 
-            kwargs: dict[str, Any] = {}
-            processor = get_service(AGGREGATION_PROMPT_PROCESSOR)
-            if processor is not None:
-                kwargs["aggregation_prompt_processor"] = processor
-            aggregator = PlaybookAggregator(
-                llm_client=create_generation_litellm_client(context),
-                request_context=context,
-                agent_version=claim.agent_version,
-                aggregation_claim=claim,
-                work_budget=max(0, budget - len(invalidations)),
-                **kwargs,
-            )
-            logger.info(
-                "event=playbook_aggregation_progress state=started org_id=%s "
-                "agent_version=%s fence=%s",
-                context.org_id,
-                claim.agent_version,
-                claim.fence,
-            )
-            result = run_with_operation_limit(
-                org_id=context.org_id,
-                operation="aggregation",
-                fn=lambda: aggregator.run(
-                    PlaybookAggregatorRequest(agent_version=claim.agent_version)
-                ),
-            )
+                kwargs: dict[str, Any] = {}
+                processor = get_service(AGGREGATION_PROMPT_PROCESSOR)
+                if processor is not None:
+                    kwargs["aggregation_prompt_processor"] = processor
+                aggregator = PlaybookAggregator(
+                    llm_client=create_generation_litellm_client(context),
+                    request_context=context,
+                    agent_version=claim.agent_version,
+                    aggregation_claim=claim,
+                    residual_batch_limit=budget,
+                    **kwargs,
+                )
+                logger.info(
+                    "event=playbook_aggregation_progress state=started org_id=%s "
+                    "agent_version=%s fence=%s",
+                    context.org_id,
+                    claim.agent_version,
+                    claim.fence,
+                )
+                result = run_with_operation_limit(
+                    org_id=context.org_id,
+                    operation="aggregation",
+                    fn=lambda: aggregator.run(
+                        PlaybookAggregatorRequest(agent_version=claim.agent_version)
+                    ),
+                )
             heartbeat.require_live()
             success = True
             after = storage.get_playbook_aggregation_backlog(claim.agent_version)
