@@ -4,6 +4,7 @@ import json
 import tempfile
 import threading
 from collections.abc import Callable
+from contextlib import ExitStack
 from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
@@ -55,6 +56,7 @@ from reflexio.server.services.storage.storage_base import (
 )
 from reflexio.server.usage_metrics import (
     UsageEvent,
+    UsageEventDeliveryStatus,
     configure_usage_event_recorder,
 )
 
@@ -213,6 +215,22 @@ def _playbook_candidates(*, request_id: str, prefix: str) -> list[UserPlaybook]:
         )
         for index in range(2)
     ]
+
+
+class _DeduplicatingUsageRecorder:
+    def __init__(self) -> None:
+        self.attempts: list[UsageEvent] = []
+        self.events: list[UsageEvent] = []
+        self._accepted_keys: set[str] = set()
+
+    def __call__(self, event: UsageEvent) -> UsageEventDeliveryStatus:
+        self.attempts.append(event)
+        assert event.event_key is not None
+        if event.event_key in self._accepted_keys:
+            return UsageEventDeliveryStatus.DUPLICATE
+        self._accepted_keys.add(event.event_key)
+        self.events.append(event)
+        return UsageEventDeliveryStatus.APPENDED
 
 
 @pytest.mark.parametrize(
@@ -652,7 +670,10 @@ def test_resumable_finalization_bills_only_durable_ids_idempotently_on_retry(
     learning_ids = ["profile_1"]
     worker = ExtractionResumeWorker(request_context=request_context)
 
-    with patch("reflexio.server.billing_meter.record_usage_event") as record_event:
+    with patch(
+        "reflexio.server.billing_meter.record_usage_event_strict",
+        return_value=UsageEventDeliveryStatus.APPENDED,
+    ) as record_event:
         worker._record_finalized_learnings(run, learning_ids, entity_type="profile")
         worker._record_finalized_learnings(run, learning_ids, entity_type="profile")
 
@@ -668,6 +689,192 @@ def test_resumable_finalization_bills_only_durable_ids_idempotently_on_retry(
         "profile_1",
         "profile_1",
     ]
+
+
+@pytest.mark.parametrize(
+    ("extractor_kind", "entity_type"),
+    [("profile", "profile"), ("playbook", "user_playbook")],
+)
+def test_delivery_failure_after_receipt_commit_retries_billing_without_recompute(
+    request_context,
+    storage,
+    extractor_kind,
+    entity_type,
+):
+    _seed_interactions(storage)
+    request_context.configurator.get_config.return_value = Config(
+        storage_config=StorageConfigSQLite(),
+        profile_extractor_config=ProfileExtractorConfig(
+            extraction_definition_prompt="Extract durable user facts.",
+        ),
+        user_playbook_extractor_config=PlaybookConfig(
+            extraction_definition_prompt="Extract durable operating rules.",
+        ),
+        pending_tool_call_config=PendingToolCallConfig(enabled=True),
+    )
+    request_id = f"request_{extractor_kind}_delivery_retry"
+    run_id = f"run_{extractor_kind}_delivery_retry"
+    committed_output = (
+        {
+            "profiles": [
+                {
+                    "content": "User deployment target is AWS ECS.",
+                    "time_to_live": "infinity",
+                }
+            ]
+        }
+        if extractor_kind == "profile"
+        else {
+            "playbooks": [
+                {
+                    "content": "Prefer AWS ECS as the deployment target.",
+                    "trigger": "when selecting a deployment target",
+                    "rationale": "The team standardizes on AWS.",
+                }
+            ]
+        }
+    )
+    storage.create_agent_run(
+        AgentRunRecord(
+            id=run_id,
+            binding=AgentBinding(
+                org_id="org_1",
+                extractor_kind=extractor_kind,
+                user_id="user_1",
+                request_id=request_id,
+                agent_version="v1",
+                source="api",
+                source_interaction_ids=[1, 2],
+            ),
+            status=AgentRunStatus.FINALIZATION_FAILED,
+            generation_request_snapshot={
+                "request_id": request_id,
+                "output_schema_name": "StructuredPlaybookList",
+            },
+            committed_output=committed_output,
+            next_resume_at=datetime(2000, 1, 1, tzinfo=UTC),
+        )
+    )
+    worker = ExtractionResumeWorker(
+        request_context=request_context,
+        llm_client=MagicMock(),
+    )
+    attempts: list[UsageEvent] = []
+    accepted: dict[str, UsageEvent] = {}
+    fail_next = True
+
+    def recorder(event: UsageEvent) -> UsageEventDeliveryStatus:
+        nonlocal fail_next
+        attempts.append(event)
+        if fail_next:
+            fail_next = False
+            raise RuntimeError("billing sink unavailable")
+        assert event.event_key is not None
+        if event.event_key in accepted:
+            return UsageEventDeliveryStatus.DUPLICATE
+        accepted[event.event_key] = event
+        return UsageEventDeliveryStatus.APPENDED
+
+    configure_usage_event_recorder(recorder)
+    try:
+        with ExitStack() as stack:
+            schedule_tagging = stack.enter_context(
+                patch.object(worker, "_schedule_finalized_tagging")
+            )
+            if extractor_kind == "profile":
+                stack.enter_context(
+                    patch(
+                        "reflexio.server.services.profile.components.consolidator."
+                        "ProfileConsolidator.deduplicate",
+                        side_effect=lambda profiles, _user_id, _request_id: (
+                            profiles,
+                            [],
+                            [],
+                        ),
+                    )
+                )
+                optimize = aggregate = None
+            else:
+                stack.enter_context(
+                    patch.object(
+                        PlaybookGenerationService,
+                        "_configured_playbook_config",
+                        return_value=None,
+                    )
+                )
+                stack.enter_context(
+                    patch(
+                        "reflexio.server.services.playbook.components.consolidator."
+                        "PlaybookConsolidator.deduplicate",
+                        side_effect=lambda results, *_args, **_kwargs: (
+                            [playbook for result in results for playbook in result],
+                            [],
+                            [],
+                        ),
+                    )
+                )
+                optimize = stack.enter_context(
+                    patch.object(
+                        PlaybookGenerationService,
+                        "_enqueue_user_playbook_optimization",
+                    )
+                )
+                aggregate = stack.enter_context(
+                    patch.object(
+                        PlaybookGenerationService,
+                        "_trigger_playbook_aggregation",
+                    )
+                )
+
+            failed = worker.run_once()
+            assert failed is not None
+            assert failed.status == AgentRunStatus.FINALIZATION_FAILED
+            receipt_after_failure = storage.get_agent_run_finalization_receipt(
+                run_id=run_id,
+                entity_type=entity_type,
+            )
+            assert receipt_after_failure
+            rows_after_failure = (
+                [profile.profile_id for profile in storage.get_user_profile("user_1")]
+                if extractor_kind == "profile"
+                else [
+                    str(row[0])
+                    for row in storage.conn.execute(
+                        "SELECT user_playbook_id FROM user_playbooks "
+                        "WHERE request_id = ? ORDER BY user_playbook_id",
+                        (request_id,),
+                    ).fetchall()
+                ]
+            )
+
+            storage.update_agent_run_status(
+                run_id,
+                AgentRunStatus.FINALIZATION_FAILED,
+                next_resume_at=datetime(2000, 1, 1, tzinfo=UTC),
+            )
+            retry = worker.run_once()
+
+        assert retry is not None
+        assert retry.status == AgentRunStatus.FINALIZED
+        assert (
+            storage.get_agent_run_finalization_receipt(
+                run_id=run_id,
+                entity_type=entity_type,
+            )
+            == receipt_after_failure
+        )
+        assert rows_after_failure == receipt_after_failure
+        assert [event.event_key for event in attempts] == [
+            f"learn:{entity_type}:{receipt_after_failure[0]}",
+            f"learn:{entity_type}:{receipt_after_failure[0]}",
+        ]
+        assert list(accepted) == [f"learn:{entity_type}:{receipt_after_failure[0]}"]
+        schedule_tagging.assert_not_called()
+        if optimize is not None and aggregate is not None:
+            optimize.assert_called_once()
+            aggregate.assert_called_once()
+    finally:
+        configure_usage_event_recorder(None)
 
 
 def test_retry_after_billing_reuses_ids_without_replaying_playbook_schedulers(
@@ -687,7 +894,19 @@ def test_retry_after_billing_reuses_ids_without_replaying_playbook_schedulers(
         pending_tool_call_config=PendingToolCallConfig(enabled=True),
     )
     events: list[UsageEvent] = []
-    configure_usage_event_recorder(events.append)
+    delivery_attempts: list[UsageEvent] = []
+    accepted_keys: set[str] = set()
+
+    def deduplicating_recorder(event: UsageEvent) -> UsageEventDeliveryStatus:
+        delivery_attempts.append(event)
+        assert event.event_key is not None
+        if event.event_key in accepted_keys:
+            return UsageEventDeliveryStatus.DUPLICATE
+        accepted_keys.add(event.event_key)
+        events.append(event)
+        return UsageEventDeliveryStatus.APPENDED
+
+    configure_usage_event_recorder(deduplicating_recorder)
 
     def _run_failed_then_retried(
         run_id: str,
@@ -911,6 +1130,12 @@ def test_retry_after_billing_reuses_ids_without_replaying_playbook_schedulers(
     assert playbook_receipt_ids == playbook_survivor_ids
     assert playbook_event_ids == playbook_survivor_ids
     assert playbook_keys == [f"learn:user_playbook:{playbook_survivor_ids[0]}"]
+    assert [event.event_key for event in delivery_attempts] == [
+        profile_keys[0],
+        profile_keys[0],
+        playbook_keys[0],
+        playbook_keys[0],
+    ]
 
 
 @pytest.mark.parametrize("failing_scheduler", ["optimizer", "aggregation"])
@@ -932,8 +1157,8 @@ def test_playbook_scheduler_failure_preserves_billing_and_isolated_retry(
         request_id=run.binding.request_id,
         prefix=failing_scheduler,
     )
-    events: list[UsageEvent] = []
-    configure_usage_event_recorder(events.append)
+    recorder = _DeduplicatingUsageRecorder()
+    configure_usage_event_recorder(recorder)
     try:
         with (
             patch.object(
@@ -981,11 +1206,15 @@ def test_playbook_scheduler_failure_preserves_billing_and_isolated_retry(
     aggregate.assert_called_once()
     billing_ids = [
         event.entity_id
-        for event in events
+        for event in recorder.events
         if event.event_name == "learnings_generated"
         and event.entity_type == "user_playbook"
     ]
     assert billing_ids == winner.learning_ids
+    assert [event.entity_id for event in recorder.attempts] == [
+        *winner.learning_ids,
+        *winner.learning_ids,
+    ]
 
 
 def test_empty_profile_receipt_wins_once_without_billing_or_recompute(storage):
@@ -997,8 +1226,8 @@ def test_empty_profile_receipt_wins_once_without_billing_or_recompute(storage):
     storage.create_agent_run(run)
     context = _finalization_context(storage)
     worker = ExtractionResumeWorker(request_context=context, llm_client=MagicMock())
-    events: list[UsageEvent] = []
-    configure_usage_event_recorder(events.append)
+    recorder = _DeduplicatingUsageRecorder()
+    configure_usage_event_recorder(recorder)
     try:
         with patch.object(
             ProfileGenerationService,
@@ -1023,7 +1252,7 @@ def test_empty_profile_receipt_wins_once_without_billing_or_recompute(storage):
         == []
     )
     assert [
-        event for event in events if event.event_name == "learnings_generated"
+        event for event in recorder.events if event.event_name == "learnings_generated"
     ] == []
 
 
@@ -1054,8 +1283,8 @@ def test_empty_playbook_receipt_retries_without_redispatch(storage):
         outcomes.append(outcome)
         return outcome
 
-    events: list[UsageEvent] = []
-    configure_usage_event_recorder(events.append)
+    recorder = _DeduplicatingUsageRecorder()
+    configure_usage_event_recorder(recorder)
     try:
         with (
             patch.object(storage, "claim_ready_agent_run", return_value=run),
@@ -1123,7 +1352,9 @@ def test_empty_playbook_receipt_retries_without_redispatch(storage):
             == []
         )
         assert [
-            event for event in events if event.event_name == "learnings_generated"
+            event
+            for event in recorder.events
+            if event.event_name == "learnings_generated"
         ] == []
     finally:
         configure_usage_event_recorder(None)
@@ -1157,8 +1388,8 @@ def test_identical_profile_ids_use_atomic_receipt_owner(tmp_path):
         ]
         for index in range(2)
     ]
-    events: list[UsageEvent] = []
-    configure_usage_event_recorder(events.append)
+    recorder = _DeduplicatingUsageRecorder()
+    configure_usage_event_recorder(recorder)
     try:
         with patch(
             "reflexio.server.services.profile.components.consolidator."
@@ -1178,9 +1409,13 @@ def test_identical_profile_ids_use_atomic_receipt_owner(tmp_path):
     ]
     assert [
         event.entity_id
-        for event in events
+        for event in recorder.events
         if event.event_name == "learnings_generated" and event.entity_type == "profile"
     ] == ["profile-shared"]
+    assert [event.entity_id for event in recorder.attempts] == [
+        "profile-shared",
+        "profile-shared",
+    ]
 
 
 def test_identical_playbook_ids_use_atomic_receipt_owner(tmp_path):
@@ -1220,8 +1455,8 @@ def test_identical_playbook_ids_use_atomic_receipt_owner(tmp_path):
                 (attempt, playbook.content),
             )
 
-    events: list[UsageEvent] = []
-    configure_usage_event_recorder(events.append)
+    recorder = _DeduplicatingUsageRecorder()
+    configure_usage_event_recorder(recorder)
     try:
         with (
             patch.object(
@@ -1272,10 +1507,11 @@ def test_identical_playbook_ids_use_atomic_receipt_owner(tmp_path):
     aggregate.assert_called_once()
     assert [
         event.entity_id
-        for event in events
+        for event in recorder.events
         if event.event_name == "learnings_generated"
         and event.entity_type == "user_playbook"
     ] == ["88", "89"]
+    assert [event.entity_id for event in recorder.attempts] == ["88", "89", "88", "89"]
 
 
 def test_two_stale_profile_workers_preserve_order_and_bill_only_winner(tmp_path):
@@ -1319,8 +1555,8 @@ def test_two_stale_profile_workers_preserve_order_and_bill_only_winner(tmp_path)
         except BaseException as exc:  # noqa: BLE001 - intentional thread error capture
             errors.append(exc)
 
-    events: list[UsageEvent] = []
-    configure_usage_event_recorder(events.append)
+    recorder = _DeduplicatingUsageRecorder()
+    configure_usage_event_recorder(recorder)
     try:
         with patch(
             "reflexio.server.services.profile.components.consolidator."
@@ -1363,10 +1599,14 @@ def test_two_stale_profile_workers_preserve_order_and_bill_only_winner(tmp_path)
     assert wrapper_ids == receipt_ids
     billing_events = [
         event
-        for event in events
+        for event in recorder.events
         if event.event_name == "learnings_generated" and event.entity_type == "profile"
     ]
     assert [event.entity_id for event in billing_events] == persisted_ids
+    assert [event.entity_id for event in recorder.attempts] == [
+        *persisted_ids,
+        *persisted_ids,
+    ]
 
 
 def test_two_stale_playbook_workers_preserve_order_and_dispatch_once(tmp_path):
@@ -1404,8 +1644,8 @@ def test_two_stale_playbook_workers_preserve_order_and_dispatch_once(tmp_path):
         except BaseException as exc:  # noqa: BLE001 - intentional thread error capture
             errors.append(exc)
 
-    events: list[UsageEvent] = []
-    configure_usage_event_recorder(events.append)
+    recorder = _DeduplicatingUsageRecorder()
+    configure_usage_event_recorder(recorder)
     try:
         with (
             patch.object(
@@ -1471,11 +1711,15 @@ def test_two_stale_playbook_workers_preserve_order_and_dispatch_once(tmp_path):
             aggregate.assert_called_once()
             billing_ids = [
                 event.entity_id
-                for event in events
+                for event in recorder.events
                 if event.event_name == "learnings_generated"
                 and event.entity_type == "user_playbook"
             ]
             assert billing_ids == receipt_ids
+            assert [event.entity_id for event in recorder.attempts] == [
+                *receipt_ids,
+                *receipt_ids,
+            ]
     finally:
         configure_usage_event_recorder(None)
 

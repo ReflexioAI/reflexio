@@ -917,10 +917,9 @@ class ExtractionResumeWorker:
                 model_provenance=model_provenance,
                 finalization_run_id=run.id,
             )
-            if result.won_receipt:
-                self._record_finalized_learnings(
-                    run, result.learning_ids, entity_type="profile"
-                )
+            self._record_finalized_learnings(
+                run, result.learning_ids, entity_type="profile"
+            )
             return result
         if run.binding.extractor_kind == "playbook":
             user_id = run.binding.user_id
@@ -944,10 +943,9 @@ class ExtractionResumeWorker:
                 extraction_run=run,
                 finalization_run_id=run.id,
             )
-            if result.won_receipt:
-                self._record_finalized_learnings(
-                    run, result.learning_ids, entity_type="user_playbook"
-                )
+            self._record_finalized_learnings(
+                run, result.learning_ids, entity_type="user_playbook"
+            )
             return result
         raise ResumeWorkerError(
             f"Unsupported extractor kind {run.binding.extractor_kind!r}"
@@ -961,7 +959,9 @@ class ExtractionResumeWorker:
         Emits one event per durable learning id returned by finalization.
         Per-record keys make finalization retries idempotent downstream.
         """
-        from reflexio.server.billing_meter import emit_learnings_generated_records
+        from reflexio.server.billing_meter import (
+            emit_learnings_generated_records_strict,
+        )
 
         if not learning_ids:
             return
@@ -969,7 +969,7 @@ class ExtractionResumeWorker:
             "run_id": run.id,
             "extractor_kind": run.binding.extractor_kind,
         }
-        emit_learnings_generated_records(
+        emit_learnings_generated_records_strict(
             org_id=self.request_context.org_id,
             configurator=self.request_context.configurator,
             learning_ids=learning_ids,
