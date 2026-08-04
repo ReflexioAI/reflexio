@@ -40,6 +40,8 @@ def _playbook() -> UserPlaybook:
         reader_angle="customer impact",
         merged_into=88,
         superseded_by=99,
+        governance_subject_ref="subject:user-1",
+        retired_at=1_700_000_050,
     )
 
 
@@ -213,6 +215,13 @@ def test_embedding_changes_do_not_change_full_version_fingerprint() -> None:
     )
 
 
+def test_internal_fields_are_excluded_from_user_playbook_serialization() -> None:
+    serialized = _playbook().model_dump(mode="json")
+
+    assert "governance_subject_ref" not in serialized
+    assert "retired_at" not in serialized
+
+
 # Every current UserPlaybook field is persisted except its derived embedding vector.
 _PERSISTED_FIELD_CHANGES = [
     ("user_playbook_id", 102),
@@ -241,6 +250,8 @@ _PERSISTED_FIELD_CHANGES = [
     ("reader_angle", "policy compliance"),
     ("merged_into", 87),
     ("superseded_by", 100),
+    ("governance_subject_ref", "subject:user-2"),
+    ("retired_at", 1_700_000_051),
 ]
 
 
