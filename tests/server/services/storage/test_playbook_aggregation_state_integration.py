@@ -203,6 +203,13 @@ def test_agent_mutation_retires_active_aggregation_cluster(
         disposition="cluster_member",
         cluster_id="mutable-agent-cluster",
     )
+    indexes = {
+        str(row[1])
+        for row in store.conn.execute(
+            "PRAGMA index_list(playbook_aggregation_cluster)"
+        ).fetchall()
+    }
+    assert "idx_playbook_aggregation_cluster_agent" in indexes
 
     if operation == "reject":
         store.update_agent_playbook_status(
@@ -232,6 +239,19 @@ def test_agent_mutation_retires_active_aggregation_cluster(
             "SELECT pending FROM playbook_aggregation_state WHERE agent_version='v1'"
         ).fetchone()[0]
         == 1
+    )
+    assert (
+        store.conn.execute(
+            "SELECT count(*) FROM playbook_aggregation_clusters_vec"
+        ).fetchone()[0]
+        == 1
+    )
+    store.repair_playbook_aggregation_pending_state(limit=1)
+    assert (
+        store.conn.execute(
+            "SELECT count(*) FROM playbook_aggregation_clusters_vec"
+        ).fetchone()[0]
+        == 0
     )
 
 
@@ -714,6 +734,74 @@ def test_sqlite_vec_centroid_lookup_and_attachment(vec_store) -> None:
     )[3]
     assert replacement_match.agent_playbook_id == 102
     assert replacement_match.similarity > 0.99
+
+
+def test_centroid_migration_skips_unmigratable_legacy_rows(
+    vec_store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = vec_store
+    embedding = [0.0] * store.embedding_dimensions
+    embedding[0] = 1.0
+    monkeypatch.setattr(store, "_get_embedding", lambda _text: embedding)
+    agents = store.save_agent_playbooks(
+        [
+            AgentPlaybook(
+                playbook_name="playbook",
+                agent_version="v1",
+                content=f"legacy agent {index}",
+                playbook_status=PlaybookStatus.PENDING,
+            )
+            for index in range(2)
+        ]
+    )
+    store.conn.execute(
+        "UPDATE agent_playbooks SET embedding=? WHERE agent_playbook_id=?",
+        (json.dumps(embedding), agents[0].agent_playbook_id),
+    )
+    store.conn.execute(
+        "UPDATE agent_playbooks SET embedding='[1.0]' WHERE agent_playbook_id=?",
+        (agents[1].agent_playbook_id,),
+    )
+    store.conn.executemany(
+        "INSERT INTO playbook_aggregation_cluster "
+        "(cluster_id, index_rowid, agent_version, agent_playbook_id, vector_sum, "
+        "member_count, embedding_model, embedding_dimension, state) "
+        "VALUES (?, ?, 'v1', ?, '[1.0]', 1, ?, ?, 'active')",
+        [
+            (
+                "missing-rowid",
+                None,
+                agents[0].agent_playbook_id,
+                store.embedding_model_name,
+                store.embedding_dimensions,
+            ),
+            (
+                "wrong-dimension",
+                4242,
+                agents[1].agent_playbook_id,
+                store.embedding_model_name,
+                store.embedding_dimensions,
+            ),
+        ],
+    )
+    store.conn.commit()
+
+    store._migrate_playbook_aggregation_agent_centroids()
+
+    rows = store.conn.execute(
+        "SELECT cluster_id, centroid, vector_sum FROM "
+        "playbook_aggregation_cluster ORDER BY cluster_id"
+    ).fetchall()
+    assert [tuple(row) for row in rows] == [
+        ("missing-rowid", None, "[1.0]"),
+        ("wrong-dimension", None, "[1.0]"),
+    ]
+    assert (
+        store.conn.execute(
+            "SELECT count(*) FROM playbook_aggregation_clusters_vec WHERE rowid=4242"
+        ).fetchone()[0]
+        == 0
+    )
 
 
 def test_centroid_batches_are_strictly_isolated_by_agent_version(vec_store) -> None:
@@ -1240,6 +1328,81 @@ def test_rebuild_failure_defers_the_entire_cluster(
     assert store.get_playbook_aggregation_residual_ids("v1", limit=10) == [1, 2]
 
 
+def test_rebuild_completion_rolls_back_items_when_cluster_fence_is_lost(
+    vec_store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = vec_store
+    embedding = [0.0] * store.embedding_dimensions
+    embedding[0] = 1.0
+    monkeypatch.setattr(store, "_get_embedding", lambda _text: embedding)
+    _insert_current(store, 1, embedding=json.dumps(embedding))
+    store.stage_playbook_aggregation_intake("v1", limit=1)
+    current = store.save_agent_playbooks(
+        [
+            AgentPlaybook(
+                playbook_name="playbook",
+                agent_version="v1",
+                content="Current aggregate",
+                trigger="current trigger",
+                playbook_status=PlaybookStatus.PENDING,
+            )
+        ]
+    )[0]
+    store.create_playbook_aggregation_cluster(
+        cluster_id="rollback-repair",
+        agent_version="v1",
+        agent_playbook_id=current.agent_playbook_id,
+        centroid_embedding=current.embedding,
+        member_count=1,
+        embedding_model=store.embedding_model_name,
+    )
+    store.set_playbook_aggregation_disposition(
+        "v1",
+        [1],
+        disposition="cluster_member",
+        cluster_id="rollback-repair",
+    )
+    store.conn.execute(
+        "UPDATE playbook_aggregation_item SET disposition='residual' "
+        "WHERE cluster_id='rollback-repair'"
+    )
+    store.conn.execute(
+        "UPDATE playbook_aggregation_cluster SET state='rebuilding', dirty=1 "
+        "WHERE cluster_id='rollback-repair'"
+    )
+    store.conn.executescript(
+        "CREATE TRIGGER ignore_rebuild_completion "
+        "BEFORE UPDATE OF agent_playbook_id ON playbook_aggregation_cluster "
+        "WHEN OLD.cluster_id='rollback-repair' AND NEW.state='active' BEGIN "
+        "SELECT RAISE(IGNORE); END;"
+    )
+    store.conn.commit()
+
+    with pytest.raises(RuntimeError, match="aggregation rebuilding cluster changed"):
+        store.complete_playbook_aggregation_cluster_rebuild(
+            cluster_id="rollback-repair",
+            agent_version="v1",
+            expected_agent_playbook_id=current.agent_playbook_id,
+            replacement_agent_playbook_id=current.agent_playbook_id + 1,
+            centroid_embedding=embedding,
+            embedding_model=store.embedding_model_name,
+        )
+
+    assert store.conn.in_transaction is False
+    assert tuple(
+        store.conn.execute(
+            "SELECT disposition, cluster_id FROM playbook_aggregation_item "
+            "WHERE user_playbook_id=1"
+        ).fetchone()
+    ) == ("residual", "rollback-repair")
+    assert tuple(
+        store.conn.execute(
+            "SELECT state, agent_playbook_id FROM playbook_aggregation_cluster "
+            "WHERE cluster_id='rollback-repair'"
+        ).fetchone()
+    ) == ("rebuilding", current.agent_playbook_id)
+
+
 def test_rebuild_dedup_context_excludes_the_invalidated_agent(
     vec_store, tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1413,6 +1576,163 @@ def test_matched_cluster_non_generated_outcomes_preserve_current_agent(
     assert store.conn.execute("SELECT count(*) FROM agent_playbooks").fetchone()[0] == 1
 
 
+def test_refresh_fence_loss_does_not_discard_healthy_cluster(
+    vec_store, tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = vec_store
+    alpha_embedding = [0.0] * store.embedding_dimensions
+    alpha_embedding[0] = 1.0
+    beta_embedding = [0.0] * store.embedding_dimensions
+    beta_embedding[1] = 1.0
+
+    def embed(text: str) -> list[float]:
+        return beta_embedding if "beta" in text.lower() else alpha_embedding
+
+    monkeypatch.setattr(store, "_get_embedding", embed)
+    _insert_current(store, 1, embedding=json.dumps(alpha_embedding))
+    _insert_current(store, 2, embedding=json.dumps(beta_embedding))
+    store.stage_playbook_aggregation_intake("v1", limit=10)
+    alpha_agent, beta_agent = store.save_agent_playbooks(
+        [
+            AgentPlaybook(
+                playbook_name="playbook",
+                agent_version="v1",
+                content="Alpha guidance",
+                trigger="alpha trigger",
+                playbook_status=PlaybookStatus.PENDING,
+            ),
+            AgentPlaybook(
+                playbook_name="playbook",
+                agent_version="v1",
+                content="Beta guidance",
+                trigger="beta trigger",
+                playbook_status=PlaybookStatus.PENDING,
+            ),
+        ]
+    )
+    for cluster_id, agent, item_id in (
+        ("cluster-alpha", alpha_agent, 1),
+        ("cluster-beta", beta_agent, 2),
+    ):
+        store.create_playbook_aggregation_cluster(
+            cluster_id=cluster_id,
+            agent_version="v1",
+            agent_playbook_id=agent.agent_playbook_id,
+            centroid_embedding=agent.embedding,
+            member_count=1,
+            embedding_model=store.embedding_model_name,
+        )
+        store.set_playbook_aggregation_disposition(
+            "v1",
+            [item_id],
+            disposition="cluster_member",
+            cluster_id=cluster_id,
+        )
+    store.set_playbook_aggregation_bootstrap_status("v1", "complete")
+    _insert_current(store, 3, embedding=json.dumps(alpha_embedding))
+    _insert_current(store, 4, embedding=json.dumps(beta_embedding))
+
+    config = Config(
+        storage_config=StorageConfigSQLite(db_path=str(tmp_path / "state.db")),
+        user_playbook_extractor_config=PlaybookConfig(
+            extractor_name="playbook",
+            extraction_definition_prompt="test",
+            aggregation_config=PlaybookAggregatorConfig(min_cluster_size=2),
+        ),
+    )
+    configurator = MagicMock()
+    configurator.get_config.return_value = config
+    aggregator = PlaybookAggregator(
+        llm_client=MagicMock(),
+        request_context=MagicMock(
+            org_id="aggregation-org", storage=store, configurator=configurator
+        ),
+        agent_version="v1",
+    )
+
+    def generate_outcomes(
+        clusters,
+        _existing,
+        *,
+        direction_overlap_threshold,
+        current_agent_playbooks=None,
+    ) -> list[AggregationGenerationOutcome]:
+        del direction_overlap_threshold
+        assert current_agent_playbooks
+        return [
+            AggregationGenerationOutcome(
+                "generated",
+                members,
+                AgentPlaybook(
+                    playbook_name="playbook",
+                    agent_version="v1",
+                    content=(
+                        "Refreshed beta guidance"
+                        if current_agent_playbooks[index].agent_playbook_id
+                        == beta_agent.agent_playbook_id
+                        else "Refreshed alpha guidance"
+                    ),
+                    trigger=(
+                        "refreshed beta trigger"
+                        if current_agent_playbooks[index].agent_playbook_id
+                        == beta_agent.agent_playbook_id
+                        else "refreshed alpha trigger"
+                    ),
+                    playbook_status=PlaybookStatus.PENDING,
+                ),
+            )
+            for index, members in clusters.items()
+        ]
+
+    monkeypatch.setattr(
+        aggregator,
+        "_generate_playbook_outcomes_with_source_clusters",
+        generate_outcomes,
+    )
+    replace_cluster_agent = store.replace_playbook_aggregation_cluster_agent
+
+    def replace_with_one_fence_loss(**kwargs) -> None:
+        if kwargs["cluster_id"] == "cluster-alpha":
+            raise RuntimeError("aggregation cluster agent changed")
+        replace_cluster_agent(**kwargs)
+
+    monkeypatch.setattr(
+        store,
+        "replace_playbook_aggregation_cluster_agent",
+        replace_with_one_fence_loss,
+    )
+
+    result = aggregator.run(PlaybookAggregatorRequest(agent_version="v1"))
+
+    assert result["playbooks_generated"] == 1
+    assert result["attachments"] == 1
+    assert result["supersessions"] == 1
+    assert result["cluster_fence_losses"] == 1
+    assert result["retryable_failures"] == 1
+    items = store.conn.execute(
+        "SELECT user_playbook_id, disposition, cluster_id, reason FROM "
+        "playbook_aggregation_item WHERE user_playbook_id IN (3, 4) "
+        "ORDER BY user_playbook_id"
+    ).fetchall()
+    assert [tuple(row) for row in items] == [
+        (3, "residual", None, "cluster_agent_unavailable"),
+        (4, "cluster_member", "cluster-beta", "centroid_match"),
+    ]
+    clusters = store.conn.execute(
+        "SELECT cluster_id, agent_playbook_id, member_count FROM "
+        "playbook_aggregation_cluster ORDER BY cluster_id"
+    ).fetchall()
+    assert tuple(clusters[0]) == (
+        "cluster-alpha",
+        alpha_agent.agent_playbook_id,
+        1,
+    )
+    assert tuple(clusters[1])[:1] == ("cluster-beta",)
+    assert clusters[1][1] != beta_agent.agent_playbook_id
+    assert clusters[1][2] == 2
+    assert store.conn.execute("SELECT count(*) FROM agent_playbooks").fetchone()[0] == 3
+
+
 def test_incremental_run_commits_healthy_clusters_when_one_llm_outcome_fails(
     vec_store, tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1511,6 +1831,11 @@ def test_legacy_fingerprint_is_reembedded_and_adopted_without_regeneration(
             )
         ]
     )[0]
+    store.conn.execute(
+        "UPDATE agent_playbooks SET embedding='[]' WHERE agent_playbook_id=?",
+        (existing.agent_playbook_id,),
+    )
+    store.conn.commit()
     OperationStateManager(
         store, "aggregation-org", "playbook_aggregator"
     ).update_cluster_fingerprints(
@@ -1546,16 +1871,80 @@ def test_legacy_fingerprint_is_reembedded_and_adopted_without_regeneration(
     assert result["playbooks_generated"] == 0
     assert store.conn.execute("SELECT count(*) FROM agent_playbooks").fetchone()[0] == 1
     cluster = store.conn.execute(
-        "SELECT agent_playbook_id, member_count, state, embedding_model "
+        "SELECT agent_playbook_id, member_count, state, embedding_model, "
+        "centroid, vector_sum "
         "FROM playbook_aggregation_cluster"
     ).fetchone()
-    assert tuple(cluster) == (
+    assert tuple(cluster[:4]) == (
         existing.agent_playbook_id,
         2,
         "active",
         store.embedding_model_name,
     )
+    assert json.loads(cluster[4]) == embedding
+    assert cluster[5] is None
     assert store.get_playbook_aggregation_bootstrap_status("v1") == "complete"
+
+
+def test_unembeddable_legacy_agent_does_not_block_bootstrap(
+    vec_store,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    store = vec_store
+    embedding = [0.0] * store.embedding_dimensions
+    embedding[0] = 1.0
+    monkeypatch.setattr(store, "_get_embedding", lambda _text: embedding)
+    _insert_current(store, 1, trigger="same trigger")
+    existing = store.save_agent_playbooks(
+        [
+            AgentPlaybook(
+                playbook_name="playbook",
+                agent_version="v1",
+                content="Unembeddable legacy aggregate",
+                playbook_status=PlaybookStatus.PENDING,
+            )
+        ]
+    )[0]
+    store.conn.execute(
+        "UPDATE agent_playbooks SET embedding='[]' WHERE agent_playbook_id=?",
+        (existing.agent_playbook_id,),
+    )
+    store.conn.commit()
+    monkeypatch.setattr(
+        store,
+        "_get_embedding",
+        MagicMock(side_effect=RuntimeError("embedding provider unavailable")),
+    )
+    OperationStateManager(
+        store, "aggregation-org", "playbook_aggregator"
+    ).update_cluster_fingerprints(
+        name="playbook",
+        version="v1",
+        fingerprints={
+            "broken-legacy-fingerprint": {
+                "agent_playbook_id": existing.agent_playbook_id,
+                "user_playbook_ids": [1],
+            }
+        },
+    )
+    aggregator = PlaybookAggregator(
+        llm_client=MagicMock(),
+        request_context=MagicMock(org_id="aggregation-org", storage=store),
+        agent_version="v1",
+    )
+
+    assert aggregator._adopt_legacy_aggregation_state(budget=10) == (0, True)
+
+    assert store.get_playbook_aggregation_bootstrap_status("v1") == "complete"
+    assert (
+        store.conn.execute(
+            "SELECT count(*) FROM playbook_aggregation_cluster"
+        ).fetchone()[0]
+        == 0
+    )
+    assert str(existing.agent_playbook_id) in caplog.text
+    assert "could not be re-embedded" in caplog.text
 
 
 def test_empty_legacy_fingerprint_is_not_activated(vec_store, tmp_path) -> None:

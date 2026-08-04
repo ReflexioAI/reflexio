@@ -61,6 +61,9 @@ CREATE TABLE IF NOT EXISTS playbook_aggregation_cluster (
 );
 CREATE INDEX IF NOT EXISTS idx_playbook_aggregation_cluster_version
     ON playbook_aggregation_cluster(agent_version, state, cluster_id);
+CREATE INDEX IF NOT EXISTS idx_playbook_aggregation_cluster_agent
+    ON playbook_aggregation_cluster(agent_playbook_id)
+    WHERE agent_playbook_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS playbook_aggregation_item (
     agent_version TEXT NOT NULL,
@@ -266,6 +269,18 @@ class PlaybookAggregationStoreMixin:
         if limit <= 0:
             return []
         with self._lock:
+            if self._has_sqlite_vec:
+                orphaned_vectors = self.conn.execute(
+                    "SELECT rowid FROM playbook_aggregation_clusters_vec "
+                    "WHERE rowid NOT IN (SELECT index_rowid FROM "
+                    "playbook_aggregation_cluster WHERE index_rowid IS NOT NULL) "
+                    "LIMIT ?",
+                    (limit,),
+                ).fetchall()
+                self.conn.executemany(
+                    "DELETE FROM playbook_aggregation_clusters_vec WHERE rowid=?",
+                    [(int(row[0]),) for row in orphaned_vectors],
+                )
             self.conn.execute(
                 "DELETE FROM playbook_aggregation_invalidation "
                 "WHERE processed_at IS NOT NULL AND processed_at < unixepoch()-?",
@@ -612,7 +627,7 @@ class PlaybookAggregationStoreMixin:
             raise ValueError("legacy cluster embedding dimension changed")
         with self._lock:
             row = self.conn.execute(
-                "SELECT index_rowid, vector_sum, member_count, state, "
+                "SELECT index_rowid, member_count, state, "
                 "embedding_model, embedding_dimension "
                 "FROM playbook_aggregation_cluster WHERE cluster_id=?",
                 (cluster_id,),
@@ -639,21 +654,15 @@ class PlaybookAggregationStoreMixin:
                     ),
                 )
                 index_rowid = next_rowid
-                vector_sum = [0.0] * embedding_dimension
                 member_count = 0
             else:
-                if str(row[3]) == "active":
+                if str(row[2]) == "active":
                     return
-                if row[4] != embedding_model or int(row[5]) != embedding_dimension:
+                if row[3] != embedding_model or int(row[4]) != embedding_dimension:
                     raise RuntimeError("legacy cluster embedding provenance changed")
                 index_rowid = int(row[0])
-                vector_sum = (
-                    [float(value) for value in json.loads(row[1])]
-                    if row[1]
-                    else [0.0] * embedding_dimension
-                )
-                member_count = int(row[2])
-            for user_playbook_id, embedding in member_embeddings:
+                member_count = int(row[1])
+            for user_playbook_id, _embedding in member_embeddings:
                 inserted = self.conn.execute(
                     "INSERT OR IGNORE INTO playbook_aggregation_item "
                     "(agent_version, user_playbook_id, disposition, cluster_id, reason) "
@@ -661,17 +670,12 @@ class PlaybookAggregationStoreMixin:
                     (agent_version, user_playbook_id, cluster_id),
                 )
                 if inserted.rowcount == 1:
-                    vector_sum = [
-                        left + right
-                        for left, right in zip(vector_sum, embedding, strict=True)
-                    ]
                     member_count += 1
             centroid = centroid_embedding if complete and member_count else None
             self.conn.execute(
-                "UPDATE playbook_aggregation_cluster SET vector_sum=?, centroid=?, "
+                "UPDATE playbook_aggregation_cluster SET vector_sum=NULL, centroid=?, "
                 "member_count=?, rebuild_cursor=?, state=? WHERE cluster_id=?",
                 (
-                    None if complete else json.dumps(vector_sum),
                     json.dumps(centroid) if centroid is not None else None,
                     member_count,
                     rebuild_cursor,
@@ -1203,6 +1207,15 @@ class PlaybookAggregationStoreMixin:
         expected_agent_playbook_id: int,
         reason: str,
     ) -> None:
+        if self._own_transaction():
+            with self.commit_scope():
+                self.defer_playbook_aggregation_cluster_rebuild(
+                    cluster_id=cluster_id,
+                    agent_version=agent_version,
+                    expected_agent_playbook_id=expected_agent_playbook_id,
+                    reason=reason,
+                )
+            return
         with self._lock:
             updated = self.conn.execute(
                 "UPDATE playbook_aggregation_cluster SET "
@@ -1227,8 +1240,6 @@ class PlaybookAggregationStoreMixin:
                 "AND cluster_id=? AND disposition='residual'",
                 (reason, agent_version, cluster_id),
             )
-            if self._own_transaction():
-                self.conn.commit()
 
     def complete_playbook_aggregation_cluster_rebuild(
         self,
@@ -1242,6 +1253,16 @@ class PlaybookAggregationStoreMixin:
     ) -> int:
         if not centroid_embedding:
             raise ValueError("cluster centroid embedding must be non-empty")
+        if self._own_transaction():
+            with self.commit_scope():
+                return self.complete_playbook_aggregation_cluster_rebuild(
+                    cluster_id=cluster_id,
+                    agent_version=agent_version,
+                    expected_agent_playbook_id=expected_agent_playbook_id,
+                    replacement_agent_playbook_id=replacement_agent_playbook_id,
+                    centroid_embedding=centroid_embedding,
+                    embedding_model=embedding_model,
+                )
         with self._lock:
             row = self.conn.execute(
                 "SELECT index_rowid, embedding_dimension FROM "
@@ -1296,8 +1317,6 @@ class PlaybookAggregationStoreMixin:
                 "VALUES (?, ?)",
                 (rowid, json.dumps(centroid_embedding)),
             )
-            if self._own_transaction():
-                self.conn.commit()
             return member_count
 
     def discard_playbook_aggregation_cluster_rebuild(
@@ -1308,6 +1327,14 @@ class PlaybookAggregationStoreMixin:
         expected_agent_playbook_id: int,
         reason: str,
     ) -> int:
+        if self._own_transaction():
+            with self.commit_scope():
+                return self.discard_playbook_aggregation_cluster_rebuild(
+                    cluster_id=cluster_id,
+                    agent_version=agent_version,
+                    expected_agent_playbook_id=expected_agent_playbook_id,
+                    reason=reason,
+                )
         with self._lock:
             row = self.conn.execute(
                 "SELECT index_rowid FROM playbook_aggregation_cluster WHERE "
@@ -1334,8 +1361,6 @@ class PlaybookAggregationStoreMixin:
             )
             if deleted.rowcount != 1:
                 raise RuntimeError("aggregation rebuilding cluster changed")
-            if self._own_transaction():
-                self.conn.commit()
             return int(updated.rowcount)
 
     def delete_orphaned_playbook_aggregation_clusters(

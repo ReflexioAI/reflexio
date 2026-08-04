@@ -119,6 +119,10 @@ Incremental work is isolated by `agent_version`:
    embeddings—as the cluster centroid for future matches.
 6. Commit replacement, lineage, membership, centroid swap, and supersession atomically.
 
+Each refresh or rebuild cluster owns that atomic scope independently. If its
+expected agent changes after generation, only that cluster rolls back and its
+selected members return to residual work; unrelated generated clusters still commit.
+
 `REFLEXIO_MAX_CLUSTERING_PLAYBOOKS` (default 20,000) is the maximum recent
 unclustered discovery window for scheduled work. Older unclustered rows are
 intentionally ignored rather than backfilled later. Invalidation repair is a

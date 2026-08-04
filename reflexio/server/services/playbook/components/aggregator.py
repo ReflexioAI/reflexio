@@ -233,6 +233,10 @@ class _RebuildWork:
     members: list[UserPlaybook]
 
 
+class _AggregationClusterUnavailableError(RuntimeError):
+    """A cluster changed after its generation inputs were selected."""
+
+
 class PlaybookAggregator:
     def __init__(
         self,
@@ -572,11 +576,14 @@ class PlaybookAggregator:
         save_generated: Callable[
             [AggregationGenerationOutcome, list[int]], AgentPlaybook
         ],
-    ) -> tuple[list[AgentPlaybook], set[int], int]:
+        *,
+        run_id: str,
+    ) -> tuple[list[AgentPlaybook], int, int, int]:
         """Finalize bounded repair prompts against complete stored membership."""
         saved_playbooks: list[AgentPlaybook] = []
-        replaced_agent_ids: set[int] = set()
         rebuilt_member_count = 0
+        supersessions = 0
+        fence_losses = 0
         for work, outcome in zip(rebuild_work, outcomes, strict=True):
             sample = work.sample
             member_ids = [
@@ -584,41 +591,154 @@ class PlaybookAggregator:
                 for item in outcome.source_cluster
                 if item.user_playbook_id is not None
             ]
-            if outcome.status == "retryable_failure":
-                self.storage.defer_playbook_aggregation_cluster_rebuild(  # type: ignore[attr-defined]
-                    cluster_id=sample.cluster_id,
-                    agent_version=self.agent_version,
-                    expected_agent_playbook_id=sample.agent_playbook_id,
+            saved: AgentPlaybook | None = None
+            rebuilt = 0
+            try:
+                with self.storage.commit_scope():  # type: ignore[attr-defined]
+                    self._require_live_aggregation_claim()
+                    if outcome.status == "retryable_failure":
+                        try:
+                            self.storage.defer_playbook_aggregation_cluster_rebuild(  # type: ignore[attr-defined]
+                                cluster_id=sample.cluster_id,
+                                agent_version=self.agent_version,
+                                expected_agent_playbook_id=sample.agent_playbook_id,
+                                reason="llm_retryable_failure",
+                            )
+                        except RuntimeError as exc:
+                            raise _AggregationClusterUnavailableError from exc
+                    elif outcome.status == "semantic_null":
+                        try:
+                            rebuilt = self.storage.discard_playbook_aggregation_cluster_rebuild(  # type: ignore[attr-defined]
+                                cluster_id=sample.cluster_id,
+                                agent_version=self.agent_version,
+                                expected_agent_playbook_id=sample.agent_playbook_id,
+                                reason="semantic_null_rebuild",
+                            )
+                        except RuntimeError as exc:
+                            raise _AggregationClusterUnavailableError from exc
+                        supersessions += self.storage.supersede_agent_playbooks_by_ids(  # type: ignore[attr-defined]
+                            [sample.agent_playbook_id], request_id=run_id
+                        )
+                    else:
+                        saved = save_generated(outcome, member_ids)
+                        if not saved.embedding:
+                            raise RuntimeError(
+                                "rebuilt agent playbook has no centroid embedding"
+                            )
+                        try:
+                            rebuilt = self.storage.complete_playbook_aggregation_cluster_rebuild(  # type: ignore[attr-defined]
+                                cluster_id=sample.cluster_id,
+                                agent_version=self.agent_version,
+                                expected_agent_playbook_id=sample.agent_playbook_id,
+                                replacement_agent_playbook_id=saved.agent_playbook_id,
+                                centroid_embedding=saved.embedding,
+                                embedding_model=self.storage.embedding_model_name,
+                            )
+                        except RuntimeError as exc:
+                            raise _AggregationClusterUnavailableError from exc
+                        supersessions += self.storage.supersede_agent_playbooks_by_ids(  # type: ignore[attr-defined]
+                            [sample.agent_playbook_id], request_id=run_id
+                        )
+                    self._require_live_aggregation_claim()
+            except _AggregationClusterUnavailableError:
+                self._mark_aggregation_members_unavailable(member_ids)
+                fence_losses += 1
+                continue
+
+            rebuilt_member_count += rebuilt
+            if outcome.status == "semantic_null":
+                continue
+            if saved is not None:
+                saved_playbooks.append(saved)
+        return (
+            saved_playbooks,
+            rebuilt_member_count,
+            supersessions,
+            fence_losses,
+        )
+
+    def _mark_aggregation_members_unavailable(self, member_ids: list[int]) -> None:
+        """Return one stale cluster's selected members to durable residual work."""
+        with self.storage.commit_scope():  # type: ignore[attr-defined]
+            self._require_live_aggregation_claim()
+            self.storage.set_playbook_aggregation_disposition(  # type: ignore[attr-defined]
+                self.agent_version,
+                member_ids,
+                disposition="residual",
+                reason="cluster_agent_unavailable",
+            )
+            self._require_live_aggregation_claim()
+
+    def _apply_refresh_outcome(
+        self,
+        work: _IncrementalRefreshWork,
+        outcome: AggregationGenerationOutcome,
+        save_generated: Callable[
+            [AggregationGenerationOutcome, list[int]], AgentPlaybook
+        ],
+        *,
+        run_id: str,
+    ) -> tuple[AgentPlaybook | None, int, int, int]:
+        """Commit one refresh independently so a stale cluster cannot waste peers."""
+        member_ids = [
+            int(item.user_playbook_id)
+            for item in outcome.source_cluster
+            if item.user_playbook_id is not None
+        ]
+        if outcome.status == "retryable_failure":
+            with self.storage.commit_scope():  # type: ignore[attr-defined]
+                self._require_live_aggregation_claim()
+                self.storage.set_playbook_aggregation_disposition(  # type: ignore[attr-defined]
+                    self.agent_version,
+                    member_ids,
+                    disposition="residual",
                     reason="llm_retryable_failure",
                 )
-                continue
-            if outcome.status == "semantic_null":
-                rebuilt_member_count += (
-                    self.storage.discard_playbook_aggregation_cluster_rebuild(  # type: ignore[attr-defined]
-                        cluster_id=sample.cluster_id,
+                self._require_live_aggregation_claim()
+            return None, 0, 0, 0
+
+        saved: AgentPlaybook | None = None
+        supersessions = 0
+        try:
+            with self.storage.commit_scope():  # type: ignore[attr-defined]
+                self._require_live_aggregation_claim()
+                try:
+                    self.storage.attach_playbook_aggregation_items(  # type: ignore[attr-defined]
                         agent_version=self.agent_version,
-                        expected_agent_playbook_id=sample.agent_playbook_id,
-                        reason="semantic_null_rebuild",
+                        attachments=[
+                            (item_id, work.cluster_id) for item_id in member_ids
+                        ],
                     )
-                )
-                replaced_agent_ids.add(sample.agent_playbook_id)
-                continue
-            saved = save_generated(outcome, member_ids)
-            if not saved.embedding:
-                raise RuntimeError("rebuilt agent playbook has no centroid embedding")
-            rebuilt_member_count += (
-                self.storage.complete_playbook_aggregation_cluster_rebuild(  # type: ignore[attr-defined]
-                    cluster_id=sample.cluster_id,
-                    agent_version=self.agent_version,
-                    expected_agent_playbook_id=sample.agent_playbook_id,
-                    replacement_agent_playbook_id=saved.agent_playbook_id,
-                    centroid_embedding=saved.embedding,
-                    embedding_model=self.storage.embedding_model_name,
-                )
-            )
-            saved_playbooks.append(saved)
-            replaced_agent_ids.add(sample.agent_playbook_id)
-        return saved_playbooks, replaced_agent_ids, rebuilt_member_count
+                except RuntimeError as exc:
+                    raise _AggregationClusterUnavailableError from exc
+                if outcome.status == "generated":
+                    saved = save_generated(outcome, member_ids)
+                    if not saved.embedding:
+                        raise RuntimeError(
+                            "replacement agent playbook has no centroid embedding"
+                        )
+                    try:
+                        self.storage.replace_playbook_aggregation_cluster_agent(  # type: ignore[attr-defined]
+                            cluster_id=work.cluster_id,
+                            agent_version=self.agent_version,
+                            expected_agent_playbook_id=(
+                                work.current_agent.agent_playbook_id
+                            ),
+                            replacement_agent_playbook_id=saved.agent_playbook_id,
+                            centroid_embedding=saved.embedding,
+                            embedding_model=self.storage.embedding_model_name,
+                        )
+                    except RuntimeError as exc:
+                        raise _AggregationClusterUnavailableError from exc
+                    supersessions = self.storage.supersede_agent_playbooks_by_ids(  # type: ignore[attr-defined]
+                        [work.current_agent.agent_playbook_id], request_id=run_id
+                    )
+                self._require_live_aggregation_claim()
+        except _AggregationClusterUnavailableError:
+            self._mark_aggregation_members_unavailable(member_ids)
+            return None, 0, 0, 1
+
+        return saved, len(member_ids), supersessions, 0
 
     def _run_incremental(
         self,
@@ -759,7 +879,6 @@ class PlaybookAggregator:
             if item.status == "retryable_failure"
         ]
         saved_playbooks: list[AgentPlaybook] = []
-        replaced_agent_ids: set[int] = set()
         generated_playbooks = [
             item.playbook
             for item in [*refresh_outcomes, *rebuild_outcomes, *new_cluster_outcomes]
@@ -806,6 +925,8 @@ class PlaybookAggregator:
             )[0]
 
         attached_count = 0
+        supersessions = 0
+        cluster_fence_losses = 0
         with self.storage.commit_scope():  # type: ignore[attr-defined]
             self._require_live_aggregation_claim()
             self.storage.set_playbook_aggregation_disposition(  # type: ignore[attr-defined]
@@ -820,67 +941,49 @@ class PlaybookAggregator:
                 disposition="residual",
                 reason="cluster_agent_unavailable",
             )
-            for work, outcome in zip(refresh_work, refresh_outcomes, strict=True):
-                members = outcome.source_cluster
-                member_ids = [
-                    int(item.user_playbook_id)
-                    for item in members
-                    if item.user_playbook_id is not None
-                ]
-                if outcome.status == "retryable_failure":
-                    self.storage.set_playbook_aggregation_disposition(  # type: ignore[attr-defined]
-                        self.agent_version,
-                        member_ids,
-                        disposition="residual",
-                        reason="llm_retryable_failure",
-                    )
-                    continue
-                self.storage.attach_playbook_aggregation_items(  # type: ignore[attr-defined]
-                    agent_version=self.agent_version,
-                    attachments=[(item_id, work.cluster_id) for item_id in member_ids],
-                )
-                attached_count += len(member_ids)
-                if outcome.status == "semantic_null":
-                    continue
-                saved = save_generated_outcome(
-                    outcome, member_ids, reason="incremental_refresh"
-                )
-                if not saved.embedding:
-                    raise RuntimeError(
-                        "replacement agent playbook has no centroid embedding"
-                    )
-                self.storage.replace_playbook_aggregation_cluster_agent(  # type: ignore[attr-defined]
-                    cluster_id=work.cluster_id,
-                    agent_version=self.agent_version,
-                    expected_agent_playbook_id=work.current_agent.agent_playbook_id,
-                    replacement_agent_playbook_id=saved.agent_playbook_id,
-                    centroid_embedding=saved.embedding,
-                    embedding_model=self.storage.embedding_model_name,
-                )
-                saved_playbooks.append(saved)
-                replaced_agent_ids.add(work.current_agent.agent_playbook_id)
+            self._require_live_aggregation_claim()
 
-            (
-                rebuilt_playbooks,
-                rebuilt_agent_ids,
-                rebuilt_member_count,
-            ) = self._apply_rebuild_outcomes(
-                rebuild_work,
-                rebuild_outcomes,
-                lambda outcome, member_ids: save_generated_outcome(
-                    outcome, member_ids, reason="invalidation_rebuild"
+        for work, outcome in zip(refresh_work, refresh_outcomes, strict=True):
+            saved, attached, replaced, fence_losses = self._apply_refresh_outcome(
+                work,
+                outcome,
+                lambda generated, member_ids: save_generated_outcome(
+                    generated, member_ids, reason="incremental_refresh"
                 ),
+                run_id=run_id,
             )
-            saved_playbooks.extend(rebuilt_playbooks)
-            replaced_agent_ids.update(rebuilt_agent_ids)
+            attached_count += attached
+            supersessions += replaced
+            cluster_fence_losses += fence_losses
+            if saved is not None:
+                saved_playbooks.append(saved)
 
-            for outcome in new_cluster_outcomes:
-                members = outcome.source_cluster
-                member_ids = [
-                    int(item.user_playbook_id)
-                    for item in members
-                    if item.user_playbook_id is not None
-                ]
+        (
+            rebuilt_playbooks,
+            rebuilt_member_count,
+            rebuild_supersessions,
+            rebuild_fence_losses,
+        ) = self._apply_rebuild_outcomes(
+            rebuild_work,
+            rebuild_outcomes,
+            lambda outcome, member_ids: save_generated_outcome(
+                outcome, member_ids, reason="invalidation_rebuild"
+            ),
+            run_id=run_id,
+        )
+        saved_playbooks.extend(rebuilt_playbooks)
+        supersessions += rebuild_supersessions
+        cluster_fence_losses += rebuild_fence_losses
+
+        for outcome in new_cluster_outcomes:
+            members = outcome.source_cluster
+            member_ids = [
+                int(item.user_playbook_id)
+                for item in members
+                if item.user_playbook_id is not None
+            ]
+            with self.storage.commit_scope():  # type: ignore[attr-defined]
+                self._require_live_aggregation_claim()
                 if outcome.status == "retryable_failure":
                     self.storage.set_playbook_aggregation_disposition(  # type: ignore[attr-defined]
                         self.agent_version,
@@ -888,48 +991,51 @@ class PlaybookAggregator:
                         disposition="residual",
                         reason="llm_retryable_failure",
                     )
-                    continue
-                if outcome.status == "semantic_null":
+                elif outcome.status == "semantic_null":
                     self.storage.set_playbook_aggregation_disposition(  # type: ignore[attr-defined]
                         self.agent_version,
                         member_ids,
                         disposition="terminal_noop",
                         reason="semantic_null",
                     )
-                    continue
-                saved = save_generated_outcome(
-                    outcome, member_ids, reason="incremental"
-                )
-                if not saved.embedding:
-                    raise RuntimeError(
-                        "generated agent playbook has no centroid embedding"
+                else:
+                    saved = save_generated_outcome(
+                        outcome, member_ids, reason="incremental"
                     )
-                saved_playbooks.append(saved)
-                cluster_id = self._stable_aggregation_cluster_id(
-                    self._compute_cluster_fingerprint(members)
-                )
-                self.storage.create_playbook_aggregation_cluster(  # type: ignore[attr-defined]
-                    cluster_id=cluster_id,
-                    agent_version=self.agent_version,
-                    agent_playbook_id=saved.agent_playbook_id,
-                    centroid_embedding=saved.embedding,
-                    member_count=len(member_ids),
-                    embedding_model=self.storage.embedding_model_name,
-                )
-                self.storage.set_playbook_aggregation_disposition(  # type: ignore[attr-defined]
-                    self.agent_version,
-                    member_ids,
-                    disposition="cluster_member",
-                    cluster_id=cluster_id,
-                    reason="generated",
-                )
-            replaced_agent_ids.update(
+                    if not saved.embedding:
+                        raise RuntimeError(
+                            "generated agent playbook has no centroid embedding"
+                        )
+                    cluster_id = self._stable_aggregation_cluster_id(
+                        self._compute_cluster_fingerprint(members)
+                    )
+                    self.storage.create_playbook_aggregation_cluster(  # type: ignore[attr-defined]
+                        cluster_id=cluster_id,
+                        agent_version=self.agent_version,
+                        agent_playbook_id=saved.agent_playbook_id,
+                        centroid_embedding=saved.embedding,
+                        member_count=len(member_ids),
+                        embedding_model=self.storage.embedding_model_name,
+                    )
+                    self.storage.set_playbook_aggregation_disposition(  # type: ignore[attr-defined]
+                        self.agent_version,
+                        member_ids,
+                        disposition="cluster_member",
+                        cluster_id=cluster_id,
+                        reason="generated",
+                    )
+                    saved_playbooks.append(saved)
+                self._require_live_aggregation_claim()
+
+        with self.storage.commit_scope():  # type: ignore[attr-defined]
+            self._require_live_aggregation_claim()
+            orphaned_agent_ids = (
                 self.storage.delete_orphaned_playbook_aggregation_clusters(  # type: ignore[attr-defined]
                     self.agent_version
                 )
             )
-            supersessions = self.storage.supersede_agent_playbooks_by_ids(  # type: ignore[attr-defined]
-                sorted(replaced_agent_ids), request_id=run_id
+            supersessions += self.storage.supersede_agent_playbooks_by_ids(  # type: ignore[attr-defined]
+                sorted(orphaned_agent_ids), request_id=run_id
             )
             self._require_live_aggregation_claim()
 
@@ -946,7 +1052,8 @@ class PlaybookAggregator:
             "attachments": attached_count,
             "rebuilt_members": rebuilt_member_count,
             "supersessions": supersessions,
-            "retryable_failures": len(retryable_outcomes),
+            "retryable_failures": len(retryable_outcomes) + cluster_fence_losses,
+            "cluster_fence_losses": cluster_fence_losses,
             "selected_rebuild_members": rebuilding_residual_count,
         }
         self._enqueue_playbook_optimization(saved_playbooks)
@@ -957,7 +1064,11 @@ class PlaybookAggregator:
             pipeline="playbook",
             playbook_name=SINGLETON_USER_PLAYBOOK_NAME,
             agent_version=self.agent_version,
-            outcome="partial_failure" if retryable_outcomes else "success",
+            outcome=(
+                "partial_failure"
+                if retryable_outcomes or cluster_fence_losses
+                else "success"
+            ),
             count_value=len(saved_playbooks),
             duration_ms=int((time.perf_counter() - aggregation_start) * 1000),
             metadata=stats,
@@ -971,6 +1082,50 @@ class PlaybookAggregator:
                 f"{self.request_context.org_id}:{self.agent_version}:{fingerprint}",
             )
         )
+
+    def _resolve_legacy_agent_centroid(
+        self,
+        agent_playbook_id: int,
+        legacy_agent: AgentPlaybook | None,
+        embed: object,
+    ) -> list[float] | None:
+        """Return a canonical legacy-agent embedding or skip one bad fingerprint."""
+        if legacy_agent is None:
+            logger.warning(
+                "Skipping legacy aggregation fingerprint because agent playbook "
+                "%s no longer exists",
+                agent_playbook_id,
+            )
+            return None
+        expected_dimension = int(
+            self.storage.embedding_dimensions  # type: ignore[attr-defined]
+        )
+        if len(legacy_agent.embedding) == expected_dimension:
+            return legacy_agent.embedding
+        try:
+            if not callable(embed):
+                raise RuntimeError("aggregation storage cannot embed agents")
+            centroid = cast(Callable[[str], list[float]], embed)(
+                embedding_text(legacy_agent)
+            )
+        except Exception:  # noqa: BLE001 - skip one corrupt legacy record
+            logger.warning(
+                "Skipping legacy aggregation fingerprint because agent playbook "
+                "%s could not be re-embedded",
+                agent_playbook_id,
+                exc_info=True,
+            )
+            return None
+        if len(centroid) != expected_dimension:
+            logger.warning(
+                "Skipping legacy aggregation fingerprint because agent playbook "
+                "%s produced embedding dimension %s instead of %s",
+                agent_playbook_id,
+                len(centroid),
+                expected_dimension,
+            )
+            return None
+        return centroid
 
     def _adopt_legacy_aggregation_state(self, *, budget: int) -> tuple[int, bool]:
         """Rebuild legacy fingerprint centroids in bounded, resumable pages."""
@@ -1010,11 +1165,15 @@ class PlaybookAggregator:
             legacy_agents = self.storage.get_agent_playbooks_by_ids(  # type: ignore[attr-defined]
                 [agent_playbook_id], include_inactive=True, include_embedding=True
             )
-            if not legacy_agents or not legacy_agents[0].embedding:
-                # Do not activate a user-embedding mean as a centroid. The
-                # canonical agent embedding is the durable matching invariant.
-                return consumed, False
-            centroid_embedding = legacy_agents[0].embedding
+            embed = getattr(self.storage, "_get_embedding", None)
+            embed_fn = cast(Callable[[str], list[float]], embed)
+            centroid_embedding = self._resolve_legacy_agent_centroid(
+                agent_playbook_id,
+                legacy_agents[0] if legacy_agents else None,
+                embed,
+            )
+            if centroid_embedding is None:
+                continue
             cluster_id = self._stable_aggregation_cluster_id(fingerprint)
             progress = self.storage.get_playbook_aggregation_cluster_rebuild_cursor(  # type: ignore[attr-defined]
                 cluster_id
@@ -1041,10 +1200,8 @@ class PlaybookAggregator:
             member_embeddings: list[tuple[int, list[float]]] = []
             rebuild_cursor = cursor
             blocked = False
-            embed = getattr(self.storage, "_get_embedding", None)
             if not callable(embed) and page_ids:
                 raise RuntimeError("aggregation storage cannot re-embed legacy members")
-            embed_fn = cast(Callable[[str], list[float]], embed)
             for user_playbook_id in page_ids:
                 item = rows_by_id.get(user_playbook_id)
                 if item is None or not item.content or not item.content.strip():

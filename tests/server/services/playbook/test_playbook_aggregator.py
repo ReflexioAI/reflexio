@@ -1895,7 +1895,10 @@ class TestProcessAggregationResponse:
         assert outcomes[0].source_cluster[0] is cluster_a[0]
         assert outcomes[1].source_cluster[0] is cluster_b[0]
 
-    def test_generation_prompt_is_bounded_without_truncating_membership(self):
+    @pytest.mark.parametrize("is_incremental_refresh", [False, True])
+    def test_generation_prompt_is_bounded_without_truncating_membership(
+        self, is_incremental_refresh: bool
+    ):
         agg = _make_aggregator()
         cluster = [_raw(item_id) for item_id in range(1, 151)]
         captured: list[UserPlaybook] = []
@@ -1910,7 +1913,9 @@ class TestProcessAggregationResponse:
         outcomes = agg._generate_playbook_outcomes_with_source_clusters(
             {0: cluster},
             [],
-            current_agent_playbooks={0: _agent_playbook()},
+            current_agent_playbooks=(
+                {0: _agent_playbook()} if is_incremental_refresh else None
+            ),
         )
 
         assert len(captured) == 100
@@ -1930,7 +1935,7 @@ class TestProcessAggregationResponse:
             members=[source],
         )
 
-        saved, replaced, rebuilt = agg._apply_rebuild_outcomes(
+        saved, rebuilt, supersessions, fence_losses = agg._apply_rebuild_outcomes(
             [work],
             [
                 aggregator_module.AggregationGenerationOutcome(
@@ -1938,11 +1943,13 @@ class TestProcessAggregationResponse:
                 )
             ],
             MagicMock(),
+            run_id="run-1",
         )
 
         assert saved == []
-        assert replaced == set()
         assert rebuilt == 0
+        assert supersessions == 0
+        assert fence_losses == 0
         storage.defer_playbook_aggregation_cluster_rebuild.assert_called_once_with(
             cluster_id="cluster-a",
             agent_version="v1",

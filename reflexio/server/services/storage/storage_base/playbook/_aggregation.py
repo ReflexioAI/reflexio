@@ -274,7 +274,11 @@ class PlaybookAggregationStoreMixin:
         expected_agent_playbook_id: int,
         reason: str,
     ) -> None:
-        """Apply one durable retry cooldown to an entire rebuilding cluster."""
+        """Apply one durable retry cooldown to an entire rebuilding cluster.
+
+        Raises:
+            RuntimeError: If the expected agent no longer owns the rebuilding cluster.
+        """
         raise NotImplementedError
 
     def complete_playbook_aggregation_cluster_rebuild(
@@ -287,7 +291,13 @@ class PlaybookAggregationStoreMixin:
         centroid_embedding: list[float],
         embedding_model: str,
     ) -> int:
-        """Activate a rebuilt cluster and restore all remaining memberships."""
+        """Activate a rebuilt cluster and restore all remaining memberships.
+
+        Raises:
+            RuntimeError: If the expected agent no longer owns the rebuilding cluster
+                or the cluster has no residual members.
+            ValueError: If the replacement embedding dimension changed.
+        """
         raise NotImplementedError
 
     def discard_playbook_aggregation_cluster_rebuild(
@@ -298,7 +308,11 @@ class PlaybookAggregationStoreMixin:
         expected_agent_playbook_id: int,
         reason: str,
     ) -> int:
-        """Terminalize all remaining members and delete a redundant rebuild."""
+        """Terminalize all remaining members and delete a redundant rebuild.
+
+        Raises:
+            RuntimeError: If the expected agent no longer owns the rebuilding cluster.
+        """
         raise NotImplementedError
 
     def delete_orphaned_playbook_aggregation_clusters(

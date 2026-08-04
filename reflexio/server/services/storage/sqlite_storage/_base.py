@@ -932,13 +932,21 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             "SELECT c.cluster_id, c.index_rowid, a.embedding "
             "FROM playbook_aggregation_cluster c JOIN agent_playbooks a "
             "ON a.agent_playbook_id=c.agent_playbook_id "
-            "WHERE c.vector_sum IS NOT NULL AND a.embedding IS NOT NULL "
+            "WHERE c.vector_sum IS NOT NULL AND c.index_rowid IS NOT NULL "
+            "AND a.embedding IS NOT NULL "
             "AND trim(a.embedding) NOT IN ('', '[]')"
         ).fetchall()
         with self._lock:
             for row in rows:
-                embedding = json.loads(row[2])
-                if not embedding:
+                try:
+                    embedding = json.loads(row[2])
+                except (json.JSONDecodeError, TypeError):
+                    continue
+                if (
+                    not isinstance(embedding, list)
+                    or len(embedding) != self.embedding_dimensions
+                    or not all(isinstance(value, int | float) for value in embedding)
+                ):
                     continue
                 self.conn.execute(
                     "UPDATE playbook_aggregation_cluster SET centroid=?, "
