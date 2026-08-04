@@ -980,9 +980,7 @@ class ExtractionResumeWorker:
 
         if not learning_ids:
             return
-        stored_run = self.storage.get_agent_run(run.id)
-        durable_run = stored_run or run
-        billing_timestamp = durable_run.agent_completed_at or durable_run.created_at
+        billing_timestamp = run.created_at or run.agent_completed_at
         if billing_timestamp is None:
             raise ReceiptBillingDeliveryError(
                 "receipt-backed learning billing timestamp is not durable"
