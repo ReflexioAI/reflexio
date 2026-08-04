@@ -30,6 +30,7 @@ from reflexio.models.api_schema.domain.governance import (
 from reflexio.models.api_schema.retriever_schema import SearchAgentPlaybookRequest
 from reflexio.models.config_schema import GovernanceRetentionConfig
 from reflexio.server.services.governance.config import governance_subject_ref
+from reflexio.server.services.governance.service import GovernanceService
 from reflexio.server.services.storage.governance_claims import PurgeExecutionClaim
 from reflexio.server.services.storage.governance_validation import (
     _CANONICAL_DELETE_TARGET_NAMES,
@@ -49,6 +50,9 @@ from reflexio.server.services.storage.storage_base.governance._erase_execution i
 )
 from reflexio.server.services.storage.storage_base.governance._purge import (
     PurgeOperationStoreMixin,
+)
+from reflexio.server.services.storage.storage_base.governance._rebuild_hide import (
+    RebuildHideMixin as RebuildHideContractMixin,
 )
 from reflexio.server.services.storage.storage_base.governance._subject_barrier import (
     SubjectBarrierMixin,
@@ -72,6 +76,8 @@ CLAIMED_ERASURE_MUTATIONS = {
     "complete_subject_erasure_barrier_after_empty_check",
     "fail_subject_erasure_barrier",
     "apply_governance_user_data_delete",
+    "hide_governance_agent_playbooks_for_rebuild",
+    "apply_governance_agent_playbook_rebuild",
     "complete_purge_operation_with_audit",
 }
 
@@ -1647,6 +1653,10 @@ def test_claimed_erasure_mutation_signatures_and_callers_require_claim() -> None
             "apply_governance_user_data_delete",
             "complete_purge_operation_with_audit",
         },
+        RebuildHideContractMixin: {
+            "hide_governance_agent_playbooks_for_rebuild",
+            "apply_governance_agent_playbook_rebuild",
+        },
         SQLiteStorage: CLAIMED_ERASURE_MUTATIONS,
     }
     for owner, method_names in method_owners.items():
@@ -2227,6 +2237,195 @@ def test_prepare_governance_erase_targets_records_full_delete_matrix_counts(stor
     }
 
 
+def test_sqlite_rebuild_mutations_reject_missing_and_stale_claims_without_state_changes(
+    storage,
+):
+    purge_id = "purge_rebuild_claim_matrix"
+    _begin_test_purge_operation(
+        storage,
+        purge_id=purge_id,
+        idempotency_key="idem_purge_rebuild_claim_matrix",
+        operation_type="user_erasure",
+        scope_type="user",
+        subject_ref=SUBJECT_REF,
+        request_ref=REQUEST_REF,
+        authoritative_user_id="alice",
+    )
+    agent_playbook_id = _seed_agent_playbook(
+        storage,
+        status=None,
+        source_windows=[
+            AgentPlaybookSourceWindow(user_playbook_id=7, source_interaction_ids=[101]),
+            AgentPlaybookSourceWindow(user_playbook_id=9, source_interaction_ids=[201]),
+        ],
+    )
+    _record_agent_playbook_rebuild_target(
+        storage,
+        purge_id=purge_id,
+        agent_playbook_id=agent_playbook_id,
+        previous_lifecycle_status=None,
+    )
+
+    def state_snapshot() -> tuple[object, ...]:
+        playbook = storage.get_agent_playbook_by_id(
+            agent_playbook_id,
+            include_tombstones=True,
+        )
+        assert playbook is not None
+        return (
+            playbook.model_dump(
+                mode="json",
+                include={
+                    "content",
+                    "trigger",
+                    "rationale",
+                    "blocking_issue",
+                    "expanded_terms",
+                    "tags",
+                    "status",
+                },
+            ),
+            [
+                window.model_dump(mode="json")
+                for window in storage.get_source_windows_for_agent_playbook(
+                    agent_playbook_id
+                )
+            ],
+            [
+                target.model_dump(mode="json")
+                for target in storage.list_purge_targets(purge_id)
+            ],
+            dict(
+                storage.conn.execute(
+                    "SELECT * FROM purge_operations WHERE org_id = ? AND purge_id = ?",
+                    (storage.org_id, purge_id),
+                ).fetchone()
+            ),
+        )
+
+    before_missing_hide = state_snapshot()
+    _assert_rejects_missing_claim(
+        lambda: storage.hide_governance_agent_playbooks_for_rebuild(purge_id),
+        lambda: storage.hide_governance_agent_playbooks_for_rebuild(
+            purge_id,
+            execution_claim=None,  # type: ignore[arg-type]
+        ),
+    )
+    assert state_snapshot() == before_missing_hide
+
+    stale_claim, takeover_claim = _claim_then_take_over(storage, purge_id)
+    before_stale_hide = state_snapshot()
+    with pytest.raises(ValueError, match="purge execution claim"):
+        storage.hide_governance_agent_playbooks_for_rebuild(
+            purge_id,
+            execution_claim=stale_claim,
+        )
+    assert state_snapshot() == before_stale_hide
+
+    storage.hide_governance_agent_playbooks_for_rebuild(
+        purge_id,
+        execution_claim=takeover_claim,
+    )
+    apply_kwargs = {
+        "purge_id": purge_id,
+        "agent_playbook_id": agent_playbook_id,
+        "remaining_source_windows": [
+            {"user_playbook_id": 9, "source_interaction_ids": [201]}
+        ],
+        "content": "rebuilt claimed content",
+        "trigger": "rebuilt claimed trigger",
+        "rationale": "rebuilt claimed rationale",
+        "blocking_issue": None,
+        "expanded_terms": "rebuilt claimed terms",
+        "tags": ["rebuilt-claimed"],
+    }
+    before_missing_apply = state_snapshot()
+    _assert_rejects_missing_claim(
+        lambda: storage.apply_governance_agent_playbook_rebuild(**apply_kwargs),
+        lambda: storage.apply_governance_agent_playbook_rebuild(
+            **apply_kwargs,
+            execution_claim=None,  # type: ignore[arg-type]
+        ),
+    )
+    assert state_snapshot() == before_missing_apply
+    with pytest.raises(ValueError, match="purge execution claim"):
+        storage.apply_governance_agent_playbook_rebuild(
+            **apply_kwargs,
+            execution_claim=stale_claim,
+        )
+    assert state_snapshot() == before_missing_apply
+
+    storage.apply_governance_agent_playbook_rebuild(
+        **apply_kwargs,
+        execution_claim=takeover_claim,
+    )
+    rebuilt = storage.get_agent_playbook_by_id(agent_playbook_id)
+    assert rebuilt is not None
+    assert rebuilt.content == "rebuilt claimed content"
+    assert rebuilt.status is None
+    assert storage.get_source_windows_for_agent_playbook(agent_playbook_id) == [
+        AgentPlaybookSourceWindow(
+            user_playbook_id=9,
+            source_interaction_ids=[201],
+        )
+    ]
+    rebuild_target = storage.list_purge_targets(
+        purge_id,
+        phase="rebuild_without_erased_sources",
+    )
+    assert len(rebuild_target) == 1
+    assert rebuild_target[0].status == "complete"
+
+
+def test_governance_service_rebuilds_through_claimed_sqlite_contract(storage):
+    purge_id = "purge_service_claimed_rebuild"
+    _begin_test_purge_operation(
+        storage,
+        purge_id=purge_id,
+        idempotency_key="idem_purge_service_claimed_rebuild",
+        operation_type="user_erasure",
+        scope_type="user",
+        subject_ref=SUBJECT_REF,
+        request_ref=REQUEST_REF,
+        authoritative_user_id="alice",
+    )
+    agent_playbook_id = _seed_agent_playbook(
+        storage,
+        status=None,
+        source_windows=[
+            AgentPlaybookSourceWindow(user_playbook_id=7, source_interaction_ids=[101]),
+            AgentPlaybookSourceWindow(user_playbook_id=9, source_interaction_ids=[201]),
+        ],
+    )
+    _record_agent_playbook_rebuild_target(
+        storage,
+        purge_id=purge_id,
+        agent_playbook_id=agent_playbook_id,
+        previous_lifecycle_status=None,
+    )
+    claim = _claim_purge(storage, purge_id)
+    storage.hide_governance_agent_playbooks_for_rebuild(
+        purge_id,
+        execution_claim=claim,
+    )
+    service = GovernanceService(
+        storage=storage,
+        org_id=storage.org_id,
+        ref_secret="test-governance-secret",
+    )
+
+    rebuilt_ids = service._rebuild_agent_playbooks(
+        purge_id,
+        execution_claim=claim,
+    )
+
+    assert rebuilt_ids == [agent_playbook_id]
+    rebuilt = storage.get_agent_playbook_by_id(agent_playbook_id)
+    assert rebuilt is not None
+    assert rebuilt.content == "source-playbook-9"
+    assert rebuilt.status is None
+
+
 def test_hide_governance_agent_playbooks_for_rebuild_sets_archive_in_progress_and_hide_marker(
     storage,
 ):
@@ -2266,7 +2465,10 @@ def test_hide_governance_agent_playbooks_for_rebuild_sets_archive_in_progress_an
         ],
     }
 
-    hidden_ids = storage.hide_governance_agent_playbooks_for_rebuild(purge_id)
+    hidden_ids = storage.hide_governance_agent_playbooks_for_rebuild(
+        purge_id,
+        execution_claim=_claim_purge(storage, purge_id),
+    )
 
     assert hidden_ids == [agent_playbook_id]
     status = storage.conn.execute(
@@ -2362,6 +2564,7 @@ def test_apply_governance_agent_playbook_rebuild_completes_planned_phase(storage
         blocking_issue=None,
         expanded_terms="rebuilt terms",
         tags=["rebuilt"],
+        execution_claim=claim,
     )
 
     rebuild_target = next(
@@ -2438,6 +2641,7 @@ def test_apply_governance_agent_playbook_rebuild_rejects_ad_hoc_rebuild_without_
             blocking_issue=None,
             expanded_terms="rebuilt terms",
             tags=["rebuilt"],
+            execution_claim=_claim_purge(storage, purge_id),
         )
 
     assert (
@@ -2521,6 +2725,7 @@ def test_apply_governance_agent_playbook_rebuild_rejects_rebuild_before_hide_pha
             blocking_issue=None,
             expanded_terms="rebuilt terms",
             tags=["rebuilt"],
+            execution_claim=claim,
         )
 
     assert (
@@ -2584,7 +2789,11 @@ def test_apply_governance_agent_playbook_rebuild_succeeds_after_prepare_and_hide
         agent_playbook_id=agent_playbook_id,
         previous_lifecycle_status=None,
     )
-    storage.hide_governance_agent_playbooks_for_rebuild(purge_id)
+    claim = _claim_purge(storage, purge_id)
+    storage.hide_governance_agent_playbooks_for_rebuild(
+        purge_id,
+        execution_claim=claim,
+    )
 
     storage.apply_governance_agent_playbook_rebuild(
         purge_id=purge_id,
@@ -2598,6 +2807,7 @@ def test_apply_governance_agent_playbook_rebuild_succeeds_after_prepare_and_hide
         blocking_issue=None,
         expanded_terms="rebuilt terms",
         tags=["rebuilt"],
+        execution_claim=claim,
     )
 
     rebuild_target = next(
@@ -2708,6 +2918,7 @@ def test_apply_governance_agent_playbook_rebuild_does_not_complete_target_when_s
             blocking_issue=None,
             expanded_terms="rebuilt terms",
             tags=["rebuilt"],
+            execution_claim=claim,
         )
 
     assert (
@@ -2796,6 +3007,7 @@ def test_apply_governance_agent_playbook_rebuild_removes_orphaned_aggregate_when
         blocking_issue=None,
         expanded_terms=None,
         tags=None,
+        execution_claim=claim,
     )
 
     rebuild_target = next(
@@ -2907,6 +3119,7 @@ def test_apply_governance_agent_playbook_rebuild_restores_previous_lifecycle_sta
         blocking_issue=None,
         expanded_terms="rebuilt terms",
         tags=["rebuilt"],
+        execution_claim=claim,
     )
 
     rebuilt_status = storage.conn.execute(
@@ -2943,7 +3156,11 @@ def test_apply_governance_agent_playbook_rebuild_rejects_second_call_after_compl
         agent_playbook_id=agent_playbook_id,
         previous_lifecycle_status=Status.ARCHIVED.value,
     )
-    storage.hide_governance_agent_playbooks_for_rebuild(purge_id)
+    claim = _claim_purge(storage, purge_id)
+    storage.hide_governance_agent_playbooks_for_rebuild(
+        purge_id,
+        execution_claim=claim,
+    )
     storage.apply_governance_agent_playbook_rebuild(
         purge_id=purge_id,
         agent_playbook_id=agent_playbook_id,
@@ -2956,6 +3173,7 @@ def test_apply_governance_agent_playbook_rebuild_rejects_second_call_after_compl
         blocking_issue=None,
         expanded_terms="rebuilt terms",
         tags=["rebuilt"],
+        execution_claim=claim,
     )
 
     before_row = storage.conn.execute(
@@ -2994,6 +3212,7 @@ def test_apply_governance_agent_playbook_rebuild_rejects_second_call_after_compl
             blocking_issue={"issue": "should not persist"},
             expanded_terms="mutated terms",
             tags=["mutated"],
+            execution_claim=claim,
         )
 
     after_row = storage.conn.execute(
@@ -3056,7 +3275,11 @@ def test_hide_governance_agent_playbooks_for_rebuild_is_idempotent_after_complet
         agent_playbook_id=agent_playbook_id,
         previous_lifecycle_status=Status.ARCHIVED.value,
     )
-    storage.hide_governance_agent_playbooks_for_rebuild(purge_id)
+    claim = _claim_purge(storage, purge_id)
+    storage.hide_governance_agent_playbooks_for_rebuild(
+        purge_id,
+        execution_claim=claim,
+    )
     storage.apply_governance_agent_playbook_rebuild(
         purge_id=purge_id,
         agent_playbook_id=agent_playbook_id,
@@ -3069,6 +3292,7 @@ def test_hide_governance_agent_playbooks_for_rebuild_is_idempotent_after_complet
         blocking_issue=None,
         expanded_terms="rebuilt terms",
         tags=["rebuilt"],
+        execution_claim=claim,
     )
 
     before_status = storage.conn.execute(
@@ -3091,7 +3315,10 @@ def test_hide_governance_agent_playbooks_for_rebuild_is_idempotent_after_complet
         and target.target_ref == str(agent_playbook_id)
     )
 
-    hidden_ids = storage.hide_governance_agent_playbooks_for_rebuild(purge_id)
+    hidden_ids = storage.hide_governance_agent_playbooks_for_rebuild(
+        purge_id,
+        execution_claim=claim,
+    )
 
     after_status = storage.conn.execute(
         "SELECT status FROM agent_playbooks WHERE agent_playbook_id = ?",
@@ -3149,7 +3376,11 @@ def test_hide_governance_agent_playbooks_for_rebuild_does_not_reopen_complete_ta
         agent_playbook_id=agent_playbook_id,
         previous_lifecycle_status=Status.ARCHIVED.value,
     )
-    storage.hide_governance_agent_playbooks_for_rebuild(purge_id)
+    claim = _claim_purge(storage, purge_id)
+    storage.hide_governance_agent_playbooks_for_rebuild(
+        purge_id,
+        execution_claim=claim,
+    )
     storage.apply_governance_agent_playbook_rebuild(
         purge_id=purge_id,
         agent_playbook_id=agent_playbook_id,
@@ -3162,6 +3393,7 @@ def test_hide_governance_agent_playbooks_for_rebuild_does_not_reopen_complete_ta
         blocking_issue=None,
         expanded_terms="rebuilt terms",
         tags=["rebuilt"],
+        execution_claim=claim,
     )
 
     before_status = storage.conn.execute(
@@ -3194,7 +3426,10 @@ def test_hide_governance_agent_playbooks_for_rebuild_does_not_reopen_complete_ta
 
     monkeypatch.setattr(storage, "list_purge_targets", stale_list_purge_targets)
 
-    hidden_ids = storage.hide_governance_agent_playbooks_for_rebuild(purge_id)
+    hidden_ids = storage.hide_governance_agent_playbooks_for_rebuild(
+        purge_id,
+        execution_claim=claim,
+    )
 
     assert hidden_ids == []
     assert (
@@ -4666,7 +4901,10 @@ def test_apply_governance_user_data_delete_retains_lineage_skeleton(
         owned_user_playbook_ids=owned_user_playbook_ids,
         execution_claim=_claim_purge(storage, purge_id),
     )
-    storage.hide_governance_agent_playbooks_for_rebuild(purge_id)
+    storage.hide_governance_agent_playbooks_for_rebuild(
+        purge_id,
+        execution_claim=_claim_purge(storage, purge_id),
+    )
 
     counts = storage.apply_governance_user_data_delete(
         purge_id=purge_id,
@@ -4780,7 +5018,10 @@ def test_apply_governance_user_data_delete_is_failure_atomic(storage, monkeypatc
         owned_user_playbook_ids=owned_user_playbook_ids,
         execution_claim=_claim_purge(storage, purge_id),
     )
-    storage.hide_governance_agent_playbooks_for_rebuild(purge_id)
+    storage.hide_governance_agent_playbooks_for_rebuild(
+        purge_id,
+        execution_claim=_claim_purge(storage, purge_id),
+    )
 
     before_counts = _user_scoped_row_counts(storage, user_id=user_id)
     before_profile_rows = storage.conn.execute(
@@ -4885,6 +5126,7 @@ def test_apply_governance_agent_playbook_rebuild_rejects_unsafe_purge_id_before_
             blocking_issue=None,
             expanded_terms="updated terms",
             tags=["updated"],
+            execution_claim=_typed_test_claim_for_unvalidated_purge_id("request_12345"),
         )
 
     after_row = storage.conn.execute(
@@ -4983,6 +5225,7 @@ def test_apply_governance_agent_playbook_rebuild_rejects_mismatched_remaining_so
             blocking_issue=None,
             expanded_terms="rebuilt terms",
             tags=["rebuilt"],
+            execution_claim=_claim_purge(storage, purge_id),
         )
 
     rebuilt_row = storage.conn.execute(
