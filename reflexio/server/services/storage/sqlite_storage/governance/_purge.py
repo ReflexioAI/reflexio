@@ -351,29 +351,34 @@ class PurgeOperationStoreMixin:
         validated_error_detail = _validate_governance_error_detail(error_detail)
         now = _epoch_now()
         with self._lock:
-            cur = self.conn.execute(
-                """UPDATE purge_operations
-                   SET status = 'failed', error_code = ?, error_detail = ?,
-                   updated_at = ?, completed_at = ?
-                   WHERE purge_id = ? AND org_id = ? AND status != 'complete'""",
-                (
-                    validated_error_code,
-                    validated_error_detail,
-                    now,
-                    now,
-                    purge_id,
-                    self.org_id,
-                ),
-            )
-            if cur.rowcount == 0:
-                existing = self.conn.execute(
-                    "SELECT status FROM purge_operations WHERE purge_id = ? AND org_id = ?",
-                    (purge_id, self.org_id),
-                ).fetchone()
-                if existing is not None and str(existing["status"]) == "complete":
-                    raise ValueError("Purge operation is already complete")
-                raise ValueError(f"Purge operation {purge_id!r} not found")
-            self.conn.commit()
+            try:
+                self.conn.execute("BEGIN IMMEDIATE")
+                cur = self.conn.execute(
+                    """UPDATE purge_operations
+                       SET status = 'failed', error_code = ?, error_detail = ?,
+                       updated_at = ?, completed_at = ?
+                       WHERE purge_id = ? AND org_id = ? AND status != 'complete'""",
+                    (
+                        validated_error_code,
+                        validated_error_detail,
+                        now,
+                        now,
+                        purge_id,
+                        self.org_id,
+                    ),
+                )
+                if cur.rowcount == 0:
+                    existing = self.conn.execute(
+                        "SELECT status FROM purge_operations WHERE purge_id = ? AND org_id = ?",
+                        (purge_id, self.org_id),
+                    ).fetchone()
+                    if existing is not None and str(existing["status"]) == "complete":
+                        raise ValueError("Purge operation is already complete")
+                    raise ValueError(f"Purge operation {purge_id!r} not found")
+                self.conn.commit()
+            except Exception:
+                self.conn.rollback()
+                raise
         return self.get_purge_operation(purge_id)
 
     def get_purge_operation(self, purge_id: str) -> PurgeOperation:

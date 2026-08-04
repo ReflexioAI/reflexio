@@ -65,6 +65,8 @@ from ._stall_state import init_stall_state_table
 
 logger = logging.getLogger(__name__)
 
+_MINIMUM_SQLITE_VERSION = (3, 35, 0)
+
 
 # ---------------------------------------------------------------------------
 # Module-level helpers
@@ -663,6 +665,12 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
 
         logger.info("SQLite Storage for org %s using db_path: %s", org_id, db_path)
 
+        if sqlite3.sqlite_version_info < _MINIMUM_SQLITE_VERSION:
+            detected_version = ".".join(map(str, sqlite3.sqlite_version_info))
+            raise RuntimeError(
+                f"SQLite 3.35.0 or newer is required; detected {detected_version}"
+            )
+
         # Ensure parent directory exists
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
 
@@ -770,6 +778,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         # _DDL creates an index over these columns. Upgrade legacy request tables
         # before executescript so index creation cannot fail on missing columns.
         self._migrate_request_retrieval_experiment()
+        self._migrate_session_outcomes_schema()
         with self._lock:
             cur = self.conn.cursor()
             cur.executescript(_DDL)
@@ -806,6 +815,115 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         init_stall_state_table(self.conn)
         self._migrate_learning_jobs()
         return True
+
+    def _migrate_session_outcomes_schema(self) -> None:
+        """Restore the pre-identity outcome schema after downgrading #407."""
+        with self._lock:
+            table_info = self.conn.execute(
+                "PRAGMA table_info(session_outcomes)"
+            ).fetchall()
+            if not table_info:
+                return
+            expected_columns = {
+                "user_id",
+                "session_id",
+                "outcome",
+                "occurred_at",
+                "source",
+                "label",
+                "value",
+                "metadata",
+                "governance_subject_ref",
+                "created_at",
+            }
+            columns = {str(row["name"]): row for row in table_info}
+            table = self.conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' "
+                "AND name = 'session_outcomes'"
+            ).fetchone()
+            table_sql = str(table["sql"] or "") if table is not None else ""
+            governance_column = columns.get("governance_subject_ref")
+            identity_columns = {
+                "outcome_id",
+                "outcome_revision",
+                "outcome_contract_digest",
+                "finalized_trajectory_digest",
+            }
+            if (
+                expected_columns.issubset(columns)
+                and not identity_columns.intersection(columns)
+                and governance_column is not None
+                and int(governance_column["notnull"]) == 1
+                and "'unknown'" not in table_sql
+            ):
+                return
+
+            self.conn.execute("BEGIN IMMEDIATE")
+            try:
+                legacy_rows = self.conn.execute(
+                    "SELECT * FROM session_outcomes"
+                ).fetchall()
+                self.conn.execute(
+                    "ALTER TABLE session_outcomes RENAME TO session_outcomes_legacy"
+                )
+                self.conn.execute(
+                    """CREATE TABLE session_outcomes (
+                        user_id TEXT NOT NULL,
+                        session_id TEXT NOT NULL,
+                        outcome TEXT NOT NULL CHECK (outcome IN ('success', 'failure')),
+                        occurred_at INTEGER NOT NULL,
+                        source TEXT NOT NULL,
+                        label TEXT,
+                        value REAL,
+                        metadata TEXT,
+                        governance_subject_ref TEXT NOT NULL,
+                        created_at INTEGER NOT NULL,
+                        PRIMARY KEY (user_id, session_id)
+                    )"""
+                )
+                compatible_rows = [
+                    row
+                    for row in legacy_rows
+                    if row["outcome"] in ("success", "failure")
+                ]
+                for row in compatible_rows:
+                    subject_ref = (
+                        row["governance_subject_ref"]
+                        if "governance_subject_ref" in columns
+                        else None
+                    )
+                    if subject_ref is None or not str(subject_ref).strip():
+                        subject_ref = self._subject_ref_for_user_id(str(row["user_id"]))
+                    self.conn.execute(
+                        """INSERT INTO session_outcomes (
+                               user_id, session_id, outcome, occurred_at, source,
+                               label, value, metadata, governance_subject_ref, created_at
+                           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (
+                            row["user_id"],
+                            row["session_id"],
+                            row["outcome"],
+                            row["occurred_at"],
+                            row["source"],
+                            row["label"] if "label" in columns else None,
+                            row["value"] if "value" in columns else None,
+                            row["metadata"] if "metadata" in columns else None,
+                            subject_ref,
+                            row["created_at"],
+                        ),
+                    )
+                dropped_unknown = len(legacy_rows) - len(compatible_rows)
+                if dropped_unknown:
+                    logger.warning(
+                        "Dropped %d unrepresentable 'unknown' session outcomes while "
+                        "restoring the pre-#407 schema",
+                        dropped_unknown,
+                    )
+                self.conn.execute("DROP TABLE session_outcomes_legacy")
+                self.conn.commit()
+            except Exception:
+                self.conn.rollback()
+                raise
 
     def _try_load_sqlite_vec(self) -> bool:
         """Attempt to load the sqlite-vec extension for native KNN search.
@@ -2258,8 +2376,8 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             user_id (str): The user id whose rows should be deleted.
 
         Returns:
-            dict[str, int]: Per-entity counts with keys ``interactions``,
-                ``user_playbooks``, ``profiles``, ``requests``,
+            dict[str, int]: Per-entity counts with keys ``session_outcomes``,
+                ``interactions``, ``user_playbooks``, ``profiles``, ``requests``,
                 ``purged_profiles``, and ``purged_user_playbooks``.
                 ``profiles`` and ``user_playbooks`` reflect hard-deleted counts;
                 purged rows are counted separately.
@@ -2336,9 +2454,10 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             interactions_cur = self.conn.execute(
                 "DELETE FROM interactions WHERE user_id = ?", (user_id,)
             )
-            self.conn.execute(
-                "DELETE FROM session_outcomes WHERE governance_subject_ref = ?",
-                (subject_ref,),
+            session_outcomes_cur = self.conn.execute(
+                """DELETE FROM session_outcomes
+                   WHERE user_id = ? OR governance_subject_ref = ?""",
+                (user_id, subject_ref),
             )
             requests_cur = self.conn.execute(
                 "DELETE FROM requests WHERE user_id = ?", (user_id,)
@@ -2375,6 +2494,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                 self.purge_content(entity_type="user_playbook", entity_id=str(upid))
 
         return {
+            "session_outcomes": session_outcomes_cur.rowcount,
             "interactions": interactions_cur.rowcount,
             "user_playbooks": upb_deleted_count,
             "profiles": profile_deleted_count,

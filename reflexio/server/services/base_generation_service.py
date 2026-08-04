@@ -342,10 +342,11 @@ class BaseGenerationService(
             results: List of all results from extractors (one per successful extractor)
         """
 
-    def _finalize_extracted_items(self, items: list) -> None:
+    def _finalize_extracted_items(self, items: list) -> list:
         """Persist already-flattened extracted items through the service path."""
         if items:
             self._process_results([items])
+        return items
 
     @abstractmethod
     def _should_track_in_progress(self) -> bool:

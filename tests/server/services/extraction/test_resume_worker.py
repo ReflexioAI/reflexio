@@ -337,6 +337,52 @@ def test_resume_worker_retries_finalization_without_rerunning_agent(
     assert storage.list_run_tool_dependencies("run_1")[0].consumed_at is not None
 
 
+@pytest.mark.parametrize(
+    ("extractor_kind", "finalize_path", "entity_type"),
+    [
+        (
+            "profile",
+            "reflexio.server.services.profile.service."
+            "ProfileGenerationService._finalize_extracted_items",
+            "profile",
+        ),
+        (
+            "playbook",
+            "reflexio.server.services.playbook.service."
+            "PlaybookGenerationService._finalize_extracted_items",
+            "user_playbook",
+        ),
+    ],
+)
+def test_resume_bills_only_items_that_survive_finalization(
+    request_context, extractor_kind, finalize_path, entity_type
+):
+    run = AgentRunRecord(
+        id="survivor-run",
+        binding=AgentBinding(
+            org_id="org_1",
+            extractor_kind=extractor_kind,
+            user_id="user_1",
+            request_id="request_1",
+            agent_version="v1",
+            source="api",
+        ),
+        status=AgentRunStatus.FINALIZING,
+        generation_request_snapshot={},
+    )
+    dropped = object()
+    survivor = object()
+    worker = ExtractionResumeWorker(request_context=request_context)
+
+    with (
+        patch(finalize_path, return_value=[survivor]),
+        patch.object(worker, "_record_finalized_learnings") as record,
+    ):
+        worker._finalize_items(run, [dropped, survivor])
+
+    record.assert_called_once_with(run, [survivor], entity_type=entity_type)
+
+
 def test_resume_worker_tagging_schedule_failure_is_best_effort(
     request_context,
 ):

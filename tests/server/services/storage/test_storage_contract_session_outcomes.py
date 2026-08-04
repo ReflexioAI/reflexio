@@ -125,3 +125,34 @@ def test_empty_request_source_is_preserved(storage: BaseStorage) -> None:
         GetSessionOutcomesRequest(session_ids=["empty-source"])
     )
     assert record.source == ""
+
+
+def test_clear_outcomes_survives_governance_secret_rotation(
+    storage: BaseStorage, monkeypatch
+) -> None:
+    monkeypatch.setenv("REFLEXIO_GOVERNANCE_REF_SECRET", "old-secret")
+    storage.add_request(
+        Request(
+            request_id="rotated-r1",
+            user_id="rotated-user",
+            session_id="rotated-session",
+            source="test",
+            created_at=100,
+        )
+    )
+    request = SetSessionOutcomeRequest(
+        session_id="rotated-session",
+        outcome=SessionOutcomeKind.SUCCESS,
+        occurred_at=101,
+    )
+    storage.record_session_outcome(
+        request,
+        created_at=102,
+        expected_context=storage.get_session_outcome_context("rotated-session"),
+    )
+
+    monkeypatch.setenv("REFLEXIO_GOVERNANCE_REF_SECRET", "new-secret")
+    counts = storage.clear_session_outcomes_for_user("rotated-user")
+
+    assert counts == {"session_outcomes": 1}
+    assert storage.get_session_outcomes(GetSessionOutcomesRequest()) == []

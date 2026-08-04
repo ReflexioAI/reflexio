@@ -145,8 +145,9 @@ class GovernanceEraseExecutionMixin:
         deps = self._deps()
         subject_ref = deps._subject_ref_for_user_id(user_id)
         session_outcomes_cur = self.conn.execute(
-            "DELETE FROM session_outcomes WHERE governance_subject_ref = ?",
-            (subject_ref,),
+            """DELETE FROM session_outcomes
+               WHERE user_id = ? OR governance_subject_ref = ?""",
+            (user_id, subject_ref),
         )
         interaction_ids = [
             int(row["interaction_id"])
@@ -269,11 +270,7 @@ class GovernanceEraseExecutionMixin:
             )
 
         return {
-            **(
-                {"session_outcomes": session_outcomes_cur.rowcount}
-                if session_outcomes_cur.rowcount
-                else {}
-            ),
+            "session_outcomes": session_outcomes_cur.rowcount,
             "interactions": interactions_cur.rowcount,
             "user_playbooks": len(delete_upb_ids),
             "profiles": len(delete_profile_ids),
@@ -372,7 +369,7 @@ class GovernanceEraseExecutionMixin:
         }
         with self._lock:
             try:
-                self.conn.execute("BEGIN")
+                self.conn.execute("BEGIN IMMEDIATE")
                 self._validate_prepared_delete_target_matrix_locked(purge_id)
                 self._validate_hide_for_rebuild_targets_locked(purge_id)
                 expected_user_playbook_ids = (

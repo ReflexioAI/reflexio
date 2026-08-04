@@ -86,6 +86,7 @@ def record_learnings_generated(
     agent_version: str | None = None,
     playbook_name: str | None = None,
     entity_type: str | None = None,
+    event_key: str | None = None,
     metadata: Mapping[str, Any] | None = None,
 ) -> None:
     """Emit the Learning value facet — number of profiles/playbooks generated.
@@ -96,9 +97,10 @@ def record_learnings_generated(
     :func:`record_learnings_generated_records` whenever the caller has the
     durable learning ids in scope. No-op when ``count <= 0``.
 
-    Emits a single event carrying a synthesized ``event_key=f"learn-batch:{uuid4()}"``
-    (distinct per call) so this aggregate event still has a dedup key, even
-    though it is not entity-backed.
+    Emits a single event carrying ``event_key`` when the caller has a durable
+    retry identity, otherwise synthesizes ``f"learn-batch:{uuid4()}"``. This
+    gives retryable callers an idempotent aggregate event without forcing an
+    unstable key on event-moment callers.
 
     Args:
         org_id: Organisation identifier.
@@ -113,6 +115,7 @@ def record_learnings_generated(
         agent_version: Optional agent version tied to the generated learning.
         playbook_name: Optional playbook name for playbook learnings.
         entity_type: Optional entity type (e.g. ``"profile"``).
+        event_key: Optional caller-supplied, retry-stable event key.
         metadata: Optional path-specific usage metadata.
     """
     if count <= 0:
@@ -129,7 +132,7 @@ def record_learnings_generated(
         agent_version=agent_version,
         playbook_name=playbook_name,
         entity_type=entity_type,
-        event_key=f"learn-batch:{uuid.uuid4()}",
+        event_key=event_key or f"learn-batch:{uuid.uuid4()}",
         count_value=count,
         platform_llm=platform_llm,
         platform_storage=platform_storage,
@@ -227,6 +230,7 @@ def emit_learnings_generated(
     agent_version: str | None = None,
     playbook_name: str | None = None,
     entity_type: str | None = None,
+    event_key: str | None = None,
     metadata: Mapping[str, Any] | None = None,
 ) -> None:
     """Resolve ``platform_llm`` from config and emit the Learning value facet.
@@ -251,6 +255,7 @@ def emit_learnings_generated(
         agent_version: Optional agent version tied to the generated learning.
         playbook_name: Optional playbook name for playbook learnings.
         entity_type: Optional entity type (e.g. ``"profile"``).
+        event_key: Optional caller-supplied, retry-stable event key.
         metadata: Optional path-specific usage metadata.
     """
     if count <= 0:
@@ -271,6 +276,7 @@ def emit_learnings_generated(
             agent_version=agent_version,
             playbook_name=playbook_name,
             entity_type=entity_type,
+            event_key=event_key,
             metadata=metadata,
         )
     except Exception:

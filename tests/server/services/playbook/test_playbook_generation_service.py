@@ -92,6 +92,31 @@ def test_inline_aggregation_default_path_schedules_durably():
     _storage(service).schedule_playbook_aggregation.assert_called_once_with("v1")
 
 
+def test_post_persist_scheduler_failures_are_best_effort(caplog):
+    configurator = MagicMock()
+    configurator.get_config.return_value = _aggregation_enabled_config()
+    service = _service_for_inline_aggregation(configurator)
+    plan = MagicMock()
+    plan.new_playbooks = [MagicMock()]
+    plan.output_pending_status = False
+    plan.skip_aggregation = False
+    service._enqueue_user_playbook_optimization = MagicMock(
+        side_effect=RuntimeError("optimization unavailable")
+    )
+    service._trigger_playbook_aggregation = MagicMock(
+        side_effect=RuntimeError("aggregation unavailable")
+    )
+
+    service._dispatch_playbook_schedulers(plan)
+
+    service._enqueue_user_playbook_optimization.assert_called_once_with(
+        plan.new_playbooks
+    )
+    service._trigger_playbook_aggregation.assert_called_once_with()
+    assert "optimization unavailable" in caplog.text
+    assert "aggregation unavailable" in caplog.text
+
+
 def test_maybe_trigger_user_playbook_aggregation_durably_schedules():
     from reflexio.server.services.playbook.aggregation_trigger import (
         maybe_trigger_user_playbook_aggregation,

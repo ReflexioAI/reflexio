@@ -337,7 +337,7 @@ class ProfileGenerationService(
         all_new_profiles: list[UserProfile],
         *,
         model_provenance: ModelProvenance | None = None,
-    ) -> None:
+    ) -> list[UserProfile]:
         """Permanent V3 wrapper: compute-then-persist together (no external fence).
 
         Kept for the synchronous resume/manual callers
@@ -349,8 +349,10 @@ class ProfileGenerationService(
         if model_provenance is not None:
             self._last_model_provenance = model_provenance
         plan = self._resolve_write_plan([all_new_profiles])
-        if plan is not None:
-            self._persist_write_plan(plan)
+        if plan is None:
+            return []
+        self._persist_write_plan(plan)
+        return plan.new_profiles
 
     def check_and_update_profiles(self, profiles: list[UserProfile]) -> None:
         """check if the profiles are expired and update them if they are"""

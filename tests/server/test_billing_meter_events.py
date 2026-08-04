@@ -126,6 +126,19 @@ def test_records_emits_distinct_keys():
     assert len(keys) == len(set(keys)) == 3
 
 
+def test_batch_record_accepts_a_retry_stable_event_key():
+    with patch(HOOK) as hook:
+        record_learnings_generated(
+            org_id="org1",
+            count=2,
+            platform_llm=True,
+            platform_storage=None,
+            event_key="learn-batch:resumable:run-1:profile",
+        )
+
+    assert hook.call_args.kwargs["event_key"] == ("learn-batch:resumable:run-1:profile")
+
+
 def test_records_totals_preserved():
     with patch(HOOK) as hook:
         record_learnings_generated_records(

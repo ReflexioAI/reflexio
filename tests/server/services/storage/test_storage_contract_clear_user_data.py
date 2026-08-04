@@ -11,6 +11,10 @@ from datetime import UTC, datetime
 
 import pytest
 
+from reflexio.models.api_schema.domain import (
+    SessionOutcomeKind,
+    SetSessionOutcomeRequest,
+)
 from reflexio.models.api_schema.service_schemas import (
     AgentPlaybook,
     Interaction,
@@ -186,9 +190,20 @@ class TestClearUserData:
                 _make_profile("userA", "pa2"),
             ],
         )
+        outcome = SetSessionOutcomeRequest(
+            session_id="sess_ra1",
+            outcome=SessionOutcomeKind.SUCCESS,
+            occurred_at=int(datetime.now(UTC).timestamp()),
+        )
+        storage.record_session_outcome(
+            outcome,
+            created_at=int(datetime.now(UTC).timestamp()),
+            expected_context=storage.get_session_outcome_context("sess_ra1"),
+        )
 
         counts = storage.clear_user_data("userA")
 
+        assert counts["session_outcomes"] == 1
         assert counts["interactions"] == 2
         assert counts["user_playbooks"] == 2
         assert counts["profiles"] == 2

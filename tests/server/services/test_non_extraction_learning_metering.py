@@ -77,6 +77,24 @@ def test_resumable_finalization_falls_back_when_items_lack_ids() -> None:
     assert event.event_key is not None and event.event_key.startswith("learn-batch:")
 
 
+def test_resumable_fallback_reuses_its_event_key_on_finalization_retry() -> None:
+    events: list[UsageEvent] = []
+    configure_usage_event_recorder(events.append)
+    worker = ExtractionResumeWorker(
+        request_context=_request_context(),
+        llm_client=MagicMock(),
+    )
+    run = _agent_run(extractor_kind="profile")
+
+    worker._record_finalized_learnings(run, [object()], entity_type="profile")
+    worker._record_finalized_learnings(run, [object()], entity_type="profile")
+
+    assert [event.event_key for event in events] == [
+        "learn-batch:resumable:run-1:profile",
+        "learn-batch:resumable:run-1:profile",
+    ]
+
+
 def test_resumable_finalization_emits_one_event_per_profile_id() -> None:
     """When every item carries a durable ``profile_id`` (the common case --
     profile ids are assigned by the extractor before finalize runs), emit one

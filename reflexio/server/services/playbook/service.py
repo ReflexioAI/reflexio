@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from reflexio.server.services.deferred_learning_plan import GenerationComputePlan
     from reflexio.server.services.storage.storage_base import BaseStorage
 
+from reflexio.models.api_schema.common import sanitise_for_log
 from reflexio.models.api_schema.domain.entities import LineageContext
 from reflexio.models.api_schema.internal_schema import RequestInteractionDataModel
 from reflexio.models.api_schema.service_schemas import (
@@ -601,10 +602,22 @@ class PlaybookGenerationService(
         keeping that path identical to the pre-split monolith. The two callers
         are mutually exclusive, so the schedulers fire exactly once per run.
         """
-        self._enqueue_user_playbook_optimization(plan.new_playbooks)
+        try:
+            self._enqueue_user_playbook_optimization(plan.new_playbooks)
+        except Exception:
+            logger.exception(
+                "Failed to schedule post-persist playbook optimization for request %s",
+                sanitise_for_log(plan.request_id),
+            )
         if not plan.output_pending_status and not plan.skip_aggregation:
-            logger.info("Trigger playbook aggregation")
-            self._trigger_playbook_aggregation()
+            try:
+                logger.info("Trigger playbook aggregation")
+                self._trigger_playbook_aggregation()
+            except Exception:
+                logger.exception(
+                    "Failed to schedule post-persist playbook aggregation for request %s",
+                    sanitise_for_log(plan.request_id),
+                )
 
     def emit_generation_side_effects(self, plan: GenerationComputePlan) -> None:
         """Post-commit side-effects — base telemetry/billing + playbook schedulers.
@@ -624,7 +637,7 @@ class PlaybookGenerationService(
         all_playbooks: list[UserPlaybook],
         *,
         model_provenance: ModelProvenance | None = None,
-    ) -> None:
+    ) -> list[UserPlaybook]:
         """Permanent V3 wrapper: compute→persist→schedulers together (no fence).
 
         Kept for the synchronous resume/manual callers
@@ -638,9 +651,10 @@ class PlaybookGenerationService(
             self._last_model_provenance = model_provenance
         plan = self._resolve_write_plan([all_playbooks])
         if plan is None:
-            return
+            return []
         self._persist_write_plan(plan)
         self._dispatch_playbook_schedulers(plan)
+        return plan.new_playbooks
 
     def _apply_consolidation_lineage(
         self,

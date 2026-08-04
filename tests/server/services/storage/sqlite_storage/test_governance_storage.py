@@ -560,6 +560,36 @@ def test_complete_purge_operation_with_audit_begins_immediate_transaction_before
     assert begin_index < first_validation_read_index
 
 
+def test_apply_governance_delete_begins_immediate_transaction_before_reads(storage):
+    purge_id = _begin_purge(storage, "purge_delete_begin_immediate")
+    for target_name in CANONICAL_DELETE_TARGET_NAMES:
+        storage.record_purge_target(
+            purge_id=purge_id,
+            target_name=target_name,
+            target_ref="all",
+            phase="delete",
+            status="pending",
+            detail={"count": 0},
+        )
+    statements: list[str] = []
+    storage.conn.set_trace_callback(statements.append)
+    try:
+        with pytest.raises(ValueError, match="prepared purge snapshot"):
+            storage.apply_governance_user_data_delete(purge_id, "empty-user")
+    finally:
+        storage.conn.set_trace_callback(None)
+
+    begin_index = next(
+        i for i, statement in enumerate(statements) if statement == "BEGIN IMMEDIATE"
+    )
+    first_validation_read_index = next(
+        i
+        for i, statement in enumerate(statements)
+        if statement.lstrip().upper().startswith("SELECT")
+    )
+    assert begin_index < first_validation_read_index
+
+
 def test_complete_purge_operation_with_audit_accepts_planned_success_detail(storage):
     purge_id = _begin_completeable_purge(storage, "purge_success_detail")
     deleted_counts = {
@@ -1052,6 +1082,7 @@ def test_prepare_governance_erase_targets_records_full_delete_matrix_counts(stor
 
     counts = storage.clear_user_data(user_id)
     assert counts == {
+        "session_outcomes": 0,
         "interactions": 1,
         "user_playbooks": 1,
         "profiles": 1,
@@ -2529,6 +2560,18 @@ def test_fail_purge_operation_persists_code_shaped_error_detail(storage):
     assert failed.error_detail == "target_delete_failed"
 
 
+def test_fail_missing_purge_rolls_back_implicit_transaction(storage):
+    with pytest.raises(ValueError, match="not found"):
+        storage.fail_purge_operation(
+            "purge_missing",
+            error_code="PURGE_TARGET_FAILED",
+            error_detail="target_delete_failed",
+        )
+
+    assert storage.conn.in_transaction is False
+    _begin_purge(storage, "purge_after_missing_failure")
+
+
 @pytest.mark.parametrize(
     "error_code", ["content_purge_failed", "prompt_redaction_route"]
 )
@@ -3271,6 +3314,7 @@ def test_apply_governance_user_data_delete_retains_lineage_skeleton(
     )
 
     assert counts == {
+        "session_outcomes": 0,
         "interactions": 1,
         "user_playbooks": 1,
         "profiles": 1,

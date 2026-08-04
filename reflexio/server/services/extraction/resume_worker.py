@@ -884,8 +884,12 @@ class ExtractionResumeWorker:
                 auto_run=False,
                 force_extraction=True,
             )
-            service._finalize_extracted_items(items, model_provenance=model_provenance)
-            self._record_finalized_learnings(run, items, entity_type="profile")
+            persisted_items = service._finalize_extracted_items(
+                items, model_provenance=model_provenance
+            )
+            self._record_finalized_learnings(
+                run, persisted_items or [], entity_type="profile"
+            )
             return
         if run.binding.extractor_kind == "playbook":
             service = PlaybookGenerationService(
@@ -900,8 +904,12 @@ class ExtractionResumeWorker:
                 auto_run=False,
                 force_extraction=True,
             )
-            service._finalize_extracted_items(items, model_provenance=model_provenance)
-            self._record_finalized_learnings(run, items, entity_type="user_playbook")
+            persisted_items = service._finalize_extracted_items(
+                items, model_provenance=model_provenance
+            )
+            self._record_finalized_learnings(
+                run, persisted_items or [], entity_type="user_playbook"
+            )
             return
         raise ResumeWorkerError(
             f"Unsupported extractor kind {run.binding.extractor_kind!r}"
@@ -968,6 +976,7 @@ class ExtractionResumeWorker:
             request_id=run.binding.request_id,
             agent_version=run.binding.agent_version,
             entity_type=entity_type,
+            event_key=f"learn-batch:resumable:{run.id}:{entity_type}",
             metadata=metadata,
         )
 

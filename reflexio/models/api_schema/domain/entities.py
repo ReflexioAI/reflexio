@@ -954,8 +954,8 @@ class DeleteUserPlaybooksByIdsRequest(BaseModel):
     user_playbook_ids: list[int] = Field(min_length=1, max_length=10_000)
 
 
-# Clear all data scoped to a single user_id (interactions, requests, user
-# playbooks, profiles). Used by paired-protocol harnesses (e.g. SWE-bench) to
+# Clear all data scoped to a single user_id (interactions, requests, session
+# outcomes, user playbooks, profiles). Used by paired-protocol harnesses (e.g. SWE-bench) to
 # isolate per-task data on a shared storage backend without nuking sibling
 # tasks' rows. Intentionally does NOT touch agent_playbooks — they are the
 # cross-project rollup of skills and have no user_id column.
