@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+import pytest
 from fastapi.testclient import TestClient
 
 from reflexio.models.api_schema.domain import UserPlaybook
@@ -32,7 +33,7 @@ def _playbook(playbook_id: int, content: str) -> UserPlaybook:
 
 
 @contextmanager
-def _search_results(playbooks: list[UserPlaybook]) -> Iterator[None]:
+def _search_results(playbooks: list[UserPlaybook]) -> Iterator[MagicMock]:
     reflexio = MagicMock()
     reflexio.request_context.configurator.get_config.return_value = Config(
         storage_config=StorageConfigSQLite()
@@ -52,7 +53,7 @@ def _search_results(playbooks: list[UserPlaybook]) -> Iterator[None]:
         "reflexio.server.routes.search.reflexio_cache.get_reflexio",
         return_value=reflexio,
     ):
-        yield
+        yield reflexio
 
 
 def _client() -> TestClient:
@@ -151,3 +152,43 @@ def test_oss_search_succeeds_when_no_recorder_is_registered() -> None:
     assert [item["user_playbook_id"] for item in response.json()["user_playbooks"]] == [
         11
     ]
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("top_k", 101),
+        ("request_id", "r" * 256),
+        ("session_id", "s" * 256),
+        ("user_id", "u" * 256),
+    ],
+)
+def test_unified_search_rejects_oversized_work_before_search_execution(
+    field: str,
+    value: object,
+) -> None:
+    with _search_results([]) as reflexio:
+        response = _client().post(
+            "/api/search",
+            json={"query": "answer", field: value},
+        )
+
+    assert response.status_code == 422
+    reflexio.unified_search.assert_not_called()
+
+
+def test_unified_search_accepts_exact_workload_and_identifier_limits() -> None:
+    with _search_results([]) as reflexio:
+        response = _client().post(
+            "/api/search",
+            json={
+                "query": "answer",
+                "top_k": 100,
+                "request_id": "r" * 255,
+                "session_id": "s" * 255,
+                "user_id": "u" * 255,
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    reflexio.unified_search.assert_called_once()

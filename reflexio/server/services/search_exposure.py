@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sized
 from dataclasses import dataclass, field
 from hashlib import sha256
 from secrets import token_hex
@@ -13,6 +14,8 @@ from reflexio.server.services.playbook.publication import (
     canonical_json_bytes,
     incumbent_user_playbook_semantic_digest,
 )
+
+MAX_EXPOSURE_EVENTS_PER_BATCH = 100
 
 
 @dataclass(frozen=True)
@@ -89,6 +92,14 @@ def record_search_exposures(batch: SearchExposureBatch) -> None:
         recorder.record(batch)
 
 
+def validate_exposure_batch_size(events: Sized) -> None:
+    """Reject exposure batches that exceed the fixed storage safety bound."""
+    if len(events) > MAX_EXPOSURE_EVENTS_PER_BATCH:
+        raise ValueError(
+            f"exposure batch must contain at most {MAX_EXPOSURE_EVENTS_PER_BATCH} events"
+        )
+
+
 def user_playbook_full_version_fingerprint(playbook: UserPlaybook) -> str:
     """Bind every persisted playbook field except its derived embedding vector.
 
@@ -161,10 +172,12 @@ def build_user_playbook_exposure_event(
 __all__ = [
     "SEARCH_EXPOSURE_RECORDER",
     "ExposureEventWriteResult",
+    "MAX_EXPOSURE_EVENTS_PER_BATCH",
     "SearchExposureBatch",
     "SearchExposureRecorder",
     "UserPlaybookExposureEvent",
     "build_user_playbook_exposure_event",
     "record_search_exposures",
     "user_playbook_full_version_fingerprint",
+    "validate_exposure_batch_size",
 ]

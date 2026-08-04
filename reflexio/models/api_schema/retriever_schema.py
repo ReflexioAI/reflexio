@@ -794,7 +794,8 @@ class UnifiedSearchRequest(BaseModel):
 
     Args:
         query (str): Search query text
-        top_k (int, optional): Maximum results per entity type. Defaults to 5
+        top_k (int, optional): Maximum results per entity type, up to 100.
+            Defaults to 5.
         threshold (float, optional): Similarity threshold for vector search.
             When omitted, the embedding model's default is used.
         agent_version (str, optional): Filter by agent version (agent_playbooks, user_playbooks)
@@ -812,11 +813,11 @@ class UnifiedSearchRequest(BaseModel):
     """
 
     query: NonEmptyStr
-    top_k: int | None = Field(default=5, gt=0)
+    top_k: int | None = Field(default=5, gt=0, le=100)
     threshold: float | None = Field(default=None, ge=0.0, le=1.0)
     agent_version: str | None = None
     playbook_name: str | None = None
-    user_id: str | None = None
+    user_id: str | None = Field(default=None, max_length=255)
     tags: list[str] | None = None
     entity_types: list[UnifiedSearchEntityType] | None = None
     agent_playbook_status_filter: list[PlaybookStatus] | None = None
@@ -829,8 +830,8 @@ class UnifiedSearchRequest(BaseModel):
     # ``session_id`` additionally enables session-scoped result dedup: items
     # already served to the same (org, session) are skipped and the next-best
     # matches backfilled (see server/services/retrieval/session_dedup.py).
-    request_id: str | None = None
-    session_id: str | None = None
+    request_id: str | None = Field(default=None, max_length=255)
+    session_id: str | None = Field(default=None, max_length=255)
     interaction_id: int | None = Field(default=None, gt=0)
 
 

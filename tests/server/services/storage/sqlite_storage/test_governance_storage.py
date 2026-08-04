@@ -2377,6 +2377,177 @@ def test_sqlite_rebuild_mutations_reject_missing_and_stale_claims_without_state_
     assert rebuild_target[0].status == "complete"
 
 
+def _prepare_blocking_embedding_rebuild(
+    storage: SQLiteStorage,
+    *,
+    suffix: str,
+) -> tuple[int, PurgeExecutionClaim, dict[str, object]]:
+    purge_id = f"purge_blocking_embedding_{suffix}"
+    _begin_test_purge_operation(
+        storage,
+        purge_id=purge_id,
+        idempotency_key=f"idem_{purge_id}",
+        operation_type="user_erasure",
+        scope_type="user",
+        subject_ref=SUBJECT_REF,
+        request_ref=REQUEST_REF,
+        authoritative_user_id="alice",
+    )
+    agent_playbook_id = _seed_agent_playbook(
+        storage,
+        status=None,
+        source_windows=[
+            AgentPlaybookSourceWindow(user_playbook_id=7, source_interaction_ids=[101]),
+            AgentPlaybookSourceWindow(user_playbook_id=9, source_interaction_ids=[201]),
+        ],
+    )
+    _record_agent_playbook_rebuild_target(
+        storage,
+        purge_id=purge_id,
+        agent_playbook_id=agent_playbook_id,
+        previous_lifecycle_status=None,
+    )
+    claim = _claim_purge(storage, purge_id)
+    storage.hide_governance_agent_playbooks_for_rebuild(
+        purge_id,
+        execution_claim=claim,
+    )
+    return (
+        agent_playbook_id,
+        claim,
+        {
+            "purge_id": purge_id,
+            "agent_playbook_id": agent_playbook_id,
+            "remaining_source_windows": [
+                {"user_playbook_id": 9, "source_interaction_ids": [201]}
+            ],
+            "content": "rebuilt after embedding",
+            "trigger": "embedding trigger",
+            "rationale": "embedding rationale",
+            "blocking_issue": None,
+            "expanded_terms": "embedding terms",
+            "tags": ["embedding"],
+            "execution_claim": claim,
+        },
+    )
+
+
+def test_sqlite_rebuild_embedding_does_not_hold_shared_storage_lock(storage) -> None:
+    agent_playbook_id, _, apply_kwargs = _prepare_blocking_embedding_rebuild(
+        storage,
+        suffix="ordinary_read",
+    )
+    embedding_started = threading.Event()
+    release_embedding = threading.Event()
+    rebuild_errors: list[BaseException] = []
+    read_finished = threading.Event()
+
+    def blocking_embedding(_text: str, purpose: str = "document") -> list[float]:
+        assert purpose == "document"
+        embedding_started.set()
+        assert release_embedding.wait(timeout=5)
+        return [0.0] * 512
+
+    def rebuild() -> None:
+        try:
+            storage.apply_governance_agent_playbook_rebuild(**apply_kwargs)
+        except BaseException as exc:  # pragma: no cover - asserted below
+            rebuild_errors.append(exc)
+
+    def ordinary_read() -> None:
+        storage.get_agent_playbook_by_id(agent_playbook_id, include_tombstones=True)
+        read_finished.set()
+
+    with patch.object(storage, "_get_embedding", side_effect=blocking_embedding):
+        rebuild_thread = threading.Thread(target=rebuild)
+        rebuild_thread.start()
+        read_thread = threading.Thread(target=ordinary_read)
+        try:
+            assert embedding_started.wait(timeout=5)
+            read_thread.start()
+            read_completed_while_embedding_blocked = read_finished.wait(timeout=0.5)
+        finally:
+            release_embedding.set()
+            rebuild_thread.join(timeout=5)
+            if read_thread.ident is not None:
+                read_thread.join(timeout=5)
+
+    assert read_completed_while_embedding_blocked is True
+    assert rebuild_errors == []
+    assert not rebuild_thread.is_alive()
+    assert not read_thread.is_alive()
+
+
+def test_sqlite_rebuild_revalidates_claim_after_embedding_takeover(
+    storage_factory,
+) -> None:
+    storage = storage_factory("org1")
+    peer = storage_factory("org1")
+    agent_playbook_id, stale_claim, apply_kwargs = _prepare_blocking_embedding_rebuild(
+        storage,
+        suffix="claim_takeover",
+    )
+    before = storage.get_agent_playbook_by_id(
+        agent_playbook_id,
+        include_tombstones=True,
+    )
+    assert before is not None
+    embedding_started = threading.Event()
+    release_embedding = threading.Event()
+    rebuild_errors: list[BaseException] = []
+
+    def blocking_embedding(_text: str, purpose: str = "document") -> list[float]:
+        assert purpose == "document"
+        embedding_started.set()
+        assert release_embedding.wait(timeout=5)
+        return [0.0] * 512
+
+    def rebuild() -> None:
+        try:
+            storage.apply_governance_agent_playbook_rebuild(**apply_kwargs)
+        except BaseException as exc:
+            rebuild_errors.append(exc)
+
+    takeover_claim: PurgeExecutionClaim | None = None
+    with patch.object(storage, "_get_embedding", side_effect=blocking_embedding):
+        rebuild_thread = threading.Thread(target=rebuild)
+        rebuild_thread.start()
+        try:
+            assert embedding_started.wait(timeout=5)
+            peer.conn.execute("PRAGMA busy_timeout = 500")
+            peer.conn.execute(
+                """UPDATE purge_operations
+                   SET execution_claim_expires_at = 0
+                   WHERE org_id = ? AND purge_id = ?""",
+                (peer.org_id, apply_kwargs["purge_id"]),
+            )
+            peer.conn.commit()
+            takeover_claim = peer.claim_purge_operation_execution(
+                str(apply_kwargs["purge_id"]),
+                lease_owner="takeover-owner",
+                lease_ttl_seconds=30,
+            )
+        finally:
+            release_embedding.set()
+            rebuild_thread.join(timeout=5)
+
+    assert takeover_claim is not None
+    assert takeover_claim.fence == stale_claim.fence + 1
+    assert len(rebuild_errors) == 1
+    assert isinstance(rebuild_errors[0], ValueError)
+    assert "purge execution claim" in str(rebuild_errors[0])
+    after = storage.get_agent_playbook_by_id(
+        agent_playbook_id,
+        include_tombstones=True,
+    )
+    assert after == before
+    [target] = storage.list_purge_targets(
+        str(apply_kwargs["purge_id"]),
+        phase="rebuild_without_erased_sources",
+    )
+    assert target.status == "running"
+
+
 def test_governance_service_rebuilds_through_claimed_sqlite_contract(storage):
     purge_id = "purge_service_claimed_rebuild"
     _begin_test_purge_operation(

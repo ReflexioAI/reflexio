@@ -224,17 +224,17 @@ class RebuildHideMixin:
         canonical_remaining_windows = [window.model_dump() for window in windows]
         content_value = content or ""
         trigger_value = trigger or None
+        embedding: list[float] = []
+        if windows:
+            embedding_text = playbook_trigger_embedding_text(trigger_value)
+            embedding = (
+                self._deps()._get_embedding(embedding_text) if embedding_text else []
+            )
         with self._lock:
             try:
                 self.conn.execute("BEGIN IMMEDIATE")
                 self._assert_purge_operation_execution_claim_locked(
                     purge_id, execution_claim
-                )
-                embedding_text = playbook_trigger_embedding_text(trigger_value)
-                embedding = (
-                    self._deps()._get_embedding(embedding_text)
-                    if embedding_text
-                    else []
                 )
                 rebuild_target_row = self.conn.execute(
                     """SELECT status, detail
