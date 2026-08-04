@@ -517,7 +517,7 @@ class AgentSuccessConfig(_ExtractorWindowOverrideCompatMixin, BaseModel):
     # (one agent-success evaluator per org), so the name is accepted but ignored.
     evaluation_name: NonEmptyStr | None = None
     success_definition_prompt: SanitizedNonEmptyStr
-    metadata_definition_prompt: str | None = None
+    tagging_definition_prompt: str | None = None
     request_sources_enabled: list[str] | None = (
         None  # default enabled for all sources, if set, only evaluate requests from the enabled request sources
     )

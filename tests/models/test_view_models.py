@@ -302,6 +302,7 @@ class TestToEvaluationResultView:
             number_of_correction_per_session=3,
             user_turns_to_resolution=7,
             is_escalated=True,
+            tags=["support", "escalated"],
             embedding=_FAKE_EMBEDDING,
         )
         view = to_evaluation_result_view(result)
@@ -317,6 +318,7 @@ class TestToEvaluationResultView:
         assert view.number_of_correction_per_session == 3
         assert view.user_turns_to_resolution == 7
         assert view.is_escalated is True
+        assert view.tags == ["support", "escalated"]
 
 
 class TestToProfileChangeLogView:

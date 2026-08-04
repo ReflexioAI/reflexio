@@ -421,7 +421,7 @@ Key files:
 - `components/retrieved_learning_evaluator.py`: `RetrievedLearningEvaluator` - per-learning relevance/impact judges over `Interaction.retrieved_learnings`; results replace the session's `retrieved_learning_evaluation` snapshot atomically (generation + session-fingerprint fenced, see `services/storage/storage_base/retrieved_learning_state.py`)
 - `services/storage/storage_base/evaluation_state_keys.py`: single source of truth for the three evaluation `_operation_state` key formats (agent-success marker, grade-on-demand cache, retrieved-learning state) shared by producers and governance erasure
 
-**Flow**: Interactions → `agent_success_evaluation/scheduler.py` → `agent_success_evaluation/runner.py` → `agent_success_evaluation/service.py` → `agent_success_evaluation/components/evaluator.py` → `AgentSuccessEvaluationResult` → Storage
+**Flow**: Interactions → `agent_success_evaluation/scheduler.py` → `agent_success_evaluation/runner.py` → `agent_success_evaluation/service.py` → `agent_success_evaluation/components/evaluator.py` → `AgentSuccessEvaluationResult` → Storage → deferred `tagging/` pass when `AgentSuccessConfig.tagging_definition_prompt` is configured
 
 **Session-Level Evaluation**: Evaluator treats one user's `request_interaction_data_models` in a session as a single conversation. Sampling rate checked once per session (not per-request). Results are keyed by `(user_id, session_id, evaluation_name)` so reused session IDs across users do not clobber each other.
 

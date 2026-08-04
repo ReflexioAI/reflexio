@@ -216,6 +216,41 @@ def test_barrier_blocks_playbook_eval_and_source_window_writes(
         )
 
 
+def test_barrier_blocks_deferred_evaluation_tag_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage = _storage(tmp_path, monkeypatch)
+    subject_ref = governance_subject_ref("org-barrier", "alice", "barrier-secret")
+    result = AgentSuccessEvaluationResult(
+        user_id="alice",
+        session_id="sess-before-barrier",
+        agent_version="agent-v1",
+        evaluation_name="barrier-test",
+        is_success=True,
+    )
+    storage.save_agent_success_evaluation_results([result])
+    persisted = storage.get_agent_success_evaluation_results(user_id="alice")[0]
+    purge = storage.begin_purge_operation(
+        purge_id="purge_deferred_tag_write",
+        idempotency_key="idem_deferred_tag_write",
+        operation_type="user_erasure",
+        scope_type="user",
+        subject_ref=subject_ref,
+        request_ref="reqref_v1_11111111111111111111111111111112",
+    )
+    storage.begin_subject_erasure_barrier(subject_ref, purge.purge_id)
+
+    with pytest.raises(SubjectWriteBarrierError):
+        storage.update_agent_success_evaluation_result_tags(
+            persisted.result_id,
+            ["blocked"],
+            expected_result=persisted,
+        )
+
+    assert storage.get_agent_success_evaluation_results(user_id="alice")[0].tags is None
+
+
 def test_begin_subject_erasure_barrier_requires_matching_purge(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

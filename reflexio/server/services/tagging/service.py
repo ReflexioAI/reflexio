@@ -7,6 +7,7 @@ from pydantic import ConfigDict, Field
 
 from reflexio.models.api_schema.service_schemas import (
     AgentPlaybook,
+    AgentSuccessEvaluationResult,
     UserPlaybook,
     UserProfile,
 )
@@ -67,6 +68,7 @@ class TaggingService:
         agent_version: str,
         tag_profiles: bool = True,
         tag_playbooks: bool = True,
+        tag_evaluations: bool = True,
     ) -> None:
         if self.storage is None:
             return
@@ -80,6 +82,9 @@ class TaggingService:
         )
         user_playbook_prompt = getattr(
             config.user_playbook_extractor_config, "tagging_definition_prompt", None
+        )
+        evaluation_prompt = getattr(
+            config.agent_success_config, "tagging_definition_prompt", None
         )
 
         if tag_profiles and profile_prompt:
@@ -95,6 +100,38 @@ class TaggingService:
             self._tag_agent_playbooks(
                 agent_version=agent_version,
                 tagging_definition_prompt=user_playbook_prompt,
+            )
+        if tag_evaluations and evaluation_prompt:
+            self._tag_evaluations(
+                user_id=user_id,
+                agent_version=agent_version,
+                tagging_definition_prompt=evaluation_prompt,
+            )
+
+    def _tag_evaluations(
+        self,
+        *,
+        user_id: str,
+        agent_version: str,
+        tagging_definition_prompt: str,
+    ) -> None:
+        evaluations = self.storage.get_agent_success_evaluation_results(  # type: ignore[union-attr]
+            limit=_TAGGING_FETCH_LIMIT,
+            user_id=user_id,
+            agent_version=agent_version,
+            only_untagged=True,
+        )
+        for evaluation in evaluations:
+            if evaluation.tags is not None:
+                continue
+            tags = self._generate_tags(
+                tagging_definition_prompt=tagging_definition_prompt,
+                content=self._evaluation_content(evaluation),
+            )
+            self.storage.update_agent_success_evaluation_result_tags(  # type: ignore[union-attr]
+                evaluation.result_id,
+                tags,
+                expected_result=evaluation,
             )
 
     def _tag_profiles(self, *, user_id: str, tagging_definition_prompt: str) -> None:
@@ -198,3 +235,20 @@ class TaggingService:
         if playbook.rationale:
             parts.append(f"Rationale: {playbook.rationale}")
         return "\n".join(part for part in parts if part)
+
+    @staticmethod
+    def _evaluation_content(evaluation: AgentSuccessEvaluationResult) -> str:
+        parts = [f"Outcome: {'success' if evaluation.is_success else 'failure'}"]
+        if evaluation.failure_type:
+            parts.append(f"Failure type: {evaluation.failure_type}")
+        if evaluation.failure_reason:
+            parts.append(f"Failure reason: {evaluation.failure_reason}")
+        parts.append(f"Escalated: {'yes' if evaluation.is_escalated else 'no'}")
+        parts.append(
+            f"Corrective user turns: {evaluation.number_of_correction_per_session}"
+        )
+        if evaluation.user_turns_to_resolution is not None:
+            parts.append(
+                f"User turns to resolution: {evaluation.user_turns_to_resolution}"
+            )
+        return "\n".join(parts)

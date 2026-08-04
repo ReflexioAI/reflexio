@@ -134,6 +134,7 @@ class EvaluationResultView(BaseModel):
     )
     user_turns_to_resolution: int | None = None
     is_escalated: bool = False
+    tags: list[str] | None = None
 
 
 class ProfileChangeLogView(BaseModel):

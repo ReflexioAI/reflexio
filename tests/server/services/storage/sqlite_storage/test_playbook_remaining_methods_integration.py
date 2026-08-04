@@ -411,6 +411,99 @@ class TestDeleteAllAgentSuccessEvaluationResults:
 
         assert s.get_agent_success_evaluation_results(limit=100) == []
 
+    def test_tags_round_trip_and_user_scope(self, tmp_path):
+        s = _store(tmp_path)
+        s.save_agent_success_evaluation_results(
+            [
+                _make_eval_result(user_id="u1", session_id="s1"),
+                _make_eval_result(user_id="u2", session_id="s2"),
+            ]
+        )
+
+        u1_results = s.get_agent_success_evaluation_results(
+            limit=100, agent_version="v1", user_id="u1"
+        )
+        assert len(u1_results) == 1
+        assert u1_results[0].tags is None
+
+        assert s.update_agent_success_evaluation_result_tags(
+            u1_results[0].result_id,
+            [],
+            expected_result=u1_results[0],
+        )
+        assert s.get_agent_success_evaluation_results(user_id="u1")[0].tags == []
+        assert (
+            s.get_agent_success_evaluation_results(user_id="u1", only_untagged=True)
+            == []
+        )
+        pending = s.get_agent_success_evaluation_results(
+            limit=1,
+            agent_version="v1",
+            only_untagged=True,
+        )
+        assert [result.user_id for result in pending] == ["u2"]
+
+        u2_result = s.get_agent_success_evaluation_results(user_id="u2")[0]
+        assert s.update_agent_success_evaluation_result_tags(
+            u2_result.result_id,
+            ["support"],
+            expected_result=u2_result,
+        )
+        assert s.get_agent_success_evaluation_results(user_id="u2")[0].tags == [
+            "support"
+        ]
+
+        s.conn.execute(
+            "UPDATE agent_success_evaluation_result "
+            "SET tags = NULL, failure_reason = ? WHERE result_id = ?",
+            ("regenerated", u2_result.result_id),
+        )
+        s.conn.commit()
+
+        assert not s.update_agent_success_evaluation_result_tags(
+            u2_result.result_id,
+            ["stale"],
+            expected_result=u2_result,
+        )
+        regenerated = s.get_agent_success_evaluation_results(user_id="u2")[0]
+        assert regenerated.tags is None
+        assert regenerated.failure_reason == "regenerated"
+        assert s.update_agent_success_evaluation_result_tags(
+            regenerated.result_id,
+            ["retagged"],
+            expected_result=regenerated,
+        )
+
+        s.conn.execute(
+            "UPDATE agent_success_evaluation_result "
+            "SET tags = NULL, agent_version = ?, regular_vs_shadow = ? "
+            "WHERE result_id = ?",
+            ("v2", "tied", regenerated.result_id),
+        )
+        s.conn.commit()
+
+        assert not s.update_agent_success_evaluation_result_tags(
+            regenerated.result_id,
+            ["stale-version"],
+            expected_result=regenerated,
+        )
+        current = s.get_agent_success_evaluation_results(
+            user_id="u2", agent_version="v2"
+        )[0]
+        assert current.tags is None
+        assert current.regular_vs_shadow is not None
+        stale_mode = current.model_copy(update={"regular_vs_shadow": None})
+        assert not s.update_agent_success_evaluation_result_tags(
+            current.result_id,
+            ["stale-mode"],
+            expected_result=stale_mode,
+        )
+        assert s.update_agent_success_evaluation_result_tags(
+            current.result_id,
+            ["current"],
+            expected_result=current,
+        )
+
     def test_idempotent_on_empty_table(self, tmp_path):
         """Calling on an empty table raises no error and leaves the table empty."""
         s = _store(tmp_path)

@@ -1,10 +1,10 @@
-"""Singleton scheduler for deferred, off-publish-path entity tagging.
+"""Singleton scheduler for deferred, off-request-path entity tagging.
 
-Tagging runs an LLM call per newly generated profile/playbook, so it must not
-block the publish request. This scheduler mirrors
+Tagging runs an LLM call per newly generated profile, playbook, or evaluation,
+so it must not block the publish or evaluation request. This scheduler mirrors
 :class:`GroupEvaluationScheduler`: a single daemon thread with a min-heap, where
-each publish upserts the fire time for its ``(org_id, user_id, agent_version)``
-key. Rapid successive publishes for the same key debounce into a single tagging
+each enqueue upserts the fire time for its ``(org_id, user_id, agent_version)``
+key. Rapid successive enqueues for the same key debounce into a single tagging
 pass; when the timer fires, the tagging callback runs on its own daemon thread.
 
 Tagging is idempotent (already-tagged entities are skipped), so a deferred pass
@@ -15,6 +15,7 @@ happens when a tagging definition is first configured.
 from __future__ import annotations
 
 import heapq
+import itertools
 import logging
 import os
 import threading
@@ -55,8 +56,9 @@ class TaggingScheduler:
         return cls._instance
 
     def __init__(self) -> None:
-        self._scheduled: dict[TaggingKey, tuple[float, Callable]] = {}
-        self._heap: list[tuple[float, TaggingKey]] = []
+        self._scheduled: dict[TaggingKey, tuple[float, int, Callable]] = {}
+        self._heap: list[tuple[float, int, TaggingKey]] = []
+        self._sequence = itertools.count()
         self._mutex = threading.Lock()
         self._wake_event = threading.Event()
         self._thread = threading.Thread(
@@ -69,8 +71,9 @@ class TaggingScheduler:
         """Schedule or reschedule a tagging pass for ``key`` (slides the fire time forward)."""
         fire_time = time.monotonic() + _EFFECTIVE_DELAY_SECONDS
         with self._mutex:
-            self._scheduled[key] = (fire_time, callback)
-            heapq.heappush(self._heap, (fire_time, key))
+            sequence = next(self._sequence)
+            self._scheduled[key] = (fire_time, sequence, callback)
+            heapq.heappush(self._heap, (fire_time, sequence, key))
         self._wake_event.set()
 
     def drain(self, *, timeout_seconds: float = 5.0) -> bool:
@@ -106,13 +109,13 @@ class TaggingScheduler:
 
                 with self._mutex:
                     while self._heap and self._heap[0][0] <= time.monotonic():
-                        fire_time, key = heapq.heappop(self._heap)
+                        _fire_time, sequence, key = heapq.heappop(self._heap)
 
                         current = self._scheduled.get(key)
                         if current is None:
                             continue
-                        current_fire_time, callback = current
-                        if abs(current_fire_time - fire_time) > 0.001:
+                        _current_fire_time, current_sequence, callback = current
+                        if current_sequence != sequence:
                             # Superseded by a newer schedule for the same key.
                             continue
 

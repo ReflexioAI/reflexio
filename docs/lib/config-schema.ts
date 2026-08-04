@@ -56,7 +56,7 @@ export interface ProfileExtractorConfig {
   extractor_name: string;
   extraction_definition_prompt: string;
   context_prompt: string | null;
-  metadata_definition_prompt: string | null;
+  tagging_definition_prompt: string | null;
   manual_trigger: boolean;
   window_size_override: number | null;
   stride_size_override: number | null;
@@ -78,7 +78,7 @@ export interface UserPlaybookExtractorConfig {
   extractor_name: string;
   extraction_definition_prompt: string;
   context_prompt: string | null;
-  metadata_definition_prompt: string | null;
+  tagging_definition_prompt: string | null;
   aggregation_config: PlaybookAggregatorConfig;
   deduplication_config: DeduplicationConfig | null;
   window_size_override: number | null;
@@ -88,7 +88,7 @@ export interface UserPlaybookExtractorConfig {
 export interface AgentSuccessConfig {
   evaluation_name: string;
   success_definition_prompt: string;
-  metadata_definition_prompt: string | null;
+  tagging_definition_prompt: string | null;
   sampling_rate: number;
   window_size_override: number | null;
   stride_size_override: number | null;
@@ -152,7 +152,7 @@ export function defaultProfileExtractor(): ProfileExtractorConfig {
     extractor_name: "new_profile_extractor",
     extraction_definition_prompt: "",
     context_prompt: null,
-    metadata_definition_prompt: null,
+    tagging_definition_prompt: null,
     manual_trigger: false,
     window_size_override: null,
     stride_size_override: null,
@@ -164,7 +164,7 @@ export function defaultPlaybookExtractor(): UserPlaybookExtractorConfig {
     extractor_name: "new_playbook_extractor",
     extraction_definition_prompt: "",
     context_prompt: null,
-    metadata_definition_prompt: null,
+    tagging_definition_prompt: null,
     aggregation_config: {
       min_cluster_size: 2,
       reaggregation_trigger_count: 2,
@@ -181,7 +181,7 @@ export function defaultAgentSuccess(): AgentSuccessConfig {
   return {
     evaluation_name: "new_evaluation",
     success_definition_prompt: "",
-    metadata_definition_prompt: null,
+    tagging_definition_prompt: null,
     sampling_rate: 1.0,
     window_size_override: null,
     stride_size_override: null,
@@ -256,7 +256,7 @@ export function serializeConfig(config: ReflexioConfig): unknown {
     T extends {
       extraction_definition_prompt: string;
       context_prompt: string | null;
-      metadata_definition_prompt: string | null;
+      tagging_definition_prompt: string | null;
     },
   >(
     extractor: T | null,
@@ -267,7 +267,19 @@ export function serializeConfig(config: ReflexioConfig): unknown {
     return {
       ...extractor,
       context_prompt: clean(extractor.context_prompt),
-      metadata_definition_prompt: clean(extractor.metadata_definition_prompt),
+      tagging_definition_prompt: clean(extractor.tagging_definition_prompt),
+    };
+  };
+
+  const cleanAgentSuccess = (
+    agentSuccess: AgentSuccessConfig | null,
+  ): AgentSuccessConfig | null => {
+    if (!agentSuccess) return null;
+    return {
+      ...agentSuccess,
+      tagging_definition_prompt: clean(
+        agentSuccess.tagging_definition_prompt,
+      ),
     };
   };
 
@@ -281,7 +293,7 @@ export function serializeConfig(config: ReflexioConfig): unknown {
     user_playbook_extractor_config: cleanExtractor(
       config.user_playbook_extractor_config,
     ),
-    agent_success_config: config.agent_success_config,
+    agent_success_config: cleanAgentSuccess(config.agent_success_config),
     extraction_preset: config.extraction_preset,
     window_size: config.window_size,
     stride_size: config.stride_size,
