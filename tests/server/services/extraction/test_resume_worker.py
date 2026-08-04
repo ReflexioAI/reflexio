@@ -667,6 +667,7 @@ def test_resumable_finalization_bills_only_durable_ids_idempotently_on_retry(
     request_context,
 ):
     """A mixed batch charges its persisted profile once across finalization retries."""
+    billing_created_at = datetime(2026, 8, 31, 23, 59, tzinfo=UTC)
     run = AgentRunRecord(
         id="run_mixed_billing",
         binding=AgentBinding(
@@ -679,6 +680,7 @@ def test_resumable_finalization_bills_only_durable_ids_idempotently_on_retry(
         ),
         status=AgentRunStatus.FINALIZATION_FAILED,
         generation_request_snapshot={"request_id": "request_1"},
+        agent_completed_at=billing_created_at,
     )
     learning_ids = ["profile_1"]
     worker = ExtractionResumeWorker(request_context=request_context)
@@ -701,6 +703,10 @@ def test_resumable_finalization_bills_only_durable_ids_idempotently_on_retry(
     assert [call.kwargs["entity_id"] for call in record_event.call_args_list] == [
         "profile_1",
         "profile_1",
+    ]
+    assert [call.kwargs["created_at"] for call in record_event.call_args_list] == [
+        billing_created_at.timestamp(),
+        billing_created_at.timestamp(),
     ]
 
 
@@ -747,6 +753,7 @@ def test_delivery_failure_after_receipt_commit_retries_billing_without_recompute
             ]
         }
     )
+    billing_created_at = datetime(2026, 8, 31, 23, 59, tzinfo=UTC)
     storage.create_agent_run(
         AgentRunRecord(
             id=run_id,
@@ -767,6 +774,7 @@ def test_delivery_failure_after_receipt_commit_retries_billing_without_recompute
             committed_output=committed_output,
             next_resume_at=datetime(2000, 1, 1, tzinfo=UTC),
             finalization_attempts=2,
+            agent_completed_at=billing_created_at,
         )
     )
     worker = ExtractionResumeWorker(
@@ -884,6 +892,10 @@ def test_delivery_failure_after_receipt_commit_retries_billing_without_recompute
             f"learn:{entity_type}:{receipt_after_failure[0]}",
         ]
         assert list(accepted) == [f"learn:{entity_type}:{receipt_after_failure[0]}"]
+        assert [event.created_at for event in attempts] == [
+            billing_created_at.timestamp(),
+            billing_created_at.timestamp(),
+        ]
         schedule_tagging.assert_not_called()
         if optimize is not None and aggregate is not None:
             optimize.assert_called_once()

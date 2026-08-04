@@ -230,6 +230,7 @@ def record_learnings_generated_records_strict(
     playbook_name: str | None = None,
     entity_type: str | None = None,
     metadata: Mapping[str, Any] | None = None,
+    created_at: float | None = None,
 ) -> None:
     """Strict per-record emission for receipt-backed finalization only."""
     _record_learnings_generated_records(
@@ -247,6 +248,7 @@ def record_learnings_generated_records_strict(
         playbook_name=playbook_name,
         entity_type=entity_type,
         metadata=metadata,
+        created_at=created_at,
     )
 
 
@@ -266,6 +268,7 @@ def _record_learnings_generated_records(
     playbook_name: str | None,
     entity_type: str | None,
     metadata: Mapping[str, Any] | None,
+    created_at: float | None = None,
 ) -> None:
     key_entity_type = entity_type or "_"
     for learning_id in learning_ids:
@@ -288,6 +291,7 @@ def _record_learnings_generated_records(
             platform_storage=platform_storage,
             caller_type=_INTERNAL,
             metadata=metadata,
+            created_at=created_at,
         )
 
 
@@ -443,6 +447,7 @@ def emit_learnings_generated_records_strict(
     playbook_name: str | None = None,
     entity_type: str | None = None,
     metadata: Mapping[str, Any] | None = None,
+    created_at: float | None = None,
 ) -> None:
     """Strict receipt-backed counterpart to the ordinary fail-open emitter."""
     if not learning_ids:
@@ -464,6 +469,7 @@ def emit_learnings_generated_records_strict(
             playbook_name=playbook_name,
             entity_type=entity_type,
             metadata=metadata,
+            created_at=created_at,
         )
     except Exception as exc:
         raise ReceiptBillingDeliveryError(
