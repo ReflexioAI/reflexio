@@ -22,6 +22,7 @@ from reflexio.models.api_schema.domain.entities import (
     AgentSuccessEvaluationResult,
 )
 from reflexio.models.api_schema.eval_overview_schema import (
+    BehaviorSuccessMetric,
     BraintrustTileRow,
     BucketLiteral,
     ContextTile,
@@ -242,6 +243,7 @@ class EvaluationOverviewService:
     ) -> ContextTile:
         cur_success = _success_rate(current) * 100
         prev_success = _success_rate(previous) * 100
+        behavior_success = _behavior_success_metric(current, previous)
         cur_corr = _mean(r.number_of_correction_per_session for r in current)
         prev_corr = _mean(r.number_of_correction_per_session for r in previous)
         cur_turns = _mean(
@@ -260,6 +262,7 @@ class EvaluationOverviewService:
             success=PercentWithDelta(
                 current=cur_success, delta_pp=cur_success - prev_success
             ),
+            behavior_success=behavior_success,
             corrections=NumberWithDelta(current=cur_corr, delta=cur_corr - prev_corr),
             turns=NumberWithDelta(current=cur_turns, delta=cur_turns - prev_turns),
             escalation=PercentWithDelta(current=cur_esc, delta_pp=cur_esc - prev_esc),
@@ -526,6 +529,37 @@ def _success_rate(results: list[AgentSuccessEvaluationResult]) -> float:
     if not results:
         return 0.0
     return sum(1 for r in results if r.is_success) / len(results)
+
+
+def _behavior_success_metric(
+    current: list[AgentSuccessEvaluationResult],
+    previous: list[AgentSuccessEvaluationResult],
+) -> BehaviorSuccessMetric:
+    """Return behavior-only success, excluding canonical system-error rows."""
+    current_eligible = [r for r in current if not _is_system_error(r)]
+    previous_eligible = [r for r in previous if not _is_system_error(r)]
+    current_rate = _success_rate(current_eligible) * 100 if current_eligible else None
+    previous_rate = (
+        _success_rate(previous_eligible) * 100 if previous_eligible else None
+    )
+    delta_pp = (
+        current_rate - previous_rate
+        if current_rate is not None and previous_rate is not None
+        else None
+    )
+    return BehaviorSuccessMetric(
+        current=current_rate,
+        delta_pp=delta_pp,
+        eligible_sessions=len(current_eligible),
+        excluded_system_errors=len(current) - len(current_eligible),
+    )
+
+
+def _is_system_error(result: AgentSuccessEvaluationResult) -> bool:
+    return (
+        not result.is_success
+        and (result.failure_type or "").strip().lower() == "system_error"
+    )
 
 
 def _escalation_rate(results: list[AgentSuccessEvaluationResult]) -> float:

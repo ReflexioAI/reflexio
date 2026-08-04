@@ -10,6 +10,7 @@ from reflexio.models.api_schema.braintrust_schema import (
     SyncBraintrustResponse,
 )
 from reflexio.models.api_schema.eval_overview_schema import (
+    BehaviorSuccessMetric,
     ContextTile,
     GetEvaluationOverviewRequest,
     GetEvaluationOverviewResponse,
@@ -252,6 +253,7 @@ def _empty_overview_response() -> GetEvaluationOverviewResponse:
         ),
         context_tiles=ContextTile(
             success=PercentWithDelta(current=0.0, delta_pp=0.0),
+            behavior_success=BehaviorSuccessMetric(),
             corrections=NumberWithDelta(current=0.0, delta=0.0),
             turns=NumberWithDelta(current=0.0, delta=0.0),
             escalation=PercentWithDelta(current=0.0, delta_pp=0.0),

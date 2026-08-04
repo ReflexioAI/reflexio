@@ -14,6 +14,15 @@ Session-level agent success evaluation module.
 - `agent_success_evaluation_constants.py`: prompt/model output constants.
 - `agent_success_evaluation_utils.py`: request DTO and prompt-message construction helpers.
 
+## Failure Classification
+
+Unsuccessful sessions use `system_error`, `missing_tool`, `wrong_tool`,
+`insufficient_info_from_tool`, or `wrong_answer`. `system_error` is reserved for
+reliability and availability failures outside agent behavior, including hangs,
+missing responses, persistent timeouts or 5xx responses, unavailable services,
+and quota or credit failures. The evaluation overview keeps these rows in task
+success while excluding them from the separate behavior-success denominator.
+
 ## Prompt IDs
 
 - Owns `agent_success_evaluation`, `retrieved_learning_relevance`, and `retrieved_learning_impact`.
