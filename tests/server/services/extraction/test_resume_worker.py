@@ -144,6 +144,16 @@ def _finalizing_run(
     )
 
 
+def _persist_and_load_run(
+    storage: SQLiteStorage, run: AgentRunRecord
+) -> AgentRunRecord:
+    storage.create_agent_run(run)
+    persisted = storage.get_agent_run(run.id)
+    assert persisted is not None
+    assert persisted.created_at is not None
+    return persisted
+
+
 def _gate_initial_receipt_reads(
     storages: tuple[SQLiteStorage, SQLiteStorage],
 ) -> None:
@@ -667,7 +677,8 @@ def test_resumable_finalization_bills_only_durable_ids_idempotently_on_retry(
     request_context,
 ):
     """A mixed batch charges its persisted profile once across finalization retries."""
-    billing_created_at = datetime(2026, 8, 31, 23, 59, tzinfo=UTC)
+    run_created_at = datetime(2026, 8, 1, 12, 0, tzinfo=UTC)
+    agent_completed_at = datetime(2026, 8, 31, 23, 59, tzinfo=UTC)
     run = AgentRunRecord(
         id="run_mixed_billing",
         binding=AgentBinding(
@@ -680,15 +691,23 @@ def test_resumable_finalization_bills_only_durable_ids_idempotently_on_retry(
         ),
         status=AgentRunStatus.FINALIZATION_FAILED,
         generation_request_snapshot={"request_id": "request_1"},
-        agent_completed_at=billing_created_at,
+        agent_completed_at=agent_completed_at,
+        created_at=run_created_at,
     )
     learning_ids = ["profile_1"]
     worker = ExtractionResumeWorker(request_context=request_context)
 
-    with patch(
-        "reflexio.server.billing_meter.record_usage_event_strict",
-        return_value=UsageEventDeliveryStatus.APPENDED,
-    ) as record_event:
+    with (
+        patch.object(
+            worker.storage,
+            "get_agent_run",
+            side_effect=AssertionError("billing must not re-read the run"),
+        ),
+        patch(
+            "reflexio.server.billing_meter.record_usage_event_strict",
+            return_value=UsageEventDeliveryStatus.APPENDED,
+        ) as record_event,
+    ):
         worker._record_finalized_learnings(run, learning_ids, entity_type="profile")
         worker._record_finalized_learnings(run, learning_ids, entity_type="profile")
 
@@ -705,8 +724,8 @@ def test_resumable_finalization_bills_only_durable_ids_idempotently_on_retry(
         "profile_1",
     ]
     assert [call.kwargs["created_at"] for call in record_event.call_args_list] == [
-        billing_created_at.timestamp(),
-        billing_created_at.timestamp(),
+        run_created_at.timestamp(),
+        run_created_at.timestamp(),
     ]
 
 
@@ -753,7 +772,8 @@ def test_delivery_failure_after_receipt_commit_retries_billing_without_recompute
             ]
         }
     )
-    billing_created_at = datetime(2026, 8, 31, 23, 59, tzinfo=UTC)
+    run_created_at = datetime(2026, 8, 1, 12, 0, tzinfo=UTC)
+    agent_completed_at = datetime(2026, 8, 31, 23, 59, tzinfo=UTC)
     storage.create_agent_run(
         AgentRunRecord(
             id=run_id,
@@ -774,9 +794,14 @@ def test_delivery_failure_after_receipt_commit_retries_billing_without_recompute
             committed_output=committed_output,
             next_resume_at=datetime(2000, 1, 1, tzinfo=UTC),
             finalization_attempts=2,
-            agent_completed_at=billing_created_at,
+            agent_completed_at=agent_completed_at,
+            created_at=run_created_at,
         )
     )
+    stored_run = storage.get_agent_run(run_id)
+    assert stored_run is not None
+    assert stored_run.created_at is not None
+    durable_run_created_at = stored_run.created_at
     worker = ExtractionResumeWorker(
         request_context=request_context,
         llm_client=MagicMock(),
@@ -893,8 +918,8 @@ def test_delivery_failure_after_receipt_commit_retries_billing_without_recompute
         ]
         assert list(accepted) == [f"learn:{entity_type}:{receipt_after_failure[0]}"]
         assert [event.created_at for event in attempts] == [
-            billing_created_at.timestamp(),
-            billing_created_at.timestamp(),
+            durable_run_created_at.timestamp(),
+            durable_run_created_at.timestamp(),
         ]
         schedule_tagging.assert_not_called()
         if optimize is not None and aggregate is not None:
@@ -1175,7 +1200,7 @@ def test_playbook_scheduler_failure_preserves_billing_and_isolated_retry(
         extractor_kind="playbook",
         request_id=f"request_scheduler_failure_{failing_scheduler}",
     )
-    storage.create_agent_run(run)
+    run = _persist_and_load_run(storage, run)
     worker = ExtractionResumeWorker(
         request_context=_finalization_context(storage),
         llm_client=MagicMock(),
@@ -1250,7 +1275,7 @@ def test_empty_profile_receipt_wins_once_without_billing_or_recompute(storage):
         extractor_kind="profile",
         request_id="request_empty_profile",
     )
-    storage.create_agent_run(run)
+    run = _persist_and_load_run(storage, run)
     context = _finalization_context(storage)
     worker = ExtractionResumeWorker(request_context=context, llm_client=MagicMock())
     recorder = _DeduplicatingUsageRecorder()
@@ -1299,7 +1324,7 @@ def test_empty_playbook_receipt_retries_without_redispatch(storage):
         committed_output={"playbooks": []},
         next_resume_at=datetime(2000, 1, 1, tzinfo=UTC),
     )
-    storage.create_agent_run(run)
+    run = _persist_and_load_run(storage, run)
     context = _finalization_context(storage)
     worker = ExtractionResumeWorker(request_context=context, llm_client=MagicMock())
     original_finalize = worker._finalize_items
@@ -1397,7 +1422,7 @@ def test_identical_profile_ids_use_atomic_receipt_owner(tmp_path):
         extractor_kind="profile",
         request_id="request_identical_profile",
     )
-    storage_a.create_agent_run(run)
+    run = _persist_and_load_run(storage_a, run)
     contexts = [_finalization_context(item) for item in (storage_a, storage_b)]
     workers = [
         ExtractionResumeWorker(request_context=context, llm_client=MagicMock())
@@ -1459,7 +1484,7 @@ def test_identical_playbook_ids_use_atomic_receipt_owner(tmp_path):
         extractor_kind="playbook",
         request_id="request_identical_playbook",
     )
-    storage_a.create_agent_run(run)
+    run = _persist_and_load_run(storage_a, run)
     contexts = [_finalization_context(item) for item in (storage_a, storage_b)]
     workers = [
         ExtractionResumeWorker(request_context=context, llm_client=MagicMock())
@@ -1551,7 +1576,7 @@ def test_two_stale_profile_workers_preserve_order_and_bill_only_winner(tmp_path)
         extractor_kind="profile",
         request_id="request_profile_race",
     )
-    storage_a.create_agent_run(run)
+    run = _persist_and_load_run(storage_a, run)
     _gate_initial_receipt_reads((storage_a, storage_b))
     contexts = [_finalization_context(storage) for storage in (storage_a, storage_b)]
     resume_workers = [
@@ -1646,7 +1671,7 @@ def test_two_stale_playbook_workers_preserve_order_and_dispatch_once(tmp_path):
         extractor_kind="playbook",
         request_id="request_playbook_race",
     )
-    storage_a.create_agent_run(run)
+    run = _persist_and_load_run(storage_a, run)
     _gate_initial_receipt_reads((storage_a, storage_b))
     contexts = [_finalization_context(storage) for storage in (storage_a, storage_b)]
     resume_workers = [
