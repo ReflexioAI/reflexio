@@ -16,6 +16,7 @@ from reflexio.models.api_schema.internal_schema import RequestInteractionDataMod
 from reflexio.models.api_schema.service_schemas import Interaction, Request
 from reflexio.models.config_schema import PlaybookConfig, ProfileExtractorConfig
 from reflexio.server.api_endpoints.request_context import RequestContext
+from reflexio.server.billing_meter import ReceiptBillingDeliveryError
 from reflexio.server.error_reporting import error_tags
 from reflexio.server.llm._litellm_types import ModelProvenance
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
@@ -90,6 +91,20 @@ class ResumeWorkerError(RuntimeError):
 def _next_retry_at(attempt_count: int) -> datetime:
     delay_seconds = min(300, max(1, 2 ** max(0, attempt_count - 1)))
     return datetime.now(UTC) + timedelta(seconds=delay_seconds)
+
+
+def _finalization_failure_status(
+    exc: Exception,
+    *,
+    next_attempt_count: int,
+    max_finalization_attempts: int,
+) -> AgentRunStatus:
+    """Keep durable receipt billing obligations retryable without an attempt cap."""
+    if isinstance(exc, ReceiptBillingDeliveryError):
+        return AgentRunStatus.FINALIZATION_FAILED
+    if next_attempt_count >= max_finalization_attempts:
+        return AgentRunStatus.FAILED
+    return AgentRunStatus.FINALIZATION_FAILED
 
 
 def _create_llm_client(request_context: RequestContext) -> LiteLLMClient:
@@ -363,10 +378,10 @@ class ExtractionResumeWorker:
                     run.id,
                 )
             next_attempt_count = run.finalization_attempts + 1
-            failed_status = (
-                AgentRunStatus.FAILED
-                if next_attempt_count >= pending_config.max_finalization_attempts
-                else AgentRunStatus.FINALIZATION_FAILED
+            failed_status = _finalization_failure_status(
+                exc,
+                next_attempt_count=next_attempt_count,
+                max_finalization_attempts=pending_config.max_finalization_attempts,
             )
             return self.storage.update_agent_run_status(
                 run.id,
@@ -411,10 +426,10 @@ class ExtractionResumeWorker:
                     run.id,
                 )
             next_attempt_count = run.finalization_attempts + 1
-            failed_status = (
-                AgentRunStatus.FAILED
-                if next_attempt_count >= pending_config.max_finalization_attempts
-                else AgentRunStatus.FINALIZATION_FAILED
+            failed_status = _finalization_failure_status(
+                exc,
+                next_attempt_count=next_attempt_count,
+                max_finalization_attempts=pending_config.max_finalization_attempts,
             )
             return self.storage.update_agent_run_status(
                 run.id,

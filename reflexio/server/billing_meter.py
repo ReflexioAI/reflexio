@@ -22,6 +22,10 @@ _INTERNAL = (
 )
 
 
+class ReceiptBillingDeliveryError(RuntimeError):
+    """A durable finalization receipt still has an undelivered billing event."""
+
+
 def record_extraction_tokens(
     *,
     org_id: str,
@@ -445,21 +449,26 @@ def emit_learnings_generated_records_strict(
         return
     from reflexio.server.billing_signals import platform_llm_from_config
 
-    config = configurator.get_config()
-    record_learnings_generated_records_strict(
-        org_id=org_id,
-        learning_ids=learning_ids,
-        platform_llm=platform_llm_from_config(config),
-        platform_storage=None,
-        pipeline=pipeline,
-        user_id=user_id,
-        request_id=request_id,
-        source=source,
-        agent_version=agent_version,
-        playbook_name=playbook_name,
-        entity_type=entity_type,
-        metadata=metadata,
-    )
+    try:
+        config = configurator.get_config()
+        record_learnings_generated_records_strict(
+            org_id=org_id,
+            learning_ids=learning_ids,
+            platform_llm=platform_llm_from_config(config),
+            platform_storage=None,
+            pipeline=pipeline,
+            user_id=user_id,
+            request_id=request_id,
+            source=source,
+            agent_version=agent_version,
+            playbook_name=playbook_name,
+            entity_type=entity_type,
+            metadata=metadata,
+        )
+    except Exception as exc:
+        raise ReceiptBillingDeliveryError(
+            "receipt-backed learning billing delivery failed"
+        ) from exc
 
 
 def record_applied_learnings(

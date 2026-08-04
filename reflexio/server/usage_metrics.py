@@ -51,9 +51,10 @@ class UsageEvent:
 class UsageEventDeliveryStatus(Enum):
     """Recorder-reported durability outcome for one usage event."""
 
-    ACCEPTED = "accepted"
     APPENDED = "appended"
     DUPLICATE = "duplicate"
+    EXEMPT = "exempt"
+    UNKNOWN = "unknown"
     FAILED = "failed"
     REJECTED = "rejected"
 
@@ -79,6 +80,11 @@ def configure_usage_event_recorder(recorder: UsageEventRecorder | None) -> None:
     """
     global _recorder
     _recorder = recorder
+
+
+def exempt_usage_event_recorder(_event: UsageEvent) -> UsageEventDeliveryStatus:
+    """Explicitly exempt a deployment from durable usage-event delivery."""
+    return UsageEventDeliveryStatus.EXEMPT
 
 
 def record_usage_event(
@@ -179,14 +185,13 @@ def record_usage_event_strict(
 ) -> UsageEventDeliveryStatus:
     """Deliver one event and fail unless the recorder accepted it durably.
 
-    Recorders predating delivery outcomes return ``None``; that remains an
-    accepted result so direct test recorders and non-enterprise integrations
-    keep working. A missing recorder is also accepted because OSS deployments
-    intentionally have no billing sink.
+    Only an explicit append, duplicate, or deployment exemption proves the
+    receipt's billing obligation was handled. Missing and legacy recorders are
+    unknown delivery, which strict receipt-backed callers must retry.
     """
     recorder = _recorder
     if recorder is None:
-        return UsageEventDeliveryStatus.ACCEPTED
+        raise UsageEventDeliveryError(UsageEventDeliveryStatus.UNKNOWN)
     delivery_outcome = recorder(
         UsageEvent(
             org_id=str(org_id),
@@ -218,7 +223,7 @@ def record_usage_event_strict(
         )
     )
     status = (
-        UsageEventDeliveryStatus.ACCEPTED
+        UsageEventDeliveryStatus.UNKNOWN
         if delivery_outcome is None
         else delivery_outcome
     )
@@ -226,9 +231,10 @@ def record_usage_event_strict(
         raise TypeError(
             f"usage event recorder returned an invalid delivery status: {status!r}"
         )
-    if status in {
-        UsageEventDeliveryStatus.FAILED,
-        UsageEventDeliveryStatus.REJECTED,
+    if status not in {
+        UsageEventDeliveryStatus.APPENDED,
+        UsageEventDeliveryStatus.DUPLICATE,
+        UsageEventDeliveryStatus.EXEMPT,
     }:
         raise UsageEventDeliveryError(status)
     return status
