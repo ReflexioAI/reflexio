@@ -1510,3 +1510,58 @@ def test_session_export_paginates_by_returned_rows_when_requests_are_missing() -
     assert storage.calls == [0, 1000]
     assert [request.request_id for request in requests] == ["req-1"]
     assert sessions == [{"session_id": "session-a", "request_ids": ["req-1"]}]
+
+
+def test_rebuild_agent_playbooks_forwards_the_active_execution_claim() -> None:
+    target = SimpleNamespace(
+        target_name="agent_playbook",
+        target_ref="17",
+        status="running",
+        detail={"remaining_source_windows": []},
+    )
+
+    class _Storage:
+        def __init__(self) -> None:
+            self.applied: list[dict[str, object]] = []
+
+        def list_purge_targets(self, purge_id: str, *, phase: str):
+            assert purge_id == "purge_claimed_rebuild"
+            assert phase == "rebuild_without_erased_sources"
+            return [target]
+
+        def get_user_playbooks_by_ids_any_user(self, ids: list[int]):
+            assert ids == []
+            return []
+
+        def apply_governance_agent_playbook_rebuild(self, **kwargs: object) -> None:
+            self.applied.append(kwargs)
+
+    storage = _Storage()
+    service = GovernanceService(storage=storage, org_id="org", ref_secret="secret")
+    claim = PurgeExecutionClaim(
+        purge_id="purge_claimed_rebuild",
+        owner="worker-a",
+        fence=1,
+        expires_at=2_000_000_000,
+    )
+
+    rebuilt_ids = service._rebuild_agent_playbooks(
+        "purge_claimed_rebuild",
+        execution_claim=claim,
+    )
+
+    assert rebuilt_ids == [17]
+    assert storage.applied == [
+        {
+            "purge_id": "purge_claimed_rebuild",
+            "agent_playbook_id": 17,
+            "remaining_source_windows": [],
+            "content": None,
+            "trigger": None,
+            "rationale": None,
+            "blocking_issue": None,
+            "expanded_terms": None,
+            "tags": None,
+            "execution_claim": claim,
+        }
+    ]

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
+from reflexio.server.services.storage.governance_claims import PurgeExecutionClaim
+
 
 class RebuildHideMixin(ABC):
     """Backend-neutral governance rebuild-hide store contract.
@@ -13,7 +15,12 @@ class RebuildHideMixin(ABC):
     """
 
     @abstractmethod
-    def hide_governance_agent_playbooks_for_rebuild(self, purge_id: str) -> list[int]:
+    def hide_governance_agent_playbooks_for_rebuild(
+        self,
+        purge_id: str,
+        *,
+        execution_claim: PurgeExecutionClaim,
+    ) -> list[int]:
         raise NotImplementedError
 
     @abstractmethod
@@ -28,5 +35,7 @@ class RebuildHideMixin(ABC):
         blocking_issue: dict[str, object] | None,
         expanded_terms: str | None,
         tags: list[str] | None,
+        *,
+        execution_claim: PurgeExecutionClaim,
     ) -> None:
         raise NotImplementedError

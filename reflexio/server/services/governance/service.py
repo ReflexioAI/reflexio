@@ -574,7 +574,12 @@ class GovernanceService:
             )
         ]
 
-    def _rebuild_agent_playbooks(self, purge_id: str) -> list[int]:
+    def _rebuild_agent_playbooks(
+        self,
+        purge_id: str,
+        *,
+        execution_claim: PurgeExecutionClaim,
+    ) -> list[int]:
         rebuilt_ids: list[int] = []
         for target in self.storage.list_purge_targets(
             purge_id,
@@ -600,6 +605,7 @@ class GovernanceService:
                 blocking_issue=rebuild_fields["blocking_issue"],
                 expanded_terms=rebuild_fields["expanded_terms"],
                 tags=rebuild_fields["tags"],
+                execution_claim=execution_claim,
             )
             rebuilt_ids.append(agent_playbook_id)
         return rebuilt_ids
