@@ -80,6 +80,7 @@ from reflexio.server.services.storage.storage_base import (
 )
 from reflexio.server.services.tagging.tagging_scheduler import schedule_tagging
 from reflexio.server.site_var.site_var_manager import SiteVarManager
+from reflexio.server.usage_metrics import UsageEventDeliveryStatus
 
 logger = logging.getLogger(__name__)
 
@@ -99,8 +100,10 @@ def _finalization_failure_status(
     next_attempt_count: int,
     max_finalization_attempts: int,
 ) -> AgentRunStatus:
-    """Keep durable receipt billing obligations retryable without an attempt cap."""
+    """Retry transient receipt delivery failures; terminate permanent rejection."""
     if isinstance(exc, ReceiptBillingDeliveryError):
+        if exc.status is UsageEventDeliveryStatus.REJECTED:
+            return AgentRunStatus.FAILED
         return AgentRunStatus.FINALIZATION_FAILED
     if next_attempt_count >= max_finalization_attempts:
         return AgentRunStatus.FAILED
@@ -983,7 +986,8 @@ class ExtractionResumeWorker:
         billing_timestamp = run.created_at or run.agent_completed_at
         if billing_timestamp is None:
             raise ReceiptBillingDeliveryError(
-                "receipt-backed learning billing timestamp is not durable"
+                UsageEventDeliveryStatus.UNKNOWN,
+                "receipt-backed learning billing timestamp is not durable",
             )
         metadata = {
             "run_id": run.id,
