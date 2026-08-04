@@ -364,6 +364,8 @@ class UserPlaybook(BaseModel):
     reader_angle: str | None = None
     merged_into: int | None = None
     superseded_by: int | None = None
+    governance_subject_ref: str | None = Field(default=None, exclude=True)
+    retired_at: int | None = Field(default=None, exclude=True)
 
 
 class ProfileChangeLog(BaseModel):

@@ -98,7 +98,11 @@ def user_playbook_full_version_fingerprint(playbook: UserPlaybook) -> str:
     """
     payload = {
         "schema_version": "user-playbook-full-version-v1",
-        "user_playbook": playbook.model_dump(mode="json", exclude={"embedding"}),
+        "user_playbook": playbook.model_dump(mode="json", exclude={"embedding"})
+        | {
+            "governance_subject_ref": playbook.governance_subject_ref,
+            "retired_at": playbook.retired_at,
+        },
     }
     return sha256(canonical_json_bytes(payload)).hexdigest()
 
