@@ -126,6 +126,30 @@ def clear_global_sweeps() -> None:
     _global_sweep_hooks.clear()
 
 
+# Always-global sweeps run once per elected tick and own their applicability
+# checks. Enterprise uses this for global maintenance that must not inherit the
+# unrelated expiry-reclamation feature gate.
+_always_global_sweep_hooks: list[Callable[[int], int]] = []
+
+
+def register_always_global_sweep(fn: Callable[[int], int]) -> None:
+    """Register an always-evaluated global sweep.
+
+    The scheduler's leader gate still controls the tick. The sweep itself must
+    decide whether its backing service is configured for this deployment.
+
+    Args:
+        fn (Callable[[int], int]): Called with the current unix epoch; returns
+            the number of rows it processed.
+    """
+    _always_global_sweep_hooks.append(fn)
+
+
+def clear_always_global_sweeps() -> None:
+    """Clear all always-evaluated global sweeps (tests restore defaults)."""
+    _always_global_sweep_hooks.clear()
+
+
 # Per-org sweeps run once per org per tick (for per-org reclamation concerns).
 # Each fn takes (org_id, now) and returns a deleted-row count. Enterprise
 # registers its closure here at startup so governance retention folds into the
@@ -447,6 +471,19 @@ class LineageGCScheduler(ThreadedScheduler):
                 capture_anomaly("lineage.global_sweep.failed", sweep=sweep_id)
                 logger.exception("event=global_sweep_failed sweep=%s", sweep_id)
 
+    def _run_always_global_sweeps(self) -> None:
+        """Invoke each applicability-owning global sweep once per elected tick."""
+        now = int(time.time())
+        for sweep in _always_global_sweep_hooks:
+            try:
+                processed = sweep(now)
+                if processed:
+                    logger.info("event=always_global_sweep processed=%d", processed)
+            except Exception:
+                sweep_id = getattr(sweep, "__qualname__", repr(sweep))
+                capture_anomaly("lineage.always_global_sweep.failed", sweep=sweep_id)
+                logger.exception("event=always_global_sweep_failed sweep=%s", sweep_id)
+
     def _run_once(self) -> float:
         poll_interval = _DEFAULT_POLL_INTERVAL_SECONDS
         try:
@@ -468,6 +505,7 @@ class LineageGCScheduler(ThreadedScheduler):
             org_ids = self._discover_org_ids(bootstrap_ctx)
             self._gc_tick(org_ids, max_workers=self._org_fanout_workers(bootstrap_ctx))
             self._run_global_sweeps(cfg)
+            self._run_always_global_sweeps()
         except Exception:
             logger.exception("event=lineage_gc_scheduler_tick_failed")
         return max(poll_interval, _MIN_POLL_SECONDS)
@@ -537,7 +575,9 @@ def maybe_start_lineage_gc(
     # must not silence sweeps that were explicitly registered. Production ran
     # with 8 registered sweeps (metering force-seal/retention/derive, governance
     # retention, missing-vector backfill) never firing because this read raised.
-    has_registered_sweeps = bool(_per_org_sweep_hooks) or bool(_global_sweep_hooks)
+    has_registered_sweeps = bool(
+        _per_org_sweep_hooks or _global_sweep_hooks or _always_global_sweep_hooks
+    )
 
     try:
         ctx = request_context_factory(bootstrap_org_id)

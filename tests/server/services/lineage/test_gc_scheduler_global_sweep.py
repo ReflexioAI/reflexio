@@ -26,8 +26,13 @@ def _cfg(enabled: bool):
 @pytest.fixture(autouse=True)
 def _isolate_hooks():
     clear_global_sweeps()
+    clear_always = getattr(gc_scheduler, "clear_always_global_sweeps", None)
+    if clear_always is not None:
+        clear_always()
     yield
     clear_global_sweeps()
+    if clear_always is not None:
+        clear_always()
 
 
 def test_global_sweep_runs_once_when_enabled():
@@ -92,6 +97,31 @@ def test_run_once_invokes_global_sweeps(monkeypatch):
     # the bounded org fan-out) so _run_once's real calling convention still
     # resolves; the assertion below is unaffected — this stub is a no-op
     # regardless of the value it's called with.
+    monkeypatch.setattr(scheduler, "_gc_tick", lambda _org_ids, **_kwargs: None)
+
+    scheduler._run_once()
+
+    assert len(calls) == 1
+
+
+def test_run_once_invokes_always_global_sweep_when_expiry_disabled(monkeypatch):
+    calls: list[int] = []
+    register = getattr(gc_scheduler, "register_always_global_sweep", None)
+    assert callable(register)
+    register(lambda now: calls.append(now) or 1)
+
+    cfg = types.SimpleNamespace(
+        lineage_gc=types.SimpleNamespace(poll_interval_seconds=10),
+        expiry_reclamation=types.SimpleNamespace(enabled=False),
+    )
+    ctx = types.SimpleNamespace(
+        configurator=types.SimpleNamespace(get_config=lambda: cfg),
+    )
+    scheduler = LineageGCScheduler(
+        request_context_factory=lambda _org_id: ctx,  # type: ignore[arg-type]
+        bootstrap_org_id="org-boot",
+    )
+    monkeypatch.setattr(scheduler, "_discover_org_ids", lambda _ctx: [])
     monkeypatch.setattr(scheduler, "_gc_tick", lambda _org_ids, **_kwargs: None)
 
     scheduler._run_once()
