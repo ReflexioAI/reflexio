@@ -46,7 +46,7 @@ PROMPT_VERSION_MAP: dict[str, tuple[str, str | None]] = {
     "profile_should_generate_override": ("v1.0.0", "boolean_evaluation"),
     "profile_deduplication": ("v1.0.0", "profile_deduplication"),
     "tagging": ("v1.0.0", "tagging"),
-    "agent_success_evaluation": ("v1.1.0", "agent_success_evaluation"),
+    "agent_success_evaluation": ("v1.2.0", "agent_success_evaluation"),
     # Retrieved-learning judges — per-learning relevance/impact verdicts for
     # sessions publishing interactions with ``retrieved_learnings``.
     "retrieved_learning_relevance": ("v1.0.0", "retrieved_learning_relevance"),

@@ -1,6 +1,7 @@
 """Tests for evaluation overview source-set schema behavior."""
 
 from reflexio.models.api_schema.eval_overview_schema import (
+    BehaviorSuccessMetric,
     ContextTile,
     EvaluationSourceSetRequest,
     GetEvaluationOverviewRequest,
@@ -26,6 +27,7 @@ def _minimal_response_kwargs() -> dict:
         ),
         "context_tiles": ContextTile(
             success=PercentWithDelta(current=0.0, delta_pp=0.0),
+            behavior_success=BehaviorSuccessMetric(),
             corrections=NumberWithDelta(current=0.0, delta=0.0),
             turns=NumberWithDelta(current=0.0, delta=0.0),
             escalation=PercentWithDelta(current=0.0, delta_pp=0.0),

@@ -419,6 +419,16 @@ class TestCorrectionCount:
                 number_of_correction_per_session=-1,
             )
 
+    def test_output_accepts_system_error_failure_type(self):
+        output = AgentSuccessEvaluationOutput(
+            is_success=False,
+            failure_type="system_error",
+            failure_reason="The agent never responded after a provider timeout.",
+            number_of_correction_per_session=0,
+        )
+
+        assert output.failure_type == "system_error"
+
     @pytest.mark.parametrize("invalid_count", ["1", 1.5])
     def test_output_rejects_non_integer_correction_count(self, invalid_count):
         with pytest.raises(ValidationError):

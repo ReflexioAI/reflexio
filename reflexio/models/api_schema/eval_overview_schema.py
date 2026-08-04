@@ -63,15 +63,32 @@ class PercentWithDelta(BaseModel):
     delta_pp: float
 
 
+class BehaviorSuccessMetric(BaseModel):
+    """Agent-behavior success after excluding system reliability failures.
+
+    ``current`` is nullable because a window containing only ``system_error``
+    rows has no behavior-evaluable sessions. ``delta_pp`` is nullable whenever
+    either the current or prior seven-day window has no eligible denominator.
+    Counts describe the current seven-day window shown by the metric tile.
+    """
+
+    current: float | None = Field(default=None, ge=0.0, le=100.0)
+    delta_pp: float | None = None
+    eligible_sessions: int = Field(default=0, ge=0)
+    excluded_system_errors: int = Field(default=0, ge=0)
+
+
 class ContextTile(BaseModel):
-    """Wrapper for the four mini-tiles in the context band.
+    """Wrapper for the session-level metric tiles in the context band.
 
     Each tile is rendered with an absolute value + a delta vs the previous
     7d window. Percent-shaped values carry `delta_pp` (percentage points);
-    raw counts carry `delta` (absolute difference).
+    raw counts carry `delta` (absolute difference). Behavior success excludes
+    rows classified as ``system_error`` while task success does not.
     """
 
     success: PercentWithDelta
+    behavior_success: BehaviorSuccessMetric
     corrections: NumberWithDelta
     turns: NumberWithDelta
     escalation: PercentWithDelta

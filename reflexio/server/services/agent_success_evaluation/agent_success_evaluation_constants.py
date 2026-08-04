@@ -25,7 +25,9 @@ class AgentSuccessEvaluationOutput(StrictStructuredOutput):
 
     Attributes:
         is_success (bool): Indicates whether the agent successfully responded to the user
-        failure_type (Optional[str]): Type of failure - 'missing_tool', 'wrong_tool', 'insufficient_info_from_tool', or 'wrong_answer'. Required when is_success=False
+        failure_type (Optional[str]): Type of failure - 'system_error',
+            'missing_tool', 'wrong_tool', 'insufficient_info_from_tool', or
+            'wrong_answer'. Required when is_success=False
         failure_reason (Optional[str]): Explanation for the failure and what the agent needs to do differently. Required when is_success=False
         number_of_correction_per_session (int): Number of user turns that corrected or redirected an earlier agent response.
     """
@@ -35,12 +37,23 @@ class AgentSuccessEvaluationOutput(StrictStructuredOutput):
     )
     failure_type: (
         Literal[
-            "missing_tool", "wrong_tool", "insufficient_info_from_tool", "wrong_answer"
+            "system_error",
+            "missing_tool",
+            "wrong_tool",
+            "insufficient_info_from_tool",
+            "wrong_answer",
         ]
         | None
     ) = Field(
         default=None,
-        description="Type of improvement the agent needs: 'missing_tool' (agent lacks necessary tools), 'wrong_tool' (agent used incorrect tool), 'insufficient_info_from_tool' (tool lacks necessary information), 'wrong_answer' (agent had info but answered incorrectly). Required when is_success=False",
+        description=(
+            "Cause of failure: 'system_error' (platform, provider, service, quota, "
+            "or reliability failure outside agent behavior), 'missing_tool' (agent "
+            "lacks necessary tools), 'wrong_tool' (agent used an incorrect available "
+            "tool), 'insufficient_info_from_tool' (the correct tool returned "
+            "insufficient information), or 'wrong_answer' (agent had enough "
+            "information but answered incorrectly). Required when is_success=False"
+        ),
     )
     failure_reason: str | None = Field(
         default=None,

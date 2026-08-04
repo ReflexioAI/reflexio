@@ -31,7 +31,7 @@ def _render_agent_success_prompt() -> str:
 def test_agent_success_prompt_v1_1_0_is_active_and_renders() -> None:
     prompt_manager = PromptManager()
 
-    assert prompt_manager.get_active_version("agent_success_evaluation") == "1.1.0"
+    assert prompt_manager.get_active_version("agent_success_evaluation") == "1.2.0"
     assert "Step 4: Count corrective user turns" in _render_agent_success_prompt()
 
 

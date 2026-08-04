@@ -39,6 +39,12 @@ def test_response_round_trips_full_payload() -> None:
         },
         "context_tiles": {
             "success": {"current": 87.4, "delta_pp": 6.2},
+            "behavior_success": {
+                "current": 91.2,
+                "delta_pp": 7.1,
+                "eligible_sessions": 96,
+                "excluded_system_errors": 4,
+            },
             "corrections": {"current": 0.4, "delta": -0.7},
             "turns": {"current": 3.2, "delta": -1.4},
             "escalation": {"current": 4.1, "delta_pp": -6.9},
@@ -62,5 +68,7 @@ def test_response_round_trips_full_payload() -> None:
     resp = GetEvaluationOverviewResponse(**payload)
     assert resp.hero.state == "full"
     assert resp.context_tiles.success.current == 87.4
+    assert resp.context_tiles.behavior_success.current == 91.2
+    assert resp.context_tiles.behavior_success.excluded_system_errors == 4
     assert resp.rule_attribution[0].net_sessions == 38
     assert resp.score_distribution.labels == ["0", "1", "2", "3", "4", "5+"]
