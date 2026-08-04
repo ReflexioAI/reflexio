@@ -148,8 +148,9 @@ client (Python SDK)
   - `braintrust/` - Braintrust eval export/sync support
   - `lineage/` - Resolve current records and schedule tombstone garbage collection for superseded profile/playbook rows
   - `governance/` - Subject-reference contracts and retention/barrier helpers used by storage and lineage
-  - `storage/` - Abstract layer (SQLite prod, LocalJSON test) with governance-aware write validation and durable `learning_jobs` contracts
+  - `storage/` - Abstract layer (SQLite prod, LocalJSON test) with governance-aware write validation, durable `learning_jobs` contracts, and canonical session-outcome identity helpers
   - `pre_retrieval/` - Query rewriting and document expansion helpers
+  - `search_exposure.py` - Optional enterprise boundary for recording served user-playbook exposure sets after unified search
   - `configurator/` - YAML config loader
 - **`billing_meter.py`**: OSS usage-event facade for learning/search metering; keep imports function-local at call sites so enterprise emitters remain optional
 - **`site_var/`**: Global settings singleton

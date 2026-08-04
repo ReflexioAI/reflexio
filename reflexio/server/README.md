@@ -501,14 +501,14 @@ Reformulates user search queries into clean, normalized natural language for imp
 
 ### Unified Search Service
 
-**File**: `services/unified_search_service.py` - `run_unified_search()`
+**Files**: `services/unified_search_service.py` - `run_unified_search()`; `services/search_exposure.py` - optional final user-playbook exposure recorder boundary
 
 Searches across all entity types (profiles, agent_playbooks, user_playbooks) in parallel via a two-phase approach:
 
 - **Phase A**: Query rewriting + embedding generation (parallel via ThreadPoolExecutor)
 - **Phase B**: Entity searches across all types (parallel via ThreadPoolExecutor, 3 workers)
 
-Pre-computed embeddings passed to storage methods via `query_embedding` parameter to avoid redundant embedding calls.
+Pre-computed embeddings passed to storage methods via `query_embedding` parameter to avoid redundant embedding calls. `routes/search.py` meters search requests / surfaced learnings and synchronously calls `record_search_exposures()` for the final user-playbook set in unified search before response release; enterprise deployments register the recorder via `SEARCH_EXPOSURE_RECORDER`.
 
 ### Storage
 
@@ -519,6 +519,7 @@ Pre-computed embeddings passed to storage methods via `query_embedding` paramete
 | `storage_base/` | BaseStorage interface split by domain. Legacy facades (`_profiles.py`, `_playbook.py`, `_agent_run.py`, etc.) preserve imports while subpackages (`profiles/`, `playbook/`, `agent_run/`, `governance/`) hold focused abstract store contracts. |
 | `sqlite_storage/` | SQLite-backed implementation split across matching facades and subpackages (`profiles/`, `playbook/`, `agent_run/`, `governance/`, `base/`), including governance-aware retention/barrier handling, lineage/tombstone support, and durable incremental playbook-aggregation state. |
 | `governance_validation.py` | Shared validation helpers for subject references and governance contracts before storage writes. |
+| `session_outcome_identity.py` | Canonical session trajectory projection plus `trajectory_digest()` / `outcome_contract_digest()` helpers for immutable session outcome identity. |
 | `retention.py`, `retention_mixin.py` | Data retention and cleanup helpers |
 | `constants.py`, `error.py` | Storage constants and shared errors |
 
