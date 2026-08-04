@@ -210,9 +210,9 @@ class BaseGenerationService(
     ABC,
     Generic[TExtractorConfig, TExtractor, TGenerationServiceConfig, TRequest],  # noqa: UP046
 ):
-    # Only online profile/playbook extraction services emit extraction-run billing
-    # here. Resumable-extraction finalization emits separately; derived mutation
-    # paths emit no additional learnings_generated events.
+    # Only profile/playbook GENERATION services emit extraction-run billing here.
+    # Non-extraction learning mutation paths emit their value facet at their own
+    # durable-success point.
     # Default is False so any future subclass is safe by default (opt-IN).
     EMITS_LEARNING_BILLING: bool = False
     """
@@ -342,20 +342,11 @@ class BaseGenerationService(
             results: List of all results from extractors (one per successful extractor)
         """
 
-    def _finalize_extracted_items(
-        self,
-        items: list,
-        *,
-        finalization_run_id: str | None = None,
-    ) -> list[str] | None:
+    def _finalize_extracted_items(self, items: list) -> list:
         """Persist already-flattened extracted items through the service path."""
-        if finalization_run_id is not None:
-            raise NotImplementedError(
-                "Receipt-aware finalization must be implemented by resumable services"
-            )
         if items:
             self._process_results([items])
-        return None
+        return items
 
     @abstractmethod
     def _should_track_in_progress(self) -> bool:
@@ -643,6 +634,7 @@ class BaseGenerationService(
         self._last_bookmark_advance = None
         self._last_model_provenance = None
         result = self._execute_extractor(prepared.extractor_config, prepared.identifier)
+        generated_count = self._count_generated_results(result)
 
         try:
             write_plan = self._resolve_write_plan([result]) if result else None
@@ -651,17 +643,9 @@ class BaseGenerationService(
             self._mark_extraction_runs_finalization_failed(exc)
             raise
 
-        generated_count = self._count_generated_results(result)
-        billable_count = (
-            self._count_retained_online_learnings(write_plan)
-            if self.EMITS_LEARNING_BILLING
-            else 0
-        )
-
         return GenerationComputePlan(
             prepared=prepared,
             generated_count=generated_count,
-            billable_count=billable_count,
             write_plan=write_plan,
             bookmark_advance=self._last_bookmark_advance,
             generation_start=generation_start,
@@ -692,8 +676,7 @@ class BaseGenerationService(
 
         Runs only for a fence-winning job (the durable worker calls it after the
         scope commits; ``.run()`` calls it inline). Reads the plan's compute-time
-        snapshot (``generated_count`` / ``billable_count`` / ``prepared`` /
-        ``generation_start``) so a
+        snapshot (``generated_count`` / ``prepared`` / ``generation_start``) so a
         fence-lost job never emits.
 
         Billing purity note (round-2 finding): ``_record_billing_learning_events``
@@ -725,7 +708,7 @@ class BaseGenerationService(
             },
         )
         self._record_billing_learning_events(
-            prepared=plan.prepared, generated_count=plan.billable_count
+            prepared=plan.prepared, generated_count=plan.generated_count
         )
 
     @abstractmethod

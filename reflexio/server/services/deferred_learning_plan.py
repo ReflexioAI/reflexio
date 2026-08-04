@@ -27,24 +27,6 @@ if TYPE_CHECKING:
 
 
 @dataclass(frozen=True)
-class FinalizationResult:
-    """Internal outcome of resumable learning finalization.
-
-    ``won_receipt`` is true only for the caller whose learning writes and
-    immutable finalization receipt committed together. Receipt-reuse callers
-    still receive the winner's ordered ids but must not replay billing or other
-    winner-only side effects.
-    """
-
-    learning_ids: list[str]
-    won_receipt: bool
-
-
-class _FinalizationReceiptAlreadyExistsError(Exception):
-    """Rollback signal for a finalization transaction that lost receipt ownership."""
-
-
-@dataclass(frozen=True)
 class ExtractorBookmarkAdvance:
     """The extractor stride-bookmark advance, deferred out of the extractor (F1).
 
@@ -152,20 +134,16 @@ class GenerationComputePlan:
     ``emit_generation_side_effects`` fires the post-commit telemetry + billing.
 
     The billing inputs (``extraction_run_ids`` / ``token_totals`` /
-    ``billable_count`` / ``prepared``) and telemetry's ``generated_count`` are
-    **snapshotted at compute time** so the fence-crossing emit reads this plan
-    rather than the reused service instance's mutable ``_last_*`` accumulators
-    (purity contract, plan §File Structure). See
-    ``emit_generation_side_effects`` for the single-use-instance invariant that
-    also keeps the money helper's ``self._last_*`` reads safe.
+    ``generated_count`` / ``prepared``) are **snapshotted at compute time** so
+    the fence-crossing emit reads this plan rather than the reused service
+    instance's mutable ``_last_*`` accumulators (purity contract, plan §File
+    Structure). See ``emit_generation_side_effects`` for the single-use-instance
+    invariant that also keeps the money helper's ``self._last_*`` reads safe.
 
     Attributes:
         prepared: The prepared generation run (identifier / extractor_name /
             extractor_config), reused by emit for telemetry + billing input.
-        generated_count: Raw learnings produced by the extractor, used for
-            generation-success telemetry.
-        billable_count: Retained write-plan learnings eligible for online billing;
-            zero for services that do not emit learning billing.
+        generated_count: Learnings produced by this extraction run.
         write_plan: The resolved write-plan (``ProfileWritePlan`` /
             ``PlaybookWritePlan`` in Tasks 6-7, a ``_LegacyItems`` shim marker
             until then) or ``None`` when the extractor produced nothing.
@@ -181,7 +159,6 @@ class GenerationComputePlan:
 
     prepared: PreparedGenerationRun[Any]
     generated_count: int
-    billable_count: int
     write_plan: Any
     bookmark_advance: ExtractorBookmarkAdvance | None
     generation_start: float

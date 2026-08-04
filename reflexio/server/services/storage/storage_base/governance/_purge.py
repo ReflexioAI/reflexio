@@ -7,7 +7,6 @@ from reflexio.models.api_schema.domain.governance import (
     PurgeOperation,
     PurgeOperationTarget,
 )
-from reflexio.server.services.storage.governance_claims import PurgeExecutionClaim
 
 
 class PurgeOperationStoreMixin(ABC):
@@ -28,37 +27,7 @@ class PurgeOperationStoreMixin(ABC):
         scope_type: Literal["user", "org"],
         subject_ref: str | None,
         request_ref: str,
-        authoritative_user_id: str | None = None,
     ) -> PurgeOperation:
-        raise NotImplementedError
-
-    @abstractmethod
-    def claim_purge_operation_execution(
-        self,
-        purge_id: str,
-        *,
-        lease_owner: str,
-        lease_ttl_seconds: int,
-    ) -> PurgeExecutionClaim | None:
-        """Atomically claim or take over a stale purge execution."""
-        raise NotImplementedError
-
-    @abstractmethod
-    def assert_purge_operation_execution_claim(
-        self, purge_id: str, execution_claim: PurgeExecutionClaim
-    ) -> None:
-        """Raise when the purge execution claim no longer owns the live fence."""
-        raise NotImplementedError
-
-    @abstractmethod
-    def renew_purge_operation_execution_claim(
-        self,
-        purge_id: str,
-        execution_claim: PurgeExecutionClaim,
-        *,
-        lease_ttl_seconds: int,
-    ) -> PurgeExecutionClaim:
-        """Atomically renew an active purge execution claim."""
         raise NotImplementedError
 
     @abstractmethod
@@ -68,8 +37,6 @@ class PurgeOperationStoreMixin(ABC):
         target_name: str,
         phase: str,
         status: Literal["pending", "running", "failed", "complete"],
-        *,
-        execution_claim: PurgeExecutionClaim,
         target_ref: str = "",
         detail: dict[str, object] | None = None,
         deleted_count: int = 0,
@@ -92,20 +59,13 @@ class PurgeOperationStoreMixin(ABC):
         self,
         purge_id: str,
         user_id: str,
-        *,
-        execution_claim: PurgeExecutionClaim,
         owned_user_playbook_ids: set[int] | None = None,
     ) -> None:
         raise NotImplementedError
 
     @abstractmethod
     def fail_purge_operation(
-        self,
-        purge_id: str,
-        error_code: str,
-        error_detail: str,
-        *,
-        execution_claim: PurgeExecutionClaim,
+        self, purge_id: str, error_code: str, error_detail: str
     ) -> PurgeOperation:
         raise NotImplementedError
 

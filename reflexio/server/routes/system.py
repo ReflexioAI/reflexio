@@ -140,8 +140,8 @@ def clear_user_data(
 ) -> ClearUserDataResponse:
     """Delete all rows scoped to a single ``user_id``.
 
-    Removes the user's interactions, user playbooks, profiles, and
-    requests. Does NOT touch ``agent_playbooks`` — they are
+    Removes the user's interactions, session outcomes, user playbooks,
+    profiles, and requests. Does NOT touch ``agent_playbooks`` — they are
     intentionally shared cross-project. Used by paired-protocol
     harnesses (e.g. SWE-bench) to isolate per-task data on a shared
     backend without one task's clear-all nuking another in-flight

@@ -1032,9 +1032,23 @@ def test_incremental_run_refreshes_agent_and_centroid_after_match(
         request_context=context,
         agent_version="v1",
     )
+    learning_meter = MagicMock()
+    monkeypatch.setattr(aggregator, "_record_learnings_generated", learning_meter)
 
-    first = aggregator.run(PlaybookAggregatorRequest(agent_version="v1"))
+    first = aggregator.run(
+        PlaybookAggregatorRequest(agent_version="v1", operation_key="test-run-1")
+    )
     assert first["playbooks_generated"] == 1
+    first_saved_id = store.conn.execute(
+        "SELECT agent_playbook_id FROM agent_playbooks"
+    ).fetchone()[0]
+    learning_meter.assert_called_once_with(
+        learning_ids=[str(first_saved_id)],
+        playbook_name="playbook",
+        request_id="test-run-1",
+        metadata=first,
+        total_count=1,
+    )
     assert store.conn.execute("SELECT count(*) FROM agent_playbooks").fetchone()[0] == 1
 
     _insert_current(store, 3, embedding=encoded, trigger="same trigger")

@@ -15,7 +15,6 @@ imported here rather than duplicated.
 
 from __future__ import annotations
 
-import json
 import sqlite3
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -30,13 +29,6 @@ from .._agent_run import _dt_str, _row_to_agent_run
 from .._base import SQLiteStorageBase, _json_dumps
 
 
-def _valid_finalized_learning_ids(value: object) -> bool:
-    return isinstance(value, list) and all(
-        isinstance(learning_id, str) and bool(learning_id.strip())
-        for learning_id in value
-    )
-
-
 class SQLiteAgentRunStoreMixin:
     """SQLite-backed resumable extraction run store primitives."""
 
@@ -45,7 +37,6 @@ class SQLiteAgentRunStoreMixin:
     _fetchone: Any
     _fetchall: Any
     _current_timestamp: Any
-    _own_transaction: Any
     org_id: str
 
     def _finalize_runs_without_pending_dependencies_unlocked(self, now_s: str) -> None:
@@ -221,87 +212,6 @@ class SQLiteAgentRunStoreMixin:
     def get_agent_run(self, run_id: str) -> AgentRunRecord | None:
         row = self._fetchone("SELECT * FROM _agent_runs WHERE id = ?", (run_id,))
         return _row_to_agent_run(row) if row else None
-
-    @SQLiteStorageBase.handle_exceptions
-    def get_agent_run_finalization_receipt(
-        self,
-        *,
-        run_id: str,
-        entity_type: str,
-    ) -> list[str] | None:
-        row = self._fetchone(
-            """
-            SELECT receipt.entity_type, receipt.learning_ids
-            FROM _agent_run_finalization_receipts AS receipt
-            JOIN _agent_runs AS run ON run.id = receipt.run_id
-            WHERE receipt.run_id = ? AND run.org_id = ?
-            """,
-            (run_id, self.org_id),
-        )
-        if row is None:
-            return None
-        if row["entity_type"] != entity_type:
-            raise ValueError("agent-run finalization receipt entity type changed")
-        learning_ids = json.loads(row["learning_ids"])
-        if not _valid_finalized_learning_ids(learning_ids):
-            raise ValueError("agent-run finalization receipt is corrupt")
-        return learning_ids
-
-    @SQLiteStorageBase.handle_exceptions
-    def save_agent_run_finalization_receipt(
-        self,
-        *,
-        run_id: str,
-        entity_type: str,
-        learning_ids: list[str],
-    ) -> bool:
-        expected_by_extractor = {
-            "profile": "profile",
-            "playbook": "user_playbook",
-        }
-        if not _valid_finalized_learning_ids(learning_ids):
-            raise ValueError(
-                "agent-run finalization receipt learning ids must be non-empty strings"
-            )
-        encoded_ids = _json_dumps(learning_ids)
-        with self._lock:
-            run = self.conn.execute(
-                "SELECT org_id, extractor_kind FROM _agent_runs WHERE id = ?",
-                (run_id,),
-            ).fetchone()
-            if run is None or run["org_id"] != self.org_id:
-                raise ValueError("agent-run finalization receipt owner is invalid")
-            if expected_by_extractor.get(run["extractor_kind"]) != entity_type:
-                raise ValueError(
-                    "agent-run finalization receipt entity type is invalid"
-                )
-            inserted = (
-                self.conn.execute(
-                    """
-                INSERT OR IGNORE INTO _agent_run_finalization_receipts
-                    (run_id, entity_type, learning_ids)
-                VALUES (?, ?, ?)
-                """,
-                    (run_id, entity_type, encoded_ids),
-                ).rowcount
-                == 1
-            )
-            stored = self.conn.execute(
-                """
-                SELECT entity_type, learning_ids
-                FROM _agent_run_finalization_receipts
-                WHERE run_id = ?
-                """,
-                (run_id,),
-            ).fetchone()
-            if stored is None or stored["entity_type"] != entity_type:
-                raise ValueError("agent-run finalization receipt is immutable")
-            stored_ids = json.loads(stored["learning_ids"])
-            if not _valid_finalized_learning_ids(stored_ids):
-                raise ValueError("agent-run finalization receipt is corrupt")
-            if self._own_transaction():
-                self.conn.commit()
-            return inserted
 
     @SQLiteStorageBase.handle_exceptions
     def get_latest_finalized_agent_run_for_request(

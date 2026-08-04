@@ -54,18 +54,13 @@ def test_source_is_derived_from_tiebroken_first_request(
         )
 
     assert response.status_code == 200
-    body = response.json()
-    assert {
+    assert response.json() == {
         "success": True,
         "recorded": True,
         "message": "Outcome recorded",
         "user_id": "u1",
         "source": "canonical-source",
-    }.items() <= body.items()
-    assert body["outcome_id"]
-    assert body["outcome_revision"] == 1
-    assert len(body["outcome_contract_digest"]) == 64
-    assert len(body["finalized_trajectory_digest"]) == 64
+    }
     assert "stripped unknown fields: source" in caplog.text
     assert "multiple sources for session source-session" in caplog.text
 
@@ -108,169 +103,6 @@ def test_retry_survives_ordinary_session_deletion(
     assert retry.json()["success"] is True
     assert retry.json()["recorded"] is False
     assert retry.json()["source"] == "published"
-
-
-def test_conflicting_retry_is_not_accepted_only_by_session_identity(
-    client_with_org: tuple[TestClient, str],
-) -> None:
-    client, org_id = client_with_org
-    storage = get_reflexio(org_id=org_id).get_storage()
-    storage.add_request(
-        Request(
-            request_id="conflict-r1",
-            user_id="u1",
-            session_id="conflict-session",
-            source="published",
-            created_at=100,
-        )
-    )
-    first = client.post(
-        "/api/session_outcome",
-        json={
-            "session_id": "conflict-session",
-            "outcome": "success",
-            "occurred_at": 101,
-        },
-    )
-    conflict = client.post(
-        "/api/session_outcome",
-        json={
-            "session_id": "conflict-session",
-            "outcome": "failure",
-            "occurred_at": 101,
-        },
-    )
-
-    assert first.status_code == 200
-    assert first.json()["recorded"] is True
-    assert conflict.status_code == 200
-    assert conflict.json()["success"] is False
-    assert conflict.json()["recorded"] is False
-    assert conflict.json()["reason"] == "conflicting_finalization"
-
-
-def test_retry_compares_metadata_as_json_values(
-    client_with_org: tuple[TestClient, str],
-) -> None:
-    client, org_id = client_with_org
-    storage = get_reflexio(org_id=org_id).get_storage()
-    storage.add_request(
-        Request(
-            request_id="semantic-metadata-r1",
-            user_id="u1",
-            session_id="semantic-metadata-session",
-            source="published",
-            created_at=100,
-        )
-    )
-    payload = {
-        "session_id": "semantic-metadata-session",
-        "outcome": "success",
-        "occurred_at": 101,
-        "metadata": {"label": "same", "nested": {"one": 1, "two": 2}},
-    }
-    first = client.post("/api/session_outcome", json=payload)
-    assert first.json()["recorded"] is True
-    storage.conn.execute(  # type: ignore[attr-defined]
-        "UPDATE session_outcomes SET metadata = ? WHERE session_id = ?",
-        (
-            '{ "nested": { "two": 2, "one": 1 }, "label": "same" }',
-            "semantic-metadata-session",
-        ),
-    )
-    storage.conn.commit()  # type: ignore[attr-defined]
-
-    retry = client.post("/api/session_outcome", json=payload)
-
-    assert retry.status_code == 200
-    assert retry.json()["success"] is True
-    assert retry.json()["recorded"] is False
-    assert "reason" not in retry.json()
-
-
-def test_retry_rejects_metadata_with_different_json_value_types(
-    client_with_org: tuple[TestClient, str],
-) -> None:
-    client, org_id = client_with_org
-    storage = get_reflexio(org_id=org_id).get_storage()
-    storage.add_request(
-        Request(
-            request_id="typed-metadata-r1",
-            user_id="u1",
-            session_id="typed-metadata-session",
-            source="published",
-            created_at=100,
-        )
-    )
-    first = client.post(
-        "/api/session_outcome",
-        json={
-            "session_id": "typed-metadata-session",
-            "outcome": "success",
-            "occurred_at": 101,
-            "metadata": {"nested": {"value": True}},
-        },
-    )
-    assert first.json()["recorded"] is True
-
-    retry = client.post(
-        "/api/session_outcome",
-        json={
-            "session_id": "typed-metadata-session",
-            "outcome": "success",
-            "occurred_at": 101,
-            "metadata": {"nested": {"value": 1}},
-        },
-    )
-
-    assert retry.status_code == 200
-    assert retry.json()["success"] is False
-    assert retry.json()["recorded"] is False
-    assert retry.json()["reason"] == "conflicting_finalization"
-
-
-@pytest.mark.parametrize(
-    "stored_metadata",
-    [
-        pytest.param("", id="empty"),
-        pytest.param("{malformed", id="malformed"),
-        pytest.param("[" * 10_000 + "]" * 10_000, id="pathological-nesting"),
-    ],
-)
-def test_retry_rejects_invalid_stored_metadata(
-    client_with_org: tuple[TestClient, str], stored_metadata: str
-) -> None:
-    client, org_id = client_with_org
-    storage = get_reflexio(org_id=org_id).get_storage()
-    session_id = f"invalid-stored-metadata-{len(stored_metadata)}"
-    storage.add_request(
-        Request(
-            request_id=f"{session_id}-r1",
-            user_id="u1",
-            session_id=session_id,
-            source="published",
-            created_at=100,
-        )
-    )
-    payload = {
-        "session_id": session_id,
-        "outcome": "success",
-        "occurred_at": 101,
-    }
-    first = client.post("/api/session_outcome", json=payload)
-    assert first.json()["recorded"] is True
-    storage.conn.execute(  # type: ignore[attr-defined]
-        "UPDATE session_outcomes SET metadata = ? WHERE session_id = ?",
-        (stored_metadata, session_id),
-    )
-    storage.conn.commit()  # type: ignore[attr-defined]
-
-    retry = client.post("/api/session_outcome", json=payload)
-
-    assert retry.status_code == 200
-    assert retry.json()["success"] is False
-    assert retry.json()["recorded"] is False
-    assert retry.json()["reason"] == "conflicting_finalization"
 
 
 def test_outcome_validation_boundaries(

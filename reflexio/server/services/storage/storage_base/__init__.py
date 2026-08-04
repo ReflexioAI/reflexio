@@ -147,13 +147,13 @@ class BaseStorage(
     def clear_user_data(self, user_id: str) -> dict[str, int]:
         """Delete all rows scoped to a single ``user_id``.
 
-        Removes the user's session outcomes, interactions, user playbooks,
-        profiles, and requests. Intentionally does NOT touch ``agent_playbooks`` — those
-        are the cross-project rollup of skills and have no ``user_id``
-        column. This is the data-isolation primitive used by paired
-        protocols (e.g. SWE-bench) that share a single backend across
-        parallel tasks without one task's clear-all nuking another
-        in-flight task's rows.
+        Removes the user's interactions, session outcomes, user playbooks,
+        profiles, and requests. Intentionally does NOT touch
+        ``agent_playbooks`` — those are the cross-project rollup of skills and
+        have no ``user_id`` column. This is the data-isolation primitive used
+        by paired protocols (e.g. SWE-bench) that share a single backend across
+        parallel tasks without one task's clear-all nuking another in-flight
+        task's rows.
 
         **Lineage-aware erasure:** rows that are tombstones (``merged_into``
         or ``superseded_by`` is set) *or* are pointed to by another row
@@ -176,8 +176,8 @@ class BaseStorage(
             user_id (str): The user id whose rows should be deleted.
 
         Returns:
-            dict[str, int]: Per-entity counts with keys ``interactions``,
-                ``session_outcomes``, ``user_playbooks``, ``profiles``, ``requests``,
+            dict[str, int]: Per-entity counts with keys ``session_outcomes``,
+                ``interactions``, ``user_playbooks``, ``profiles``, ``requests``,
                 ``purged_profiles``, and ``purged_user_playbooks``.
                 ``profiles`` and ``user_playbooks`` reflect hard-deleted
                 counts; purged rows are counted separately.

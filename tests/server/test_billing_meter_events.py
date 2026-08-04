@@ -13,11 +13,12 @@ legitimately occur in both -- without the entity-type segment those would
 mint the same ``event_key`` and collapse into one event downstream.
 
 The existing count-based ``record_learnings_generated`` / ``emit_learnings_generated``
-remain for online extraction callers that have a known billable count but do
-not retain per-record ids. Resumable finalization uses only the record-backed
-path and skips items without durable ids. The count-based helper carries a
-synthesized ``event_key=f"learn-batch:{uuid4()}"`` so every
-``learnings_generated`` event -- record-backed or batch -- has a dedup key.
+remain as the documented FALLBACK for callers that genuinely lack a per-record
+id list (e.g. dedup/consolidation can reduce the persisted count below the raw
+extracted count, so there is no safe 1:1 id per unit of ``count``). The
+fallback path now also carries a synthesized ``event_key=f"learn-batch:{uuid4()}"``
+so every ``learnings_generated`` event -- record-backed or batch -- has a
+dedup key.
 
 Totals are preserved in both paths: the sum of ``count_value`` across the
 per-record events equals ``len(learning_ids)``; the fallback emits exactly
@@ -123,6 +124,19 @@ def test_records_emits_distinct_keys():
         )
     keys = [call.kwargs["event_key"] for call in hook.call_args_list]
     assert len(keys) == len(set(keys)) == 3
+
+
+def test_batch_record_accepts_a_retry_stable_event_key():
+    with patch(HOOK) as hook:
+        record_learnings_generated(
+            org_id="org1",
+            count=2,
+            platform_llm=True,
+            platform_storage=None,
+            event_key="learn-batch:resumable:run-1:profile",
+        )
+
+    assert hook.call_args.kwargs["event_key"] == ("learn-batch:resumable:run-1:profile")
 
 
 def test_records_totals_preserved():

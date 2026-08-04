@@ -19,7 +19,6 @@ from reflexio.server.error_reporting import error_tags
 from reflexio.server.llm._litellm_types import ModelProvenance
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 from reflexio.server.llm.model_defaults import ModelRole, resolve_model_name
-from reflexio.server.services.deferred_learning_plan import FinalizationResult
 from reflexio.server.services.extraction.agent_run_records import build_scope_hash
 from reflexio.server.services.extraction.pending_tool_call_dispatch import (
     PendingToolCallToolContext,
@@ -318,9 +317,8 @@ class ExtractionResumeWorker:
 
         try:
             self.storage.update_agent_run_status(run.id, AgentRunStatus.FINALIZING)
-            result = self._finalize_items(run, items, model_provenance=model_provenance)
-            if result.won_receipt:
-                self._schedule_finalized_tagging(run)
+            self._finalize_items(run, items, model_provenance=model_provenance)
+            self._schedule_finalized_tagging(run)
             self.storage.consume_run_tool_dependencies(run.id)
             finalized_status = (
                 AgentRunStatus.FINALIZED_PENDING_TOOL
@@ -365,9 +363,8 @@ class ExtractionResumeWorker:
             items, pending_tool_call_ids, model_provenance = (
                 self._items_from_committed_output(run)
             )
-            result = self._finalize_items(run, items, model_provenance=model_provenance)
-            if result.won_receipt:
-                self._schedule_finalized_tagging(run)
+            self._finalize_items(run, items, model_provenance=model_provenance)
+            self._schedule_finalized_tagging(run)
             self.storage.consume_run_tool_dependencies(run.id)
             finalized_status = (
                 AgentRunStatus.FINALIZED_PENDING_TOOL
@@ -874,7 +871,7 @@ class ExtractionResumeWorker:
         items: list[Any],
         *,
         model_provenance: ModelProvenance | None = None,
-    ) -> FinalizationResult:
+    ) -> None:
         if run.binding.extractor_kind == "profile":
             service = ProfileGenerationService(
                 llm_client=self.client,
@@ -887,16 +884,13 @@ class ExtractionResumeWorker:
                 auto_run=False,
                 force_extraction=True,
             )
-            result = service._finalize_extracted_items_with_outcome(
-                items,
-                model_provenance=model_provenance,
-                finalization_run_id=run.id,
+            persisted_items = service._finalize_extracted_items(
+                items, model_provenance=model_provenance
             )
-            if result.won_receipt:
-                self._record_finalized_learnings(
-                    run, result.learning_ids, entity_type="profile"
-                )
-            return result
+            self._record_finalized_learnings(
+                run, persisted_items or [], entity_type="profile"
+            )
+            return
         if run.binding.extractor_kind == "playbook":
             service = PlaybookGenerationService(
                 llm_client=self.client,
@@ -910,46 +904,79 @@ class ExtractionResumeWorker:
                 auto_run=False,
                 force_extraction=True,
             )
-            result = service._finalize_extracted_items_with_outcome(
-                items,
-                model_provenance=model_provenance,
-                finalization_run_id=run.id,
+            persisted_items = service._finalize_extracted_items(
+                items, model_provenance=model_provenance
             )
-            if result.won_receipt:
-                self._record_finalized_learnings(
-                    run, result.learning_ids, entity_type="user_playbook"
-                )
-            return result
+            self._record_finalized_learnings(
+                run, persisted_items or [], entity_type="user_playbook"
+            )
+            return
         raise ResumeWorkerError(
             f"Unsupported extractor kind {run.binding.extractor_kind!r}"
         )
 
     def _record_finalized_learnings(
-        self, run: AgentRunRecord, learning_ids: list[str], *, entity_type: str
+        self, run: AgentRunRecord, items: list[Any], *, entity_type: str
     ) -> None:
         """Emit ``learnings_generated`` for a finalized resumable-extraction batch.
 
-        Emits one event per durable learning id returned by finalization.
-        Per-record keys make finalization retries idempotent downstream.
+        Prefers one event per learning id (``entity_id``/``profile_id`` for
+        profiles, ``user_playbook_id`` for playbooks) when every item in
+        ``items`` carries a durable id — the common case, since these ids are
+        assigned by the extractor (profile) or by ``save_user_playbooks``
+        in-place during ``_finalize_extracted_items`` (playbook), which has
+        already run by the time this is called. Falls back to the
+        count-based aggregate event when any item lacks one (e.g. dropped by
+        within-batch/consolidator dedup before persist, leaving a default
+        ``user_playbook_id=0``) — this avoids both fabricating an id for a row
+        that never persisted and colliding on the shared default-id key.
+        Totals are preserved either way: ``len(items)`` learnings are counted
+        whether via ``len(learning_ids)`` per-record events or one aggregate
+        ``count=len(items)`` event.
         """
-        from reflexio.server.billing_meter import emit_learnings_generated_records
+        from reflexio.server.billing_meter import (
+            emit_learnings_generated,
+            emit_learnings_generated_records,
+        )
 
-        if not learning_ids:
+        if not items:
             return
+
+        id_attr = "profile_id" if entity_type == "profile" else "user_playbook_id"
+        learning_ids = [
+            str(getattr(item, id_attr))
+            for item in items
+            if getattr(item, id_attr, None)
+        ]
         metadata = {
             "run_id": run.id,
             "extractor_kind": run.binding.extractor_kind,
         }
-        emit_learnings_generated_records(
+        if len(learning_ids) == len(items):
+            emit_learnings_generated_records(
+                org_id=self.request_context.org_id,
+                configurator=self.request_context.configurator,
+                learning_ids=learning_ids,
+                source="resumable_extraction",
+                pipeline=run.binding.extractor_kind,
+                user_id=run.binding.user_id,
+                request_id=run.binding.request_id,
+                agent_version=run.binding.agent_version,
+                entity_type=entity_type,
+                metadata=metadata,
+            )
+            return
+        emit_learnings_generated(
             org_id=self.request_context.org_id,
             configurator=self.request_context.configurator,
-            learning_ids=learning_ids,
+            count=len(items),
             source="resumable_extraction",
             pipeline=run.binding.extractor_kind,
             user_id=run.binding.user_id,
             request_id=run.binding.request_id,
             agent_version=run.binding.agent_version,
             entity_type=entity_type,
+            event_key=f"learn-batch:resumable:{run.id}:{entity_type}",
             metadata=metadata,
         )
 

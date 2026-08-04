@@ -92,6 +92,31 @@ def test_inline_aggregation_default_path_schedules_durably():
     _storage(service).schedule_playbook_aggregation.assert_called_once_with("v1")
 
 
+def test_post_persist_scheduler_failures_are_best_effort(caplog):
+    configurator = MagicMock()
+    configurator.get_config.return_value = _aggregation_enabled_config()
+    service = _service_for_inline_aggregation(configurator)
+    plan = MagicMock()
+    plan.new_playbooks = [MagicMock()]
+    plan.output_pending_status = False
+    plan.skip_aggregation = False
+    service._enqueue_user_playbook_optimization = MagicMock(
+        side_effect=RuntimeError("optimization unavailable")
+    )
+    service._trigger_playbook_aggregation = MagicMock(
+        side_effect=RuntimeError("aggregation unavailable")
+    )
+
+    service._dispatch_playbook_schedulers(plan)
+
+    service._enqueue_user_playbook_optimization.assert_called_once_with(
+        plan.new_playbooks
+    )
+    service._trigger_playbook_aggregation.assert_called_once_with()
+    assert "optimization unavailable" in caplog.text
+    assert "aggregation unavailable" in caplog.text
+
+
 def test_maybe_trigger_user_playbook_aggregation_durably_schedules():
     from reflexio.server.services.playbook.aggregation_trigger import (
         maybe_trigger_user_playbook_aggregation,
@@ -532,6 +557,55 @@ def test_finalize_without_provenance_emits_create_with_null_model_fields():
             request_id="legacy-request",
             model_name=None,
             provider=None,
+        )
+
+
+def test_synchronous_finalize_rolls_back_creation_when_lineage_fails():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        service = PlaybookGenerationService(
+            llm_client=LiteLLMClient(LiteLLMConfig(model="gpt-4o-mini")),
+            request_context=RequestContext(org_id="0", storage_base_dir=temp_dir),
+        )
+        service.service_config = PlaybookGenerationServiceConfig(
+            request_id="atomic-request",
+            agent_version="1.0",
+            user_id="atomic-user",
+            source="test",
+        )
+        playbook = UserPlaybook(
+            agent_version="1.0",
+            request_id="atomic-request",
+            content="Keep creation and lineage atomic.",
+            trigger="When synchronous finalization retries",
+        )
+
+        with (
+            patch(
+                "reflexio.server.services.playbook.components.consolidator.PlaybookConsolidator",
+            ) as consolidator_class,
+            patch.object(
+                service,
+                "_apply_consolidation_lineage",
+                side_effect=RuntimeError("lineage failed"),
+            ),
+        ):
+            consolidator_class.return_value.deduplicate.return_value = (
+                [playbook],
+                [],
+                [],
+            )
+            consolidator_class.return_value.model_provenance = None
+            consolidator_class.return_value.consolidated_output_indices = set()
+            with pytest.raises(RuntimeError, match="lineage failed"):
+                service._finalize_extracted_items([playbook])
+
+        assert (
+            _storage(service)
+            .conn.execute(
+                "SELECT count(*) FROM user_playbooks WHERE user_id = 'atomic-user'"
+            )
+            .fetchone()[0]
+            == 0
         )
 
 

@@ -18,8 +18,6 @@ and the module-level helpers (``_json_dumps``, ``_row_to_purge_operation``,
 
 from __future__ import annotations
 
-import hashlib
-import hmac
 import sqlite3
 import threading
 from collections.abc import Callable
@@ -28,11 +26,6 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 from reflexio.models.api_schema.domain.governance import (
     PurgeOperation,
     PurgeOperationTarget,
-)
-from reflexio.server.services.governance.config import get_governance_ref_secret
-from reflexio.server.services.storage.governance_claims import (
-    PurgeExecutionClaim,
-    validate_purge_execution_claim,
 )
 from reflexio.server.services.storage.governance_validation import (
     _ALLOWED_PURGE_OPERATION_TYPES,
@@ -55,12 +48,7 @@ from reflexio.server.services.storage.governance_validation import (
     _validate_governance_target_ref,
 )
 
-from .._governance import (
-    _json_dumps,
-    _json_loads,
-    _row_to_purge_operation,
-    _row_to_purge_target,
-)
+from .._governance import _json_dumps, _row_to_purge_operation, _row_to_purge_target
 
 if TYPE_CHECKING:
     from .._governance import _SQLiteGovernanceDeps
@@ -77,114 +65,6 @@ class PurgeOperationStoreMixin:
     _deps: Callable[[], _SQLiteGovernanceDeps]
     _owned_user_playbook_ids_locked: Callable[[str], set[int]]
     _planned_governance_delete_counts: Callable[[str, set[int]], dict[str, int]]
-    _subject_ref_for_user_id: Callable[[str], str]
-
-    def _authoritative_user_digest(self, purge_id: str, user_id: str) -> str:
-        material = f"authoritative-user-v1\0{self.org_id}\0{purge_id}\0{user_id}"
-        return hmac.new(
-            get_governance_ref_secret().encode(),
-            material.encode(),
-            hashlib.sha256,
-        ).hexdigest()
-
-    @staticmethod
-    def _legacy_authoritative_user_digest(purge_id: str, user_id: str) -> str:
-        return hashlib.sha256(f"{purge_id}\0{user_id}".encode()).hexdigest()
-
-    def _assert_authoritative_user_identity_locked(
-        self, purge_id: str, user_id: str
-    ) -> str:
-        row = self.conn.execute(
-            """SELECT operation_type, scope_type, subject_ref,
-                      authoritative_user_digest
-               FROM purge_operations
-               WHERE org_id = ? AND purge_id = ?""",
-            (self.org_id, purge_id),
-        ).fetchone()
-        expected_digest = self._authoritative_user_digest(purge_id, user_id)
-        if (
-            row is None
-            or row["operation_type"] != "user_erasure"
-            or row["scope_type"] != "user"
-            or row["subject_ref"] != self._subject_ref_for_user_id(user_id)
-            or row["authoritative_user_digest"] != expected_digest
-        ):
-            raise ValueError("Purge authoritative user identity does not match")
-        return expected_digest
-
-    def _adopt_authoritative_user_digest_bindings_locked(
-        self,
-        *,
-        purge_id: str,
-        user_id: str,
-        existing_digest: object,
-        authoritative_user_digest: str,
-        now: int,
-    ) -> None:
-        legacy_digest = self._legacy_authoritative_user_digest(purge_id, user_id)
-
-        def is_recognized(binding: object) -> bool:
-            return binding is None or (
-                isinstance(binding, str)
-                and (
-                    hmac.compare_digest(binding, authoritative_user_digest)
-                    or hmac.compare_digest(binding, legacy_digest)
-                )
-            )
-
-        if not is_recognized(existing_digest):
-            raise ValueError(
-                "Existing purge operation has mismatched authoritative user identity"
-            )
-
-        snapshot_row = self.conn.execute(
-            """SELECT detail FROM purge_operation_targets
-               WHERE org_id = ? AND purge_id = ? AND target_name = ?
-                 AND target_ref = 'all' AND phase = ?""",
-            (self.org_id, purge_id, _SNAPSHOT_TARGET_NAME, _PREPARE_PHASE),
-        ).fetchone()
-        snapshot_detail = None
-        if snapshot_row is not None:
-            snapshot_detail = _json_loads(snapshot_row["detail"])
-            if not isinstance(snapshot_detail, dict) or not is_recognized(
-                snapshot_detail.get("authoritative_user_digest")
-            ):
-                raise ValueError(
-                    "Existing purge snapshot has mismatched authoritative user identity"
-                )
-
-        if existing_digest != authoritative_user_digest:
-            self.conn.execute(
-                """UPDATE purge_operations
-                   SET authoritative_user_digest = ?, updated_at = ?
-                   WHERE org_id = ? AND purge_id = ?
-                     AND authoritative_user_digest IS ?""",
-                (
-                    authoritative_user_digest,
-                    now,
-                    self.org_id,
-                    purge_id,
-                    existing_digest,
-                ),
-            )
-        if (
-            snapshot_detail is not None
-            and snapshot_detail.get("authoritative_user_digest")
-            != authoritative_user_digest
-        ):
-            snapshot_detail["authoritative_user_digest"] = authoritative_user_digest
-            self.conn.execute(
-                """UPDATE purge_operation_targets SET detail = ?
-                   WHERE org_id = ? AND purge_id = ? AND target_name = ?
-                     AND target_ref = 'all' AND phase = ?""",
-                (
-                    _json_dumps(snapshot_detail),
-                    self.org_id,
-                    purge_id,
-                    _SNAPSHOT_TARGET_NAME,
-                    _PREPARE_PHASE,
-                ),
-            )
 
     def _record_purge_target_locked(
         self,
@@ -285,7 +165,6 @@ class PurgeOperationStoreMixin:
         scope_type: Literal["user", "org"],
         subject_ref: str | None,
         request_ref: str,
-        authoritative_user_id: str | None = None,
     ) -> PurgeOperation:
         _validate_governance_enum(
             "operation_type",
@@ -307,20 +186,6 @@ class PurgeOperationStoreMixin:
         validated_idempotency_key = cast(
             str,
             _validate_governance_idempotency_key("idempotency_key", idempotency_key),
-        )
-        if operation_type == "user_erasure" and scope_type == "user":
-            if not authoritative_user_id:
-                raise ValueError("authoritative user identity is required")
-            if subject_ref != self._subject_ref_for_user_id(authoritative_user_id):
-                raise ValueError("authoritative user identity must match subject_ref")
-        elif authoritative_user_id:
-            raise ValueError(
-                "authoritative user identity is only valid for user erasure"
-            )
-        authoritative_user_digest = (
-            self._authoritative_user_digest(validated_purge_id, authoritative_user_id)
-            if authoritative_user_id
-            else None
         )
         now = _epoch_now()
         with self._lock:
@@ -346,26 +211,13 @@ class PurgeOperationStoreMixin:
                                 "Existing purge operation for idempotency_key has "
                                 f"mismatched {field_name}"
                             )
-                    if authoritative_user_id and authoritative_user_digest:
-                        self._adopt_authoritative_user_digest_bindings_locked(
-                            purge_id=validated_purge_id,
-                            user_id=authoritative_user_id,
-                            existing_digest=existing["authoritative_user_digest"],
-                            authoritative_user_digest=authoritative_user_digest,
-                            now=now,
-                        )
-                    elif existing["authoritative_user_digest"] is not None:
-                        raise ValueError(
-                            "Existing purge operation has mismatched authoritative user identity"
-                        )
-                    self.conn.commit()
-                    return _row_to_purge_operation(existing)
+                    self.conn.rollback()
+                    return existing_operation
                 self.conn.execute(
                     """INSERT INTO purge_operations (
                            purge_id, org_id, operation_type, scope_type, subject_ref,
-                           request_ref, idempotency_key, authoritative_user_digest,
-                           status, created_at, updated_at
-                       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)""",
+                           request_ref, idempotency_key, status, created_at, updated_at
+                       ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)""",
                     (
                         validated_purge_id,
                         self.org_id,
@@ -374,7 +226,6 @@ class PurgeOperationStoreMixin:
                         subject_ref,
                         request_ref,
                         validated_idempotency_key,
-                        authoritative_user_digest,
                         now,
                         now,
                     ),
@@ -385,177 +236,12 @@ class PurgeOperationStoreMixin:
                 raise
         return self.get_purge_operation(validated_purge_id)
 
-    def claim_purge_operation_execution(
-        self,
-        purge_id: str,
-        *,
-        lease_owner: str,
-        lease_ttl_seconds: int,
-    ) -> PurgeExecutionClaim | None:
-        validated_purge_id = _validate_governance_purge_id("purge_id", purge_id)
-        if not lease_owner.strip():
-            raise ValueError("lease_owner is required")
-        if lease_ttl_seconds <= 0:
-            raise ValueError("lease_ttl_seconds must be positive")
-        now = _epoch_now()
-        expires_at = now + lease_ttl_seconds
-        with self._lock:
-            try:
-                self.conn.execute("BEGIN IMMEDIATE")
-                cursor = self.conn.execute(
-                    """UPDATE purge_operations
-                       SET status = 'running', error_code = NULL, error_detail = NULL,
-                           completed_at = NULL, updated_at = ?,
-                           execution_claim_owner = ?,
-                           execution_claim_fence = execution_claim_fence + 1,
-                           execution_claim_expires_at = ?
-                       WHERE purge_id = ? AND org_id = ?
-                         AND (
-                            status IN ('pending', 'failed')
-                            OR (
-                                status = 'running'
-                                AND (
-                                    execution_claim_expires_at IS NULL
-                                    OR execution_claim_expires_at <= ?
-                                )
-                            )
-                         )
-                       RETURNING execution_claim_owner,
-                                 execution_claim_fence,
-                                 execution_claim_expires_at""",
-                    (
-                        now,
-                        lease_owner,
-                        expires_at,
-                        validated_purge_id,
-                        self.org_id,
-                        now,
-                    ),
-                )
-                row = cursor.fetchone()
-                self.conn.commit()
-                if row is None:
-                    return None
-                return PurgeExecutionClaim(
-                    purge_id=validated_purge_id,
-                    owner=str(row["execution_claim_owner"]),
-                    fence=int(row["execution_claim_fence"]),
-                    expires_at=int(row["execution_claim_expires_at"]),
-                )
-            except Exception:
-                self.conn.rollback()
-                raise
-
-    def assert_purge_operation_execution_claim(
-        self, purge_id: str, execution_claim: PurgeExecutionClaim
-    ) -> None:
-        purge_id = _validate_governance_purge_id("purge_id", purge_id)
-        claim = validate_purge_execution_claim(purge_id, execution_claim)
-        now = _epoch_now()
-        row = self._deps()._fetchone(
-            """SELECT status, execution_claim_owner, execution_claim_fence,
-                      execution_claim_expires_at
-               FROM purge_operations
-               WHERE purge_id = ? AND org_id = ?""",
-            (purge_id, self.org_id),
-        )
-        if row is None:
-            raise ValueError(f"Purge operation {purge_id!r} not found")
-        if (
-            row["status"] != "running"
-            or row["execution_claim_owner"] != claim.owner
-            or int(row["execution_claim_fence"]) != claim.fence
-            or row["execution_claim_expires_at"] is None
-            or int(row["execution_claim_expires_at"]) <= now
-        ):
-            raise ValueError("purge execution claim is no longer active")
-
-    def _assert_purge_operation_execution_claim_locked(
-        self,
-        purge_id: str,
-        execution_claim: PurgeExecutionClaim,
-    ) -> None:
-        purge_id = _validate_governance_purge_id("purge_id", purge_id)
-        claim = validate_purge_execution_claim(purge_id, execution_claim)
-        now = _epoch_now()
-        row = self.conn.execute(
-            """SELECT status, execution_claim_owner, execution_claim_fence,
-                      execution_claim_expires_at
-               FROM purge_operations
-               WHERE purge_id = ? AND org_id = ?""",
-            (purge_id, self.org_id),
-        ).fetchone()
-        if row is None:
-            raise ValueError(f"Purge operation {purge_id!r} not found")
-        if (
-            row["status"] != "running"
-            or row["execution_claim_owner"] != claim.owner
-            or int(row["execution_claim_fence"]) != claim.fence
-            or row["execution_claim_expires_at"] is None
-            or int(row["execution_claim_expires_at"]) <= now
-        ):
-            raise ValueError("purge execution claim is no longer active")
-
-    def renew_purge_operation_execution_claim(
-        self,
-        purge_id: str,
-        execution_claim: PurgeExecutionClaim,
-        *,
-        lease_ttl_seconds: int,
-    ) -> PurgeExecutionClaim:
-        purge_id = _validate_governance_purge_id("purge_id", purge_id)
-        claim = validate_purge_execution_claim(purge_id, execution_claim)
-        if lease_ttl_seconds <= 0:
-            raise ValueError("lease_ttl_seconds must be positive")
-        now = _epoch_now()
-        expires_at = now + lease_ttl_seconds
-        with self._lock:
-            try:
-                self.conn.execute("BEGIN IMMEDIATE")
-                cursor = self.conn.execute(
-                    """UPDATE purge_operations
-                       SET execution_claim_expires_at = ?, updated_at = ?
-                       WHERE purge_id = ? AND org_id = ?
-                         AND status = 'running'
-                         AND execution_claim_owner = ?
-                         AND execution_claim_fence = ?
-                         AND execution_claim_expires_at IS NOT NULL
-                         AND execution_claim_expires_at > ?
-                       RETURNING execution_claim_owner,
-                                 execution_claim_fence,
-                                 execution_claim_expires_at""",
-                    (
-                        expires_at,
-                        now,
-                        purge_id,
-                        self.org_id,
-                        claim.owner,
-                        claim.fence,
-                        now,
-                    ),
-                )
-                row = cursor.fetchone()
-                self.conn.commit()
-            except Exception:
-                self.conn.rollback()
-                raise
-        if row is None:
-            raise ValueError("purge execution claim is no longer active")
-        return PurgeExecutionClaim(
-            purge_id=purge_id,
-            owner=str(row["execution_claim_owner"]),
-            fence=int(row["execution_claim_fence"]),
-            expires_at=int(row["execution_claim_expires_at"]),
-        )
-
     def record_purge_target(
         self,
         purge_id: str,
         target_name: str,
         phase: str,
         status: Literal["pending", "running", "failed", "complete"],
-        *,
-        execution_claim: PurgeExecutionClaim,
         target_ref: str = "",
         detail: dict[str, object] | None = None,
         deleted_count: int = 0,
@@ -579,10 +265,6 @@ class PurgeOperationStoreMixin:
         )
         with self._lock:
             try:
-                self.conn.execute("BEGIN IMMEDIATE")
-                self._assert_purge_operation_execution_claim_locked(
-                    purge_id, execution_claim
-                )
                 self._record_purge_target_locked(
                     purge_id=purge_id,
                     target_name=target_name,
@@ -626,28 +308,14 @@ class PurgeOperationStoreMixin:
         self,
         purge_id: str,
         user_id: str,
-        *,
-        execution_claim: PurgeExecutionClaim,
         owned_user_playbook_ids: set[int] | None = None,
     ) -> None:
         purge_id = _validate_governance_purge_id("purge_id", purge_id)
         with self._lock:
             try:
                 self.conn.execute("BEGIN IMMEDIATE")
-                self._assert_purge_operation_execution_claim_locked(
-                    purge_id, execution_claim
-                )
-                authoritative_user_digest = (
-                    self._assert_authoritative_user_identity_locked(purge_id, user_id)
-                )
-                prepared = self.conn.execute(
-                    """SELECT 1 FROM purge_operation_targets
-                       WHERE org_id = ? AND purge_id = ? AND target_name = ? AND target_ref = 'all'
-                         AND phase = ? AND status = 'complete'""",
-                    (self.org_id, purge_id, _SNAPSHOT_TARGET_NAME, _PREPARE_PHASE),
-                ).fetchone()
-                if prepared is not None:
-                    self.conn.commit()
+                if self.purge_targets_prepared(purge_id):
+                    self.conn.rollback()
                     return
                 owned_user_playbook_ids = (
                     set(owned_user_playbook_ids)
@@ -676,7 +344,6 @@ class PurgeOperationStoreMixin:
                     phase=_PREPARE_PHASE,
                     status="complete",
                     detail={
-                        "authoritative_user_digest": authoritative_user_digest,
                         "owned_user_playbook_ids": sorted(owned_user_playbook_ids),
                     },
                     deleted_count=0,
@@ -688,12 +355,7 @@ class PurgeOperationStoreMixin:
                 raise
 
     def fail_purge_operation(
-        self,
-        purge_id: str,
-        error_code: str,
-        error_detail: str,
-        *,
-        execution_claim: PurgeExecutionClaim,
+        self, purge_id: str, error_code: str, error_detail: str
     ) -> PurgeOperation:
         purge_id = _validate_governance_purge_id("purge_id", purge_id)
         validated_error_code = _validate_governance_error_code(error_code)
@@ -702,15 +364,10 @@ class PurgeOperationStoreMixin:
         with self._lock:
             try:
                 self.conn.execute("BEGIN IMMEDIATE")
-                self._assert_purge_operation_execution_claim_locked(
-                    purge_id, execution_claim
-                )
                 cur = self.conn.execute(
                     """UPDATE purge_operations
                        SET status = 'failed', error_code = ?, error_detail = ?,
-                       updated_at = ?, completed_at = ?,
-                       execution_claim_owner = NULL,
-                       execution_claim_expires_at = NULL
+                       updated_at = ?, completed_at = ?
                        WHERE purge_id = ? AND org_id = ? AND status != 'complete'""",
                     (
                         validated_error_code,

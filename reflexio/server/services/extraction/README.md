@@ -16,16 +16,13 @@ information, and resumes outside the request path.
 | `prior_answer_search.py` | Finds and formats previous human answers for async extraction context. |
 | `agent_run_records.py` | Builds durable extraction-agent run records and source interaction identity. |
 | `resume_scheduler.py` | Schedules due paused extraction runs in a background singleton. |
-| `resume_worker.py` | Resumes paused runs, rebuilds request context, and records retry state. Finalization uses an immutable run-keyed receipt so learning writes and retry billing reuse the same persisted IDs. |
+| `resume_worker.py` | Resumes paused runs, rebuilds request context, and records retry state. |
 | `outcome.py` | Provides the generic extraction outcome wrapper used by callers. |
 
 ## Boundary Rules
 
 - Keep profile-specific and playbook-specific extraction behavior in their own
   modules; call this package only for shared async runtime concerns.
-- Commit resumable learning writes, lineage changes, and the agent-run
-  finalization receipt in one storage transaction. Retries must return the
-  receipt's persisted IDs instead of repeating finalization.
 - Add a new file here when the behavior is shared by more than one extraction
   caller or is part of the resumable runtime itself.
 - Split into subpackages only when a responsibility grows large enough that a
