@@ -13,7 +13,12 @@ import uuid
 from collections.abc import Mapping
 from typing import Any
 
-from reflexio.server.usage_metrics import record_usage_event, record_usage_event_strict
+from reflexio.server.usage_metrics import (
+    UsageEventDeliveryError,
+    UsageEventDeliveryStatus,
+    record_usage_event,
+    record_usage_event_strict,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +29,14 @@ _INTERNAL = (
 
 class ReceiptBillingDeliveryError(RuntimeError):
     """A durable finalization receipt still has an undelivered billing event."""
+
+    def __init__(
+        self,
+        status: UsageEventDeliveryStatus,
+        message: str = "receipt-backed learning billing delivery failed",
+    ) -> None:
+        super().__init__(message)
+        self.status = status
 
 
 def record_extraction_tokens(
@@ -471,10 +484,10 @@ def emit_learnings_generated_records_strict(
             metadata=metadata,
             created_at=created_at,
         )
+    except UsageEventDeliveryError as exc:
+        raise ReceiptBillingDeliveryError(exc.status) from exc
     except Exception as exc:
-        raise ReceiptBillingDeliveryError(
-            "receipt-backed learning billing delivery failed"
-        ) from exc
+        raise ReceiptBillingDeliveryError(UsageEventDeliveryStatus.UNKNOWN) from exc
 
 
 def record_applied_learnings(

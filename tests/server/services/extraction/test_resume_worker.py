@@ -24,9 +24,11 @@ from reflexio.models.config_schema import (
     StorageConfigSQLite,
 )
 from reflexio.server.api_endpoints.request_context import RequestContext
+from reflexio.server.billing_meter import ReceiptBillingDeliveryError
 from reflexio.server.services.deferred_learning_plan import FinalizationResult
 from reflexio.server.services.extraction.resume_worker import (
     ExtractionResumeWorker,
+    _finalization_failure_status,
     _run_playbook_contract_selection,
     _run_uses_strict_playbook_evidence,
 )
@@ -927,6 +929,30 @@ def test_delivery_failure_after_receipt_commit_retries_billing_without_recompute
             aggregate.assert_called_once()
     finally:
         configure_usage_event_recorder(None)
+
+
+@pytest.mark.parametrize(
+    ("delivery_status", "expected_status"),
+    [
+        (UsageEventDeliveryStatus.FAILED, AgentRunStatus.FINALIZATION_FAILED),
+        (UsageEventDeliveryStatus.UNKNOWN, AgentRunStatus.FINALIZATION_FAILED),
+        (UsageEventDeliveryStatus.REJECTED, AgentRunStatus.FAILED),
+    ],
+)
+def test_receipt_delivery_failure_status_distinguishes_transient_and_permanent(
+    delivery_status,
+    expected_status,
+):
+    error = ReceiptBillingDeliveryError(delivery_status)
+
+    assert (
+        _finalization_failure_status(
+            error,
+            next_attempt_count=1,
+            max_finalization_attempts=3,
+        )
+        is expected_status
+    )
 
 
 def test_retry_after_billing_reuses_ids_without_replaying_playbook_schedulers(
