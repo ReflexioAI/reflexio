@@ -652,7 +652,8 @@ class PlaybookGenerationService(
         plan = self._resolve_write_plan([all_playbooks])
         if plan is None:
             return []
-        self._persist_write_plan(plan)
+        with self.storage.commit_scope():  # type: ignore[reportOptionalMemberAccess]
+            self._persist_write_plan(plan)
         self._dispatch_playbook_schedulers(plan)
         return plan.new_playbooks
 

@@ -843,6 +843,10 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             ).fetchone()
             table_sql = str(table["sql"] or "") if table is not None else ""
             governance_column = columns.get("governance_subject_ref")
+            has_empty_subject_default = (
+                governance_column is not None
+                and governance_column["dflt_value"] in ("''", '""')
+            )
             identity_columns = {
                 "outcome_id",
                 "outcome_revision",
@@ -854,6 +858,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                 and not identity_columns.intersection(columns)
                 and governance_column is not None
                 and int(governance_column["notnull"]) == 1
+                and not has_empty_subject_default
                 and "'unknown'" not in table_sql
             ):
                 return

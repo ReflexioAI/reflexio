@@ -186,6 +186,48 @@ def test_dedup_removal_soft_supersedes_and_reconstructs(tmp_path) -> None:
     assert [p.profile_id for p in recon_log.added_profiles] == ["p_new_A"]
 
 
+def test_synchronous_finalize_rolls_back_profile_creation_when_supersede_fails(
+    tmp_path,
+) -> None:
+    org_id = "always-soft-org-atomic"
+    user_id = "u-atomic"
+    request_id = "manual-atomic-1"
+    storage = SQLiteStorage(org_id=org_id, db_path=str(tmp_path / "atomic.db"))
+    old_profile = _make_profile(user_id, "old-atomic", generated_from_request_id="seed")
+    storage.add_user_profile(user_id, [old_profile])
+    new_profile = _make_profile(
+        user_id,
+        "new-atomic",
+        generated_from_request_id=request_id,
+    )
+    service = _build_service(
+        storage,
+        org_id=org_id,
+        user_id=user_id,
+        request_id=request_id,
+    )
+    mock_dedup, mock_dedup_cls = _patch_dedup(
+        all_new=[new_profile],
+        existing_ids=[old_profile.profile_id],
+        superseded=[old_profile],
+    )
+
+    with (
+        mock_dedup_cls as cls,
+        patch.object(
+            storage,
+            "supersede_profiles_by_ids",
+            side_effect=RuntimeError("supersede failed"),
+        ),
+    ):
+        cls.return_value = mock_dedup
+        with pytest.raises(RuntimeError, match="supersede failed"):
+            service._finalize_extracted_items([new_profile])
+
+    assert storage.get_profile_by_id("new-atomic", include_tombstones=True) is None
+    assert storage.get_profile_by_id("old-atomic") is not None
+
+
 # ===========================================================================
 # B. Failure-path (mock storage): atomicity guard — no phantom removal
 # ===========================================================================

@@ -165,6 +165,44 @@ def test_legacy_schema_backfills_required_subject_ref(
     )
 
 
+def test_legacy_empty_subject_default_is_rebuilt_and_backfilled(tmp_path) -> None:
+    db_path = str(tmp_path / "legacy-empty-subject-default.db")
+    storage = _storage(db_path)
+    storage.conn.execute("DROP TABLE session_outcomes")
+    storage.conn.executescript(
+        """CREATE TABLE session_outcomes (
+            user_id TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            outcome TEXT NOT NULL CHECK (outcome IN ('success', 'failure')),
+            occurred_at INTEGER NOT NULL,
+            source TEXT NOT NULL,
+            label TEXT,
+            value REAL,
+            metadata TEXT,
+            governance_subject_ref TEXT NOT NULL DEFAULT '',
+            created_at INTEGER NOT NULL,
+            PRIMARY KEY (user_id, session_id)
+        );"""
+    )
+    storage.conn.execute(
+        """INSERT INTO session_outcomes (
+               user_id, session_id, outcome, occurred_at, source, created_at
+           ) VALUES ('legacy-user', 'legacy-session', 'success', 101, 'legacy', 102)"""
+    )
+    storage.conn.commit()
+    storage.conn.close()
+
+    migrated = _storage(db_path)
+
+    row = migrated.conn.execute(
+        "SELECT governance_subject_ref FROM session_outcomes"
+    ).fetchone()
+    assert row is not None
+    assert row["governance_subject_ref"] == migrated._subject_ref_for_user_id(
+        "legacy-user"
+    )
+
+
 def test_sqlite_versions_without_returning_and_drop_column_are_rejected(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

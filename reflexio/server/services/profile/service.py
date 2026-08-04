@@ -351,7 +351,8 @@ class ProfileGenerationService(
         plan = self._resolve_write_plan([all_new_profiles])
         if plan is None:
             return []
-        self._persist_write_plan(plan)
+        with self.storage.commit_scope():  # type: ignore[reportOptionalMemberAccess]
+            self._persist_write_plan(plan)
         return plan.new_profiles
 
     def check_and_update_profiles(self, profiles: list[UserProfile]) -> None:

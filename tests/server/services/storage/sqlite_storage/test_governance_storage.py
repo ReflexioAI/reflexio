@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Literal, cast
 from unittest.mock import patch
 
@@ -2570,6 +2573,138 @@ def test_fail_missing_purge_rolls_back_implicit_transaction(storage):
 
     assert storage.conn.in_transaction is False
     _begin_purge(storage, "purge_after_missing_failure")
+
+
+def test_record_purge_target_rolls_back_after_write_failure(storage, monkeypatch):
+    purge_id = _begin_purge(storage, "purge_target_write_failure")
+
+    def _write_then_raise(**_kwargs: object) -> None:
+        storage.conn.execute(
+            "UPDATE purge_operations SET status = 'running' WHERE purge_id = ?",
+            (purge_id,),
+        )
+        raise RuntimeError("target write failed")
+
+    monkeypatch.setattr(storage, "_record_purge_target_locked", _write_then_raise)
+
+    with pytest.raises(RuntimeError, match="target write failed"):
+        storage.record_purge_target(
+            purge_id=purge_id,
+            target_name="request",
+            target_ref="all",
+            phase="delete",
+            status="running",
+        )
+
+    assert storage.conn.in_transaction is False
+
+
+def test_begin_purge_operation_serializes_idempotent_two_connection_retry(
+    storage_factory,
+) -> None:
+    first = storage_factory("org1")
+    second = storage_factory("org1")
+    purge_id = "purge_two_connection_retry"
+    idempotency_key = "idem_two_connection_retry"
+    first.conn.execute("BEGIN IMMEDIATE")
+    first.conn.execute(
+        """INSERT INTO purge_operations (
+               purge_id, org_id, operation_type, scope_type, subject_ref,
+               request_ref, idempotency_key, status, created_at, updated_at
+           ) VALUES (?, 'org1', 'user_erasure', 'user', ?, ?, ?, 'pending', 1, 1)""",
+        (purge_id, SUBJECT_REF, REQUEST_REF, idempotency_key),
+    )
+    entered = threading.Event()
+
+    def _trace(statement: str) -> None:
+        if (
+            statement.startswith("BEGIN IMMEDIATE")
+            or "FROM purge_operations" in statement
+        ):
+            entered.set()
+
+    second.conn.set_trace_callback(_trace)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(
+            second.begin_purge_operation,
+            purge_id,
+            idempotency_key,
+            "user_erasure",
+            "user",
+            SUBJECT_REF,
+            REQUEST_REF,
+        )
+        assert entered.wait(timeout=1)
+        time.sleep(0.05)
+        first.conn.commit()
+        operation = future.result(timeout=2)
+
+    assert operation.purge_id == purge_id
+
+
+def test_prepare_targets_rechecks_snapshot_after_two_connection_write_lock(
+    storage_factory,
+) -> None:
+    first = storage_factory("org1")
+    second = storage_factory("org1")
+    purge_id = "purge_two_connection_prepare"
+    first.begin_purge_operation(
+        purge_id=purge_id,
+        idempotency_key="idem_two_connection_prepare",
+        operation_type="user_erasure",
+        scope_type="user",
+        subject_ref=SUBJECT_REF,
+        request_ref=REQUEST_REF,
+    )
+    first.conn.execute("BEGIN IMMEDIATE")
+    first._record_purge_target_locked(
+        purge_id=purge_id,
+        target_name="request",
+        target_ref="all",
+        phase="delete",
+        status="running",
+        detail={"count": 1},
+        deleted_count=0,
+        error_detail=None,
+    )
+    first._record_purge_target_locked(
+        purge_id=purge_id,
+        target_name="target_snapshot",
+        target_ref="all",
+        phase="prepare_targets",
+        status="complete",
+        detail={"owned_user_playbook_ids": []},
+        deleted_count=0,
+        error_detail=None,
+    )
+    entered = threading.Event()
+
+    def _trace(statement: str) -> None:
+        if (
+            statement.startswith("BEGIN IMMEDIATE")
+            or "purge_operation_targets" in statement
+        ):
+            entered.set()
+
+    second.conn.set_trace_callback(_trace)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(
+            second.prepare_governance_erase_targets,
+            purge_id,
+            "two-connection-user",
+            set(),
+        )
+        assert entered.wait(timeout=1)
+        time.sleep(0.05)
+        first.conn.commit()
+        future.result(timeout=2)
+
+    request_target = next(
+        target
+        for target in second.list_purge_targets(purge_id)
+        if target.target_name == "request" and target.phase == "delete"
+    )
+    assert request_target.status == "running"
 
 
 @pytest.mark.parametrize(

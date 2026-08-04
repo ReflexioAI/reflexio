@@ -189,45 +189,51 @@ class PurgeOperationStoreMixin:
         )
         now = _epoch_now()
         with self._lock:
-            existing = self.conn.execute(
-                """SELECT * FROM purge_operations
-                   WHERE org_id = ? AND idempotency_key = ?""",
-                (self.org_id, validated_idempotency_key),
-            ).fetchone()
-            if existing is not None:
-                existing_operation = _row_to_purge_operation(existing)
-                expected_identity = {
-                    "purge_id": validated_purge_id,
-                    "operation_type": operation_type,
-                    "scope_type": scope_type,
-                    "subject_ref": subject_ref,
-                    "request_ref": request_ref,
-                }
-                for field_name, expected_value in expected_identity.items():
-                    if getattr(existing_operation, field_name) != expected_value:
-                        raise ValueError(
-                            "Existing purge operation for idempotency_key has "
-                            f"mismatched {field_name}"
-                        )
-                return _row_to_purge_operation(existing)
-            self.conn.execute(
-                """INSERT INTO purge_operations (
-                       purge_id, org_id, operation_type, scope_type, subject_ref,
-                       request_ref, idempotency_key, status, created_at, updated_at
-                   ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)""",
-                (
-                    validated_purge_id,
-                    self.org_id,
-                    operation_type,
-                    scope_type,
-                    subject_ref,
-                    request_ref,
-                    validated_idempotency_key,
-                    now,
-                    now,
-                ),
-            )
-            self.conn.commit()
+            try:
+                self.conn.execute("BEGIN IMMEDIATE")
+                existing = self.conn.execute(
+                    """SELECT * FROM purge_operations
+                       WHERE org_id = ? AND idempotency_key = ?""",
+                    (self.org_id, validated_idempotency_key),
+                ).fetchone()
+                if existing is not None:
+                    existing_operation = _row_to_purge_operation(existing)
+                    expected_identity = {
+                        "purge_id": validated_purge_id,
+                        "operation_type": operation_type,
+                        "scope_type": scope_type,
+                        "subject_ref": subject_ref,
+                        "request_ref": request_ref,
+                    }
+                    for field_name, expected_value in expected_identity.items():
+                        if getattr(existing_operation, field_name) != expected_value:
+                            raise ValueError(
+                                "Existing purge operation for idempotency_key has "
+                                f"mismatched {field_name}"
+                            )
+                    self.conn.rollback()
+                    return existing_operation
+                self.conn.execute(
+                    """INSERT INTO purge_operations (
+                           purge_id, org_id, operation_type, scope_type, subject_ref,
+                           request_ref, idempotency_key, status, created_at, updated_at
+                       ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)""",
+                    (
+                        validated_purge_id,
+                        self.org_id,
+                        operation_type,
+                        scope_type,
+                        subject_ref,
+                        request_ref,
+                        validated_idempotency_key,
+                        now,
+                        now,
+                    ),
+                )
+                self.conn.commit()
+            except Exception:
+                self.conn.rollback()
+                raise
         return self.get_purge_operation(validated_purge_id)
 
     def record_purge_target(
@@ -258,17 +264,21 @@ class PurgeOperationStoreMixin:
             allowed=_ALLOWED_PURGE_TARGET_STATUSES,
         )
         with self._lock:
-            self._record_purge_target_locked(
-                purge_id=purge_id,
-                target_name=target_name,
-                target_ref=target_ref,
-                phase=phase,
-                status=status,
-                detail=detail,
-                deleted_count=deleted_count,
-                error_detail=error_detail,
-            )
-            self.conn.commit()
+            try:
+                self._record_purge_target_locked(
+                    purge_id=purge_id,
+                    target_name=target_name,
+                    target_ref=target_ref,
+                    phase=phase,
+                    status=status,
+                    detail=detail,
+                    deleted_count=deleted_count,
+                    error_detail=error_detail,
+                )
+                self.conn.commit()
+            except Exception:
+                self.conn.rollback()
+                raise
 
     def list_purge_targets(
         self, purge_id: str, phase: str | None = None
@@ -302,10 +312,11 @@ class PurgeOperationStoreMixin:
     ) -> None:
         purge_id = _validate_governance_purge_id("purge_id", purge_id)
         with self._lock:
-            if self.purge_targets_prepared(purge_id):
-                return
             try:
                 self.conn.execute("BEGIN IMMEDIATE")
+                if self.purge_targets_prepared(purge_id):
+                    self.conn.rollback()
+                    return
                 owned_user_playbook_ids = (
                     set(owned_user_playbook_ids)
                     if owned_user_playbook_ids is not None
