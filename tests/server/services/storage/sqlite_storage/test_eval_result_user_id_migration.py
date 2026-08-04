@@ -61,7 +61,7 @@ def _eval_columns(db_path: str) -> set[str]:
         conn.close()
 
 
-def test_migrate_adds_user_id_on_legacy_eval_table(tmp_path):
+def test_migrate_adds_user_id_and_tags_on_legacy_eval_table(tmp_path):
     db_path = str(tmp_path / "legacy.db")
     _seed_legacy_db(db_path)
 
@@ -70,6 +70,7 @@ def test_migrate_adds_user_id_on_legacy_eval_table(tmp_path):
 
     cols = _eval_columns(db_path)
     assert "user_id" in cols  # backfill ran
+    assert "tags" in cols
     # Existing row preserved with the NOT NULL DEFAULT '' backfill value.
     conn = sqlite3.connect(db_path)
     try:
@@ -89,3 +90,4 @@ def test_migrate_is_idempotent_on_legacy_eval_table(tmp_path):
     SQLiteStorage(org_id="0", db_path=db_path)  # second boot must not raise
 
     assert "user_id" in _eval_columns(db_path)
+    assert "tags" in _eval_columns(db_path)

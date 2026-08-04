@@ -193,11 +193,6 @@ class AgentSuccessEvaluator:
                 else ""
             ),
             tool_can_use=tool_can_use_str,
-            metadata_definition_prompt=(
-                self.config.metadata_definition_prompt.strip()
-                if self.config.metadata_definition_prompt
-                else None
-            ),
         )
         messages_dict = messages
 

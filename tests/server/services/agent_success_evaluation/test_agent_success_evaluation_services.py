@@ -423,7 +423,7 @@ def test_with_tool_configs(mock_chat_completion):
         success_config = AgentSuccessConfig(
             evaluation_name="tool_usage_evaluation",
             success_definition_prompt="Evaluate if the agent used tools effectively",
-            metadata_definition_prompt="Include tool usage statistics",
+            tagging_definition_prompt="Include tool usage",
         )
         agent_success_service.configurator.set_config_by_name(
             "agent_success_config", success_config

@@ -35,17 +35,34 @@ class AgentEvaluationResultStoreMixin:
 
     @abstractmethod
     def get_agent_success_evaluation_results(
-        self, limit: int = 100, agent_version: str | None = None
+        self,
+        limit: int = 100,
+        agent_version: str | None = None,
+        user_id: str | None = None,
+        only_untagged: bool = False,
     ) -> list[AgentSuccessEvaluationResult]:
         """Get agent success evaluation results from storage.
 
         Args:
             limit (int): Maximum number of results to return
             agent_version (str, optional): The agent version to filter by. If None, returns all results.
+            user_id (str, optional): The user id to filter by. If None, returns all users.
+            only_untagged (bool): When true, return only rows awaiting tagging.
 
         Returns:
             list[AgentSuccessEvaluationResult]: List of agent success evaluation result objects
         """
+        raise NotImplementedError
+
+    @abstractmethod
+    def update_agent_success_evaluation_result_tags(
+        self,
+        result_id: int,
+        tags: list[str],
+        *,
+        expected_result: AgentSuccessEvaluationResult,
+    ) -> bool:
+        """Update tags only if the persisted tagging summary is unchanged."""
         raise NotImplementedError
 
     def get_agent_success_evaluation_results_in_window(

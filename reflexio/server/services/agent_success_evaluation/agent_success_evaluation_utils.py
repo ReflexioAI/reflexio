@@ -32,7 +32,6 @@ def construct_agent_success_evaluation_messages_from_sessions(
     agent_context_prompt: str,
     success_definition_prompt: str,
     tool_can_use: str,
-    metadata_definition_prompt: str | None = None,
 ) -> list[dict]:
     """
     Construct LLM messages for agent success evaluation from request interaction groups.
@@ -46,8 +45,6 @@ def construct_agent_success_evaluation_messages_from_sessions(
         agent_context_prompt: Context about the agent
         success_definition_prompt: Definition of what constitutes agent success
         tool_can_use: Description of tools available to the agent
-        metadata_definition_prompt: Optional additional metadata definition
-
     Returns:
         list[dict]: List of messages ready for agent success evaluation
     """
@@ -59,7 +56,6 @@ def construct_agent_success_evaluation_messages_from_sessions(
             "agent_context_prompt": agent_context_prompt,
             "success_definition_prompt": success_definition_prompt,
             "tool_can_use": tool_can_use,
-            "metadata_definition_prompt": metadata_definition_prompt or "",
             "interactions": format_sessions_to_history_string(
                 request_interaction_data_models
             ),

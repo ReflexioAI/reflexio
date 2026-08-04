@@ -18,6 +18,7 @@ from reflexio.server.services.extractor_interaction_utils import (
     filter_interactions_by_source,
     get_effective_source_filter,
 )
+from reflexio.server.services.tagging.tagging_scheduler import schedule_tagging
 
 logger = logging.getLogger(__name__)
 
@@ -212,6 +213,24 @@ class AgentSuccessEvaluationService(
                     self.service_config.session_id,  # type: ignore[reportOptionalMemberAccess]
                     attempt,
                 )
+            else:
+                service_config = self.service_config
+                if service_config is not None:
+                    try:
+                        schedule_tagging(
+                            org_id=self.request_context.org_id,
+                            user_id=service_config.user_id,
+                            agent_version=service_config.agent_version,
+                            request_context=self.request_context,
+                            llm_client=self.client,
+                        )
+                    except Exception:
+                        # Tagging is a deferred best-effort side effect. A scheduler
+                        # failure must not retry or invalidate the durable result.
+                        logger.exception(
+                            "Failed to schedule tagging for agent success evaluation session %s",
+                            service_config.session_id,
+                        )
 
     def _resolve_write_plan(self, results: list) -> None:
         """Compute-half — write the evaluation results HERE (never durable-split).

@@ -72,8 +72,8 @@ class AgentEvaluationResultStoreMixin:
                            (user_id, session_id, agent_version, evaluation_name, is_success,
                             failure_type, failure_reason, regular_vs_shadow,
                             number_of_correction_per_session, user_turns_to_resolution,
-                            is_escalated, embedding, created_at, governance_subject_ref)
-                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                            is_escalated, tags, embedding, created_at, governance_subject_ref)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                         (
                             result.user_id,
                             result.session_id,
@@ -88,6 +88,9 @@ class AgentEvaluationResultStoreMixin:
                             result.number_of_correction_per_session,
                             result.user_turns_to_resolution,
                             int(result.is_escalated),
+                            _json_dumps(result.tags)
+                            if result.tags is not None
+                            else None,
                             _json_dumps(result.embedding) if result.embedding else None,
                             created_at_iso,
                             subject_ref,
@@ -100,17 +103,61 @@ class AgentEvaluationResultStoreMixin:
 
     @SQLiteStorageBase.handle_exceptions
     def get_agent_success_evaluation_results(
-        self, limit: int = 100, agent_version: str | None = None
+        self,
+        limit: int = 100,
+        agent_version: str | None = None,
+        user_id: str | None = None,
+        only_untagged: bool = False,
     ) -> list[AgentSuccessEvaluationResult]:
         sql = "SELECT * FROM agent_success_evaluation_result"
         params: list[Any] = []
+        clauses: list[str] = []
         if agent_version is not None:
-            sql += " WHERE agent_version = ?"
+            clauses.append("agent_version = ?")
             params.append(agent_version)
+        if user_id is not None:
+            clauses.append("user_id = ?")
+            params.append(user_id)
+        if only_untagged:
+            clauses.append("tags IS NULL")
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
         sql += " ORDER BY created_at DESC LIMIT ?"
         params.append(limit)
         rows = self._fetchall(sql, params)
         return [_row_to_eval_result(r) for r in rows]
+
+    @SQLiteStorageBase.handle_exceptions
+    def update_agent_success_evaluation_result_tags(
+        self,
+        result_id: int,
+        tags: list[str],
+        *,
+        expected_result: AgentSuccessEvaluationResult,
+    ) -> bool:
+        cursor = self._execute(
+            """UPDATE agent_success_evaluation_result
+               SET tags = ?
+               WHERE result_id = ?
+                 AND tags IS NULL
+                 AND is_success = ?
+                 AND failure_type IS ?
+                 AND failure_reason IS ?
+                 AND number_of_correction_per_session = ?
+                 AND user_turns_to_resolution IS ?
+                 AND is_escalated = ?""",
+            (
+                _json_dumps(tags),
+                result_id,
+                int(expected_result.is_success),
+                expected_result.failure_type,
+                expected_result.failure_reason,
+                expected_result.number_of_correction_per_session,
+                expected_result.user_turns_to_resolution,
+                int(expected_result.is_escalated),
+            ),
+        )
+        return cursor.rowcount == 1
 
     @SQLiteStorageBase.handle_exceptions
     def get_agent_success_evaluation_results_in_window(

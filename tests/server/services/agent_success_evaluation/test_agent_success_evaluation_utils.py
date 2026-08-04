@@ -22,17 +22,17 @@ def _render_agent_success_prompt() -> str:
             "agent_context_prompt": "Test agent",
             "success_definition_prompt": "Complete the requested task",
             "tool_can_use": "No tools",
-            "metadata_definition_prompt": "No metadata",
             "interactions": "user: ```hello```",
         },
     )
 
 
-def test_agent_success_prompt_v1_1_0_is_active_and_renders() -> None:
+def test_agent_success_prompt_v1_3_0_is_active_and_renders() -> None:
     prompt_manager = PromptManager()
 
-    assert prompt_manager.get_active_version("agent_success_evaluation") == "1.2.0"
+    assert prompt_manager.get_active_version("agent_success_evaluation") == "1.3.0"
     assert "Step 4: Count corrective user turns" in _render_agent_success_prompt()
+    assert "[Metadata Definition]" not in _render_agent_success_prompt()
 
 
 def test_agent_success_prompt_examples_are_valid_json() -> None:
@@ -132,7 +132,6 @@ def test_construct_agent_success_evaluation_messages_with_sessions():
         agent_context_prompt="Test agent context",
         success_definition_prompt="Evaluate if the agent successfully completed the task",
         tool_can_use="search, calculator",
-        metadata_definition_prompt="Include tool usage statistics",
     )
 
     # Validate that messages were created
@@ -213,7 +212,6 @@ def test_construct_agent_success_evaluation_messages_with_empty_sessions():
         agent_context_prompt="Test agent context",
         success_definition_prompt="Evaluate if the agent successfully completed the task",
         tool_can_use="search, calculator",
-        metadata_definition_prompt="Include tool usage statistics",
     )
 
     # Should still create messages (user message with prompt)

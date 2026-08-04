@@ -591,6 +591,7 @@ def _row_to_eval_result(row: sqlite3.Row) -> AgentSuccessEvaluationResult:
         number_of_correction_per_session=d.get("number_of_correction_per_session") or 0,
         user_turns_to_resolution=d.get("user_turns_to_resolution"),
         is_escalated=bool(d.get("is_escalated", False)),
+        tags=_json_loads(d.get("tags")),
         embedding=[],
     )
 
@@ -1244,7 +1245,12 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
 
     def _migrate_tags(self) -> None:
         """Add tags column if missing."""
-        for table in ("profiles", "user_playbooks", "agent_playbooks"):
+        for table in (
+            "profiles",
+            "user_playbooks",
+            "agent_playbooks",
+            "agent_success_evaluation_result",
+        ):
             cols = {
                 row["name"]
                 for row in self.conn.execute(f"PRAGMA table_info({table})").fetchall()
@@ -2676,6 +2682,7 @@ CREATE TABLE IF NOT EXISTS agent_success_evaluation_result (
     number_of_correction_per_session INTEGER NOT NULL DEFAULT 0,
     user_turns_to_resolution INTEGER,
     is_escalated INTEGER NOT NULL DEFAULT 0,
+    tags TEXT,
     embedding TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_eval_agent_version ON agent_success_evaluation_result(agent_version);
