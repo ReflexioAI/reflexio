@@ -58,6 +58,7 @@ from reflexio.server.usage_metrics import (
     UsageEvent,
     UsageEventDeliveryStatus,
     configure_usage_event_recorder,
+    exempt_usage_event_recorder,
 )
 
 
@@ -68,6 +69,15 @@ def storage():
         patch.object(SQLiteStorage, "_get_embedding", return_value=[0.0] * 512),
     ):
         yield SQLiteStorage(org_id="org_1", db_path=f"{temp_dir}/reflexio.db")
+
+
+@pytest.fixture(autouse=True)
+def explicit_test_billing_exemption():
+    configure_usage_event_recorder(exempt_usage_event_recorder)
+    try:
+        yield
+    finally:
+        configure_usage_event_recorder(None)
 
 
 @pytest.fixture
@@ -82,7 +92,10 @@ def request_context(storage):
         profile_extractor_config=ProfileExtractorConfig(
             extraction_definition_prompt="Extract durable user deployment facts.",
         ),
-        pending_tool_call_config=PendingToolCallConfig(enabled=True),
+        pending_tool_call_config=PendingToolCallConfig(
+            enabled=True,
+            max_finalization_attempts=3,
+        ),
     )
     ctx.configurator.get_agent_context.return_value = "Test agent context"
     ctx.prompt_manager = MagicMock()
@@ -753,6 +766,7 @@ def test_delivery_failure_after_receipt_commit_retries_billing_without_recompute
             },
             committed_output=committed_output,
             next_resume_at=datetime(2000, 1, 1, tzinfo=UTC),
+            finalization_attempts=2,
         )
     )
     worker = ExtractionResumeWorker(
@@ -829,6 +843,7 @@ def test_delivery_failure_after_receipt_commit_retries_billing_without_recompute
             failed = worker.run_once()
             assert failed is not None
             assert failed.status == AgentRunStatus.FINALIZATION_FAILED
+            assert failed.finalization_attempts == 3
             receipt_after_failure = storage.get_agent_run_finalization_receipt(
                 run_id=run_id,
                 entity_type=entity_type,

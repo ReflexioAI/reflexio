@@ -474,6 +474,13 @@ def create_app(  # noqa: C901
         durable_learning_scheduler = None
         aggregation_scheduler = None
         started_caps: list = []
+        if capabilities is None:
+            from reflexio.server.usage_metrics import (
+                configure_usage_event_recorder,
+                exempt_usage_event_recorder,
+            )
+
+            configure_usage_event_recorder(exempt_usage_event_recorder)
         if mounts_data_plane:
             _log_multi_worker_daemons()
             log_publish_hardware_capacity()
@@ -555,6 +562,12 @@ def create_app(  # noqa: C901
             )
 
             stop_search_metering_worker(timeout=5.0)
+            if capabilities is None:
+                from reflexio.server.usage_metrics import (
+                    configure_usage_event_recorder,
+                )
+
+                configure_usage_event_recorder(None)
             for cap in reversed(started_caps):
                 try:
                     await cap.on_shutdown()

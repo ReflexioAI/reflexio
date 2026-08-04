@@ -28,9 +28,42 @@ def test_event_key_defaults_none():
     assert UsageEvent(org_id="7", event_name="x", event_category="y").event_key is None
 
 
-def test_strict_delivery_accepts_legacy_none_recorder():
+def test_strict_delivery_rejects_legacy_none_recorder_as_unknown():
     captured = []
     usage_metrics.configure_usage_event_recorder(captured.append)
+    try:
+        with pytest.raises(UsageEventDeliveryError) as exc_info:
+            usage_metrics.record_usage_event_strict(
+                org_id="7",
+                event_name="learnings_generated",
+                event_category="learning",
+                event_key="learn:profile:1",
+            )
+    finally:
+        usage_metrics.configure_usage_event_recorder(None)
+
+    assert exc_info.value.status is UsageEventDeliveryStatus.UNKNOWN
+    assert [event.event_key for event in captured] == ["learn:profile:1"]
+
+
+def test_strict_delivery_rejects_missing_recorder_as_unknown():
+    usage_metrics.configure_usage_event_recorder(None)
+
+    with pytest.raises(UsageEventDeliveryError) as exc_info:
+        usage_metrics.record_usage_event_strict(
+            org_id="7",
+            event_name="learnings_generated",
+            event_category="learning",
+            event_key="learn:profile:1",
+        )
+
+    assert exc_info.value.status is UsageEventDeliveryStatus.UNKNOWN
+
+
+def test_strict_delivery_accepts_explicit_deployment_exemption():
+    usage_metrics.configure_usage_event_recorder(
+        usage_metrics.exempt_usage_event_recorder
+    )
     try:
         outcome = usage_metrics.record_usage_event_strict(
             org_id="7",
@@ -41,8 +74,7 @@ def test_strict_delivery_accepts_legacy_none_recorder():
     finally:
         usage_metrics.configure_usage_event_recorder(None)
 
-    assert outcome is UsageEventDeliveryStatus.ACCEPTED
-    assert [event.event_key for event in captured] == ["learn:profile:1"]
+    assert outcome is UsageEventDeliveryStatus.EXEMPT
 
 
 @pytest.mark.parametrize(
