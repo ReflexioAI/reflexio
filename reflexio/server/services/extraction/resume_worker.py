@@ -980,6 +980,13 @@ class ExtractionResumeWorker:
 
         if not learning_ids:
             return
+        stored_run = self.storage.get_agent_run(run.id)
+        durable_run = stored_run or run
+        billing_timestamp = durable_run.agent_completed_at or durable_run.created_at
+        if billing_timestamp is None:
+            raise ReceiptBillingDeliveryError(
+                "receipt-backed learning billing timestamp is not durable"
+            )
         metadata = {
             "run_id": run.id,
             "extractor_kind": run.binding.extractor_kind,
@@ -995,6 +1002,7 @@ class ExtractionResumeWorker:
             agent_version=run.binding.agent_version,
             entity_type=entity_type,
             metadata=metadata,
+            created_at=billing_timestamp.timestamp(),
         )
 
     def _schedule_finalized_tagging(self, run: AgentRunRecord) -> None:

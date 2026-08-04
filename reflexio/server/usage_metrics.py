@@ -115,6 +115,7 @@ def record_usage_event(
     duration_ms: int | None = None,
     error_kind: str | None = None,
     metadata: Mapping[str, Any] | None = None,
+    created_at: float | None = None,
 ) -> None:
     """Record one usage event if a recorder is configured.
 
@@ -149,6 +150,7 @@ def record_usage_event(
             duration_ms=duration_ms,
             error_kind=error_kind,
             metadata=metadata,
+            created_at=created_at,
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("Usage metrics recorder failed: %s", exc)
@@ -182,6 +184,7 @@ def record_usage_event_strict(
     duration_ms: int | None = None,
     error_kind: str | None = None,
     metadata: Mapping[str, Any] | None = None,
+    created_at: float | None = None,
 ) -> UsageEventDeliveryStatus:
     """Deliver one event and fail unless the recorder accepted it durably.
 
@@ -220,6 +223,7 @@ def record_usage_event_strict(
             duration_ms=duration_ms,
             error_kind=error_kind,
             metadata=metadata or {},
+            created_at=time.time() if created_at is None else created_at,
         )
     )
     status = (
