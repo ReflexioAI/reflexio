@@ -28,6 +28,7 @@ import time
 from collections.abc import Callable
 
 from reflexio.server.api_endpoints.request_context import RequestContext
+from reflexio.server.auth import DEFAULT_ORG_ID
 from reflexio.server.env_utils import env_str
 from reflexio.server.error_reporting import capture_anomaly
 from reflexio.server.org_fanout import iterate_orgs_bounded
@@ -37,6 +38,7 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_POLL_INTERVAL_SECONDS = 86400
 _MIN_POLL_SECONDS = 1
+_BOOTSTRAP_RETRY_INTERVAL_SECONDS = 5
 _ORG_SWEEP_TIMEOUT_SECONDS = 60.0
 _DEFAULT_ORG_FANOUT_WORKERS = 8
 
@@ -448,6 +450,18 @@ class LineageGCScheduler(ThreadedScheduler):
     def _run_once(self) -> float:
         poll_interval = _DEFAULT_POLL_INTERVAL_SECONDS
         try:
+            if (
+                self.bootstrap_org_id == DEFAULT_ORG_ID
+                and self.org_id_provider is not None
+            ):
+                org_ids = [
+                    org_id
+                    for org_id in self.org_id_provider()
+                    if org_id != DEFAULT_ORG_ID
+                ]
+                if not org_ids:
+                    return _BOOTSTRAP_RETRY_INTERVAL_SECONDS
+                self.bootstrap_org_id = org_ids[0]
             bootstrap_ctx = self.request_context_factory(self.bootstrap_org_id)
             cfg = bootstrap_ctx.configurator.get_config()
             poll_interval = cfg.lineage_gc.poll_interval_seconds
@@ -513,6 +527,10 @@ def maybe_start_lineage_gc(
         LineageGCScheduler: The started scheduler, or ``None`` if no start
         condition holds (see the startup criteria above).
     """
+    effective_org_id_provider = (
+        org_id_provider if org_id_provider is not None else _org_id_provider_hook
+    )
+
     # Registered sweeps carry their own per-org gates, so they must start the
     # scheduler whether or not the bootstrap org's config is readable. Evaluate
     # that first: the config read below needs a real org, and a failure there
@@ -569,12 +587,17 @@ def maybe_start_lineage_gc(
                 exc,
             )
             return None
-        logger.warning(
-            "event=lineage_gc_config_read_failed error_type=%s error=%s "
-            "starting anyway: registered sweeps gate themselves per-org",
-            type(exc).__name__,
-            exc,
-        )
+        if bootstrap_org_id == DEFAULT_ORG_ID and effective_org_id_provider is not None:
+            logger.info(
+                "event=lineage_gc_scheduler_start_deferred reason=no_organizations"
+            )
+        else:
+            logger.warning(
+                "event=lineage_gc_config_read_failed error_type=%s error=%s "
+                "starting anyway: registered sweeps gate themselves per-org",
+                type(exc).__name__,
+                exc,
+            )
         config_enabled = False
 
     # Also start when any reclamation sweep has been registered — registered
@@ -588,9 +611,7 @@ def maybe_start_lineage_gc(
     scheduler = LineageGCScheduler(
         request_context_factory=request_context_factory,
         bootstrap_org_id=bootstrap_org_id,
-        org_id_provider=(
-            org_id_provider if org_id_provider is not None else _org_id_provider_hook
-        ),
+        org_id_provider=effective_org_id_provider,
         leader_gate=leader_gate if leader_gate is not None else _leader_gate_hook,
     )
     scheduler.start()

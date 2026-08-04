@@ -361,6 +361,7 @@ def create_app(  # noqa: C901
     app_context_factory: "Callable[[], AppContext] | None" = None,
     profile: "DeploymentProfile | None" = None,
     durable_org_ids_provider: Callable[[], Iterable[str]] | None = None,
+    resume_org_ids_provider: Callable[[], list[str]] | None = None,
 ) -> FastAPI:
     """Factory to create a FastAPI app.
 
@@ -412,6 +413,10 @@ def create_app(  # noqa: C901
             logic. It is only consulted when ``REFLEXIO_DURABLE_LEARNING_QUEUE`` is
             on — when the flag is off ``maybe_start_durable_learning`` returns None
             without ever calling the provider.
+        resume_org_ids_provider: Optional zero-arg callable used only when the
+            bootstrap org is not available yet. This lets a multi-tenant deployment
+            defer the resume scheduler on an empty fleet and adopt its first real
+            org without restarting. The OSS default remains unchanged.
 
     Returns:
         Configured FastAPI application.
@@ -495,6 +500,7 @@ def create_app(  # noqa: C901
             scheduler = maybe_start_resume_scheduler(
                 lambda org_id: RequestContext(org_id=org_id),
                 bootstrap_org_id=bootstrap_org_id,
+                org_id_provider=resume_org_ids_provider,
             )
             # Register the missing-vector backfill sweep (opt-in via
             # REFLEXIO_MISSING_VECTOR_BACKFILL_ENABLED) BEFORE starting the GC
