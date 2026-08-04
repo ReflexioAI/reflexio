@@ -135,29 +135,55 @@ class AgentEvaluationResultStoreMixin:
         *,
         expected_result: AgentSuccessEvaluationResult,
     ) -> bool:
-        cursor = self._execute(
-            """UPDATE agent_success_evaluation_result
-               SET tags = ?
-               WHERE result_id = ?
-                 AND tags IS NULL
-                 AND is_success = ?
-                 AND failure_type IS ?
-                 AND failure_reason IS ?
-                 AND number_of_correction_per_session = ?
-                 AND user_turns_to_resolution IS ?
-                 AND is_escalated = ?""",
-            (
-                _json_dumps(tags),
-                result_id,
-                int(expected_result.is_success),
-                expected_result.failure_type,
-                expected_result.failure_reason,
-                expected_result.number_of_correction_per_session,
-                expected_result.user_turns_to_resolution,
-                int(expected_result.is_escalated),
-            ),
-        )
-        return cursor.rowcount == 1
+        with self._lock:
+            try:
+                self.conn.execute("BEGIN IMMEDIATE")
+                row = self.conn.execute(
+                    """SELECT user_id, governance_subject_ref
+                       FROM agent_success_evaluation_result
+                       WHERE result_id = ?""",
+                    (result_id,),
+                ).fetchone()
+                if row is None:
+                    self.conn.rollback()
+                    return False
+                subject_ref = row["governance_subject_ref"] or (
+                    self._subject_ref_for_user_id(row["user_id"])
+                )
+                self._assert_subject_writable_locked(subject_ref)
+                cursor = self.conn.execute(
+                    """UPDATE agent_success_evaluation_result
+                       SET tags = ?
+                       WHERE result_id = ?
+                         AND tags IS NULL
+                         AND agent_version = ?
+                         AND is_success = ?
+                         AND failure_type IS ?
+                         AND failure_reason IS ?
+                         AND regular_vs_shadow IS ?
+                         AND number_of_correction_per_session = ?
+                         AND user_turns_to_resolution IS ?
+                         AND is_escalated = ?""",
+                    (
+                        _json_dumps(tags),
+                        result_id,
+                        expected_result.agent_version,
+                        int(expected_result.is_success),
+                        expected_result.failure_type,
+                        expected_result.failure_reason,
+                        expected_result.regular_vs_shadow.value
+                        if expected_result.regular_vs_shadow
+                        else None,
+                        expected_result.number_of_correction_per_session,
+                        expected_result.user_turns_to_resolution,
+                        int(expected_result.is_escalated),
+                    ),
+                )
+                self.conn.commit()
+                return cursor.rowcount == 1
+            except Exception:
+                self.conn.rollback()
+                raise
 
     @SQLiteStorageBase.handle_exceptions
     def get_agent_success_evaluation_results_in_window(

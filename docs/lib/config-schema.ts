@@ -271,6 +271,18 @@ export function serializeConfig(config: ReflexioConfig): unknown {
     };
   };
 
+  const cleanAgentSuccess = (
+    agentSuccess: AgentSuccessConfig | null,
+  ): AgentSuccessConfig | null => {
+    if (!agentSuccess) return null;
+    return {
+      ...agentSuccess,
+      tagging_definition_prompt: clean(
+        agentSuccess.tagging_definition_prompt,
+      ),
+    };
+  };
+
   return {
     storage_config: config.storage_config
       ? { db_path: clean(config.storage_config.db_path) }
@@ -281,7 +293,7 @@ export function serializeConfig(config: ReflexioConfig): unknown {
     user_playbook_extractor_config: cleanExtractor(
       config.user_playbook_extractor_config,
     ),
-    agent_success_config: config.agent_success_config,
+    agent_success_config: cleanAgentSuccess(config.agent_success_config),
     extraction_preset: config.extraction_preset,
     window_size: config.window_size,
     stride_size: config.stride_size,

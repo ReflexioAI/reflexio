@@ -474,6 +474,36 @@ class TestDeleteAllAgentSuccessEvaluationResults:
             expected_result=regenerated,
         )
 
+        s.conn.execute(
+            "UPDATE agent_success_evaluation_result "
+            "SET tags = NULL, agent_version = ?, regular_vs_shadow = ? "
+            "WHERE result_id = ?",
+            ("v2", "tied", regenerated.result_id),
+        )
+        s.conn.commit()
+
+        assert not s.update_agent_success_evaluation_result_tags(
+            regenerated.result_id,
+            ["stale-version"],
+            expected_result=regenerated,
+        )
+        current = s.get_agent_success_evaluation_results(
+            user_id="u2", agent_version="v2"
+        )[0]
+        assert current.tags is None
+        assert current.regular_vs_shadow is not None
+        stale_mode = current.model_copy(update={"regular_vs_shadow": None})
+        assert not s.update_agent_success_evaluation_result_tags(
+            current.result_id,
+            ["stale-mode"],
+            expected_result=stale_mode,
+        )
+        assert s.update_agent_success_evaluation_result_tags(
+            current.result_id,
+            ["current"],
+            expected_result=current,
+        )
+
     def test_idempotent_on_empty_table(self, tmp_path):
         """Calling on an empty table raises no error and leaves the table empty."""
         s = _store(tmp_path)
