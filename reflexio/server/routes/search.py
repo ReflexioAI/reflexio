@@ -251,6 +251,17 @@ def search_user_playbooks_endpoint(
             msg=response.msg,
             experiment=assignment,
         )
+        if response.user_playbooks:
+            record_search_exposures(
+                SearchExposureBatch(
+                    org_id=org_id,
+                    request_id=payload.request_id,
+                    session_id=payload.session_id,
+                    interaction_id=None,
+                    user_id=payload.user_id,
+                    user_playbooks=tuple(response.user_playbooks),
+                )
+            )
     enqueue_search_metering(
         org_id=org_id,
         caller_type=caller_type,
