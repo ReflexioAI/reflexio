@@ -32,8 +32,10 @@ class FinalizationResult:
 
     ``won_receipt`` is true only for the caller whose learning writes and
     immutable finalization receipt committed together. Receipt-reuse callers
-    still receive the winner's ordered ids but must not replay billing or other
-    winner-only side effects.
+    still receive the winner's ordered ids and may replay retry-safe durable
+    obligations, such as billing records keyed by those ids. They must not
+    replay winner-only derived work such as optimization, aggregation, or
+    tagging.
     """
 
     learning_ids: list[str]

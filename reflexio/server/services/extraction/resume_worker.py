@@ -16,7 +16,10 @@ from reflexio.models.api_schema.internal_schema import RequestInteractionDataMod
 from reflexio.models.api_schema.service_schemas import Interaction, Request
 from reflexio.models.config_schema import PlaybookConfig, ProfileExtractorConfig
 from reflexio.server.api_endpoints.request_context import RequestContext
-from reflexio.server.billing_meter import ReceiptBillingDeliveryError
+from reflexio.server.billing_meter import (
+    ReceiptBillingDeliveryError,
+    emit_learnings_generated_records_strict,
+)
 from reflexio.server.error_reporting import error_tags
 from reflexio.server.llm._litellm_types import ModelProvenance
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
@@ -100,7 +103,13 @@ def _finalization_failure_status(
     next_attempt_count: int,
     max_finalization_attempts: int,
 ) -> AgentRunStatus:
-    """Retry transient receipt delivery failures; terminate permanent rejection."""
+    """Classify finalization failures under the receipt-delivery contract.
+
+    Transient receipt delivery failures remain retryable beyond the ordinary
+    finalization-attempt ceiling because their committed billing obligation must
+    eventually be delivered. Permanent receipt rejection is terminal, as are
+    ordinary finalization failures at or above the configured ceiling.
+    """
     if isinstance(exc, ReceiptBillingDeliveryError):
         if exc.status is UsageEventDeliveryStatus.REJECTED:
             return AgentRunStatus.FAILED
@@ -977,10 +986,6 @@ class ExtractionResumeWorker:
         Emits one event per durable learning id returned by finalization.
         Per-record keys make finalization retries idempotent downstream.
         """
-        from reflexio.server.billing_meter import (
-            emit_learnings_generated_records_strict,
-        )
-
         if not learning_ids:
             return
         billing_timestamp = run.created_at or run.agent_completed_at
