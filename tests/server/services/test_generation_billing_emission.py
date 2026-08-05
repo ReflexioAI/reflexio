@@ -53,6 +53,7 @@ from reflexio.server.services.profile.service import (
 from reflexio.server.services.service_utils import format_sessions_to_history_string
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 from reflexio.server.usage_metrics import UsageEvent, configure_usage_event_recorder
+from reflexio.test_support.llm_mock import patched_litellm
 
 # ---------------------------------------------------------------------------
 # Helpers: build a RequestContext backed by a real SQLiteStorage, mirroring
@@ -152,9 +153,9 @@ def _run_profile_generation(storage: SQLiteStorage, *, auto_run: bool = True) ->
 def test_real_extraction_emits_tokens_and_learnings(tmp_path):
     """A successful extraction emits extraction_tokens + learnings_generated.
 
-    MOCK_LLM_RESPONSE=true is active (autouse conftest), so the profile extractor
-    takes the deterministic mock path and we verify the billing events it triggers.
-    auto_run=False bypasses the should_run gate so extraction always fires.
+    The local LiteLLM patch keeps this deterministic even when the test is selected
+    alongside E2E paths. auto_run=False bypasses the should_run gate so extraction
+    always fires.
     """
     events: list[UsageEvent] = []
     configure_usage_event_recorder(events.append)
@@ -164,7 +165,8 @@ def test_real_extraction_emits_tokens_and_learnings(tmp_path):
                 org_id=_ORG_ID, db_path=str(tmp_path / "reflexio.db")
             )
             _seed_interactions(storage)
-            _run_profile_generation(storage, auto_run=False)
+            with patched_litellm():
+                _run_profile_generation(storage, auto_run=False)
     finally:
         configure_usage_event_recorder(None)
 
