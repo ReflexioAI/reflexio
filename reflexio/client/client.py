@@ -2731,12 +2731,14 @@ class ReflexioClient:
         Args:
             request (Optional[UnifiedSearchRequest]): The search request object (alternative to kwargs)
             query (str): Search query text
-            top_k (Optional[int]): Maximum results per entity type (default: 5)
+            top_k (Optional[int]): Maximum results per entity type, from 1 to 100
+                (default: 5).
             threshold (Optional[float]): Similarity threshold for vector search.
                 When omitted, the embedding model's default is used.
             agent_version (Optional[str]): Filter by agent version (agent_playbooks, user_playbooks)
             playbook_name (Optional[str]): Filter by playbook name (agent_playbooks, user_playbooks)
-            user_id (Optional[str]): Filter by user ID (profiles, user_playbooks)
+            user_id (Optional[str]): Filter by user ID (profiles, user_playbooks),
+                at most 255 characters.
             tags (Optional[list[str]]): Match entities having any requested tag.
             entity_types (Optional[list[str]]): Entity types to search. Valid values:
                 "profiles", "user_playbooks", "agent_playbooks".
@@ -2752,9 +2754,12 @@ class ReflexioClient:
                 the configured search backend supports it (default: False).
             conversation_history (Optional[list[ConversationTurn] | list[dict]]): Prior conversation turns for context-aware query reformulation. Accepts ConversationTurn objects or dicts with "role" and "content" keys.
             search_mode (Optional[SearchMode | str]): Search mode to use. Accepts SearchMode enum or string value ("vector", "fts", "hybrid").
-            request_id (Optional[str]): Caller correlation id for the search turn.
-            session_id (Optional[str]): Caller session id for the search turn.
-            interaction_id (Optional[int]): Caller interaction id for the search turn.
+            request_id (Optional[str]): Caller correlation ID for the search turn,
+                at most 255 characters.
+            session_id (Optional[str]): Caller session ID for the search turn,
+                at most 255 characters. Also enables session-scoped result deduplication.
+            interaction_id (Optional[int]): Caller interaction ID for the search
+                turn; must be a positive integer (minimum 1).
 
         Returns:
             UnifiedSearchViewResponse: Combined search results from all entity types
