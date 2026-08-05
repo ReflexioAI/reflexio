@@ -60,7 +60,7 @@ from reflexio.server.services.storage.error import (
     StorageError,
     require_non_empty_session_id,
 )
-from reflexio.server.services.storage.retention_mixin import RetentionMixin
+from reflexio.server.services.storage.retention_mixin import RetentionMixin, chunked
 from reflexio.server.services.storage.session_outcome_identity import (
     CanonicalSessionTrajectory,
     canonical_json_bytes,
@@ -145,6 +145,66 @@ def _canonical_session_snapshot(
     return canonical_session_trajectory(
         session_id, request_payloads, interactions_by_request
     )
+
+
+def _prefetch_canonical_session_snapshots(
+    conn: sqlite3.Connection, session_ids: Sequence[str]
+) -> dict[str, CanonicalSessionTrajectory]:
+    """Bulk-load canonical session state in bounded SQLite-safe chunks."""
+    snapshots: dict[str, CanonicalSessionTrajectory] = {}
+    for session_id_chunk in chunked(list(dict.fromkeys(session_ids))):
+        placeholders = ",".join("?" for _ in session_id_chunk)
+        request_rows = conn.execute(
+            f"""SELECT request_id, user_id, created_at, source, agent_version,
+                       session_id, evaluation_only, retrieval_experiment_id,
+                       retrieval_experiment_arm
+                FROM requests WHERE session_id IN ({placeholders})
+                ORDER BY session_id ASC, created_at ASC, request_id ASC""",  # noqa: S608
+            session_id_chunk,
+        ).fetchall()
+        interaction_rows = conn.execute(
+            f"""SELECT requests.session_id AS trajectory_session_id,
+                       interactions.interaction_id, interactions.user_id,
+                       interactions.request_id, interactions.created_at,
+                       interactions.content, interactions.role,
+                       interactions.token_count, interactions.user_action,
+                       interactions.user_action_description,
+                       interactions.interacted_image_url,
+                       interactions.image_encoding, interactions.shadow_content,
+                       interactions.expert_content, interactions.tools_used,
+                       interactions.citations, interactions.retrieved_learnings
+                FROM interactions
+                JOIN requests ON requests.request_id = interactions.request_id
+                WHERE requests.session_id IN ({placeholders})
+                ORDER BY requests.session_id ASC, interactions.request_id ASC,
+                         interactions.created_at ASC,
+                         interactions.interaction_id ASC""",  # noqa: S608
+            session_id_chunk,
+        ).fetchall()
+
+        requests_by_session: dict[str, list[dict[str, object]]] = {
+            session_id: [] for session_id in session_id_chunk
+        }
+        interactions_by_session: dict[str, dict[str, list[dict[str, object]]]] = {
+            session_id: {} for session_id in session_id_chunk
+        }
+        for request in request_rows:
+            session_id = str(request["session_id"])
+            requests_by_session[session_id].append(dict(request))
+            interactions_by_session[session_id][str(request["request_id"])] = []
+        for interaction in interaction_rows:
+            interaction_payload = dict(interaction)
+            session_id = str(interaction_payload.pop("trajectory_session_id"))
+            interactions_by_session[session_id][
+                str(interaction_payload["request_id"])
+            ].append(interaction_payload)
+        for session_id in session_id_chunk:
+            snapshots[session_id] = canonical_session_trajectory(
+                session_id,
+                requests_by_session[session_id],
+                interactions_by_session[session_id],
+            )
+    return snapshots
 
 
 def _legacy_session_outcome_id(user_id: str, session_id: str) -> str:
@@ -1256,6 +1316,15 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                 legacy_rows = self.conn.execute(
                     "SELECT * FROM session_outcomes"
                 ).fetchall()
+                trajectory_snapshots = _prefetch_canonical_session_snapshots(
+                    self.conn,
+                    [
+                        str(row["session_id"])
+                        for row in legacy_rows
+                        if "finalized_trajectory_digest" not in columns
+                        or not row["finalized_trajectory_digest"]
+                    ],
+                )
                 self.conn.execute(
                     "ALTER TABLE session_outcomes RENAME TO session_outcomes_legacy"
                 )
@@ -1334,9 +1403,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                             ),
                             existing_trajectory_digest
                             or trajectory_digest(
-                                _canonical_session_snapshot(
-                                    self.conn, str(row["session_id"])
-                                )
+                                trajectory_snapshots[str(row["session_id"])]
                             ),
                             subject_ref,
                             row["created_at"],

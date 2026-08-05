@@ -191,6 +191,67 @@ def test_migration_preserves_populated_legacy_outcomes_with_unambiguous_ids(
         )
 
 
+def test_migration_prefetches_trajectory_inputs_in_bounded_chunks(tmp_path) -> None:
+    db_path = str(tmp_path / "legacy-session-outcome-query-scaling.db")
+    storage = SQLiteStorage(org_id="legacy-query-scaling", db_path=db_path)
+    row_count = 501
+    storage.conn.executemany(
+        """INSERT INTO requests (
+               request_id, user_id, created_at, source, session_id
+           ) VALUES (?, ?, ?, ?, ?)""",
+        [
+            (
+                f"request-{index}",
+                f"user-{index}",
+                str(index),
+                "legacy-source",
+                f"session-{index}",
+            )
+            for index in range(row_count)
+        ],
+    )
+    storage.conn.execute("DROP TABLE session_outcomes")
+    storage.conn.executescript(_LEGACY_SESSION_OUTCOMES_DDL)
+    storage.conn.executemany(
+        """INSERT INTO session_outcomes (
+               user_id, session_id, outcome, occurred_at, source,
+               governance_subject_ref, created_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        [
+            (
+                f"user-{index}",
+                f"session-{index}",
+                "success",
+                index,
+                "legacy-source",
+                f"subject-{index}",
+                index,
+            )
+            for index in range(row_count)
+        ],
+    )
+    storage.conn.commit()
+
+    statements: list[str] = []
+    storage.conn.set_trace_callback(statements.append)
+    try:
+        storage._migrate_session_outcomes_schema()
+    finally:
+        storage.conn.set_trace_callback(None)
+
+    trajectory_input_queries = [
+        statement
+        for statement in statements
+        if statement.lstrip().upper().startswith("SELECT")
+        and ("FROM requests" in statement or "FROM interactions" in statement)
+    ]
+    assert len(trajectory_input_queries) == 4
+    assert (
+        storage.conn.execute("SELECT COUNT(*) FROM session_outcomes").fetchone()[0]
+        == row_count
+    )
+
+
 @pytest.mark.parametrize(
     ("with_subject_column", "stored_subject_ref"),
     [(False, None), (True, None), (True, "   ")],
