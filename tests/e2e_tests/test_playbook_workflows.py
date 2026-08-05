@@ -25,7 +25,11 @@ from reflexio.models.api_schema.service_schemas import (
 )
 from reflexio.models.config_schema import SINGLETON_USER_PLAYBOOK_NAME, SearchMode
 from tests.e2e_tests.conftest import save_user_playbooks
-from tests.server.test_utils import skip_in_precommit, skip_low_priority
+from tests.server.test_utils import (
+    require_storage,
+    skip_in_precommit,
+    skip_low_priority,
+)
 
 pytestmark = pytest.mark.e2e
 
@@ -59,25 +63,23 @@ def test_publish_interaction_playbook_only(
     assert response.message == "Interaction published successfully"
 
     # Verify interactions were added to storage
-    final_interactions = (
-        reflexio_instance_playbook_only.request_context.storage.get_all_interactions()
-    )
+    final_interactions = require_storage(
+        reflexio_instance_playbook_only
+    ).get_all_interactions()
     assert len(final_interactions) == len(sample_interaction_requests)
 
     # Verify playbooks were generated and stored
-    user_playbooks = (
-        reflexio_instance_playbook_only.request_context.storage.get_user_playbooks(
-            playbook_name=SINGLETON_USER_PLAYBOOK_NAME
-        )
-    )
+    user_playbooks = require_storage(
+        reflexio_instance_playbook_only
+    ).get_user_playbooks(playbook_name=SINGLETON_USER_PLAYBOOK_NAME)
     assert len(user_playbooks) > 0 and user_playbooks[0].content.strip() != ""
     assert all(p.playbook_name == SINGLETON_USER_PLAYBOOK_NAME for p in user_playbooks)
 
     # No agent success evaluation results — this fixture does not configure
     # agent_success_config, and group evaluation is never triggered in this flow.
-    agent_success_results = reflexio_instance_playbook_only.request_context.storage.get_agent_success_evaluation_results(
-        agent_version=agent_version
-    )
+    agent_success_results = require_storage(
+        reflexio_instance_playbook_only
+    ).get_agent_success_evaluation_results(agent_version=agent_version)
     assert len(agent_success_results) == 0
 
 
@@ -106,18 +108,16 @@ def test_run_playbook_aggregation_end_to_end(
         # If we reach here, the operation was successful
         assert True
 
-        user_playbooks = (
-            reflexio_instance_playbook_only.request_context.storage.get_user_playbooks(
-                playbook_name=playbook_name
-            )
-        )
+        user_playbooks = require_storage(
+            reflexio_instance_playbook_only
+        ).get_user_playbooks(playbook_name=playbook_name)
         assert len(user_playbooks) == 20
 
-        agent_playbooks = (
-            reflexio_instance_playbook_only.request_context.storage.get_agent_playbooks(
-                playbook_name=playbook_name,
-                playbook_status_filter=[PlaybookStatus.PENDING],
-            )
+        agent_playbooks = require_storage(
+            reflexio_instance_playbook_only
+        ).get_agent_playbooks(
+            playbook_name=playbook_name,
+            playbook_status_filter=[PlaybookStatus.PENDING],
         )
         assert len(agent_playbooks) > 0
     finally:
@@ -143,7 +143,7 @@ def test_get_agent_playbooks_with_playbook_status_filter(
     """
     agent_version = "1.0.0"
     playbook_name = "test_playbook"
-    storage = reflexio_instance_playbook_only.request_context.storage
+    storage = require_storage(reflexio_instance_playbook_only)
 
     # First save mock playbooks and run aggregation
     save_user_playbooks(reflexio_instance_playbook_only)
@@ -307,7 +307,7 @@ def test_upgrade_user_playbooks_end_to_end(
     """
     playbook_name = "test_playbook"
     agent_version = "1.0.0"
-    storage = reflexio_instance_playbook_only.request_context.storage
+    storage = require_storage(reflexio_instance_playbook_only)
 
     # Setup: Create user playbooks with different statuses
     # Create CURRENT playbooks (status=None)
@@ -410,7 +410,7 @@ def test_downgrade_user_playbooks_end_to_end(
     """
     playbook_name = "test_playbook"
     agent_version = "1.0.0"
-    storage = reflexio_instance_playbook_only.request_context.storage
+    storage = require_storage(reflexio_instance_playbook_only)
 
     # Setup: Create user playbooks with different statuses
     # Create CURRENT playbooks (status=None)
@@ -486,7 +486,7 @@ def test_upgrade_downgrade_roundtrip(
     """Test that upgrade followed by downgrade restores the original state."""
     playbook_name = "test_playbook"
     agent_version = "1.0.0"
-    storage = reflexio_instance_playbook_only.request_context.storage
+    storage = require_storage(reflexio_instance_playbook_only)
 
     # Setup: Create initial CURRENT playbooks
     current_playbooks = [
@@ -807,6 +807,7 @@ def test_rerun_playbook_generation_end_to_end(
             )
         )
         assert rerun_response.success is True
+        assert rerun_response.playbooks_generated is not None
         assert rerun_response.playbooks_generated > 0
 
         # Step 3: Verify PENDING playbooks were created
@@ -897,7 +898,7 @@ def test_rerun_playbook_generation_with_time_filters(
             )
         )
         assert future_response.success is False
-        assert "No interactions found" in future_response.msg
+        assert "No interactions found" in (future_response.msg or "")
 
         # Test with valid time range (past to future)
         past_start = datetime.now(UTC) - timedelta(days=1)
@@ -912,6 +913,7 @@ def test_rerun_playbook_generation_with_time_filters(
             )
         )
         assert valid_response.success is True
+        assert valid_response.playbooks_generated is not None
         assert valid_response.playbooks_generated > 0
 
     finally:
@@ -940,7 +942,7 @@ def test_playbook_source_filtering_with_matching_source(
     """
     user_id = "test_user_source_filter"
     agent_version = "test_agent_source"
-    storage = reflexio_instance_playbook_source_filtering.request_context.storage
+    storage = require_storage(reflexio_instance_playbook_source_filtering)
 
     # Step 1: Publish interactions with source="api"
     response_api = reflexio_instance_playbook_source_filtering.publish_interaction(
@@ -983,7 +985,7 @@ def test_playbook_source_filtering_with_non_matching_source(
     """
     user_id = "test_user_source_filter_other"
     agent_version = "test_agent_source_other"
-    storage = reflexio_instance_playbook_source_filtering.request_context.storage
+    storage = require_storage(reflexio_instance_playbook_source_filtering)
 
     # Publish interactions with source="other" (not in request_sources_enabled)
     response = reflexio_instance_playbook_source_filtering.publish_interaction(
@@ -1022,7 +1024,7 @@ def test_playbook_source_filtering_webhook_source(
     """
     user_id = "test_user_source_filter_webhook"
     agent_version = "test_agent_source_webhook"
-    storage = reflexio_instance_playbook_source_filtering.request_context.storage
+    storage = require_storage(reflexio_instance_playbook_source_filtering)
 
     # Publish interactions with source="webhook"
     response = reflexio_instance_playbook_source_filtering.publish_interaction(
@@ -1093,7 +1095,9 @@ def test_manual_playbook_generation_end_to_end(
         )
 
         # Step 3: Verify playbooks were generated with CURRENT status (None)
-        current_playbooks = reflexio_instance_manual_playbook.request_context.storage.get_user_playbooks(
+        current_playbooks = require_storage(
+            reflexio_instance_manual_playbook
+        ).get_user_playbooks(
             playbook_name=playbook_name,
             status_filter=[None],
         )
@@ -1101,7 +1105,9 @@ def test_manual_playbook_generation_end_to_end(
         assert isinstance(current_playbooks, list)
 
         # Step 4: Verify NO PENDING playbooks were created (that's rerun behavior)
-        pending_playbooks = reflexio_instance_manual_playbook.request_context.storage.get_user_playbooks(
+        pending_playbooks = require_storage(
+            reflexio_instance_manual_playbook
+        ).get_user_playbooks(
             playbook_name=playbook_name,
             status_filter=[Status.PENDING],
         )
@@ -1339,7 +1345,7 @@ def test_rerun_playbook_generation_with_source_filter(
 
     user_id = "test_user_rerun_source_filter"
     agent_version = "test_agent_rerun_source"
-    storage = reflexio_instance_multiple_playbook_extractors.request_context.storage
+    storage = require_storage(reflexio_instance_multiple_playbook_extractors)
 
     # Use mock mode
     original_env = os.environ.get("MOCK_LLM_RESPONSE")
@@ -1398,7 +1404,7 @@ def test_rerun_playbook_generation_with_source_filter(
 
         # Step 5: Verify pending playbooks were created with source="api"
         pending_playbooks = storage.get_user_playbooks(status_filter=[Status.PENDING])
-        if rerun_response.playbooks_generated > 0:
+        if (rerun_response.playbooks_generated or 0) > 0:
             assert len(pending_playbooks) > 0
             for playbook in pending_playbooks:
                 assert playbook.source == "api", (
@@ -1415,7 +1421,7 @@ def test_rerun_playbook_generation_with_source_filter(
             )
         )
         assert rerun_response_invalid.success is False
-        assert "No interactions found" in rerun_response_invalid.msg
+        assert "No interactions found" in (rerun_response_invalid.msg or "")
 
     finally:
         if original_env is None:
@@ -1442,7 +1448,7 @@ def test_rerun_playbook_generation_multiple_extractors_all_sources(
 
     user_id = "test_user_rerun_all_sources"
     agent_version = "test_agent_rerun_all"
-    storage = reflexio_instance_multiple_playbook_extractors.request_context.storage
+    storage = require_storage(reflexio_instance_multiple_playbook_extractors)
 
     # Use mock mode
     original_env = os.environ.get("MOCK_LLM_RESPONSE")
@@ -1511,7 +1517,7 @@ def test_rerun_playbook_generation_multiple_extractors_all_sources(
         )
 
         # Step 4: Verify playbooks from multiple extractors
-        if rerun_response.playbooks_generated > 0:
+        if (rerun_response.playbooks_generated or 0) > 0:
             pending_playbooks = storage.get_user_playbooks(
                 status_filter=[Status.PENDING]
             )
@@ -1546,7 +1552,7 @@ def test_rerun_playbook_generation_with_extractor_names_filter(
     unique_id = uuid.uuid4().hex[:8]
     user_id = f"test_user_rerun_extractor_names_{unique_id}"
     agent_version = f"test_agent_extractor_names_{unique_id}"
-    storage = reflexio_instance_multiple_playbook_extractors.request_context.storage
+    storage = require_storage(reflexio_instance_multiple_playbook_extractors)
 
     # Use mock mode
     original_env = os.environ.get("MOCK_LLM_RESPONSE")

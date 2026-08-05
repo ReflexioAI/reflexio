@@ -23,7 +23,11 @@ from reflexio.models.api_schema.service_schemas import (
 )
 from reflexio.models.config_schema import SINGLETON_USER_PLAYBOOK_NAME
 from tests.e2e_tests.conftest import scenario_batch_to_interactions
-from tests.server.test_utils import skip_in_precommit, skip_low_priority
+from tests.server.test_utils import (
+    require_storage,
+    skip_in_precommit,
+    skip_low_priority,
+)
 
 pytestmark = pytest.mark.e2e
 
@@ -54,15 +58,13 @@ def test_publish_interaction_profile_only(
     assert response.message == "Interaction published successfully"
 
     # Verify interactions were added to storage
-    final_interactions = (
-        reflexio_instance_profile_only.request_context.storage.get_all_interactions()
-    )
+    final_interactions = require_storage(
+        reflexio_instance_profile_only
+    ).get_all_interactions()
     assert len(final_interactions) == len(sample_interaction_requests)
 
     # Verify profiles were generated and added to storage
-    final_profiles = (
-        reflexio_instance_profile_only.request_context.storage.get_all_profiles()
-    )
+    final_profiles = require_storage(reflexio_instance_profile_only).get_all_profiles()
     assert len(final_profiles) > 0
     assert final_profiles[0].content.strip() != ""
 
@@ -73,17 +75,15 @@ def test_publish_interaction_profile_only(
     assert len(final_change_logs) > 0
 
     # Verify NO playbooks were generated (since playbook config is not enabled)
-    user_playbooks = (
-        reflexio_instance_profile_only.request_context.storage.get_user_playbooks(
-            user_id=user_id, playbook_name=SINGLETON_USER_PLAYBOOK_NAME
-        )
+    user_playbooks = require_storage(reflexio_instance_profile_only).get_user_playbooks(
+        user_id=user_id, playbook_name=SINGLETON_USER_PLAYBOOK_NAME
     )
     assert len(user_playbooks) == 0
 
     # Verify NO agent success evaluation results were created (since agent success config is not enabled)
-    agent_success_results = reflexio_instance_profile_only.request_context.storage.get_agent_success_evaluation_results(
-        agent_version=agent_version
-    )
+    agent_success_results = require_storage(
+        reflexio_instance_profile_only
+    ).get_agent_success_evaluation_results(agent_version=agent_version)
     assert len(agent_success_results) == 0
 
 
@@ -165,9 +165,7 @@ def test_get_profiles_end_to_end(
     )
 
     # Verify profiles were generated and stored
-    stored_profiles = (
-        reflexio_instance_profile_only.request_context.storage.get_all_profiles()
-    )
+    stored_profiles = require_storage(reflexio_instance_profile_only).get_all_profiles()
     assert len(stored_profiles) > 0
     # Get the auto-generated request_id
     request_id = stored_profiles[0].generated_from_request_id
@@ -208,9 +206,9 @@ def test_delete_profile_end_to_end(
     assert response.success is True
 
     # Verify profiles were generated and stored
-    initial_profiles = (
-        reflexio_instance_profile_only.request_context.storage.get_all_profiles()
-    )
+    initial_profiles = require_storage(
+        reflexio_instance_profile_only
+    ).get_all_profiles()
     assert len(initial_profiles) > 0
 
     # Get profiles to find profile IDs
@@ -229,9 +227,7 @@ def test_delete_profile_end_to_end(
     assert delete_response.success is True
 
     # Verify profile was deleted from storage
-    final_profiles = (
-        reflexio_instance_profile_only.request_context.storage.get_all_profiles()
-    )
+    final_profiles = require_storage(reflexio_instance_profile_only).get_all_profiles()
     assert len(final_profiles) < len(initial_profiles)
 
 
@@ -305,10 +301,8 @@ def test_rerun_profile_generation_end_to_end(
     assert response.success is True
 
     # Verify profiles were generated with status=None (current)
-    current_profiles = (
-        reflexio_instance_profile_only.request_context.storage.get_user_profile(
-            user_id, status_filter=[None]
-        )
+    current_profiles = require_storage(reflexio_instance_profile_only).get_user_profile(
+        user_id, status_filter=[None]
     )
     assert len(current_profiles) > 0, "Should have current profiles"
     for profile in current_profiles:
@@ -325,15 +319,14 @@ def test_rerun_profile_generation_end_to_end(
         rerun_request
     )
     assert rerun_response.success is True, f"Rerun should succeed: {rerun_response.msg}"
+    assert rerun_response.profiles_generated is not None
     assert rerun_response.profiles_generated > 0, (
         "Rerun should generate at least one profile"
     )
 
     # Step 3: Verify pending profiles were created
-    pending_profiles = (
-        reflexio_instance_profile_only.request_context.storage.get_user_profile(
-            user_id, status_filter=[Status.PENDING]
-        )
+    pending_profiles = require_storage(reflexio_instance_profile_only).get_user_profile(
+        user_id, status_filter=[Status.PENDING]
     )
     assert len(pending_profiles) > 0, "Should have pending profiles after rerun"
     for profile in pending_profiles:
@@ -342,11 +335,9 @@ def test_rerun_profile_generation_end_to_end(
         )
 
     # Step 4: Verify current profiles still exist unchanged
-    current_profiles_after = (
-        reflexio_instance_profile_only.request_context.storage.get_user_profile(
-            user_id, status_filter=[None]
-        )
-    )
+    current_profiles_after = require_storage(
+        reflexio_instance_profile_only
+    ).get_user_profile(user_id, status_filter=[None])
     assert len(current_profiles_after) == initial_profile_count, (
         "Current profiles should remain unchanged"
     )
@@ -397,11 +388,9 @@ def test_rerun_profile_generation_with_time_filters(
     assert response.success is True
 
     # Get the interactions to determine their timestamps
-    all_interactions = (
-        reflexio_instance_profile_only.request_context.storage.get_user_interaction(
-            user_id
-        )
-    )
+    all_interactions = require_storage(
+        reflexio_instance_profile_only
+    ).get_user_interaction(user_id)
     assert len(all_interactions) == len(sample_interaction_requests)
 
     # Test with time filter that excludes all interactions (future time range)
@@ -418,7 +407,7 @@ def test_rerun_profile_generation_with_time_filters(
         rerun_request
     )
     assert rerun_response.success is False
-    assert "No interactions found" in rerun_response.msg
+    assert "No interactions found" in (rerun_response.msg or "")
 
     # Test with time filter that includes all interactions (past to future)
     past_start = datetime.now(UTC) - timedelta(days=1)
@@ -434,15 +423,14 @@ def test_rerun_profile_generation_with_time_filters(
         rerun_request_valid
     )
     assert rerun_response_valid.success is True
+    assert rerun_response_valid.profiles_generated is not None
     assert rerun_response_valid.profiles_generated > 0, (
         "Rerun with valid time filter should generate profiles"
     )
 
     # Verify pending profiles were created
-    pending_profiles = (
-        reflexio_instance_profile_only.request_context.storage.get_user_profile(
-            user_id, status_filter=[Status.PENDING]
-        )
+    pending_profiles = require_storage(reflexio_instance_profile_only).get_user_profile(
+        user_id, status_filter=[Status.PENDING]
     )
     assert len(pending_profiles) > 0
 
@@ -492,11 +480,9 @@ def test_rerun_profile_generation_with_source_filter(
     assert response_b.success is True
 
     # Verify we have interactions from both sources
-    all_interactions = (
-        reflexio_instance_profile_only.request_context.storage.get_user_interaction(
-            user_id
-        )
-    )
+    all_interactions = require_storage(
+        reflexio_instance_profile_only
+    ).get_user_interaction(user_id)
     assert len(all_interactions) == len(sample_interaction_requests) + 1
 
     # Rerun profile generation for only "test_source_a"
@@ -512,12 +498,10 @@ def test_rerun_profile_generation_with_source_filter(
     assert rerun_response_a.success is True, f"Rerun failed: {rerun_response_a.msg}"
 
     # If profiles were generated, verify they are in pending status
-    pending_profiles = (
-        reflexio_instance_profile_only.request_context.storage.get_user_profile(
-            user_id, status_filter=[Status.PENDING]
-        )
+    pending_profiles = require_storage(reflexio_instance_profile_only).get_user_profile(
+        user_id, status_filter=[Status.PENDING]
     )
-    if rerun_response_a.profiles_generated > 0:
+    if (rerun_response_a.profiles_generated or 0) > 0:
         assert len(pending_profiles) > 0, (
             "Expected pending profiles when profiles_generated > 0"
         )
@@ -532,7 +516,7 @@ def test_rerun_profile_generation_with_source_filter(
         rerun_request_invalid
     )
     assert rerun_response_invalid.success is False
-    assert "No interactions found" in rerun_response_invalid.msg
+    assert "No interactions found" in (rerun_response_invalid.msg or "")
 
 
 @skip_in_precommit
@@ -719,7 +703,7 @@ def test_status_filter_in_get_profiles_request(
 def _create_test_profile(
     user_id: str,
     request_id: str,
-    status: Status = None,
+    status: Status | None = None,
     content: str = "Test profile content",
 ) -> UserProfile:
     """Helper function to create test profiles with specified status.
@@ -756,7 +740,7 @@ def test_upgrade_profiles_end_to_end(
     3. Promote PENDING profiles (PENDING -> None/CURRENT)
     """
     user_id = "test_user_upgrade"
-    storage = reflexio_instance_profile_only.request_context.storage
+    storage = require_storage(reflexio_instance_profile_only)
 
     # Setup: Create profiles with different statuses
     # Create CURRENT profiles (status=None)
@@ -851,7 +835,7 @@ def test_downgrade_profiles_end_to_end(
     3. Complete archiving (ARCHIVE_IN_PROGRESS -> ARCHIVED)
     """
     user_id = "test_user_downgrade"
-    storage = reflexio_instance_profile_only.request_context.storage
+    storage = require_storage(reflexio_instance_profile_only)
 
     # Setup: Create profiles with different statuses
     # Create CURRENT profiles (status=None)
@@ -922,7 +906,7 @@ def test_upgrade_downgrade_profiles_roundtrip(
 ):
     """Test that upgrade followed by downgrade restores the original profile state."""
     user_id = "test_user_roundtrip"
-    storage = reflexio_instance_profile_only.request_context.storage
+    storage = require_storage(reflexio_instance_profile_only)
 
     # Setup: Create initial CURRENT profiles
     current_profiles = [
@@ -1023,21 +1007,17 @@ def test_manual_profile_generation_end_to_end(
     )
 
     # Step 3: Verify profiles were generated with CURRENT status (None)
-    current_profiles = (
-        reflexio_instance_manual_profile.request_context.storage.get_user_profile(
-            user_id, status_filter=[None]
-        )
-    )
+    current_profiles = require_storage(
+        reflexio_instance_manual_profile
+    ).get_user_profile(user_id, status_filter=[None])
     # Note: profiles may already exist from publish_interaction,
     # but manual_profile_generation should also generate CURRENT profiles
     assert len(current_profiles) >= 0  # Just verify no errors
 
     # Step 4: Verify NO PENDING profiles were created (that's rerun behavior)
-    pending_profiles = (
-        reflexio_instance_manual_profile.request_context.storage.get_user_profile(
-            user_id, status_filter=[Status.PENDING]
-        )
-    )
+    pending_profiles = require_storage(
+        reflexio_instance_manual_profile
+    ).get_user_profile(user_id, status_filter=[Status.PENDING])
     assert len(pending_profiles) == 0, (
         "Manual generation should not create PENDING profiles"
     )
@@ -1212,12 +1192,12 @@ def test_rerun_profile_generation_with_extractor_names_filter(
 
     # Step 3: Verify profiles were generated (may be 0 depending on LLM response)
     # The main thing is that the operation succeeded
-    pending_profiles = reflexio_instance_multiple_profile_extractors.request_context.storage.get_user_profile(
-        user_id, status_filter=[Status.PENDING]
-    )
+    pending_profiles = require_storage(
+        reflexio_instance_multiple_profile_extractors
+    ).get_user_profile(user_id, status_filter=[Status.PENDING])
 
     # If profiles were generated, verify they come from allowed extractors
-    if rerun_response.profiles_generated > 0:
+    if (rerun_response.profiles_generated or 0) > 0:
         assert len(pending_profiles) > 0
 
 
@@ -1394,11 +1374,9 @@ def test_profile_dedup_resolves_contradiction(
     )
     assert response.success is True, f"batch 1 publish failed: {response.message}"
 
-    profiles_after_batch_1 = (
-        reflexio_instance_lifestyle_profile.request_context.storage.get_user_profile(
-            user_id, status_filter=[None]
-        )
-    )
+    profiles_after_batch_1 = require_storage(
+        reflexio_instance_lifestyle_profile
+    ).get_user_profile(user_id, status_filter=[None])
     assert profiles_after_batch_1, "expected initial profiles from batch 1"
     batch_1_text = " ".join(p.content.lower() for p in profiles_after_batch_1)
     sanity_terms = [term.lower() for term in scenario["batch_1_sanity_terms"]]
@@ -1420,9 +1398,7 @@ def test_profile_dedup_resolves_contradiction(
     assert response.success is True, f"batch 2 publish failed: {response.message}"
 
     # ---- Verify dedup resolved the contradiction -------------------------
-    final_profiles = (
-        reflexio_instance_lifestyle_profile.request_context.storage.get_user_profile(
-            user_id, status_filter=[None]
-        )
-    )
+    final_profiles = require_storage(
+        reflexio_instance_lifestyle_profile
+    ).get_user_profile(user_id, status_filter=[None])
     _assert_contradiction_resolved(final_profiles, scenario)

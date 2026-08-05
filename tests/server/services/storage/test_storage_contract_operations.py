@@ -106,6 +106,7 @@ class TestPendingRequestQueue:
         assert result["acquired"] is False
 
         state = self._state(storage, "svc_lock_2")
+        assert state is not None
         queue = state.get("pending_request_queue", [])
         assert len(queue) == 1
         assert queue[0]["request_id"] == "req_2"
@@ -121,6 +122,7 @@ class TestPendingRequestQueue:
         )
 
         state = self._state(storage, "svc_lock_3")
+        assert state is not None
         queue = state.get("pending_request_queue", [])
         assert [q["request_id"] for q in queue] == ["req_2", "req_3"]
         assert queue[0]["payload"] == {"user_id": "user_b"}
@@ -139,6 +141,7 @@ class TestPendingRequestQueue:
         )
 
         state = self._state(storage, "svc_lock_4")
+        assert state is not None
         queue = state.get("pending_request_queue", [])
         # Only one entry for req_2 — second attempt is a noop.
         assert [q["request_id"] for q in queue] == ["req_2"]
@@ -151,6 +154,7 @@ class TestPendingRequestQueue:
         assert result["acquired"] is True
 
         state = self._state(storage, "svc_lock_5")
+        assert state is not None
         assert state.get("pending_request_queue", []) == []
 
     def test_lock_stays_held_across_a_handover(self, storage):
@@ -191,6 +195,7 @@ class TestPendingRequestQueue:
             "handover disagree about which key means 'held'"
         )
         state = self._state(storage, "svc_handover")
+        assert state is not None
         assert state.get("current_request_id") == "req_2"
 
     def test_a_legacy_status_keyed_lock_is_still_honoured(self, storage):
@@ -212,7 +217,9 @@ class TestPendingRequestQueue:
 
         result = storage.try_acquire_in_progress_lock("svc_legacy", "req_new")
         assert result["acquired"] is False
-        assert self._state(storage, "svc_legacy").get("current_request_id") == "req_old"
+        legacy_state = self._state(storage, "svc_legacy")
+        assert legacy_state is not None
+        assert legacy_state.get("current_request_id") == "req_old"
 
     def test_a_rejected_acquire_does_not_extend_the_holders_lock(self, storage):
         """Contention must not refresh the staleness clock.
@@ -227,6 +234,7 @@ class TestPendingRequestQueue:
         # Backdate the holder well past any plausible staleness window, leaving
         # the row's own updated_at fresh — exactly the post-contention shape.
         state = self._state(storage, "svc_stale")
+        assert state is not None
         state["started_at"] = int(time.time()) - 10_000
         storage.upsert_operation_state("svc_stale", state)
 
@@ -247,6 +255,7 @@ class TestPendingRequestQueue:
         """
         storage.try_acquire_in_progress_lock("svc_started_at", "req_1")
         state = self._state(storage, "svc_started_at")
+        assert state is not None
         assert state.get("in_progress") is True
         assert isinstance(state.get("started_at"), int)
         assert state["started_at"] > 0

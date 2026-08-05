@@ -37,8 +37,8 @@ class TestCorrelationIdFilter:
             CorrelationIdFilter().filter(record)
         finally:
             correlation_id_var.reset(token)
-        assert record.correlation_id == ""
-        assert record.correlation_tag == ""
+        assert getattr(record, "correlation_id", None) == ""
+        assert getattr(record, "correlation_tag", None) == ""
 
     def test_formats_tag_when_cid_present(self) -> None:
         record = _make_record()
@@ -47,8 +47,8 @@ class TestCorrelationIdFilter:
             CorrelationIdFilter().filter(record)
         finally:
             correlation_id_var.reset(token)
-        assert record.correlation_id == "abc12345"
-        assert record.correlation_tag == "[abc12345] "
+        assert getattr(record, "correlation_id", None) == "abc12345"
+        assert getattr(record, "correlation_tag", None) == "[abc12345] "
 
     def test_format_string_renders_cleanly_without_cid(self) -> None:
         """Integration: format a record through the real format string."""

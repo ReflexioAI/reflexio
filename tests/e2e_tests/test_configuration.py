@@ -84,6 +84,9 @@ def test_set_config_end_to_end(
     current_config = reflexio.request_context.configurator.get_config()
     assert current_config is not None
     assert current_config.profile_extractor_config is not None
+    assert current_config.profile_extractor_config.context_prompt is not None
+    assert new_config.profile_extractor_config is not None
+    assert new_config.profile_extractor_config.context_prompt is not None
     assert (
         current_config.profile_extractor_config.context_prompt.strip()
         == new_config.profile_extractor_config.context_prompt.strip()
@@ -125,9 +128,8 @@ def test_set_config_end_to_end(
     updated_config = reflexio.request_context.configurator.get_config()
     assert updated_config is not None
     assert updated_config.profile_extractor_config is not None
-    assert (
-        "Updated test configuration from dict"
-        in updated_config.profile_extractor_config.context_prompt
+    assert "Updated test configuration from dict" in (
+        updated_config.profile_extractor_config.context_prompt or ""
     )
     assert updated_config.user_playbook_extractor_config is not None
     assert (
@@ -144,7 +146,7 @@ def test_set_config_end_to_end(
         invalid_config = {"invalid_field": "invalid_value"}
         error_response = reflexio.set_config(invalid_config)
         assert error_response.success is False
-        assert "Failed to set configuration" in error_response.msg
+        assert "Failed to set configuration" in (error_response.msg or "")
     except Exception:  # noqa: S110
         # If an exception is thrown instead of returning error response, that's also acceptable
         pass
@@ -208,7 +210,9 @@ def test_get_config_end_to_end(
 
     # Verify profile extractor config
     assert retrieved_config.profile_extractor_config is not None
-    assert "Get config test" in retrieved_config.profile_extractor_config.context_prompt
+    assert "Get config test" in (
+        retrieved_config.profile_extractor_config.context_prompt or ""
+    )
 
     # Verify agent playbook config
     assert retrieved_config.user_playbook_extractor_config is not None

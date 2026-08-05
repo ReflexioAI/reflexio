@@ -13,6 +13,7 @@ from reflexio.lib._base import (
     ReflexioBase,
     _require_storage,
 )
+from reflexio.test_support.typing_helpers import as_mock
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -132,7 +133,7 @@ class TestGetQueryReformulator:
         base = _make_base()
         mock_config = MagicMock()
         mock_config.api_key_config = MagicMock()
-        base.request_context.configurator.get_config.return_value = mock_config
+        as_mock(base.request_context.configurator.get_config).return_value = mock_config
 
         reformulator = base._get_query_reformulator()
 
@@ -145,7 +146,7 @@ class TestGetQueryReformulator:
         base = _make_base()
         mock_config = MagicMock()
         mock_config.api_key_config = MagicMock()
-        base.request_context.configurator.get_config.return_value = mock_config
+        as_mock(base.request_context.configurator.get_config).return_value = mock_config
 
         reformulator1 = base._get_query_reformulator()
         reformulator2 = base._get_query_reformulator()
@@ -159,7 +160,7 @@ class TestGetQueryReformulator:
     def test_handles_no_config(self, mock_reformulator_cls, mock_svm_cls):
         """Handles None config gracefully — auto-detects model from available API keys."""
         base = _make_base()
-        base.request_context.configurator.get_config.return_value = None
+        as_mock(base.request_context.configurator.get_config).return_value = None
         # Site var also returns nothing for pre_retrieval_model_name
         mock_svm_cls.return_value.get_site_var.return_value = {}
 

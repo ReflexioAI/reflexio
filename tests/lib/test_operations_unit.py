@@ -13,6 +13,7 @@ from reflexio.models.api_schema.service_schemas import (
     GetOperationStatusRequest,
     OperationStatus,
 )
+from reflexio.test_support.typing_helpers import as_mock
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -34,7 +35,7 @@ def _make_mixin(*, storage_configured: bool = True) -> OperationsMixin:
 
 
 def _get_storage(mixin: OperationsMixin) -> MagicMock:
-    return mixin.request_context.storage
+    return as_mock(mixin.request_context.storage)
 
 
 # ---------------------------------------------------------------------------

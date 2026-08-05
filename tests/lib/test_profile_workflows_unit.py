@@ -222,9 +222,7 @@ def test_search_interactions(reflexio_with_config):
     reflexio.publish_interaction(publish_request)
 
     # Search for interactions
-    search_request = SearchInteractionRequest(
-        user_id=user_id, query_text="sushi", top_k=10
-    )
+    search_request = SearchInteractionRequest(user_id=user_id, query="sushi", top_k=10)
 
     response = reflexio.search_interactions(search_request)
 
@@ -252,9 +250,7 @@ def test_search_profiles_current_only(reflexio_with_config):
     reflexio.publish_interaction(publish_request)
 
     # Search profiles (default: current only)
-    search_request = SearchUserProfileRequest(
-        user_id=user_id, query_text="sushi", top_k=10
-    )
+    search_request = SearchUserProfileRequest(user_id=user_id, query="sushi", top_k=10)
 
     response = reflexio.search_user_profiles(search_request)
 
@@ -282,9 +278,7 @@ def test_search_profiles_with_status_filter(reflexio_with_config):
     reflexio.publish_interaction(publish_request)
 
     # Search with status filter including PENDING
-    search_request = SearchUserProfileRequest(
-        user_id=user_id, query_text="test", top_k=10
-    )
+    search_request = SearchUserProfileRequest(user_id=user_id, query="test", top_k=10)
 
     response = reflexio.search_user_profiles(
         search_request, status_filter=[None, Status.PENDING]
@@ -532,7 +526,7 @@ def test_rerun_profile_generation_empty_interactions(temp_storage):
     response = reflexio.rerun_profile_generation(rerun_request)
 
     assert response.success is False
-    assert "No interactions found" in response.msg
+    assert "No interactions found" in (response.msg or "")
     assert response.profiles_generated == 0
 
 

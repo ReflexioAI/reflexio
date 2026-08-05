@@ -14,6 +14,7 @@ from reflexio.server.services.pre_retrieval._document_expander import (
     DocumentExpander,
     ExpansionResult,
 )
+from reflexio.test_support.typing_helpers import as_mock
 
 
 def _make_expander(mock_llm=None, mock_pm=None):
@@ -44,7 +45,7 @@ class TestExpand(unittest.TestCase):
         """LLM returns valid JSON; verify ExpansionResult fields."""
         expander = _make_expander()
         llm_json = json.dumps({"backup": ["sync", "replication"]})
-        expander.llm_client.generate_response.return_value = llm_json
+        as_mock(expander.llm_client.generate_response).return_value = llm_json
 
         result = expander.expand("We need a backup strategy")
 
@@ -56,7 +57,7 @@ class TestExpand(unittest.TestCase):
         """Empty string content triggers LLM call but produces empty result on empty LLM output."""
         expander = _make_expander()
         # LLM returns non-string (None) for empty content
-        expander.llm_client.generate_response.return_value = None
+        as_mock(expander.llm_client.generate_response).return_value = None
 
         result = expander.expand("")
 
@@ -66,7 +67,9 @@ class TestExpand(unittest.TestCase):
     def test_expand_llm_failure_returns_empty(self):
         """When the LLM raises an exception, expand() returns empty result."""
         expander = _make_expander()
-        expander.llm_client.generate_response.side_effect = RuntimeError("LLM down")
+        as_mock(expander.llm_client.generate_response).side_effect = RuntimeError(
+            "LLM down"
+        )
 
         result = expander.expand("some content")
 
@@ -77,9 +80,9 @@ class TestExpand(unittest.TestCase):
     def test_expand_invalid_json_returns_empty(self):
         """When the LLM returns non-JSON text, expand() returns empty result."""
         expander = _make_expander()
-        expander.llm_client.generate_response.return_value = (
-            "Here are some synonyms for you"
-        )
+        as_mock(
+            expander.llm_client.generate_response
+        ).return_value = "Here are some synonyms for you"
 
         result = expander.expand("some content")
 
