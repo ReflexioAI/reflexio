@@ -329,6 +329,7 @@ def test_rerun_profile_generation_end_to_end(
         rerun_request
     )
     assert rerun_response.success is True, f"Rerun should succeed: {rerun_response.msg}"
+    assert rerun_response.profiles_generated is not None
     assert rerun_response.profiles_generated > 0, (
         "Rerun should generate at least one profile"
     )
@@ -422,7 +423,7 @@ def test_rerun_profile_generation_with_time_filters(
         rerun_request
     )
     assert rerun_response.success is False
-    assert "No interactions found" in rerun_response.msg
+    assert "No interactions found" in (rerun_response.msg or "")
 
     # Test with time filter that includes all interactions (past to future)
     past_start = datetime.now(UTC) - timedelta(days=1)
@@ -438,6 +439,7 @@ def test_rerun_profile_generation_with_time_filters(
         rerun_request_valid
     )
     assert rerun_response_valid.success is True
+    assert rerun_response_valid.profiles_generated is not None
     assert rerun_response_valid.profiles_generated > 0, (
         "Rerun with valid time filter should generate profiles"
     )
@@ -521,7 +523,7 @@ def test_rerun_profile_generation_with_source_filter(
             user_id, status_filter=[Status.PENDING]
         )
     )
-    if rerun_response_a.profiles_generated > 0:
+    if (rerun_response_a.profiles_generated or 0) > 0:
         assert len(pending_profiles) > 0, (
             "Expected pending profiles when profiles_generated > 0"
         )
@@ -536,7 +538,7 @@ def test_rerun_profile_generation_with_source_filter(
         rerun_request_invalid
     )
     assert rerun_response_invalid.success is False
-    assert "No interactions found" in rerun_response_invalid.msg
+    assert "No interactions found" in (rerun_response_invalid.msg or "")
 
 
 @skip_in_precommit
@@ -723,7 +725,7 @@ def test_status_filter_in_get_profiles_request(
 def _create_test_profile(
     user_id: str,
     request_id: str,
-    status: Status = None,
+    status: Status | None = None,
     content: str = "Test profile content",
 ) -> UserProfile:
     """Helper function to create test profiles with specified status.
@@ -1221,7 +1223,7 @@ def test_rerun_profile_generation_with_extractor_names_filter(
     )
 
     # If profiles were generated, verify they come from allowed extractors
-    if rerun_response.profiles_generated > 0:
+    if (rerun_response.profiles_generated or 0) > 0:
         assert len(pending_profiles) > 0
 
 

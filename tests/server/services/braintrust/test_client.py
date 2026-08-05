@@ -61,7 +61,7 @@ def test_list_projects_unwraps_bare_list() -> None:
 
 def test_list_experiments_passes_since_param() -> None:
     """The `since` query param is included only when provided."""
-    seen_params: list[dict[str, list[str]]] = []
+    seen_params: list[dict[str, str]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen_params.append(dict(request.url.params.multi_items()))

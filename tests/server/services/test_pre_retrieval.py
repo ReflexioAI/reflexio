@@ -5,6 +5,7 @@ _extract_reformulated_query(), and _format_conversation_context().
 """
 
 import unittest
+from typing import cast
 from unittest.mock import Mock
 
 from reflexio.models.api_schema.retriever_schema import (
@@ -129,7 +130,7 @@ class TestExtractReformulatedQuery(unittest.TestCase):
         """Empty or whitespace-only input returns None."""
         self.assertIsNone(QueryReformulator._extract_reformulated_query(""))
         self.assertIsNone(QueryReformulator._extract_reformulated_query("   "))
-        self.assertIsNone(QueryReformulator._extract_reformulated_query(None))
+        self.assertIsNone(QueryReformulator._extract_reformulated_query(cast(str, None)))
 
     def test_returns_none_for_too_long_output(self):
         """Output exceeding MAX_REFORMULATION_LENGTH (512) returns None."""
@@ -238,7 +239,9 @@ class TestFormatConversationContext(unittest.TestCase):
             {"role": "user", "content": "dict-based question"},
             {"role": "agent", "content": "dict-based answer"},
         ]
-        result = QueryReformulator._format_conversation_context(history)
+        result = QueryReformulator._format_conversation_context(
+            cast("list[ConversationTurn]", history)
+        )
         self.assertIn("[user]: dict-based question", result)
         self.assertIn("[agent]: dict-based answer", result)
 

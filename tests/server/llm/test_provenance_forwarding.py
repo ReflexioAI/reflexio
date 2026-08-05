@@ -18,6 +18,7 @@ call test pins the specific regression.
 """
 
 import inspect
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -62,7 +63,7 @@ def test_plain_entry_point_forwards_every_declared_option(option):
     did with `provider_request_guard`.
     """
     inst = TextGenerationMixin.__new__(TextGenerationMixin)
-    sentinel = object()
+    sentinel: Any = object()
     with patch.object(
         TextGenerationMixin, "generate_chat_response_with_provenance"
     ) as p:
@@ -82,7 +83,7 @@ def test_provenance_entry_point_forwards_every_declared_option(option):
     from the signature raises NameError here rather than in production.
     """
     inst = TextGenerationMixin.__new__(TextGenerationMixin)
-    sentinel = object()
+    sentinel: Any = object()
     with patch.object(TextGenerationMixin, "_make_request", return_value="ok") as m:
         PROVENANCE(inst, [{"role": "user", "content": "hi"}], **{option: sentinel})
     assert m.call_args.kwargs.get(option) is sentinel, (
@@ -110,7 +111,12 @@ def test_provenance_call_without_a_guard_does_not_raise_nameerror():
 def test_provenance_call_forwards_the_guard_when_supplied():
     inst = TextGenerationMixin.__new__(TextGenerationMixin)
 
-    def guard(_params):
+    def guard(
+        _params: dict[str, Any],
+        _timeout: float,
+        _models: tuple[str, ...],
+        _flag: bool,
+    ) -> None:
         return None
 
     with patch.object(
@@ -131,7 +137,12 @@ def test_plain_entry_point_does_not_silently_drop_the_guard():
     """
     inst = TextGenerationMixin.__new__(TextGenerationMixin)
 
-    def guard(_params):
+    def guard(
+        _params: dict[str, Any],
+        _timeout: float,
+        _models: tuple[str, ...],
+        _flag: bool,
+    ) -> None:
         return None
 
     with patch.object(

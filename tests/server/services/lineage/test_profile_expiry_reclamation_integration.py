@@ -39,6 +39,7 @@ from reflexio.models.config_schema import (
     StorageConfigSQLite,
 )
 from reflexio.server.services.configurator.configurator import DefaultConfigurator
+from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 from tests.server.test_utils import require_storage
 
 pytestmark = pytest.mark.integration
@@ -79,7 +80,7 @@ def reflexio_instance(tmp_path: pathlib.Path, worker_id: str) -> Reflexio:
     return Reflexio(org_id=org_id, configurator=configurator)
 
 
-def _publish_and_get_profile(reflexio: Reflexio) -> object:
+def _publish_and_get_profile(reflexio: Reflexio) -> UserProfile:
     """Publish one interaction through the real extraction path and return the profile.
 
     The mock LLM returns ``time_to_live: "one_month"`` for profile extraction,
@@ -226,6 +227,7 @@ def test_pre_fix_pathology_active_expired_is_not_gc_eligible_until_swept(
         "it is NOT yet a tombstone"
     )
     # retired_at is storage-internal (not on the domain model) — read via direct SQL.
+    assert isinstance(storage, SQLiteStorage)
     raw_retired_at = storage.conn.execute(
         "SELECT retired_at FROM profiles WHERE profile_id = ?",
         (profile.profile_id,),

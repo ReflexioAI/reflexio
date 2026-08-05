@@ -1,14 +1,16 @@
 """Compute net sessions per rule by joining PlaybookApplicationStat with success outcomes."""
 
 from reflexio.server.services.evaluation_overview.components.rule_attribution import (
+    CitationKey,
     RuleAttribution,
+    SessionIdentity,
     compute_net_sessions,
 )
 
 
 def test_basic_join_one_rule_two_successes_one_failure() -> None:
     """Net = successes_with_rule_fired - failures_with_rule_fired."""
-    citations_by_session = {
+    citations_by_session: dict[SessionIdentity, list[CitationKey]] = {
         ("u1", "sess_a"): [("playbook", "rule_42")],
         ("u1", "sess_b"): [("playbook", "rule_42")],
         ("u1", "sess_c"): [("playbook", "rule_42")],
@@ -18,7 +20,7 @@ def test_basic_join_one_rule_two_successes_one_failure() -> None:
         ("u1", "sess_b"): True,
         ("u1", "sess_c"): False,
     }
-    rule_titles = {("playbook", "rule_42"): "Confirm address before checkout"}
+    rule_titles: dict[CitationKey, str] = {("playbook", "rule_42"): "Confirm address before checkout"}
 
     attribs = compute_net_sessions(
         citations_by_session=citations_by_session,
@@ -39,7 +41,7 @@ def test_basic_join_one_rule_two_successes_one_failure() -> None:
 
 def test_ranks_by_net_sessions_descending_and_caps_at_top_n() -> None:
     """Top-N ordering by net_sessions desc; ties broken by total fires desc."""
-    citations_by_session = {
+    citations_by_session: dict[SessionIdentity, list[CitationKey]] = {
         ("u1", "s1"): [("playbook", "good")],
         ("u1", "s2"): [("playbook", "good")],
         ("u1", "s3"): [("playbook", "good")],
@@ -55,7 +57,7 @@ def test_ranks_by_net_sessions_descending_and_caps_at_top_n() -> None:
         ("u1", "s5"): False,
         ("u1", "s6"): True,
     }
-    rule_titles = {
+    rule_titles: dict[CitationKey, str] = {
         ("playbook", "good"): "good",
         ("playbook", "ugly"): "ugly",
         ("playbook", "meh"): "meh",
@@ -78,12 +80,12 @@ def test_session_missing_from_success_map_is_skipped() -> None:
     """If a citation references a session we have no AgentSuccessEvaluationResult
     for, treat it as unknown and don't count it on either side."""
     _ = RuleAttribution  # imported for export sanity; no-op
-    citations_by_session = {
+    citations_by_session: dict[SessionIdentity, list[CitationKey]] = {
         ("u1", "sess_known"): [("playbook", "r1")],
         ("u1", "sess_orphan"): [("playbook", "r1")],
     }
     is_success_by_session = {("u1", "sess_known"): True}
-    rule_titles = {("playbook", "r1"): "r1"}
+    rule_titles: dict[CitationKey, str] = {("playbook", "r1"): "r1"}
 
     attribs = compute_net_sessions(
         citations_by_session=citations_by_session,
@@ -100,7 +102,7 @@ def test_session_missing_from_success_map_is_skipped() -> None:
 
 def test_cited_session_ids_populated_for_each_rule() -> None:
     """Each RuleAttribution row carries the session ids that cited the rule."""
-    citations_by_session = {
+    citations_by_session: dict[SessionIdentity, list[CitationKey]] = {
         ("u1", "sess_alpha"): [("playbook", "rule_a"), ("playbook", "rule_b")],
         ("u1", "sess_beta"): [("playbook", "rule_a")],
         ("u1", "sess_gamma"): [("playbook", "rule_b")],
@@ -110,7 +112,7 @@ def test_cited_session_ids_populated_for_each_rule() -> None:
         ("u1", "sess_beta"): False,
         ("u1", "sess_gamma"): True,
     }
-    rule_titles = {("playbook", "rule_a"): "A", ("playbook", "rule_b"): "B"}
+    rule_titles: dict[CitationKey, str] = {("playbook", "rule_a"): "A", ("playbook", "rule_b"): "B"}
 
     rows = compute_net_sessions(
         citations_by_session=citations_by_session,
@@ -128,7 +130,7 @@ def test_cited_session_ids_populated_for_each_rule() -> None:
 
 def test_cited_session_ids_excludes_sessions_with_no_outcome() -> None:
     """Sessions absent from is_success_by_session are skipped on both sides."""
-    citations_by_session = {
+    citations_by_session: dict[SessionIdentity, list[CitationKey]] = {
         ("u1", "graded"): [("playbook", "rule_x")],
         ("u1", "ungraded"): [("playbook", "rule_x")],
     }
@@ -147,7 +149,7 @@ def test_cited_session_ids_excludes_sessions_with_no_outcome() -> None:
 
 def test_cited_session_ids_dedupes_within_same_session() -> None:
     """A rule cited multiple times in the same session yields a single session entry."""
-    citations_by_session = {
+    citations_by_session: dict[SessionIdentity, list[CitationKey]] = {
         ("u1", "sess_a"): [
             ("playbook", "rule_x"),
             ("playbook", "rule_x"),

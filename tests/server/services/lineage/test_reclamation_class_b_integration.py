@@ -12,6 +12,7 @@ Both are gated independently:
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -46,7 +47,7 @@ def _make_ctx_factory(
     *,
     lineage_gc_enabled: bool,
     expiry_reclamation_enabled: bool,
-) -> tuple[SQLiteStorage, object]:
+) -> tuple[SQLiteStorage, Callable[[str], RequestContext]]:
     """Build (storage, factory) pair for the given flag combination."""
     storage = SQLiteStorage(org_id=_ORG_ID, db_path=str(tmp_path / "gc_b_test.db"))
     cfg = SimpleNamespace(
@@ -153,7 +154,7 @@ def test_scheduler_does_not_start_when_both_disabled(tmp_path, org_id):
         lineage_gc_enabled=False,
         expiry_reclamation_enabled=False,
     )
-    result = maybe_start_lineage_gc(factory, bootstrap_org_id=org_id)  # type: ignore[arg-type]
+    result = maybe_start_lineage_gc(factory, bootstrap_org_id=org_id)
     assert result is None, (
         "Scheduler must not start when lineage_gc.enabled=False and "
         "expiry_reclamation.enabled=False"
@@ -173,7 +174,7 @@ def test_scheduler_starts_when_only_expiry_reclamation_enabled(tmp_path, org_id)
         lineage_gc_enabled=False,
         expiry_reclamation_enabled=True,
     )
-    sched = maybe_start_lineage_gc(factory, bootstrap_org_id=org_id)  # type: ignore[arg-type]
+    sched = maybe_start_lineage_gc(factory, bootstrap_org_id=org_id)
     assert sched is not None, (
         "Scheduler must start when expiry_reclamation.enabled=True "
         "(even with lineage_gc.enabled=False)"

@@ -19,6 +19,7 @@ from reflexio.models.api_schema.service_schemas import (
     DeleteSessionRequest,
     DeleteUserInteractionRequest,
     Interaction,
+    InteractionData,
     PublishUserInteractionRequest,
 )
 from reflexio.server.services.generation_service import GenerationServiceResult
@@ -406,7 +407,7 @@ class TestPublishInteraction:
         request = PublishUserInteractionRequest(
             user_id="user1",
             session_id="test_session",
-            interaction_data_list=[{"role": "User", "content": "hi"}],
+            interaction_data_list=[InteractionData(role="User", content="hi")],
         )
         response = mixin.publish_interaction(request)
 
@@ -427,7 +428,7 @@ class TestPublishInteraction:
         request = PublishUserInteractionRequest(
             user_id="user1",
             session_id="test_session",
-            interaction_data_list=[{"role": "User", "content": "hi"}],
+            interaction_data_list=[InteractionData(role="User", content="hi")],
         )
         response = mixin.publish_interaction(request)
 
@@ -464,7 +465,7 @@ class TestPublishInteraction:
     def test_reports_extraction_deltas(self, mock_gen_cls):
         """profiles_added / playbooks_added reflect the before→after delta."""
         mixin = _make_mixin()
-        storage = mixin.request_context.storage
+        storage = _get_storage(mixin)
         # Storage snapshot: 2 profiles before → 5 after; 0 playbooks → 3 after
         as_mock(storage.count_all_profiles).side_effect = [2, 5]
         as_mock(storage.count_user_playbooks).side_effect = [0, 3]
@@ -479,7 +480,7 @@ class TestPublishInteraction:
             PublishUserInteractionRequest(
                 user_id="user1",
                 session_id="test_session",
-                interaction_data_list=[{"role": "User", "content": "hi"}],
+                interaction_data_list=[InteractionData(role="User", content="hi")],
             )
         )
 
@@ -496,7 +497,7 @@ class TestPublishInteraction:
         itself has nothing to do with the counters.
         """
         mixin = _make_mixin()
-        storage = mixin.request_context.storage
+        storage = _get_storage(mixin)
         as_mock(storage.count_all_profiles).side_effect = RuntimeError("db down")
         # count_user_playbooks still works — exercised independently
         as_mock(storage.count_user_playbooks).return_value = 0
@@ -511,7 +512,7 @@ class TestPublishInteraction:
             PublishUserInteractionRequest(
                 user_id="user1",
                 session_id="test_session",
-                interaction_data_list=[{"role": "User", "content": "hi"}],
+                interaction_data_list=[InteractionData(role="User", content="hi")],
             )
         )
 
@@ -532,7 +533,7 @@ class TestPublishInteraction:
         request = PublishUserInteractionRequest(
             user_id="user1",
             session_id="test_session",
-            interaction_data_list=[{"role": "User", "content": "hi"}],
+            interaction_data_list=[InteractionData(role="User", content="hi")],
         )
         response = mixin.publish_interaction(request)
 

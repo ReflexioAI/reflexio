@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 
 import pytest
 
+from reflexio.models.api_schema.common import ToolUsed
 from reflexio.models.api_schema.domain.entities import UserPlaybook
 from reflexio.models.api_schema.domain.enums import UserActionType
 from reflexio.models.api_schema.internal_schema import RequestInteractionDataModel
@@ -203,7 +204,7 @@ def test_prompt_context_maps_one_turn_reference_to_all_visible_sources():
         request_id="request",
         content="First paragraph.\n\nSecond paragraph.",
         role="assistant",
-        tools_used=[{"tool_name": "lookup", "tool_data": {"key": "value"}}],
+        tools_used=[ToolUsed(tool_name="lookup", tool_data={"key": "value"})],
         user_action=UserActionType.CLICK,
         user_action_description="confirm",
     )

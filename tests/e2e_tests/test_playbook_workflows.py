@@ -811,6 +811,7 @@ def test_rerun_playbook_generation_end_to_end(
             )
         )
         assert rerun_response.success is True
+        assert rerun_response.playbooks_generated is not None
         assert rerun_response.playbooks_generated > 0
 
         # Step 3: Verify PENDING playbooks were created
@@ -901,7 +902,7 @@ def test_rerun_playbook_generation_with_time_filters(
             )
         )
         assert future_response.success is False
-        assert "No interactions found" in future_response.msg
+        assert "No interactions found" in (future_response.msg or "")
 
         # Test with valid time range (past to future)
         past_start = datetime.now(UTC) - timedelta(days=1)
@@ -916,6 +917,7 @@ def test_rerun_playbook_generation_with_time_filters(
             )
         )
         assert valid_response.success is True
+        assert valid_response.playbooks_generated is not None
         assert valid_response.playbooks_generated > 0
 
     finally:
@@ -1402,7 +1404,7 @@ def test_rerun_playbook_generation_with_source_filter(
 
         # Step 5: Verify pending playbooks were created with source="api"
         pending_playbooks = storage.get_user_playbooks(status_filter=[Status.PENDING])
-        if rerun_response.playbooks_generated > 0:
+        if (rerun_response.playbooks_generated or 0) > 0:
             assert len(pending_playbooks) > 0
             for playbook in pending_playbooks:
                 assert playbook.source == "api", (
@@ -1419,7 +1421,7 @@ def test_rerun_playbook_generation_with_source_filter(
             )
         )
         assert rerun_response_invalid.success is False
-        assert "No interactions found" in rerun_response_invalid.msg
+        assert "No interactions found" in (rerun_response_invalid.msg or "")
 
     finally:
         if original_env is None:
@@ -1515,7 +1517,7 @@ def test_rerun_playbook_generation_multiple_extractors_all_sources(
         )
 
         # Step 4: Verify playbooks from multiple extractors
-        if rerun_response.playbooks_generated > 0:
+        if (rerun_response.playbooks_generated or 0) > 0:
             pending_playbooks = storage.get_user_playbooks(
                 status_filter=[Status.PENDING]
             )

@@ -6,6 +6,7 @@ returns both user and agent playbooks.
 """
 
 import os
+from collections.abc import Iterator
 
 import pytest
 
@@ -171,7 +172,7 @@ def _cleanup(instance: Reflexio, playbook_name: str | None = None) -> None:
 def openclaw_playbook_instance(
     sqlite_storage_config: StorageConfigSQLite,
     test_org_id: str,
-) -> Reflexio:
+) -> Iterator[Reflexio]:
     """Reflexio instance configured for OpenClaw playbook extraction."""
     instance = _make_reflexio_with_playbook(test_org_id, sqlite_storage_config)
     _cleanup(instance, _PLAYBOOK_NAME)
@@ -183,7 +184,7 @@ def openclaw_playbook_instance(
 def openclaw_profile_instance(
     sqlite_storage_config: StorageConfigSQLite,
     test_org_id: str,
-) -> Reflexio:
+) -> Iterator[Reflexio]:
     """Reflexio instance configured for OpenClaw profile extraction."""
     instance = _make_reflexio_with_profile(test_org_id, sqlite_storage_config)
     _cleanup(instance)
@@ -250,13 +251,17 @@ class TestOpenClawMultiUser:
         # to verify playbook scoping by user_id
         from reflexio.models.api_schema.service_schemas import UserPlaybook
 
+        alpha_request_id = alpha_resp.request_id
+        beta_request_id = beta_resp.request_id
+        assert alpha_request_id is not None
+        assert beta_request_id is not None
         alpha_pb = UserPlaybook(
             user_id=_ALPHA_USER,
             agent_version=_AGENT_VERSION,
             playbook_name=_PLAYBOOK_NAME,
             content="Always ask for file formatting preference first",
             trigger="file formatting",
-            request_id=alpha_resp.request_id,
+            request_id=alpha_request_id,
         )
         beta_pb = UserPlaybook(
             user_id=_BETA_USER,
@@ -264,7 +269,7 @@ class TestOpenClawMultiUser:
             playbook_name=_PLAYBOOK_NAME,
             content="Always ask for code review style preference first",
             trigger="code review",
-            request_id=beta_resp.request_id,
+            request_id=beta_request_id,
         )
         storage.save_user_playbooks([alpha_pb, beta_pb])
 
