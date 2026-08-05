@@ -1386,6 +1386,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                             (
                                 row["outcome_revision"]
                                 if "outcome_revision" in columns
+                                and row["outcome_revision"] is not None
                                 else 1
                             ),
                             row["user_id"],

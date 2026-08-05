@@ -185,7 +185,7 @@ def test_retry_compares_metadata_as_json_values(
     assert retry.status_code == 200
     assert retry.json()["success"] is True
     assert retry.json()["recorded"] is False
-    assert "reason" not in retry.json()
+    assert retry.json().get("reason") is None
 
 
 def test_retry_rejects_metadata_with_different_json_value_types(
