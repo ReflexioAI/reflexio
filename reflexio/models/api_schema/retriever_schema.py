@@ -318,7 +318,7 @@ class SearchUserPlaybookRequest(BaseModel):
         start_time (datetime, optional): Start time for created_at filter
         end_time (datetime, optional): End time for created_at filter
         status_filter (list[Optional[Status]], optional): Filter by status (None for CURRENT, PENDING, ARCHIVED)
-        top_k (int, optional): Maximum number of results to return. Defaults to 10
+        top_k (int, optional): Maximum results to return, up to 100. Defaults to 10
         threshold (float, optional): Similarity threshold for vector search.
             When omitted, the embedding model's default is used.
     """
@@ -331,7 +331,7 @@ class SearchUserPlaybookRequest(BaseModel):
     end_time: datetime | None = None
     status_filter: list[Status | None] | None = None
     tags: list[str] | None = None
-    top_k: int | None = Field(default=10, gt=0)
+    top_k: int | None = Field(default=10, gt=0, le=100)
     threshold: float | None = Field(default=None, ge=0.0, le=1.0)
     enable_reformulation: bool | None = False
     search_mode: SearchMode = SearchMode.HYBRID

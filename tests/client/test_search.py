@@ -5,11 +5,16 @@ from typing import Any
 import pytest
 
 from reflexio import ReflexioClient
-from reflexio.models.api_schema.retriever_schema import UnifiedSearchRequest
+from reflexio.models.api_schema.retriever_schema import (
+    SearchUserPlaybookRequest,
+    UnifiedSearchRequest,
+)
 
 
-def _non_null_schema(field_name: str) -> dict[str, Any]:
-    field_schema = UnifiedSearchRequest.model_json_schema()["properties"][field_name]
+def _non_null_schema(
+    field_name: str, *, request_model: type[Any] = UnifiedSearchRequest
+) -> dict[str, Any]:
+    field_schema = request_model.model_json_schema()["properties"][field_name]
     return next(
         option
         for option in field_schema.get("anyOf", [field_schema])
@@ -102,3 +107,16 @@ def test_unified_search_docs_track_schema_contract() -> None:
     assert registry_docs.count(f"at most {identifier_limit} characters") >= 3
     assert 'name: "interaction_id"' in registry_docs
     assert f"positive integer (minimum {interaction_minimum})" in registry_docs
+
+
+def test_user_playbook_search_docs_track_top_k_schema_contract() -> None:
+    top_k_limit = _non_null_schema("top_k", request_model=SearchUserPlaybookRequest)[
+        "maximum"
+    ]
+    client_docs = inspect.getdoc(ReflexioClient.search_user_playbooks) or ""
+    registry_docs = (
+        Path(__file__).parents[2] / "docs/lib/methods/user-playbooks.ts"
+    ).read_text(encoding="utf-8")
+
+    assert f"1 to {top_k_limit}" in client_docs
+    assert f"1 to {top_k_limit}" in registry_docs

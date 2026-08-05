@@ -105,7 +105,7 @@ export const userPlaybookMethods: MethodDef[] = [
         type: "number",
         required: false,
         default: 10,
-        description: "Maximum number of results to return",
+        description: "Maximum number of results to return, from 1 to 100",
       },
       {
         name: "threshold",

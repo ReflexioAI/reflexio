@@ -232,6 +232,46 @@ def test_direct_user_playbook_search_does_not_record_empty_results() -> None:
     assert recorder.batches == []
 
 
+def test_direct_user_playbook_search_rejects_101_before_search_or_recording() -> None:
+    playbooks = [
+        _playbook(playbook_id, f"Playbook {playbook_id}")
+        for playbook_id in range(1, 102)
+    ]
+    recorder = _Recorder()
+    register_service(SEARCH_EXPOSURE_RECORDER, recorder)
+
+    with _search_results(playbooks) as reflexio:
+        response = _client().post(
+            "/api/search_user_playbooks",
+            json={"query": "direct answer", "user_id": "user-1", "top_k": 101},
+        )
+
+    assert response.status_code == 422
+    reflexio.search_user_playbooks.assert_not_called()
+    assert recorder.batches == []
+
+
+def test_direct_user_playbook_search_returns_and_records_exactly_100() -> None:
+    playbooks = [
+        _playbook(playbook_id, f"Playbook {playbook_id}")
+        for playbook_id in range(1, 101)
+    ]
+    recorder = _Recorder()
+    register_service(SEARCH_EXPOSURE_RECORDER, recorder)
+
+    with _search_results(playbooks) as reflexio:
+        response = _client().post(
+            "/api/search_user_playbooks",
+            json={"query": "direct answer", "user_id": "user-1", "top_k": 100},
+        )
+
+    assert response.status_code == 200, response.text
+    reflexio.search_user_playbooks.assert_called_once()
+    assert len(response.json()["user_playbooks"]) == 100
+    assert len(recorder.batches) == 1
+    assert recorder.batches[0].user_playbooks == tuple(playbooks)
+
+
 def test_oss_search_succeeds_when_no_recorder_is_registered() -> None:
     with _search_results([_playbook(11, "First")]):
         response = _client().post(
