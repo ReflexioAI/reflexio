@@ -119,8 +119,9 @@ def record_usage_event(
 ) -> None:
     """Record one usage event if a recorder is configured.
 
-    The product path must never fail because metrics failed, so this function
-    catches and logs all recorder errors.
+    The product path must never fail because metrics failed. Missing and legacy
+    recorders are silent on this ordinary fail-open path; explicit delivery
+    failures and recorder exceptions are logged.
     """
     try:
         record_usage_event_strict(
@@ -152,8 +153,11 @@ def record_usage_event(
             metadata=metadata,
             created_at=created_at,
         )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Usage metrics recorder failed: %s", exc)
+    except UsageEventDeliveryError as exc:
+        if exc.status is not UsageEventDeliveryStatus.UNKNOWN:
+            logger.warning("Usage metrics recorder failed: %s", exc)
+    except Exception:  # noqa: BLE001
+        logger.warning("Usage metrics recorder failed", exc_info=True)
 
 
 def record_usage_event_strict(
