@@ -1,0 +1,214 @@
+"""mem0 ``MemoryClient`` subclass that mirrors traces and learnings to Reflexio.
+
+Every Reflexio touchpoint is best-effort: failures are logged and swallowed
+so Reflexio availability never breaks the customer's mem0 code path (same
+contract as the openclaw ``reflexio_adapter``).
+"""
+
+from __future__ import annotations
+
+import logging
+import uuid
+from typing import Any
+
+from mem0 import MemoryClient as _Mem0MemoryClient
+
+from reflexio.client import ReflexioClient
+from reflexio.defaults import resolve_agent_version
+
+logger = logging.getLogger(__name__)
+
+_SOURCE = "mem0"
+_REFLEXIO_TIMEOUT_SECONDS = 10
+_REFLEXIO_TOP_K = 5
+_ROLE_MAP = {"user": "User", "assistant": "Assistant"}
+_SKIPPED_ROLES = {"system"}
+
+
+def _default_reflexio_client() -> ReflexioClient | None:
+    """Build a ReflexioClient from env config, or None if construction fails."""
+    try:
+        return ReflexioClient(timeout=_REFLEXIO_TIMEOUT_SECONDS)
+    except Exception as exc:  # noqa: BLE001 — wrapper must never break the mem0 path.
+        logger.warning("Failed to construct ReflexioClient: %s", exc)
+        return None
+
+
+def _opt(options: Any, kwargs: dict[str, Any], name: str) -> Any:
+    """Read a mem0 call parameter, kwargs first then the options model.
+
+    Mirrors mem0's own precedence: kwargs override ``options`` fields.
+    """
+    if name in kwargs:
+        return kwargs[name]
+    return getattr(options, name, None) if options is not None else None
+
+
+def _nonempty_str(value: Any) -> str | None:
+    """Return the value if it is a non-empty string, else None."""
+    if isinstance(value, str) and value.strip():
+        return value
+    return None
+
+
+def _normalize_messages(messages: Any, created_at: int | None) -> list[dict[str, Any]]:
+    """Convert mem0 ``add()`` messages into Reflexio interaction dicts.
+
+    Accepts the shapes mem0 accepts (str, dict, list of dicts or strs);
+    skips system messages and items without non-empty string content.
+    """
+    if isinstance(messages, str):
+        raw: list[Any] = [{"role": "user", "content": messages}]
+    elif isinstance(messages, dict):
+        raw = [messages]
+    elif isinstance(messages, list):
+        raw = messages
+    else:
+        return []
+
+    normalized: list[dict[str, Any]] = []
+    for item in raw:
+        if isinstance(item, str):
+            item = {"role": "user", "content": item}
+        if not isinstance(item, dict):
+            continue
+        role = str(item.get("role", "user")).lower()
+        if role in _SKIPPED_ROLES:
+            continue
+        content = item.get("content")
+        if not isinstance(content, str) or not content.strip():
+            continue
+        interaction: dict[str, Any] = {
+            "role": _ROLE_MAP.get(role, role.capitalize()),
+            "content": content,
+        }
+        if created_at is not None:
+            interaction["created_at"] = created_at
+        normalized.append(interaction)
+    return normalized
+
+
+def _extract_user_id(filters: Any) -> str | None:
+    """Pull a plain-string user_id from mem0 search filters.
+
+    Handles the top-level form ``{"user_id": "u1"}`` and one level of
+    ``{"AND": [{"user_id": "u1"}, ...]}``. Operator forms like
+    ``{"user_id": {"in": [...]}}`` identify no single user and return None.
+    """
+    if not isinstance(filters, dict):
+        return None
+    if user_id := _nonempty_str(filters.get("user_id")):
+        return user_id
+    clauses = filters.get("AND")
+    if not isinstance(clauses, list):
+        return None
+    for clause in clauses:
+        if isinstance(clause, dict) and (
+            user_id := _nonempty_str(clause.get("user_id"))
+        ):
+            return user_id
+    return None
+
+
+class MemoryClient(_Mem0MemoryClient):
+    """mem0 MemoryClient that also publishes traces to Reflexio.
+
+    Reflexio configuration comes from the ``REFLEXIO_API_KEY`` and
+    ``REFLEXIO_URL`` environment variables, or a pre-built client passed as
+    ``reflexio_client``. All other behavior is inherited from mem0.
+    """
+
+    def __init__(
+        self,
+        api_key: str | None = None,
+        host: str | None = None,
+        client: Any = None,
+        *,
+        reflexio_client: ReflexioClient | None = None,
+    ) -> None:
+        super().__init__(api_key=api_key, host=host, client=client)
+        self._reflexio = (
+            reflexio_client
+            if reflexio_client is not None
+            else _default_reflexio_client()
+        )
+        # Groups this client instance's publishes when add() has no run_id.
+        self._session_id = f"mem0-{uuid.uuid4().hex}"
+
+    def add(self, messages: Any, options: Any = None, **kwargs: Any) -> Any:
+        """Add memories via mem0, then best-effort publish the trace to Reflexio."""
+        result = super().add(messages, options, **kwargs)
+        self._publish_to_reflexio(messages, options, kwargs)
+        return result
+
+    def search(self, query: str, options: Any = None, **kwargs: Any) -> Any:
+        """Search mem0, then best-effort add Reflexio learnings as sibling keys.
+
+        On success the returned dict additionally carries
+        ``reflexio_profiles``, ``reflexio_user_playbooks``, and
+        ``reflexio_agent_playbooks``. On any Reflexio failure (or when no
+        plain user_id is present in filters) the keys are absent and the
+        payload is exactly what unwrapped mem0 returned.
+        """
+        result = super().search(query, options, **kwargs)
+        return self._augment_search_result(result, query, options, kwargs)
+
+    def _publish_to_reflexio(
+        self, messages: Any, options: Any, kwargs: dict[str, Any]
+    ) -> None:
+        if self._reflexio is None:
+            return
+        try:
+            user_id = _nonempty_str(kwargs.get("user_id"))
+            if user_id is None:
+                logger.debug("Skipping Reflexio publish: mem0 add() has no user_id")
+                return
+            timestamp = _opt(options, kwargs, "timestamp")
+            interactions = _normalize_messages(
+                messages, timestamp if isinstance(timestamp, int) else None
+            )
+            if not interactions:
+                logger.debug("Skipping Reflexio publish: no publishable messages")
+                return
+            self._reflexio.publish_interaction(
+                user_id=user_id,
+                interactions=interactions,
+                source=_SOURCE,
+                agent_version=_nonempty_str(kwargs.get("agent_id"))
+                or resolve_agent_version(),
+                session_id=_nonempty_str(kwargs.get("run_id")) or self._session_id,
+                wait_for_response=False,
+            )
+        except Exception as exc:  # noqa: BLE001 — best-effort by contract.
+            logger.warning("Best-effort Reflexio publish failed: %s", exc)
+
+    def _augment_search_result(
+        self, result: Any, query: str, options: Any, kwargs: dict[str, Any]
+    ) -> Any:
+        if self._reflexio is None or not isinstance(result, dict):
+            return result
+        try:
+            user_id = _extract_user_id(_opt(options, kwargs, "filters"))
+            if user_id is None:
+                logger.debug(
+                    "Skipping Reflexio search augmentation: no plain user_id in filters"
+                )
+                return result
+            response = self._reflexio.search(
+                query=query, user_id=user_id, top_k=_REFLEXIO_TOP_K
+            )
+            # Build all three lists before assigning any key, so a failure
+            # leaves the mem0 payload entirely untouched.
+            profiles = [p.model_dump(mode="json") for p in response.profiles]
+            user_playbooks = [
+                p.model_dump(mode="json") for p in response.user_playbooks
+            ]
+            agent_playbooks = [
+                p.model_dump(mode="json") for p in response.agent_playbooks
+            ]
+            result["reflexio_profiles"] = profiles
+            result["reflexio_user_playbooks"] = user_playbooks
+            result["reflexio_agent_playbooks"] = agent_playbooks
+        except Exception as exc:  # noqa: BLE001 — best-effort by contract.
+            logger.warning("Best-effort Reflexio search failed: %s", exc)
+        return result

@@ -57,6 +57,8 @@ dependencies = [
 
 [project.optional-dependencies]
 notebooks = ["pandas>=3.0.2"]
+# mem0 has shipped breaking API changes in minor releases; cap below 3.0.
+mem0 = ["mem0ai>=2.0,<3.0"]
 benchmark = [
     "datasets>=4.8.4",
     "fire>=0.7.1",

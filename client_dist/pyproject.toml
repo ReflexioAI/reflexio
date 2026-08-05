@@ -14,6 +14,10 @@ dependencies = [
     "python-dotenv>=0.19.0",
 ]
 
+[project.optional-dependencies]
+# mem0 has shipped breaking API changes in minor releases; cap below 3.0.
+mem0 = ["mem0ai>=2.0,<3.0"]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
@@ -30,6 +34,7 @@ only-include = [
 "../reflexio/client" = "reflexio/client"
 "../reflexio/models" = "reflexio/models"
 "../reflexio/integrations" = "reflexio/integrations"
+"../reflexio/mem0" = "reflexio/mem0"
 
 [tool.hatch.build.targets.wheel.force-include]
 "reflexio/__init__.py" = "reflexio/__init__.py"
@@ -37,3 +42,4 @@ only-include = [
 "reflexio/client" = "reflexio/client"
 "reflexio/models" = "reflexio/models"
 "reflexio/integrations" = "reflexio/integrations"
+"reflexio/mem0" = "reflexio/mem0"

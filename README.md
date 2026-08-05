@@ -309,6 +309,32 @@ client.set_config(reflexio.SetConfigRequest(
 Reflexio integrates with popular AI agent frameworks out of the box:
 
 - **[OpenClaw](reflexio/integrations/openclaw/README.md)** -- Native integration with the OpenClaw agent framework.
+- **mem0** -- Drop-in wrapper for the mem0 managed-platform client.
+
+### mem0 drop-in wrapper
+
+Already using [mem0](https://mem0.ai)? Install the extra and change one import —
+no other code changes:
+
+```bash
+pip install 'reflexio-ai[mem0]'
+```
+
+```python
+# Before
+from mem0 import MemoryClient
+# After
+from reflexio.mem0 import MemoryClient
+
+client = MemoryClient(api_key="your-mem0-key")
+```
+
+Every call still goes to mem0. In addition, `add()` publishes the conversation
+to Reflexio so it can learn playbooks (best-effort, never raises), and
+`search()` returns mem0's payload plus `reflexio_profiles`,
+`reflexio_user_playbooks`, and `reflexio_agent_playbooks` sibling keys.
+Reflexio credentials come from the `REFLEXIO_API_KEY` and `REFLEXIO_URL`
+environment variables, or pass `reflexio_client=ReflexioClient(...)`.
 
 > **Migration from the LangChain integration (removed in this release).** The
 > `reflexio.integrations.langchain` package and the `reflexio-client[langchain]`

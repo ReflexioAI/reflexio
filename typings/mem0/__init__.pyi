@@ -1,0 +1,23 @@
+# Minimal stub for the optional `mem0ai` dependency (not installed in dev/CI).
+# Without it, pyright resolves the top-level name `mem0` from inside
+# `reflexio/mem0/` to that package itself, making the wrapper appear to
+# derive from itself. Only the surface `reflexio.mem0` touches is declared.
+from typing import Any
+
+class Memory: ...
+class AsyncMemory: ...
+class AsyncMemoryClient: ...
+
+class MemoryClient:
+    api_key: str | None
+    host: str
+    client: Any
+    def __init__(
+        self,
+        api_key: str | None = None,
+        host: str | None = None,
+        client: Any = None,
+    ) -> None: ...
+    def add(self, messages: Any, options: Any = None, **kwargs: Any) -> dict[str, Any]: ...
+    def search(self, query: str, options: Any = None, **kwargs: Any) -> dict[str, Any]: ...
+    def get_all(self, options: Any = None, **kwargs: Any) -> dict[str, Any]: ...
