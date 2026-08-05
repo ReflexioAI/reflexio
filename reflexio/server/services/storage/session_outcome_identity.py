@@ -166,7 +166,10 @@ def outcome_contract_digest(
 
 def _canonical_trajectory_json(value: object, *, depth: int = 0) -> str:
     """Encode trajectory JSON deterministically within a bounded nesting depth."""
-    if depth > MAX_CANONICAL_TRAJECTORY_JSON_DEPTH:
+    if (
+        isinstance(value, tuple | list | Mapping)
+        and depth >= MAX_CANONICAL_TRAJECTORY_JSON_DEPTH
+    ):
         raise ValueError("canonical trajectory JSON exceeds maximum depth")
     if isinstance(value, float):
         return json.dumps(value, allow_nan=False, separators=(",", ":"))
