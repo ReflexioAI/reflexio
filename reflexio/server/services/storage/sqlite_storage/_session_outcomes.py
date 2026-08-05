@@ -339,12 +339,10 @@ class SessionOutcomeStoreMixin:
 
     @SQLiteStorageBase.handle_exceptions
     def clear_session_outcomes_for_user(self, user_id: str) -> dict[str, int]:
-        subject_ref = self._subject_ref_for_user_id(user_id)
         with self._lock:
             outcome_cursor = self.conn.execute(
-                """DELETE FROM session_outcomes
-                   WHERE user_id = ? OR governance_subject_ref = ?""",
-                (user_id, subject_ref),
+                "DELETE FROM session_outcomes WHERE user_id = ?",
+                (user_id,),
             )
             self.conn.commit()
         return {

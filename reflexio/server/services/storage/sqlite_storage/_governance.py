@@ -431,11 +431,9 @@ class SQLiteGovernanceMixin:
             "SELECT COUNT(DISTINCT session_id) AS cnt FROM requests WHERE user_id = ?",
             (user_id,),
         ).fetchone()
-        subject_ref = self._deps()._subject_ref_for_user_id(user_id)
         session_outcome_row = self.conn.execute(
-            """SELECT COUNT(*) AS cnt FROM session_outcomes
-               WHERE user_id = ? OR governance_subject_ref = ?""",
-            (user_id, subject_ref),
+            "SELECT COUNT(*) AS cnt FROM session_outcomes WHERE user_id = ?",
+            (user_id,),
         ).fetchone()
         profile_rows = self.conn.execute(
             "SELECT profile_id FROM profiles WHERE user_id = ?",

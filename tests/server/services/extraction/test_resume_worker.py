@@ -606,13 +606,13 @@ def test_resume_worker_retries_finalization_without_rerunning_agent(
         (
             "profile",
             "reflexio.server.services.profile.service."
-            "ProfileGenerationService._finalize_extracted_items",
+            "ProfileGenerationService._finalize_extracted_items_with_outcome",
             "profile",
         ),
         (
             "playbook",
             "reflexio.server.services.playbook.service."
-            "PlaybookGenerationService._finalize_extracted_items",
+            "PlaybookGenerationService._finalize_extracted_items_with_outcome",
             "user_playbook",
         ),
     ],
@@ -635,15 +635,19 @@ def test_resume_bills_only_items_that_survive_finalization(
     )
     dropped = object()
     survivor = object()
+    survivor_id = "durable-survivor-id"
     worker = ExtractionResumeWorker(request_context=request_context)
 
     with (
-        patch(finalize_path, return_value=[survivor]) as finalize,
+        patch(
+            finalize_path,
+            return_value=FinalizationResult([survivor_id], won_receipt=True),
+        ) as finalize,
         patch.object(worker, "_record_finalized_learnings") as record,
     ):
         worker._finalize_items(run, [dropped, survivor])
 
-    record.assert_called_once_with(run, [survivor], entity_type=entity_type)
+    record.assert_called_once_with(run, [survivor_id], entity_type=entity_type)
     if extractor_kind == "playbook":
         assert finalize.call_args.kwargs["extraction_run"] is run
     else:

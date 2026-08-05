@@ -7,8 +7,8 @@ import json
 import sqlite3
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Literal, cast
 from unittest.mock import patch
@@ -1036,6 +1036,7 @@ def test_complete_purge_operation_with_audit_begins_immediate_transaction_before
 
 def test_apply_governance_delete_begins_immediate_transaction_before_reads(storage):
     purge_id = _begin_purge(storage, "purge_delete_begin_immediate")
+    claim = _claim_purge(storage, purge_id)
     for target_name in CANONICAL_DELETE_TARGET_NAMES:
         storage.record_purge_target(
             purge_id=purge_id,
@@ -1043,13 +1044,18 @@ def test_apply_governance_delete_begins_immediate_transaction_before_reads(stora
             target_ref="all",
             phase="delete",
             status="pending",
+            execution_claim=claim,
             detail={"count": 0},
         )
     statements: list[str] = []
     storage.conn.set_trace_callback(statements.append)
     try:
         with pytest.raises(ValueError, match="prepared purge snapshot"):
-            storage.apply_governance_user_data_delete(purge_id, "empty-user")
+            storage.apply_governance_user_data_delete(
+                purge_id,
+                "alice",
+                execution_claim=claim,
+            )
     finally:
         storage.conn.set_trace_callback(None)
 
@@ -4161,6 +4167,7 @@ def test_fail_missing_purge_rolls_back_implicit_transaction(storage):
             "purge_missing",
             error_code="PURGE_TARGET_FAILED",
             error_detail="target_delete_failed",
+            execution_claim=_typed_test_claim_for_unvalidated_purge_id("purge_missing"),
         )
 
     assert storage.conn.in_transaction is False
@@ -4169,6 +4176,7 @@ def test_fail_missing_purge_rolls_back_implicit_transaction(storage):
 
 def test_record_purge_target_rolls_back_after_write_failure(storage, monkeypatch):
     purge_id = _begin_purge(storage, "purge_target_write_failure")
+    claim = _claim_purge(storage, purge_id)
 
     def _write_then_raise(**_kwargs: object) -> None:
         storage.conn.execute(
@@ -4186,6 +4194,7 @@ def test_record_purge_target_rolls_back_after_write_failure(storage, monkeypatch
             target_ref="all",
             phase="delete",
             status="running",
+            execution_claim=claim,
         )
 
     assert storage.conn.in_transaction is False
@@ -4225,6 +4234,7 @@ def test_begin_purge_operation_serializes_idempotent_two_connection_retry(
             "user",
             SUBJECT_REF,
             REQUEST_REF,
+            authoritative_user_id="alice",
         )
         assert entered.wait(timeout=1)
         time.sleep(0.05)
@@ -4245,9 +4255,11 @@ def test_prepare_targets_rechecks_snapshot_after_two_connection_write_lock(
         idempotency_key="idem_two_connection_prepare",
         operation_type="user_erasure",
         scope_type="user",
+        authoritative_user_id="alice",
         subject_ref=SUBJECT_REF,
         request_ref=REQUEST_REF,
     )
+    claim = _claim_purge(first, purge_id)
     first.conn.execute("BEGIN IMMEDIATE")
     first._record_purge_target_locked(
         purge_id=purge_id,
@@ -4265,7 +4277,14 @@ def test_prepare_targets_rechecks_snapshot_after_two_connection_write_lock(
         target_ref="all",
         phase="prepare_targets",
         status="complete",
-        detail={"owned_user_playbook_ids": []},
+        detail={
+            "authoritative_user_digest": first.conn.execute(
+                """SELECT authoritative_user_digest FROM purge_operations
+                   WHERE org_id = ? AND purge_id = ?""",
+                (first.org_id, purge_id),
+            ).fetchone()["authoritative_user_digest"],
+            "owned_user_playbook_ids": [],
+        },
         deleted_count=0,
         error_detail=None,
     )
@@ -4283,8 +4302,9 @@ def test_prepare_targets_rechecks_snapshot_after_two_connection_write_lock(
         future = executor.submit(
             second.prepare_governance_erase_targets,
             purge_id,
-            "two-connection-user",
-            set(),
+            "alice",
+            execution_claim=claim,
+            owned_user_playbook_ids=set(),
         )
         assert entered.wait(timeout=1)
         time.sleep(0.05)
