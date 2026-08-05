@@ -183,6 +183,49 @@ def test_trajectory_digest_rejects_over_maximum_canonical_json_depth(
         trajectory_digest(value)
 
 
+@pytest.mark.parametrize(
+    ("empty_container", "container_factory"),
+    [
+        ({}, lambda value: {"nested": value}),
+        ([], lambda value: [value]),
+        ((), lambda value: (value,)),
+    ],
+    ids=["mapping", "list", "tuple"],
+)
+def test_trajectory_digest_accepts_maximum_empty_container_depth(
+    empty_container,
+    container_factory,
+) -> None:
+    value: object = empty_container
+    for _ in range(session_outcome_identity.MAX_CANONICAL_TRAJECTORY_JSON_DEPTH - 1):
+        value = container_factory(value)
+
+    assert trajectory_digest(value)
+
+
+@pytest.mark.parametrize(
+    ("empty_container", "container_factory"),
+    [
+        ({}, lambda value: {"nested": value}),
+        ([], lambda value: [value]),
+        ((), lambda value: (value,)),
+    ],
+    ids=["mapping", "list", "tuple"],
+)
+def test_trajectory_digest_rejects_over_maximum_empty_container_depth(
+    empty_container,
+    container_factory,
+) -> None:
+    value: object = empty_container
+    for _ in range(session_outcome_identity.MAX_CANONICAL_TRAJECTORY_JSON_DEPTH):
+        value = container_factory(value)
+
+    with pytest.raises(
+        ValueError, match="canonical trajectory JSON exceeds maximum depth"
+    ):
+        trajectory_digest(value)
+
+
 def test_session_outcome_record_accepts_unknown_and_serializes_identities() -> None:
     record = SessionOutcomeRecord(
         outcome_id="outcome-1",
