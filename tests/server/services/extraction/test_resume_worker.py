@@ -962,8 +962,10 @@ def test_receipt_delivery_failure_status_distinguishes_transient_and_permanent(
 def test_retry_after_billing_reuses_ids_without_replaying_playbook_schedulers(
     request_context,
     storage,
+    monkeypatch,
 ):
     """A post-billing retry reuses durable IDs and skips derived schedulers."""
+    monkeypatch.setenv("MOCK_LLM_RESPONSE", "true")
     _seed_interactions(storage)
     request_context.configurator.get_config.return_value = Config(
         storage_config=StorageConfigSQLite(),
