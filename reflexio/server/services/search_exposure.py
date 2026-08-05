@@ -20,7 +20,7 @@ MAX_EXPOSURE_EVENTS_PER_BATCH = 100
 
 @dataclass(frozen=True)
 class SearchExposureBatch:
-    """The final user-playbook set returned by one unified search."""
+    """The final user-playbook set returned by an authenticated search."""
 
     org_id: str
     request_id: str | None

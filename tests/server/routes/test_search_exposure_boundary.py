@@ -49,6 +49,7 @@ def _search_results(playbooks: list[UserPlaybook]) -> Iterator[MagicMock]:
         rehydrated_text=None,
     )
     reflexio.unified_search.return_value = result
+    reflexio.search_user_playbooks.return_value = result
     with patch(
         "reflexio.server.routes.search.reflexio_cache.get_reflexio",
         return_value=reflexio,
@@ -70,8 +71,11 @@ def _client() -> TestClient:
 class _Recorder:
     batches: list[Any] = field(default_factory=list)
     completed: bool = False
+    order: list[str] | None = None
 
     def record(self, batch: Any) -> None:
+        if self.order is not None:
+            self.order.append("record")
         self.batches.append(batch)
         self.completed = True
 
@@ -139,6 +143,93 @@ def test_no_user_playbook_results_record_one_empty_synchronous_batch() -> None:
     assert recorder.completed is True
     assert len(recorder.batches) == 1
     assert recorder.batches[0].user_playbooks == ()
+
+
+def test_direct_user_playbook_search_records_final_results_before_metering() -> None:
+    playbooks = [_playbook(21, "Direct first"), _playbook(22, "Direct second")]
+    order: list[str] = []
+    recorder = _Recorder(order=order)
+    register_service(SEARCH_EXPOSURE_RECORDER, recorder)
+
+    with (
+        _search_results(playbooks),
+        patch(
+            "reflexio.server.routes.search._meter_search_request",
+            side_effect=lambda **_kwargs: order.append("meter_search"),
+        ),
+        patch(
+            "reflexio.server.routes.search._meter_applied_learnings",
+            side_effect=lambda **_kwargs: order.append("meter_applied"),
+        ),
+    ):
+        response = _client().post(
+            "/api/search_user_playbooks",
+            json={
+                "query": "direct answer",
+                "user_id": "user-1",
+                "request_id": "request-direct-1",
+                "session_id": "session-direct-1",
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    assert order == ["record", "meter_search", "meter_applied"]
+    assert len(recorder.batches) == 1
+    batch = recorder.batches[0]
+    assert batch.org_id == "org-1"
+    assert batch.request_id == "request-direct-1"
+    assert batch.session_id == "session-direct-1"
+    assert batch.interaction_id is None
+    assert batch.user_id == "user-1"
+    assert batch.user_playbooks == tuple(playbooks)
+
+
+def test_direct_user_playbook_recorder_failure_prevents_metering_and_success() -> None:
+    order: list[str] = []
+
+    class _FailingRecorder:
+        def record(self, _batch: Any) -> None:
+            order.append("record")
+            raise RuntimeError("ledger unavailable")
+
+    register_service(SEARCH_EXPOSURE_RECORDER, _FailingRecorder())
+
+    with (
+        _search_results([_playbook(21, "Direct first")]),
+        patch(
+            "reflexio.server.routes.search._meter_search_request",
+            side_effect=lambda **_kwargs: order.append("meter_search"),
+        ),
+        patch(
+            "reflexio.server.routes.search._meter_applied_learnings",
+            side_effect=lambda **_kwargs: order.append("meter_applied"),
+        ),
+    ):
+        response = _client().post(
+            "/api/search_user_playbooks",
+            json={
+                "query": "direct answer",
+                "user_id": "user-1",
+                "request_id": "request-direct-1",
+            },
+        )
+
+    assert response.status_code == 500
+    assert order == ["record"]
+
+
+def test_direct_user_playbook_search_does_not_record_empty_results() -> None:
+    recorder = _Recorder()
+    register_service(SEARCH_EXPOSURE_RECORDER, recorder)
+
+    with _search_results([]):
+        response = _client().post(
+            "/api/search_user_playbooks",
+            json={"query": "direct answer", "user_id": "user-1"},
+        )
+
+    assert response.status_code == 200, response.text
+    assert recorder.batches == []
 
 
 def test_oss_search_succeeds_when_no_recorder_is_registered() -> None:
