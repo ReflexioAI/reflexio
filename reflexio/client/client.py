@@ -449,7 +449,9 @@ class ReflexioClient:
         Args:
             user_id: The user ID.
             interactions: List of interaction data.
-            source: The source of the interaction.
+            source: Non-sensitive producer/workflow label. A non-empty value
+                must match ``^[a-z0-9][a-z0-9._:-]{0,127}$`` and must not
+                contain user identifiers or PII.
             agent_version: The agent version.
             session_id: Required non-empty session ID for grouping requests.
             wait_for_response: If True, the **server** waits for
