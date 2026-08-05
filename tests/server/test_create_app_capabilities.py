@@ -15,8 +15,13 @@ import pytest
 from fastapi import APIRouter
 from fastapi.testclient import TestClient
 
+from reflexio.server import usage_metrics
 from reflexio.server.api import create_app
 from reflexio.server.extensions import AppContext, Capability, CapabilityRegistry
+from reflexio.server.usage_metrics import (
+    UsageEventDeliveryError,
+    UsageEventDeliveryStatus,
+)
 
 
 class RouterCap(Capability):
@@ -90,6 +95,30 @@ def test_on_startup_raise_is_fail_loud() -> None:
 def test_capabilities_none_is_unchanged() -> None:
     app = create_app()  # legacy path, no capabilities
     assert app is not None
+
+
+def test_oss_startup_failure_clears_exempt_usage_recorder(monkeypatch) -> None:
+    usage_metrics.configure_usage_event_recorder(None)
+
+    def fail_startup_guards() -> None:
+        raise RuntimeError("startup guard failed")
+
+    monkeypatch.setattr(
+        "reflexio.server.llm.providers.embedder_warmup.run_startup_config_guards",
+        fail_startup_guards,
+    )
+
+    app = create_app(capabilities=None, mount_data_plane=False)
+    with pytest.raises(RuntimeError, match="startup guard failed"), TestClient(app):
+        pass
+
+    with pytest.raises(UsageEventDeliveryError) as exc_info:
+        usage_metrics.record_usage_event_strict(
+            org_id="7",
+            event_name="learnings_generated",
+            event_category="learning",
+        )
+    assert exc_info.value.status is UsageEventDeliveryStatus.UNKNOWN
 
 
 def test_partial_cleanup_invariant() -> None:

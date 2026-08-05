@@ -110,7 +110,7 @@ def record_learnings_generated(
 
     Intended for online extraction paths that have a known billable count but
     do not retain a complete per-record id list. Resumable finalization must
-    use :func:`record_learnings_generated_records` and skip items without
+    use :func:`record_learnings_generated_records_strict` and skip items without
     durable ids. No-op when ``count <= 0``.
 
     Emits a single event carrying ``event_key`` when the caller has a durable
@@ -331,7 +331,8 @@ def emit_learnings_generated(
     product path must never fail because metering failed, so config resolution
     and emission are wrapped and any exception is logged and swallowed
     (mirroring the extraction path's ``_record_billing_learning_events``).
-    Resumable finalization must use :func:`emit_learnings_generated_records`.
+    Resumable finalization must use
+    :func:`emit_learnings_generated_records_strict`.
     No-op when ``count <= 0``.
 
     Args:
@@ -395,14 +396,14 @@ def emit_learnings_generated_records(
 ) -> None:
     """Resolve ``platform_llm`` from config and emit one event per learning id.
 
-    Entity-backed counterpart to :func:`emit_learnings_generated`, used by
-    resumable-extraction finalization for every created user learning with a
-    durable id. Items without ids are not billable on that path. Online
-    extraction uses the count-based :func:`record_learnings_generated` helper
-    because it does not retain a safe 1:1 id per generated unit. Same guard
-    semantics: config resolution and emission are wrapped and any exception is
-    logged and swallowed — the product path must never fail because metering
-    failed. No-op when ``learning_ids`` is empty.
+    Ordinary fail-open per-record counterpart to
+    :func:`emit_learnings_generated`. Receipt-backed resumable finalization uses
+    :func:`emit_learnings_generated_records_strict`; items without durable ids
+    are not billable on that path. Online extraction uses the count-based
+    :func:`record_learnings_generated` helper because it does not retain a safe
+    1:1 id per generated unit. Config resolution and emission are wrapped and
+    any exception is logged and swallowed — the product path must never fail
+    because metering failed. No-op when ``learning_ids`` is empty.
 
     Args:
         org_id: Organisation identifier.

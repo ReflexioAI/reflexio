@@ -1,3 +1,5 @@
+import logging
+
 import pytest
 
 from reflexio.server import usage_metrics
@@ -22,6 +24,36 @@ def test_usage_event_carries_event_key():
     finally:
         usage_metrics.configure_usage_event_recorder(None)
     assert captured and captured[0].event_key == "search:abc"
+
+
+def test_ordinary_delivery_is_silent_without_recorder(caplog):
+    usage_metrics.configure_usage_event_recorder(None)
+
+    with caplog.at_level(logging.WARNING, logger=usage_metrics.__name__):
+        usage_metrics.record_usage_event(
+            org_id="7",
+            event_name="search_request",
+            event_category="application",
+        )
+
+    assert caplog.records == []
+
+
+def test_ordinary_delivery_is_silent_for_legacy_recorder(caplog):
+    captured = []
+    usage_metrics.configure_usage_event_recorder(captured.append)
+    try:
+        with caplog.at_level(logging.WARNING, logger=usage_metrics.__name__):
+            usage_metrics.record_usage_event(
+                org_id="7",
+                event_name="search_request",
+                event_category="application",
+            )
+    finally:
+        usage_metrics.configure_usage_event_recorder(None)
+
+    assert len(captured) == 1
+    assert caplog.records == []
 
 
 def test_event_key_defaults_none():
