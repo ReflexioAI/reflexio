@@ -8,6 +8,7 @@ contract as the openclaw ``reflexio_adapter``).
 from __future__ import annotations
 
 import logging
+import os
 import uuid
 from typing import Any
 
@@ -26,7 +27,18 @@ _SKIPPED_ROLES = {"system"}
 
 
 def _default_reflexio_client() -> ReflexioClient | None:
-    """Build a ReflexioClient from env config, or None if construction fails."""
+    """Build a ReflexioClient from env config, or None when unconfigured or broken.
+
+    Without this guard, an unconfigured environment would fall through to the
+    client's production default URL and every add()/search() would fire a
+    doomed unauthenticated request at it.
+    """
+    if not (os.environ.get("REFLEXIO_API_KEY") or os.environ.get("REFLEXIO_URL")):
+        logger.info(
+            "REFLEXIO_API_KEY / REFLEXIO_URL not set; reflexio.mem0 runs in "
+            "pass-through mode (mem0 only, no Reflexio calls)"
+        )
+        return None
     try:
         return ReflexioClient(timeout=_REFLEXIO_TIMEOUT_SECONDS)
     except Exception as exc:  # noqa: BLE001 — wrapper must never break the mem0 path.
@@ -72,7 +84,7 @@ def _normalize_messages(messages: Any, created_at: int | None) -> list[dict[str,
             item = {"role": "user", "content": item}
         if not isinstance(item, dict):
             continue
-        role = str(item.get("role", "user")).lower()
+        role = str(item.get("role") or "user").lower()
         if role in _SKIPPED_ROLES:
             continue
         content = item.get("content")
@@ -115,7 +127,9 @@ class MemoryClient(_Mem0MemoryClient):
 
     Reflexio configuration comes from the ``REFLEXIO_API_KEY`` and
     ``REFLEXIO_URL`` environment variables, or a pre-built client passed as
-    ``reflexio_client``. All other behavior is inherited from mem0.
+    ``reflexio_client``. When neither env var is set and no client is passed,
+    the wrapper is a pure pass-through (no Reflexio calls). All other
+    behavior is inherited from mem0.
     """
 
     def __init__(
@@ -134,6 +148,9 @@ class MemoryClient(_Mem0MemoryClient):
         )
         # Groups this client instance's publishes when add() has no run_id.
         self._session_id = f"mem0-{uuid.uuid4().hex}"
+        # Debounce: warn on the first Reflexio failure, DEBUG afterwards, so a
+        # sustained outage doesn't spam the host application's logs.
+        self._reflexio_failure_logged = False
 
     def add(self, messages: Any, options: Any = None, **kwargs: Any) -> Any:
         """Add memories via mem0, then best-effort publish the trace to Reflexio."""
@@ -163,6 +180,8 @@ class MemoryClient(_Mem0MemoryClient):
             if user_id is None:
                 logger.debug("Skipping Reflexio publish: mem0 add() has no user_id")
                 return
+            # Only int (unix seconds) timestamps map to created_at; mem0 also
+            # accepts datetime/ISO strings, which fall back to "now" here.
             timestamp = _opt(options, kwargs, "timestamp")
             interactions = _normalize_messages(
                 messages, timestamp if isinstance(timestamp, int) else None
@@ -180,12 +199,16 @@ class MemoryClient(_Mem0MemoryClient):
                 wait_for_response=False,
             )
         except Exception as exc:  # noqa: BLE001 — best-effort by contract.
-            logger.warning("Best-effort Reflexio publish failed: %s", exc)
+            self._log_reflexio_failure("publish", exc)
 
     def _augment_search_result(
         self, result: Any, query: str, options: Any, kwargs: dict[str, Any]
     ) -> Any:
         if self._reflexio is None or not isinstance(result, dict):
+            return result
+        if not isinstance(query, str) or not query.strip():
+            # Reflexio search requires a non-empty query; skip rather than
+            # fail-and-warn on every blank mem0 search.
             return result
         try:
             user_id = _extract_user_id(_opt(options, kwargs, "filters"))
@@ -210,5 +233,11 @@ class MemoryClient(_Mem0MemoryClient):
             result["reflexio_user_playbooks"] = user_playbooks
             result["reflexio_agent_playbooks"] = agent_playbooks
         except Exception as exc:  # noqa: BLE001 — best-effort by contract.
-            logger.warning("Best-effort Reflexio search failed: %s", exc)
+            self._log_reflexio_failure("search", exc)
         return result
+
+    def _log_reflexio_failure(self, operation: str, exc: Exception) -> None:
+        """Log a best-effort Reflexio failure, warning only on the first one."""
+        level = logging.DEBUG if self._reflexio_failure_logged else logging.WARNING
+        self._reflexio_failure_logged = True
+        logger.log(level, "Best-effort Reflexio %s failed: %s", operation, exc)

@@ -37,6 +37,24 @@ def test_filters_from_options_model(wrapped_cls, reflexio_mock):
     assert reflexio_mock.search.call_args.kwargs["user_id"] == "u3"
 
 
+def test_filters_kwargs_override_options(wrapped_cls, reflexio_mock):
+    client = _client(wrapped_cls, reflexio_mock)
+    client.search(
+        "q",
+        types.SimpleNamespace(filters={"user_id": "u-opt"}),
+        filters={"user_id": "u-kw"},
+    )
+    assert reflexio_mock.search.call_args.kwargs["user_id"] == "u-kw"
+
+
+def test_empty_query_skips_augmentation(wrapped_cls, reflexio_mock):
+    client = _client(wrapped_cls, reflexio_mock)
+    for query in ("", "   "):
+        result = client.search(query, filters={"user_id": "u1"})
+        assert "reflexio_profiles" not in result
+    reflexio_mock.search.assert_not_called()
+
+
 def test_no_plain_user_id_skips_augmentation(wrapped_cls, reflexio_mock):
     client = _client(wrapped_cls, reflexio_mock)
     for filters in (None, {"agent_id": "a1"}, {"user_id": {"in": ["u1", "u2"]}}):

@@ -128,6 +128,7 @@ def test_mem0_error_propagates_and_no_publish(wrapped_cls, reflexio_mock):
 def test_default_reflexio_client_failure_degrades(wrapped_cls, monkeypatch):
     import reflexio.mem0._wrapper as wrapper_module
 
+    monkeypatch.setenv("REFLEXIO_URL", "http://localhost:1")
     monkeypatch.setattr(
         wrapper_module,
         "ReflexioClient",
@@ -136,3 +137,48 @@ def test_default_reflexio_client_failure_degrades(wrapped_cls, monkeypatch):
     client = wrapped_cls(api_key="mk")
     assert client._reflexio is None
     assert client.add("hi", user_id="u1") is client.add_result
+
+
+def test_unconfigured_env_yields_none_client(wrapped_cls, monkeypatch):
+    monkeypatch.delenv("REFLEXIO_API_KEY", raising=False)
+    monkeypatch.delenv("REFLEXIO_URL", raising=False)
+    client = wrapped_cls(api_key="mk")
+    assert client._reflexio is None
+    # Pure pass-through: mem0 result comes back, nothing else happens.
+    assert client.add("hi", user_id="u1") is client.add_result
+    assert "reflexio_profiles" not in client.search("q", filters={"user_id": "u1"})
+
+
+def test_timestamp_kwargs_overrides_options(wrapped_cls, reflexio_mock):
+    client = _client(wrapped_cls, reflexio_mock)
+    client.add(
+        "hi",
+        types.SimpleNamespace(timestamp=1720000000),
+        user_id="u1",
+        timestamp=1730000000,
+    )
+    interactions = reflexio_mock.publish_interaction.call_args.kwargs["interactions"]
+    assert interactions == [{"role": "User", "content": "hi", "created_at": 1730000000}]
+
+
+def test_role_none_defaults_to_user(wrapped_cls, reflexio_mock):
+    client = _client(wrapped_cls, reflexio_mock)
+    client.add([{"role": None, "content": "hi"}], user_id="u1")
+    interactions = reflexio_mock.publish_interaction.call_args.kwargs["interactions"]
+    assert interactions == [{"role": "User", "content": "hi"}]
+
+
+def test_repeat_failures_warn_once_then_debug(wrapped_cls, reflexio_mock, caplog):
+    reflexio_mock.publish_interaction.side_effect = RuntimeError("reflexio down")
+    reflexio_mock.search.side_effect = RuntimeError("reflexio down")
+    client = _client(wrapped_cls, reflexio_mock)
+    with caplog.at_level("DEBUG", logger="reflexio.mem0._wrapper"):
+        client.add("hi", user_id="u1")
+        client.add("hi again", user_id="u1")
+        client.search("q", filters={"user_id": "u1"})
+    failures = [
+        r
+        for r in caplog.records
+        if "failed" in r.getMessage() and "Reflexio" in r.getMessage()
+    ]
+    assert [r.levelname for r in failures] == ["WARNING", "DEBUG", "DEBUG"]

@@ -334,7 +334,8 @@ to Reflexio so it can learn playbooks (best-effort, never raises), and
 `search()` returns mem0's payload plus `reflexio_profiles`,
 `reflexio_user_playbooks`, and `reflexio_agent_playbooks` sibling keys.
 Reflexio credentials come from the `REFLEXIO_API_KEY` and `REFLEXIO_URL`
-environment variables, or pass `reflexio_client=ReflexioClient(...)`.
+environment variables, or pass `reflexio_client=ReflexioClient(...)`. When
+neither is configured, the wrapper is a pure pass-through (mem0 only).
 
 > **Migration from the LangChain integration (removed in this release).** The
 > `reflexio.integrations.langchain` package and the `reflexio-client[langchain]`
