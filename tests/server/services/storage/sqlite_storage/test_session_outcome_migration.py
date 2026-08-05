@@ -1,6 +1,7 @@
 """Regression coverage for the SQLite session-outcome identity migration."""
 
 import json
+import sqlite3
 from hashlib import sha256
 
 import pytest
@@ -250,6 +251,126 @@ def test_migration_prefetches_trajectory_inputs_in_bounded_chunks(tmp_path) -> N
         storage.conn.execute("SELECT COUNT(*) FROM session_outcomes").fetchone()[0]
         == row_count
     )
+
+
+def test_session_outcome_rebuild_failure_rolls_back_renamed_legacy_table(
+    tmp_path, monkeypatch
+) -> None:
+    db_path = str(tmp_path / "legacy-session-outcome-atomicity.db")
+    storage = SQLiteStorage(org_id="legacy-atomicity", db_path=db_path)
+    storage.add_request(
+        Request(
+            request_id="request-atomicity-session",
+            user_id="atomicity-user",
+            session_id="atomicity-session",
+            source="atomicity-source",
+            created_at=100,
+        )
+    )
+    storage.conn.execute("DROP TABLE session_outcomes")
+    storage.conn.executescript(_LEGACY_SESSION_OUTCOMES_DDL)
+    legacy_rows = [
+        (
+            "atomicity-user",
+            "atomicity-session",
+            "success",
+            101,
+            "atomicity-source",
+            "atomicity-label",
+            4.5,
+            json.dumps({"kept": True}, sort_keys=True),
+            "subject:atomicity-user",
+            102,
+        ),
+        (
+            "atomicity-user-2",
+            "atomicity-session-2",
+            "failure",
+            201,
+            "atomicity-source-2",
+            None,
+            None,
+            None,
+            "subject:atomicity-user-2",
+            202,
+        ),
+    ]
+    storage.conn.executemany(
+        """INSERT INTO session_outcomes (
+               user_id, session_id, outcome, occurred_at, source, label, value,
+               metadata, governance_subject_ref, created_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        legacy_rows,
+    )
+    storage.conn.commit()
+    storage.conn.close()
+
+    with sqlite3.connect(db_path) as probe:
+        original_schema = probe.execute(
+            """SELECT sql FROM sqlite_master
+               WHERE type = 'table' AND name = 'session_outcomes'"""
+        ).fetchone()[0]
+        original_rows = probe.execute(
+            "SELECT * FROM session_outcomes ORDER BY user_id, session_id"
+        ).fetchall()
+
+    real_connect = sqlite3.connect
+    failing_connections = []
+
+    class _FailAfterSessionOutcomeRename(sqlite3.Connection):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.saw_session_outcome_rename = False
+            self.injected_failure = False
+
+        def execute(self, sql, parameters=(), /):
+            normalized = " ".join(str(sql).split())
+            if (
+                normalized
+                == "ALTER TABLE session_outcomes RENAME TO session_outcomes_legacy"
+            ):
+                self.saw_session_outcome_rename = True
+            if self.saw_session_outcome_rename and normalized.startswith(
+                "CREATE TABLE session_outcomes ("
+            ):
+                self.injected_failure = True
+                raise RuntimeError("injected session_outcomes rebuild failure")
+            return super().execute(sql, parameters)
+
+    def _connect_with_failure(*args, **kwargs):
+        kwargs["factory"] = _FailAfterSessionOutcomeRename
+        conn = real_connect(*args, **kwargs)
+        failing_connections.append(conn)
+        return conn
+
+    monkeypatch.setattr(sqlite3, "connect", _connect_with_failure)
+
+    with pytest.raises(RuntimeError, match="injected session_outcomes rebuild failure"):
+        SQLiteStorage(org_id="legacy-atomicity", db_path=db_path)
+
+    assert any(
+        conn.saw_session_outcome_rename and conn.injected_failure
+        for conn in failing_connections
+    )
+    for conn in failing_connections:
+        conn.close()
+
+    with sqlite3.connect(db_path) as probe:
+        restored_schema = probe.execute(
+            """SELECT sql FROM sqlite_master
+               WHERE type = 'table' AND name = 'session_outcomes'"""
+        ).fetchone()[0]
+        restored_rows = probe.execute(
+            "SELECT * FROM session_outcomes ORDER BY user_id, session_id"
+        ).fetchall()
+        stranded_legacy_table = probe.execute(
+            """SELECT 1 FROM sqlite_master
+               WHERE type = 'table' AND name = 'session_outcomes_legacy'"""
+        ).fetchone()
+
+    assert restored_schema == original_schema
+    assert restored_rows == original_rows
+    assert stranded_legacy_table is None
 
 
 @pytest.mark.parametrize(
