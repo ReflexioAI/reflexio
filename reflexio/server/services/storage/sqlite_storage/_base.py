@@ -147,11 +147,11 @@ def _canonical_session_snapshot(
     )
 
 
-def _prefetch_canonical_session_snapshots(
+def _prefetch_canonical_session_trajectory_digests(
     conn: sqlite3.Connection, session_ids: Sequence[str]
-) -> dict[str, CanonicalSessionTrajectory]:
-    """Bulk-load canonical session state in bounded SQLite-safe chunks."""
-    snapshots: dict[str, CanonicalSessionTrajectory] = {}
+) -> dict[str, str]:
+    """Derive trajectory digests while retaining only one payload chunk."""
+    digests: dict[str, str] = {}
     for session_id_chunk in chunked(list(dict.fromkeys(session_ids))):
         placeholders = ",".join("?" for _ in session_id_chunk)
         request_rows = conn.execute(
@@ -199,12 +199,14 @@ def _prefetch_canonical_session_snapshots(
                 str(interaction_payload["request_id"])
             ].append(interaction_payload)
         for session_id in session_id_chunk:
-            snapshots[session_id] = canonical_session_trajectory(
-                session_id,
-                requests_by_session[session_id],
-                interactions_by_session[session_id],
+            digests[session_id] = trajectory_digest(
+                canonical_session_trajectory(
+                    session_id,
+                    requests_by_session[session_id],
+                    interactions_by_session[session_id],
+                )
             )
-    return snapshots
+    return digests
 
 
 def _legacy_session_outcome_id(user_id: str, session_id: str) -> str:
@@ -1316,7 +1318,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                 legacy_rows = self.conn.execute(
                     "SELECT * FROM session_outcomes"
                 ).fetchall()
-                trajectory_snapshots = _prefetch_canonical_session_snapshots(
+                trajectory_digests = _prefetch_canonical_session_trajectory_digests(
                     self.conn,
                     [
                         str(row["session_id"])
@@ -1402,9 +1404,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                                 finalization_rule="first_write",
                             ),
                             existing_trajectory_digest
-                            or trajectory_digest(
-                                trajectory_snapshots[str(row["session_id"])]
-                            ),
+                            or trajectory_digests[str(row["session_id"])],
                             subject_ref,
                             row["created_at"],
                         ),

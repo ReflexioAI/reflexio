@@ -18,6 +18,7 @@ from reflexio.server.services.storage.session_outcome_identity import (
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 from reflexio.server.services.storage.sqlite_storage._base import (
     _canonical_session_snapshot,
+    _prefetch_canonical_session_trajectory_digests,
 )
 
 pytestmark = pytest.mark.integration
@@ -251,6 +252,33 @@ def test_migration_prefetches_trajectory_inputs_in_bounded_chunks(tmp_path) -> N
         storage.conn.execute("SELECT COUNT(*) FROM session_outcomes").fetchone()[0]
         == row_count
     )
+
+
+def test_migration_prefetch_retains_only_trajectory_digests(tmp_path) -> None:
+    storage = SQLiteStorage(
+        org_id="legacy-digest-retention",
+        db_path=str(tmp_path / "legacy-digest-retention.db"),
+    )
+    storage.add_request(
+        Request(
+            request_id="request-digest-retention",
+            user_id="digest-user",
+            session_id="digest-session",
+            source="legacy-source",
+            created_at=100,
+        )
+    )
+
+    digests = _prefetch_canonical_session_trajectory_digests(
+        storage.conn, ["digest-session"]
+    )
+
+    assert digests == {
+        "digest-session": trajectory_digest(
+            _canonical_session_snapshot(storage.conn, "digest-session")
+        )
+    }
+    assert all(isinstance(digest, str) for digest in digests.values())
 
 
 def test_session_outcome_rebuild_failure_rolls_back_renamed_legacy_table(
