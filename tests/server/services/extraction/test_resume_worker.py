@@ -935,6 +935,7 @@ def test_delivery_failure_after_receipt_commit_retries_billing_without_recompute
         configure_usage_event_recorder(None)
 
 
+@pytest.mark.parametrize("next_attempt_count", [1, 3, 4])
 @pytest.mark.parametrize(
     ("delivery_status", "expected_status"),
     [
@@ -945,6 +946,7 @@ def test_delivery_failure_after_receipt_commit_retries_billing_without_recompute
 )
 def test_receipt_delivery_failure_status_distinguishes_transient_and_permanent(
     delivery_status,
+    next_attempt_count,
     expected_status,
 ):
     error = ReceiptBillingDeliveryError(delivery_status)
@@ -952,10 +954,22 @@ def test_receipt_delivery_failure_status_distinguishes_transient_and_permanent(
     assert (
         _finalization_failure_status(
             error,
-            next_attempt_count=1,
+            next_attempt_count=next_attempt_count,
             max_finalization_attempts=3,
         )
         is expected_status
+    )
+
+
+@pytest.mark.parametrize("next_attempt_count", [3, 4])
+def test_ordinary_finalization_failure_stops_at_attempt_ceiling(next_attempt_count):
+    assert (
+        _finalization_failure_status(
+            RuntimeError("ordinary finalization failed"),
+            next_attempt_count=next_attempt_count,
+            max_finalization_attempts=3,
+        )
+        is AgentRunStatus.FAILED
     )
 
 
