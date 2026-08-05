@@ -95,7 +95,7 @@ learns, what stays private to a user scope, and what transfers to other users.
 | `user_id` | Scope for profiles and user playbooks | Use the human user, tenant, workspace, repo, or project whose preferences should be isolated. For example, use a project id when repo-specific rules should not leak into unrelated repos. |
 | `agent_version` | Scope for shared agent playbooks | Use a stable agent name plus major behavior version, for example `my-agent-v1`. Keep it stable if learnings should transfer across users/projects. If you omit it, the SDK uses `DEFAULT_AGENT_VERSION` (`"agent-v0"`) — fine for a single agent, but set an explicit value before you run more than one. |
 | `session_id` | Group turns for one conversation | Use the host session/conversation id. Generate a UUID if the host does not provide one. |
-| `source` | Audit label | Use the integration name, for example `my-agent-plugin`. |
+| `source` | Producer/workflow label | Use a non-sensitive machine label such as `support-agent:v2`. Where the API permits an empty value, empty means the source is absent. Every non-empty value must match `^[a-z0-9][a-z0-9._:-]{0,127}$` and is limited to 128 ASCII characters. Do not include user identifiers, email addresses, or other PII. |
 
 `user_id` and `agent_version` work together:
 
@@ -234,7 +234,7 @@ Publish request fields:
 | --- | --- | --- | --- |
 | `user_id` | Yes | The user, tenant, workspace, repo, or project scope whose private profiles and user playbooks should be isolated. | `"alice"`, `"tenant-acme"`, `"repo-reflexio"` |
 | `interactions` / `interaction_data_list` | Yes | Ordered conversation turns to publish. Include at least one turn; multi-turn correction examples are best for learning. | `[{"role": "User", "content": "Use pnpm here."}, {"role": "Assistant", "content": "Got it, I will use pnpm."}]` |
-| `source` | No | Integration label for debugging and filtering. Use a stable name for the plugin, framework, or adapter. | `"my-agent-plugin"`, `"vscode-assistant"`, `"support-chatbot"` |
+| `source` | No | Non-sensitive producer/workflow machine label for debugging and filtering. Empty means the source is absent where the API permits it. Every non-empty value must match `^[a-z0-9][a-z0-9._:-]{0,127}$` and is limited to 128 ASCII characters. Do not include user identifiers, email addresses, or other PII. | `"support-agent:v2"` |
 | `agent_version` | Strongly recommended | The shared-agent learning boundary. Use the same value when playbooks should transfer across users. Change it when old playbooks should not transfer. | `"support-agent-v1"`, `"coding-agent-2026-05"` |
 | `session_id` | Yes | Host conversation/session id. Generate a UUID if the host has no session id, and reuse it for all turns in that conversation. | `"sess_01HX8Y..."`, `"3f02b7f8-..."` |
 | `skip_aggregation` | No | `False` when user playbooks should be eligible to roll up into shared agent playbooks. `True` when you want user-level extraction only. | `false` |
@@ -315,7 +315,7 @@ def publish_turns(
         response = client.publish_interaction(
             user_id=user_id,
             interactions=interactions,
-            source="my-agent-plugin",
+            source="support-agent:v2",
             agent_version=agent_version,
             session_id=session_id,
             wait_for_response=False,
