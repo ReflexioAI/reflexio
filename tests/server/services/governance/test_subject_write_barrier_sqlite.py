@@ -490,10 +490,11 @@ def test_barrier_blocks_deferred_evaluation_tag_write(
         idempotency_key="idem_deferred_tag_write",
         operation_type="user_erasure",
         scope_type="user",
+        authoritative_user_id="alice",
         subject_ref=subject_ref,
         request_ref="reqref_v1_11111111111111111111111111111112",
     )
-    storage.begin_subject_erasure_barrier(subject_ref, purge.purge_id)
+    _begin_claimed_subject_erasure_barrier(storage, subject_ref, purge.purge_id)
 
     with pytest.raises(SubjectWriteBarrierError):
         storage.update_agent_success_evaluation_result_tags(

@@ -687,6 +687,7 @@ class PlaybookGenerationService(
         return self._finalize_extracted_items_with_outcome(
             all_playbooks,
             model_provenance=model_provenance,
+            extraction_run=extraction_run,
             finalization_run_id=finalization_run_id,
         ).learning_ids
 
@@ -695,6 +696,7 @@ class PlaybookGenerationService(
         all_playbooks: list[UserPlaybook],
         *,
         model_provenance: ModelProvenance | None = None,
+        extraction_run: AgentRunRecord | None = None,
         finalization_run_id: str | None = None,
     ) -> FinalizationResult:
         """Finalize playbooks and expose the atomic receipt winner internally."""

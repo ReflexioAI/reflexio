@@ -149,11 +149,9 @@ class GovernanceEraseExecutionMixin:
         expected_user_playbook_ids: set[int] | None = None,
     ) -> dict[str, int]:
         deps = self._deps()
-        subject_ref = deps._subject_ref_for_user_id(user_id)
         session_outcomes_cur = self.conn.execute(
-            """DELETE FROM session_outcomes
-               WHERE user_id = ? OR governance_subject_ref = ?""",
-            (user_id, subject_ref),
+            "DELETE FROM session_outcomes WHERE user_id = ?",
+            (user_id,),
         )
         interaction_ids = [
             int(row["interaction_id"])

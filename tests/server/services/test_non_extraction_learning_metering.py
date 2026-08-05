@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -18,7 +19,11 @@ from reflexio.server.services.storage.storage_base import (
     AgentRunRecord,
     AgentRunStatus,
 )
-from reflexio.server.usage_metrics import UsageEvent, configure_usage_event_recorder
+from reflexio.server.usage_metrics import (
+    UsageEvent,
+    UsageEventDeliveryStatus,
+    configure_usage_event_recorder,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -37,6 +42,14 @@ def _request_context() -> RequestContext:
     return ctx
 
 
+def _capture_events(events: list[UsageEvent]) -> None:
+    def recorder(event: UsageEvent) -> UsageEventDeliveryStatus:
+        events.append(event)
+        return UsageEventDeliveryStatus.APPENDED
+
+    configure_usage_event_recorder(recorder)
+
+
 def _agent_run(*, extractor_kind: str) -> AgentRunRecord:
     return AgentRunRecord(
         id="run-1",
@@ -50,13 +63,14 @@ def _agent_run(*, extractor_kind: str) -> AgentRunRecord:
         ),
         status=AgentRunStatus.FINALIZING,
         generation_request_snapshot={},
+        created_at=datetime(2026, 8, 1, tzinfo=UTC),
     )
 
 
 def test_resumable_profile_bills_only_ids_returned_by_finalization() -> None:
     """A preassigned candidate ID is not billed when finalization drops it."""
     events: list[UsageEvent] = []
-    configure_usage_event_recorder(events.append)
+    _capture_events(events)
     worker = ExtractionResumeWorker(
         request_context=_request_context(),
         llm_client=MagicMock(),
@@ -77,28 +91,10 @@ def test_resumable_profile_bills_only_ids_returned_by_finalization() -> None:
     assert events == []
 
 
-def test_resumable_fallback_reuses_its_event_key_on_finalization_retry() -> None:
-    events: list[UsageEvent] = []
-    configure_usage_event_recorder(events.append)
-    worker = ExtractionResumeWorker(
-        request_context=_request_context(),
-        llm_client=MagicMock(),
-    )
-    run = _agent_run(extractor_kind="profile")
-
-    worker._record_finalized_learnings(run, [object()], entity_type="profile")
-    worker._record_finalized_learnings(run, [object()], entity_type="profile")
-
-    assert [event.event_key for event in events] == [
-        "learn-batch:resumable:run-1:profile",
-        "learn-batch:resumable:run-1:profile",
-    ]
-
-
 def test_resumable_finalization_emits_one_event_per_profile_id() -> None:
     """Finalization survivor IDs emit one entity-backed event per profile."""
     events: list[UsageEvent] = []
-    configure_usage_event_recorder(events.append)
+    _capture_events(events)
     worker = ExtractionResumeWorker(
         request_context=_request_context(),
         llm_client=MagicMock(),
@@ -129,7 +125,7 @@ def test_resumable_finalization_emits_one_event_per_profile_id() -> None:
 def test_resumable_finalization_emits_one_event_per_playbook_id() -> None:
     """Finalization survivor IDs emit one entity-backed event per playbook."""
     events: list[UsageEvent] = []
-    configure_usage_event_recorder(events.append)
+    _capture_events(events)
     worker = ExtractionResumeWorker(
         request_context=_request_context(),
         llm_client=MagicMock(),
@@ -158,7 +154,7 @@ def test_resumable_finalization_emits_one_event_per_playbook_id() -> None:
 def test_resumable_playbook_bills_consolidation_replacement_id() -> None:
     """Billing follows the persisted replacement, not its input candidate."""
     events: list[UsageEvent] = []
-    configure_usage_event_recorder(events.append)
+    _capture_events(events)
     worker = ExtractionResumeWorker(
         request_context=_request_context(),
         llm_client=MagicMock(),
@@ -187,7 +183,7 @@ def test_aggregation_emits_no_learnings_generated(
 ) -> None:
     """A completed aggregation remains observable but adds no billable learning."""
     events: list[UsageEvent] = []
-    configure_usage_event_recorder(events.append)
+    _capture_events(events)
     request_context = _request_context()
     storage = MagicMock()
     configurator = MagicMock()

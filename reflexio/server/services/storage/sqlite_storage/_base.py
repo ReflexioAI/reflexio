@@ -1193,24 +1193,46 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         with self._lock:
             self.conn.execute("BEGIN IMMEDIATE")
             try:
-                columns = {
-                    row["name"]
-                    for row in self.conn.execute(
-                        "PRAGMA table_info(session_outcomes)"
-                    ).fetchall()
-                }
+                table_info = self.conn.execute(
+                    "PRAGMA table_info(session_outcomes)"
+                ).fetchall()
+                columns = {str(row["name"]): row for row in table_info}
                 table = self.conn.execute(
                     "SELECT sql FROM sqlite_master WHERE type = 'table' "
                     "AND name = 'session_outcomes'"
                 ).fetchone()
                 table_sql = (table["sql"] if table is not None else "") or ""
-                required = {
+                identity_columns = {
                     "outcome_id",
                     "outcome_revision",
                     "outcome_contract_digest",
                     "finalized_trajectory_digest",
                 }
-                if required.issubset(columns) and "'unknown'" in table_sql:
+                expected_columns = identity_columns | {
+                    "user_id",
+                    "session_id",
+                    "outcome",
+                    "occurred_at",
+                    "source",
+                    "label",
+                    "value",
+                    "metadata",
+                    "governance_subject_ref",
+                    "created_at",
+                }
+                subject_column = columns.get("governance_subject_ref")
+                has_empty_subject_default = (
+                    subject_column is not None
+                    and subject_column["dflt_value"] in ("''", '""')
+                )
+                schema_is_canonical = (
+                    expected_columns.issubset(columns)
+                    and "'unknown'" in table_sql
+                    and subject_column is not None
+                    and int(subject_column["notnull"]) == 1
+                    and not has_empty_subject_default
+                )
+                if schema_is_canonical:
                     rows_missing_subject_ref = self.conn.execute(
                         """SELECT user_id, session_id FROM session_outcomes
                            WHERE governance_subject_ref IS NULL
@@ -1258,9 +1280,26 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                 )
                 for row in legacy_rows:
                     source = str(row["source"])
-                    subject_ref = row["governance_subject_ref"]
+                    subject_ref = (
+                        row["governance_subject_ref"]
+                        if "governance_subject_ref" in columns
+                        else None
+                    )
                     if subject_ref is None or not str(subject_ref).strip():
                         subject_ref = self._subject_ref_for_user_id(str(row["user_id"]))
+                    existing_outcome_id = (
+                        row["outcome_id"] if "outcome_id" in columns else None
+                    )
+                    existing_contract_digest = (
+                        row["outcome_contract_digest"]
+                        if "outcome_contract_digest" in columns
+                        else None
+                    )
+                    existing_trajectory_digest = (
+                        row["finalized_trajectory_digest"]
+                        if "finalized_trajectory_digest" in columns
+                        else None
+                    )
                     self.conn.execute(
                         """INSERT INTO session_outcomes (
                             outcome_id, outcome_revision, user_id, session_id, outcome,
@@ -1269,25 +1308,32 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                             governance_subject_ref, created_at
                         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                         (
-                            _legacy_session_outcome_id(
+                            existing_outcome_id
+                            or _legacy_session_outcome_id(
                                 str(row["user_id"]), str(row["session_id"])
                             ),
-                            1,
+                            (
+                                row["outcome_revision"]
+                                if "outcome_revision" in columns
+                                else 1
+                            ),
                             row["user_id"],
                             row["session_id"],
                             row["outcome"],
                             row["occurred_at"],
                             source,
-                            row["label"],
-                            row["value"],
-                            row["metadata"],
-                            outcome_contract_digest(
+                            row["label"] if "label" in columns else None,
+                            row["value"] if "value" in columns else None,
+                            row["metadata"] if "metadata" in columns else None,
+                            existing_contract_digest
+                            or outcome_contract_digest(
                                 source=source,
                                 schema_version=1,
                                 allowed_values=_OUTCOME_ALLOWED_VALUES,
                                 finalization_rule="first_write",
                             ),
-                            trajectory_digest(
+                            existing_trajectory_digest
+                            or trajectory_digest(
                                 _canonical_session_snapshot(
                                     self.conn, str(row["session_id"])
                                 )
@@ -2710,7 +2756,6 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                 "SELECT rowid, profile_id FROM profiles WHERE user_id = ?",
                 (user_id,),
             ).fetchall()
-            subject_ref = self._subject_ref_for_user_id(user_id)
 
             # Build a rowid lookup for FTS/vec cleanup (SQLite-specific need).
             profile_rowid_by_id: dict[str, int] = {
@@ -2761,9 +2806,8 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                 "DELETE FROM interactions WHERE user_id = ?", (user_id,)
             )
             session_outcomes_cur = self.conn.execute(
-                """DELETE FROM session_outcomes
-                   WHERE user_id = ? OR governance_subject_ref = ?""",
-                (user_id, subject_ref),
+                "DELETE FROM session_outcomes WHERE user_id = ?",
+                (user_id,),
             )
             requests_cur = self.conn.execute(
                 "DELETE FROM requests WHERE user_id = ?", (user_id,)
