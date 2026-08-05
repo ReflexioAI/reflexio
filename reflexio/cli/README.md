@@ -144,7 +144,7 @@ Apply to all three modes:
 | `--wait`            | Block until server-side extraction finishes (returns real counts).      |
 | `--session-id`      | Required unless each payload includes `session_id`; group publishes into one session. |
 | `--agent-version`   | Tag the interaction with an agent version (used by playbook filtering). |
-| `--source`          | Free-form source tag (defaults to `cli`).                                |
+| `--source`          | Non-sensitive producer/workflow label matching `^[a-z0-9][a-z0-9._:-]{0,127}$`; never use user identifiers or PII (defaults to `cli`). |
 | `--skip-aggregation`| Extract profiles/playbooks but skip playbook aggregation.                |
 | `--force-extraction`| Bypass all extraction gates (`stride_size`, cheap pre-filter, LLM `should_run`) and always run extractors. |
 | `--evaluation-only` | Store the request for session-level evaluation only; requires `--session-id` and skips profile/playbook extraction. |

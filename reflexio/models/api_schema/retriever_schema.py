@@ -29,6 +29,7 @@ from .ui.entities import (
 )
 from .validators import (
     NonEmptyStr,
+    SessionOutcomeSource,
     TimeRangeValidatorMixin,
 )
 
@@ -63,7 +64,7 @@ class SearchUserProfileRequest(BaseModel):
     start_time: datetime | None = None
     end_time: datetime | None = None
     top_k: int | None = Field(default=10, gt=0)
-    source: str | None = None
+    source: SessionOutcomeSource | None = None
     custom_feature: str | None = None
     extractor_name: str | None = (
         None  # Deprecated compatibility field; accepted but ignored.
@@ -196,7 +197,7 @@ class GetUserProfilesRequest(BaseModel):
     start_time: datetime | None = None
     end_time: datetime | None = None
     top_k: int | None = Field(default=30, gt=0)
-    source: str | None = None
+    source: SessionOutcomeSource | None = None
     profile_time_to_live: str | None = None
     status_filter: list[Status | None] | None = None
     tags: list[str] | None = None
@@ -478,7 +479,7 @@ class GetRequestsRequest(BaseModel):
     user_id: str | None = None
     request_id: str | None = None
     session_id: str | None = None
-    source: str | None = None
+    source: SessionOutcomeSource | None = None
     start_time: datetime | None = None
     end_time: datetime | None = None
     top_k: int | None = Field(

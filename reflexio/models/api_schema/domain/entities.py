@@ -1732,7 +1732,7 @@ class RerunProfileGenerationRequest(BaseModel):
     user_id: str | None = None
     start_time: datetime | None = None
     end_time: datetime | None = None
-    source: str | None = None
+    source: SessionOutcomeSource | None = None
     extractor_names: list[str] | None = (
         None  # Deprecated compatibility field; ignored for selection.
     )
@@ -1759,7 +1759,7 @@ class ManualProfileGenerationRequest(BaseModel):
     """
 
     user_id: str | None = None
-    source: str | None = None
+    source: SessionOutcomeSource | None = None
     extractor_names: list[str] | None = None
 
 
@@ -1779,7 +1779,7 @@ class ManualPlaybookGenerationRequest(BaseModel):
     """
 
     agent_version: str = DEFAULT_AGENT_VERSION
-    source: str | None = None
+    source: SessionOutcomeSource | None = None
     playbook_name: str | None = (
         None  # Deprecated compatibility field; ignored for selection.
     )
@@ -1805,7 +1805,7 @@ class RerunPlaybookGenerationRequest(BaseModel):
     playbook_name: str | None = (
         None  # Deprecated compatibility field; ignored for selection.
     )
-    source: str | None = None
+    source: SessionOutcomeSource | None = None
 
     @field_validator("agent_version")
     @classmethod
