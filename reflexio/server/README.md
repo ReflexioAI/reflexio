@@ -100,7 +100,7 @@ Description: FastAPI backend server that processes user interactions to generate
 
 **Authentication Pattern**: The open-source app uses `default_get_org_id` and `DEFAULT_ORG_ID` for local/no-auth starts. Enterprise deployments wrap `create_app()` with authenticated org resolution, additional account routers, admin checks, observability hooks, and usage metrics.
 
-**User-playbook exposure boundary**: Every authenticated search boundary that serves user playbooks (`POST /api/search` and `POST /api/search_user_playbooks`) synchronously records the final served set through `services/search_exposure.py` before metering or releasing a successful response. Recorder failures fail closed so a served result cannot escape without exposure evidence; the direct route skips recording when its final result set is empty.
+**User-playbook exposure boundary**: Authenticated enterprise deployments install `ExposureLedgerRecorder` through their capability registry. In those deployments, `POST /api/search` and `POST /api/search_user_playbooks` synchronously record the final served user-playbook set through `services/search_exposure.py` before metering or releasing success, and recorder failures fail closed. Shared `create_app()` intentionally installs no default recorder; local/no-auth OSS and custom shared app constructions persist exposures only when their deployment registers `SEARCH_EXPOSURE_RECORDER`. The direct route skips recording when its final result set is empty.
 
 **Pattern**: Core route handlers call `Reflexio` through `get_reflexio(org_id)`; endpoint helper files should not instantiate `Reflexio` directly.
 
