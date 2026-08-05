@@ -10,11 +10,13 @@ from reflexio.server.services.playbook.publication import canonical_json_bytes
 
 __all__ = [
     "CanonicalSessionTrajectory",
-    "canonical_session_trajectory",
     "canonical_json_bytes",
+    "canonical_session_trajectory",
     "outcome_contract_digest",
     "trajectory_digest",
 ]
+
+MAX_CANONICAL_TRAJECTORY_JSON_DEPTH = 100
 
 
 class CanonicalRequest(TypedDict):
@@ -162,12 +164,20 @@ def outcome_contract_digest(
     return sha256(canonical_json_bytes(payload)).hexdigest()
 
 
-def _canonical_trajectory_json(value: object) -> str:
-    """Encode trajectory JSON, including finite floats, deterministically."""
+def _canonical_trajectory_json(value: object, *, depth: int = 0) -> str:
+    """Encode trajectory JSON deterministically within a bounded nesting depth."""
+    if depth > MAX_CANONICAL_TRAJECTORY_JSON_DEPTH:
+        raise ValueError("canonical trajectory JSON exceeds maximum depth")
     if isinstance(value, float):
         return json.dumps(value, allow_nan=False, separators=(",", ":"))
     if isinstance(value, tuple | list):
-        return "[" + ",".join(_canonical_trajectory_json(item) for item in value) + "]"
+        return (
+            "["
+            + ",".join(
+                _canonical_trajectory_json(item, depth=depth + 1) for item in value
+            )
+            + "]"
+        )
     if isinstance(value, Mapping):
         if not all(isinstance(key, str) for key in value):
             raise TypeError("canonical trajectory object keys must be strings")
@@ -175,7 +185,8 @@ def _canonical_trajectory_json(value: object) -> str:
         return (
             "{"
             + ",".join(
-                f"{canonical_json_bytes(key).decode()}:{_canonical_trajectory_json(value[key])}"
+                f"{canonical_json_bytes(key).decode()}:"
+                f"{_canonical_trajectory_json(value[key], depth=depth + 1)}"
                 for key in keys
             )
             + "}"

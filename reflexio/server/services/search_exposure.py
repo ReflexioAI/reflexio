@@ -170,9 +170,9 @@ def build_user_playbook_exposure_event(
 
 
 __all__ = [
+    "MAX_EXPOSURE_EVENTS_PER_BATCH",
     "SEARCH_EXPOSURE_RECORDER",
     "ExposureEventWriteResult",
-    "MAX_EXPOSURE_EVENTS_PER_BATCH",
     "SearchExposureBatch",
     "SearchExposureRecorder",
     "UserPlaybookExposureEvent",

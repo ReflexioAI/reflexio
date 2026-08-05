@@ -12,6 +12,7 @@ from reflexio.models.api_schema.domain.entities import (
     SetSessionOutcomeResponse,
 )
 from reflexio.models.api_schema.domain.enums import SessionOutcomeKind
+from reflexio.server.services.storage import session_outcome_identity
 from reflexio.server.services.storage.session_outcome_identity import (
     canonical_json_bytes,
     canonical_session_trajectory,
@@ -139,6 +140,47 @@ def test_canonical_session_trajectory_normalizes_sqlite_and_postgres_rows() -> N
 def test_trajectory_digest_rejects_non_finite_nested_floats(value: float) -> None:
     with pytest.raises(ValueError, match="Out of range float values"):
         trajectory_digest({"nested": [{"value": value}]})
+
+
+@pytest.mark.parametrize(
+    "container_factory",
+    [
+        lambda value: {"nested": value},
+        lambda value: [value],
+        lambda value: (value,),
+    ],
+    ids=["mapping", "list", "tuple"],
+)
+def test_trajectory_digest_accepts_maximum_canonical_json_depth(
+    container_factory,
+) -> None:
+    value: object = "leaf"
+    for _ in range(session_outcome_identity.MAX_CANONICAL_TRAJECTORY_JSON_DEPTH):
+        value = container_factory(value)
+
+    assert trajectory_digest(value)
+
+
+@pytest.mark.parametrize(
+    "container_factory",
+    [
+        lambda value: {"nested": value},
+        lambda value: [value],
+        lambda value: (value,),
+    ],
+    ids=["mapping", "list", "tuple"],
+)
+def test_trajectory_digest_rejects_over_maximum_canonical_json_depth(
+    container_factory,
+) -> None:
+    value: object = "leaf"
+    for _ in range(session_outcome_identity.MAX_CANONICAL_TRAJECTORY_JSON_DEPTH + 1):
+        value = container_factory(value)
+
+    with pytest.raises(
+        ValueError, match="canonical trajectory JSON exceeds maximum depth"
+    ):
+        trajectory_digest(value)
 
 
 def test_session_outcome_record_accepts_unknown_and_serializes_identities() -> None:

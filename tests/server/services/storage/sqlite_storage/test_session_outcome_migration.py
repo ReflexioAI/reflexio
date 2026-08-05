@@ -82,6 +82,55 @@ CREATE TABLE session_outcomes (
 """
 
 
+_IDENTITY_COMPLETE_UNCONSTRAINED_REVISION_DDL = """
+CREATE TABLE session_outcomes (
+    outcome_id TEXT NOT NULL UNIQUE,
+    outcome_revision INTEGER,
+    user_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    outcome TEXT NOT NULL CHECK (outcome IN ('success', 'failure')),
+    occurred_at INTEGER NOT NULL,
+    source TEXT NOT NULL,
+    label TEXT,
+    value REAL,
+    metadata TEXT,
+    outcome_contract_digest TEXT NOT NULL,
+    finalized_trajectory_digest TEXT NOT NULL,
+    governance_subject_ref TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (user_id, session_id)
+);
+"""
+
+
+def _replace_session_outcomes_with_unconstrained_revision(
+    storage: SQLiteStorage, revision: int | None
+) -> None:
+    storage.conn.execute("DROP TABLE session_outcomes")
+    storage.conn.executescript(_IDENTITY_COMPLETE_UNCONSTRAINED_REVISION_DDL)
+    storage.conn.execute(
+        """INSERT INTO session_outcomes (
+               outcome_id, outcome_revision, user_id, session_id, outcome,
+               occurred_at, source, outcome_contract_digest,
+               finalized_trajectory_digest, governance_subject_ref, created_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            "legacy-outcome-id",
+            revision,
+            "legacy-user",
+            "legacy-session",
+            "success",
+            101,
+            "legacy-source",
+            "a" * 64,
+            "b" * 64,
+            "subject:legacy-user",
+            102,
+        ),
+    )
+    storage.conn.commit()
+
+
 def test_migration_preserves_populated_legacy_outcomes_with_unambiguous_ids(
     tmp_path,
 ) -> None:
@@ -191,6 +240,45 @@ def test_migration_preserves_populated_legacy_outcomes_with_unambiguous_ids(
         assert record.finalized_trajectory_digest == trajectory_digest(
             _canonical_session_snapshot(migrated.conn, row["session_id"])
         )
+
+
+def test_migration_defaults_null_legacy_outcome_revision_to_one(tmp_path) -> None:
+    db_path = str(tmp_path / "legacy-null-revision.db")
+    storage = SQLiteStorage(org_id="legacy-null-revision", db_path=db_path)
+    _replace_session_outcomes_with_unconstrained_revision(storage, None)
+    storage.conn.close()
+
+    migrated = SQLiteStorage(org_id="legacy-null-revision", db_path=db_path)
+
+    row = migrated.conn.execute(
+        "SELECT outcome_revision FROM session_outcomes WHERE session_id = ?",
+        ("legacy-session",),
+    ).fetchone()
+    assert row is not None
+    assert row["outcome_revision"] == 1
+
+
+def test_migration_rejects_zero_legacy_outcome_revision_atomically(tmp_path) -> None:
+    db_path = str(tmp_path / "legacy-zero-revision.db")
+    storage = SQLiteStorage(org_id="legacy-zero-revision", db_path=db_path)
+    _replace_session_outcomes_with_unconstrained_revision(storage, 0)
+    storage.conn.close()
+
+    with pytest.raises(sqlite3.IntegrityError, match="outcome_revision"):
+        SQLiteStorage(org_id="legacy-zero-revision", db_path=db_path)
+
+    with sqlite3.connect(db_path) as probe:
+        stored_revision = probe.execute(
+            "SELECT outcome_revision FROM session_outcomes WHERE session_id = ?",
+            ("legacy-session",),
+        ).fetchone()[0]
+        stranded_legacy_table = probe.execute(
+            """SELECT 1 FROM sqlite_master
+               WHERE type = 'table' AND name = 'session_outcomes_legacy'"""
+        ).fetchone()
+
+    assert stored_revision == 0
+    assert stranded_legacy_table is None
 
 
 def test_migration_prefetches_trajectory_inputs_in_bounded_chunks(tmp_path) -> None:

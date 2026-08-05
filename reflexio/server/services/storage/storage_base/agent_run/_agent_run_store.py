@@ -30,7 +30,11 @@ class AgentRunStoreABC:
         run_id: str,
         entity_type: str,
     ) -> list[str] | None:
-        """Return persisted learning ids for a completed run finalization."""
+        """Return the committed learning ids, or ``None`` when no receipt exists.
+
+        A committed empty receipt returns ``[]`` and must remain distinguishable
+        from a missing receipt so finalization stays idempotent.
+        """
         raise NotImplementedError(f"{type(self).__name__} does not support agent runs")
 
     def save_agent_run_finalization_receipt(
