@@ -808,7 +808,7 @@ class ReflexioClient:
             end_time (Optional[datetime]): End time for created_at filter
             status_filter (Optional[list[Optional[Status]]]): Filter by status (None for CURRENT, PENDING, ARCHIVED)
             tags (Optional[list[str]]): Match playbooks having any of these tags.
-            top_k (Optional[int]): Maximum number of results to return (default: 10)
+            top_k (Optional[int]): Maximum results to return, from 1 to 100 (default: 10)
             threshold (Optional[float]): Similarity threshold for vector search.
                 When omitted, the embedding model's default is used.
             enable_reformulation (Optional[bool]): Enable LLM query reformulation (default: False)
