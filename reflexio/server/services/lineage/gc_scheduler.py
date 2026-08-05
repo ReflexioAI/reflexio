@@ -485,6 +485,7 @@ class LineageGCScheduler(ThreadedScheduler):
                 logger.exception("event=always_global_sweep_failed sweep=%s", sweep_id)
 
     def _run_once(self) -> float:
+        self._run_always_global_sweeps()
         poll_interval = _DEFAULT_POLL_INTERVAL_SECONDS
         try:
             if (
@@ -505,7 +506,6 @@ class LineageGCScheduler(ThreadedScheduler):
             org_ids = self._discover_org_ids(bootstrap_ctx)
             self._gc_tick(org_ids, max_workers=self._org_fanout_workers(bootstrap_ctx))
             self._run_global_sweeps(cfg)
-            self._run_always_global_sweeps()
         except Exception:
             logger.exception("event=lineage_gc_scheduler_tick_failed")
         return max(poll_interval, _MIN_POLL_SECONDS)
