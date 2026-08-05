@@ -11,12 +11,21 @@ from reflexio.models.api_schema.domain.entities import (
     GetSessionOutcomesRequest,
     GetSessionOutcomesResponse,
     InteractionData,
+    ManualPlaybookGenerationRequest,
+    ManualProfileGenerationRequest,
     PublishUserInteractionRequest,
     Request,
+    RerunPlaybookGenerationRequest,
+    RerunProfileGenerationRequest,
     SessionOutcomeRecord,
     SetSessionOutcomeResponse,
 )
 from reflexio.models.api_schema.domain.enums import SessionOutcomeKind
+from reflexio.models.api_schema.retriever_schema import (
+    GetRequestsRequest,
+    GetUserProfilesRequest,
+    SearchUserProfileRequest,
+)
 from reflexio.server.services.storage import session_outcome_identity
 from reflexio.server.services.storage.session_outcome_identity import (
     canonical_json_bytes,
@@ -78,8 +87,28 @@ _OUTCOME_SOURCE_MODEL_FACTORIES: tuple[Callable[[str], _HasSource], ...] = (
     ),
     lambda source: SetSessionOutcomeResponse(success=True, source=source),
     lambda source: GetSessionOutcomesRequest(source=source),
+    lambda source: GetRequestsRequest(source=source),
+    lambda source: SearchUserProfileRequest(user_id="user-1", source=source),
+    lambda source: GetUserProfilesRequest(user_id="user-1", source=source),
+    lambda source: RerunProfileGenerationRequest(source=source),
+    lambda source: ManualProfileGenerationRequest(source=source),
+    lambda source: ManualPlaybookGenerationRequest(source=source),
+    lambda source: RerunPlaybookGenerationRequest(source=source),
 )
-_OUTCOME_SOURCE_MODEL_IDS = ("request", "publish", "record", "set-response", "get")
+_OUTCOME_SOURCE_MODEL_IDS = (
+    "request",
+    "publish",
+    "record",
+    "set-response",
+    "get-outcomes",
+    "get-requests",
+    "search-profiles",
+    "get-profiles",
+    "rerun-profiles",
+    "manual-profiles",
+    "manual-playbooks",
+    "rerun-playbooks",
+)
 
 
 @pytest.mark.parametrize(
@@ -112,7 +141,7 @@ def test_outcome_source_models_reject_sensitive_or_free_form_values(
     factory: Callable[[str], _HasSource],
     source: str,
 ) -> None:
-    with pytest.raises(ValidationError, match="outcome source"):
+    with pytest.raises(ValidationError):
         factory(source)
 
 
@@ -128,6 +157,25 @@ def test_outcome_source_models_preserve_empty_source(
 def test_optional_outcome_source_models_preserve_absence() -> None:
     assert SetSessionOutcomeResponse(success=False).source is None
     assert GetSessionOutcomesRequest().source is None
+    assert GetRequestsRequest().source is None
+    assert SearchUserProfileRequest(user_id="user-1").source is None
+    assert GetUserProfilesRequest(user_id="user-1").source is None
+    assert RerunProfileGenerationRequest().source is None
+    assert ManualProfileGenerationRequest().source is None
+    assert ManualPlaybookGenerationRequest().source is None
+    assert RerunPlaybookGenerationRequest().source is None
+
+
+def test_outcome_source_json_schema_exposes_exact_constraints() -> None:
+    source_schema = PublishUserInteractionRequest.model_json_schema()["properties"][
+        "source"
+    ]
+
+    assert {
+        "maxLength": 128,
+        "pattern": "^[a-z0-9][a-z0-9._:-]{0,127}$",
+        "type": "string",
+    } in source_schema["anyOf"]
 
 
 def test_outcome_contract_digest_is_stable_for_valid_machine_label() -> None:

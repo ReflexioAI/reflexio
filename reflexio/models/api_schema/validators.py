@@ -18,10 +18,10 @@ import ipaddress
 import os
 import re
 import socket
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 from urllib.parse import urlparse
 
-from pydantic import AfterValidator, HttpUrl
+from pydantic import AfterValidator, HttpUrl, StringConstraints
 
 # Embedding vector dimensions — must match config_schema.EMBEDDING_DIMENSIONS.
 # Duplicated here to avoid circular imports (config_schema imports from this module).
@@ -106,17 +106,13 @@ EmbeddingVector = Annotated[list[float], AfterValidator(_check_embedding_dimensi
 
 SESSION_OUTCOME_SOURCE_PATTERN = r"^[a-z0-9][a-z0-9._:-]{0,127}$"
 
-
-def _check_session_outcome_source(v: str) -> str:
-    """Validate a non-empty source as a non-sensitive machine label."""
-    if v and re.fullmatch(SESSION_OUTCOME_SOURCE_PATTERN, v, flags=re.ASCII) is None:
-        raise ValueError(
-            f"non-empty outcome source must match {SESSION_OUTCOME_SOURCE_PATTERN}"
-        )
-    return v
-
-
-SessionOutcomeSource = Annotated[str, AfterValidator(_check_session_outcome_source)]
+SessionOutcomeSource = (
+    Literal[""]
+    | Annotated[
+        str,
+        StringConstraints(max_length=128, pattern=SESSION_OUTCOME_SOURCE_PATTERN),
+    ]
+)
 """Outcome producer/workflow label; empty preserves the existing absent-source value."""
 
 
