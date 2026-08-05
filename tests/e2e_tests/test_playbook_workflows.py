@@ -63,25 +63,23 @@ def test_publish_interaction_playbook_only(
     assert response.message == "Interaction published successfully"
 
     # Verify interactions were added to storage
-    final_interactions = (
-        require_storage(reflexio_instance_playbook_only).get_all_interactions()
-    )
+    final_interactions = require_storage(
+        reflexio_instance_playbook_only
+    ).get_all_interactions()
     assert len(final_interactions) == len(sample_interaction_requests)
 
     # Verify playbooks were generated and stored
-    user_playbooks = (
-        require_storage(reflexio_instance_playbook_only).get_user_playbooks(
-            playbook_name=SINGLETON_USER_PLAYBOOK_NAME
-        )
-    )
+    user_playbooks = require_storage(
+        reflexio_instance_playbook_only
+    ).get_user_playbooks(playbook_name=SINGLETON_USER_PLAYBOOK_NAME)
     assert len(user_playbooks) > 0 and user_playbooks[0].content.strip() != ""
     assert all(p.playbook_name == SINGLETON_USER_PLAYBOOK_NAME for p in user_playbooks)
 
     # No agent success evaluation results — this fixture does not configure
     # agent_success_config, and group evaluation is never triggered in this flow.
-    agent_success_results = require_storage(reflexio_instance_playbook_only).get_agent_success_evaluation_results(
-        agent_version=agent_version
-    )
+    agent_success_results = require_storage(
+        reflexio_instance_playbook_only
+    ).get_agent_success_evaluation_results(agent_version=agent_version)
     assert len(agent_success_results) == 0
 
 
@@ -110,18 +108,16 @@ def test_run_playbook_aggregation_end_to_end(
         # If we reach here, the operation was successful
         assert True
 
-        user_playbooks = (
-            require_storage(reflexio_instance_playbook_only).get_user_playbooks(
-                playbook_name=playbook_name
-            )
-        )
+        user_playbooks = require_storage(
+            reflexio_instance_playbook_only
+        ).get_user_playbooks(playbook_name=playbook_name)
         assert len(user_playbooks) == 20
 
-        agent_playbooks = (
-            require_storage(reflexio_instance_playbook_only).get_agent_playbooks(
-                playbook_name=playbook_name,
-                playbook_status_filter=[PlaybookStatus.PENDING],
-            )
+        agent_playbooks = require_storage(
+            reflexio_instance_playbook_only
+        ).get_agent_playbooks(
+            playbook_name=playbook_name,
+            playbook_status_filter=[PlaybookStatus.PENDING],
         )
         assert len(agent_playbooks) > 0
     finally:
@@ -1099,7 +1095,9 @@ def test_manual_playbook_generation_end_to_end(
         )
 
         # Step 3: Verify playbooks were generated with CURRENT status (None)
-        current_playbooks = require_storage(reflexio_instance_manual_playbook).get_user_playbooks(
+        current_playbooks = require_storage(
+            reflexio_instance_manual_playbook
+        ).get_user_playbooks(
             playbook_name=playbook_name,
             status_filter=[None],
         )
@@ -1107,7 +1105,9 @@ def test_manual_playbook_generation_end_to_end(
         assert isinstance(current_playbooks, list)
 
         # Step 4: Verify NO PENDING playbooks were created (that's rerun behavior)
-        pending_playbooks = require_storage(reflexio_instance_manual_playbook).get_user_playbooks(
+        pending_playbooks = require_storage(
+            reflexio_instance_manual_playbook
+        ).get_user_playbooks(
             playbook_name=playbook_name,
             status_filter=[Status.PENDING],
         )

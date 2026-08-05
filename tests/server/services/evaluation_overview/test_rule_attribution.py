@@ -20,7 +20,9 @@ def test_basic_join_one_rule_two_successes_one_failure() -> None:
         ("u1", "sess_b"): True,
         ("u1", "sess_c"): False,
     }
-    rule_titles: dict[CitationKey, str] = {("playbook", "rule_42"): "Confirm address before checkout"}
+    rule_titles: dict[CitationKey, str] = {
+        ("playbook", "rule_42"): "Confirm address before checkout"
+    }
 
     attribs = compute_net_sessions(
         citations_by_session=citations_by_session,
@@ -112,7 +114,10 @@ def test_cited_session_ids_populated_for_each_rule() -> None:
         ("u1", "sess_beta"): False,
         ("u1", "sess_gamma"): True,
     }
-    rule_titles: dict[CitationKey, str] = {("playbook", "rule_a"): "A", ("playbook", "rule_b"): "B"}
+    rule_titles: dict[CitationKey, str] = {
+        ("playbook", "rule_a"): "A",
+        ("playbook", "rule_b"): "B",
+    }
 
     rows = compute_net_sessions(
         citations_by_session=citations_by_session,

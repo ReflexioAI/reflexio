@@ -67,7 +67,9 @@ class TestExpand(unittest.TestCase):
     def test_expand_llm_failure_returns_empty(self):
         """When the LLM raises an exception, expand() returns empty result."""
         expander = _make_expander()
-        as_mock(expander.llm_client.generate_response).side_effect = RuntimeError("LLM down")
+        as_mock(expander.llm_client.generate_response).side_effect = RuntimeError(
+            "LLM down"
+        )
 
         result = expander.expand("some content")
 
@@ -78,9 +80,9 @@ class TestExpand(unittest.TestCase):
     def test_expand_invalid_json_returns_empty(self):
         """When the LLM returns non-JSON text, expand() returns empty result."""
         expander = _make_expander()
-        as_mock(expander.llm_client.generate_response).return_value = (
-            "Here are some synonyms for you"
-        )
+        as_mock(
+            expander.llm_client.generate_response
+        ).return_value = "Here are some synonyms for you"
 
         result = expander.expand("some content")
 

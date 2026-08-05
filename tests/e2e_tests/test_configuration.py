@@ -128,9 +128,8 @@ def test_set_config_end_to_end(
     updated_config = reflexio.request_context.configurator.get_config()
     assert updated_config is not None
     assert updated_config.profile_extractor_config is not None
-    assert (
-        "Updated test configuration from dict"
-        in (updated_config.profile_extractor_config.context_prompt or "")
+    assert "Updated test configuration from dict" in (
+        updated_config.profile_extractor_config.context_prompt or ""
     )
     assert updated_config.user_playbook_extractor_config is not None
     assert (
