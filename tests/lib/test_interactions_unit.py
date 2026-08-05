@@ -22,6 +22,7 @@ from reflexio.models.api_schema.service_schemas import (
     PublishUserInteractionRequest,
 )
 from reflexio.server.services.generation_service import GenerationServiceResult
+from reflexio.test_support.typing_helpers import as_mock
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -56,7 +57,7 @@ def _make_mixin(*, storage_configured: bool = True) -> InteractionsMixin:
 
 
 def _get_storage(mixin: InteractionsMixin) -> MagicMock:
-    return mixin.request_context.storage
+    return as_mock(mixin.request_context.storage)
 
 
 def _sample_interaction(**overrides) -> Interaction:
@@ -465,8 +466,8 @@ class TestPublishInteraction:
         mixin = _make_mixin()
         storage = mixin.request_context.storage
         # Storage snapshot: 2 profiles before → 5 after; 0 playbooks → 3 after
-        storage.count_all_profiles.side_effect = [2, 5]
-        storage.count_user_playbooks.side_effect = [0, 3]
+        as_mock(storage.count_all_profiles).side_effect = [2, 5]
+        as_mock(storage.count_user_playbooks).side_effect = [0, 3]
         mock_gen_instance = MagicMock()
         mock_gen_instance.run.return_value = GenerationServiceResult(
             request_id="req-1",
@@ -496,9 +497,9 @@ class TestPublishInteraction:
         """
         mixin = _make_mixin()
         storage = mixin.request_context.storage
-        storage.count_all_profiles.side_effect = RuntimeError("db down")
+        as_mock(storage.count_all_profiles).side_effect = RuntimeError("db down")
         # count_user_playbooks still works — exercised independently
-        storage.count_user_playbooks.return_value = 0
+        as_mock(storage.count_user_playbooks).return_value = 0
         mock_gen_instance = MagicMock()
         mock_gen_instance.run.return_value = GenerationServiceResult(
             request_id="req-ok",

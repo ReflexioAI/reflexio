@@ -16,6 +16,7 @@ from reflexio.server.prompt.prompt_manager import PromptManager
 from reflexio.server.services.pre_retrieval._query_reformulator import (
     QueryReformulator,
 )
+from reflexio.test_support.typing_helpers import as_mock
 
 
 def _make_reformulator(mock_llm=None, mock_pm=None):
@@ -40,22 +41,22 @@ class TestRewrite(unittest.TestCase):
     def test_without_conversation_history_llm_reformulates_query(self):
         """LLM reformulates the query when no conversation history is given."""
         reformulator = _make_reformulator()
-        reformulator.llm_client.generate_chat_response.return_value = (
+        as_mock(reformulator.llm_client.generate_chat_response).return_value = (
             ReformulationResult(standalone_query="expanded search query")
         )
 
         result = reformulator.rewrite("search query")
 
         self.assertEqual(result.standalone_query, "expanded search query")
-        reformulator.prompt_manager.render_prompt.assert_called_once()
-        call_args = reformulator.prompt_manager.render_prompt.call_args
+        as_mock(reformulator.prompt_manager.render_prompt).assert_called_once()
+        call_args = as_mock(reformulator.prompt_manager.render_prompt).call_args
         variables = call_args[0][1]
         self.assertEqual(variables["conversation_context_block"], "")
 
     def test_with_conversation_history_context_included_in_prompt(self):
         """Conversation context is formatted and included in prompt variables."""
         reformulator = _make_reformulator()
-        reformulator.llm_client.generate_chat_response.return_value = (
+        as_mock(reformulator.llm_client.generate_chat_response).return_value = (
             ReformulationResult(standalone_query="standalone query")
         )
         history = [
@@ -66,7 +67,7 @@ class TestRewrite(unittest.TestCase):
         result = reformulator.rewrite("follow up question", history)
 
         self.assertEqual(result.standalone_query, "standalone query")
-        call_args = reformulator.prompt_manager.render_prompt.call_args
+        call_args = as_mock(reformulator.prompt_manager.render_prompt).call_args
         variables = call_args[0][1]
         self.assertIn("Conversation context:", variables["conversation_context_block"])
         self.assertIn("[user]: hello", variables["conversation_context_block"])
@@ -74,7 +75,7 @@ class TestRewrite(unittest.TestCase):
     def test_llm_failure_falls_back_to_original_query(self):
         """When the LLM raises an exception, the original query is returned."""
         reformulator = _make_reformulator()
-        reformulator.llm_client.generate_chat_response.side_effect = RuntimeError(
+        as_mock(reformulator.llm_client.generate_chat_response).side_effect = RuntimeError(
             "LLM down"
         )
 
@@ -85,7 +86,7 @@ class TestRewrite(unittest.TestCase):
     def test_empty_llm_response_falls_back_to_original(self):
         """When the LLM returns a non-string (None), original query is used."""
         reformulator = _make_reformulator()
-        reformulator.llm_client.generate_chat_response.return_value = None
+        as_mock(reformulator.llm_client.generate_chat_response).return_value = None
 
         result = reformulator.rewrite("original query")
 
@@ -94,7 +95,7 @@ class TestRewrite(unittest.TestCase):
     def test_invalid_unsafe_llm_output_falls_back_to_original(self):
         """When the LLM returns an unsafe phrase, the original query is used."""
         reformulator = _make_reformulator()
-        reformulator.llm_client.generate_chat_response.return_value = (
+        as_mock(reformulator.llm_client.generate_chat_response).return_value = (
             ReformulationResult(
                 standalone_query="Here is the reformulated query for you"
             )
@@ -260,7 +261,7 @@ class TestSearch(unittest.TestCase):
     def test_calls_search_fn_with_reformulated_query(self):
         """search_fn receives the reformulated query, not the original."""
         reformulator = _make_reformulator()
-        reformulator.llm_client.generate_chat_response.return_value = (
+        as_mock(reformulator.llm_client.generate_chat_response).return_value = (
             ReformulationResult(standalone_query="reformulated")
         )
         search_fn = Mock(return_value=["result1", "result2"])
@@ -274,7 +275,7 @@ class TestSearch(unittest.TestCase):
     def test_deduplicates_results_with_dedup_key(self):
         """Duplicate items are removed based on the dedup_key function."""
         reformulator = _make_reformulator()
-        reformulator.llm_client.generate_chat_response.return_value = (
+        as_mock(reformulator.llm_client.generate_chat_response).return_value = (
             ReformulationResult(standalone_query="query")
         )
 
@@ -297,7 +298,7 @@ class TestSearch(unittest.TestCase):
     def test_handles_search_fn_failure_gracefully(self):
         """When search_fn raises, result.items is an empty list."""
         reformulator = _make_reformulator()
-        reformulator.llm_client.generate_chat_response.return_value = (
+        as_mock(reformulator.llm_client.generate_chat_response).return_value = (
             ReformulationResult(standalone_query="query")
         )
         search_fn = Mock(side_effect=RuntimeError("search failed"))
@@ -310,7 +311,7 @@ class TestSearch(unittest.TestCase):
     def test_returns_all_results_without_dedup_key(self):
         """Without a dedup_key, all results are returned including duplicates."""
         reformulator = _make_reformulator()
-        reformulator.llm_client.generate_chat_response.return_value = (
+        as_mock(reformulator.llm_client.generate_chat_response).return_value = (
             ReformulationResult(standalone_query="query")
         )
 

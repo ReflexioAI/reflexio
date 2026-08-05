@@ -5,7 +5,7 @@ The LLM mock is applied globally in the parent conftest.py.
 """
 
 import os
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -28,8 +28,7 @@ def reflexio_mock():
 
     Bypasses __init__ entirely so no real storage/LLM setup is required.
     """
-    with patch.object(Reflexio, "__init__", lambda _self: None):
-        instance = Reflexio()
+    instance = Reflexio.__new__(Reflexio)
     instance.org_id = "test_org"
     instance.request_context = MagicMock()
     instance.request_context.org_id = "test_org"
@@ -42,8 +41,7 @@ def reflexio_mock():
 @pytest.fixture
 def reflexio_no_storage():
     """Reflexio instance where storage is not configured."""
-    with patch.object(Reflexio, "__init__", lambda _self: None):
-        instance = Reflexio()
+    instance = Reflexio.__new__(Reflexio)
     instance.org_id = "test_org"
     instance.request_context = MagicMock()
     instance.request_context.org_id = "test_org"

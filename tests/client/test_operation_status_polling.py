@@ -1,10 +1,14 @@
 """Unit tests for ReflexioClient operation-status polling."""
 
+import pytest
+
 from reflexio.client import ReflexioClient
 from reflexio.models.api_schema.domain.enums import OperationStatus
 
 
-def test_poll_operation_status_accepts_one_second_started_at_skew():
+def test_poll_operation_status_accepts_one_second_started_at_skew(
+    monkeypatch: pytest.MonkeyPatch,
+):
     client = ReflexioClient.__new__(ReflexioClient)
 
     def fake_make_request(method: str, path: str, **kwargs):
@@ -25,7 +29,7 @@ def test_poll_operation_status_accepts_one_second_started_at_skew():
             },
         }
 
-    client._make_request = fake_make_request
+    monkeypatch.setattr(client, "_make_request", fake_make_request)
 
     response = client._poll_operation_status(
         "profile_generation",
