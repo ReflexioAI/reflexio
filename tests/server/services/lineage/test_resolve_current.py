@@ -34,6 +34,7 @@ def test_merged_resolves_to_survivor(tmp_path):
         context=LineageContext(op_kind="merge", actor="t", request_id="r"),
     )
     ref = resolve_current(s, "user_playbook", src.user_playbook_id)
+    assert ref is not None
     assert str(ref.id) == str(surv.user_playbook_id)
 
 

@@ -39,6 +39,7 @@ from reflexio.models.config_schema import (
     StorageConfigSQLite,
 )
 from reflexio.server.services.configurator.configurator import DefaultConfigurator
+from tests.server.test_utils import require_storage
 
 pytestmark = pytest.mark.integration
 
@@ -106,7 +107,7 @@ def _publish_and_get_profile(reflexio: Reflexio) -> object:
         }
     )
     assert response.success, f"publish_interaction failed: {response.message}"
-    storage = reflexio.request_context.storage
+    storage = require_storage(reflexio)
     profiles = storage.get_user_profile(user_id)
     assert len(profiles) == 1, (
         "publish_interaction must produce exactly one profile via the real "
@@ -133,7 +134,7 @@ def test_ttl_expired_active_profile_is_physically_reclaimed(
       4. get_profile_by_id(include_tombstones=True) → None (row is gone).
       5. Lineage events contain both ``status_change`` (reason ttl-expired) and ``hard_delete``.
     """
-    storage = reflexio_instance.request_context.storage
+    storage = require_storage(reflexio_instance)
     profile = _publish_and_get_profile(reflexio_instance)
 
     # The mock LLM returns one_month TTL → real expiration_timestamp, not the sentinel.
@@ -198,7 +199,7 @@ def test_pre_fix_pathology_active_expired_is_not_gc_eligible_until_swept(
     We monkeypatch ``_epoch_now`` — used by ``get_user_profile``'s expiry filter —
     to simulate being past the profile's expiration, without touching the wall clock.
     """
-    storage = reflexio_instance.request_context.storage
+    storage = require_storage(reflexio_instance)
     profile = _publish_and_get_profile(reflexio_instance)
 
     assert profile.expiration_timestamp != NEVER_EXPIRES_TIMESTAMP
@@ -268,7 +269,7 @@ def test_expiry_sweep_does_not_break_concurrent_supersede(
 
     Guards spec RD-ADV-005: the sweep must not corrupt dedup lineage.
     """
-    storage = reflexio_instance.request_context.storage
+    storage = require_storage(reflexio_instance)
     profile = _publish_and_get_profile(reflexio_instance)
 
     assert profile.expiration_timestamp != NEVER_EXPIRES_TIMESTAMP

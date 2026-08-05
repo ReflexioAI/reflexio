@@ -35,7 +35,7 @@ from reflexio.models.config_schema import (
     StorageConfigSQLite,
 )
 from reflexio.server.services.configurator.configurator import DefaultConfigurator
-from tests.server.test_utils import skip_in_precommit
+from tests.server.test_utils import require_storage, skip_in_precommit
 
 pytestmark = pytest.mark.e2e
 
@@ -149,7 +149,7 @@ def _make_reflexio_with_profile(
 
 def _cleanup(instance: Reflexio, playbook_name: str | None = None) -> None:
     """Delete all test data created by an instance."""
-    storage = instance.request_context.storage
+    storage = require_storage(instance)
     try:
         if playbook_name:
             storage.delete_all_user_playbooks_by_playbook_name(playbook_name)
@@ -215,7 +215,7 @@ class TestOpenClawMultiUser:
         to test playbook isolation.
         """
         instance = openclaw_playbook_instance
-        storage = instance.request_context.storage
+        storage = require_storage(instance)
 
         alpha_turns = _make_correction_interactions("file formatting")
         beta_turns = _make_correction_interactions("code review comments")
@@ -299,7 +299,7 @@ class TestOpenClawMultiUser:
         that get_user_profile scopes correctly by user_id.
         """
         instance = openclaw_profile_instance
-        storage = instance.request_context.storage
+        storage = require_storage(instance)
 
         # Seed a profile directly for instance-alpha
         import uuid
@@ -346,7 +346,7 @@ class TestAgentPlaybookAggregation:
         Uses mock LLM mode for clustering (avoids needing real embeddings).
         """
         instance = openclaw_playbook_instance
-        storage = instance.request_context.storage
+        storage = require_storage(instance)
 
         # Seed user playbooks directly (bypassing extraction stride gate)
         # to test aggregation scoping across multiple users
