@@ -2,6 +2,7 @@ import types
 
 import pytest
 
+from reflexio.server.auth import DEFAULT_ORG_ID
 from reflexio.server.services.lineage import gc_scheduler
 from reflexio.server.services.lineage.gc_scheduler import (
     LineageGCScheduler,
@@ -126,4 +127,45 @@ def test_run_once_invokes_always_global_sweep_when_expiry_disabled(monkeypatch):
 
     scheduler._run_once()
 
+    assert len(calls) == 1
+
+
+def test_run_once_invokes_always_global_sweep_during_empty_fleet_retry():
+    calls: list[int] = []
+    gc_scheduler.register_always_global_sweep(lambda now: calls.append(now) or 1)
+    factory_calls: list[str] = []
+    scheduler = LineageGCScheduler(
+        request_context_factory=lambda org_id: factory_calls.append(org_id),  # type: ignore[arg-type]
+        bootstrap_org_id=DEFAULT_ORG_ID,
+        org_id_provider=lambda: [DEFAULT_ORG_ID],
+    )
+
+    assert scheduler._run_once() == 5
+    assert len(calls) == 1
+    assert factory_calls == []
+
+
+@pytest.mark.parametrize("bootstrap_failure", ["context", "config"])
+def test_run_once_invokes_always_global_sweep_during_bootstrap_failure(
+    bootstrap_failure: str,
+):
+    calls: list[int] = []
+    gc_scheduler.register_always_global_sweep(lambda now: calls.append(now) or 1)
+
+    def get_config():
+        raise RuntimeError("config bootstrap failed")
+
+    def request_context_factory(_org_id: str):
+        if bootstrap_failure == "context":
+            raise RuntimeError("context bootstrap failed")
+        return types.SimpleNamespace(
+            configurator=types.SimpleNamespace(get_config=get_config)
+        )
+
+    scheduler = LineageGCScheduler(
+        request_context_factory=request_context_factory,  # type: ignore[arg-type]
+        bootstrap_org_id="org-boot",
+    )
+
+    assert scheduler._run_once() == 86400
     assert len(calls) == 1
