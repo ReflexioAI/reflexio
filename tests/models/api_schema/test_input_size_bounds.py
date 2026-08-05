@@ -138,10 +138,11 @@ def test_interaction_data_nested_list_bounds() -> None:
 
 
 def test_publish_request_string_bounds() -> None:
-    cap = 1_000
-    _publish(source="s" * cap)
-    _publish(agent_version="v" * cap)
+    source_cap = 128
+    agent_version_cap = 1_000
+    _publish(source="s" * source_cap)
+    _publish(agent_version="v" * agent_version_cap)
     with pytest.raises(ValidationError):
-        _publish(source="s" * (cap + 1))
+        _publish(source="s" * (source_cap + 1))
     with pytest.raises(ValidationError):
-        _publish(agent_version="v" * (cap + 1))
+        _publish(agent_version="v" * (agent_version_cap + 1))

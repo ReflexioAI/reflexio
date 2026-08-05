@@ -104,6 +104,22 @@ EmbeddingVector = Annotated[list[float], AfterValidator(_check_embedding_dimensi
 """Embedding vector that must be either empty or exactly EMBEDDING_DIMENSIONS (512) floats."""
 
 
+SESSION_OUTCOME_SOURCE_PATTERN = r"^[a-z0-9][a-z0-9._:-]{0,127}$"
+
+
+def _check_session_outcome_source(v: str) -> str:
+    """Validate a non-empty source as a non-sensitive machine label."""
+    if v and re.fullmatch(SESSION_OUTCOME_SOURCE_PATTERN, v, flags=re.ASCII) is None:
+        raise ValueError(
+            f"non-empty outcome source must match {SESSION_OUTCOME_SOURCE_PATTERN}"
+        )
+    return v
+
+
+SessionOutcomeSource = Annotated[str, AfterValidator(_check_session_outcome_source)]
+"""Outcome producer/workflow label; empty preserves the existing absent-source value."""
+
+
 # =============================================================================
 # Security Validators — SSRF Prevention
 # =============================================================================

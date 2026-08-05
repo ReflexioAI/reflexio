@@ -26,6 +26,7 @@ from ..common import (
 from ..validators import (
     EmbeddingVector,
     NonEmptyStr,
+    SessionOutcomeSource,
     TimeRangeValidatorMixin,
     _validate_image_url,
 )
@@ -278,7 +279,8 @@ class Request(BaseModel):
         user_id (str): Owner of the request.
         created_at (int): Unix epoch seconds at request creation. Defaults
             to the current UTC time.
-        source (str): Free-form origin tag (integration name, etc.).
+        source (str): Non-sensitive producer/workflow label. Non-empty values
+            use the session outcome source contract.
         agent_version (str): The agent version that handled this request.
         session_id (str): Non-empty session this request belongs to.
         evaluation_only (bool): Whether this request is stored for
@@ -293,7 +295,7 @@ class Request(BaseModel):
     request_id: str
     user_id: str
     created_at: int = Field(default_factory=lambda: int(datetime.now(UTC).timestamp()))
-    source: str = ""
+    source: SessionOutcomeSource = ""
     agent_version: str = ""
     session_id: NonEmptyStr
     evaluation_only: bool = False
@@ -833,7 +835,7 @@ class SessionOutcomeRecord(BaseModel):
     session_id: NonEmptyStr
     outcome: SessionOutcomeKind
     occurred_at: int = Field(ge=0)
-    source: str
+    source: SessionOutcomeSource
     label: str | None = Field(default=None, max_length=128)
     value: float | None = Field(default=None, allow_inf_nan=False)
     metadata: dict[str, Any] | None = None
@@ -910,7 +912,7 @@ class SetSessionOutcomeResponse(BaseModel):
     reason: SessionOutcomeFailureReason | None = None
     message: str = ""
     user_id: str | None = None
-    source: str | None = None
+    source: SessionOutcomeSource | None = None
     outcome_id: NonEmptyStr | None = None
     outcome_revision: int | None = Field(default=None, ge=1)
     outcome_contract_digest: Sha256Digest | None = None
@@ -945,7 +947,7 @@ class SetSessionOutcomeResponse(BaseModel):
 class GetSessionOutcomesRequest(CapturesUnknownFields):
     session_ids: list[NonEmptyStr] | None = Field(default=None, max_length=100)
     user_id: str | None = None
-    source: str | None = None
+    source: SessionOutcomeSource | None = None
     outcome: SessionOutcomeKind | None = None
     label: str | None = None
     start_time: int | None = Field(default=None, ge=0)
@@ -1242,7 +1244,7 @@ class PublishUserInteractionRequest(CapturesUnknownFields):
     request_id: NonEmptyStr | None = None
     user_id: NonEmptyStr
     interaction_data_list: list[InteractionData] = Field(min_length=1, max_length=1_000)
-    source: str = Field(default="", max_length=1_000)
+    source: SessionOutcomeSource = ""
     # this is used for aggregating interactions for generating agent playbooks
     agent_version: str = Field(default="", max_length=1_000)
     session_id: NonEmptyStr  # used for grouping requests together

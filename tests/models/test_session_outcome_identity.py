@@ -1,13 +1,18 @@
+from collections.abc import Callable
 from datetime import UTC, datetime
 from hashlib import sha256
 from itertools import combinations
-from typing import Any
+from typing import Any, Protocol
 
 import pytest
 from pydantic import ValidationError
 
 from reflexio.models.api_schema.domain.entities import (
+    GetSessionOutcomesRequest,
     GetSessionOutcomesResponse,
+    InteractionData,
+    PublishUserInteractionRequest,
+    Request,
     SessionOutcomeRecord,
     SetSessionOutcomeResponse,
 )
@@ -43,6 +48,100 @@ def test_outcome_contract_digest_changes_when_source_changes() -> None:
     assert _outcome_contract_digest(
         source="customer_webhook"
     ) != _outcome_contract_digest(source="customer_batch")
+
+
+class _HasSource(Protocol):
+    @property
+    def source(self) -> str | None: ...
+
+
+_OUTCOME_SOURCE_MODEL_FACTORIES: tuple[Callable[[str], _HasSource], ...] = (
+    lambda source: Request(
+        request_id="request-1",
+        user_id="user-1",
+        session_id="session-1",
+        source=source,
+    ),
+    lambda source: PublishUserInteractionRequest(
+        user_id="user-1",
+        session_id="session-1",
+        interaction_data_list=[InteractionData(content="hello")],
+        source=source,
+    ),
+    lambda source: SessionOutcomeRecord(
+        user_id="user-1",
+        session_id="session-1",
+        outcome=SessionOutcomeKind.SUCCESS,
+        occurred_at=1,
+        source=source,
+        created_at=2,
+    ),
+    lambda source: SetSessionOutcomeResponse(success=True, source=source),
+    lambda source: GetSessionOutcomesRequest(source=source),
+)
+_OUTCOME_SOURCE_MODEL_IDS = ("request", "publish", "record", "set-response", "get")
+
+
+@pytest.mark.parametrize(
+    "factory", _OUTCOME_SOURCE_MODEL_FACTORIES, ids=_OUTCOME_SOURCE_MODEL_IDS
+)
+def test_outcome_source_models_accept_machine_label(
+    factory: Callable[[str], _HasSource],
+) -> None:
+    assert factory("support-agent:v2").source == "support-agent:v2"
+    assert factory("a" * 128).source == "a" * 128
+
+
+@pytest.mark.parametrize(
+    "factory", _OUTCOME_SOURCE_MODEL_FACTORIES, ids=_OUTCOME_SOURCE_MODEL_IDS
+)
+@pytest.mark.parametrize(
+    "source",
+    [
+        "alice@example.com",
+        "https://example.com/hook",
+        "support agent",
+        " support-agent",
+        "support/agent",
+        "Support-Agent",
+        "support-agént",
+        "a" * 129,
+    ],
+)
+def test_outcome_source_models_reject_sensitive_or_free_form_values(
+    factory: Callable[[str], _HasSource],
+    source: str,
+) -> None:
+    with pytest.raises(ValidationError, match="outcome source"):
+        factory(source)
+
+
+@pytest.mark.parametrize(
+    "factory", _OUTCOME_SOURCE_MODEL_FACTORIES, ids=_OUTCOME_SOURCE_MODEL_IDS
+)
+def test_outcome_source_models_preserve_empty_source(
+    factory: Callable[[str], _HasSource],
+) -> None:
+    assert factory("").source == ""
+
+
+def test_optional_outcome_source_models_preserve_absence() -> None:
+    assert SetSessionOutcomeResponse(success=False).source is None
+    assert GetSessionOutcomesRequest().source is None
+
+
+def test_outcome_contract_digest_is_stable_for_valid_machine_label() -> None:
+    payload = {
+        "allowed_values": ["failure", "success", "unknown"],
+        "finalization_rule": "first_write",
+        "schema_version": 1,
+        "source": "support-agent:v2",
+    }
+
+    assert (
+        _outcome_contract_digest(source="support-agent:v2")
+        == sha256(canonical_json_bytes(payload)).hexdigest()
+    )
 
 
 def test_outcome_contract_digest_changes_when_schema_version_changes() -> None:
