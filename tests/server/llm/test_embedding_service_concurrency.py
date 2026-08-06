@@ -145,3 +145,39 @@ def test_micro_batches_concurrent_requests(monkeypatch: pytest.MonkeyPatch) -> N
     assert len(results) == 2
     assert len(fake_model.encode_calls) == 1
     assert set(fake_model.encode_calls[0]) == {"first", "second"}
+
+
+def test_micro_batches_requests_for_registered_encoder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A provider extension keeps the daemon's request coalescing behavior."""
+    monkeypatch.setenv("REFLEXIO_EMBED_MAX_CONCURRENCY", "1")
+    monkeypatch.setenv("REFLEXIO_EMBED_MICRO_BATCH_DELAY_MS", "50")
+    monkeypatch.setenv("REFLEXIO_EMBED_MICRO_BATCH_MAX_TEXTS", "8")
+    monkeypatch.setattr(es, "_ACTIVE_MODEL", None)
+    monkeypatch.setattr(es, "_MICRO_BATCH_QUEUE", [])
+    monkeypatch.setattr(es, "_ACTIVE_BATCH_PROCESSORS", 0)
+    model = "custom/enterprise-model"
+    encode_calls: list[list[str]] = []
+    barrier = threading.Barrier(2)
+
+    def encode(texts: list[str]) -> list[list[float]]:
+        encode_calls.append(list(texts))
+        return [[1.0, 0.0] for _ in texts]
+
+    def worker(text: str) -> None:
+        barrier.wait(timeout=1)
+        es._embed_texts(model, [text], encoder=encode, allowed_models={model})
+
+    threads = [
+        threading.Thread(target=worker, args=("first",)),
+        threading.Thread(target=worker, args=("second",)),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert len(encode_calls) == 1
+    assert set(encode_calls[0]) == {"first", "second"}

@@ -7,7 +7,7 @@ import math
 import os
 import threading
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any
@@ -17,11 +17,6 @@ from pydantic import BaseModel, Field
 
 from reflexio.server.llm.llm_utils import positive_int_env
 from reflexio.server.llm.providers.local_embedding_provider import LocalEmbedder
-from reflexio.server.llm.providers.multilingual_e5_embedding_provider import (
-    MULTILINGUAL_E5_MODEL,
-    MultilingualE5Embedder,
-    is_multilingual_e5_model,
-)
 from reflexio.server.llm.providers.nomic_embedding_provider import (
     NomicEmbedder,
     is_nomic_model,
@@ -40,7 +35,6 @@ _SUPPORTED_MODELS = {
     MINILM_MODEL,
     "local/nomic-embed-v1.5",
     NOMIC_TEXT_MODEL,
-    MULTILINGUAL_E5_MODEL,
 }
 _ACTIVE_MODEL: str | None = None
 _ACTIVE_MODEL_LOCK = threading.Lock()
@@ -72,11 +66,14 @@ _ACTIVE_BATCH_PROCESSORS = 0
 # Failsafe bound for a submitter waiting on its job (see _embed_texts).
 _JOB_WAIT_TIMEOUT_SECONDS = 600.0
 
+EmbeddingEncoder = Callable[[list[str]], list[list[float]]]
+
 
 @dataclass
 class _EmbeddingJob:
     model: str
     texts: list[str]
+    encoder: EmbeddingEncoder | None = None
     done: threading.Event = field(default_factory=threading.Event)
     result: list[list[float]] | None = None
     error: BaseException | None = None
@@ -151,13 +148,23 @@ def create_embedding_app(
     default_model: str | None = None,
     *,
     allowed_models: set[str] | None = None,
+    model_encoders: Mapping[str, EmbeddingEncoder] | None = None,
+    fixed_dimensions: Mapping[str, int] | None = None,
 ) -> FastAPI:
-    """Create the embedding daemon app and optionally warm a default model."""
+    """Create the embedding daemon app and optionally register external encoders."""
+    effective_encoders = dict(model_encoders or {})
+    effective_fixed_dimensions = dict(fixed_dimensions or {})
     effective_allowed_models = (
-        allowed_models
-        if allowed_models is not None
-        else _SUPPORTED_MODELS - {MULTILINGUAL_E5_MODEL}
+        set(allowed_models) if allowed_models is not None else set(_SUPPORTED_MODELS)
     )
+
+    def embed_texts(model: str, texts: list[str]) -> list[list[float]]:
+        return _embed_texts(
+            model,
+            texts,
+            encoder=effective_encoders.get(model),
+            allowed_models=effective_allowed_models,
+        )
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
@@ -165,7 +172,7 @@ def create_embedding_app(
             yield
             return
         try:
-            _embed_texts(default_model, ["reflexio embedding daemon warmup"])
+            embed_texts(default_model, ["reflexio embedding daemon warmup"])
         except Exception:
             logger.exception("Failed to warm embedding model %s", default_model)
             raise
@@ -190,19 +197,23 @@ def create_embedding_app(
                 status_code=400,
                 detail=f"Unsupported model for this service: {request.model}",
             )
+        expected_dimensions = effective_fixed_dimensions.get(request.model)
         if (
-            request.model == MULTILINGUAL_E5_MODEL
+            expected_dimensions is not None
             and request.dimensions is not None
-            and request.dimensions != 512
+            and request.dimensions != expected_dimensions
         ):
             raise HTTPException(
                 status_code=400,
-                detail="multilingual E5 embeddings use the fixed 512-dimension storage contract",
+                detail=(
+                    f"{request.model} embeddings use the fixed "
+                    f"{expected_dimensions}-dimension storage contract"
+                ),
             )
         texts = (
             [request.input] if isinstance(request.input, str) else list(request.input)
         )
-        embeddings = _embed_texts(request.model, texts)
+        embeddings = embed_texts(request.model, texts)
 
         if request.dimensions:
             embeddings = [
@@ -240,12 +251,18 @@ def create_embedding_app(
     return embedding_app
 
 
-def _embed_texts(model: str, texts: list[str]) -> list[list[float]]:
-    _activate_model(model)
+def _embed_texts(
+    model: str,
+    texts: list[str],
+    *,
+    encoder: EmbeddingEncoder | None = None,
+    allowed_models: set[str] | None = None,
+) -> list[list[float]]:
+    _activate_model(model, allowed_models=allowed_models)
     if not texts:
         return []
 
-    job = _EmbeddingJob(model=model, texts=list(texts))
+    job = _EmbeddingJob(model=model, texts=list(texts), encoder=encoder)
     should_process = False
 
     global _ACTIVE_BATCH_PROCESSORS
@@ -316,6 +333,7 @@ def _take_micro_batch() -> list[_EmbeddingJob]:
                     index
                     for index, candidate in enumerate(_MICRO_BATCH_QUEUE)
                     if candidate.model == first.model
+                    and candidate.encoder is first.encoder
                     and total_texts + len(candidate.texts) <= max_texts
                 ),
                 None,
@@ -343,7 +361,12 @@ def _process_micro_batch(jobs: list[_EmbeddingJob]) -> None:
         slices.append((job, start, len(texts)))
 
     try:
-        embeddings = _encode_texts_now(jobs[0].model, texts)
+        encoder = jobs[0].encoder
+        embeddings = (
+            encoder(texts)
+            if encoder is not None
+            else _encode_texts_now(jobs[0].model, texts)
+        )
     except BaseException as exc:
         for job in jobs:
             job.error = exc
@@ -375,15 +398,16 @@ def _encode_texts_now(model: str, texts: list[str]) -> list[list[float]]:
     # lock/semaphore is needed here.
     if is_nomic_model(model):
         return NomicEmbedder.get().embed(texts)
-    if is_multilingual_e5_model(model):
-        return MultilingualE5Embedder.get().embed(texts)
     if model == MINILM_MODEL:
         return LocalEmbedder.get().embed(texts)
     raise HTTPException(status_code=400, detail=f"Unsupported model: {model}")
 
 
-def _activate_model(model: str) -> None:
-    if model not in _SUPPORTED_MODELS:
+def _activate_model(model: str, *, allowed_models: set[str] | None = None) -> None:
+    effective_allowed_models = (
+        allowed_models if allowed_models is not None else _SUPPORTED_MODELS
+    )
+    if model not in effective_allowed_models:
         raise HTTPException(status_code=400, detail=f"Unsupported model: {model}")
     global _ACTIVE_MODEL
     with _ACTIVE_MODEL_LOCK:

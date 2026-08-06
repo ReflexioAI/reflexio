@@ -7,11 +7,11 @@ from reflexio.server.llm.embedding_service import create_embedding_app
 
 
 def test_health_exposes_configured_model(monkeypatch) -> None:
-    configured_model = "local/multilingual-e5-small"
+    configured_model = "custom/enterprise-model"
     monkeypatch.setattr(
         embedding_service,
         "_embed_texts",
-        lambda _model, texts: [[1.0, 0.0] for _ in texts],
+        lambda _model, texts, **_kwargs: [[1.0, 0.0] for _ in texts],
     )
     app = create_embedding_app(
         default_model=configured_model,
@@ -31,11 +31,11 @@ def test_health_exposes_configured_model(monkeypatch) -> None:
 
 
 def test_dedicated_service_rejects_model_other_than_baked_model(monkeypatch) -> None:
-    configured_model = "local/multilingual-e5-small"
+    configured_model = "custom/enterprise-model"
     monkeypatch.setattr(
         embedding_service,
         "_embed_texts",
-        lambda _model, texts: [[1.0, 0.0] for _ in texts],
+        lambda _model, texts, **_kwargs: [[1.0, 0.0] for _ in texts],
     )
     app = create_embedding_app(
         default_model=configured_model,
@@ -52,16 +52,17 @@ def test_dedicated_service_rejects_model_other_than_baked_model(monkeypatch) -> 
     assert "Unsupported model" in response.json()["detail"]
 
 
-def test_multilingual_e5_rejects_non_storage_dimensions(monkeypatch) -> None:
-    configured_model = "local/multilingual-e5-small"
+def test_extension_model_rejects_non_storage_dimensions(monkeypatch) -> None:
+    configured_model = "custom/enterprise-model"
     monkeypatch.setattr(
         embedding_service,
         "_embed_texts",
-        lambda _model, texts: [[1.0] * 512 for _ in texts],
+        lambda _model, texts, **_kwargs: [[1.0] * 512 for _ in texts],
     )
     app = create_embedding_app(
         default_model=configured_model,
         allowed_models={configured_model},
+        fixed_dimensions={configured_model: 512},
     )
 
     with TestClient(app) as client:
@@ -78,7 +79,7 @@ def test_default_local_service_rejects_multilingual_e5(monkeypatch) -> None:
     monkeypatch.setattr(
         embedding_service,
         "_embed_texts",
-        lambda _model, texts: [[1.0, 0.0] for _ in texts],
+        lambda _model, texts, **_kwargs: [[1.0, 0.0] for _ in texts],
     )
 
     with TestClient(create_embedding_app()) as client:
@@ -88,3 +89,27 @@ def test_default_local_service_rejects_multilingual_e5(monkeypatch) -> None:
         )
 
     assert response.status_code == 400
+
+
+def test_extension_encoder_runs_through_embedding_service(monkeypatch) -> None:
+    configured_model = "custom/enterprise-model"
+    calls: list[list[str]] = []
+    monkeypatch.setattr(embedding_service, "_ACTIVE_MODEL", None)
+
+    def encode(texts: list[str]) -> list[list[float]]:
+        calls.append(texts)
+        return [[1.0, 0.0] for _ in texts]
+
+    app = create_embedding_app(
+        allowed_models={configured_model},
+        model_encoders={configured_model: encode},
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/embeddings",
+            json={"model": configured_model, "input": ["中文", "English"]},
+        )
+
+    assert response.status_code == 200
+    assert calls == [["中文", "English"]]

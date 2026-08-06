@@ -18,6 +18,7 @@ SEARCH_DOCUMENT_PREFIX = "search_document: "
 SEARCH_QUERY_PREFIX = "search_query: "
 E5_DOCUMENT_PREFIX = "passage: "
 E5_QUERY_PREFIX = "query: "
+MULTILINGUAL_E5_MODEL = "local/multilingual-e5-small"
 
 
 @dataclass(frozen=True)
@@ -53,13 +54,19 @@ _EMBEDDING_MODEL_POLICIES = {
     # Backward-compatible provider alias. New configuration should use the
     # canonical ``local/nomic-embed-text-v1.5`` identifier.
     "local/nomic-embed-v1.5": _NOMIC_MODEL_POLICY,
-    "local/multilingual-e5-small": EmbeddingModelPolicy(
+    MULTILINGUAL_E5_MODEL: EmbeddingModelPolicy(
         document_prefix=E5_DOCUMENT_PREFIX,
         query_prefix=E5_QUERY_PREFIX,
         retrieval_threshold=0.7993814945220947,
         clustering_similarity=0.9284577369689941,
     ),
 }
+
+
+def is_multilingual_e5_model(model: str) -> bool:
+    """Return whether ``model`` uses the shared multilingual E5 policy."""
+    return model.strip().casefold() == MULTILINGUAL_E5_MODEL
+
 
 EmbeddingTextEntity = (
     Interaction

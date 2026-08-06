@@ -46,14 +46,14 @@ from reflexio.server.llm.providers.local_embedding_provider import (
 from reflexio.server.llm.providers.local_embedding_provider import (
     is_chromadb_importable as _is_chromadb_importable,
 )
-from reflexio.server.llm.providers.multilingual_e5_embedding_provider import (
-    is_multilingual_e5_model as _is_multilingual_e5_model,
-)
 from reflexio.server.llm.providers.nomic_embedding_provider import (
     NomicEmbedder,
 )
 from reflexio.server.llm.providers.nomic_embedding_provider import (
     is_nomic_model as _is_nomic_model,
+)
+from reflexio.server.services.embedding_text import (
+    is_multilingual_e5_model as _is_multilingual_e5_model,
 )
 
 if TYPE_CHECKING:
