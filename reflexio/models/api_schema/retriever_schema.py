@@ -325,7 +325,7 @@ class SearchUserPlaybookRequest(BaseModel):
     """
 
     query: str | None = None
-    user_id: str | None = None
+    user_id: str | None = Field(default=None, max_length=255)
     agent_version: str | None = None
     playbook_name: str | None = None
     start_time: datetime | None = None
@@ -338,8 +338,8 @@ class SearchUserPlaybookRequest(BaseModel):
     search_mode: SearchMode = SearchMode.HYBRID
     # Caller correlation IDs for billing attribution on the Application line.
     # Optional; consumed by _meter_applied_learnings in server/api.py.
-    request_id: str | None = None
-    session_id: str | None = None
+    request_id: str | None = Field(default=None, max_length=255)
+    session_id: str | None = Field(default=None, max_length=255)
 
     @model_validator(mode="after")
     def check_time_range(self) -> Self:
