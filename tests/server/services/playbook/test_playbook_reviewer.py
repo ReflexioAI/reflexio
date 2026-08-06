@@ -456,12 +456,12 @@ def test_reviewer_prompt_preserves_grounded_procedures_and_forbids_substitutes()
     # dominant context. Frontmatter is not included in the rendered prompt.
     #
     # Raised 1000 -> 1050 in v1.1.0 to fit check 7 (absence). The check is
-    # dose-dependent on its own wording, measured on one window over 8 reps each:
-    #   ~70 words (as shipped)  -> 86% of candidates pruned, absence_inference x6
-    #   ~30 words (premise only)-> 25% pruned, x2
-    #   ~22 words (terse)       ->  0% pruned, x1 and not even rejected
-    # A compressed check is not a smaller version of this one, it is an inert
-    # one. Prefer displacing existing policy text over raising this again.
+    # dose-dependent on its own wording. Measured on one known-answer window:
+    #   ~70 words (as shipped)  -> 36% pruned (5/14), vs 0/14 for v1.0.0, p=0.041
+    #   ~30 words (premise only)-> 25% pruned (2/8)   [under-powered]
+    #   ~22 words (terse)       ->  0% pruned (0/8), code assigned but not rejected
+    # The terse form is inert, not merely weaker. Prefer displacing existing
+    # policy text over raising this again.
     assert len(rendered.split()) <= 1_050
 
 
