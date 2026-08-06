@@ -409,6 +409,41 @@ def test_outcome_warning_values_are_sanitized_and_bounded(
     assert source_warning.endswith("unsafe?session")
 
 
+def test_unregistered_acceptance_provider_accepts_long_lived_session_marker(
+    client_with_org: tuple[TestClient, str],
+) -> None:
+    client, org_id = client_with_org
+    storage = get_reflexio(org_id=org_id).get_storage()
+    session_started_at = int(time.time()) - 90 * 86400
+    storage.add_request(
+        Request(
+            request_id="long-lived-r1",
+            user_id="u1",
+            session_id="long-lived-session",
+            source="published",
+            created_at=session_started_at,
+        )
+    )
+
+    response = client.post(
+        "/api/session_outcome",
+        json={
+            "session_id": "long-lived-session",
+            "outcome": "success",
+            "occurred_at": session_started_at + 1,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["success"] is True
+    assert response.json()["recorded"] is True
+    outcomes = storage.get_session_outcomes(
+        GetSessionOutcomesRequest(session_ids=["long-lived-session"])
+    )
+    assert len(outcomes) == 1
+    assert outcomes[0].occurred_at == session_started_at + 1
+
+
 def test_acceptance_hook_runs_before_persistence_at_exact_deadline(
     client_with_org: tuple[TestClient, str], monkeypatch
 ) -> None:
