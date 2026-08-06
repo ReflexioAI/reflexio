@@ -131,6 +131,12 @@ def test_embedding_input_applies_nomic_asymmetric_prefixes() -> None:
     )
 
 
+def test_embedding_input_applies_multilingual_e5_prefixes() -> None:
+    model = "local/multilingual-e5-small"
+    assert embedding_input("你好", model_name=model) == "passage: 你好"
+    assert embedding_input("你好", model_name=model, purpose="query") == "query: 你好"
+
+
 @pytest.mark.parametrize(
     "model_name",
     ["local/minilm-l6-v2", "text-embedding-3-small", "unknown-model"],
@@ -146,6 +152,7 @@ def test_embedding_input_leaves_non_nomic_models_unprefixed(model_name: str) -> 
         ("local/minilm-l6-v2", 0.30),
         ("local/nomic-embed-text-v1.5", 0.70),
         ("local/nomic-embed-v1.5", 0.70),
+        ("local/multilingual-e5-small", 0.7993814945220947),
         ("unknown-model", 0.45),
     ],
 )
@@ -171,6 +178,7 @@ def test_explicit_retrieval_threshold_wins_including_zero() -> None:
         ("local/minilm-l6-v2", 0.30),
         ("local/nomic-embed-text-v1.5", 0.85),
         ("local/nomic-embed-v1.5", 0.85),
+        ("local/multilingual-e5-small", 0.9284577369689941),
         ("unknown-model", 0.30),
     ],
 )

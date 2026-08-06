@@ -58,9 +58,9 @@ PROMPT_VERSION_MAP: dict[str, tuple[str, str | None]] = {
     # registry key was removed, so they are mapped without a registry key.
     "agent_success_evaluation_with_comparison": ("v1.0.0", None),
     "shadow_content_evaluation": ("v1.0.0", None),
-    # v2.0.0: structured output — rewrite + temporal signals (window,
+    # v2.1.0: structured output + source-language/script preservation (window,
     # recency_dominant, wants_current) in the same pre-search LLM call.
-    "query_reformulation": ("v2.0.0", "query_reformulation"),
+    "query_reformulation": ("v2.1.0", "query_reformulation"),
     # v1.1.0: fact-key/category phrasings + escaped JSON braces (v1.0.0 never
     # rendered — literal braces broke str.format and the expander swallowed it).
     "document_expansion": ("v1.1.0", None),

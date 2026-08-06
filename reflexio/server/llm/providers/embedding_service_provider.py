@@ -35,6 +35,8 @@ _ENV_LOCAL_SERVICE_PROBE_TIMEOUT_MS = (
 )
 _ENV_CLAUDE_SMART_LOCAL = "CLAUDE_SMART_USE_LOCAL_EMBEDDING"
 _ENV_MAX_TEXTS_PER_REQUEST = "REFLEXIO_EMBEDDING_SERVICE_MAX_TEXTS_PER_REQUEST"
+CUSTOM_EMBEDDING_MODEL = "custom"
+_INPROCESS_CUSTOM_MODEL = "local/nomic-embed-text-v1.5"
 _DEFAULT_LOCAL_PORT = 8072
 _DEFAULT_INTERNAL_SERVICE_TIMEOUT_MS = 2_000
 _DEFAULT_LOCAL_SERVICE_TIMEOUT_MS = 30_000
@@ -70,6 +72,8 @@ _last_inprocess_fallback_warn_at: float | None = None
 _http_client_lock = threading.Lock()
 _http_client_instance: httpx.Client | None = None
 _http_client_pid: int | None = None
+_configured_model_cache: dict[tuple[int, str], str] = {}
+_configured_model_lock = threading.Lock()
 
 
 class EmbeddingUnavailableError(RuntimeError):
@@ -138,6 +142,71 @@ def _is_local_model(model: str | None) -> bool:
     return bool(model and model.startswith("local/"))
 
 
+def _uses_embedding_service(model: str | None) -> bool:
+    return model == CUSTOM_EMBEDDING_MODEL or _is_local_model(model)
+
+
+def resolve_service_configured_model(
+    model: str | None = CUSTOM_EMBEDDING_MODEL,
+) -> str:
+    """Resolve ``custom`` to the service's authoritative, process-cached model.
+
+    Exact cloud and local model names pass through unchanged. The service model
+    is immutable for a data-plane process lifetime; operators restart the data
+    plane after changing the model behind an endpoint.
+    """
+    if model and model != CUSTOM_EMBEDDING_MODEL:
+        return model
+    mode = embedding_provider_mode(CUSTOM_EMBEDDING_MODEL)
+    if mode == "inprocess":
+        # The legacy keyless in-process path has no health endpoint and remains
+        # intentionally Nomic-only. E5 is CUDA-service-only.
+        return _INPROCESS_CUSTOM_MODEL
+    if mode not in _SERVICE_MODES:
+        raise EmbeddingUnavailableError(
+            "embedding_model_name='custom' requires a configured embedding service"
+        )
+    service_url = embedding_service_url(mode)
+    cache_key = (os.getpid(), service_url)
+    cached = _configured_model_cache.get(cache_key)
+    if cached is not None:
+        return cached
+    if mode == "local_service" and service_url == _local_service_url():
+        reachable, configured_model = _local_service_status()
+        if reachable and configured_model:
+            with _configured_model_lock:
+                _configured_model_cache.setdefault(cache_key, configured_model)
+            return configured_model
+    with _configured_model_lock:
+        cached = _configured_model_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        try:
+            response = _http_client().get(
+                f"{service_url}/health",
+                timeout=embedding_service_timeout_seconds(mode),
+            )
+            response.raise_for_status()
+            configured_model = response.json().get("configured_model")
+        except (
+            httpx.HTTPError,
+            json.JSONDecodeError,
+            ValueError,
+            TypeError,
+            AttributeError,
+        ) as exc:
+            raise EmbeddingUnavailableError(
+                f"Could not discover embedding model from {service_url}/health: {exc}"
+            ) from exc
+        if not isinstance(configured_model, str) or not configured_model.strip():
+            raise EmbeddingUnavailableError(
+                f"{service_url}/health did not return configured_model"
+            )
+        configured_model = configured_model.strip()
+        _configured_model_cache[cache_key] = configured_model
+        return configured_model
+
+
 def _http_client() -> httpx.Client:
     """Shared keep-alive client for health probes and embedding POSTs.
 
@@ -183,9 +252,12 @@ def _local_service_status() -> tuple[bool, str | None]:
             timeout=_local_service_probe_timeout_seconds(),
         )
         reachable = response.status_code < 500
-        active_model = response.json().get("active_model") if reachable else None
-        if not isinstance(active_model, str):
+        body = response.json() if reachable else {}
+        active_model = body.get("configured_model") or body.get("active_model")
+        if not isinstance(active_model, str) or not active_model.strip():
             active_model = None
+        else:
+            active_model = active_model.strip()
         if not reachable:
             reason = f"/health returned HTTP {response.status_code}"
     except httpx.HTTPError as exc:
@@ -293,7 +365,12 @@ def embedding_provider_mode(model: str | None = None) -> EmbeddingProviderMode:
                 f"Invalid {_ENV_PROVIDER}={configured!r}; expected one of "
                 f"{', '.join(sorted(_VALID_MODES))}"
             )
+        if model and not _uses_embedding_service(model) and mode in _SERVICE_MODES:
+            return "cloud"
         return mode  # type: ignore[return-value]
+
+    if model and not _uses_embedding_service(model):
+        return "cloud"
 
     if os.environ.get(_ENV_CLAUDE_SMART_LOCAL) == "1":
         return "local_service"
@@ -301,12 +378,16 @@ def embedding_provider_mode(model: str | None = None) -> EmbeddingProviderMode:
     if os.environ.get(_ENV_SERVICE_URL):
         return "internal_service"
 
-    if _is_local_model(model) and os.environ.get(_ENV_DAEMON_HOST, "").strip():
+    if _uses_embedding_service(model) and os.environ.get(_ENV_DAEMON_HOST, "").strip():
         return "local_service"
 
-    if _is_local_model(model):
+    if _uses_embedding_service(model):
         reachable, active_model = _local_service_status()
-        if reachable and (active_model is None or active_model == model):
+        if reachable and (
+            model == CUSTOM_EMBEDDING_MODEL
+            or active_model is None
+            or active_model == model
+        ):
             return "local_service"
         if reachable:
             reason = (

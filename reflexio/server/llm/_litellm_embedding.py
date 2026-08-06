@@ -37,6 +37,7 @@ from reflexio.server.llm.providers.embedding_service_provider import (
     EmbeddingUnavailableError,
     embedding_provider_mode,
     get_service_embeddings,
+    resolve_service_configured_model,
     should_use_embedding_service,
 )
 from reflexio.server.llm.providers.local_embedding_provider import (
@@ -50,6 +51,9 @@ from reflexio.server.llm.providers.nomic_embedding_provider import (
 )
 from reflexio.server.llm.providers.nomic_embedding_provider import (
     is_nomic_model as _is_nomic_model,
+)
+from reflexio.server.services.embedding_text import (
+    is_multilingual_e5_model as _is_multilingual_e5_model,
 )
 
 if TYPE_CHECKING:
@@ -345,7 +349,9 @@ class EmbeddingMixin:
             EmbeddingUnavailableError: If the embedding provider is disabled.
             LiteLLMClientError: If embedding generation fails.
         """
-        embedding_model = model or self._resolve_default_embedding_model()
+        embedding_model = resolve_service_configured_model(
+            model or self._resolve_default_embedding_model()
+        )
         mode = embedding_provider_mode(embedding_model)
         if mode == "off":
             raise EmbeddingUnavailableError("Embedding provider is disabled")
@@ -367,6 +373,13 @@ class EmbeddingMixin:
                     f"failed: {str(e)}",
                     mode,
                 ) from e
+
+        if _is_multilingual_e5_model(embedding_model):
+            raise _embedding_error(
+                "multilingual-e5-small is available only through the dedicated "
+                "GPU embedding service",
+                mode,
+            )
 
         # local/* models route through the in-process ONNX embedder — no
         # network call, no litellm API, no tiktoken truncation (the embedder

@@ -28,6 +28,9 @@ sys.path.insert(0, str(_PROJECT_ROOT))
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.prompt.prompt_manager import PromptManager
 from reflexio.server.services.pre_retrieval import DocumentExpander
+from reflexio.server.services.storage.sqlite_storage._base import (
+    register_unicode_lexical_index_function,
+)
 
 # Tables that have an expanded_terms column and the column used as content source.
 _TABLE_CONFIG: dict[str, dict[str, str]] = {
@@ -202,6 +205,7 @@ def main() -> None:
 
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
+    register_unicode_lexical_index_function(conn)
 
     llm_client = LiteLLMClient()
     prompt_manager = PromptManager()

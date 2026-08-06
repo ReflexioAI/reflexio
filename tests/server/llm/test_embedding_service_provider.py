@@ -15,10 +15,12 @@ from reflexio.server.llm.litellm_client import (
 )
 from reflexio.server.llm.providers import embedding_service_provider as esp
 from reflexio.server.llm.providers.embedding_service_provider import (
+    CUSTOM_EMBEDDING_MODEL,
     EmbeddingUnavailableError,
     embedding_provider_mode,
     embedding_service_timeout_seconds,
     get_service_embeddings,
+    resolve_service_configured_model,
 )
 from reflexio.server.llm.providers.local_embedding_provider import LocalEmbedder
 from reflexio.server.llm.providers.nomic_embedding_provider import NomicEmbedder
@@ -48,6 +50,139 @@ class _RecordingTracer:
     def span(self, name: str, **data: object):
         self.started.append((name, data))
         yield _RecordingSpan()
+
+
+def test_custom_model_discovery_is_cached_for_process_lifetime(monkeypatch) -> None:
+    probes = {"count": 0}
+
+    class _HealthResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, str]:
+            return {"configured_model": "local/multilingual-e5-small"}
+
+    class _Client:
+        def get(self, *_args, **_kwargs) -> _HealthResponse:
+            probes["count"] += 1
+            return _HealthResponse()
+
+    monkeypatch.setenv("REFLEXIO_EMBEDDING_SERVICE_URL", "http://embedding")
+    monkeypatch.delenv("REFLEXIO_EMBEDDING_PROVIDER", raising=False)
+    monkeypatch.setattr(esp, "_configured_model_cache", {})
+    monkeypatch.setattr(esp, "_http_client", lambda: _Client())
+
+    assert resolve_service_configured_model(CUSTOM_EMBEDDING_MODEL) == (
+        "local/multilingual-e5-small"
+    )
+    assert resolve_service_configured_model(CUSTOM_EMBEDDING_MODEL) == (
+        "local/multilingual-e5-small"
+    )
+    assert probes["count"] == 1
+
+
+def test_custom_local_service_reuses_the_routing_health_probe(monkeypatch) -> None:
+    probes = {"count": 0}
+
+    class _HealthResponse:
+        status_code = 200
+
+        def json(self) -> dict[str, str]:
+            return {"configured_model": "local/nomic-embed-text-v1.5"}
+
+    class _Client:
+        def get(self, *_args, **_kwargs) -> _HealthResponse:
+            probes["count"] += 1
+            return _HealthResponse()
+
+    monkeypatch.delenv("REFLEXIO_EMBEDDING_PROVIDER", raising=False)
+    monkeypatch.delenv("REFLEXIO_EMBEDDING_SERVICE_URL", raising=False)
+    monkeypatch.delenv("REFLEXIO_EMBEDDING_DAEMON_HOST", raising=False)
+    monkeypatch.setattr(esp, "_local_service_probe_cache", None)
+    monkeypatch.setattr(esp, "_configured_model_cache", {})
+    monkeypatch.setattr(esp, "_http_client", lambda: _Client())
+
+    assert resolve_service_configured_model(CUSTOM_EMBEDDING_MODEL) == (
+        "local/nomic-embed-text-v1.5"
+    )
+    assert resolve_service_configured_model(CUSTOM_EMBEDDING_MODEL) == (
+        "local/nomic-embed-text-v1.5"
+    )
+    assert probes["count"] == 1
+
+
+def test_custom_embedding_calls_reuse_health_model_and_ignore_response_model(
+    monkeypatch,
+) -> None:
+    calls = {"health": 0, "embedding": 0}
+
+    class _Response:
+        def __init__(self, body: dict) -> None:
+            self._body = body
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return self._body
+
+    class _Client:
+        def get(self, *_args, **_kwargs) -> _Response:
+            calls["health"] += 1
+            return _Response({"configured_model": "local/multilingual-e5-small"})
+
+        def post(self, _url, *, json, timeout) -> _Response:  # noqa: ARG002
+            calls["embedding"] += 1
+            assert json["model"] == "local/multilingual-e5-small"
+            return _Response(
+                {
+                    "model": "ignored-response-model",
+                    "data": [{"index": 0, "embedding": [1.0, 0.0]}],
+                }
+            )
+
+    monkeypatch.setenv("REFLEXIO_EMBEDDING_SERVICE_URL", "http://embedding")
+    monkeypatch.delenv("REFLEXIO_EMBEDDING_PROVIDER", raising=False)
+    monkeypatch.setattr(esp, "_configured_model_cache", {})
+    monkeypatch.setattr(esp, "_http_client", lambda: _Client())
+    client = LiteLLMClient(LiteLLMConfig(model="gpt-4o"))
+
+    assert client.get_embedding("中文", model=CUSTOM_EMBEDDING_MODEL) == [1.0, 0.0]
+    assert client.get_embedding("English", model=CUSTOM_EMBEDDING_MODEL) == [
+        1.0,
+        0.0,
+    ]
+    assert calls == {"health": 1, "embedding": 2}
+
+
+def test_cloud_model_bypasses_configured_internal_service(monkeypatch) -> None:
+    monkeypatch.setenv("REFLEXIO_EMBEDDING_SERVICE_URL", "http://embedding")
+    monkeypatch.delenv("REFLEXIO_EMBEDDING_PROVIDER", raising=False)
+
+    assert embedding_provider_mode("text-embedding-3-small") == "cloud"
+
+
+def test_cloud_model_bypasses_explicit_internal_service_mode(monkeypatch) -> None:
+    monkeypatch.setenv("REFLEXIO_EMBEDDING_PROVIDER", "internal_service")
+    monkeypatch.setenv("REFLEXIO_EMBEDDING_SERVICE_URL", "http://embedding")
+
+    assert embedding_provider_mode("text-embedding-3-small") == "cloud"
+
+
+def test_custom_inprocess_fallback_remains_nomic_only(monkeypatch) -> None:
+    monkeypatch.setenv("REFLEXIO_EMBEDDING_PROVIDER", "inprocess")
+
+    assert resolve_service_configured_model(CUSTOM_EMBEDDING_MODEL) == (
+        "local/nomic-embed-text-v1.5"
+    )
+
+
+def test_multilingual_e5_rejects_inprocess_provider(monkeypatch) -> None:
+    monkeypatch.setenv("REFLEXIO_EMBEDDING_PROVIDER", "inprocess")
+    client = LiteLLMClient(LiteLLMConfig(model="gpt-4o"))
+
+    with pytest.raises(LiteLLMClientError, match="dedicated GPU embedding service"):
+        client.get_embedding("中文", model="local/multilingual-e5-small")
 
 
 def test_claude_smart_legacy_flag_defaults_to_local_service(monkeypatch) -> None:
@@ -309,10 +444,11 @@ def test_service_response_is_sorted_by_index(monkeypatch) -> None:
 
         def json(self) -> dict:
             return {
+                "model": "response-model-is-deliberately-ignored",
                 "data": [
                     {"index": 1, "embedding": [0.3, 0.4]},
                     {"index": 0, "embedding": [0.1, 0.2]},
-                ]
+                ],
             }
 
     class _Client:

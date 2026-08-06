@@ -1,5 +1,6 @@
 import hashlib
 import json
+import sqlite3
 import tempfile
 from datetime import UTC, datetime
 from unittest.mock import patch
@@ -32,6 +33,7 @@ from reflexio.server.services.storage.sqlite_storage import (
 from reflexio.server.services.storage.sqlite_storage._base import (
     _epoch_to_iso,
     _iso_to_epoch,
+    register_unicode_lexical_index_function,
 )
 
 # ---------------------------------------------------------------------------
@@ -215,6 +217,205 @@ def test_or_recall_returns_multiple_matches(storage):
     contents = {r.content for r in results}
     assert "authentication failed" in contents
     assert "timeout occurred" in contents
+
+
+def test_unicode_lexical_search_ranks_chinese_database_record_first(storage):
+    storage.save_agent_playbooks(
+        [
+            AgentPlaybook(
+                agent_version="v1",
+                content="系统使用 PostgreSQL 数据库保存用户资料。",
+                trigger="用户询问数据库配置",
+            ),
+            AgentPlaybook(
+                agent_version="v1",
+                content="The service uses an in-memory cache.",
+                trigger="user asks about caching",
+            ),
+        ]
+    )
+
+    results = storage.search_agent_playbooks(
+        SearchAgentPlaybookRequest(
+            query="用户使用什么数据库？",
+            search_mode=SearchMode.FTS,
+            top_k=10,
+        )
+    )
+
+    assert results
+    assert "PostgreSQL" in results[0].content
+
+
+@pytest.mark.parametrize(
+    ("document", "query"),
+    [
+        ("日本語の設定ではタイムゾーンを東京にします。", "タイムゾーン設定"),
+        ("قاعدة البيانات المستخدمة هي PostgreSQL", "قاعدة البيانات"),
+        ("Le café préféré est à Montréal.", "café Montréal"),
+        ("中文 runbook 使用 PostgreSQL connection pool。", "中文 PostgreSQL 连接"),
+    ],
+)
+def test_unicode_lexical_search_supports_non_latin_and_mixed_scripts(
+    storage, document, query
+):
+    storage.save_user_playbooks(
+        [
+            UserPlaybook(
+                user_id="user1",
+                agent_version="v1",
+                request_id="r1",
+                playbook_name="unicode",
+                content=document,
+                trigger=document,
+            )
+        ]
+    )
+
+    results = storage.search_user_playbooks(
+        SearchUserPlaybookRequest(
+            query=query,
+            search_mode=SearchMode.FTS,
+            top_k=10,
+        )
+    )
+
+    assert [result.content for result in results] == [document]
+
+
+@pytest.mark.parametrize("query", ["！！！", "🙂🚀"])
+def test_unicode_lexical_search_handles_non_lexical_input(storage, query):
+    storage.save_agent_playbooks(
+        [
+            AgentPlaybook(
+                agent_version="v1",
+                content="普通记录",
+                trigger="普通触发条件",
+            )
+        ]
+    )
+
+    assert (
+        storage.search_agent_playbooks(
+            SearchAgentPlaybookRequest(
+                query=query,
+                search_mode=SearchMode.FTS,
+                top_k=10,
+            )
+        )
+        == []
+    )
+
+
+def test_unicode_lexical_search_scores_only_bounded_index_candidates(storage):
+    from reflexio.server.services.storage.sqlite_storage.playbook import (
+        _agent as agent_storage,
+    )
+
+    storage.save_agent_playbooks(
+        [
+            AgentPlaybook(
+                agent_version="v1",
+                content=f"数据库运行手册 {index}",
+                trigger=f"数据库问题 {index}",
+            )
+            for index in range(75)
+        ]
+    )
+
+    with patch.object(
+        agent_storage,
+        "_rank_unicode_lexical_rows",
+        wraps=agent_storage._rank_unicode_lexical_rows,
+    ) as rank_candidates:
+        results = storage.search_agent_playbooks(
+            SearchAgentPlaybookRequest(
+                query="数据库",
+                search_mode=SearchMode.FTS,
+                top_k=10,
+            )
+        )
+
+    assert len(results) == 10
+    candidates = rank_candidates.call_args.args[0]
+    assert len(candidates) == 50
+    assert len(candidates) < 75
+
+
+def test_unicode_lexical_index_backfills_existing_records_on_upgrade():
+    with (
+        tempfile.TemporaryDirectory() as temp_dir,
+        patch.object(SQLiteStorage, "_get_embedding", return_value=[0.0] * 512),
+    ):
+        db_path = f"{temp_dir}/reflexio.db"
+        original = SQLiteStorage(org_id="0", db_path=db_path)
+        original.save_agent_playbooks(
+            [
+                AgentPlaybook(
+                    agent_version="v1",
+                    content="系统使用 PostgreSQL 数据库。",
+                    trigger="数据库配置",
+                )
+            ]
+        )
+        original.conn.executescript(
+            """DROP TRIGGER agent_playbooks_unicode_fts_ai;
+               DROP TRIGGER agent_playbooks_unicode_fts_au;
+               DROP TRIGGER agent_playbooks_unicode_fts_ad;
+               DROP TABLE agent_playbooks_unicode_fts;
+               DELETE FROM interactions_unicode_fts WHERE rowid = -1;"""
+        )
+        original.conn.close()
+
+        upgraded = SQLiteStorage(org_id="0", db_path=db_path)
+        results = upgraded.search_agent_playbooks(
+            SearchAgentPlaybookRequest(
+                query="数据库",
+                search_mode=SearchMode.FTS,
+                top_k=10,
+            )
+        )
+        upgraded.conn.close()
+
+    assert len(results) == 1
+    assert "PostgreSQL" in results[0].content
+
+
+def test_unicode_lexical_triggers_work_on_registered_direct_writer_connection():
+    conn = sqlite3.connect(":memory:")
+    register_unicode_lexical_index_function(conn)
+    conn.executescript(
+        """CREATE TABLE profiles (
+               profile_id INTEGER PRIMARY KEY,
+               content TEXT,
+               expanded_terms TEXT
+           );
+           CREATE VIRTUAL TABLE profiles_unicode_fts
+               USING fts5(search_ngrams, content='');
+           CREATE TRIGGER profiles_unicode_fts_au
+           AFTER UPDATE OF content, expanded_terms ON profiles BEGIN
+               INSERT INTO profiles_unicode_fts(rowid, search_ngrams)
+               VALUES (
+                   new.profile_id,
+                   reflexio_unicode_lexical_index(
+                       COALESCE(new.content, '') || ' ' ||
+                       COALESCE(new.expanded_terms, '')
+                   )
+               );
+           END;
+           INSERT INTO profiles(profile_id, content) VALUES (1, '数据库');
+           UPDATE profiles SET expanded_terms = 'PostgreSQL' WHERE profile_id = 1;
+        """
+    )
+
+    indexed = conn.execute(
+        "SELECT rowid FROM profiles_unicode_fts WHERE profiles_unicode_fts MATCH ?",
+        ('"数据"',),
+    ).fetchone()
+    conn.close()
+
+    assert indexed is not None
+    assert indexed[0] == 1
 
 
 # ---------------------------------------------------------------------------
