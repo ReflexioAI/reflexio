@@ -71,6 +71,7 @@ class CandidateReviewDecision(BaseModel):
         "late_trigger",
         "compound",
         "internal_status",
+        "absence_inference",
     ]
     evidence_ids: list[str] = Field(default_factory=list)
     revision: CandidateRevision | None = None

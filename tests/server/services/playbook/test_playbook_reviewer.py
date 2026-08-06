@@ -407,7 +407,7 @@ def test_apply_decisions_uses_the_same_trimmed_candidate_id_as_validation():
 def test_reviewer_prompt_is_versioned_and_active():
     manager = PromptManager()
 
-    assert manager.get_active_version("playbook_candidate_review") == "1.0.0"
+    assert manager.get_active_version("playbook_candidate_review") == "1.1.0"
 
 
 def test_reviewer_prompt_preserves_grounded_procedures_and_forbids_substitutes():
@@ -454,7 +454,15 @@ def test_reviewer_prompt_preserves_grounded_procedures_and_forbids_substitutes()
 
     # Keep the policy compact enough that chronology and evidence remain the
     # dominant context. Frontmatter is not included in the rendered prompt.
-    assert len(rendered.split()) <= 1_000
+    #
+    # Raised 1000 -> 1050 in v1.1.0 to fit check 7 (absence). The check is
+    # dose-dependent on its own wording, measured on one window over 8 reps each:
+    #   ~70 words (as shipped)  -> 86% of candidates pruned, absence_inference x6
+    #   ~30 words (premise only)-> 25% pruned, x2
+    #   ~22 words (terse)       ->  0% pruned, x1 and not even rejected
+    # A compressed check is not a smaller version of this one, it is an inert
+    # one. Prefer displacing existing policy text over raising this again.
+    assert len(rendered.split()) <= 1_050
 
 
 @pytest.mark.parametrize(
