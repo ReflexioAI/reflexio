@@ -305,6 +305,80 @@ def test_unicode_lexical_search_handles_non_lexical_input(storage, query):
     )
 
 
+def test_unicode_lexical_search_scores_only_bounded_index_candidates(storage):
+    from reflexio.server.services.storage.sqlite_storage.playbook import (
+        _agent as agent_storage,
+    )
+
+    storage.save_agent_playbooks(
+        [
+            AgentPlaybook(
+                agent_version="v1",
+                content=f"数据库运行手册 {index}",
+                trigger=f"数据库问题 {index}",
+            )
+            for index in range(75)
+        ]
+    )
+
+    with patch.object(
+        agent_storage,
+        "_rank_unicode_lexical_rows",
+        wraps=agent_storage._rank_unicode_lexical_rows,
+    ) as rank_candidates:
+        results = storage.search_agent_playbooks(
+            SearchAgentPlaybookRequest(
+                query="数据库",
+                search_mode=SearchMode.FTS,
+                top_k=10,
+            )
+        )
+
+    assert len(results) == 10
+    candidates = rank_candidates.call_args.args[0]
+    assert len(candidates) == 50
+    assert len(candidates) < 75
+
+
+def test_unicode_lexical_index_backfills_existing_records_on_upgrade():
+    with (
+        tempfile.TemporaryDirectory() as temp_dir,
+        patch.object(SQLiteStorage, "_get_embedding", return_value=[0.0] * 512),
+    ):
+        db_path = f"{temp_dir}/reflexio.db"
+        original = SQLiteStorage(org_id="0", db_path=db_path)
+        original.save_agent_playbooks(
+            [
+                AgentPlaybook(
+                    agent_version="v1",
+                    content="系统使用 PostgreSQL 数据库。",
+                    trigger="数据库配置",
+                )
+            ]
+        )
+        original.conn.executescript(
+            """DROP TRIGGER agent_playbooks_unicode_fts_ai;
+               DROP TRIGGER agent_playbooks_unicode_fts_au;
+               DROP TRIGGER agent_playbooks_unicode_fts_ad;
+               DROP TABLE agent_playbooks_unicode_fts;
+               DELETE FROM interactions_unicode_fts WHERE rowid = -1;"""
+        )
+        original.conn.close()
+
+        upgraded = SQLiteStorage(org_id="0", db_path=db_path)
+        results = upgraded.search_agent_playbooks(
+            SearchAgentPlaybookRequest(
+                query="数据库",
+                search_mode=SearchMode.FTS,
+                top_k=10,
+            )
+        )
+        upgraded.conn.close()
+
+    assert len(results) == 1
+    assert "PostgreSQL" in results[0].content
+
+
 # ---------------------------------------------------------------------------
 # SQL filter pushdown
 # ---------------------------------------------------------------------------

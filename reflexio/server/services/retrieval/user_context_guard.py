@@ -108,7 +108,7 @@ _POSITIVE_USER_CONTEXT_PATTERN = re.compile(
     rf"\b{_PROFILE_ACTION}\s+{_PROFILE_TARGET}\b", re.VERBOSE
 )
 _ZH_OPTOUT_PATTERN = re.compile(
-    r"(?:^|[。！？!?；;，,])\s*"
+    r"(?:^|[。.!?;,])\s*"
     r"(?:不要|別|别|請勿|请勿|無需|无需|不用|不需要)"
     r"(?:再)?(?:使用|採用|采用|參考|参考|考慮|考虑|讀取|读取|檢索|检索|訪問|访问|依賴|依赖)?"
     r"(?:任何)?(?:我的|使用者的|用户的|個人|个人)?"

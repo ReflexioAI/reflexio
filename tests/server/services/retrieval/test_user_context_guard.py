@@ -28,6 +28,7 @@ from reflexio.server.services.retrieval.user_context_guard import (
         "請勿參考我的偏好。",
         "无需个性化，直接回答问题。",
         "請直接回答，別使用我的歷史記錄。",
+        "先说明背景。不要使用我的个人资料。",
     ],
 )
 def test_explicit_opt_outs_suppress_user_context(query: str) -> None:

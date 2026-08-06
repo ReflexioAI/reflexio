@@ -26,10 +26,13 @@ from .._base import (
     _build_status_sql,
     _effective_search_mode,
     _epoch_now,
+    _rank_unicode_lexical_rows,
     _row_to_interaction,
     _row_to_profile,
     _sanitize_fts_query,
     _true_rrf_merge,
+    _unicode_lexical_candidate_limit,
+    _unicode_lexical_fts_query,
     _uses_unicode_lexical_fallback,
     _vector_rank_rows,
 )
@@ -100,7 +103,8 @@ class ProfileSearchMixin:
             )
         elif has_query:
             # FTS search (with optional HYBRID re-ranking)
-            fts_query = _sanitize_fts_query(req.query)  # type: ignore[arg-type]
+            query = req.query or ""
+            fts_query = _sanitize_fts_query(query)
             fts_conditions = ["interactions_fts MATCH ?", *conditions]
             fts_where = " AND ".join(fts_conditions)
             fts_params: list[str | int | float] = [fts_query, *params, overfetch]
@@ -110,22 +114,26 @@ class ProfileSearchMixin:
                       ORDER BY bm25(interactions_fts, 1.0, 2.0)
                       LIMIT ?"""
             fts_rows = self._fetchall(sql, tuple(fts_params))
-            if _uses_unicode_lexical_fallback(req.query):  # type: ignore[arg-type]
-                unicode_sql = f"""SELECT ranked.* FROM (
-                              SELECT i.*,
-                                reflexio_unicode_lexical_score(
-                                  COALESCE(i.content, '') || ' ' ||
-                                  COALESCE(i.user_action_description, ''), ?
-                                ) AS unicode_score
-                              FROM interactions i
-                              WHERE {where_clause}
-                            ) AS ranked
-                            WHERE ranked.unicode_score > 0
-                            ORDER BY ranked.unicode_score DESC
-                            LIMIT ?"""
-                unicode_rows = self._fetchall(
+            if _uses_unicode_lexical_fallback(query):
+                unicode_sql = f"""SELECT i.* FROM interactions_unicode_fts uf
+                              JOIN interactions i ON i.rowid = uf.rowid
+                              WHERE interactions_unicode_fts MATCH ?
+                              AND {where_clause}
+                              ORDER BY bm25(interactions_unicode_fts)
+                              LIMIT ?"""
+                unicode_candidates = self._fetchall(
                     unicode_sql,
-                    (req.query, *params, overfetch),
+                    (
+                        _unicode_lexical_fts_query(query),
+                        *params,
+                        _unicode_lexical_candidate_limit(overfetch),
+                    ),
+                )
+                unicode_rows = _rank_unicode_lexical_rows(
+                    unicode_candidates,
+                    query,
+                    ("content", "user_action_description"),
+                    overfetch,
                 )
                 fts_rows = _true_rrf_merge(
                     fts_rows,
@@ -248,7 +256,8 @@ class ProfileSearchMixin:
                 threshold=threshold,
             )
         elif has_query:
-            fts_query = _sanitize_fts_query(req.query)  # type: ignore[arg-type]
+            query = req.query or ""
+            fts_query = _sanitize_fts_query(query)
             sql = f"""SELECT p.* FROM profiles p
                       JOIN profiles_fts f ON p.profile_id = f.profile_id
                       WHERE profiles_fts MATCH ?
@@ -257,22 +266,26 @@ class ProfileSearchMixin:
                       LIMIT ?"""
             params_list: list[object] = [fts_query, *params, overfetch]
             fts_rows = self._fetchall(sql, tuple(params_list))
-            if _uses_unicode_lexical_fallback(req.query):  # type: ignore[arg-type]
-                unicode_sql = f"""SELECT ranked.* FROM (
-                              SELECT p.*,
-                                reflexio_unicode_lexical_score(
-                                  COALESCE(p.content, '') || ' ' ||
-                                  COALESCE(p.expanded_terms, ''), ?
-                                ) AS unicode_score
-                              FROM profiles p
-                              WHERE {where_clause}
-                            ) AS ranked
-                            WHERE ranked.unicode_score > 0
-                            ORDER BY ranked.unicode_score DESC
-                            LIMIT ?"""
-                unicode_rows = self._fetchall(
+            if _uses_unicode_lexical_fallback(query):
+                unicode_sql = f"""SELECT p.* FROM profiles_unicode_fts uf
+                              JOIN profiles p ON p.rowid = uf.rowid
+                              WHERE profiles_unicode_fts MATCH ?
+                              AND {where_clause}
+                              ORDER BY bm25(profiles_unicode_fts)
+                              LIMIT ?"""
+                unicode_candidates = self._fetchall(
                     unicode_sql,
-                    (req.query, *params, overfetch),
+                    (
+                        _unicode_lexical_fts_query(query),
+                        *params,
+                        _unicode_lexical_candidate_limit(overfetch),
+                    ),
+                )
+                unicode_rows = _rank_unicode_lexical_rows(
+                    unicode_candidates,
+                    query,
+                    ("content", "expanded_terms"),
+                    overfetch,
                 )
                 fts_rows = _true_rrf_merge(
                     fts_rows,

@@ -13,6 +13,7 @@ from reflexio.models.api_schema.domain.entities import (
     AgentPlaybook,
     PlaybookStatus,
     UserPlaybook,
+    UserProfile,
 )
 from reflexio.models.api_schema.retriever_schema import (
     UnifiedSearchRequest,
@@ -498,6 +499,47 @@ class TestEntityTypesFiltering(unittest.TestCase):
         storage.search_user_profile.assert_not_called()
         storage.search_user_playbooks.assert_not_called()
         storage.search_agent_playbooks.assert_called_once()
+
+    @patch("reflexio.server.services.unified_search_service.QueryReformulator")
+    def test_explicit_include_preserves_user_context_for_opt_out_text(
+        self, _reformulator_cls
+    ):
+        profile = UserProfile(
+            profile_id="p1",
+            user_id="user1",
+            content="Uses PostgreSQL",
+            last_modified_timestamp=1,
+            generated_from_request_id="r1",
+        )
+        playbook = UserPlaybook(
+            user_playbook_id=1,
+            user_id="user1",
+            agent_version="v1",
+            request_id="r1",
+            content="Prefer PostgreSQL",
+        )
+        storage = _mock_storage()
+        storage.search_user_profile.return_value = [profile]
+        storage.search_user_playbooks.return_value = [playbook]
+
+        result = run_unified_search(
+            request=UnifiedSearchRequest(
+                query="不要使用我的个人资料",
+                user_id="user1",
+                entity_types=["profiles", "user_playbooks"],
+                include_user_context=True,
+            ),
+            org_id="test-org",
+            storage=storage,
+            llm_client=MagicMock(),
+            prompt_manager=MagicMock(),
+        )
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.profiles, [profile])
+        self.assertEqual(result.user_playbooks, [playbook])
+        storage.search_user_profile.assert_called_once()
+        storage.search_user_playbooks.assert_called_once()
 
     @patch("reflexio.server.services.unified_search_service._run_phase_a")
     def test_user_only_opt_out_returns_before_phase_a(self, phase_a):

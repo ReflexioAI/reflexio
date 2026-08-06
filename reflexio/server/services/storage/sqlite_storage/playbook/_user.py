@@ -38,9 +38,12 @@ from .._base import (
     _epoch_now,
     _epoch_to_iso,
     _json_dumps,
+    _rank_unicode_lexical_rows,
     _row_to_user_playbook,
     _sanitize_fts_query,
     _true_rrf_merge,
+    _unicode_lexical_candidate_limit,
+    _unicode_lexical_fts_query,
     _uses_unicode_lexical_fallback,
     _vector_rank_rows,
 )
@@ -1416,24 +1419,24 @@ class UserPlaybookStoreMixin:
                       LIMIT ?"""
             fts_rows = self._fetchall(sql, [fts_query, *params, overfetch])
             if _uses_unicode_lexical_fallback(query):
-                base_where = "WHERE " + " AND ".join(conditions) if conditions else ""
-                unicode_sql = f"""SELECT ranked.* FROM (
-                              SELECT up.*,
-                                reflexio_unicode_lexical_score(
-                                  COALESCE(up.trigger, '') || ' ' ||
-                                  COALESCE(up.content, '') || ' ' ||
-                                  COALESCE(up.rationale, '') || ' ' ||
-                                  COALESCE(up.source, ''), ?
-                                ) AS unicode_score
-                              FROM user_playbooks up
-                              {base_where}
-                            ) AS ranked
-                            WHERE ranked.unicode_score > 0
-                            ORDER BY ranked.unicode_score DESC
-                            LIMIT ?"""
-                unicode_rows = self._fetchall(
+                unicode_sql = f"""SELECT up.* FROM user_playbooks_unicode_fts uf
+                              JOIN user_playbooks up ON up.rowid = uf.rowid
+                              WHERE user_playbooks_unicode_fts MATCH ?{where_extra}
+                              ORDER BY bm25(user_playbooks_unicode_fts)
+                              LIMIT ?"""
+                unicode_candidates = self._fetchall(
                     unicode_sql,
-                    [query, *params, overfetch],
+                    [
+                        _unicode_lexical_fts_query(query),
+                        *params,
+                        _unicode_lexical_candidate_limit(overfetch),
+                    ],
+                )
+                unicode_rows = _rank_unicode_lexical_rows(
+                    unicode_candidates,
+                    query,
+                    ("trigger", "content", "rationale", "source"),
+                    overfetch,
                 )
                 fts_rows = _true_rrf_merge(
                     fts_rows,

@@ -93,16 +93,17 @@ _FTS5_OPERATORS = frozenset({"OR", "AND", "NOT"})
 _FTS5_RESERVED = _FTS5_OPERATORS | {"NEAR"}
 _TOKEN_RE = re.compile(r"\w+", re.UNICODE)
 _UNICODE_LEXICAL_MAX_TERMS = 16
+_UNICODE_LEXICAL_MAX_CANDIDATES = 250
+_UNICODE_LEXICAL_INDEX_VERSION = 1
 
 
 def _normalize_lexical_text(text: str) -> str:
     return " ".join(unicodedata.normalize("NFKC", text).casefold().split())
 
 
-@functools.lru_cache(maxsize=512)
-def _unicode_lexical_terms(query: str) -> tuple[str, ...]:
-    """Return bounded Unicode-aware terms for the SQLite scan fallback."""
-    normalized = _normalize_lexical_text(query)
+def _unicode_lexical_runs(text: str) -> tuple[str, ...]:
+    """Split normalized text at punctuation and ASCII/non-ASCII boundaries."""
+    normalized = _normalize_lexical_text(text)
     runs: list[str] = []
     current: list[str] = []
     current_is_ascii: bool | None = None
@@ -121,14 +122,43 @@ def _unicode_lexical_terms(query: str) -> tuple[str, ...]:
         current_is_ascii = is_ascii
     if current:
         runs.append("".join(current))
+    return tuple(runs)
 
+
+@functools.lru_cache(maxsize=512)
+def _unicode_lexical_terms(query: str) -> tuple[str, ...]:
+    """Return bounded Unicode-aware terms used for query coverage scoring."""
     terms: list[str] = []
-    for run in runs:
+    for run in _unicode_lexical_runs(query):
         if run.isascii() or len(run) == 1:
             terms.append(run)
         else:
             terms.extend(run[index : index + 2] for index in range(len(run) - 1))
     return tuple(dict.fromkeys(terms))[:_UNICODE_LEXICAL_MAX_TERMS]
+
+
+def _unicode_lexical_index_text(document: str | None) -> str:
+    """Build normalized unigram/bigram tokens for the Unicode FTS sidecars."""
+    if not document:
+        return ""
+    terms: list[str] = []
+    for run in _unicode_lexical_runs(document):
+        if run.isascii():
+            terms.append(run)
+            continue
+        terms.extend(run)
+        terms.extend(run[index : index + 2] for index in range(len(run) - 1))
+    return " ".join(dict.fromkeys(terms))
+
+
+def _unicode_lexical_fts_query(query: str) -> str:
+    """Return an OR query over normalized Unicode lexical terms."""
+    return " OR ".join(f'"{term}"' for term in _unicode_lexical_terms(query))
+
+
+def _unicode_lexical_candidate_limit(result_limit: int) -> int:
+    """Bound the indexed candidate pool before Python-side coverage scoring."""
+    return min(max(result_limit * 5, 50), _UNICODE_LEXICAL_MAX_CANDIDATES)
 
 
 def _uses_unicode_lexical_fallback(query: str) -> bool:
@@ -145,6 +175,23 @@ def _unicode_lexical_score(document: str | None, query: str | None) -> float:
     normalized_document = _normalize_lexical_text(document)
     matched = sum(term in normalized_document for term in terms)
     return matched / len(terms)
+
+
+def _rank_unicode_lexical_rows(
+    rows: Sequence[Any],
+    query: str,
+    text_columns: Sequence[str],
+    limit: int,
+) -> list[Any]:
+    """Rank an already-bounded indexed candidate set by query-term coverage."""
+    scored: list[tuple[float, int, Any]] = []
+    for index, row in enumerate(rows):
+        document = " ".join(str(row[column] or "") for column in text_columns)
+        score = _unicode_lexical_score(document, query)
+        if score > 0:
+            scored.append((score, index, row))
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    return [row for _score, _index, row in scored[:limit]]
 
 
 def _sanitize_fts_query(text: str) -> str:
@@ -734,9 +781,9 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         self.conn = sqlite3.connect(db_path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.create_function(
-            "reflexio_unicode_lexical_score",
-            2,
-            _unicode_lexical_score,
+            "reflexio_unicode_lexical_index",
+            1,
+            _unicode_lexical_index_text,
             deterministic=True,
         )
         self.conn.execute("PRAGMA journal_mode=WAL")
@@ -859,6 +906,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         self._migrate_agent_runs_schema()
         self._migrate_pending_tool_calls_schema()
         self._migrate_expanded_terms()
+        self._migrate_unicode_lexical_indexes()
         self._migrate_tags()
         self._migrate_profile_source_interaction_ids()
         self._migrate_interaction_window_indexes()
@@ -881,6 +929,72 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         init_stall_state_table(self.conn)
         self._migrate_learning_jobs()
         return True
+
+    def _migrate_unicode_lexical_indexes(self) -> None:
+        """Backfill the trigger-maintained Unicode FTS sidecars exactly once."""
+        version_sentinel_rowid = -_UNICODE_LEXICAL_INDEX_VERSION
+        with self._lock:
+            version_row = self.conn.execute(
+                "SELECT rowid FROM interactions_unicode_fts WHERE rowid = ?",
+                (version_sentinel_rowid,),
+            ).fetchone()
+            if version_row is not None:
+                return
+
+            self.conn.execute("BEGIN IMMEDIATE")
+            try:
+                for index_table in (
+                    "interactions_unicode_fts",
+                    "profiles_unicode_fts",
+                    "user_playbooks_unicode_fts",
+                    "agent_playbooks_unicode_fts",
+                ):
+                    self.conn.execute(f"DELETE FROM {index_table}")  # noqa: S608
+
+                self.conn.execute(
+                    """INSERT INTO interactions_unicode_fts(rowid, search_ngrams)
+                       SELECT i.rowid, reflexio_unicode_lexical_index(
+                           COALESCE(i.content, '') || ' ' ||
+                           COALESCE(i.user_action_description, '')
+                       )
+                       FROM interactions i"""
+                )
+                self.conn.execute(
+                    """INSERT INTO profiles_unicode_fts(rowid, search_ngrams)
+                       SELECT p.rowid, reflexio_unicode_lexical_index(
+                           COALESCE(p.content, '') || ' ' ||
+                           COALESCE(p.expanded_terms, '')
+                       )
+                       FROM profiles p"""
+                )
+                self.conn.execute(
+                    """INSERT INTO user_playbooks_unicode_fts(rowid, search_ngrams)
+                       SELECT up.rowid, reflexio_unicode_lexical_index(
+                           COALESCE(up.trigger, '') || ' ' ||
+                           COALESCE(up.content, '') || ' ' ||
+                           COALESCE(up.rationale, '') || ' ' ||
+                           COALESCE(up.source, '')
+                       )
+                       FROM user_playbooks up"""
+                )
+                self.conn.execute(
+                    """INSERT INTO agent_playbooks_unicode_fts(rowid, search_ngrams)
+                       SELECT ap.rowid, reflexio_unicode_lexical_index(
+                           COALESCE(ap.trigger, '') || ' ' ||
+                           COALESCE(ap.content, '') || ' ' ||
+                           COALESCE(ap.rationale, '')
+                       )
+                       FROM agent_playbooks ap"""
+                )
+                self.conn.execute(
+                    "INSERT INTO interactions_unicode_fts(rowid, search_ngrams) "
+                    "VALUES (?, '')",
+                    (version_sentinel_rowid,),
+                )
+                self.conn.commit()
+            except Exception:
+                self.conn.rollback()
+                raise
 
     def _migrate_session_outcomes_schema(self) -> None:
         """Restore the pre-identity outcome schema after downgrading #407."""
@@ -3108,6 +3222,143 @@ CREATE VIRTUAL TABLE IF NOT EXISTS agent_playbooks_fts USING fts5(
     search_text,
     tokenize="porter unicode61"
 );
+
+-- Unicode lexical candidate indexes. Main-table triggers keep these normalized
+-- n-gram sidecars current so non-ASCII searches never scan every document.
+CREATE VIRTUAL TABLE IF NOT EXISTS interactions_unicode_fts USING fts5(
+    search_ngrams,
+    tokenize="unicode61 remove_diacritics 0"
+);
+CREATE VIRTUAL TABLE IF NOT EXISTS profiles_unicode_fts USING fts5(
+    search_ngrams,
+    tokenize="unicode61 remove_diacritics 0"
+);
+CREATE VIRTUAL TABLE IF NOT EXISTS user_playbooks_unicode_fts USING fts5(
+    search_ngrams,
+    tokenize="unicode61 remove_diacritics 0"
+);
+CREATE VIRTUAL TABLE IF NOT EXISTS agent_playbooks_unicode_fts USING fts5(
+    search_ngrams,
+    tokenize="unicode61 remove_diacritics 0"
+);
+
+CREATE TRIGGER IF NOT EXISTS interactions_unicode_fts_ai
+AFTER INSERT ON interactions BEGIN
+    INSERT INTO interactions_unicode_fts(rowid, search_ngrams)
+    VALUES (
+        new.rowid,
+        reflexio_unicode_lexical_index(
+            COALESCE(new.content, '') || ' ' ||
+            COALESCE(new.user_action_description, '')
+        )
+    );
+END;
+CREATE TRIGGER IF NOT EXISTS interactions_unicode_fts_au
+AFTER UPDATE OF content, user_action_description ON interactions BEGIN
+    DELETE FROM interactions_unicode_fts WHERE rowid = old.rowid;
+    INSERT INTO interactions_unicode_fts(rowid, search_ngrams)
+    VALUES (
+        new.rowid,
+        reflexio_unicode_lexical_index(
+            COALESCE(new.content, '') || ' ' ||
+            COALESCE(new.user_action_description, '')
+        )
+    );
+END;
+CREATE TRIGGER IF NOT EXISTS interactions_unicode_fts_ad
+AFTER DELETE ON interactions BEGIN
+    DELETE FROM interactions_unicode_fts WHERE rowid = old.rowid;
+END;
+
+CREATE TRIGGER IF NOT EXISTS profiles_unicode_fts_ai
+AFTER INSERT ON profiles BEGIN
+    INSERT INTO profiles_unicode_fts(rowid, search_ngrams)
+    VALUES (
+        new.rowid,
+        reflexio_unicode_lexical_index(
+            COALESCE(new.content, '') || ' ' ||
+            COALESCE(new.expanded_terms, '')
+        )
+    );
+END;
+CREATE TRIGGER IF NOT EXISTS profiles_unicode_fts_au
+AFTER UPDATE OF content, expanded_terms ON profiles BEGIN
+    DELETE FROM profiles_unicode_fts WHERE rowid = old.rowid;
+    INSERT INTO profiles_unicode_fts(rowid, search_ngrams)
+    VALUES (
+        new.rowid,
+        reflexio_unicode_lexical_index(
+            COALESCE(new.content, '') || ' ' ||
+            COALESCE(new.expanded_terms, '')
+        )
+    );
+END;
+CREATE TRIGGER IF NOT EXISTS profiles_unicode_fts_ad
+AFTER DELETE ON profiles BEGIN
+    DELETE FROM profiles_unicode_fts WHERE rowid = old.rowid;
+END;
+
+CREATE TRIGGER IF NOT EXISTS user_playbooks_unicode_fts_ai
+AFTER INSERT ON user_playbooks BEGIN
+    INSERT INTO user_playbooks_unicode_fts(rowid, search_ngrams)
+    VALUES (
+        new.rowid,
+        reflexio_unicode_lexical_index(
+            COALESCE(new.trigger, '') || ' ' ||
+            COALESCE(new.content, '') || ' ' ||
+            COALESCE(new.rationale, '') || ' ' ||
+            COALESCE(new.source, '')
+        )
+    );
+END;
+CREATE TRIGGER IF NOT EXISTS user_playbooks_unicode_fts_au
+AFTER UPDATE OF trigger, content, rationale, source ON user_playbooks BEGIN
+    DELETE FROM user_playbooks_unicode_fts WHERE rowid = old.rowid;
+    INSERT INTO user_playbooks_unicode_fts(rowid, search_ngrams)
+    VALUES (
+        new.rowid,
+        reflexio_unicode_lexical_index(
+            COALESCE(new.trigger, '') || ' ' ||
+            COALESCE(new.content, '') || ' ' ||
+            COALESCE(new.rationale, '') || ' ' ||
+            COALESCE(new.source, '')
+        )
+    );
+END;
+CREATE TRIGGER IF NOT EXISTS user_playbooks_unicode_fts_ad
+AFTER DELETE ON user_playbooks BEGIN
+    DELETE FROM user_playbooks_unicode_fts WHERE rowid = old.rowid;
+END;
+
+CREATE TRIGGER IF NOT EXISTS agent_playbooks_unicode_fts_ai
+AFTER INSERT ON agent_playbooks BEGIN
+    INSERT INTO agent_playbooks_unicode_fts(rowid, search_ngrams)
+    VALUES (
+        new.rowid,
+        reflexio_unicode_lexical_index(
+            COALESCE(new.trigger, '') || ' ' ||
+            COALESCE(new.content, '') || ' ' ||
+            COALESCE(new.rationale, '')
+        )
+    );
+END;
+CREATE TRIGGER IF NOT EXISTS agent_playbooks_unicode_fts_au
+AFTER UPDATE OF trigger, content, rationale ON agent_playbooks BEGIN
+    DELETE FROM agent_playbooks_unicode_fts WHERE rowid = old.rowid;
+    INSERT INTO agent_playbooks_unicode_fts(rowid, search_ngrams)
+    VALUES (
+        new.rowid,
+        reflexio_unicode_lexical_index(
+            COALESCE(new.trigger, '') || ' ' ||
+            COALESCE(new.content, '') || ' ' ||
+            COALESCE(new.rationale, '')
+        )
+    );
+END;
+CREATE TRIGGER IF NOT EXISTS agent_playbooks_unicode_fts_ad
+AFTER DELETE ON agent_playbooks BEGIN
+    DELETE FROM agent_playbooks_unicode_fts WHERE rowid = old.rowid;
+END;
 
 CREATE TABLE IF NOT EXISTS share_links (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

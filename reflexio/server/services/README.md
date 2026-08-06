@@ -63,7 +63,7 @@ strings before deleting old import paths in the same PR.
 
 | Path | Purpose |
 |------|---------|
-| `storage/` | `storage_base/` and `sqlite_storage/` keep legacy domain facades while focused subpackages own `profiles/`, `playbook/`, `agent_run/`, `governance`, durable `learning_jobs`, and SQLite `base/` helpers. SQLite hybrid search preserves Porter FTS for ASCII and adds bounded Unicode substring candidates for non-ASCII and mixed-script queries. `storage_base/playbook/_aggregation.py` defines fenced aggregation state; SQLite implements it in the matching playbook package. Access via `request_context.storage` only. |
+| `storage/` | `storage_base/` and `sqlite_storage/` keep legacy domain facades while focused subpackages own `profiles/`, `playbook/`, `agent_run/`, `governance`, durable `learning_jobs`, and SQLite `base/` helpers. SQLite hybrid search preserves Porter FTS for ASCII and adds bounded Unicode substring candidates only when a query contains at least one non-ASCII alphanumeric character, including mixed-script queries; emoji-only and punctuation-only queries are ineligible. `storage_base/playbook/_aggregation.py` defines fenced aggregation state; SQLite implements it in the matching playbook package. Access via `request_context.storage` only. |
 | `configurator/` | `DefaultConfigurator` — loads YAML config and creates the storage backend. |
 
 ## Key Rules
