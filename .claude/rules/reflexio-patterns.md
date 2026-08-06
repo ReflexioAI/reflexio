@@ -6,8 +6,8 @@ paths:
 # Reflexio Architecture Guardrails
 
 ## Reflexio Instance
-- **NEVER** instantiate `Reflexio()` directly in API endpoints
-- **ALWAYS** use `get_reflexio()` from `server/cache/`
+- **NEVER** instantiate `Reflexio()` or `RequestContext()` directly in API endpoints or background schedulers
+- **ALWAYS** use `get_reflexio()` from `server/cache/` — or `get_cached_request_context()` when only the `RequestContext` is needed (e.g. a scheduler fanning out per-org work). Direct construction in a per-tick loop rebuilds config decryption, storage client pools, and LLM clients on every tick.
 
 ## Storage
 - **NEVER** import storage implementations directly
