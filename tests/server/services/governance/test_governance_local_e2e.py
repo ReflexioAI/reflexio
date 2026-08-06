@@ -233,12 +233,12 @@ def test_purge_execution_heartbeat_serializes_concurrent_renewals() -> None:
     renewal_lock = TrackingRenewalLock(progress)
     cast_heartbeat: Any = heartbeat
     cast_heartbeat._renewal_lock = renewal_lock
-    errors: list[BaseException] = []
+    errors: list[Exception] = []
 
     def renew() -> None:
         try:
             heartbeat.renew_now()
-        except BaseException as exc:
+        except Exception as exc:
             errors.append(exc)
 
     allow_second_renewal = threading.Event()
