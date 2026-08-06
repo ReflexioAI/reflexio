@@ -32,6 +32,7 @@ from reflexio.server.services.playbook.playbook_service_utils import (
     PlaybookAggregatorRequest,
 )
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
+from reflexio.server.services.storage.sqlite_storage.playbook import _aggregation
 from reflexio.server.services.storage.sqlite_storage.playbook._aggregation import (
     init_playbook_aggregation_tables,
 )
@@ -548,6 +549,75 @@ def test_aggregation_schema_init_does_not_rebuild_pending_index(tmp_path) -> Non
         "WHERE type='index' AND name='idx_playbook_aggregation_invalidation_pending'"
     ).fetchone()[0]
     assert "WHERE processed_at IS NULL" in index_sql
+
+
+def test_aggregation_trigger_replacement_is_atomic_across_connections(tmp_path) -> None:
+    store = _store(tmp_path)
+    observer = sqlite3.connect(store.db_path)
+    observed: list[tuple[str, str | None]] = []
+
+    def authorizer(
+        action: int,
+        name: str | None,
+        _table: str | None,
+        _database: str | None,
+        _source: str | None,
+    ) -> int:
+        if action == sqlite3.SQLITE_CREATE_TRIGGER and name is not None:
+            row = observer.execute(
+                "SELECT name FROM sqlite_master WHERE type='trigger' AND name=?",
+                (name,),
+            ).fetchone()
+            observed.append((name, None if row is None else str(row[0])))
+        return sqlite3.SQLITE_OK
+
+    store.conn.set_authorizer(authorizer)
+    try:
+        init_playbook_aggregation_tables(store.conn)
+    finally:
+        store.conn.set_authorizer(None)
+        observer.close()
+
+    assert observed == [
+        (
+            "capture_playbook_aggregation_hard_delete",
+            "capture_playbook_aggregation_hard_delete",
+        ),
+        (
+            "retire_playbook_aggregation_cluster_on_agent_update",
+            "retire_playbook_aggregation_cluster_on_agent_update",
+        ),
+        (
+            "retire_playbook_aggregation_cluster_on_agent_delete",
+            "retire_playbook_aggregation_cluster_on_agent_delete",
+        ),
+    ]
+
+
+def test_aggregation_trigger_replacement_rolls_back_together(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = _store(tmp_path)
+    broken_trigger_ddl = _aggregation.AGGREGATION_TRIGGER_DDL.replace(
+        "DROP TRIGGER IF EXISTS retire_playbook_aggregation_cluster_on_agent_update;",
+        "THIS IS NOT VALID SQL;",
+    )
+    monkeypatch.setattr(_aggregation, "AGGREGATION_TRIGGER_DDL", broken_trigger_ddl)
+
+    with pytest.raises(sqlite3.OperationalError):
+        init_playbook_aggregation_tables(store.conn)
+
+    trigger_names = {
+        str(row[0])
+        for row in store.conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='trigger'"
+        )
+    }
+    assert {
+        "capture_playbook_aggregation_hard_delete",
+        "retire_playbook_aggregation_cluster_on_agent_update",
+        "retire_playbook_aggregation_cluster_on_agent_delete",
+    } <= trigger_names
 
 
 def test_semantic_dispositions_are_unique_per_version_and_item(tmp_path) -> None:

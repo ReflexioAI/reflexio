@@ -13,6 +13,7 @@ Covers:
 
 import importlib
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
@@ -26,6 +27,8 @@ from reflexio.server.cache.reflexio_cache import (
     get_reflexio,
     invalidate_reflexio_cache,
 )
+from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
+from reflexio.server.services.storage.sqlite_storage._base import SQLiteStorageBase
 from reflexio.server.tracing import configure_tracer
 
 # =============================================================================
@@ -612,3 +615,55 @@ class TestGetCachedRequestContext:
 
         assert all(result is constructed.request_context for result in results)
         mock_reflexio_cls.assert_called_once_with(org_id="org-1", storage_base_dir=None)
+
+    def test_different_orgs_serialize_shared_sqlite_initialization(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Cold cache misses sharing one SQLite file cannot migrate concurrently."""
+        import reflexio.server.cache.reflexio_cache as cache_mod
+
+        storage_base_dir = str(tmp_path)
+        org_ids: list[str] = []
+        cache_locks: set[int] = set()
+        for index in range(256):
+            org_id = f"org-{index}"
+            lock = cache_mod._get_construction_lock((org_id, storage_base_dir))
+            if id(lock) not in cache_locks:
+                org_ids.append(org_id)
+                cache_locks.add(id(lock))
+            if len(org_ids) == 4:
+                break
+        assert len(org_ids) == 4
+
+        active = 0
+        max_active = 0
+        counter_lock = threading.Lock()
+
+        def slow_migrate(_self: SQLiteStorageBase) -> bool:
+            nonlocal active, max_active
+            with counter_lock:
+                active += 1
+                max_active = max(max_active, active)
+            time.sleep(0.05)
+            with counter_lock:
+                active -= 1
+            return True
+
+        monkeypatch.setattr(SQLiteStorageBase, "migrate", slow_migrate)
+        start = threading.Barrier(len(org_ids))
+
+        def construct(org_id: str):
+            start.wait(timeout=2)
+            return get_cached_request_context(org_id, storage_base_dir)
+
+        with ThreadPoolExecutor(max_workers=len(org_ids)) as executor:
+            contexts = list(executor.map(construct, org_ids))
+
+        try:
+            assert max_active == 1
+            assert len({id(context.storage) for context in contexts}) == len(org_ids)
+        finally:
+            for context in contexts:
+                storage = context.storage
+                assert isinstance(storage, SQLiteStorage)
+                storage.conn.close()

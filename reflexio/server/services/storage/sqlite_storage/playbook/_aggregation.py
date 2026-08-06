@@ -109,7 +109,10 @@ CREATE INDEX IF NOT EXISTS idx_playbook_aggregation_invalidation_pending
 CREATE INDEX IF NOT EXISTS idx_playbook_aggregation_invalidation_retention
     ON playbook_aggregation_invalidation(processed_at)
     WHERE processed_at IS NOT NULL;
+"""
 
+AGGREGATION_TRIGGER_DDL = """
+BEGIN IMMEDIATE;
 DROP TRIGGER IF EXISTS capture_playbook_aggregation_hard_delete;
 CREATE TRIGGER IF NOT EXISTS capture_playbook_aggregation_hard_delete
 BEFORE DELETE ON user_playbooks
@@ -191,11 +194,17 @@ BEGIN
     DELETE FROM playbook_aggregation_cluster
     WHERE agent_playbook_id = OLD.agent_playbook_id;
 END;
+COMMIT;
 """
 
 
 def init_playbook_aggregation_tables(conn: sqlite3.Connection) -> None:
     conn.executescript(AGGREGATION_DDL)
+    try:
+        conn.executescript(AGGREGATION_TRIGGER_DDL)
+    except Exception:
+        conn.rollback()
+        raise
     state_columns = {
         str(row[1])
         for row in conn.execute("PRAGMA table_info(playbook_aggregation_state)")
