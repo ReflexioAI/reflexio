@@ -272,6 +272,52 @@ def test_direct_user_playbook_search_returns_and_records_exactly_100() -> None:
     assert recorder.batches[0].user_playbooks == tuple(playbooks)
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("user_id", "u" * 256),
+        ("request_id", "r" * 256),
+        ("session_id", "s" * 256),
+    ],
+)
+def test_direct_user_playbook_search_rejects_oversized_identifiers_before_search_or_recording(
+    field: str,
+    value: str,
+) -> None:
+    recorder = _Recorder()
+    register_service(SEARCH_EXPOSURE_RECORDER, recorder)
+
+    with _search_results([]) as reflexio:
+        response = _client().post(
+            "/api/search_user_playbooks",
+            json={"query": "direct answer", field: value},
+        )
+
+    assert response.status_code == 422
+    reflexio.search_user_playbooks.assert_not_called()
+    assert recorder.batches == []
+
+
+def test_direct_user_playbook_search_accepts_255_character_identifiers() -> None:
+    recorder = _Recorder()
+    register_service(SEARCH_EXPOSURE_RECORDER, recorder)
+
+    with _search_results([]) as reflexio:
+        response = _client().post(
+            "/api/search_user_playbooks",
+            json={
+                "query": "direct answer",
+                "user_id": "u" * 255,
+                "request_id": "r" * 255,
+                "session_id": "s" * 255,
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    reflexio.search_user_playbooks.assert_called_once()
+    assert len(recorder.batches) == 0
+
+
 def test_oss_search_succeeds_when_no_recorder_is_registered() -> None:
     with _search_results([_playbook(11, "First")]):
         response = _client().post(
