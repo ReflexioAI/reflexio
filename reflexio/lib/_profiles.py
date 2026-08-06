@@ -74,10 +74,7 @@ class ProfilesMixin(ReflexioBase):
         if isinstance(request, dict):
             request = SearchUserProfileRequest(**request)
         with profile_step("search.user_context_guard", entity_type="profiles") as span:
-            suppress_user_context = should_suppress_user_context(
-                request.query,
-                include_user_context=request.include_user_context,
-            )
+            suppress_user_context = should_suppress_user_context(request.query)
             span.set_data("suppressed", suppress_user_context)
         if suppress_user_context:
             return SearchUserProfileResponse(

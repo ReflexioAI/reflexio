@@ -631,7 +631,6 @@ class ReflexioClient:
         tags: list[str] | None = None,
         threshold: float | None = None,
         enable_reformulation: bool | None = None,
-        include_user_context: bool | None = None,
         search_mode: SearchMode | None = None,
     ) -> SearchProfilesViewResponse:
         """Search for user profiles.
@@ -651,9 +650,6 @@ class ReflexioClient:
             threshold (Optional[float]): Similarity threshold. When omitted,
                 the embedding model's default is used.
             enable_reformulation (Optional[bool]): Enable LLM query reformulation (default: False)
-            include_user_context (Optional[bool]): Explicit personalization
-                override. False suppresses profiles, True includes them, and
-                None retains textual opt-out detection.
 
         Returns:
             SearchProfilesViewResponse: Response containing matching profiles
@@ -673,7 +669,6 @@ class ReflexioClient:
             tags=tags,
             threshold=threshold,
             enable_reformulation=enable_reformulation,
-            include_user_context=include_user_context,
             search_mode=search_mode,
         )
         response = self._make_request(
@@ -698,7 +693,6 @@ class ReflexioClient:
         tags: list[str] | None = None,
         threshold: float | None = None,
         enable_reformulation: bool | None = None,
-        include_user_context: bool | None = None,
         search_mode: SearchMode | None = None,
     ) -> SearchProfilesViewResponse:
         """Deprecated alias for :meth:`search_user_profiles`. Will be removed in a future release."""
@@ -722,7 +716,6 @@ class ReflexioClient:
             tags=tags,
             threshold=threshold,
             enable_reformulation=enable_reformulation,
-            include_user_context=include_user_context,
             search_mode=search_mode,
         )
 
@@ -801,7 +794,6 @@ class ReflexioClient:
         top_k: int | None = None,
         threshold: float | None = None,
         enable_reformulation: bool | None = None,
-        include_user_context: bool | None = None,
         search_mode: SearchMode | None = None,
     ) -> SearchUserPlaybooksViewResponse:
         """Search for user playbooks with semantic/text search and filtering.
@@ -820,9 +812,6 @@ class ReflexioClient:
             threshold (Optional[float]): Similarity threshold for vector search.
                 When omitted, the embedding model's default is used.
             enable_reformulation (Optional[bool]): Enable LLM query reformulation (default: False)
-            include_user_context (Optional[bool]): Explicit personalization
-                override. False suppresses user playbooks, True includes them,
-                and None retains textual opt-out detection.
 
         Returns:
             SearchUserPlaybooksViewResponse: Response containing matching user playbooks
@@ -841,7 +830,6 @@ class ReflexioClient:
             top_k=top_k,
             threshold=threshold,
             enable_reformulation=enable_reformulation,
-            include_user_context=include_user_context,
             search_mode=search_mode,
         )
         response = self._make_request(
@@ -2721,7 +2709,6 @@ class ReflexioClient:
         entity_types: list[str] | None = None,
         agent_playbook_status_filter: list[PlaybookStatus | str] | None = None,
         enable_reformulation: bool | None = None,
-        include_user_context: bool | None = None,
         enable_agent_answer: bool | None = None,
         conversation_history: list[ConversationTurn] | list[dict] | None = None,
         search_mode: SearchMode | str | None = None,
@@ -2754,9 +2741,6 @@ class ReflexioClient:
                 ("this week"), as-of boundaries, and current-value intent —
                 that make retrieval time-sensitive (window filters,
                 freshness-preferred ranking for superseded facts).
-            include_user_context (Optional[bool]): Explicit personalization
-                override. False suppresses profiles and user playbooks, True
-                includes them, and None retains textual opt-out detection.
             enable_agent_answer (Optional[bool]): Enable agentic answer synthesis when
                 the configured search backend supports it (default: False).
             conversation_history (Optional[list[ConversationTurn] | list[dict]]): Prior conversation turns for context-aware query reformulation. Accepts ConversationTurn objects or dicts with "role" and "content" keys.
@@ -2781,7 +2765,6 @@ class ReflexioClient:
             entity_types=entity_types,
             agent_playbook_status_filter=agent_playbook_status_filter,
             enable_reformulation=enable_reformulation,
-            include_user_context=include_user_context,
             enable_agent_answer=enable_agent_answer,
             conversation_history=conversation_history,
             search_mode=search_mode,

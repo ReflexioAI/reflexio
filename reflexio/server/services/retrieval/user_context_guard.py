@@ -147,17 +147,12 @@ def _is_explicit_directive(query: str, start: int) -> bool:
 
 def should_suppress_user_context(
     query: str | None,
-    *,
-    include_user_context: bool | None = None,
 ) -> bool:
     """Return whether ``query`` explicitly opts out of personalized context.
 
-    An explicit API flag wins over text detection. Text detection intentionally
-    recognizes only high-precision English and Chinese directives; ambiguous
-    language fails open so ordinary retrieval is unchanged.
+    Detection intentionally recognizes only high-precision English and Chinese
+    directives; ambiguous language fails open so ordinary retrieval is unchanged.
     """
-    if include_user_context is not None:
-        return not include_user_context
     if not query or not query.strip():
         return False
 

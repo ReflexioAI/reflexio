@@ -64,14 +64,3 @@ def test_explicit_opt_outs_suppress_user_context(query: str) -> None:
 )
 def test_non_opt_outs_preserve_user_context(query: str | None) -> None:
     assert should_suppress_user_context(query) is False
-
-
-def test_explicit_include_user_context_flag_wins_over_text() -> None:
-    assert (
-        should_suppress_user_context("不要使用我的个人资料", include_user_context=True)
-        is False
-    )
-    assert (
-        should_suppress_user_context("Use my profile", include_user_context=False)
-        is True
-    )
