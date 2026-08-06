@@ -40,6 +40,7 @@ from .._base import (
     _row_to_agent_playbook,
     _sanitize_fts_query,
     _true_rrf_merge,
+    _uses_unicode_lexical_fallback,
     _vector_rank_rows,
 )
 from .._lineage import _append_event_stmt
@@ -965,6 +966,31 @@ class AgentPlaybookStoreMixin:
                       ORDER BY bm25(agent_playbooks_fts, 1.0)
                       LIMIT ?"""
             fts_rows = self._fetchall(sql, [fts_query, *params, overfetch])
+            if _uses_unicode_lexical_fallback(query):
+                base_where = "WHERE " + " AND ".join(conditions) if conditions else ""
+                unicode_sql = f"""SELECT ranked.* FROM (
+                              SELECT ap.*,
+                                reflexio_unicode_lexical_score(
+                                  COALESCE(ap.trigger, '') || ' ' ||
+                                  COALESCE(ap.content, '') || ' ' ||
+                                  COALESCE(ap.rationale, ''), ?
+                                ) AS unicode_score
+                              FROM agent_playbooks ap
+                              {base_where}
+                            ) AS ranked
+                            WHERE ranked.unicode_score > 0
+                            ORDER BY ranked.unicode_score DESC
+                            LIMIT ?"""
+                unicode_rows = self._fetchall(
+                    unicode_sql,
+                    [query, *params, overfetch],
+                )
+                fts_rows = _true_rrf_merge(
+                    fts_rows,
+                    unicode_rows,
+                    "agent_playbook_id",
+                    overfetch,
+                )
 
             if mode == SearchMode.HYBRID and query_embedding:
                 base_where = "WHERE " + " AND ".join(conditions) if conditions else ""

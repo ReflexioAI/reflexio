@@ -30,6 +30,7 @@ from .._base import (
     _row_to_profile,
     _sanitize_fts_query,
     _true_rrf_merge,
+    _uses_unicode_lexical_fallback,
     _vector_rank_rows,
 )
 from .._profiles import _build_tags_sql
@@ -109,6 +110,29 @@ class ProfileSearchMixin:
                       ORDER BY bm25(interactions_fts, 1.0, 2.0)
                       LIMIT ?"""
             fts_rows = self._fetchall(sql, tuple(fts_params))
+            if _uses_unicode_lexical_fallback(req.query):  # type: ignore[arg-type]
+                unicode_sql = f"""SELECT ranked.* FROM (
+                              SELECT i.*,
+                                reflexio_unicode_lexical_score(
+                                  COALESCE(i.content, '') || ' ' ||
+                                  COALESCE(i.user_action_description, ''), ?
+                                ) AS unicode_score
+                              FROM interactions i
+                              WHERE {where_clause}
+                            ) AS ranked
+                            WHERE ranked.unicode_score > 0
+                            ORDER BY ranked.unicode_score DESC
+                            LIMIT ?"""
+                unicode_rows = self._fetchall(
+                    unicode_sql,
+                    (req.query, *params, overfetch),
+                )
+                fts_rows = _true_rrf_merge(
+                    fts_rows,
+                    unicode_rows,
+                    "interaction_id",
+                    overfetch,
+                )
 
             if mode == SearchMode.HYBRID and query_embedding:
                 vec_limit = match_count * 10
@@ -233,6 +257,29 @@ class ProfileSearchMixin:
                       LIMIT ?"""
             params_list: list[object] = [fts_query, *params, overfetch]
             fts_rows = self._fetchall(sql, tuple(params_list))
+            if _uses_unicode_lexical_fallback(req.query):  # type: ignore[arg-type]
+                unicode_sql = f"""SELECT ranked.* FROM (
+                              SELECT p.*,
+                                reflexio_unicode_lexical_score(
+                                  COALESCE(p.content, '') || ' ' ||
+                                  COALESCE(p.expanded_terms, ''), ?
+                                ) AS unicode_score
+                              FROM profiles p
+                              WHERE {where_clause}
+                            ) AS ranked
+                            WHERE ranked.unicode_score > 0
+                            ORDER BY ranked.unicode_score DESC
+                            LIMIT ?"""
+                unicode_rows = self._fetchall(
+                    unicode_sql,
+                    (req.query, *params, overfetch),
+                )
+                fts_rows = _true_rrf_merge(
+                    fts_rows,
+                    unicode_rows,
+                    "profile_id",
+                    overfetch,
+                )
             logger.info("FTS search: %d results from BM25", len(fts_rows))
 
             if mode == SearchMode.HYBRID and query_embedding:

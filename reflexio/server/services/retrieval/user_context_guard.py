@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 
 _APOSTROPHE_TRANSLATION = str.maketrans(
     {
@@ -106,10 +107,18 @@ _REPORTED_NEGATION_PREFIX = re.compile(
 _POSITIVE_USER_CONTEXT_PATTERN = re.compile(
     rf"\b{_PROFILE_ACTION}\s+{_PROFILE_TARGET}\b", re.VERBOSE
 )
+_ZH_OPTOUT_PATTERN = re.compile(
+    r"(?:^|[。！？!?；;，,])\s*"
+    r"(?:不要|別|别|請勿|请勿|無需|无需|不用|不需要)"
+    r"(?:再)?(?:使用|採用|采用|參考|参考|考慮|考虑|讀取|读取|檢索|检索|訪問|访问|依賴|依赖)?"
+    r"(?:任何)?(?:我的|使用者的|用户的|個人|个人)?"
+    r"(?:個人化|个性化|個人資料|个人资料|偏好|記憶|记忆|歷史記錄|历史记录|上下文|個人資訊|个人信息|資料|数据)"
+)
 
 
 def _normalize(query: str) -> str:
-    return " ".join(query.translate(_APOSTROPHE_TRANSLATION).casefold().split())
+    normalized = unicodedata.normalize("NFKC", query)
+    return " ".join(normalized.translate(_APOSTROPHE_TRANSLATION).casefold().split())
 
 
 def _has_negated_prefix(query: str, start: int) -> bool:
@@ -136,18 +145,27 @@ def _is_explicit_directive(query: str, start: int) -> bool:
     )
 
 
-def should_suppress_user_context(query: str | None) -> bool:
+def should_suppress_user_context(
+    query: str | None,
+    *,
+    include_user_context: bool | None = None,
+) -> bool:
     """Return whether ``query`` explicitly opts out of personalized context.
 
-    This intentionally recognizes only high-precision English directives. Ambiguous
-    language fails open so ordinary profile and user-playbook retrieval is unchanged.
+    An explicit API flag wins over text detection. Text detection intentionally
+    recognizes only high-precision English and Chinese directives; ambiguous
+    language fails open so ordinary retrieval is unchanged.
     """
+    if include_user_context is not None:
+        return not include_user_context
     if not query or not query.strip():
         return False
 
     normalized = _normalize(query)
     if _has_positive_user_context_request(normalized):
         return False
+    if _ZH_OPTOUT_PATTERN.search(normalized):
+        return True
 
     for pattern in _DIRECT_OPTOUT_PATTERNS:
         for match in pattern.finditer(normalized):

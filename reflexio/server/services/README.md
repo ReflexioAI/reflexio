@@ -57,13 +57,13 @@ strings before deleting old import paths in the same PR.
 | `pre_retrieval/` | `QueryReformulator` (`_query_reformulator.py`) + `DocumentExpander` (`_document_expander.py`) - query rewrite and doc expansion for recall. Compact by design; see [README](pre_retrieval/README.md). |
 | `tagging/` | `TaggingService` (`service.py`) + deferred `tagging_scheduler.py` - post-generation profile/playbook tagging. Compact by design; see [README](tagging/README.md). |
 | `unified_search_service.py` | `run_unified_search()` — two-phase parallel search across profiles / agent playbooks / user playbooks. |
-| `retrieval/` | `relevance_floor.py` — result relevance thresholding. `temporal.py` — temporal post-processing driven by reformulation signals: query time windows → per-arm SQL filters, near-duplicate freshness collapse for current-value questions, timestamp ordering for latest-value questions. `user_context_guard.py` — high-precision detection of explicit personalization opt-outs before user-context retrieval. (Superseded/expired rows are already excluded by storage search SQL.) |
+| `retrieval/` | `relevance_floor.py` — result relevance thresholding. `temporal.py` — temporal post-processing driven by reformulation signals: query time windows → per-arm SQL filters, near-duplicate freshness collapse for current-value questions, timestamp ordering for latest-value questions. `user_context_guard.py` — high-precision detection of explicit personalization opt-outs, including Simplified and Traditional Chinese, before user-context retrieval. (Superseded/expired rows are already excluded by storage search SQL.) |
 
 ## Persistence & Config
 
 | Path | Purpose |
 |------|---------|
-| `storage/` | `storage_base/` and `sqlite_storage/` keep legacy domain facades while focused subpackages own `profiles/`, `playbook/`, `agent_run/`, `governance/`, durable `learning_jobs`, and SQLite `base/` helpers. `storage_base/playbook/_aggregation.py` defines fenced aggregation state; SQLite implements it in the matching playbook package. Access via `request_context.storage` only. |
+| `storage/` | `storage_base/` and `sqlite_storage/` keep legacy domain facades while focused subpackages own `profiles/`, `playbook/`, `agent_run/`, `governance`, durable `learning_jobs`, and SQLite `base/` helpers. SQLite hybrid search preserves Porter FTS for ASCII and adds bounded Unicode substring candidates for non-ASCII and mixed-script queries. `storage_base/playbook/_aggregation.py` defines fenced aggregation state; SQLite implements it in the matching playbook package. Access via `request_context.storage` only. |
 | `configurator/` | `DefaultConfigurator` — loads YAML config and creates the storage backend. |
 
 ## Key Rules

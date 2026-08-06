@@ -17,6 +17,11 @@ from pydantic import BaseModel, Field
 
 from reflexio.server.llm.llm_utils import positive_int_env
 from reflexio.server.llm.providers.local_embedding_provider import LocalEmbedder
+from reflexio.server.llm.providers.multilingual_e5_embedding_provider import (
+    MULTILINGUAL_E5_MODEL,
+    MultilingualE5Embedder,
+    is_multilingual_e5_model,
+)
 from reflexio.server.llm.providers.nomic_embedding_provider import (
     NomicEmbedder,
     is_nomic_model,
@@ -35,6 +40,7 @@ _SUPPORTED_MODELS = {
     MINILM_MODEL,
     "local/nomic-embed-v1.5",
     NOMIC_TEXT_MODEL,
+    MULTILINGUAL_E5_MODEL,
 }
 _ACTIVE_MODEL: str | None = None
 _ACTIVE_MODEL_LOCK = threading.Lock()
@@ -141,8 +147,17 @@ class RerankResponse(BaseModel):
     model: str
 
 
-def create_embedding_app(default_model: str | None = None) -> FastAPI:
+def create_embedding_app(
+    default_model: str | None = None,
+    *,
+    allowed_models: set[str] | None = None,
+) -> FastAPI:
     """Create the embedding daemon app and optionally warm a default model."""
+    effective_allowed_models = (
+        allowed_models
+        if allowed_models is not None
+        else _SUPPORTED_MODELS - {MULTILINGUAL_E5_MODEL}
+    )
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
@@ -161,11 +176,29 @@ def create_embedding_app(default_model: str | None = None) -> FastAPI:
     @embedding_app.get("/health")
     def health() -> dict[str, Any]:
         """Health check endpoint."""
-        return {"status": "ok", "active_model": _ACTIVE_MODEL}
+        return {
+            "status": "ok",
+            "active_model": _ACTIVE_MODEL,
+            "configured_model": default_model,
+        }
 
     @embedding_app.post("/v1/embeddings")
     def create_embeddings(request: EmbeddingRequest) -> EmbeddingResponse:
         """Create embeddings using the daemon's single active local model."""
+        if request.model not in effective_allowed_models:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported model for this service: {request.model}",
+            )
+        if (
+            request.model == MULTILINGUAL_E5_MODEL
+            and request.dimensions is not None
+            and request.dimensions != 512
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="multilingual E5 embeddings use the fixed 512-dimension storage contract",
+            )
         texts = (
             [request.input] if isinstance(request.input, str) else list(request.input)
         )
@@ -342,6 +375,8 @@ def _encode_texts_now(model: str, texts: list[str]) -> list[list[float]]:
     # lock/semaphore is needed here.
     if is_nomic_model(model):
         return NomicEmbedder.get().embed(texts)
+    if is_multilingual_e5_model(model):
+        return MultilingualE5Embedder.get().embed(texts)
     if model == MINILM_MODEL:
         return LocalEmbedder.get().embed(texts)
     raise HTTPException(status_code=400, detail=f"Unsupported model: {model}")

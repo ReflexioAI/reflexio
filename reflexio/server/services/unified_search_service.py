@@ -148,7 +148,10 @@ def run_unified_search(
         return UnifiedSearchResponse(success=True, msg="No query provided")
 
     with profile_step("search.user_context_guard", entity_type="all") as span:
-        suppress_user_context = should_suppress_user_context(request.query)
+        suppress_user_context = should_suppress_user_context(
+            request.query,
+            include_user_context=request.include_user_context,
+        )
         span.set_data("suppressed", suppress_user_context)
     if suppress_user_context:
         requested_entity_types = set(request.entity_types or _DEFAULT_ENTITY_TYPES)

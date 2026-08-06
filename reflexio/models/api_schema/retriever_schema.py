@@ -71,6 +71,13 @@ class SearchUserProfileRequest(BaseModel):
     tags: list[str] | None = None
     threshold: float | None = Field(default=None, ge=0.0, le=1.0)
     enable_reformulation: bool | None = False
+    include_user_context: bool | None = Field(
+        default=None,
+        description=(
+            "Explicit personalization override: false suppresses user context, "
+            "true includes it, and null retains textual opt-out detection."
+        ),
+    )
     search_mode: SearchMode = SearchMode.HYBRID
 
     @model_validator(mode="after")
@@ -334,6 +341,13 @@ class SearchUserPlaybookRequest(BaseModel):
     top_k: int | None = Field(default=10, gt=0)
     threshold: float | None = Field(default=None, ge=0.0, le=1.0)
     enable_reformulation: bool | None = False
+    include_user_context: bool | None = Field(
+        default=None,
+        description=(
+            "Explicit personalization override: false suppresses user context, "
+            "true includes it, and null retains textual opt-out detection."
+        ),
+    )
     search_mode: SearchMode = SearchMode.HYBRID
     # Caller correlation IDs for billing attribution on the Application line.
     # Optional; consumed by _meter_applied_learnings in server/api.py.
@@ -822,6 +836,13 @@ class UnifiedSearchRequest(BaseModel):
     agent_playbook_status_filter: list[PlaybookStatus] | None = None
     conversation_history: list[ConversationTurn] | None = None
     enable_reformulation: bool | None = False
+    include_user_context: bool | None = Field(
+        default=None,
+        description=(
+            "Explicit personalization override: false suppresses user context, "
+            "true includes it, and null retains textual opt-out detection."
+        ),
+    )
     enable_agent_answer: bool | None = False
     search_mode: SearchMode = SearchMode.HYBRID
     # Caller correlation IDs for billing attribution on the Application line.

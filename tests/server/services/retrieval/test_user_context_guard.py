@@ -24,6 +24,10 @@ from reflexio.server.services.retrieval.user_context_guard import (
         "Skip profiles and answer only from the current request.",
         "Please\n  exclude   my profile from this one.",
         "Do not use my profile; personalize only from the current request.",
+        "不要使用我的个人资料来回答。",
+        "請勿參考我的偏好。",
+        "无需个性化，直接回答问题。",
+        "請直接回答，別使用我的歷史記錄。",
     ],
 )
 def test_explicit_opt_outs_suppress_user_context(query: str) -> None:
@@ -53,7 +57,20 @@ def test_explicit_opt_outs_suppress_user_context(query: str) -> None:
         "Explain how agents operate without personalization.",
         "Do not personalize the introduction; use my profile for the rest.",
         "I never said 'don't use my profile'; please personalize this.",
+        "解释为什么有些系统无需个性化。",
+        "比較使用個人資料與不用個人資料的差異。",
     ],
 )
 def test_non_opt_outs_preserve_user_context(query: str | None) -> None:
     assert should_suppress_user_context(query) is False
+
+
+def test_explicit_include_user_context_flag_wins_over_text() -> None:
+    assert (
+        should_suppress_user_context("不要使用我的个人资料", include_user_context=True)
+        is False
+    )
+    assert (
+        should_suppress_user_context("Use my profile", include_user_context=False)
+        is True
+    )

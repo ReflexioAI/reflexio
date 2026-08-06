@@ -16,6 +16,8 @@ from reflexio.models.api_schema.service_schemas import (
 
 SEARCH_DOCUMENT_PREFIX = "search_document: "
 SEARCH_QUERY_PREFIX = "search_query: "
+E5_DOCUMENT_PREFIX = "passage: "
+E5_QUERY_PREFIX = "query: "
 
 
 @dataclass(frozen=True)
@@ -51,6 +53,12 @@ _EMBEDDING_MODEL_POLICIES = {
     # Backward-compatible provider alias. New configuration should use the
     # canonical ``local/nomic-embed-text-v1.5`` identifier.
     "local/nomic-embed-v1.5": _NOMIC_MODEL_POLICY,
+    "local/multilingual-e5-small": EmbeddingModelPolicy(
+        document_prefix=E5_DOCUMENT_PREFIX,
+        query_prefix=E5_QUERY_PREFIX,
+        retrieval_threshold=0.7993814945220947,
+        clustering_similarity=0.9284577369689941,
+    ),
 }
 
 EmbeddingTextEntity = (

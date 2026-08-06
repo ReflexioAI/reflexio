@@ -165,7 +165,10 @@ class UserPlaybookMixin(ReflexioBase):
         with profile_step(
             "search.user_context_guard", entity_type="user_playbooks"
         ) as span:
-            suppress_user_context = should_suppress_user_context(request.query)
+            suppress_user_context = should_suppress_user_context(
+                request.query,
+                include_user_context=request.include_user_context,
+            )
             span.set_data("suppressed", suppress_user_context)
         if suppress_user_context:
             return SearchUserPlaybookResponse(

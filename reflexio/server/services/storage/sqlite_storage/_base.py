@@ -15,6 +15,7 @@ import math
 import re
 import sqlite3
 import threading
+import unicodedata
 from collections.abc import Callable, Generator, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
@@ -50,6 +51,7 @@ from reflexio.server.llm.model_defaults import (
 )
 from reflexio.server.llm.providers.embedding_service_provider import (
     EmbeddingUnavailableError,
+    resolve_service_configured_model,
 )
 from reflexio.server.services.embedding_text import embedding_input
 from reflexio.server.services.storage.error import (
@@ -89,7 +91,60 @@ def _json_loads(text: str | None) -> Any:
 
 _FTS5_OPERATORS = frozenset({"OR", "AND", "NOT"})
 _FTS5_RESERVED = _FTS5_OPERATORS | {"NEAR"}
-_TOKEN_RE = re.compile(r"[a-zA-Z0-9_]+")
+_TOKEN_RE = re.compile(r"\w+", re.UNICODE)
+_UNICODE_LEXICAL_MAX_TERMS = 16
+
+
+def _normalize_lexical_text(text: str) -> str:
+    return " ".join(unicodedata.normalize("NFKC", text).casefold().split())
+
+
+@functools.lru_cache(maxsize=512)
+def _unicode_lexical_terms(query: str) -> tuple[str, ...]:
+    """Return bounded Unicode-aware terms for the SQLite scan fallback."""
+    normalized = _normalize_lexical_text(query)
+    runs: list[str] = []
+    current: list[str] = []
+    current_is_ascii: bool | None = None
+    for char in normalized:
+        if not char.isalnum():
+            if current:
+                runs.append("".join(current))
+                current = []
+            current_is_ascii = None
+            continue
+        is_ascii = char.isascii()
+        if current and is_ascii != current_is_ascii:
+            runs.append("".join(current))
+            current = []
+        current.append(char)
+        current_is_ascii = is_ascii
+    if current:
+        runs.append("".join(current))
+
+    terms: list[str] = []
+    for run in runs:
+        if run.isascii() or len(run) == 1:
+            terms.append(run)
+        else:
+            terms.extend(run[index : index + 2] for index in range(len(run) - 1))
+    return tuple(dict.fromkeys(terms))[:_UNICODE_LEXICAL_MAX_TERMS]
+
+
+def _uses_unicode_lexical_fallback(query: str) -> bool:
+    return any(char.isalnum() and not char.isascii() for char in query)
+
+
+def _unicode_lexical_score(document: str | None, query: str | None) -> float:
+    """Score query-term coverage in a Unicode-normalized document."""
+    if not document or not query:
+        return 0.0
+    terms = _unicode_lexical_terms(query)
+    if not terms:
+        return 0.0
+    normalized_document = _normalize_lexical_text(document)
+    matched = sum(term in normalized_document for term in terms)
+    return matched / len(terms)
 
 
 def _sanitize_fts_query(text: str) -> str:
@@ -105,7 +160,7 @@ def _sanitize_fts_query(text: str) -> str:
     Returns:
         FTS5-safe query string with stemming enabled and OR default
     """
-    tokens = _TOKEN_RE.findall(text)
+    tokens = _TOKEN_RE.findall(unicodedata.normalize("NFKC", text))
     if not tokens:
         return '""'
 
@@ -678,6 +733,12 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         # Open connection
         self.conn = sqlite3.connect(db_path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
+        self.conn.create_function(
+            "reflexio_unicode_lexical_score",
+            2,
+            _unicode_lexical_score,
+            deterministic=True,
+        )
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA foreign_keys=ON")
 
@@ -685,11 +746,15 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         model_setting = SiteVarManager().get_site_var("llm_model_setting")
         site_var = model_setting if isinstance(model_setting, dict) else {}
 
-        self.embedding_model_name = resolve_model_name(
-            ModelRole.EMBEDDING,
-            site_var_value=site_var.get("embedding_model_name"),
-            config_override=llm_config.embedding_model_name if llm_config else None,
-            api_key_config=self.api_key_config,
+        self.embedding_model_name = resolve_service_configured_model(
+            resolve_model_name(
+                ModelRole.EMBEDDING,
+                site_var_value=site_var.get("embedding_model_name"),
+                config_override=(
+                    llm_config.embedding_model_name if llm_config else None
+                ),
+                api_key_config=self.api_key_config,
+            )
         )
         self.embedding_dimensions = EMBEDDING_DIMENSIONS
         # Text-generation model for storage-time document expansion. The

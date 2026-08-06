@@ -217,6 +217,94 @@ def test_or_recall_returns_multiple_matches(storage):
     assert "timeout occurred" in contents
 
 
+def test_unicode_lexical_search_ranks_chinese_database_record_first(storage):
+    storage.save_agent_playbooks(
+        [
+            AgentPlaybook(
+                agent_version="v1",
+                content="系统使用 PostgreSQL 数据库保存用户资料。",
+                trigger="用户询问数据库配置",
+            ),
+            AgentPlaybook(
+                agent_version="v1",
+                content="The service uses an in-memory cache.",
+                trigger="user asks about caching",
+            ),
+        ]
+    )
+
+    results = storage.search_agent_playbooks(
+        SearchAgentPlaybookRequest(
+            query="用户使用什么数据库？",
+            search_mode=SearchMode.FTS,
+            top_k=10,
+        )
+    )
+
+    assert results
+    assert "PostgreSQL" in results[0].content
+
+
+@pytest.mark.parametrize(
+    ("document", "query"),
+    [
+        ("日本語の設定ではタイムゾーンを東京にします。", "タイムゾーン設定"),
+        ("قاعدة البيانات المستخدمة هي PostgreSQL", "قاعدة البيانات"),
+        ("Le café préféré est à Montréal.", "café Montréal"),
+        ("中文 runbook 使用 PostgreSQL connection pool。", "中文 PostgreSQL 连接"),
+    ],
+)
+def test_unicode_lexical_search_supports_non_latin_and_mixed_scripts(
+    storage, document, query
+):
+    storage.save_user_playbooks(
+        [
+            UserPlaybook(
+                user_id="user1",
+                agent_version="v1",
+                request_id="r1",
+                playbook_name="unicode",
+                content=document,
+                trigger=document,
+            )
+        ]
+    )
+
+    results = storage.search_user_playbooks(
+        SearchUserPlaybookRequest(
+            query=query,
+            search_mode=SearchMode.FTS,
+            top_k=10,
+        )
+    )
+
+    assert [result.content for result in results] == [document]
+
+
+@pytest.mark.parametrize("query", ["！！！", "🙂🚀"])
+def test_unicode_lexical_search_handles_non_lexical_input(storage, query):
+    storage.save_agent_playbooks(
+        [
+            AgentPlaybook(
+                agent_version="v1",
+                content="普通记录",
+                trigger="普通触发条件",
+            )
+        ]
+    )
+
+    assert (
+        storage.search_agent_playbooks(
+            SearchAgentPlaybookRequest(
+                query=query,
+                search_mode=SearchMode.FTS,
+                top_k=10,
+            )
+        )
+        == []
+    )
+
+
 # ---------------------------------------------------------------------------
 # SQL filter pushdown
 # ---------------------------------------------------------------------------
