@@ -18,6 +18,7 @@ _LOGGER = logging.getLogger(__name__)
 
 MULTILINGUAL_E5_MODEL = "local/multilingual-e5-small"
 MULTILINGUAL_E5_HF_MODEL = "intfloat/multilingual-e5-small"
+MULTILINGUAL_E5_HF_REVISION = "614241f622f53c4eeff9890bdc4f31cfecc418b3"
 _NATIVE_DIM = 384
 _TARGET_DIM = 512
 _MAX_CHARS = 8_000
@@ -89,6 +90,7 @@ class MultilingualE5Embedder:
             self._model = SentenceTransformer(
                 MULTILINGUAL_E5_HF_MODEL,
                 device="cuda",
+                revision=MULTILINGUAL_E5_HF_REVISION,
             )
             return self._model
 

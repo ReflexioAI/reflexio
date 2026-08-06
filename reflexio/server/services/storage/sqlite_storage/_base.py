@@ -151,6 +151,16 @@ def _unicode_lexical_index_text(document: str | None) -> str:
     return " ".join(dict.fromkeys(terms))
 
 
+def register_unicode_lexical_index_function(conn: sqlite3.Connection) -> None:
+    """Register the Unicode lexical trigger function on a writer connection."""
+    conn.create_function(
+        "reflexio_unicode_lexical_index",
+        1,
+        _unicode_lexical_index_text,
+        deterministic=True,
+    )
+
+
 def _unicode_lexical_fts_query(query: str) -> str:
     """Return an OR query over normalized Unicode lexical terms."""
     return " OR ".join(f'"{term}"' for term in _unicode_lexical_terms(query))
@@ -780,12 +790,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         # Open connection
         self.conn = sqlite3.connect(db_path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
-        self.conn.create_function(
-            "reflexio_unicode_lexical_index",
-            1,
-            _unicode_lexical_index_text,
-            deterministic=True,
-        )
+        register_unicode_lexical_index_function(self.conn)
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA foreign_keys=ON")
 

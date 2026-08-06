@@ -1,5 +1,6 @@
 import hashlib
 import json
+import sqlite3
 import tempfile
 from datetime import UTC, datetime
 from unittest.mock import patch
@@ -32,6 +33,7 @@ from reflexio.server.services.storage.sqlite_storage import (
 from reflexio.server.services.storage.sqlite_storage._base import (
     _epoch_to_iso,
     _iso_to_epoch,
+    register_unicode_lexical_index_function,
 )
 
 # ---------------------------------------------------------------------------
@@ -377,6 +379,43 @@ def test_unicode_lexical_index_backfills_existing_records_on_upgrade():
 
     assert len(results) == 1
     assert "PostgreSQL" in results[0].content
+
+
+def test_unicode_lexical_triggers_work_on_registered_direct_writer_connection():
+    conn = sqlite3.connect(":memory:")
+    register_unicode_lexical_index_function(conn)
+    conn.executescript(
+        """CREATE TABLE profiles (
+               profile_id INTEGER PRIMARY KEY,
+               content TEXT,
+               expanded_terms TEXT
+           );
+           CREATE VIRTUAL TABLE profiles_unicode_fts
+               USING fts5(search_ngrams, content='');
+           CREATE TRIGGER profiles_unicode_fts_au
+           AFTER UPDATE OF content, expanded_terms ON profiles BEGIN
+               INSERT INTO profiles_unicode_fts(rowid, search_ngrams)
+               VALUES (
+                   new.profile_id,
+                   reflexio_unicode_lexical_index(
+                       COALESCE(new.content, '') || ' ' ||
+                       COALESCE(new.expanded_terms, '')
+                   )
+               );
+           END;
+           INSERT INTO profiles(profile_id, content) VALUES (1, '数据库');
+           UPDATE profiles SET expanded_terms = 'PostgreSQL' WHERE profile_id = 1;
+        """
+    )
+
+    indexed = conn.execute(
+        "SELECT rowid FROM profiles_unicode_fts WHERE profiles_unicode_fts MATCH ?",
+        ('"数据"',),
+    ).fetchone()
+    conn.close()
+
+    assert indexed is not None
+    assert indexed[0] == 1
 
 
 # ---------------------------------------------------------------------------

@@ -7,6 +7,8 @@ import pytest
 import torch
 
 from reflexio.server.llm.providers.multilingual_e5_embedding_provider import (
+    MULTILINGUAL_E5_HF_MODEL,
+    MULTILINGUAL_E5_HF_REVISION,
     MultilingualE5Embedder,
     MultilingualE5EmbedderError,
     _pad_unit_embedding,
@@ -49,3 +51,19 @@ def test_load_rejects_cpu_runtime(monkeypatch) -> None:
 
     with pytest.raises(MultilingualE5EmbedderError, match="dedicated CUDA"):
         MultilingualE5Embedder()._load()
+
+
+def test_load_pins_the_baked_model_revision(monkeypatch) -> None:
+    loaded = MagicMock()
+    sentence_transformer = MagicMock(return_value=loaded)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(
+        "sentence_transformers.SentenceTransformer", sentence_transformer
+    )
+
+    assert MultilingualE5Embedder()._load() is loaded
+    sentence_transformer.assert_called_once_with(
+        MULTILINGUAL_E5_HF_MODEL,
+        device="cuda",
+        revision=MULTILINGUAL_E5_HF_REVISION,
+    )
