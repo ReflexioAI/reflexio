@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 from unittest.mock import patch
 
 import pytest
 
 from reflexio.cli.log_format import (
     _LEVEL_COLORS,
+    DuplicateFilter,
     format_service_line,
     highlight_log_level,
 )
@@ -82,3 +84,67 @@ class TestFormatServiceLine:
         with patch("reflexio.cli.log_format.sys.stdout.isatty", return_value=False):
             out = format_service_line("backend", "ERROR: port in use")
         assert out == "[backend ] ERROR: port in use"
+
+
+class TestDuplicateFilterSuppressionIsVisible:
+    """A per-entity warning loop must not silently under-report its scope.
+
+    ``DuplicateFilter`` keys on the message TEMPLATE, so N per-org warnings
+    emitted in a loop share one key and collapse to roughly one per window.
+    Dropping the rest silently reads as full coverage — a real migration audit
+    affecting 19 orgs printed as 7 for exactly this reason.
+    """
+
+    def _record(self, msg: str, args: tuple = ()) -> logging.LogRecord:
+        return logging.LogRecord(
+            name="t",
+            level=logging.WARNING,
+            pathname=__file__,
+            lineno=1,
+            msg=msg,
+            args=args,
+            exc_info=None,
+        )
+
+    def test_suppressed_count_is_reported_on_the_next_emitted_record(self):
+        filt = DuplicateFilter(window_seconds=300)
+        first = self._record("org %s is wedged", ("org_1",))
+        assert filt.filter(first) is True
+        assert "suppressed" not in first.getMessage()
+
+        for org in ("org_2", "org_3", "org_4"):
+            assert filt.filter(self._record("org %s is wedged", (org,))) is False
+
+        filt._recent.clear()  # simulate the window elapsing
+        later = self._record("org %s is wedged", ("org_5",))
+        assert filt.filter(later) is True
+        assert "+3 similar suppressed" in later.getMessage()
+
+    def test_emitted_message_survives_handler_reformatting(self):
+        """The suffix must not be destroyed by the handler's own %-substitution."""
+        filt = DuplicateFilter(window_seconds=300)
+        assert filt.filter(self._record("org %s is wedged", ("org_1",))) is True
+        assert filt.filter(self._record("org %s is wedged", ("org_2",))) is False
+        filt._recent.clear()
+        rec = self._record("org %s is wedged", ("org_3",))
+        filt.filter(rec)
+        # getMessage() is what handlers call; calling it twice must be stable
+        # and must not raise on a template whose args were cleared.
+        assert rec.getMessage() == rec.getMessage()
+        assert "org_3" in rec.getMessage()
+        assert "+1 similar suppressed" in rec.getMessage()
+
+    def test_distinct_templates_do_not_share_a_suppression_count(self):
+        filt = DuplicateFilter(window_seconds=300)
+        assert filt.filter(self._record("alpha %s", ("a",))) is True
+        assert filt.filter(self._record("alpha %s", ("b",))) is False
+        beta = self._record("beta %s", ("c",))
+        assert filt.filter(beta) is True
+        assert "suppressed" not in beta.getMessage()
+
+    def test_unsuppressed_records_are_left_untouched(self):
+        filt = DuplicateFilter(window_seconds=300)
+        rec = self._record("solo %s", ("x",))
+        assert filt.filter(rec) is True
+        assert rec.getMessage() == "solo x"
+        assert rec.args == ("x",)
