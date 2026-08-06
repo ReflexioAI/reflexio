@@ -74,6 +74,21 @@ from reflexio.test_support.llm_mock import cleanup_llm_mock, configure_llm_mock
 ensure_provider_credential()
 
 
+# ``addopts`` passes ``-n auto``, which xdist resolves to the machine's full CPU count.
+# Every worker imports torch/chromadb/sentence-transformers and runs real embeddings, so on
+# a developer laptop that saturates each core and freezes the desktop. CI runners have the
+# box to themselves and want the full count, so the cap is local-only.
+_LOCAL_MAX_XDIST_WORKERS = 4
+
+
+@pytest.hookimpl
+def pytest_xdist_auto_num_workers(config: pytest.Config) -> int | None:
+    """Cap what ``-n auto`` expands to locally; return None in CI to keep xdist's default."""
+    if os.environ.get("CI"):
+        return None
+    return min(_LOCAL_MAX_XDIST_WORKERS, os.cpu_count() or 1)
+
+
 def pytest_configure(config):
     configure_llm_mock(config)
 
