@@ -75,6 +75,25 @@ def test_extension_model_rejects_non_storage_dimensions(monkeypatch) -> None:
     assert "fixed 512-dimension" in response.json()["detail"]
 
 
+def test_extension_model_rejects_wrong_encoder_output_dimensions(monkeypatch) -> None:
+    configured_model = "custom/enterprise-model"
+    monkeypatch.setattr(embedding_service, "_ACTIVE_MODEL", None)
+    app = create_embedding_app(
+        allowed_models={configured_model},
+        model_encoders={configured_model: lambda _texts: [[1.0] * 384]},
+        fixed_dimensions={configured_model: 512},
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/embeddings",
+            json={"model": configured_model, "input": "中文"},
+        )
+
+    assert response.status_code == 500
+    assert "returned 384 dimensions; expected 512" in response.json()["detail"]
+
+
 def test_default_local_service_rejects_multilingual_e5(monkeypatch) -> None:
     monkeypatch.setattr(
         embedding_service,

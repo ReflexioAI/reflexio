@@ -215,6 +215,18 @@ def create_embedding_app(
         )
         embeddings = embed_texts(request.model, texts)
 
+        if expected_dimensions is not None:
+            for embedding in embeddings:
+                if len(embedding) != expected_dimensions:
+                    raise HTTPException(
+                        status_code=500,
+                        detail=(
+                            f"Encoder for {request.model} returned "
+                            f"{len(embedding)} dimensions; expected "
+                            f"{expected_dimensions}"
+                        ),
+                    )
+
         if request.dimensions:
             embeddings = [
                 _resize_embedding(vec, request.dimensions) for vec in embeddings
