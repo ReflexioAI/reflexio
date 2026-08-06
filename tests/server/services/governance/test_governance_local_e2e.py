@@ -142,6 +142,86 @@ def _insert_session_outcome(
     storage.conn.commit()
 
 
+def test_purge_execution_heartbeat_serializes_concurrent_renewals() -> None:
+    initial_claim = PurgeExecutionClaim(
+        purge_id="purge-1",
+        owner="owner-1",
+        fence=1,
+        expires_at=300,
+    )
+    first_renewed_claim = PurgeExecutionClaim(
+        purge_id="purge-1",
+        owner="owner-1",
+        fence=1,
+        expires_at=400,
+    )
+    second_renewed_claim = PurgeExecutionClaim(
+        purge_id="purge-1",
+        owner="owner-1",
+        fence=1,
+        expires_at=401,
+    )
+
+    class BlockingRenewalStorage:
+        def __init__(self) -> None:
+            self.claims: list[PurgeExecutionClaim] = []
+            self._calls_lock = threading.Lock()
+            self.first_renewal_started = threading.Event()
+            self.release_first_renewal = threading.Event()
+            self.second_renewal_started = threading.Event()
+
+        def renew_purge_operation_execution_claim(
+            self,
+            _purge_id: str,
+            claim: PurgeExecutionClaim,
+            *,
+            lease_ttl_seconds: int,
+        ) -> PurgeExecutionClaim:
+            assert lease_ttl_seconds == 300
+            with self._calls_lock:
+                self.claims.append(claim)
+                call_number = len(self.claims)
+            if call_number == 1:
+                self.first_renewal_started.set()
+                assert self.release_first_renewal.wait(timeout=5)
+                return first_renewed_claim
+            self.second_renewal_started.set()
+            return second_renewed_claim
+
+    storage = BlockingRenewalStorage()
+    heartbeat = governance_service_module._PurgeExecutionHeartbeat(
+        storage=storage,
+        purge_id="purge-1",
+        execution_claim=initial_claim,
+    )
+    errors: list[BaseException] = []
+
+    def renew() -> None:
+        try:
+            heartbeat.renew_now()
+        except BaseException as exc:
+            errors.append(exc)
+
+    first = threading.Thread(target=renew)
+    second = threading.Thread(target=renew)
+    first.start()
+    assert storage.first_renewal_started.wait(timeout=5)
+    second.start()
+    second_started_while_first_was_blocked = storage.second_renewal_started.wait(
+        timeout=0.2
+    )
+    storage.release_first_renewal.set()
+    first.join(timeout=5)
+    second.join(timeout=5)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert errors == []
+    assert not second_started_while_first_was_blocked
+    assert storage.claims == [initial_claim, first_renewed_claim]
+    assert heartbeat.claim() == second_renewed_claim
+
+
 @pytest.fixture
 def storage(
     tmp_path: Path,
