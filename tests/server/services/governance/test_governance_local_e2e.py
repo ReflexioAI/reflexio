@@ -6,6 +6,7 @@ from collections.abc import Generator
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -188,12 +189,33 @@ def test_purge_execution_heartbeat_serializes_concurrent_renewals() -> None:
             self.second_renewal_started.set()
             return second_renewed_claim
 
+    class TrackingRenewalLock:
+        def __init__(self) -> None:
+            self._lock = threading.Lock()
+            self._attempts_lock = threading.Lock()
+            self._attempts = 0
+            self.second_renewal_attempted = threading.Event()
+
+        def __enter__(self) -> TrackingRenewalLock:
+            with self._attempts_lock:
+                self._attempts += 1
+                if self._attempts == 2:
+                    self.second_renewal_attempted.set()
+            self._lock.acquire()
+            return self
+
+        def __exit__(self, *_exc: object) -> None:
+            self._lock.release()
+
     storage = BlockingRenewalStorage()
     heartbeat = governance_service_module._PurgeExecutionHeartbeat(
         storage=storage,
         purge_id="purge-1",
         execution_claim=initial_claim,
     )
+    renewal_lock = TrackingRenewalLock()
+    cast_heartbeat: Any = heartbeat
+    cast_heartbeat._renewal_lock = renewal_lock
     errors: list[BaseException] = []
 
     def renew() -> None:
@@ -207,9 +229,8 @@ def test_purge_execution_heartbeat_serializes_concurrent_renewals() -> None:
     first.start()
     assert storage.first_renewal_started.wait(timeout=5)
     second.start()
-    second_started_while_first_was_blocked = storage.second_renewal_started.wait(
-        timeout=0.2
-    )
+    assert renewal_lock.second_renewal_attempted.wait(timeout=5)
+    assert not storage.second_renewal_started.is_set()
     storage.release_first_renewal.set()
     first.join(timeout=5)
     second.join(timeout=5)
@@ -217,7 +238,6 @@ def test_purge_execution_heartbeat_serializes_concurrent_renewals() -> None:
     assert not first.is_alive()
     assert not second.is_alive()
     assert errors == []
-    assert not second_started_while_first_was_blocked
     assert storage.claims == [initial_claim, first_renewed_claim]
     assert heartbeat.claim() == second_renewed_claim
 
