@@ -204,6 +204,42 @@ def _load_dotenv_pruned(path: Path, *, override: bool = False) -> None:
             os.environ.pop(key, None)
 
 
+def promote_legacy_env_aliases() -> None:
+    """Fill a blank/unset canonical env var from its legacy alias.
+
+    Must run BEFORE any ``.env`` file is loaded. Those files load with
+    ``override=False``, which only protects a canonical name that is ALREADY
+    set in the process environment — it does nothing when the environment
+    supplied the LEGACY name and a ``.env`` file supplies the CANONICAL one.
+    In that case the file's value silently wins, so a process handed a real
+    DSN under the legacy name can end up reading a developer's local DSN
+    while reporting success. That shipped: a prod deploy's post-deploy grant
+    check verified the operator's local Supabase for exactly this reason.
+
+    ``DATA_DB_URL`` is canonical; ``DATA_SUPABASE_DB_URL`` is the legacy name
+    (see ``.env.template``). Deployments whose secret store we do not control
+    — a self-host customer's, for instance — may legitimately supply only the
+    legacy one, so this must work whichever name arrives.
+
+    Deliberately conservative: promotion is skipped when the canonical name
+    already carries a value, and when ``POSTGRES_DB_URL`` is set or the
+    storage backend is ``postgres``. In those cases the legacy Supabase name
+    is not necessarily the intended DSN, and the existing storage-aware
+    resolver should decide instead of this loader pre-empting it.
+    """
+    if os.environ.get("DATA_DB_URL", "").strip():
+        return
+    legacy = os.environ.get("DATA_SUPABASE_DB_URL", "").strip()
+    if not legacy:
+        return
+    if os.environ.get("POSTGRES_DB_URL", "").strip():
+        return
+    if os.environ.get("REFLEXIO_STORAGE", "").strip().lower() == "postgres":
+        return
+    os.environ["DATA_DB_URL"] = legacy
+    _logger.debug("Promoted legacy DATA_SUPABASE_DB_URL to canonical DATA_DB_URL")
+
+
 def load_reflexio_env(
     *,
     package_data_module: str = "reflexio.data",
@@ -227,6 +263,7 @@ def load_reflexio_env(
         Path to the loaded .env file, or None if no .env was found/created.
     """
     global _loaded_env_path
+    promote_legacy_env_aliases()
     for env_path in _env_search_paths():
         if env_path.exists():
             _load_dotenv_pruned(env_path)
@@ -309,6 +346,7 @@ def load_reflexio_env_for_mode(
         Path to the loaded mode env file, or None if nothing was found/created.
     """
     global _loaded_env_path
+    promote_legacy_env_aliases()
     mode = resolve_mode(cli_mode)
     if mode is None:
         return load_reflexio_env(

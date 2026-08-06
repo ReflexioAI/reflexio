@@ -157,11 +157,22 @@ class DuplicateFilter(logging.Filter):
     def __init__(self, window_seconds: int = 5) -> None:
         super().__init__()
         self._recent: dict[tuple[str, str], float] = {}
+        self._suppressed: dict[tuple[str, str], int] = {}
         self._window = window_seconds
         self._lock = threading.Lock()
 
     def filter(self, record: logging.LogRecord) -> bool:
-        """Return False to suppress duplicate messages within the time window."""
+        """Return False to suppress duplicate messages within the time window.
+
+        Keying on the template means a per-entity line emitted in a loop (one
+        warning per org, per schema, ...) collapses to roughly one record per
+        window, because every iteration shares one template. Silently dropping
+        those reads as full coverage: a fleet-wide problem affecting 19 orgs
+        printed as 7, which is how a real migration audit got under-reported.
+        So when a record does get through, it carries a count of what was
+        dropped for that key since the last one — the suppression stays, but
+        it stops being invisible.
+        """
         # record.msg can be any object (callers sometimes pass a list/dict
         # directly to logger.warning). Stringify so the key is always
         # hashable — otherwise this filter raises TypeError and crashes
@@ -178,9 +189,21 @@ class DuplicateFilter(logging.Filter):
 
             last_seen = self._recent.get(key)
             if last_seen is not None and now - last_seen < self._window:
+                self._suppressed[key] = self._suppressed.get(key, 0) + 1
                 return False
             self._recent[key] = now
-            return True
+            dropped = self._suppressed.pop(key, 0)
+
+        if dropped:
+            # Format now and clear args: the suffix must survive the handler's
+            # own `record.getMessage()` %-substitution, which would otherwise
+            # re-apply args to a template that no longer matches them.
+            record.msg = (
+                f"{record.getMessage()} "
+                f"[+{dropped} similar suppressed in the last {self._window}s]"
+            )
+            record.args = None
+        return True
 
 
 def print_startup_banner(
