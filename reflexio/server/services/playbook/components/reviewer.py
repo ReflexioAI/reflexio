@@ -71,12 +71,31 @@ class CandidateReviewDecision(BaseModel):
         "late_trigger",
         "compound",
         "internal_status",
+        "absence_inference",
     ]
     evidence_ids: list[str] = Field(default_factory=list)
     revision: CandidateRevision | None = None
     reason: str | None = None
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    @model_validator(mode="after")
+    def absence_inference_must_reject(self) -> "CandidateReviewDecision":
+        """A claim resting on what the record lacks cannot be narrowed.
+
+        The prompt instructs the reviewer to reject these outright, but a prompt
+        instruction is not an invariant: a response pairing
+        ``absence_inference`` with ``accept`` or ``revise`` otherwise validates
+        cleanly, and revision would launder the unsupported claim into tidier
+        prose rather than removing it. That pairing has been observed in
+        practice, so enforce it structurally rather than by wording alone.
+        """
+        if self.reason_code == "absence_inference" and self.decision != "reject":
+            raise ValueError(
+                "absence_inference requires decision='reject'; a claim grounded "
+                f"in what the record lacks cannot be {self.decision}d"
+            )
+        return self
 
     @model_validator(mode="before")
     @classmethod

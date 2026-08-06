@@ -3,6 +3,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 import pytest
+from pydantic import ValidationError
 
 from reflexio.models.api_schema.domain.entities import (
     Interaction,
@@ -407,7 +408,7 @@ def test_apply_decisions_uses_the_same_trimmed_candidate_id_as_validation():
 def test_reviewer_prompt_is_versioned_and_active():
     manager = PromptManager()
 
-    assert manager.get_active_version("playbook_candidate_review") == "1.0.0"
+    assert manager.get_active_version("playbook_candidate_review") == "1.1.0"
 
 
 def test_reviewer_prompt_preserves_grounded_procedures_and_forbids_substitutes():
@@ -454,7 +455,15 @@ def test_reviewer_prompt_preserves_grounded_procedures_and_forbids_substitutes()
 
     # Keep the policy compact enough that chronology and evidence remain the
     # dominant context. Frontmatter is not included in the rendered prompt.
-    assert len(rendered.split()) <= 1_000
+    #
+    # Raised 1000 -> 1050 in v1.1.0 to fit check 7 (absence). The check is
+    # dose-dependent on its own wording. Measured on one known-answer window:
+    #   ~70 words (as shipped)  -> 36% pruned (5/14), vs 0/14 for v1.0.0, p=0.041
+    #   ~30 words (premise only)-> 25% pruned (2/8)   [under-powered]
+    #   ~22 words (terse)       ->  0% pruned (0/8), code assigned but not rejected
+    # The terse form is inert, not merely weaker. Prefer displacing existing
+    # policy text over raising this again.
+    assert len(rendered.split()) <= 1_050
 
 
 @pytest.mark.parametrize(
@@ -530,3 +539,34 @@ def test_review_output_rejects_conflicting_single_candidate_wrapper_drift():
                 ],
             }
         )
+
+
+def test_absence_inference_requires_reject():
+    """`absence_inference` paired with accept/revise must not validate.
+
+    The prompt tells the reviewer to reject outright, but wording is not an
+    invariant -- a revise would launder the unsupported claim into tidier prose
+    instead of removing it.
+    """
+    from reflexio.server.services.playbook.components.reviewer import (
+        CandidateReviewDecision,
+    )
+
+    ok = CandidateReviewDecision.model_validate(
+        {"id": "C1", "decision": "reject", "reason_code": "absence_inference"}
+    )
+    assert ok.decision == "reject"
+
+    for bad in ("accept", "revise"):
+        with pytest.raises(ValidationError):
+            CandidateReviewDecision.model_validate(
+                {"id": "C1", "decision": bad, "reason_code": "absence_inference"}
+            )
+
+    # Other codes are unaffected: revise remains available to them.
+    assert (
+        CandidateReviewDecision.model_validate(
+            {"id": "C1", "decision": "revise", "reason_code": "unsupported_evidence"}
+        ).decision
+        == "revise"
+    )
