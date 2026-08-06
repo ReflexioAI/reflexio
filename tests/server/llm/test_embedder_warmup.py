@@ -290,6 +290,16 @@ def test_half_pair_guard_silent_when_both_set(
     assert caplog.records == []
 
 
+def test_half_pair_guard_silent_for_disabled_internal_service(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setenv("REFLEXIO_EMBEDDING_PROVIDER", "internal_service")
+    monkeypatch.setenv("REFLEXIO_DISABLE_LOCAL_EMBEDDING_DAEMON", "1")
+    with caplog.at_level(logging.WARNING):
+        embedder_warmup._guard_daemon_disable_half_pair()
+    assert caplog.records == []
+
+
 def test_half_pair_guard_silent_when_neither_set(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:

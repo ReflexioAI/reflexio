@@ -53,6 +53,7 @@ _ENV_WORKERS = "REFLEXIO_SERVER_WORKERS"
 _ENV_WEB_CONCURRENCY = "WEB_CONCURRENCY"
 
 _INPROCESS = "inprocess"
+_NO_LOCAL_DAEMON_MODES = {_INPROCESS, "internal_service"}
 
 # Process-level readiness signal: set once the in-process embedder is loaded.
 _ready = threading.Event()
@@ -259,24 +260,26 @@ def _guard_daemon_disable_half_pair() -> None:
     """D8(b): warn when the daemon-disable flag and provider disagree.
 
     ``REFLEXIO_DISABLE_LOCAL_EMBEDDING_DAEMON`` (truthy) and
-    ``REFLEXIO_EMBEDDING_PROVIDER=inprocess`` describe the same intent from two
-    angles and are meant to be flipped together. If exactly one is set the
+    a provider that does not use the co-located daemon describe the same intent
+    from two angles and are meant to be flipped together. Both ``inprocess`` and
+    ``internal_service`` bypass the local daemon. If exactly one side is set the
     topology is half-configured (e.g. the daemon is disabled but requests still
-    route to daemon mode, or vice-versa).
+    route to local-service mode, or vice-versa).
     """
     from reflexio.server.env_utils import env_truthy
 
     daemon_disabled = env_truthy(os.environ.get(_ENV_DISABLE_DAEMON, ""))
-    inprocess = _provider() == _INPROCESS
-    if daemon_disabled != inprocess:
+    provider = _provider()
+    bypasses_local_daemon = provider in _NO_LOCAL_DAEMON_MODES
+    if daemon_disabled != bypasses_local_daemon:
         _LOGGER.warning(
-            "Half-configured in-process embedding: %s=%s and %s=%s disagree. "
-            "Set them together (disable the daemon AND select the in-process "
-            "provider) or neither.",
+            "Half-configured embedding topology: %s=%s and %s=%s disagree. "
+            "Disable the local daemon with an in-process or internal-service "
+            "provider, or leave it enabled for local-service routing.",
             _ENV_DISABLE_DAEMON,
             daemon_disabled,
             _ENV_PROVIDER,
-            _provider() or "<unset>",
+            provider or "<unset>",
         )
 
 
