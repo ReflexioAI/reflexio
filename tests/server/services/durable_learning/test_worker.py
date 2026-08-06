@@ -212,15 +212,24 @@ def test_exactly_once_under_claim_race():
 
         errors: list[BaseException] = []
 
+        # Build each worker's context BEFORE starting the threads: parallel
+        # cold construction of SQLite storage on one db file is not safe
+        # (concurrent schema DDL) — the server serializes it behind
+        # get_reflexio's construction lock, which this direct factory
+        # bypasses. The race under test is the claim-token fence, not
+        # construction.
+        ctx_stale = factory("org_race")
+        ctx_live = factory("org_race")
+
         def run_stale() -> None:
             try:
-                worker_stale._process_job(factory("org_race"), stale_job)
+                worker_stale._process_job(ctx_stale, stale_job)
             except BaseException as exc:  # noqa: BLE001
                 errors.append(exc)
 
         def run_live() -> None:
             try:
-                worker_live._process_job(factory("org_race"), live_job)
+                worker_live._process_job(ctx_live, live_job)
             except BaseException as exc:  # noqa: BLE001
                 errors.append(exc)
 

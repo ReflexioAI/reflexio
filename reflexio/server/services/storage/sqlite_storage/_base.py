@@ -68,11 +68,23 @@ from ._stall_state import init_stall_state_table
 logger = logging.getLogger(__name__)
 
 _MINIMUM_SQLITE_VERSION = (3, 35, 0)
+_SQLITE_INITIALIZATION_LOCK_STRIPES = 64
+_sqlite_initialization_locks = tuple(
+    threading.Lock() for _ in range(_SQLITE_INITIALIZATION_LOCK_STRIPES)
+)
 
 
 # ---------------------------------------------------------------------------
 # Module-level helpers
 # ---------------------------------------------------------------------------
+
+
+def _get_sqlite_initialization_lock(db_path: str) -> threading.Lock:
+    """Return a bounded process-local lock for one SQLite database path."""
+    normalized_path = str(Path(db_path).resolve())
+    return _sqlite_initialization_locks[
+        hash(normalized_path) % _SQLITE_INITIALIZATION_LOCK_STRIPES
+    ]
 
 
 def _json_dumps(obj: Any) -> str | None:
@@ -786,13 +798,18 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
 
         # Ensure parent directory exists
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+        initialization_lock = _get_sqlite_initialization_lock(db_path)
 
-        # Open connection
-        self.conn = sqlite3.connect(db_path, check_same_thread=False)
-        self.conn.row_factory = sqlite3.Row
-        register_unicode_lexical_index_function(self.conn)
-        self.conn.execute("PRAGMA journal_mode=WAL")
-        self.conn.execute("PRAGMA foreign_keys=ON")
+        # SQLite's journal-mode negotiation can fail immediately when another
+        # connection is cold-starting the same file. Serialize that setup by
+        # database path while allowing unrelated SQLite files to initialize in
+        # parallel.
+        with initialization_lock:
+            self.conn = sqlite3.connect(db_path, check_same_thread=False)
+            self.conn.row_factory = sqlite3.Row
+            register_unicode_lexical_index_function(self.conn)
+            self.conn.execute("PRAGMA journal_mode=WAL")
+            self.conn.execute("PRAGMA foreign_keys=ON")
 
         # LLM client for embeddings
         model_setting = SiteVarManager().get_site_var("llm_model_setting")
@@ -830,8 +847,10 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         # Optionally load sqlite-vec for native KNN vector search
         self._has_sqlite_vec = self._try_load_sqlite_vec()
 
-        # Create tables
-        self.migrate()
+        # Migrations use an instance-local lock, so separate storage instances
+        # for the same file also need the shared path lock.
+        with initialization_lock:
+            self.migrate()
 
     # ------------------------------------------------------------------
     # Transaction scope
