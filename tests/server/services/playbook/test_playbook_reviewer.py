@@ -3,6 +3,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 import pytest
+from pydantic import ValidationError
 
 from reflexio.models.api_schema.domain.entities import (
     Interaction,
@@ -538,3 +539,34 @@ def test_review_output_rejects_conflicting_single_candidate_wrapper_drift():
                 ],
             }
         )
+
+
+def test_absence_inference_requires_reject():
+    """`absence_inference` paired with accept/revise must not validate.
+
+    The prompt tells the reviewer to reject outright, but wording is not an
+    invariant -- a revise would launder the unsupported claim into tidier prose
+    instead of removing it.
+    """
+    from reflexio.server.services.playbook.components.reviewer import (
+        CandidateReviewDecision,
+    )
+
+    ok = CandidateReviewDecision.model_validate(
+        {"id": "C1", "decision": "reject", "reason_code": "absence_inference"}
+    )
+    assert ok.decision == "reject"
+
+    for bad in ("accept", "revise"):
+        with pytest.raises(ValidationError):
+            CandidateReviewDecision.model_validate(
+                {"id": "C1", "decision": bad, "reason_code": "absence_inference"}
+            )
+
+    # Other codes are unaffected: revise remains available to them.
+    assert (
+        CandidateReviewDecision.model_validate(
+            {"id": "C1", "decision": "revise", "reason_code": "unsupported_evidence"}
+        ).decision
+        == "revise"
+    )
