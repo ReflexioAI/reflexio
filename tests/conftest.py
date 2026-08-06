@@ -83,7 +83,14 @@ _LOCAL_MAX_XDIST_WORKERS = 4
 
 @pytest.hookimpl
 def pytest_xdist_auto_num_workers(config: pytest.Config) -> int | None:
-    """Cap what ``-n auto`` expands to locally; return None in CI to keep xdist's default."""
+    """Cap what ``-n auto``/``-n logical`` expand to locally; None in CI keeps xdist's default.
+
+    xdist calls this for both modes and for neither when an explicit ``-n <N>`` is given
+    (``xdist/plugin.py``: ``if config.option.numprocesses in ("auto", "logical")``), so an
+    explicit count is already the caller's own choice. Capping ``logical`` too is
+    deliberate — it asks for *more* workers than physical cores, so exempting it would
+    reopen the all-cores local run this cap exists to prevent.
+    """
     if os.environ.get("CI"):
         return None
     return min(_LOCAL_MAX_XDIST_WORKERS, os.cpu_count() or 1)
