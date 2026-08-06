@@ -163,8 +163,22 @@ def test_purge_execution_heartbeat_serializes_concurrent_renewals() -> None:
         expires_at=401,
     )
 
-    class BlockingRenewalStorage:
+    class RenewalProgress:
         def __init__(self) -> None:
+            self.event = threading.Event()
+            self._lock = threading.Lock()
+            self.source: str | None = None
+
+        def record(self, source: str) -> None:
+            with self._lock:
+                if self.event.is_set():
+                    return
+                self.source = source
+                self.event.set()
+
+    class BlockingRenewalStorage:
+        def __init__(self, progress: RenewalProgress) -> None:
+            self._progress = progress
             self.claims: list[PurgeExecutionClaim] = []
             self._calls_lock = threading.Lock()
             self.first_renewal_started = threading.Event()
@@ -186,11 +200,13 @@ def test_purge_execution_heartbeat_serializes_concurrent_renewals() -> None:
                 self.first_renewal_started.set()
                 assert self.release_first_renewal.wait(timeout=5)
                 return first_renewed_claim
+            self._progress.record("storage")
             self.second_renewal_started.set()
             return second_renewed_claim
 
     class TrackingRenewalLock:
-        def __init__(self) -> None:
+        def __init__(self, progress: RenewalProgress) -> None:
+            self._progress = progress
             self._lock = threading.Lock()
             self._attempts_lock = threading.Lock()
             self._attempts = 0
@@ -200,20 +216,21 @@ def test_purge_execution_heartbeat_serializes_concurrent_renewals() -> None:
             with self._attempts_lock:
                 self._attempts += 1
                 if self._attempts == 2:
-                    self.second_renewal_attempted.set()
+                    self._progress.record("renewal lock")
             self._lock.acquire()
             return self
 
         def __exit__(self, *_exc: object) -> None:
             self._lock.release()
 
-    storage = BlockingRenewalStorage()
+    progress = RenewalProgress()
+    storage = BlockingRenewalStorage(progress)
     heartbeat = governance_service_module._PurgeExecutionHeartbeat(
         storage=storage,
         purge_id="purge-1",
         execution_claim=initial_claim,
     )
-    renewal_lock = TrackingRenewalLock()
+    renewal_lock = TrackingRenewalLock(progress)
     cast_heartbeat: Any = heartbeat
     cast_heartbeat._renewal_lock = renewal_lock
     errors: list[BaseException] = []
@@ -224,16 +241,27 @@ def test_purge_execution_heartbeat_serializes_concurrent_renewals() -> None:
         except BaseException as exc:
             errors.append(exc)
 
+    allow_second_renewal = threading.Event()
+
+    def renew_second() -> None:
+        assert allow_second_renewal.wait(timeout=5)
+        renew()
+
     first = threading.Thread(target=renew)
-    second = threading.Thread(target=renew)
+    second = threading.Thread(target=renew_second)
     first.start()
-    assert storage.first_renewal_started.wait(timeout=5)
     second.start()
-    assert renewal_lock.second_renewal_attempted.wait(timeout=5)
-    assert not storage.second_renewal_started.is_set()
-    storage.release_first_renewal.set()
-    first.join(timeout=5)
-    second.join(timeout=5)
+    try:
+        assert storage.first_renewal_started.wait(timeout=5)
+        allow_second_renewal.set()
+        assert progress.event.wait(timeout=5)
+        assert progress.source == "renewal lock"
+        assert not storage.second_renewal_started.is_set()
+    finally:
+        allow_second_renewal.set()
+        storage.release_first_renewal.set()
+        first.join(timeout=5)
+        second.join(timeout=5)
 
     assert not first.is_alive()
     assert not second.is_alive()
