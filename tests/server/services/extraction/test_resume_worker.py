@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import tempfile
 import threading
+from collections import Counter
 from collections.abc import Callable
 from contextlib import ExitStack
 from datetime import UTC, datetime, timedelta
@@ -247,15 +248,17 @@ class _DeduplicatingUsageRecorder:
         self.attempts: list[UsageEvent] = []
         self.events: list[UsageEvent] = []
         self._accepted_keys: set[str] = set()
+        self._lock = threading.Lock()
 
     def __call__(self, event: UsageEvent) -> UsageEventDeliveryStatus:
-        self.attempts.append(event)
-        assert event.event_key is not None
-        if event.event_key in self._accepted_keys:
-            return UsageEventDeliveryStatus.DUPLICATE
-        self._accepted_keys.add(event.event_key)
-        self.events.append(event)
-        return UsageEventDeliveryStatus.APPENDED
+        with self._lock:
+            self.attempts.append(event)
+            assert event.event_key is not None
+            if event.event_key in self._accepted_keys:
+                return UsageEventDeliveryStatus.DUPLICATE
+            self._accepted_keys.add(event.event_key)
+            self.events.append(event)
+            return UsageEventDeliveryStatus.APPENDED
 
 
 @pytest.mark.parametrize(
@@ -1701,10 +1704,9 @@ def test_two_stale_profile_workers_preserve_order_and_bill_only_winner(tmp_path)
         if event.event_name == "learnings_generated" and event.entity_type == "profile"
     ]
     assert [event.entity_id for event in billing_events] == persisted_ids
-    assert [event.entity_id for event in recorder.attempts] == [
-        *persisted_ids,
-        *persisted_ids,
-    ]
+    assert Counter(event.entity_id for event in recorder.attempts) == Counter(
+        persisted_ids * 2
+    )
 
 
 def test_two_stale_playbook_workers_preserve_order_and_dispatch_once(tmp_path):
@@ -1814,10 +1816,9 @@ def test_two_stale_playbook_workers_preserve_order_and_dispatch_once(tmp_path):
                 and event.entity_type == "user_playbook"
             ]
             assert billing_ids == receipt_ids
-            assert [event.entity_id for event in recorder.attempts] == [
-                *receipt_ids,
-                *receipt_ids,
-            ]
+            assert Counter(event.entity_id for event in recorder.attempts) == Counter(
+                receipt_ids * 2
+            )
     finally:
         configure_usage_event_recorder(None)
 
