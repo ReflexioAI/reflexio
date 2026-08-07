@@ -1526,16 +1526,20 @@ def test_shared_file_claim_takeover_fences_independent_storage_instance(
     )
     ready = threading.Barrier(2)
     claims: list[PurgeExecutionClaim | None] = []
+    errors: list[BaseException] = []
 
     def claim(storage_instance: SQLiteStorage, owner: str) -> None:
-        ready.wait(timeout=5)
-        claims.append(
-            storage_instance.claim_purge_operation_execution(
-                purge.purge_id,
-                lease_owner=owner,
-                lease_ttl_seconds=30,
+        try:
+            ready.wait(timeout=5)
+            claims.append(
+                storage_instance.claim_purge_operation_execution(
+                    purge.purge_id,
+                    lease_owner=owner,
+                    lease_ttl_seconds=30,
+                )
             )
-        )
+        except BaseException as exc:  # noqa: BLE001 - intentional thread error capture
+            errors.append(exc)
 
     callers = [
         threading.Thread(target=claim, args=(storage_a, "owner-a")),
@@ -1547,6 +1551,8 @@ def test_shared_file_claim_takeover_fences_independent_storage_instance(
         caller.join(timeout=5)
 
     assert all(not caller.is_alive() for caller in callers)
+    assert errors == []
+    assert len(claims) == len(callers)
     live_claims = [claim for claim in claims if claim is not None]
     assert len(live_claims) == 1
     first_claim = live_claims[0]
@@ -1675,8 +1681,11 @@ def test_claimed_erasure_mutation_signatures_and_callers_require_claim() -> None
             assert parameter.annotation in {"PurgeExecutionClaim", PurgeExecutionClaim}
 
     production_root = Path(__file__).resolve().parents[5] / "reflexio"
+    assert production_root.exists()
+    python_modules = list(production_root.rglob("*.py"))
+    assert python_modules
     violations: list[str] = []
-    for path in production_root.rglob("*.py"):
+    for path in python_modules:
         tree = ast.parse(path.read_text(), filename=str(path))
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
