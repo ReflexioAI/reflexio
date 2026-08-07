@@ -60,6 +60,7 @@ from reflexio.server.extensions import reset_services  # noqa: E402
 
 _test_server.LOCAL_STORAGE_PATH = os.environ["LOCAL_STORAGE_PATH"]
 
+from reflexio.test_support.embedding_mock import patch_embeddings  # noqa: E402
 from reflexio.test_support.llm_credentials import (  # noqa: E402
     ensure_provider_credential,
 )
@@ -111,6 +112,36 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
 
 def pytest_unconfigure(config):
     cleanup_llm_mock(config)
+
+
+@pytest.fixture(autouse=True)
+def _deterministic_embeddings(request: pytest.FixtureRequest) -> Iterator[None]:
+    """Give every non-e2e test a vector source, so storage writes are real writes.
+
+    Embeddings were computed in-process until local inference moved behind a
+    service; nothing replaced that for tests. The suite kept passing only
+    because the SQLite ingest path swallows EmbeddingUnavailableError and stores
+    an empty vector -- so rows were written unsearchable, and assertions about
+    vector search or clustering downstream of them passed vacuously.
+
+    Two carve-outs, both "do not stub the thing under test":
+
+    - ``e2e_tests`` exercise the real stack, the same reason they bypass the
+      LLM mock.
+    - ``server/llm`` owns the embedding dispatch this patches. Stubbing
+      ``_embed_texts`` there would replace the unit under test, so those suites
+      keep the real implementation and mock the provider beneath it instead.
+
+    The vectors are deterministic but NOT semantic (hash-derived), so this makes
+    write paths real without making similarity assertions meaningful -- place
+    vectors explicitly for those.
+    """
+    parts = Path(str(request.node.path)).parts
+    if "e2e_tests" in parts or ("llm" in parts and "server" in parts):
+        yield
+        return
+    with patch_embeddings():
+        yield
 
 
 @pytest.fixture(autouse=True)
