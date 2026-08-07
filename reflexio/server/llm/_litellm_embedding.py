@@ -8,8 +8,8 @@ the module-level ``_TRUNCATION_WARNED_MODELS`` set and the budget constants live
 alongside them at module scope.
 
 SINK-1 (patch-where-used): the provider/router names this module references
-(``resolve_model_name``, ``get_service_embeddings``, ``should_use_embedding_service``,
-``NomicEmbedder``, ``LocalEmbedder``, ``is_chromadb_importable``) are imported HERE,
+(``resolve_model_name``, ``get_service_embeddings``, and
+``should_use_embedding_service``) are imported HERE,
 so tests patch them at ``_litellm_embedding.<name>`` — patching the old facade
 namespace would no-op and a no-op would hit the real embedder/137M model/network
 (the P0). ``litellm.get_model_info``/``litellm.embedding`` are called via the shared
@@ -39,21 +39,6 @@ from reflexio.server.llm.providers.embedding_service_provider import (
     get_service_embeddings,
     resolve_service_configured_model,
     should_use_embedding_service,
-)
-from reflexio.server.llm.providers.local_embedding_provider import (
-    LocalEmbedder,
-)
-from reflexio.server.llm.providers.local_embedding_provider import (
-    is_chromadb_importable as _is_chromadb_importable,
-)
-from reflexio.server.llm.providers.nomic_embedding_provider import (
-    NomicEmbedder,
-)
-from reflexio.server.llm.providers.nomic_embedding_provider import (
-    is_nomic_model as _is_nomic_model,
-)
-from reflexio.server.services.embedding_text import (
-    is_multilingual_e5_model as _is_multilingual_e5_model,
 )
 
 if TYPE_CHECKING:
@@ -205,7 +190,7 @@ def _truncate_for_embedding(
 def _embedding_error(message: str, mode: str) -> LiteLLMClientError:
     """Build a ``LiteLLMClientError`` and log it tagged with the resolved mode.
 
-    Attaching ``mode`` (daemon-path vs in-process-path vs cloud) to the log makes
+    Attaching ``mode`` (service path vs cloud) to the log makes
     embedding failures attributable to a routing decision. The exception message
     itself is unchanged so existing callers/tests keep matching on it.
 
@@ -360,49 +345,12 @@ class EmbeddingMixin:
                 texts, model=embedding_model, dimensions=dimensions
             )
 
-        # local/nomic-embed-* must stay on the Nomic provider (137M params,
-        # 768d Matryoshka-truncated to 512). Falling through to MiniLM would
-        # mix embedding models inside existing vector stores.
-        if _is_nomic_model(embedding_model):
-            _reject_cloud_mode(embedding_model, mode)
-            try:
-                return NomicEmbedder.get().embed(texts)
-            except Exception as e:
-                raise _embedding_error(
-                    f"Nomic{' batch' if batch else ''} embedding generation "
-                    f"failed: {str(e)}",
-                    mode,
-                ) from e
-
-        if _is_multilingual_e5_model(embedding_model):
+        if embedding_model.startswith("local/"):
             raise _embedding_error(
-                "multilingual-e5-small is available only through the dedicated "
-                "GPU embedding service",
+                f"Local embedding model {embedding_model!r} was not routed to "
+                "the inference service",
                 mode,
             )
-
-        # local/* models route through the in-process ONNX embedder — no
-        # network call, no litellm API, no tiktoken truncation (the embedder
-        # applies its own token cap). The dispatch is gated solely on
-        # ``chromadb`` being importable; the env-var opt-in (claude-smart's
-        # ``CLAUDE_SMART_USE_LOCAL_EMBEDDING``) is enforced earlier in the
-        # auto-detection layer (see ``model_defaults._auto_detect_model``).
-        if embedding_model.startswith("local/"):
-            _reject_cloud_mode(embedding_model, mode)
-            if not _is_chromadb_importable():
-                raise _embedding_error(
-                    f"Embedding model {embedding_model!r} requires chromadb. "
-                    "Run `pip install chromadb`.",
-                    mode,
-                )
-            try:
-                return LocalEmbedder.get().embed(texts)
-            except Exception as e:
-                raise _embedding_error(
-                    f"Local{' batch' if batch else ''} embedding generation "
-                    f"failed: {str(e)}",
-                    mode,
-                ) from e
 
         truncated = [_truncate_for_embedding(t, embedding_model) for t in texts]
 

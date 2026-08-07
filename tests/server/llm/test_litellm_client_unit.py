@@ -957,31 +957,19 @@ class TestEmbeddingSingleBatchParity:
     must agree, and embedding failures must be tagged with the resolved mode."""
 
     @staticmethod
-    def _route_local_inprocess(monkeypatch, *, embed):
-        """Force the in-process LocalEmbedder branch with a fake embedder."""
+    def _route_local_service(monkeypatch, *, embed):
+        """Force the HTTP inference-service branch with a fake response."""
         from reflexio.server.llm import _litellm_embedding
 
         monkeypatch.setattr(
-            _litellm_embedding, "embedding_provider_mode", lambda _m: "inprocess"
+            _litellm_embedding,
+            "get_service_embeddings",
+            lambda texts, **_kwargs: embed(texts),
         )
-        monkeypatch.setattr(
-            _litellm_embedding, "should_use_embedding_service", lambda _m: False
-        )
-        monkeypatch.setattr(_litellm_embedding, "_is_chromadb_importable", lambda: True)
-
-        class _FakeEmbedder:
-            @staticmethod
-            def get():
-                return _FakeEmbedder()
-
-            def embed(self, texts):
-                return embed(texts)
-
-        monkeypatch.setattr(_litellm_embedding, "LocalEmbedder", _FakeEmbedder)
 
     def test_get_embedding_matches_get_embeddings_first_element(self, monkeypatch):
         """get_embedding(t) == get_embeddings([t])[0] on the local-embedder path."""
-        self._route_local_inprocess(
+        self._route_local_service(
             monkeypatch,
             embed=lambda texts: [[float(len(t)), 1.0, 2.0] for t in texts],
         )
@@ -993,26 +981,17 @@ class TestEmbeddingSingleBatchParity:
         assert single == batch[0]
         assert single == [5.0, 1.0, 2.0]
 
-    def test_inprocess_embedding_failure_is_tagged_with_mode(self, monkeypatch, caplog):
-        """A local (in-process) embedding failure logs a record tagged mode=inprocess."""
+    def test_service_embedding_failure_never_falls_back(self, monkeypatch):
+        """A service failure propagates and never constructs a local model."""
 
         def _boom(_texts):
             raise RuntimeError("boom")
 
-        self._route_local_inprocess(monkeypatch, embed=_boom)
+        self._route_local_service(monkeypatch, embed=_boom)
         client = _build_client()
 
-        with (
-            caplog.at_level(logging.WARNING),
-            pytest.raises(
-                LiteLLMClientError, match="Local embedding generation failed"
-            ),
-        ):
+        with pytest.raises(RuntimeError, match="boom"):
             client.get_embedding("hello", model="local/minilm-l6-v2")
-
-        tagged = [r for r in caplog.records if getattr(r, "mode", None) == "inprocess"]
-        assert tagged, "expected a log record carrying the resolved mode"
-        assert "mode=inprocess" in tagged[0].getMessage()
 
 
 # ===================================================================
@@ -1058,30 +1037,16 @@ class TestEmbeddingDefaultResolution:
 
     def test_get_embedding_routes_to_local_when_default_is_local(self, monkeypatch):
         """When the auto-detected default is ``local/…``, ``get_embedding``
-        must take the LocalEmbedder branch and never call ``litellm.embedding``.
+        must take the inference-service branch and never call ``litellm.embedding``.
         """
         monkeypatch.setattr(
             LiteLLMClient,
             "_resolve_default_embedding_model",
             lambda _: "local/minilm-l6-v2",
         )
-        # Stay hermetic: if a local embedding daemon happens to be running on
-        # this host, model-driven routing would call it instead of the
-        # in-process LocalEmbedder branch this test exercises. Force the service
-        # gate off.
         monkeypatch.setattr(
-            "reflexio.server.llm._litellm_embedding.should_use_embedding_service",
-            lambda _model: False,
-        )
-        monkeypatch.setattr(
-            "reflexio.server.llm._litellm_embedding._is_chromadb_importable",
-            lambda: True,
-        )
-        fake_embedder = MagicMock()
-        fake_embedder.embed.return_value = [[0.9, 0.8, 0.7]]
-        monkeypatch.setattr(
-            "reflexio.server.llm._litellm_embedding.LocalEmbedder.get",
-            classmethod(lambda _cls: fake_embedder),
+            "reflexio.server.llm._litellm_embedding.get_service_embeddings",
+            lambda *_args, **_kwargs: [[0.9, 0.8, 0.7]],
         )
 
         client = _build_client()
@@ -1089,7 +1054,6 @@ class TestEmbeddingDefaultResolution:
             result = client.get_embedding("hello")
 
         assert result == [0.9, 0.8, 0.7]
-        fake_embedder.embed.assert_called_once_with(["hello"])
         mock_emb.assert_not_called()
 
 

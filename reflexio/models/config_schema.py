@@ -568,10 +568,9 @@ def _default_agent_success_config() -> AgentSuccessConfig:
 class RetrievalFloorConfig(BaseModel):
     """Read-path relevance floor: drop search results below a per-arm cross-encoder score.
 
-    Floors are RAW cross-encoder logits (ms-marco-MiniLM), not probabilities. On this
-    corpus strongly relevant items score roughly 0..-3, weak/marginal items -3..-5,
-    and clear junk -6..-11. A default of -3 keeps strong matches while dropping the
-    weak tail that drives false-positive citations. Calibrate per arm on real data.
+    Floors are raw, model-specific cross-encoder logits, not probabilities. ``None``
+    selects the calibrated default for the reranker discovered from the inference
+    service. Numeric values are exact organization overrides, including ``0.0``.
     """
 
     enabled: bool = False
@@ -580,9 +579,9 @@ class RetrievalFloorConfig(BaseModel):
         gt=0,
         description="Candidates fetched per arm before flooring + cap to top_k.",
     )
-    profile_floor: float = -3.0
-    user_playbook_floor: float = -3.0
-    agent_playbook_floor: float = -3.0
+    profile_floor: float | None = None
+    user_playbook_floor: float | None = None
+    agent_playbook_floor: float | None = None
 
 
 class PlaybookOptimizerConfig(BaseModel):

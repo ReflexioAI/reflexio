@@ -1,9 +1,11 @@
 """Read-path relevance floor: drop retrieved items below a cross-encoder score.
 
-Scores ``(query, item.content)`` pairs with the local cross-encoder (raw logits),
+Scores ``(query, item.content)`` pairs with the shared-service cross-encoder
+(raw logits),
 drops anything below ``floor``, returns survivors sorted by score desc, capped at
-``top_k``. On reranker unavailability, degrades to the retrieved order (logged) —
-never crashes, never silently returns the full unfiltered list.
+``top_k``. On reranker unavailability, degrades to the retrieved order. Remote
+service failures are logged; an unavailable local embedding daemon is an
+expected silent skip.
 """
 
 from __future__ import annotations
@@ -14,8 +16,10 @@ from dataclasses import dataclass
 from typing import Any
 
 from reflexio.server.llm.rerank import score_pairs
+from reflexio.server.llm.rerank.common import resolve_retrieval_floor
 from reflexio.server.llm.rerank.cross_encoder_reranker import (
     CrossEncoderUnavailableError,
+    score_pairs_with_model,
 )
 from reflexio.server.tracing import profile_step
 
@@ -70,13 +74,15 @@ def apply_relevance_floor[T](
     ) as span:
         try:
             scores = score_pairs(query, [content_of(item) for item in items])
-        except CrossEncoderUnavailableError:
+        except CrossEncoderUnavailableError as exc:
             span.set_data("available", False)
-            logger.warning(
-                "event=relevance_floor_unavailable arm=%s items=%d (returning unfiltered top_k)",
-                arm,
-                len(items),
-            )
+            if exc.report_failure:
+                logger.warning(
+                    "event=relevance_floor_unavailable arm=%s items=%d (returning unfiltered top_k)",
+                    arm,
+                    len(items),
+                    exc_info=True,
+                )
             return items[:top_k]
         span.set_data("available", True)
 
@@ -97,7 +103,7 @@ def apply_relevance_floor[T](
 
 def apply_relevance_floors(
     query: str,
-    arms: Sequence[tuple[str, list[Any], float]],
+    arms: Sequence[tuple[str, list[Any], float | None]],
     top_k: int,
     *,
     content_of: Callable[[Any], str] = lambda item: item.content,
@@ -135,20 +141,23 @@ def apply_relevance_floors(
         top_k=top_k,
     ) as span:
         try:
-            scores = score_pairs(query, contents)
-        except CrossEncoderUnavailableError:
+            reranker_model, scores = score_pairs_with_model(query, contents)
+        except CrossEncoderUnavailableError as exc:
             span.set_data("available", False)
-            logger.warning(
-                "event=relevance_floor_unavailable arms=%s items=%d (returning unfiltered pool)",
-                arm_names,
-                len(contents),
-            )
+            if exc.report_failure:
+                logger.warning(
+                    "event=relevance_floor_unavailable arms=%s items=%d (returning unfiltered pool)",
+                    arm_names,
+                    len(contents),
+                    exc_info=True,
+                )
             return [RelevanceFloorResult(list(items), None) for _, items, _ in arms]
         span.set_data("available", True)
 
         results: list[RelevanceFloorResult] = []
         offset = 0
-        for name, items, floor in arms:
+        for name, items, configured_floor in arms:
+            floor = resolve_retrieval_floor(reranker_model, name, configured_floor)
             arm_scores = scores[offset : offset + len(items)]
             offset += len(items)
             survivors = _floor_and_sort(items, arm_scores, floor)

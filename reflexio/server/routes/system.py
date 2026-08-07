@@ -13,7 +13,6 @@ from fastapi import (
     Request,
     status,
 )
-from fastapi.responses import JSONResponse
 
 from reflexio.models.api_schema.retriever_schema import (
     GetDashboardStatsRequest,
@@ -57,26 +56,8 @@ def root() -> dict[str, str]:
 
 
 @router.get("/health", response_model=None)
-async def health_check() -> dict[str, str] | JSONResponse:
-    """Health check endpoint for ECS/container orchestration.
-
-    When the in-process-embedder warm-before-ready gate is active (a future
-    ``REFLEXIO_EMBEDDING_PROVIDER=inprocess`` + ``local/*`` deployment) and the
-    embedder has not finished loading, return HTTP 503 so the load balancer
-    holds traffic until the model is warm. In every other configuration — the
-    current daemon-mode prod state included — the gate is inactive and this
-    returns exactly the historical 200 body.
-    """
-    from reflexio.server.llm.providers.embedder_warmup import (
-        inprocess_local_gate_active,
-        is_embedder_ready,
-    )
-
-    if inprocess_local_gate_active() and not is_embedder_ready():
-        return JSONResponse(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            content={"status": "starting"},
-        )
+async def health_check() -> dict[str, str]:
+    """Health check endpoint for ECS/container orchestration."""
     return {"status": "healthy"}
 
 

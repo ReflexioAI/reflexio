@@ -151,15 +151,10 @@ class TestEnsureLlmConfigured:
         assert str(env) in out
         assert "reflexio setup init" in out
 
-    def test_prompts_only_for_embedding_when_llm_exists_without_embedding(
+    def test_generation_provider_uses_colocated_inference_without_prompt(
         self, tmp_path: Path
     ) -> None:
-        """Anthropic-only env + no chromadb → embedding prompt fires.
-
-        With chromadb available the helper takes the local-fallback path and
-        skips the prompt entirely (covered by
-        ``test_services_start_proceeds_without_cloud_embedder_when_chromadb_present``).
-        """
+        """Anthropic-only env uses the supervised inference child."""
         env = tmp_path / ".env"
         env.write_text("")
         with (
@@ -182,7 +177,7 @@ class TestEnsureLlmConfigured:
         ):
             _ensure_llm_configured(env)
         mock_llm.assert_not_called()
-        mock_emb.assert_called_once_with(env, "anthropic")
+        mock_emb.assert_not_called()
 
     def test_local_only_provider_still_triggers_llm_wizard(
         self, tmp_path: Path
@@ -252,8 +247,7 @@ class TestEnsureLlmConfigured:
     ) -> None:
         """Anthropic-only env + chromadb importable → no prompt, no exit.
 
-        The runtime auto-detection (Layer A path 3) picks the local embedder,
-        so ``services start`` should log the fallback note and continue
+        The launcher supplies the local inference process, so startup continues
         without involving the user.
         """
         env = tmp_path / ".env"
@@ -282,7 +276,7 @@ class TestEnsureLlmConfigured:
         mock_llm.assert_not_called()
         mock_emb.assert_not_called()
         assert any(
-            "Using local embedder as fallback" in record.message
+            "Using colocated inference service" in record.message
             for record in caplog.records
         )
 

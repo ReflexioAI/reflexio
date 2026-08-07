@@ -201,10 +201,10 @@ def test_wants_current_composes_with_relevance_floor(monkeypatch):
     monkeypatch.setattr(uss, "_run_phase_b", lambda **_kw: ([stale, fresh], [], []))
 
     def fake_score(query, docs):  # noqa: ARG001
-        return [1.0] * len(docs)
+        return "cross-encoder/ms-marco-MiniLM-L-6-v2", [1.0] * len(docs)
 
     with patch(
-        "reflexio.server.services.retrieval.relevance_floor.score_pairs",
+        "reflexio.server.services.retrieval.relevance_floor.score_pairs_with_model",
         side_effect=fake_score,
     ):
         result = uss.run_unified_search(

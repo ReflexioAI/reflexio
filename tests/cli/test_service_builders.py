@@ -200,19 +200,25 @@ class TestBuildBackendService:
 
         assert should_start_local_embedding_service() is True
 
-    def test_should_not_start_local_embedding_service_for_true_string(
-        self, monkeypatch
-    ) -> None:
+    def test_regular_startup_always_starts_shared_service(self, monkeypatch) -> None:
         monkeypatch.delenv("REFLEXIO_EMBEDDING_PROVIDER", raising=False)
         monkeypatch.setenv("CLAUDE_SMART_USE_LOCAL_EMBEDDING", "true")
 
-        assert should_start_local_embedding_service() is False
+        assert should_start_local_embedding_service() is True
 
-    def test_should_not_start_local_embedding_service_for_internal(
+    def test_internal_mode_without_remote_url_still_starts_local_service(
         self, monkeypatch
     ) -> None:
         monkeypatch.setenv("REFLEXIO_EMBEDDING_PROVIDER", "internal_service")
+        monkeypatch.delenv("REFLEXIO_EMBEDDING_SERVICE_URL", raising=False)
         monkeypatch.setenv("CLAUDE_SMART_USE_LOCAL_EMBEDDING", "1")
+
+        assert should_start_local_embedding_service() is True
+
+    def test_remote_service_url_suppresses_local_service(self, monkeypatch) -> None:
+        monkeypatch.setenv(
+            "REFLEXIO_EMBEDDING_SERVICE_URL", "http://embedding.internal:8089"
+        )
 
         assert should_start_local_embedding_service() is False
 

@@ -59,7 +59,7 @@ Example: `uv run reflexio --json search "refund policy"`.
 
 ## Services
 
-Start and stop the backend, docs server, and optional local embedding daemon.
+Start and stop the backend, docs server, and colocated inference service.
 
 ```shell
 uv run reflexio services start                          # backend :8061, docs :8062
@@ -71,16 +71,18 @@ uv run reflexio services stop
 uv run reflexio services stop --force                   # SIGKILL instead of SIGTERM
 ```
 
-When `REFLEXIO_EMBEDDING_PROVIDER=local_service` or
-`CLAUDE_SMART_USE_LOCAL_EMBEDDING=1`, `services start --only backend` starts an
-`embedding` service dependency automatically. The daemon exposes
-`POST /v1/embeddings` and supports `local/nomic-embed-v1.5`,
+`services start --only backend` starts the separate `embedding` process unless
+`REFLEXIO_EMBEDDING_SERVICE_URL` routes inference to a remote service. This is
+also true when an organization uses cloud embeddings because the service owns
+reranking. The service exposes `POST /v1/embeddings` and `POST /v1/rerank`, and
+supports `local/nomic-embed-v1.5`,
 `local/nomic-embed-text-v1.5`, and `local/minilm-l6-v2`. Local embedding
 requests allow extra time for model cold start; override with
 `REFLEXIO_EMBEDDING_SERVICE_TIMEOUT_MS` when needed.
 MiniLM cache corruption is retried once automatically. If recovery still fails,
 delete the cache directory named in the error message, restart Reflexio, and
-retry local embedding.
+retry local embedding. API workers never load either model and embedding
+failures never fall back to in-process inference.
 
 ## Publishing interactions
 

@@ -12,9 +12,9 @@ def test_retrieval_floor_defaults():
     cfg = RetrievalFloorConfig()
     assert cfg.enabled is False
     assert cfg.pool_size == 30
-    assert cfg.profile_floor == -3.0
-    assert cfg.user_playbook_floor == -3.0
-    assert cfg.agent_playbook_floor == -3.0
+    assert cfg.profile_floor is None
+    assert cfg.user_playbook_floor is None
+    assert cfg.agent_playbook_floor is None
 
 
 def test_config_has_retrieval_floor_default():

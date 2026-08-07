@@ -82,11 +82,8 @@ def test_daemon_mode_recycles_worker_after_max_requests() -> None:
     )
     try:
         url = f"http://127.0.0.1:{port}/healthz"
-        # Cold start loads the local embedder + cross-encoder reranker into each
-        # worker. With --workers 2 the manager brings workers up roughly serially,
-        # so a clean cold start already takes ~70s even with models cached; a
-        # worker death+respawn re-triggers a full model reload, and a contended box
-        # (this test runs at the tail of the parallel suite) stretches it further.
+        # API workers do not load inference models. A contended box (this test
+        # runs at the tail of the parallel suite) can still stretch startup.
         # Give it a generous budget so the recycle assertion isn't masked by a
         # too-tight readiness deadline.
         _wait_for_healthz(url, timeout=180.0)
@@ -104,8 +101,7 @@ def test_daemon_mode_recycles_worker_after_max_requests() -> None:
                 httpx.get(url, timeout=2.0)
 
         # Let the supervisor respawn any recycled workers. A respawned worker
-        # reloads the embedder + reranker models from scratch, so it can take far
-        # longer than a warm request to start serving again — wait accordingly.
+        # can take longer than a warm request to start serving again.
         time.sleep(3.0)
         _wait_for_healthz(url, timeout=180.0)
 

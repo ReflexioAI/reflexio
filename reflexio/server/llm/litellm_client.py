@@ -81,12 +81,6 @@ from reflexio.server.llm._litellm_types import (
 from reflexio.server.llm.providers.claude_code_provider import (
     register_if_enabled as _register_claude_code,
 )
-from reflexio.server.llm.providers.local_embedding_provider import (
-    register_if_chromadb_available as _register_local_embedder,
-)
-from reflexio.server.llm.providers.nomic_embedding_provider import (
-    register_if_enabled as _register_nomic_embedder,
-)
 from reflexio.server.llm.providers.openclaw_provider import (
     register_if_enabled as _register_openclaw,
 )
@@ -98,8 +92,6 @@ litellm.suppress_debug_info = True
 # matching env var is set. Safe to call at import.
 _register_claude_code()
 _register_openclaw()
-_register_local_embedder()
-_register_nomic_embedder()
 
 # Public importer surface (the #1 invariant of the Tier-2.5 decomposition). These
 # five names — plus the test-imported internals re-exported below the split — must

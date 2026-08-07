@@ -63,9 +63,6 @@ def _ensure_llm_configured(env_path: Path) -> None:
         GENERATION_CAPABLE_PROVIDERS,
         detect_available_providers,
     )
-    from reflexio.server.llm.providers.local_embedding_provider import (
-        is_chromadb_importable,
-    )
 
     providers = detect_available_providers()
     has_embedding = any(p in EMBEDDING_CAPABLE_PROVIDERS for p in providers)
@@ -83,8 +80,8 @@ def _ensure_llm_configured(env_path: Path) -> None:
     # block startup. We require ``has_generation`` here because providers
     # like ``["local"]`` (embedder-only) leave the GENERATION role
     # unresolvable and must still trip the wizard.
-    if has_generation and is_chromadb_importable():
-        _logger.info("Using local embedder as fallback (no cloud embedder configured)")
+    if has_generation:
+        _logger.info("Using colocated inference service (no cloud embedder configured)")
         return
 
     if not sys.stdin.isatty():

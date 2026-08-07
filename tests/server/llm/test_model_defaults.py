@@ -307,16 +307,15 @@ class TestValidateLlmAvailability:
         monkeypatch.setattr(lep.importlib.util, "find_spec", lambda _name: object())
         validate_llm_availability()  # should not raise
 
-    def test_no_embedding_provider_no_chromadb_raises(
+    def test_no_embedding_provider_uses_colocated_service_without_chromadb(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Anthropic key + chromadb missing → raise with install hint."""
+        """Model packages live in the child service, not the API worker."""
         from reflexio.server.llm.providers import local_embedding_provider as lep
 
         monkeypatch.setenv("ANTHROPIC_API_KEY", "ant-test")
         monkeypatch.setattr(lep.importlib.util, "find_spec", lambda _name: None)
-        with pytest.raises(RuntimeError, match="chromadb"):
-            validate_llm_availability()
+        validate_llm_availability()
 
     def test_openai_only_passes(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
