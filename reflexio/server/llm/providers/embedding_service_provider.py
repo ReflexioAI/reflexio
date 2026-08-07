@@ -169,7 +169,21 @@ def resolve_service_configured_reranker_model() -> str:
 
 
 def resolve_inference_service_capabilities() -> InferenceServiceCapabilities:
-    """Discover and process-cache both models with one ``/health`` request."""
+    """Discover and process-cache both models with one ``/health`` request.
+
+    Raises:
+        EmbeddingUnavailableError: If the provider is ``off``, or the service
+            cannot be reached.
+    """
+    # Honour an explicit `off` before deriving a service mode. Deriving one
+    # unconditionally made `off` unreachable here: the caller got a connection
+    # error against a service it had just disabled, rather than being told the
+    # provider is off.
+    if embedding_provider_mode() == "off":
+        raise EmbeddingUnavailableError(
+            f"Embedding provider is disabled ({_ENV_PROVIDER}=off); "
+            "no service model can be discovered"
+        )
     mode: EmbeddingProviderMode = (
         "internal_service"
         if os.environ.get(_ENV_SERVICE_URL, "").strip()

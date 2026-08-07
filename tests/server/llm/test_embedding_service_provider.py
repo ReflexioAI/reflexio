@@ -237,3 +237,26 @@ def test_malformed_embedding_response_fails_closed(monkeypatch, data: Any) -> No
 
     with pytest.raises(EmbeddingUnavailableError):
         get_service_embeddings(["text"], model="local/minilm-l6-v2")
+
+
+def test_capability_discovery_honours_off_mode(monkeypatch) -> None:
+    """`off` must short-circuit discovery, not attempt a connection.
+
+    The mode was derived locally here, so `off` -- a validated member of
+    _VALID_MODES -- could not reach this path: callers that had explicitly
+    disabled embedding still got a connection error against the service they
+    had just turned off. Asserts on the message because the failure mode being
+    guarded is a *misleading* error, not merely an error.
+    """
+    from reflexio.server.llm.providers import embedding_service_provider as provider
+
+    monkeypatch.setattr(provider, "_configured_model_cache", {})
+    monkeypatch.setenv("REFLEXIO_EMBEDDING_PROVIDER", "off")
+
+    def _fail_if_called(*args, **kwargs):  # pragma: no cover - must not run
+        raise AssertionError("discovery attempted an HTTP call while provider=off")
+
+    monkeypatch.setattr(provider, "_http_client", _fail_if_called)
+
+    with pytest.raises(provider.EmbeddingUnavailableError, match="disabled"):
+        provider.resolve_inference_service_capabilities()
