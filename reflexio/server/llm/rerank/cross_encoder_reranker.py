@@ -96,12 +96,7 @@ def _score_pairs_remote(
         response.raise_for_status()
         body = response.json()
         return _ordered_scores_from_response(body.get("data"), len(docs))
-    except (
-        httpx.ConnectError,
-        httpx.ConnectTimeout,
-        httpx.ReadTimeout,
-        httpx.RemoteProtocolError,
-    ) as exc:
+    except httpx.TransportError as exc:
         raise CrossEncoderUnavailableError(
             f"Rerank service request failed at {url}: {exc}",
             report_failure=not expected_local_unavailability,
@@ -115,7 +110,7 @@ def _score_pairs_remote(
             f"Rerank service request failed at {url}: {exc}",
             report_failure=not expected_local_503,
         ) from exc
-    except (httpx.HTTPError, ValueError, TypeError, KeyError, AttributeError) as exc:
+    except (ValueError, TypeError, KeyError, AttributeError) as exc:
         raise CrossEncoderUnavailableError(
             f"Rerank service request failed at {url}: {exc}"
         ) from exc

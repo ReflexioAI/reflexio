@@ -12,6 +12,7 @@ from reflexio.server.llm.providers.embedding_service_provider import (
     EmbeddingUnavailableError,
     embedding_provider_mode,
     get_service_embeddings,
+    remote_inference_service_configured,
     resolve_inference_service_capabilities,
     resolve_service_configured_model,
     resolve_service_configured_reranker_model,
@@ -48,6 +49,31 @@ def test_local_models_always_route_to_separate_service(monkeypatch) -> None:
     assert embedding_provider_mode("local/minilm-l6-v2") == "local_service"
     assert embedding_provider_mode("local/nomic-embed-text-v1.5") == "local_service"
     assert embedding_provider_mode(CUSTOM_EMBEDDING_MODEL) == "local_service"
+
+
+def test_whitespace_service_url_is_treated_as_unset(monkeypatch) -> None:
+    monkeypatch.setenv("REFLEXIO_EMBEDDING_SERVICE_URL", "  \t")
+    monkeypatch.delenv("REFLEXIO_EMBEDDING_PROVIDER", raising=False)
+
+    assert embedding_provider_mode(CUSTOM_EMBEDDING_MODEL) == "local_service"
+    assert remote_inference_service_configured() is False
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        ("http://127.0.0.1:8072", False),
+        ("http://[::1]:8072", False),
+        ("http://localhost:8072", False),
+        ("http://inference.internal:8089", True),
+    ],
+)
+def test_remote_inference_service_detection(
+    monkeypatch, url: str, expected: bool
+) -> None:
+    monkeypatch.setenv("REFLEXIO_EMBEDDING_SERVICE_URL", url)
+
+    assert remote_inference_service_configured() is expected
 
 
 def test_removed_inprocess_mode_is_rejected(monkeypatch) -> None:

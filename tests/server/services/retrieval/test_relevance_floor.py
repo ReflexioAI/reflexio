@@ -218,3 +218,15 @@ def test_explicit_zero_floor_is_not_replaced_by_model_default():
     ):
         out = apply_relevance_floors("q", arms, top_k=5)
     assert [item.content for item in out[0].items] == ["positive"]
+
+
+def test_unknown_model_nullable_floor_degrades_to_unfiltered_pool():
+    arms = [("profiles", _items("first", "second"), None)]
+    with patch(
+        "reflexio.server.services.retrieval.relevance_floor.score_pairs_with_model",
+        return_value=("cross-encoder/unknown", [2.0, 1.0]),
+    ):
+        out = apply_relevance_floors("q", arms, top_k=1)
+
+    assert [item.content for item in out[0].items] == ["first", "second"]
+    assert out[0].scores is None

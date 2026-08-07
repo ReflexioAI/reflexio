@@ -101,6 +101,7 @@ def test_disabled_reranker_skips_prewarm_and_scoring(monkeypatch) -> None:
     runner = _Runner()
     with TestClient(create_embedding_app(reranker_runner=runner)) as client:  # type: ignore[arg-type]
         health = client.get("/health")
+        reranker_health = client.get("/health/rerank")
         rerank = client.post(
             "/v1/rerank",
             json={"model": RERANK_MODEL, "query": "q", "documents": ["doc"]},
@@ -109,6 +110,8 @@ def test_disabled_reranker_skips_prewarm_and_scoring(monkeypatch) -> None:
     assert runner.prewarm_calls == 0
     assert runner.score_calls == []
     assert health.json()["reranker_enabled"] is False
+    assert reranker_health.status_code == 503
+    assert reranker_health.json()["status"] == "disabled"
     assert rerank.status_code == 503
 
 

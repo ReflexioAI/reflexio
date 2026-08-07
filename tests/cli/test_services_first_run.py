@@ -242,27 +242,35 @@ class TestEnsureLlmConfigured:
         out = capsys.readouterr().out
         assert "no generation-capable LLM API key" in out
 
-    def test_services_start_proceeds_without_cloud_embedder_when_chromadb_present(
-        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    @pytest.mark.parametrize(
+        ("service_url", "expected_location"),
+        [(None, "colocated"), ("http://inference.internal:8089", "remote")],
+    )
+    def test_services_start_uses_configured_inference_location(
+        self,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+        monkeypatch: pytest.MonkeyPatch,
+        service_url: str | None,
+        expected_location: str,
     ) -> None:
-        """Anthropic-only env + chromadb importable → no prompt, no exit.
+        """Anthropic-only startup reports remote versus colocated inference.
 
-        The launcher supplies the local inference process, so startup continues
-        without involving the user.
+        Startup continues without involving the user in either topology.
         """
         env = tmp_path / ".env"
         env.write_text("")
         import logging
 
+        if service_url is None:
+            monkeypatch.delenv("REFLEXIO_EMBEDDING_SERVICE_URL", raising=False)
+        else:
+            monkeypatch.setenv("REFLEXIO_EMBEDDING_SERVICE_URL", service_url)
+
         with (
             patch(
                 "reflexio.server.llm.model_defaults.detect_available_providers",
                 return_value=["anthropic"],
-            ),
-            patch(
-                "reflexio.server.llm.providers.local_embedding_provider"
-                ".is_chromadb_importable",
-                return_value=True,
             ),
             patch("reflexio.cli.commands.setup_cmd._prompt_llm_provider") as mock_llm,
             patch(
@@ -276,7 +284,7 @@ class TestEnsureLlmConfigured:
         mock_llm.assert_not_called()
         mock_emb.assert_not_called()
         assert any(
-            "Using colocated inference service" in record.message
+            f"Using {expected_location} inference service" in record.message
             for record in caplog.records
         )
 

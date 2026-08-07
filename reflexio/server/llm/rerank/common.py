@@ -81,15 +81,15 @@ def resolve_retrieval_floor(model: str, arm: str, configured: float | None) -> f
 
 
 __all__ = [
-    "RERANK_ENABLED_ENV_VAR",
+    "CrossEncoderUnavailableError",
     "ENGLISH_RERANK_MODEL",
-    "MULTILINGUAL_RERANK_MODEL",
     "ENGLISH_RERANK_REVISION",
+    "MULTILINGUAL_RERANK_MODEL",
     "MULTILINGUAL_RERANK_REVISION",
-    "RERANK_MODEL_REVISIONS",
+    "RERANK_ENABLED_ENV_VAR",
     "RERANK_FLOOR_DEFAULTS",
     "RERANK_MODEL",
-    "CrossEncoderUnavailableError",
+    "RERANK_MODEL_REVISIONS",
     "reranker_enabled",
     "reranker_model_for_embedding",
     "reranker_revision",

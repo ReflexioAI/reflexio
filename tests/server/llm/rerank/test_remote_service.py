@@ -131,6 +131,25 @@ def test_service_503_classification(monkeypatch, remote: bool) -> None:
     assert exc_info.value.report_failure is remote
 
 
+@pytest.mark.parametrize("remote", [False, True])
+def test_transport_failure_classification(monkeypatch, remote: bool) -> None:
+    if remote:
+        monkeypatch.setenv("REFLEXIO_EMBEDDING_SERVICE_URL", "http://inference")
+    else:
+        monkeypatch.delenv("REFLEXIO_EMBEDDING_SERVICE_URL", raising=False)
+    _set_model(monkeypatch)
+
+    class _Client:
+        def post(self, *_args, **_kwargs) -> _Response:
+            raise httpx.WriteError("connection closed while writing")
+
+    monkeypatch.setattr(reranker, "inference_http_client", lambda: _Client())
+
+    with pytest.raises(CrossEncoderUnavailableError) as exc_info:
+        reranker.score_pairs("q", ["doc"])
+    assert exc_info.value.report_failure is remote
+
+
 @pytest.mark.parametrize(
     "data",
     [

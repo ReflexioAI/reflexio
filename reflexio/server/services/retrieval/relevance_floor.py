@@ -142,6 +142,10 @@ def apply_relevance_floors(
     ) as span:
         try:
             reranker_model, scores = score_pairs_with_model(query, contents)
+            resolved_floors = [
+                resolve_retrieval_floor(reranker_model, name, configured_floor)
+                for name, _items, configured_floor in arms
+            ]
         except CrossEncoderUnavailableError as exc:
             span.set_data("available", False)
             if exc.report_failure:
@@ -156,8 +160,9 @@ def apply_relevance_floors(
 
         results: list[RelevanceFloorResult] = []
         offset = 0
-        for name, items, configured_floor in arms:
-            floor = resolve_retrieval_floor(reranker_model, name, configured_floor)
+        for (name, items, _configured_floor), floor in zip(
+            arms, resolved_floors, strict=True
+        ):
             arm_scores = scores[offset : offset + len(items)]
             offset += len(items)
             survivors = _floor_and_sort(items, arm_scores, floor)

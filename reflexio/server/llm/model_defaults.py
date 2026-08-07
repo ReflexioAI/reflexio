@@ -487,7 +487,14 @@ def validate_llm_availability(
             embedding_provider,
         )
     else:
-        logger.info("Using the configured local inference service for embeddings")
+        from reflexio.server.llm.providers.embedding_service_provider import (
+            remote_inference_service_configured,
+        )
+
+        location = "remote" if remote_inference_service_configured() else "colocated"
+        logger.info(
+            "Using the configured %s inference service for embeddings", location
+        )
 
     fallback_raw = os.environ.get("REFLEXIO_LLM_FALLBACK_MODELS", "")
     fallbacks = [m.strip() for m in fallback_raw.split(",") if m.strip()]

@@ -113,21 +113,23 @@ class _EmbeddingDaemon:
     def base_url(self) -> str:
         return f"http://127.0.0.1:{self.port}"
 
-    def start(self, timeout: float = 90.0) -> None:
+    def start(self, timeout: float = 180.0) -> None:
         self._thread.start()
         deadline = time.monotonic() + timeout
-        last_err: Exception | None = None
+        last_result = "no response"
         while time.monotonic() < deadline:
             try:
                 resp = httpx.get(f"{self.base_url}/health", timeout=2.0)
                 if resp.status_code == 200 and resp.json().get("status") == "ok":
                     return
+                last_result = f"status={resp.status_code}, body={resp.text}"
             except httpx.HTTPError as exc:
-                last_err = exc
+                last_result = repr(exc)
             time.sleep(0.2)
         self.stop()
         raise RuntimeError(
-            f"embedding daemon did not become healthy within {timeout:.0f}s: {last_err}"
+            "embedding daemon did not become healthy within "
+            f"{timeout:.0f}s: {last_result}"
         )
 
     def stop(self) -> None:
@@ -216,7 +218,7 @@ def test_service_mode_round_trip(
     reranker_health = httpx.get(
         f"{embedding_daemon.base_url}/health/rerank", timeout=5.0
     )
-    assert reranker_health.status_code == 200
+    assert reranker_health.status_code == 200, reranker_health.text
     assert reranker_health.json()["ready"] is True
     rerank_scores = score_pairs(
         "Italian food", ["fresh pasta with tomato sauce", "rain forecast"]

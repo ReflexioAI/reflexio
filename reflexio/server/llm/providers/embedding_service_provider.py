@@ -14,7 +14,9 @@ import os
 import threading
 import time
 from dataclasses import dataclass
+from ipaddress import ip_address
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -84,6 +86,20 @@ def inference_service_url() -> str:
     return configured.rstrip("/") if configured else _local_service_url()
 
 
+def remote_inference_service_configured() -> bool:
+    """Return whether the configured inference URL targets a non-loopback host."""
+    configured = os.environ.get(_ENV_SERVICE_URL, "").strip()
+    if not configured:
+        return False
+    hostname = urlsplit(configured).hostname
+    if hostname is None or hostname.lower() == "localhost":
+        return False
+    try:
+        return not ip_address(hostname).is_loopback
+    except ValueError:
+        return True
+
+
 def embedding_service_url(mode: EmbeddingProviderMode | None = None) -> str:
     """Return the configured embedding service URL.
 
@@ -92,7 +108,7 @@ def embedding_service_url(mode: EmbeddingProviderMode | None = None) -> str:
     requires an explicit URL because it is deployment-specific.
     """
     resolved = mode or embedding_provider_mode()
-    configured = os.environ.get(_ENV_SERVICE_URL)
+    configured = os.environ.get(_ENV_SERVICE_URL, "").strip()
     if configured:
         return inference_service_url()
     if resolved == "local_service":
@@ -306,7 +322,7 @@ def embedding_provider_mode(model: str | None = None) -> EmbeddingProviderMode:
     if os.environ.get(_ENV_CLAUDE_SMART_LOCAL) == "1":
         return "local_service"
 
-    if os.environ.get(_ENV_SERVICE_URL):
+    if os.environ.get(_ENV_SERVICE_URL, "").strip():
         return "internal_service"
 
     if _uses_embedding_service(model) and os.environ.get(_ENV_DAEMON_HOST, "").strip():

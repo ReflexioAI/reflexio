@@ -8,6 +8,8 @@ explicit profile-rerank operation and its storage behavior.
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 import reflexio.server.llm.rerank.cross_encoder_reranker as reranker_client
@@ -47,7 +49,7 @@ class _RerankResponse:
                 {
                     "index": index,
                     "score": 1.0
-                    if food_terms.intersection(document.lower().split())
+                    if food_terms.intersection(re.findall(r"\w+", document.lower()))
                     else -1.0,
                 }
                 for index, document in enumerate(self._documents)

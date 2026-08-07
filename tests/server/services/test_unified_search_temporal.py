@@ -180,6 +180,7 @@ def test_wants_current_composes_with_relevance_floor(monkeypatch):
     # reach these pools — storage search excludes them at SQL level; the
     # storage contract test pins that invariant.)
     from reflexio.models.config_schema import RetrievalFloorConfig
+    from reflexio.server.llm.rerank.common import ENGLISH_RERANK_MODEL
     from reflexio.server.services import unified_search_service as uss
 
     stale = _profile(
@@ -201,7 +202,7 @@ def test_wants_current_composes_with_relevance_floor(monkeypatch):
     monkeypatch.setattr(uss, "_run_phase_b", lambda **_kw: ([stale, fresh], [], []))
 
     def fake_score(query, docs):  # noqa: ARG001
-        return "cross-encoder/ms-marco-MiniLM-L-6-v2", [1.0] * len(docs)
+        return ENGLISH_RERANK_MODEL, [1.0] * len(docs)
 
     with patch(
         "reflexio.server.services.retrieval.relevance_floor.score_pairs_with_model",

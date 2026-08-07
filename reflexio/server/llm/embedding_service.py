@@ -206,13 +206,14 @@ def create_embedding_app(
     @embedding_app.get("/health/rerank", response_model=RerankHealthResponse)
     def rerank_health(response: Response) -> RerankHealthResponse:
         """Report reranker readiness without affecting embedding health."""
-        ready = runner.ready()
+        enabled = reranker_enabled()
+        ready = enabled and runner.ready()
         if not ready:
             response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
         return RerankHealthResponse(
-            status=runner.status(),
+            status=runner.status() if enabled else "disabled",
             configured_model=reranker_model,
-            enabled=reranker_enabled(),
+            enabled=enabled,
             ready=ready,
         )
 
