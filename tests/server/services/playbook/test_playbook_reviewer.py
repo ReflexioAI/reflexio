@@ -589,13 +589,14 @@ def test_fatal_reason_codes_require_reject(code: str):
     assert ok.decision == "reject"
 
     for bad in ("accept", "revise"):
-        # `match=code` keeps this targeted as more validators accrete on this
-        # model: the offending code name is what an operator reads in a failed
-        # run, and it is interpolated into the message.
-        with pytest.raises(ValidationError, match=code):
+        # Match both the offending code and the decision. The code name is what
+        # an operator reads in a failed run; pinning the decision catches
+        # suffix-concatenating phrasings, which previously rendered "acceptd".
+        with pytest.raises(ValidationError, match=code) as excinfo:
             CandidateReviewDecision.model_validate(
                 {"id": "C1", "decision": bad, "reason_code": code}
             )
+        assert f"decision={bad!r} is invalid" in str(excinfo.value)
 
     # Other codes are unaffected: revise remains available to them.
     # `internal_status` in particular MUST stay non-fatal. Folding check 8 into

@@ -105,7 +105,7 @@ class CandidateReviewDecision(BaseModel):
         if self.reason_code in _FATAL_REASON_CODES and self.decision != "reject":
             raise ValueError(
                 f"{self.reason_code} requires decision='reject'; it has no grounded "
-                f"core to narrow, so it cannot be {self.decision}d"
+                f"core to narrow, so decision={self.decision!r} is invalid"
             )
         return self
 
