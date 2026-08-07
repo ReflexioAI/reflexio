@@ -284,22 +284,51 @@ def test_backfill_text_matches_the_ingest_derivation(
 # ---------------------------------------------------------------------------
 
 
-def test_sweep_disabled_by_default_does_not_touch_storage(
-    tmp_path, worker_id, monkeypatch
+@pytest.mark.parametrize(
+    ("flag", "expect_run"),
+    [(None, True), ("false", False), ("0", False), ("true", True)],
+    ids=[
+        "unset_runs",
+        "explicit_false_skips",
+        "explicit_zero_skips",
+        "explicit_true_runs",
+    ],
+)
+def test_sweep_runs_unless_explicitly_disabled(
+    tmp_path, worker_id, monkeypatch, flag: str | None, expect_run: bool
 ) -> None:
+    """The sweep is on by default; only an explicit falsey value disables it.
+
+    Parametrised over unset and explicit-false together because the default is
+    the whole point: asserting only the enabled case would still pass if the
+    flag were ignored, and asserting only the disabled case would still pass
+    under the old opt-in default.
+    """
     from reflexio.server.services.lineage import vector_backfill_sweep as vbs
 
-    monkeypatch.delenv("REFLEXIO_MISSING_VECTOR_BACKFILL_ENABLED", raising=False)
+    if flag is None:
+        monkeypatch.delenv("REFLEXIO_MISSING_VECTOR_BACKFILL_ENABLED", raising=False)
+    else:
+        monkeypatch.setenv("REFLEXIO_MISSING_VECTOR_BACKFILL_ENABLED", flag)
 
-    # RequestContext must never be constructed when the flag is off.
-    def _boom(*_a, **_k):  # pragma: no cover - asserts it is never called
-        raise AssertionError("RequestContext built while sweep disabled")
+    built: list[str] = []
+
+    def _fake_request_context(**kwargs):
+        built.append(str(kwargs.get("org_id")))
+        ctx = MagicMock()
+        ctx.storage.backfill_missing_interaction_vectors.return_value = 0
+        return ctx
 
     monkeypatch.setattr(
-        "reflexio.server.api_endpoints.request_context.RequestContext", _boom
+        "reflexio.server.api_endpoints.request_context.RequestContext",
+        _fake_request_context,
     )
 
-    assert vbs.missing_vector_backfill_sweep("some-org", 0) == 0
+    vbs.missing_vector_backfill_sweep("some-org", 0)
+
+    # Reaching storage at all is the observable difference; a disabled sweep
+    # must not even construct a RequestContext.
+    assert bool(built) is expect_run
 
 
 def test_sweep_enabled_backfills_via_storage(tmp_path, worker_id, monkeypatch) -> None:
