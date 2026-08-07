@@ -471,19 +471,28 @@ def test_reviewer_prompt_preserves_grounded_procedures_and_forbids_substitutes()
     # This bound is a smoke test against unbounded growth, not the real gate.
     # The real gate is measured behaviour: a change earns its words by pruning
     # its target class while leaving a healthy window and a second tenant
-    # untouched. See docs (prompt-change-evaluation) for the harness.
+    # untouched. The in-repo half of that gate is
+    # test_reviewer_manifest_regression.py (real API, deselected by default);
+    # the production-window harness lives in the enterprise repo under
+    # docs_for_coding_agent/prompt-change-evaluation.md.
     #
     # Raised 1000 -> 1050 in v1.1.0 to fit check 7 (absence).
     # Raised 1050 -> 1260 in v1.2.0 to fit check 8 (decision ownership),
     # including the discriminator that keeps an entry whose TRIGGER is another
-    # system's output but whose subject is a choice the agent controls
-    # (bounded_retry / non_delivery in the generalization manifest). Without it
-    # check 8 rejected those must-capture families.
+    # system's output but whose subject is a choice the agent controls. That
+    # discriminator resolves a textual contradiction with "Useful cores to
+    # preserve"; it did NOT change measured behaviour (the manifest's
+    # must_capture families survived 12/12 with and without it), so do not cite
+    # it as a fix for a reproduced rejection.
     #
     # Both checks are dose-dependent on their own wording -- compression does
-    # not weaken them gracefully, it switches them off. Measured:
-    #   check 7: ~70 words -> 36% pruned (p=0.041); ~22 words -> 0%, inert
-    #   check 8: ~110 words -> 3/3 target pruned; ~60 words -> inert
+    # not weaken them gracefully, it switches them off. Word counts below are of
+    # the check paragraph as shipped, counted the same way, so they can be
+    # compared against a future edit:
+    #   check 7 (70 words as shipped)
+    #     70 -> 36% pruned (p=0.041);  22 -> 0%, inert
+    #   check 8 (198 words as shipped, incl. the ~64-word discriminator)
+    #     134 -> 3/3 target pruned;  198 -> 4/4;  60 -> inert
     # So do not "tidy" these checks shorter without re-measuring; a trim that
     # reads as equivalent has twice measured as a total loss of effect.
     #

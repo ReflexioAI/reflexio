@@ -66,6 +66,11 @@ class CandidateReviewDecision(BaseModel):
 
     candidate_id: str = Field(alias="id", min_length=1)
     decision: Literal["accept", "revise", "reject"]
+    # Adding a code here is not self-contained: it must also appear in the
+    # active prompt's "reason_code is exactly one of" list, or the model is
+    # never told it exists. If it names an unsalvageable defect, add it to
+    # _FATAL_REASON_CODES and to that prompt's "Always reject" line too.
+    # test_prompt_reason_codes_match_the_schema_literal enforces the first.
     reason_code: Literal[
         "grounded_useful",
         "unsupported_evidence",
