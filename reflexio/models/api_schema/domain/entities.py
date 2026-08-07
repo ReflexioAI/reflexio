@@ -34,6 +34,7 @@ from .enums import (
     PlaybookStatus,
     ProfileTimeToLive,
     RegularVsShadow,
+    ReviewUserPlaybookReasonCode,
     SessionOutcomeFailureReason,
     SessionOutcomeKind,
     Status,
@@ -1782,7 +1783,7 @@ class ReviewUserPlaybookResult(BaseModel):
 
     user_playbook_id: int = Field(gt=0)
     decision: Literal["accept", "edit", "reject", "skip"]
-    reason_code: str
+    reason_code: ReviewUserPlaybookReasonCode
     reason: str | None = None
     edit: ReviewUserPlaybookEdit | None = None
     applied: bool = False

@@ -1,4 +1,5 @@
 from enum import Enum, StrEnum
+from typing import Literal
 
 from ..common import BlockingIssueKind  # noqa: F401
 
@@ -12,7 +13,40 @@ __all__ = [
     "SessionOutcomeKind",
     "SessionOutcomeFailureReason",
     "BlockingIssueKind",
+    "PlaybookReviewReasonCode",
+    "ReviewUserPlaybookReasonCode",
 ]
+
+#: Why the candidate reviewer decided what it decided.
+#:
+#: Defined here rather than beside the reviewer because the public
+#: ``ReviewUserPlaybookResult`` also has to name this vocabulary, and ``models``
+#: must not import from ``server``. One definition, so the schema the reviewer
+#: enforces and the schema the API advertises cannot drift.
+#:
+#: Adding a member is not self-contained: it must also appear in the active
+#: ``playbook_candidate_review`` prompt's "reason_code is exactly one of" list,
+#: or the model is never told the code exists.
+PlaybookReviewReasonCode = Literal[
+    "grounded_useful",
+    "unsupported_evidence",
+    "generic",
+    "speculative",
+    "unsupported_causality",
+    "unseen_artifact",
+    "redundant",
+    "late_trigger",
+    "compound",
+    "internal_status",
+    "absence_inference",
+    "not_agent_decision",
+]
+
+#: What a re-review can report publicly: every reviewer code, plus the one the
+#: review *service* raises on its own behalf when a row cannot be reviewed at
+#: all. ``evidence_unavailable`` never comes from the model -- it accompanies
+#: ``decision="skip"``, meaning the row's provenance was absent or invalid.
+ReviewUserPlaybookReasonCode = Literal[PlaybookReviewReasonCode, "evidence_unavailable"]
 
 
 class SessionOutcomeKind(StrEnum):
