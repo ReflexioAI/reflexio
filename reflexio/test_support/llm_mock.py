@@ -265,25 +265,32 @@ def unpatched_litellm() -> Iterator[None]:
     test instead: whoever knows a given test needs a real provider can lift
     the patch for exactly that test, whatever the invocation.
 
-    ``MOCK_LLM_RESPONSE`` is cleared alongside the patch and restored with it,
-    because service code branches on that variable to skip LLM work entirely.
+    ``MOCK_LLM_RESPONSE`` is cleared unconditionally -- including when there is
+    no session patcher to stop. Service code branches on that variable to skip
+    LLM work entirely, and :func:`patched_litellm` deliberately leaves it set
+    on exit, so an e2e-path run (where ``configure_llm_mock`` never patched)
+    can reach a live test with a stale flag: ``litellm.completion`` is real,
+    :func:`assert_litellm_unpatched` passes, and the services under test
+    quietly take their mock branches anyway.
 
     Yields:
-        None: A context in which ``litellm.completion`` is the real function.
+        None: A context in which ``litellm.completion`` is the real function
+            and ``MOCK_LLM_RESPONSE`` is unset.
     """
     patcher = _litellm_patcher
-    if patcher is None:
-        yield
-        return
-
     previous_flag = os.environ.get("MOCK_LLM_RESPONSE")
-    patcher.stop()
+
+    if patcher is not None:
+        patcher.stop()
     os.environ.pop("MOCK_LLM_RESPONSE", None)
     try:
         yield
     finally:
-        patcher.start()
-        if previous_flag is not None:
+        if patcher is not None:
+            patcher.start()
+        if previous_flag is None:
+            os.environ.pop("MOCK_LLM_RESPONSE", None)
+        else:
             os.environ["MOCK_LLM_RESPONSE"] = previous_flag
 
 
