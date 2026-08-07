@@ -16,10 +16,18 @@ Design:
 - **Bounded**: re-embeds at most ``REFLEXIO_MISSING_VECTOR_BACKFILL_CAP``
   interactions per org per tick (prior art warns unbounded backfills flood
   logs / embedding cost — see ``llm/_litellm_embedding.py``).
-- **Opt-in**: only registered when ``REFLEXIO_MISSING_VECTOR_BACKFILL_ENABLED``
-  is truthy, so a default OSS deployment is byte-for-byte unchanged (the
-  scheduler does not start on this hook alone). The enable flag is re-read every
-  tick so a live disable is honoured without a restart.
+- **On by default**: registered unless ``REFLEXIO_MISSING_VECTOR_BACKFILL_ENABLED``
+  is explicitly falsey. It was opt-in originally so that a deployment which had
+  not asked for it was byte-for-byte unchanged; that turned out to be the wrong
+  default, because the hole it repairs is opened silently by the ingest path and
+  is permanent while nothing sweeps. An operator who wants the old behaviour
+  sets the flag to ``false``. The flag is re-read every tick, so a live disable
+  is honoured without a restart.
+
+  Registering any per-org hook starts the shared ``LineageGCScheduler`` even
+  when no bootstrap-org flag is set, so this default also starts that loop where
+  it previously would not have. Other sweep classes keep their own config gates
+  and do not begin running as a result -- only this hook does.
 - **Fail-safe**: the storage layer catches ``EmbeddingUnavailableError`` and
   returns 0 (work left for the next tick); this closure additionally captures
   any unexpected error as an anomaly and returns the count so far, so one org's
@@ -78,7 +86,7 @@ def missing_vector_backfill_sweep(org_id: str, _now: int) -> int:
     Returns:
         int: Number of interactions whose vector was backfilled (0 on skip/error).
     """
-    if not env_truthy(env_str(ENABLE_ENV_VAR, "false")):
+    if not env_truthy(env_str(ENABLE_ENV_VAR, "true")):
         return 0
 
     # Imported lazily so importing this module never drags in the request stack.
@@ -106,13 +114,16 @@ def missing_vector_backfill_sweep(org_id: str, _now: int) -> int:
 
 
 def install_missing_vector_backfill_sweep() -> None:
-    """Register the backfill sweep on the OSS lineage GC scheduler when enabled.
+    """Register the backfill sweep on the OSS lineage GC scheduler unless disabled.
 
-    Only registers when ``REFLEXIO_MISSING_VECTOR_BACKFILL_ENABLED`` is truthy,
-    so an OSS deployment that has not opted in keeps its scheduler start
-    conditions unchanged. Idempotent: a second call in the same process is a
-    no-op. Non-fatal: a registration failure logs and skips rather than aborting
-    app startup.
+    Registers unless ``REFLEXIO_MISSING_VECTOR_BACKFILL_ENABLED`` is explicitly
+    falsey. Because a registered per-org hook is itself a scheduler start
+    condition, this means the shared ``LineageGCScheduler`` now starts even when
+    no bootstrap-org flag is set. That is intended: the durability hole this
+    repairs is permanent while nothing sweeps.
+
+    Idempotent: a second call in the same process is a no-op. Non-fatal: a
+    registration failure logs and skips rather than aborting app startup.
 
     Call this before ``maybe_start_lineage_gc`` so the registered hook is
     visible when the scheduler evaluates its start conditions.
@@ -120,7 +131,7 @@ def install_missing_vector_backfill_sweep() -> None:
     global _installed  # noqa: PLW0603
     if _installed:
         return
-    if not env_truthy(env_str(ENABLE_ENV_VAR, "false")):
+    if not env_truthy(env_str(ENABLE_ENV_VAR, "true")):
         return
     try:
         from reflexio.server.services.lineage.gc_scheduler import (
