@@ -12,19 +12,25 @@ that by driving the reviewer with the repo's own generalization manifest: each
 `must_capture` case becomes one candidate, grounded in that case's own turns. A
 must-capture family that does not survive is a false rejection.
 
-Costs real API calls, so it is marked `integration` (what the unit jobs filter
-on) and `requires_credentials`, and skips outright without a real provider key.
+Costs real API calls. It lives under `e2e_tests/` because that is the only path
+`llm_mock._is_e2e_test_run` exempts from the session-wide `litellm.completion`
+patch -- from anywhere else the reviewer answers from the mock's profile-shaped
+payload, the schema fails to parse, and the repair ladder exhausts into twelve
+failures that look like a reviewer regression and are not.
+
 Run it when changing the reviewer prompt:
 
-    uv run pytest tests/server/services/playbook/test_reviewer_manifest_regression.py \\
-        -m 'integration and requires_credentials' -o 'addopts='
+    set -a && source .env && set +a && \\
+    RUN_LOW_PRIORITY=1 uv run pytest \\
+      tests/e2e_tests/test_reviewer_manifest_regression_real_llm.py -o 'addopts=' -n 0 -v
 """
 
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
-from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -41,34 +47,37 @@ from reflexio.server.prompt.prompt_manager import PromptManager
 from reflexio.server.services.playbook.components.reviewer import (
     PlaybookCandidateReviewer,
 )
-from reflexio.server.services.playbook.playbook_service_utils import (
-    build_playbook_prompt_context,
-)
-from reflexio.test_support.llm_credentials import real_provider_key
+from reflexio.test_support.llm_credentials import real_generation_provider
+from tests.server.test_utils import skip_low_priority
 
-# `requires_credentials` alone does NOT keep this out of a default run: the
-# unit-test jobs filter on `-m "not integration"`, so the marker that actually
-# deselects live-provider tests is `integration`. Without it these ran against
-# the global litellm mock, which answers every call with a profile-shaped
-# payload -- so the reviewer schema failed to parse and the repair ladder
-# exhausted, 12 failures that looked like a reviewer regression and were not.
+# The model comes from `resolve_model_name(ModelRole.GENERATION)`, so the gate
+# has to be provider-agnostic too: keying it on OPENAI/ANTHROPIC skipped the
+# whole file on a MiniMax-only machine even though resolution would have picked
+# `minimax/MiniMax-M3` and the test would have run.
 #
-# `real_provider_key` rather than `os.getenv`, because the credential floor
-# pins a placeholder key when none is set; a plain getenv check would let this
-# run against a credential that authenticates with nothing.
+# Restricted to the providers whose models are known to satisfy these semantic
+# assertions rather than every generation-capable provider -- a weaker model
+# behind some other key would turn silent skips into false regressions.
+#
+# `real_generation_provider` rather than `os.getenv`, because the credential
+# floor pins a placeholder key when none is set; a plain getenv check would let
+# this run against a credential that authenticates with nothing.
+_REVIEWER_CAPABLE = frozenset({"openai", "anthropic", "minimax"})
+
 pytestmark = [
-    pytest.mark.integration,
+    pytest.mark.e2e,
     pytest.mark.requires_credentials,
     pytest.mark.skipif(
-        not real_provider_key("OPENAI_API_KEY")
-        and not real_provider_key("ANTHROPIC_API_KEY"),
-        reason="Neither OPENAI_API_KEY nor ANTHROPIC_API_KEY is set to a real key",
+        not real_generation_provider(_REVIEWER_CAPABLE),
+        reason=(
+            "no real key for a reviewer-capable provider "
+            "(openai/anthropic/minimax) is set"
+        ),
     ),
 ]
 
 _MANIFEST = (
-    Path(__file__).resolve().parents[4]
-    / "tests"
+    Path(__file__).resolve().parent.parent
     / "test_data"
     / "playbook_generalization_manifest.json"
 )
@@ -112,6 +121,7 @@ def _sessions_for(case: dict) -> list[RequestInteractionDataModel]:
     return sessions
 
 
+@skip_low_priority
 @pytest.mark.parametrize(
     "case", _must_capture_cases(), ids=lambda case: str(case["id"])
 )
@@ -122,15 +132,21 @@ def test_must_capture_families_survive_review(case: dict) -> None:
     the diagnostic, and an aggregate would let one regression hide behind
     eleven passes.
     """
+    assert os.environ.get("MOCK_LLM_RESPONSE", "").strip().lower() != "true", (
+        "this test asserts real reviewer behavior; against the mock every case "
+        "fails on schema parse. Invoke it by a path under tests/e2e_tests/."
+    )
+
     sessions = _sessions_for(case)
     model = resolve_model_name(ModelRole.GENERATION)
+    request_context = MagicMock()
+    request_context.prompt_manager = PromptManager()
+    request_context.org_id = "manifest-regression"
+    request_context.storage = None
     reviewer = PlaybookCandidateReviewer(
-        request_context=SimpleNamespace(
-            prompt_manager=PromptManager(), org_id="manifest-regression", storage=None
-        ),
+        request_context=request_context,
         llm_client=LiteLLMClient(LiteLLMConfig(model=model)),
     )
-    context = build_playbook_prompt_context(sessions, expert=False, label_turns=True)
     candidate = UserPlaybook(
         user_playbook_id=1,
         agent_version="1.0",
@@ -146,7 +162,10 @@ def test_must_capture_families_survive_review(case: dict) -> None:
         candidates=[candidate],
         request_interaction_data_models=sessions,
         existing_playbooks=[],
-        agent_context=context,
+        # `decide` renders the evidence chronology itself from the sessions
+        # above; `agent_context` is the separate "what this agent does" slot
+        # that production fills from `configurator.get_agent_context()`.
+        agent_context="Test agent",
         playbook_definition="Reusable user guidance",
         tool_context="",
     )

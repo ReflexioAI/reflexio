@@ -10,6 +10,7 @@ from reflexio.server.llm.model_defaults import _ENV_TO_PROVIDER
 from reflexio.test_support.llm_credentials import (
     _PLACEHOLDER_KEY,
     ensure_provider_credential,
+    real_generation_provider,
     real_provider_key,
 )
 
@@ -58,3 +59,45 @@ def test_real_provider_key_returns_a_configured_credential(
     monkeypatch.setenv("OPENAI_API_KEY", "sk-real")
     assert real_provider_key("OPENAI_API_KEY") == "sk-real"
     assert real_provider_key("ANTHROPIC_API_KEY") is None
+
+
+def test_no_generation_provider_in_a_bare_environment() -> None:
+    assert real_generation_provider() is None
+
+
+def test_generation_provider_ignores_the_placeholder_floor() -> None:
+    """The regression this helper exists to prevent, in reverse.
+
+    The floor pins a key that ``detect_available_providers`` counts, so a gate
+    built on detection alone would report a provider and let a live test run
+    against a credential that authenticates with nothing.
+    """
+    ensure_provider_credential()
+    assert real_generation_provider() is None
+
+
+def test_generation_provider_finds_a_non_openai_credential(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The whole point: a MiniMax-only machine has a usable provider."""
+    monkeypatch.setenv("MINIMAX_API_KEY", "mm-real")
+    assert real_generation_provider() == "minimax"
+
+
+def test_generation_provider_honors_the_allowed_filter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MINIMAX_API_KEY", "mm-real")
+    assert real_generation_provider({"openai", "anthropic"}) is None
+    assert real_generation_provider({"openai", "minimax"}) == "minimax"
+
+
+def test_generation_provider_rejects_an_embedding_only_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``local`` is detected but serves no generation-role model."""
+    monkeypatch.setattr(
+        "reflexio.test_support.llm_credentials.detect_available_providers",
+        lambda: ["local"],
+    )
+    assert real_generation_provider() is None

@@ -32,8 +32,12 @@ from reflexio.server.llm.litellm_client import (
 from reflexio.test_support.llm_credentials import real_provider_key
 from tests.server.test_utils import skip_in_precommit, skip_low_priority
 
-# Skip all tests if neither API key is set
-pytestmark = [
+# Applied per class or per test, NOT module-wide. Most of this file builds a
+# client from a literal config and asserts how the config resolved -- no network
+# and no credential involved. A module-level gate skipped those alongside the
+# real calls, so on any machine without an OpenAI/Anthropic key (CI included)
+# the whole file reported skipped and the resolution logic went unverified.
+_LIVE_PROVIDER_MARKS = [
     pytest.mark.integration,
     pytest.mark.requires_credentials,
     pytest.mark.skipif(
@@ -42,6 +46,17 @@ pytestmark = [
         reason="Neither OPENAI_API_KEY nor ANTHROPIC_API_KEY environment variable is set",
     ),
 ]
+
+
+def _live_provider(func):
+    """Apply the live-provider mark set to one test.
+
+    For the classes that hold live and offline tests side by side, where a
+    class-level ``pytestmark`` would re-skip the offline ones.
+    """
+    for mark in reversed(_LIVE_PROVIDER_MARKS):
+        func = mark(func)
+    return func
 
 
 def _get_openai_test_model() -> str:
@@ -211,6 +226,8 @@ class TestLiteLLMClientConfiguration:
 class TestLiteLLMClientOpenAI:
     """Test LiteLLM client with OpenAI models."""
 
+    pytestmark = _LIVE_PROVIDER_MARKS
+
     @skip_in_precommit
     @skip_low_priority
     def test_generate_response_simple(self, openai_client: LiteLLMClient):
@@ -295,6 +312,8 @@ class TestLiteLLMClientOpenAI:
 class TestLiteLLMClientClaude:
     """Test LiteLLM client with Claude models."""
 
+    pytestmark = _LIVE_PROVIDER_MARKS
+
     @skip_in_precommit
     @skip_low_priority
     def test_generate_response_simple(self, claude_client: LiteLLMClient):
@@ -350,6 +369,8 @@ class TestLiteLLMClientClaude:
 
 class TestLiteLLMClientMultiModal:
     """Test LiteLLM client with image inputs."""
+
+    pytestmark = _LIVE_PROVIDER_MARKS
 
     @skip_in_precommit
     @skip_low_priority
@@ -486,6 +507,7 @@ class TestLiteLLMClientImageEncoding:
 class TestLiteLLMClientModelSwitching:
     """Test switching between different models."""
 
+    @_live_provider
     @skip_in_precommit
     @skip_low_priority
     def test_switch_from_openai_to_claude(self):
@@ -541,7 +563,7 @@ class TestLiteLLMClientModelSwitching:
 class TestLiteLLMClientEdgeCases:
     """Test edge cases and error handling."""
 
-    def test_empty_images_list(self, openai_client: LiteLLMClient):
+    def test_empty_images_list(self):
         """Test that empty images list works like no images."""
         # Should not raise - empty list is falsy
         # This is a configuration test, not an API call test
@@ -583,6 +605,7 @@ class TestLiteLLMClientEdgeCases:
         assert config.retry_delay == 1.0
         assert config.top_p == 1.0
 
+    @_live_provider
     @skip_in_precommit
     @skip_low_priority
     def test_long_conversation(self, openai_client: LiteLLMClient):
@@ -762,6 +785,7 @@ class TestLiteLLMClientAPIKeyOverride:
         # OpenAI model but no OpenAI key configured
         assert client._api_key is None
 
+    @_live_provider
     @skip_in_precommit
     @skip_low_priority
     def test_generate_response_with_api_key_override_openai(self):
@@ -785,6 +809,7 @@ class TestLiteLLMClientAPIKeyOverride:
         assert isinstance(response, str)
         assert "2" in response
 
+    @_live_provider
     @skip_in_precommit
     @skip_low_priority
     def test_generate_response_with_api_key_override_anthropic(self):
@@ -808,6 +833,7 @@ class TestLiteLLMClientAPIKeyOverride:
         assert isinstance(response, str)
         assert "8" in response
 
+    @_live_provider
     @skip_in_precommit
     @skip_low_priority
     def test_embeddings_with_api_key_override(self):
@@ -828,6 +854,7 @@ class TestLiteLLMClientAPIKeyOverride:
         assert len(embedding) > 0
         assert all(isinstance(x, float) for x in embedding)
 
+    @_live_provider
     @skip_in_precommit
     @skip_low_priority
     def test_structured_output_with_api_key_override(self):
@@ -876,6 +903,7 @@ class TestLiteLLMClientAPIKeyOverride:
         claude_client = LiteLLMClient(claude_config)
         assert claude_client._api_key == "anthropic-shared-key"
 
+    @_live_provider
     @skip_in_precommit
     @skip_low_priority
     def test_chat_response_with_api_key_override(self):
@@ -903,6 +931,7 @@ class TestLiteLLMClientAPIKeyOverride:
         assert isinstance(response, str)
         assert "42" in response
 
+    @_live_provider
     @skip_in_precommit
     @skip_low_priority
     def test_image_analysis_with_api_key_override(self, test_image_bytes: bytes):

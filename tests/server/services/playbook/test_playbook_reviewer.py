@@ -472,7 +472,8 @@ def test_reviewer_prompt_preserves_grounded_procedures_and_forbids_substitutes()
     # The real gate is measured behaviour: a change earns its words by pruning
     # its target class while leaving a healthy window and a second tenant
     # untouched. The in-repo half of that gate is
-    # test_reviewer_manifest_regression.py (real API, deselected by default);
+    # tests/e2e_tests/test_reviewer_manifest_regression_real_llm.py (real API,
+    # opt-in via RUN_LOW_PRIORITY=1);
     # the production-window harness lives in the enterprise repo under
     # docs_for_coding_agent/prompt-change-evaluation.md.
     #

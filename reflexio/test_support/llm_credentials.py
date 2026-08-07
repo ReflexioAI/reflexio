@@ -17,10 +17,12 @@ which is why the same suite can be green locally and ~1,250 errors deep in CI.
 from __future__ import annotations
 
 import os
+from collections.abc import Collection
 
 from reflexio.server.llm.model_defaults import (
     GENERATION_CAPABLE_PROVIDERS,
     detect_available_providers,
+    provider_env_vars,
 )
 
 # Matches the string already used by the `storage` fixture in
@@ -67,3 +69,43 @@ def real_provider_key(name: str) -> str | None:
     """
     value = os.environ.get(name, "")
     return None if value in ("", _PLACEHOLDER_KEY) else value
+
+
+def real_generation_provider(
+    allowed: Collection[str] | None = None,
+) -> str | None:
+    """Return a provider that holds a real key and can serve generation.
+
+    The provider-agnostic counterpart to :func:`real_provider_key`, for live
+    tests that resolve their model through
+    ``resolve_model_name(ModelRole.GENERATION)`` rather than naming one. Gating
+    such a test on ``OPENAI_API_KEY``/``ANTHROPIC_API_KEY`` skips it on a
+    machine whose only credential is, say, MiniMax -- even though model
+    resolution would have picked MiniMax and the test would have run.
+
+    Selection follows the same priority order as
+    :func:`detect_available_providers`, so the provider named here is the one
+    ``resolve_model_name`` will pick.
+
+    Args:
+        allowed (Collection[str] | None): Restrict to these provider keys, e.g.
+            ``{"openai", "anthropic", "minimax"}`` for a test whose assertions
+            are only known to hold on those models. None accepts any
+            generation-capable provider.
+
+    Returns:
+        str | None: Provider key, or None when no eligible provider has a real
+            key configured.
+    """
+    env_by_provider = {
+        provider: env_var for env_var, provider in provider_env_vars().items()
+    }
+    for provider in detect_available_providers():
+        if provider not in GENERATION_CAPABLE_PROVIDERS:
+            continue
+        if allowed is not None and provider not in allowed:
+            continue
+        env_var = env_by_provider.get(provider)
+        if env_var and real_provider_key(env_var):
+            return provider
+    return None
