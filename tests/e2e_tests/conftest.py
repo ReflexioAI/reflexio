@@ -26,7 +26,11 @@ from reflexio.models.config_schema import (
 )
 from reflexio.server.services.configurator.configurator import DefaultConfigurator
 from reflexio.server.services.tagging.tagging_scheduler import drain_tagging
-from reflexio.test_support.llm_mock import patched_litellm, unpatched_litellm
+from reflexio.test_support.llm_mock import (
+    assert_litellm_unpatched,
+    patched_litellm,
+    unpatched_litellm,
+)
 
 _TEST_DATA_DIR = Path(__file__).resolve().parent.parent / "test_data"
 _SCENARIO_DIR = _TEST_DATA_DIR / "scenarios" / "e2e"
@@ -51,6 +55,11 @@ def mock_llm(request: pytest.FixtureRequest) -> Iterator[None]:
     """
     if request.node.get_closest_marker("requires_credentials"):
         with unpatched_litellm():
+            # Confirm the lift actually took before the test asserts on model
+            # behavior. Anything that patched litellm at another layer, or a
+            # future change that quietly makes the suspend a no-op, surfaces
+            # here as a failure rather than as a test grading canned text.
+            assert_litellm_unpatched()
             yield
         return
     with patched_litellm():

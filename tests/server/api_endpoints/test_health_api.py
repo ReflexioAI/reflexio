@@ -35,6 +35,32 @@ def test_healthz_request_count_increments() -> None:
     assert second > first
 
 
+def test_healthz_reports_mock_llm_response(monkeypatch) -> None:
+    """The one signal an out-of-process caller cannot otherwise observe.
+
+    A mocked worker returns plausible text, so a client asserting real model
+    behavior has no way to tell without asking.
+    """
+    app = _build_app()
+    client = TestClient(app)
+
+    monkeypatch.setenv("MOCK_LLM_RESPONSE", "true")
+    assert client.get("/healthz").json()["mock_llm_response"] is True
+
+    monkeypatch.delenv("MOCK_LLM_RESPONSE", raising=False)
+    assert client.get("/healthz").json()["mock_llm_response"] is False
+
+
+def test_healthz_mock_llm_response_ignores_non_true_values(monkeypatch) -> None:
+    """Only an explicit "true" counts; an empty value is not mock mode."""
+    app = _build_app()
+    client = TestClient(app)
+
+    for value in ("", "false", "0"):
+        monkeypatch.setenv("MOCK_LLM_RESPONSE", value)
+        assert client.get("/healthz").json()["mock_llm_response"] is False
+
+
 def test_healthz_rss_mb_optional() -> None:
     """rss_mb is present when psutil is available; None otherwise."""
     app = _build_app()
