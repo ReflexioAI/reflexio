@@ -57,7 +57,8 @@ class CandidateRevision(BaseModel):
 
 #: Reason codes naming a defect with no salvageable core, so the only coherent
 #: decision is ``reject``. Enforced structurally by
-#: :meth:`CandidateReviewDecision.fatal_reason_codes_must_reject`.
+#: :meth:`CandidateReviewDecision.fatal_reason_codes_are_rejects`, and applied
+#: by the coercion in `normalize_known_provider_shape`.
 _FATAL_REASON_CODES = frozenset({"absence_inference", "not_agent_decision"})
 
 

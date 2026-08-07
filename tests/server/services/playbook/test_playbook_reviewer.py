@@ -722,16 +722,21 @@ def test_one_fatal_code_slip_does_not_cost_the_whole_batch():
             content="Do not echo the raw failure line.",
         ),
     ]
-    output = PlaybookCandidateReviewOutput(
-        decisions=[
-            CandidateReviewDecision(
-                id="C1",
-                decision="accept",
-                reason_code="grounded_useful",
-                evidence_ids=["C1-E1"],
-            ),
-            # The slip: a fatal code the model paired with `revise`.
-            CandidateReviewDecision.model_validate(
+    # Parsed from raw dicts through the BATCH model, which is the path a
+    # provider response actually takes. Building the decisions individually
+    # would coerce each one before the output model ever saw it, so the
+    # whole-output parse -- the step that used to lose every sibling decision --
+    # would never be exercised.
+    output = PlaybookCandidateReviewOutput.model_validate(
+        {
+            "decisions": [
+                {
+                    "id": "C1",
+                    "decision": "accept",
+                    "reason_code": "grounded_useful",
+                    "evidence_ids": ["C1-E1"],
+                },
+                # The slip: a fatal code the model paired with `revise`.
                 {
                     "id": "C2",
                     "decision": "revise",
@@ -742,10 +747,11 @@ def test_one_fatal_code_slip_does_not_cost_the_whole_batch():
                         "trigger": "When the notification fails",
                         "rationale": "The cited turn shows the failure.",
                     },
-                }
-            ),
-        ]
+                },
+            ]
+        }
     )
+
     reviewer, _client = _reviewer(output)
 
     result = reviewer.review(
