@@ -5,6 +5,7 @@ Tests fingerprint computation, change detection logic, selective LLM invocation,
 and clustering stability.
 """
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -944,6 +945,101 @@ class TestClusteringStability:
         # Group B membership should be unchanged
         if group_b_cluster_members is not None and group_b_cluster_members2 is not None:
             assert group_b_cluster_members == group_b_cluster_members2
+
+
+class TestRerunCentroidRequirement:
+    """The rerun path persists a cluster centroid, so it needs an embedding.
+
+    The invariant was added when local embeddings were computed in-process, so
+    ``saved_fb.embedding`` was always populated and the raise was unreachable
+    outside a genuine bug. Once local inference moved behind a separate
+    service, an unreachable embedder became a normal runtime state: storage
+    logs "continuing without vector" and saves the playbook with no embedding,
+    and the invariant fired on infrastructure rather than on a bug -- rolling
+    back every ``run_playbook_aggregation`` call, which always sets
+    ``rerun=True``. Mock mode clusters by trigger and has no centroid to
+    persist at all, so it must skip the bookkeeping rather than abort.
+    """
+
+    def _run_rerun_aggregation(self, *, embedding):
+        group_a = create_similar_embeddings(3, base_seed=42)
+        group_b = create_similar_embeddings(3, base_seed=100)
+        user_playbooks = create_user_playbooks_with_embeddings(group_a + group_b)
+        # Mock mode clusters by trigger, not by vector, so a shared trigger is
+        # what groups these there. Vector clustering ignores the field.
+        for playbook in user_playbooks:
+            playbook.trigger = "When something happens"
+
+        config = PlaybookAggregatorConfig(
+            min_cluster_size=2, reaggregation_trigger_count=1
+        )
+        mock_ctx = MagicMock()
+        mock_ctx.storage = MagicMock()
+        mock_ctx.configurator = MagicMock()
+        temp = PlaybookAggregator(MagicMock(), mock_ctx, "1.0")
+        prev_fingerprints = {}
+        for cluster_id, cluster_playbooks in temp.get_clusters(
+            user_playbooks, config
+        ).items():
+            fp = PlaybookAggregator._compute_cluster_fingerprint(cluster_playbooks)
+            prev_fingerprints[fp] = {
+                "agent_playbook_id": cluster_id + 100,
+                "user_playbook_ids": sorted(
+                    fb.user_playbook_id for fb in cluster_playbooks
+                ),
+            }
+
+        harness = TestAggregatorRunWithChangeDetection()
+        aggregator, mock_storage, _llm = harness._setup_aggregator_for_run(
+            user_playbooks=user_playbooks,
+            operation_state=prev_fingerprints,
+            config=config,
+        )
+        # The centroid branch is reached only under a held aggregation claim,
+        # and that path sources its corpus from the rerun snapshot rather than
+        # from get_user_playbooks.
+        aggregator.aggregation_claim = MagicMock()
+        mock_storage.capture_playbook_aggregation_rerun_snapshot.return_value = (
+            SimpleNamespace(
+                user_playbooks=user_playbooks,
+                user_high_watermark=max(fb.user_playbook_id for fb in user_playbooks),
+                invalidation_ids=[],
+            )
+        )
+
+        saved_count = [0]
+
+        def save_side_effect(playbooks, **_kwargs):  # noqa: ANN001
+            saved_count[0] += 1
+            playbook = playbooks[0]
+            playbook.agent_playbook_id = saved_count[0]
+            playbook.embedding = embedding
+            return [playbook]
+
+        mock_storage.save_agent_playbooks.side_effect = save_side_effect
+
+        aggregator.run(PlaybookAggregatorRequest(agent_version="1.0", rerun=True))
+        return mock_storage
+
+    def test_missing_centroid_aborts_the_rerun(self):
+        """Outside mock mode a centroid-less cluster row must never be written."""
+        with pytest.raises(RuntimeError, match="no centroid embedding"):
+            self._run_rerun_aggregation(embedding=None)
+
+    def test_mock_mode_skips_cluster_bookkeeping(self, monkeypatch):
+        """Mock mode reaches the save, then skips the centroid write."""
+        monkeypatch.setenv("MOCK_LLM_RESPONSE", "true")
+
+        mock_storage = self._run_rerun_aggregation(embedding=None)
+
+        mock_storage.save_agent_playbooks.assert_called()
+        mock_storage.create_playbook_aggregation_cluster.assert_not_called()
+
+    def test_present_centroid_persists_the_cluster(self):
+        """The happy path still records the cluster."""
+        mock_storage = self._run_rerun_aggregation(embedding=[0.1] * 8)
+
+        mock_storage.create_playbook_aggregation_cluster.assert_called()
 
 
 if __name__ == "__main__":

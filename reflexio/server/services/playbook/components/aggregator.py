@@ -1775,26 +1775,37 @@ class PlaybookAggregator:
                         playbook_aggregator_request.rerun
                         and self.aggregation_claim is not None
                     ):
-                        if not saved_fb.embedding:
+                        # Mock mode clusters by trigger rather than by vector
+                        # (see the MOCK_LLM_RESPONSE branch in
+                        # ``get_clusters``), so no centroid exists
+                        # to persist and cluster bookkeeping is skipped. Every
+                        # other caller still aborts on a missing embedding: a
+                        # centroid-less cluster row would silently break the
+                        # incremental re-aggregation this table exists to feed.
+                        if (
+                            not saved_fb.embedding
+                            and os.getenv("MOCK_LLM_RESPONSE", "").lower() != "true"
+                        ):
                             raise RuntimeError(
                                 "rerun agent playbook has no centroid embedding"
                             )
-                        cluster_id = self._stable_aggregation_cluster_id(fp_key)
-                        self.storage.create_playbook_aggregation_cluster(  # type: ignore[attr-defined]
-                            cluster_id=cluster_id,
-                            agent_version=self.agent_version,
-                            agent_playbook_id=saved_fb.agent_playbook_id,
-                            centroid_embedding=saved_fb.embedding,
-                            member_count=len(raw_ids),
-                            embedding_model=self.storage.embedding_model_name,
-                        )
-                        self.storage.set_playbook_aggregation_disposition(  # type: ignore[attr-defined]
-                            self.agent_version,
-                            raw_ids,
-                            disposition="cluster_member",
-                            cluster_id=cluster_id,
-                            reason="full_rerun",
-                        )
+                        if saved_fb.embedding:
+                            cluster_id = self._stable_aggregation_cluster_id(fp_key)
+                            self.storage.create_playbook_aggregation_cluster(  # type: ignore[attr-defined]
+                                cluster_id=cluster_id,
+                                agent_version=self.agent_version,
+                                agent_playbook_id=saved_fb.agent_playbook_id,
+                                centroid_embedding=saved_fb.embedding,
+                                member_count=len(raw_ids),
+                                embedding_model=self.storage.embedding_model_name,
+                            )
+                            self.storage.set_playbook_aggregation_disposition(  # type: ignore[attr-defined]
+                                self.agent_version,
+                                raw_ids,
+                                disposition="cluster_member",
+                                cluster_id=cluster_id,
+                                reason="full_rerun",
+                            )
                     for prev_fp in previous_fingerprints_for_changed_clusters.get(
                         fp_key, {}
                     ):
