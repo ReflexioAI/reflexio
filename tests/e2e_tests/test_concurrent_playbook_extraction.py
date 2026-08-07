@@ -32,6 +32,7 @@ import pytest
 
 from reflexio.lib.reflexio_lib import Reflexio
 from reflexio.models.api_schema.service_schemas import InteractionData
+from reflexio.models.config_schema import SINGLETON_USER_PLAYBOOK_NAME
 from tests.server.test_utils import skip_in_precommit, skip_low_priority
 
 pytestmark = pytest.mark.e2e
@@ -158,7 +159,11 @@ def test_concurrent_publishes_distinct_users_all_produce_playbooks(
     per_user_counts: dict[str, int] = {}
     for uid in user_ids:
         playbooks = storage.get_user_playbooks(  # type: ignore[reportOptionalMemberAccess]
-            user_id=uid, playbook_name="test_playbook"
+            # Raw playbooks are written under the singleton name, NOT the
+            # config's ``extractor_name`` ("test_playbook") — querying by the
+            # extractor name matched nothing and read as "the R2 bug is back".
+            user_id=uid,
+            playbook_name=SINGLETON_USER_PLAYBOOK_NAME,
         )
         per_user_counts[uid] = len(playbooks)
 

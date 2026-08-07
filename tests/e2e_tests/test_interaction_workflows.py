@@ -292,7 +292,10 @@ def test_dict_input_handling_end_to_end(
     # Search using dict input
     search_dict = {
         "user_id": user_id,
-        "query": "Sarah",
+        # Must name someone the fixture conversation actually mentions. This
+        # said "Sarah" long after the fixture moved to the Priya scenario, so
+        # the search legitimately matched nothing and the assertion below failed.
+        "query": "Priya",
         "top_k": 5,
     }
     search_response = reflexio_instance.search_interactions(search_dict)

@@ -22,6 +22,8 @@ from reflexio.models.api_schema.service_schemas import (
     UserProfile,
 )
 from reflexio.models.config_schema import SINGLETON_USER_PLAYBOOK_NAME
+from reflexio.test_support.llm_credentials import real_generation_provider
+from reflexio.test_support.llm_mock import assert_litellm_unpatched
 from tests.e2e_tests.conftest import scenario_batch_to_interactions
 from tests.server.test_utils import (
     require_storage,
@@ -1332,6 +1334,11 @@ def _assert_contradiction_resolved(
 
 @skip_in_precommit
 @skip_low_priority
+@pytest.mark.requires_credentials
+@pytest.mark.skipif(
+    not real_generation_provider(),
+    reason="No real API key for a generation-capable provider",
+)
 @pytest.mark.parametrize("scenario_name", ["diet_reversal", "location_move"])
 def test_profile_dedup_resolves_contradiction(
     scenario_name: str,
@@ -1359,6 +1366,12 @@ def test_profile_dedup_resolves_contradiction(
         scenario_name (str): Key into ``contradiction_scenarios`` (e.g.
             "diet_reversal", "location_move").
     """
+    # Asserts the dedup LLM lets newer facts win over contradictory older ones.
+    # The mock echoes the input turns verbatim, so under it the batch-1 phrases
+    # it checks for absence are exactly what survives — the test can only pass
+    # against a real model.
+    assert_litellm_unpatched()
+
     scenario = contradiction_scenarios[scenario_name]
     user_id = f"{scenario_name}_user_{uuid.uuid4().hex[:8]}"
 

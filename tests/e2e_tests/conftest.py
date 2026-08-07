@@ -35,6 +35,14 @@ from reflexio.test_support.llm_mock import (
 _TEST_DATA_DIR = Path(__file__).resolve().parent.parent / "test_data"
 _SCENARIO_DIR = _TEST_DATA_DIR / "scenarios" / "e2e"
 _CUSTOMER_SUPPORT_WINDOW_SIZE = 20
+# Pin the extraction cadence for e2e fixtures instead of inheriting
+# ``DEFAULT_STRIDE_SIZE``. That default is a production cost knob (raised 5 -> 8
+# in "update stride size to 8 to save cost"), and every raise silently stops
+# extraction from running for tests whose batches are smaller than the new
+# value — the test then asserts against zero profiles/playbooks and fails for a
+# reason that has nothing to do with what it covers. A stride of 1 means one
+# extraction pass per publish call, which is what these tests assume.
+_E2E_STRIDE_SIZE = 1
 _CUSTOMER_SUPPORT_PROFILE_DEFINITION = """
 name, occupation, location, membership tier, order context, communication preferences,
 formatting preferences, timeline preferences, and other durable customer-support
@@ -135,6 +143,7 @@ def reflexio_instance(
         agent_context_prompt="this is a sales agent",
         skip_should_run_check=True,
         window_size=_CUSTOMER_SUPPORT_WINDOW_SIZE,
+        stride_size=_E2E_STRIDE_SIZE,
         # Single configured profile extractor (the list-valued field is retired and
         # the Config constructor would ignore it, dropping tagging_definition_prompt).
         profile_extractor_config=ProfileExtractorConfig(
@@ -215,6 +224,7 @@ def reflexio_instance_lifestyle_profile(
     config = Config(
         storage_config=sqlite_storage_config,
         agent_context_prompt="this is a personal assistant that learns about the user over time",
+        stride_size=_E2E_STRIDE_SIZE,
         profile_extractor_config=ProfileExtractorConfig(
             extractor_name="lifestyle_extractor",
             context_prompt="""
@@ -280,6 +290,7 @@ def reflexio_instance_playbook_only(
     config = Config(
         storage_config=sqlite_storage_config,
         agent_context_prompt="this is a sales agent",
+        stride_size=_E2E_STRIDE_SIZE,
         user_playbook_extractor_config=PlaybookConfig(
             extractor_name="test_playbook",
             extraction_definition_prompt="""

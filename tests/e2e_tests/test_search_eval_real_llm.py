@@ -18,12 +18,26 @@ from __future__ import annotations
 
 import pytest
 
+from reflexio.test_support.llm_credentials import real_provider_key
 from reflexio.test_support.skip_decorators import skip_low_priority
 from tests.eval.conftest import _load, _load_rubric, _real_judge
 from tests.eval.search.providers import make_classic_search_provider
 from tests.eval.search.runner import run_eval
 
-pytestmark = [pytest.mark.e2e, pytest.mark.requires_credentials]
+# Both tests name Anthropic models outright — the search/reformulation client
+# below pins ``claude-haiku-4-5`` and ``_real_judge`` pins ``claude-sonnet-4-6``
+# — so no other provider's key can satisfy them. Without this gate the module
+# does not skip on a machine lacking the key; it runs and dies on
+# AuthenticationError, which reads as a product failure rather than a missing
+# credential.
+pytestmark = [
+    pytest.mark.e2e,
+    pytest.mark.requires_credentials,
+    pytest.mark.skipif(
+        not real_provider_key("ANTHROPIC_API_KEY"),
+        reason="ANTHROPIC_API_KEY not set to a real key",
+    ),
+]
 
 
 @skip_low_priority

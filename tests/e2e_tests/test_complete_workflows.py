@@ -840,7 +840,9 @@ def test_rerun_operations_consistency(
     # Record initial state
     initial_interactions = storage.get_all_interactions()
     initial_current_profiles = storage.get_user_profile(user_id, status_filter=[None])
-    initial_playbooks = storage.get_user_playbooks(playbook_name="test_playbook")
+    initial_playbooks = storage.get_user_playbooks(
+        playbook_name=SINGLETON_USER_PLAYBOOK_NAME
+    )
     initial_agent_success = storage.get_agent_success_evaluation_results(
         agent_version=agent_version
     )
@@ -884,7 +886,9 @@ def test_rerun_operations_consistency(
     )
 
     # Step 6: Verify playbooks unchanged
-    playbooks_after_rerun = storage.get_user_playbooks(playbook_name="test_playbook")
+    playbooks_after_rerun = storage.get_user_playbooks(
+        playbook_name=SINGLETON_USER_PLAYBOOK_NAME
+    )
     assert len(playbooks_after_rerun) == initial_playbook_count, (
         "User playbooks should remain unchanged"
     )
