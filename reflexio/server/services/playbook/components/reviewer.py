@@ -55,6 +55,12 @@ class CandidateRevision(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+#: Reason codes naming a defect with no salvageable core, so the only coherent
+#: decision is ``reject``. Enforced structurally by
+#: :meth:`CandidateReviewDecision.fatal_reason_codes_must_reject`.
+_FATAL_REASON_CODES = frozenset({"absence_inference", "not_agent_decision"})
+
+
 class CandidateReviewDecision(BaseModel):
     """One exactly-accounted-for candidate decision."""
 
@@ -72,6 +78,7 @@ class CandidateReviewDecision(BaseModel):
         "compound",
         "internal_status",
         "absence_inference",
+        "not_agent_decision",
     ]
     evidence_ids: list[str] = Field(default_factory=list)
     revision: CandidateRevision | None = None
@@ -80,20 +87,25 @@ class CandidateReviewDecision(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     @model_validator(mode="after")
-    def absence_inference_must_reject(self) -> "CandidateReviewDecision":
-        """A claim resting on what the record lacks cannot be narrowed.
+    def fatal_reason_codes_must_reject(self) -> CandidateReviewDecision:
+        """A defect with no salvageable core cannot be narrowed into a survivor.
 
         The prompt instructs the reviewer to reject these outright, but a prompt
-        instruction is not an invariant: a response pairing
-        ``absence_inference`` with ``accept`` or ``revise`` otherwise validates
-        cleanly, and revision would launder the unsupported claim into tidier
-        prose rather than removing it. That pairing has been observed in
-        practice, so enforce it structurally rather than by wording alone.
+        instruction is not an invariant: a response pairing one of these codes
+        with ``accept`` or ``revise`` otherwise validates cleanly, and revision
+        would launder the defect into tidier prose rather than removing it. That
+        pairing has been observed in practice, so enforce it structurally rather
+        than by wording alone.
+
+        Deliberately narrow. ``internal_status`` is NOT listed: an entry that
+        merely rests on an internal event as evidence usually has a grounded
+        core that revision can keep, and forcing it to reject was measured to
+        destroy healthy entries.
         """
-        if self.reason_code == "absence_inference" and self.decision != "reject":
+        if self.reason_code in _FATAL_REASON_CODES and self.decision != "reject":
             raise ValueError(
-                "absence_inference requires decision='reject'; a claim grounded "
-                f"in what the record lacks cannot be {self.decision}d"
+                f"{self.reason_code} requires decision='reject'; it has no grounded "
+                f"core to narrow, so it cannot be {self.decision}d"
             )
         return self
 

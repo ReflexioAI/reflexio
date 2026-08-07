@@ -408,7 +408,7 @@ def test_apply_decisions_uses_the_same_trimmed_candidate_id_as_validation():
 def test_reviewer_prompt_is_versioned_and_active():
     manager = PromptManager()
 
-    assert manager.get_active_version("playbook_candidate_review") == "1.1.0"
+    assert manager.get_active_version("playbook_candidate_review") == "1.2.0"
 
 
 def test_reviewer_prompt_preserves_grounded_procedures_and_forbids_substitutes():
@@ -456,14 +456,26 @@ def test_reviewer_prompt_preserves_grounded_procedures_and_forbids_substitutes()
     # Keep the policy compact enough that chronology and evidence remain the
     # dominant context. Frontmatter is not included in the rendered prompt.
     #
-    # Raised 1000 -> 1050 in v1.1.0 to fit check 7 (absence). The check is
-    # dose-dependent on its own wording. Measured on one known-answer window:
-    #   ~70 words (as shipped)  -> 36% pruned (5/14), vs 0/14 for v1.0.0, p=0.041
-    #   ~30 words (premise only)-> 25% pruned (2/8)   [under-powered]
-    #   ~22 words (terse)       ->  0% pruned (0/8), code assigned but not rejected
-    # The terse form is inert, not merely weaker. Prefer displacing existing
-    # policy text over raising this again.
-    assert len(rendered.split()) <= 1_050
+    # This bound is a smoke test against unbounded growth, not the real gate.
+    # The real gate is measured behaviour: a change earns its words by pruning
+    # its target class while leaving a healthy window and a second tenant
+    # untouched. See docs (prompt-change-evaluation) for the harness.
+    #
+    # Raised 1000 -> 1050 in v1.1.0 to fit check 7 (absence).
+    # Raised 1050 -> 1200 in v1.2.0 to fit check 8 (decision ownership).
+    #
+    # Both checks are dose-dependent on their own wording -- compression does
+    # not weaken them gracefully, it switches them off. Measured:
+    #   check 7: ~70 words -> 36% pruned (p=0.041); ~22 words -> 0%, inert
+    #   check 8: ~110 words -> 3/3 target pruned; ~60 words -> inert
+    # So do not "tidy" these checks shorter without re-measuring; a trim that
+    # reads as equivalent has twice measured as a total loss of effect.
+    #
+    # Consolidation was tried instead of raising, and measured worse: folding
+    # check 8 into the existing `internal_status` code pruned the target
+    # identically but cost 3 healthy entries, because that code must stay
+    # revisable while check 8 is fatal.
+    assert len(rendered.split()) <= 1_200
 
 
 @pytest.mark.parametrize(
@@ -541,26 +553,29 @@ def test_review_output_rejects_conflicting_single_candidate_wrapper_drift():
         )
 
 
-def test_absence_inference_requires_reject():
-    """`absence_inference` paired with accept/revise must not validate.
+@pytest.mark.parametrize("code", ["absence_inference", "not_agent_decision"])
+def test_fatal_reason_codes_require_reject(code: str):
+    """A fatal code paired with accept/revise must not validate.
 
-    The prompt tells the reviewer to reject outright, but wording is not an
-    invariant -- a revise would launder the unsupported claim into tidier prose
-    instead of removing it.
+    The prompt tells the reviewer to reject these outright, but wording is not
+    an invariant -- a revise would launder the defect into tidier prose instead
+    of removing it. Both codes name a defect with no salvageable core: one rests
+    on what the record lacks, the other is about a system the agent does not
+    drive, and rewording cannot change either subject.
     """
     from reflexio.server.services.playbook.components.reviewer import (
         CandidateReviewDecision,
     )
 
     ok = CandidateReviewDecision.model_validate(
-        {"id": "C1", "decision": "reject", "reason_code": "absence_inference"}
+        {"id": "C1", "decision": "reject", "reason_code": code}
     )
     assert ok.decision == "reject"
 
     for bad in ("accept", "revise"):
         with pytest.raises(ValidationError):
             CandidateReviewDecision.model_validate(
-                {"id": "C1", "decision": bad, "reason_code": "absence_inference"}
+                {"id": "C1", "decision": bad, "reason_code": code}
             )
 
     # Other codes are unaffected: revise remains available to them.
