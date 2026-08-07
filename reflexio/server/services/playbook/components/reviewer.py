@@ -57,7 +57,8 @@ class CandidateRevision(BaseModel):
 
 #: Reason codes naming a defect with no salvageable core, so the only coherent
 #: decision is ``reject``. Enforced structurally by
-#: :meth:`CandidateReviewDecision.fatal_reason_codes_must_reject`.
+#: :meth:`CandidateReviewDecision.fatal_reason_codes_are_rejects`, and applied
+#: by the coercion in `normalize_known_provider_shape`.
 _FATAL_REASON_CODES = frozenset({"absence_inference", "not_agent_decision"})
 
 
@@ -92,15 +93,20 @@ class CandidateReviewDecision(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     @model_validator(mode="after")
-    def fatal_reason_codes_must_reject(self) -> CandidateReviewDecision:
-        """A defect with no salvageable core cannot be narrowed into a survivor.
+    def fatal_reason_codes_are_rejects(self) -> CandidateReviewDecision:
+        """A defect with no salvageable core can never end up a survivor.
 
         The prompt instructs the reviewer to reject these outright, but a prompt
         instruction is not an invariant: a response pairing one of these codes
         with ``accept`` or ``revise`` otherwise validates cleanly, and revision
         would launder the defect into tidier prose rather than removing it. That
-        pairing has been observed in practice, so enforce it structurally rather
-        than by wording alone.
+        pairing has been observed in practice, so it is enforced structurally.
+
+        Enforcement is the coercion in ``normalize_known_provider_shape``; this
+        is the backstop that makes the invariant total. It is reachable only via
+        a construction path that skips that coercion, so it raises rather than
+        coercing a second time -- at that point the caller is our own code with a
+        bug, not a provider, and no batch is at stake.
 
         Deliberately narrow. ``internal_status`` is NOT listed: an entry that
         merely rests on an internal event as evidence usually has a grounded
@@ -174,6 +180,35 @@ class CandidateReviewDecision(BaseModel):
                 if data["decision"] == "reject"
                 else "grounded_useful"
             )
+
+        # A fatal code paired with accept/revise is self-contradictory: the code
+        # asserts nothing salvageable remains, and the decision tries to keep it.
+        # Coerce to the decision the code already implies, rather than raising.
+        #
+        # Raising here was worse than it looked. This runs during PARSE of the
+        # whole PlaybookCandidateReviewOutput, so one contradictory decision
+        # invalidated every decision in the batch -- and the repair turn could
+        # not fix it, because `_safe_validation_errors` deliberately drops the
+        # message (Customer Content) and forwards only `decisions.N:
+        # value_error`. The constraint is also absent from the JSON schema, since
+        # a model_validator does not serialize, so the model was never told the
+        # rule it had just broken. One slip therefore cost the whole review, with
+        # a repair round-trip spent on an uninformative message.
+        if data.get("reason_code") in _FATAL_REASON_CODES and data.get("decision") in {
+            "accept",
+            "revise",
+        }:
+            logger.warning(
+                "event=playbook_review_fatal_code_coerced reason_code=%s from=%s",
+                data.get("reason_code"),
+                data.get("decision"),
+            )
+            data["decision"] = "reject"
+            # A reject must retain no evidence and carry no revision, so clear
+            # both -- otherwise the coerced object fails semantic validation and
+            # reintroduces the batch loss by another route.
+            data["revision"] = None
+            data["evidence_ids"] = []
         return data
 
 

@@ -3,7 +3,6 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 import pytest
-from pydantic import ValidationError
 
 from reflexio.models.api_schema.domain.entities import (
     Interaction,
@@ -599,14 +598,32 @@ def test_fatal_reason_codes_require_reject(code: str):
     assert ok.decision == "reject"
 
     for bad in ("accept", "revise"):
-        # Match both the offending code and the decision. The code name is what
-        # an operator reads in a failed run; pinning the decision catches
-        # suffix-concatenating phrasings, which previously rendered "acceptd".
-        with pytest.raises(ValidationError, match=code) as excinfo:
-            CandidateReviewDecision.model_validate(
-                {"id": "C1", "decision": bad, "reason_code": code}
-            )
-        assert f"decision={bad!r} is invalid" in str(excinfo.value)
+        # Coerced, not rejected outright. This validation runs during parse of
+        # the WHOLE review output, so raising here invalidated every decision in
+        # the batch over one self-contradictory entry -- and the repair turn
+        # could not fix it, because the message is stripped to
+        # "decisions.N: value_error" and the constraint never reaches the JSON
+        # schema. The code already asserts nothing salvageable remains, so
+        # reject is the decision it implies.
+        coerced = CandidateReviewDecision.model_validate(
+            {
+                "id": "C1",
+                "decision": bad,
+                "reason_code": code,
+                "evidence_ids": ["C1-E1"],
+                "revision": {
+                    "content": "c",
+                    "trigger": "t",
+                    "rationale": "r",
+                },
+            }
+        )
+        assert coerced.decision == "reject"
+        # A reject must retain no evidence and carry no revision; leaving either
+        # in place would fail semantic validation and reintroduce the batch loss
+        # by another route.
+        assert coerced.evidence_ids == []
+        assert coerced.revision is None
 
     # Other codes are unaffected: revise remains available to them.
     # `internal_status` in particular MUST stay non-fatal. Folding check 8 into
@@ -672,3 +689,103 @@ def test_prompt_reason_codes_match_the_schema_literal():
         f"prompt-only: {sorted(prompt_codes - literal_codes)}; "
         f"schema-only: {sorted(literal_codes - prompt_codes)}"
     )
+
+
+def test_one_fatal_code_slip_does_not_cost_the_whole_batch():
+    """A self-contradictory decision must not invalidate its siblings.
+
+    This is the defect the coercion exists to prevent, asserted end-to-end
+    rather than on the model alone. The pairing raised during parse of the whole
+    PlaybookCandidateReviewOutput, so a single slip lost every candidate in the
+    request -- including healthy ones -- and `service.py` reviews all candidates
+    for a request in one call. The repair turn could not recover it either: the
+    error text is reduced to "decisions.N: value_error" before it reaches the
+    model, and a model_validator never appears in the JSON schema, so the rule
+    it broke was never stated to it.
+
+    Asserts the survivor by content, not by count, so the test cannot pass by
+    dropping the wrong candidate.
+    """
+    interactions = [
+        _interaction_model(201, "The user corrected the agent's assumption."),
+        _interaction_model(202, "Notification failed status=FAILED."),
+    ]
+    candidates = [
+        _candidate(
+            201,
+            "The user corrected the agent's assumption.",
+            content="Honor the stated correction.",
+        ),
+        _candidate(
+            202,
+            "Notification failed status=FAILED.",
+            content="Do not echo the raw failure line.",
+        ),
+    ]
+    # Parsed from raw dicts through the BATCH model, which is the path a
+    # provider response actually takes. Building the decisions individually
+    # would coerce each one before the output model ever saw it, so the
+    # whole-output parse -- the step that used to lose every sibling decision --
+    # would never be exercised.
+    output = PlaybookCandidateReviewOutput.model_validate(
+        {
+            "decisions": [
+                {
+                    "id": "C1",
+                    "decision": "accept",
+                    "reason_code": "grounded_useful",
+                    "evidence_ids": ["C1-E1"],
+                },
+                # The slip: a fatal code the model paired with `revise`.
+                {
+                    "id": "C2",
+                    "decision": "revise",
+                    "reason_code": "not_agent_decision",
+                    "evidence_ids": ["C2-E1"],
+                    "revision": {
+                        "content": "Report the failure plainly.",
+                        "trigger": "When the notification fails",
+                        "rationale": "The cited turn shows the failure.",
+                    },
+                },
+            ]
+        }
+    )
+
+    reviewer, _client = _reviewer(output)
+
+    result = reviewer.review(
+        candidates=candidates,
+        request_interaction_data_models=interactions,
+        existing_playbooks=[],
+        agent_context="Test agent",
+        playbook_definition="Reusable user guidance",
+        tool_context="",
+    )
+
+    assert [item.content for item in result] == ["Honor the stated correction."]
+
+
+def test_fatal_code_backstop_still_raises_when_coercion_is_bypassed():
+    """The invariant holds even on a path that skips normalization.
+
+    Coercion in `normalize_known_provider_shape` is the enforcement; this
+    validator is the backstop that makes "a fatal code is always a reject"
+    total rather than merely usual. It is unreachable through normal
+    construction, so it is exercised directly -- otherwise it would be an
+    untestable guard, and an untestable guard is how the original gap survived.
+
+    It raises rather than coercing a second time: reaching it means the caller
+    is our own code bypassing normalization, where a loud failure is right and
+    no provider batch is at stake.
+    """
+    from reflexio.server.services.playbook.components.reviewer import (
+        CandidateReviewDecision,
+    )
+
+    bypassed = CandidateReviewDecision.model_construct(
+        candidate_id="C1", decision="accept", reason_code="absence_inference"
+    )
+
+    with pytest.raises(ValueError, match="absence_inference"):
+        bypassed.fatal_reason_codes_are_rejects()
