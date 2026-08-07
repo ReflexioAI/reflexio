@@ -12,11 +12,12 @@ that by driving the reviewer with the repo's own generalization manifest: each
 `must_capture` case becomes one candidate, grounded in that case's own turns. A
 must-capture family that does not survive is a false rejection.
 
-Costs real API calls, so it is marked `requires_credentials` and excluded from
-default runs. Run it when changing the reviewer prompt:
+Costs real API calls, so it is marked `integration` (what the unit jobs filter
+on) and `requires_credentials`, and skips outright without a real provider key.
+Run it when changing the reviewer prompt:
 
     uv run pytest tests/server/services/playbook/test_reviewer_manifest_regression.py \\
-        -m requires_credentials -o 'addopts='
+        -m 'integration and requires_credentials' -o 'addopts='
 """
 
 from __future__ import annotations
@@ -43,8 +44,27 @@ from reflexio.server.services.playbook.components.reviewer import (
 from reflexio.server.services.playbook.playbook_service_utils import (
     build_playbook_prompt_context,
 )
+from reflexio.test_support.llm_credentials import real_provider_key
 
-pytestmark = pytest.mark.requires_credentials
+# `requires_credentials` alone does NOT keep this out of a default run: the
+# unit-test jobs filter on `-m "not integration"`, so the marker that actually
+# deselects live-provider tests is `integration`. Without it these ran against
+# the global litellm mock, which answers every call with a profile-shaped
+# payload -- so the reviewer schema failed to parse and the repair ladder
+# exhausted, 12 failures that looked like a reviewer regression and were not.
+#
+# `real_provider_key` rather than `os.getenv`, because the credential floor
+# pins a placeholder key when none is set; a plain getenv check would let this
+# run against a credential that authenticates with nothing.
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.requires_credentials,
+    pytest.mark.skipif(
+        not real_provider_key("OPENAI_API_KEY")
+        and not real_provider_key("ANTHROPIC_API_KEY"),
+        reason="Neither OPENAI_API_KEY nor ANTHROPIC_API_KEY is set to a real key",
+    ),
+]
 
 _MANIFEST = (
     Path(__file__).resolve().parents[4]
