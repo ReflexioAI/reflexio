@@ -789,3 +789,64 @@ def test_fatal_code_backstop_still_raises_when_coercion_is_bypassed():
 
     with pytest.raises(ValueError, match="absence_inference"):
         bypassed.fatal_reason_codes_are_rejects()
+
+
+def test_public_reason_code_vocabulary_is_the_reviewer_set_plus_the_skip_code():
+    """The API must advertise exactly what can be produced -- no more, no less.
+
+    `ReviewUserPlaybookResult.reason_code` was a plain `str`, so the public
+    vocabulary was whatever happened to be emitted: the reviewer's codes plus
+    `evidence_unavailable`, which the review *service* raises on its own behalf
+    for an unreviewable row. Nothing enforced or documented that, so a consumer
+    branching on the value silently gained an unhandled case whenever the
+    reviewer's Literal grew -- as it did when `not_agent_decision` was added.
+
+    Asserted as set equality rather than membership: a subset check would pass
+    while the API under-advertised, and a superset check would pass while it
+    promised codes nothing can emit.
+    """
+    from typing import get_args
+
+    from reflexio.models.api_schema.domain.entities import ReviewUserPlaybookResult
+    from reflexio.server.services.playbook.components.reviewer import (
+        CandidateReviewDecision,
+    )
+
+    reviewer_codes = set(
+        get_args(CandidateReviewDecision.model_fields["reason_code"].annotation)
+    )
+    public_codes = set(
+        get_args(ReviewUserPlaybookResult.model_fields["reason_code"].annotation)
+    )
+
+    assert public_codes == reviewer_codes | {"evidence_unavailable"}
+
+
+def test_public_result_rejects_a_reason_code_nothing_can_emit():
+    """An unknown code must fail validation rather than reach a consumer.
+
+    This is what "typed" buys over documentation: the field cannot carry a value
+    the producers do not produce.
+    """
+    from pydantic import ValidationError
+
+    from reflexio.models.api_schema.domain.entities import ReviewUserPlaybookResult
+
+    # The real skip pairing still validates.
+    skipped = ReviewUserPlaybookResult.model_validate(
+        {
+            "user_playbook_id": 1,
+            "decision": "skip",
+            "reason_code": "evidence_unavailable",
+        }
+    )
+    assert skipped.reason_code == "evidence_unavailable"
+
+    with pytest.raises(ValidationError):
+        ReviewUserPlaybookResult.model_validate(
+            {
+                "user_playbook_id": 1,
+                "decision": "skip",
+                "reason_code": "not_a_real_code",
+            }
+        )

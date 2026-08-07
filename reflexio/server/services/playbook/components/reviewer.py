@@ -9,6 +9,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from reflexio.models.api_schema.domain.entities import UserPlaybook
+from reflexio.models.api_schema.domain.enums import PlaybookReviewReasonCode
 from reflexio.models.api_schema.internal_schema import RequestInteractionDataModel
 from reflexio.models.structured_output import normalize_provider_value
 from reflexio.server.api_endpoints.request_context import RequestContext
@@ -72,20 +73,7 @@ class CandidateReviewDecision(BaseModel):
     # never told it exists. If it names an unsalvageable defect, add it to
     # _FATAL_REASON_CODES and to that prompt's "Always reject" line too.
     # test_prompt_reason_codes_match_the_schema_literal enforces the first.
-    reason_code: Literal[
-        "grounded_useful",
-        "unsupported_evidence",
-        "generic",
-        "speculative",
-        "unsupported_causality",
-        "unseen_artifact",
-        "redundant",
-        "late_trigger",
-        "compound",
-        "internal_status",
-        "absence_inference",
-        "not_agent_decision",
-    ]
+    reason_code: PlaybookReviewReasonCode
     evidence_ids: list[str] = Field(default_factory=list)
     revision: CandidateRevision | None = None
     reason: str | None = None
