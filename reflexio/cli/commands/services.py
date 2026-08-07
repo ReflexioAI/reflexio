@@ -30,10 +30,9 @@ def _ensure_llm_configured(env_path: Path) -> None:
     Behaviour matrix:
         - At least one LLM key AND an embedding-capable provider in env →
           return silently, startup continues.
-        - At least one LLM key but no cloud embedder, and ``chromadb`` is
-          importable → log "Using local embedder as fallback" and return;
-          runtime auto-detection (Layer A) will pick ``local/minilm-l6-v2``
-          for the EMBEDDING role. No prompt, no blocking.
+        - At least one LLM key but no cloud embedder → use the configured remote
+          inference service, or the colocated inference service when no remote
+          URL is configured. No prompt, no blocking.
         - No LLM key, interactive TTY → prompt for a provider + key, then
           (conditionally) prompt for an embedding key, re-load the .env so
           the new values land in ``os.environ``, and return.
@@ -63,9 +62,6 @@ def _ensure_llm_configured(env_path: Path) -> None:
         GENERATION_CAPABLE_PROVIDERS,
         detect_available_providers,
     )
-    from reflexio.server.llm.providers.local_embedding_provider import (
-        is_chromadb_importable,
-    )
 
     providers = detect_available_providers()
     has_embedding = any(p in EMBEDDING_CAPABLE_PROVIDERS for p in providers)
@@ -76,15 +72,20 @@ def _ensure_llm_configured(env_path: Path) -> None:
     if providers and has_generation and has_embedding:
         return
 
-    # Path 3 of the embedding auto-detection: if a generation provider is
-    # configured but no cloud embedder, and chromadb is importable, the
-    # runtime will silently fall back to the local MiniLM embedder (see
-    # ``_auto_detect_model`` in model_defaults.py). No need to prompt or
-    # block startup. We require ``has_generation`` here because providers
+    # A generation provider can use the shared inference service for embeddings.
+    # No need to prompt or block startup. We require ``has_generation`` here
+    # because providers
     # like ``["local"]`` (embedder-only) leave the GENERATION role
     # unresolvable and must still trip the wizard.
-    if has_generation and is_chromadb_importable():
-        _logger.info("Using local embedder as fallback (no cloud embedder configured)")
+    if has_generation:
+        from reflexio.server.llm.providers.embedding_service_provider import (
+            remote_inference_service_configured,
+        )
+
+        location = "remote" if remote_inference_service_configured() else "colocated"
+        _logger.info(
+            "Using %s inference service (no cloud embedder configured)", location
+        )
         return
 
     if not sys.stdin.isatty():

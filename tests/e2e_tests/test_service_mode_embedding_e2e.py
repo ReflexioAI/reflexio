@@ -56,6 +56,7 @@ from reflexio.models.config_schema import (
     StorageConfigSQLite,
 )
 from reflexio.server.llm.embedding_service import MINILM_MODEL, create_embedding_app
+from reflexio.server.llm.rerank import score_pairs
 from reflexio.server.services.configurator.configurator import DefaultConfigurator
 from tests.server.test_utils import skip_in_precommit
 
@@ -112,21 +113,23 @@ class _EmbeddingDaemon:
     def base_url(self) -> str:
         return f"http://127.0.0.1:{self.port}"
 
-    def start(self, timeout: float = 90.0) -> None:
+    def start(self, timeout: float = 180.0) -> None:
         self._thread.start()
         deadline = time.monotonic() + timeout
-        last_err: Exception | None = None
+        last_result = "no response"
         while time.monotonic() < deadline:
             try:
                 resp = httpx.get(f"{self.base_url}/health", timeout=2.0)
                 if resp.status_code == 200 and resp.json().get("status") == "ok":
                     return
+                last_result = f"status={resp.status_code}, body={resp.text}"
             except httpx.HTTPError as exc:
-                last_err = exc
+                last_result = repr(exc)
             time.sleep(0.2)
         self.stop()
         raise RuntimeError(
-            f"embedding daemon did not become healthy within {timeout:.0f}s: {last_err}"
+            "embedding daemon did not become healthy within "
+            f"{timeout:.0f}s: {last_result}"
         )
 
     def stop(self) -> None:
@@ -211,6 +214,17 @@ def test_service_mode_round_trip(
     # encode never trips the 2s internal-service default and flakes.
     monkeypatch.setenv("REFLEXIO_EMBEDDING_SERVICE_URL", embedding_daemon.base_url)
     monkeypatch.setenv("REFLEXIO_EMBEDDING_SERVICE_TIMEOUT_MS", "30000")
+
+    reranker_health = httpx.get(
+        f"{embedding_daemon.base_url}/health/rerank", timeout=5.0
+    )
+    assert reranker_health.status_code == 200, reranker_health.text
+    assert reranker_health.json()["ready"] is True
+    rerank_scores = score_pairs(
+        "Italian food", ["fresh pasta with tomato sauce", "rain forecast"]
+    )
+    assert len(rerank_scores) == 2
+    assert rerank_scores[0] > rerank_scores[1]
 
     reflexio = _build_reflexio(str(tmp_path / "reflexio.db"), org_id)
     storage = reflexio.request_context.storage

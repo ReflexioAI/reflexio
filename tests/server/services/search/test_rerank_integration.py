@@ -1,16 +1,18 @@
 """Integration tests for Reflexio.rerank_user_profiles.
 
-Uses real SQLite storage in a temp dir and the real cross-encoder model — slow
-on first run (model download) but cached afterwards under
-``~/.cache/huggingface/``. The model is a 22M-param MS-MARCO MiniLM, ~50 ms for
-K=30 on CPU, so steady-state cost is small enough to keep these tests in the
-default integration tier (no ``@skip_in_precommit``).
+Uses real SQLite storage in a temp dir and a transport-level fake of the shared
+reranker service. Service model execution and real-socket wiring are covered by
+the shared inference-service end-to-end tests; this module protects the
+explicit profile-rerank operation and its storage behavior.
 """
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
+import reflexio.server.llm.rerank.cross_encoder_reranker as reranker_client
 from reflexio.models.api_schema.domain.entities import (
     NEVER_EXPIRES_TIMESTAMP,
     UserProfile,
@@ -31,6 +33,47 @@ _IRRELEVANT_CONTENTS = [
     "User commutes by bicycle on weekdays",
     "User watches NBA games on Sunday evenings",
 ]
+
+
+class _RerankResponse:
+    def __init__(self, documents: list[str]) -> None:
+        self._documents = documents
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> dict:
+        food_terms = {"pasta", "pizza", "ramen", "peanuts"}
+        return {
+            "data": [
+                {
+                    "index": index,
+                    "score": 1.0
+                    if food_terms.intersection(re.findall(r"\w+", document.lower()))
+                    else -1.0,
+                }
+                for index, document in enumerate(self._documents)
+            ]
+        }
+
+
+@pytest.fixture(autouse=True)
+def shared_reranker_service(monkeypatch):
+    calls: list[dict] = []
+    monkeypatch.setenv("REFLEXIO_EMBEDDING_SERVICE_URL", "http://reranker.test")
+    monkeypatch.setattr(
+        reranker_client,
+        "resolve_service_configured_reranker_model",
+        lambda: "cross-encoder/ms-marco-MiniLM-L-6-v2",
+    )
+
+    def post(_url, *, json, timeout):  # noqa: ARG001
+        calls.append(json)
+        return _RerankResponse(json["documents"])
+
+    client = type("RerankClient", (), {"post": staticmethod(post)})()
+    monkeypatch.setattr(reranker_client, "inference_http_client", lambda: client)
+    return calls
 
 
 @pytest.fixture
@@ -72,7 +115,7 @@ def reflexio_with_seeded_profiles(tmp_path):
 
 
 def test_rerank_surfaces_relevant_profile_above_irrelevant(
-    reflexio_with_seeded_profiles,
+    reflexio_with_seeded_profiles, shared_reranker_service
 ):
     """Cross-encoder must rank a food-related profile above unrelated profiles."""
     all_ids = [f"rel_{i}" for i in range(3)] + [f"irr_{i}" for i in range(3)]
@@ -90,6 +133,7 @@ def test_rerank_surfaces_relevant_profile_above_irrelevant(
     assert ids[0].startswith("rel_"), (
         f"expected food-related profile at top, got id={ids[0]!r}; all={ids!r}"
     )
+    assert len(shared_reranker_service) == 1
 
 
 def test_rerank_silently_drops_unknown_ids(reflexio_with_seeded_profiles):

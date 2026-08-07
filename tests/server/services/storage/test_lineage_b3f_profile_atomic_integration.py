@@ -27,6 +27,15 @@ from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 pytestmark = pytest.mark.integration
 
 
+@pytest.fixture(autouse=True)
+def _service_embeddings(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep storage atomicity tests independent of a live inference child."""
+    monkeypatch.setattr(
+        "reflexio.server.llm._litellm_embedding.get_service_embeddings",
+        lambda texts, **_kwargs: [[0.1] * 512 for _ in texts],
+    )
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

@@ -10,9 +10,9 @@ import time
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response, status
 from pydantic import BaseModel, Field
 
 from reflexio.server.llm.llm_utils import positive_int_env
@@ -21,11 +21,12 @@ from reflexio.server.llm.providers.nomic_embedding_provider import (
     NomicEmbedder,
     is_nomic_model,
 )
-from reflexio.server.llm.rerank.cross_encoder_reranker import (
+from reflexio.server.llm.rerank.common import (
     RERANK_MODEL,
     CrossEncoderUnavailableError,
-    _score_pairs_local,
+    reranker_enabled,
 )
+from reflexio.server.llm.rerank.cross_encoder_model import CrossEncoderRunner
 
 logger = logging.getLogger(__name__)
 
@@ -144,12 +145,21 @@ class RerankResponse(BaseModel):
     model: str
 
 
+class RerankHealthResponse(BaseModel):
+    status: Literal["ready", "disabled", "unavailable"]
+    configured_model: str
+    enabled: bool
+    ready: bool
+
+
 def create_embedding_app(
     default_model: str | None = None,
     *,
     allowed_models: set[str] | None = None,
     model_encoders: Mapping[str, EmbeddingEncoder] | None = None,
     fixed_dimensions: Mapping[str, int] | None = None,
+    reranker_model: str = RERANK_MODEL,
+    reranker_runner: CrossEncoderRunner | None = None,
 ) -> FastAPI:
     """Create the embedding daemon app and optionally register external encoders."""
     effective_encoders = dict(model_encoders or {})
@@ -157,6 +167,7 @@ def create_embedding_app(
     effective_allowed_models = (
         set(allowed_models) if allowed_models is not None else set(_SUPPORTED_MODELS)
     )
+    runner = reranker_runner or CrossEncoderRunner(reranker_model)
 
     def embed_texts(model: str, texts: list[str]) -> list[list[float]]:
         return _embed_texts(
@@ -168,14 +179,14 @@ def create_embedding_app(
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-        if not default_model:
-            yield
-            return
-        try:
-            embed_texts(default_model, ["reflexio embedding daemon warmup"])
-        except Exception:
-            logger.exception("Failed to warm embedding model %s", default_model)
-            raise
+        if default_model:
+            try:
+                embed_texts(default_model, ["reflexio embedding daemon warmup"])
+            except Exception:
+                logger.exception("Failed to warm embedding model %s", default_model)
+                raise
+        if reranker_enabled():
+            runner.prewarm()
         yield
 
     embedding_app = FastAPI(title="Reflexio Embedding Service", lifespan=lifespan)
@@ -187,7 +198,24 @@ def create_embedding_app(
             "status": "ok",
             "active_model": _ACTIVE_MODEL,
             "configured_model": default_model,
+            "configured_reranker_model": reranker_model,
+            "reranker_enabled": reranker_enabled(),
+            "reranker_ready": runner.ready(),
         }
+
+    @embedding_app.get("/health/rerank", response_model=RerankHealthResponse)
+    def rerank_health(response: Response) -> RerankHealthResponse:
+        """Report reranker readiness without affecting embedding health."""
+        enabled = reranker_enabled()
+        ready = enabled and runner.ready()
+        if not ready:
+            response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+        return RerankHealthResponse(
+            status=runner.status() if enabled else "disabled",
+            configured_model=reranker_model,
+            enabled=enabled,
+            ready=ready,
+        )
 
     @embedding_app.post("/v1/embeddings")
     def create_embeddings(request: EmbeddingRequest) -> EmbeddingResponse:
@@ -243,12 +271,17 @@ def create_embedding_app(
     @embedding_app.post("/v1/rerank")
     def create_rerank_scores(request: RerankRequest) -> RerankResponse:
         """Score query/document pairs using this daemon's local cross-encoder."""
-        if request.model != RERANK_MODEL:
+        if request.model != reranker_model:
             raise HTTPException(
                 status_code=400, detail=f"Unsupported model: {request.model}"
             )
+        if not reranker_enabled():
+            raise HTTPException(
+                status_code=503,
+                detail="Reranking is disabled by REFLEXIO_RERANK_ENABLED",
+            )
         try:
-            scores = _score_pairs_local(request.query, request.documents)
+            scores = runner.score_pairs(request.query, request.documents)
         except CrossEncoderUnavailableError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
 

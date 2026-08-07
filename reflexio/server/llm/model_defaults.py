@@ -474,10 +474,9 @@ def validate_llm_availability(
         )
     logger.info("Primary provider for generation: %s", generation_provider)
 
-    # Validate embedding availability. When no embedding-capable provider
-    # is configured, fall back to the in-process local ONNX embedder if
-    # chromadb is importable — this keeps users with only a non-embedding
-    # LLM key (Anthropic, MiniMax, etc.) from being blocked at startup.
+    # The launcher always provides a separate colocated inference service when
+    # no remote endpoint is configured. API workers never import or construct
+    # the local model.
     embedding_provider = next(
         (p for p in providers if _PROVIDER_DEFAULTS[p].embedding), None
     )
@@ -488,22 +487,14 @@ def validate_llm_availability(
             embedding_provider,
         )
     else:
-        from reflexio.server.llm.providers.local_embedding_provider import (
-            is_chromadb_importable,
+        from reflexio.server.llm.providers.embedding_service_provider import (
+            remote_inference_service_configured,
         )
 
-        if is_chromadb_importable():
-            logger.info(
-                "Local MiniLM embedding fallback available: %s "
-                "(no cloud embedding provider configured)",
-                _LOCAL_EMBEDDING_PROVIDER,
-            )
-        else:
-            raise RuntimeError(
-                "No embedding-capable provider configured and chromadb is not "
-                "importable. Set OPENAI_API_KEY or GEMINI_API_KEY, or "
-                "`pip install chromadb`."
-            )
+        location = "remote" if remote_inference_service_configured() else "colocated"
+        logger.info(
+            "Using the configured %s inference service for embeddings", location
+        )
 
     fallback_raw = os.environ.get("REFLEXIO_LLM_FALLBACK_MODELS", "")
     fallbacks = [m.strip() for m in fallback_raw.split(",") if m.strip()]

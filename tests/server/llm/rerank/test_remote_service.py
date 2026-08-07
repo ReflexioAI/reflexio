@@ -1,84 +1,153 @@
+from __future__ import annotations
+
 from typing import Any
-from unittest.mock import patch
 
 import httpx
 import pytest
 
 import reflexio.server.llm.rerank.cross_encoder_reranker as reranker
+from reflexio.server.llm.rerank.common import MULTILINGUAL_RERANK_MODEL
 from reflexio.server.llm.rerank.cross_encoder_reranker import (
-    RERANK_MODEL,
     CrossEncoderUnavailableError,
 )
 
 
 class _Response:
-    def __init__(
-        self,
-        body: dict[str, Any],
-        *,
-        status_error: Exception | None = None,
-    ) -> None:
+    def __init__(self, body: dict[str, Any], status_code: int = 200) -> None:
         self._body = body
-        self._status_error = status_error
+        request = httpx.Request("POST", "http://inference/v1/rerank")
+        self._response = httpx.Response(status_code, request=request)
 
     def raise_for_status(self) -> None:
-        if self._status_error is not None:
-            raise self._status_error
+        self._response.raise_for_status()
 
     def json(self) -> dict[str, Any]:
         return self._body
 
 
-def test_unset_service_url_uses_local_scorer(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("REFLEXIO_RERANK_SERVICE_URL", raising=False)
-    with patch.object(reranker, "_score_pairs_local", return_value=[1.0]) as local:
-        assert reranker.score_pairs("q", ["doc"]) == [1.0]
-    local.assert_called_once_with("q", ["doc"])
-
-
-def test_set_service_url_calls_remote_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("REFLEXIO_RERANK_SERVICE_URL", "http://rerank.internal:8089/")
-    monkeypatch.setenv("REFLEXIO_RERANK_SERVICE_TIMEOUT_MS", "2500")
-
-    def post(url: str, *, json: dict[str, Any], timeout: float) -> _Response:
-        assert url == "http://rerank.internal:8089/v1/rerank"
-        assert json == {
-            "model": RERANK_MODEL,
-            "query": "q",
-            "documents": ["first", "second"],
-        }
-        assert timeout == 2.5
-        return _Response(
-            {
-                "data": [
-                    {"index": 1, "score": -1.0},
-                    {"index": 0, "score": 2},
-                ]
-            }
-        )
-
-    monkeypatch.setattr(reranker.httpx, "post", post)
-
-    assert reranker.score_pairs("q", ["first", "second"]) == [2.0, -1.0]
-
-
-def test_remote_endpoint_http_error_degrades_as_unavailable(
-    monkeypatch: pytest.MonkeyPatch,
+def _set_model(
+    monkeypatch: pytest.MonkeyPatch, model: str = MULTILINGUAL_RERANK_MODEL
 ) -> None:
-    monkeypatch.setenv("REFLEXIO_RERANK_SERVICE_URL", "http://rerank.internal")
-    request = httpx.Request("POST", "http://rerank.internal/v1/rerank")
-    response = httpx.Response(503, request=request)
-    status_error = httpx.HTTPStatusError(
-        "service unavailable", request=request, response=response
+    monkeypatch.setattr(
+        reranker, "resolve_service_configured_reranker_model", lambda: model
+    )
+
+
+def test_reranker_uses_embedding_service_url_and_discovered_model(monkeypatch) -> None:
+    monkeypatch.setenv("REFLEXIO_EMBEDDING_SERVICE_URL", "http://inference:8089/")
+    monkeypatch.setenv("REFLEXIO_RERANK_SERVICE_TIMEOUT_MS", "2500")
+    _set_model(monkeypatch)
+
+    class _Client:
+        def post(self, url: str, *, json: dict[str, Any], timeout: float) -> _Response:
+            assert url == "http://inference:8089/v1/rerank"
+            assert json == {
+                "model": MULTILINGUAL_RERANK_MODEL,
+                "query": "数据库",
+                "documents": ["PostgreSQL", "weather"],
+            }
+            assert timeout == 2.5
+            return _Response(
+                {
+                    "data": [
+                        {"index": 1, "score": -2.0},
+                        {"index": 0, "score": 4.0},
+                    ]
+                }
+            )
+
+    monkeypatch.setattr(reranker, "inference_http_client", lambda: _Client())
+
+    assert reranker.score_pairs("数据库", ["PostgreSQL", "weather"]) == [4.0, -2.0]
+
+
+def test_separate_reranker_url_override_is_ignored(monkeypatch) -> None:
+    monkeypatch.setenv("REFLEXIO_RERANK_SERVICE_URL", "http://obsolete")
+    monkeypatch.setenv("REFLEXIO_EMBEDDING_SERVICE_URL", "http://inference")
+
+    assert reranker.reranker_service_url() == "http://inference"
+
+
+def test_disabled_reranker_makes_no_discovery_or_http_request(monkeypatch) -> None:
+    monkeypatch.setenv("REFLEXIO_RERANK_ENABLED", "false")
+    monkeypatch.setattr(
+        reranker,
+        "resolve_service_configured_reranker_model",
+        lambda: pytest.fail("model discovery must not run"),
     )
     monkeypatch.setattr(
-        reranker.httpx,
-        "post",
-        lambda *_args, **_kwargs: _Response({}, status_error=status_error),
+        reranker,
+        "inference_http_client",
+        lambda: pytest.fail("HTTP client must not be constructed"),
+    )
+    with pytest.raises(CrossEncoderUnavailableError, match="disabled"):
+        reranker.score_pairs("q", ["doc"])
+
+
+def test_colocated_discovery_failure_is_silent_fail_open(monkeypatch) -> None:
+    monkeypatch.delenv("REFLEXIO_EMBEDDING_SERVICE_URL", raising=False)
+    monkeypatch.setattr(
+        reranker,
+        "resolve_service_configured_reranker_model",
+        lambda: (_ for _ in ()).throw(
+            reranker.EmbeddingUnavailableError("child is restarting")
+        ),
     )
 
-    with pytest.raises(CrossEncoderUnavailableError):
+    with pytest.raises(CrossEncoderUnavailableError) as exc_info:
         reranker.score_pairs("q", ["doc"])
+    assert exc_info.value.report_failure is False
+
+
+def test_remote_discovery_failure_is_reported_but_fail_open(monkeypatch) -> None:
+    monkeypatch.setenv("REFLEXIO_EMBEDDING_SERVICE_URL", "http://inference")
+    monkeypatch.setattr(
+        reranker,
+        "resolve_service_configured_reranker_model",
+        lambda: (_ for _ in ()).throw(reranker.EmbeddingUnavailableError("down")),
+    )
+
+    with pytest.raises(CrossEncoderUnavailableError) as exc_info:
+        reranker.score_pairs("q", ["doc"])
+    assert exc_info.value.report_failure is True
+
+
+@pytest.mark.parametrize("remote", [False, True])
+def test_service_503_classification(monkeypatch, remote: bool) -> None:
+    if remote:
+        monkeypatch.setenv("REFLEXIO_EMBEDDING_SERVICE_URL", "http://inference")
+    else:
+        monkeypatch.delenv("REFLEXIO_EMBEDDING_SERVICE_URL", raising=False)
+    _set_model(monkeypatch)
+
+    class _Client:
+        def post(self, *_args, **_kwargs) -> _Response:
+            return _Response({}, status_code=503)
+
+    monkeypatch.setattr(reranker, "inference_http_client", lambda: _Client())
+
+    with pytest.raises(CrossEncoderUnavailableError) as exc_info:
+        reranker.score_pairs("q", ["doc"])
+    assert exc_info.value.report_failure is remote
+
+
+@pytest.mark.parametrize("remote", [False, True])
+def test_transport_failure_classification(monkeypatch, remote: bool) -> None:
+    if remote:
+        monkeypatch.setenv("REFLEXIO_EMBEDDING_SERVICE_URL", "http://inference")
+    else:
+        monkeypatch.delenv("REFLEXIO_EMBEDDING_SERVICE_URL", raising=False)
+    _set_model(monkeypatch)
+
+    class _Client:
+        def post(self, *_args, **_kwargs) -> _Response:
+            raise httpx.WriteError("connection closed while writing")
+
+    monkeypatch.setattr(reranker, "inference_http_client", lambda: _Client())
+
+    with pytest.raises(CrossEncoderUnavailableError) as exc_info:
+        reranker.score_pairs("q", ["doc"])
+    assert exc_info.value.report_failure is remote
 
 
 @pytest.mark.parametrize(
@@ -89,29 +158,17 @@ def test_remote_endpoint_http_error_degrades_as_unavailable(
         [{"index": 0, "score": 1.0}, {"index": 0, "score": 2.0}],
         [{"index": 2, "score": 1.0}],
         [{"index": "0", "score": 1.0}],
-        [{"index": 0, "score": "1.0"}],
         [{"index": 0, "score": True}],
     ],
 )
-def test_remote_endpoint_malformed_response_degrades_as_unavailable(
-    monkeypatch: pytest.MonkeyPatch, data: Any
-) -> None:
-    monkeypatch.setenv("REFLEXIO_RERANK_SERVICE_URL", "http://rerank.internal")
-    monkeypatch.setattr(
-        reranker.httpx,
-        "post",
-        lambda *_args, **_kwargs: _Response({"data": data}),
-    )
+def test_malformed_response_degrades_as_unavailable(monkeypatch, data: Any) -> None:
+    monkeypatch.setenv("REFLEXIO_EMBEDDING_SERVICE_URL", "http://inference")
+    _set_model(monkeypatch)
 
-    with pytest.raises(CrossEncoderUnavailableError):
-        reranker.score_pairs("q", ["doc"])
+    class _Client:
+        def post(self, *_args, **_kwargs) -> _Response:
+            return _Response({"data": data})
 
-
-def test_invalid_remote_timeout_degrades_as_unavailable(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("REFLEXIO_RERANK_SERVICE_URL", "http://rerank.internal")
-    monkeypatch.setenv("REFLEXIO_RERANK_SERVICE_TIMEOUT_MS", "not-an-int")
-
+    monkeypatch.setattr(reranker, "inference_http_client", lambda: _Client())
     with pytest.raises(CrossEncoderUnavailableError):
         reranker.score_pairs("q", ["doc"])

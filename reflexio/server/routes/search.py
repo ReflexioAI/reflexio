@@ -42,6 +42,7 @@ from reflexio.server.auth import (
     default_get_org_id,
 )
 from reflexio.server.cache import reflexio_cache
+from reflexio.server.llm.rerank.common import CrossEncoderUnavailableError
 from reflexio.server.rate_limit import limiter
 from reflexio.server.routes._common import _run_limited_api
 from reflexio.server.routes._metering import (
@@ -154,13 +155,24 @@ def rerank_user_profiles(
     Returns:
         SearchProfilesViewResponse: Reranked profiles, top_k entries.
     """
-    response = _run_limited_api(
-        org_id,
-        "search",
-        lambda: reflexio_cache.get_reflexio(org_id=org_id).rerank_user_profiles(
-            payload
-        ),
-    )
+    try:
+        response = _run_limited_api(
+            org_id,
+            "search",
+            lambda: reflexio_cache.get_reflexio(org_id=org_id).rerank_user_profiles(
+                payload
+            ),
+        )
+    except CrossEncoderUnavailableError as exc:
+        logger.warning(
+            "event=profile_rerank_unavailable org_id=%s",
+            org_id,
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Reranking is currently unavailable",
+        ) from exc
     return SearchProfilesViewResponse(
         success=response.success,
         user_profiles=[to_profile_view(p) for p in response.user_profiles],

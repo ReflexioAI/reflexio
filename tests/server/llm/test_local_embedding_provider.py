@@ -736,9 +736,11 @@ class TestLiteLLMClientShortCircuit:
         from reflexio.server.llm import litellm_client
         from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 
-        _install_fake_chroma(monkeypatch)
-        monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_EMBEDDING", raising=False)
-        monkeypatch.setattr(lep.importlib.util, "find_spec", lambda _name: MagicMock())
+        monkeypatch.setattr(
+            _litellm_embedding,
+            "get_service_embeddings",
+            lambda *_args, **_kwargs: [[0.1] * 512],
+        )
 
         client = LiteLLMClient(LiteLLMConfig(model="claude-code/default"))
 
@@ -755,9 +757,11 @@ class TestLiteLLMClientShortCircuit:
         from reflexio.server.llm import litellm_client
         from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 
-        _install_fake_chroma(monkeypatch)
-        monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_EMBEDDING", raising=False)
-        monkeypatch.setattr(lep.importlib.util, "find_spec", lambda _name: MagicMock())
+        monkeypatch.setattr(
+            _litellm_embedding,
+            "get_service_embeddings",
+            lambda *_args, **_kwargs: [[0.1] * 512, [0.2] * 512],
+        )
 
         client = LiteLLMClient(LiteLLMConfig(model="claude-code/default"))
 
@@ -768,35 +772,29 @@ class TestLiteLLMClientShortCircuit:
         assert len(result) == 2
         assert all(len(vec) == 512 for vec in result)
 
-    def test_get_embedding_local_without_chromadb_raises(
+    def test_get_embedding_local_service_failure_does_not_fallback(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """When local/* is requested but chromadb is missing, raise a clear error."""
+        """When local inference is down, do not construct an in-process model."""
         from reflexio.server.llm import litellm_client
         from reflexio.server.llm.litellm_client import (
             LiteLLMClient,
-            LiteLLMClientError,
             LiteLLMConfig,
         )
 
-        # Force "inprocess" provider mode so the embedding-service short-circuit
-        # doesn't intercept the local/* model before the chromadb-import check.
-        # Clearing the env vars is not enough: model-driven routing probes the
-        # local daemon, so if one happens to be running on this host the call
-        # would route there. Force the service gate off to stay hermetic.
-        monkeypatch.delenv("REFLEXIO_EMBEDDING_PROVIDER", raising=False)
-        monkeypatch.delenv("REFLEXIO_EMBEDDING_SERVICE_URL", raising=False)
-        monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_EMBEDDING", raising=False)
         monkeypatch.setattr(
-            _litellm_embedding, "should_use_embedding_service", lambda _model: False
+            _litellm_embedding,
+            "get_service_embeddings",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                RuntimeError("service unavailable")
+            ),
         )
-        monkeypatch.setattr(lep.importlib.util, "find_spec", lambda _name: None)
 
         client = LiteLLMClient(LiteLLMConfig(model="claude-code/default"))
 
         with (
             patch.object(litellm_client.litellm, "embedding") as mock_embedding,
-            pytest.raises((LiteLLMClientError, RuntimeError), match="chromadb"),
+            pytest.raises(RuntimeError, match="service unavailable"),
         ):
             client.get_embedding("hello", model="local/minilm-l6-v2")
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 import pytest
@@ -125,3 +126,26 @@ def test_postgres_plus_multi_worker_no_warning(
     with caplog.at_level(logging.WARNING):
         _warn_if_sqlite_multi_worker(storage_backend="postgres", workers=2)
     assert not any("SQLite has limited" in rec.message for rec in caplog.records)
+
+
+def test_backend_starts_shared_service_for_cloud_embeddings(monkeypatch) -> None:
+    """Cloud embeddings still need the local shared service for reranking."""
+    import reflexio.cli.run_services as run_services_module
+
+    args = run_services_module._build_run_services_parser().parse_args(
+        ["--only", "backend", "--no-reload", "--workers", "1"]
+    )
+    captured = []
+    monkeypatch.setenv("REFLEXIO_EMBEDDING_PROVIDER", "cloud")
+    monkeypatch.delenv("REFLEXIO_EMBEDDING_SERVICE_URL", raising=False)
+    monkeypatch.setattr(run_services_module, "load_reflexio_env", lambda: None)
+    monkeypatch.setattr(
+        run_services_module,
+        "run_services",
+        lambda services, _ports: captured.extend(services),
+    )
+
+    run_services_module.execute(args)
+
+    assert [service.name for service in captured] == ["embedding", "backend"]
+    assert "REFLEXIO_EMBEDDING_SERVICE_URL" not in os.environ

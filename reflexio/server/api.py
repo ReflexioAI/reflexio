@@ -90,17 +90,18 @@ def _log_multi_worker_daemons() -> None:
     (duplicate ticking). Safe by the concurrent-tick invariant — every daemon
     tick is concurrent-safe — but worth one visible line (design D3).
 
-    Reuses ``embedder_warmup._detected_worker_count`` (checks
-    ``REFLEXIO_SERVER_WORKERS`` then falls back to ``WEB_CONCURRENCY``)
-    instead of re-implementing a narrower env read here. When the count is
-    undetectable (``None``), this logs nothing — it cannot verify the count,
-    so it must not assume a single worker.
+    Checks ``REFLEXIO_SERVER_WORKERS`` then ``WEB_CONCURRENCY``. When the count
+    is unavailable or invalid, this logs nothing.
     """
-    from reflexio.server.llm.providers.embedder_warmup import (
-        _detected_worker_count,
-    )
+    import os
 
-    workers = _detected_worker_count()
+    raw_workers = os.environ.get("REFLEXIO_SERVER_WORKERS") or os.environ.get(
+        "WEB_CONCURRENCY"
+    )
+    try:
+        workers = int(raw_workers) if raw_workers is not None else None
+    except ValueError:
+        workers = None
     if workers is not None and workers > 1:
         logger.warning(
             "event=multi_worker_daemons workers=%d — background daemons tick in "
@@ -383,8 +384,8 @@ def create_app(  # noqa: C901
             exactly mirroring the ``get_caller_type`` override pattern.
         mount_data_plane: When True (default), include the data-plane routers
             (core, stall-state, pending-tool-call) and run the data-plane
-            lifespan work (LLM availability check, cross-encoder prewarm,
-            resume scheduler). When False, skip both so a control-plane host
+            lifespan work (LLM availability check and resume scheduler). When
+            False, skip both so a control-plane host
             can build an app without requiring LLM/storage or starting the
             scheduler, while keeping all other scaffolding (middleware, CORS,
             auth overrides, OpenAPI security, health, ``/meta/version``,
@@ -472,26 +473,10 @@ def create_app(  # noqa: C901
         durable_learning_scheduler = None
         aggregation_scheduler = None
         started_caps: list = []
-        # D8 config guards + D5 warm-before-ready. Both are dormant unless the
-        # deployment has flipped to the in-process local embedder
-        # (REFLEXIO_EMBEDDING_PROVIDER=inprocess + local/* default); pre-flip
-        # this is a no-op and /health stays byte-for-byte unchanged. Run before
-        # the data-plane block so a gated deployment warms regardless of the
-        # mount profile (otherwise /health could 503 forever).
-        from reflexio.server.llm.providers.embedder_warmup import (
-            maybe_start_embedder_warmup,
-            run_startup_config_guards,
-        )
-
-        run_startup_config_guards()
-        maybe_start_embedder_warmup()
         if mounts_data_plane:
             _log_multi_worker_daemons()
             log_publish_hardware_capacity()
             validate_llm_availability()
-            from reflexio.server.llm.rerank import prewarm as _prewarm_cross_encoder
-
-            _prewarm_cross_encoder()
             # The scheduler discovers every org with resumable work each tick and
             # drives a per-org worker with org-scoped claims, so it is not limited
             # to the bootstrap org. The bootstrap org is only used to read config

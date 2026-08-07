@@ -168,7 +168,7 @@ def _build_embedding_choices() -> list[tuple[str, str | None, str]]:
             (
                 "local",
                 None,
-                "Local (in-process MiniLM-L6-v2; ~25 MB; no API key needed)",
+                "Local service (MiniLM-L6-v2; ~25 MB; no API key needed)",
             )
         )
     choices.extend(
@@ -815,7 +815,7 @@ def openclaw(
         typer.Option(
             "--embedding",
             help=(
-                "Embedding provider: 'local' (in-process MiniLM), 'openai', "
+                "Embedding provider: 'local' (colocated MiniLM service), 'openai', "
                 "'gemini', or 'auto' (default — let runtime auto-detection "
                 "pick). Skips the interactive prompt."
             ),
@@ -916,7 +916,7 @@ def init(
         typer.Option(
             "--embedding",
             help=(
-                "Embedding provider: 'local' (in-process MiniLM), 'openai', "
+                "Embedding provider: 'local' (colocated MiniLM service), 'openai', "
                 "'gemini', or 'auto' (default — let runtime auto-detection "
                 "pick). Skips the interactive prompt."
             ),

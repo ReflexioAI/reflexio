@@ -54,10 +54,10 @@ def test_floor_applied_per_arm(monkeypatch):
     score = {"good": 2.0, "ok": -1.0, "junk": -9.0}
 
     def fake_score(query, docs):  # noqa: ARG001
-        return [score[d] for d in docs]
+        return "cross-encoder/ms-marco-MiniLM-L-6-v2", [score[d] for d in docs]
 
     with patch(
-        "reflexio.server.services.retrieval.relevance_floor.score_pairs",
+        "reflexio.server.services.retrieval.relevance_floor.score_pairs_with_model",
         side_effect=fake_score,
     ):
         resp = uss.run_unified_search(
@@ -87,10 +87,12 @@ def test_floor_recency_applied_after_logits(monkeypatch):
     monkeypatch.setattr(uss, "_run_phase_b", lambda **_kw: ([], [], [old, fresh]))
 
     def fake_score(query, docs):  # noqa: ARG001
-        return [2.0 if doc == "old" else 1.9 for doc in docs]
+        return "cross-encoder/ms-marco-MiniLM-L-6-v2", [
+            2.0 if doc == "old" else 1.9 for doc in docs
+        ]
 
     with patch(
-        "reflexio.server.services.retrieval.relevance_floor.score_pairs",
+        "reflexio.server.services.retrieval.relevance_floor.score_pairs_with_model",
         side_effect=fake_score,
     ):
         resp = uss.run_unified_search(
@@ -123,10 +125,12 @@ def test_floor_recency_does_not_overtake_clearly_more_relevant(monkeypatch):
 
     def fake_score(query, docs):  # noqa: ARG001
         # 1.0 logit gap >> max_penalty_logit (0.2)
-        return [2.0 if doc == "old" else 1.0 for doc in docs]
+        return "cross-encoder/ms-marco-MiniLM-L-6-v2", [
+            2.0 if doc == "old" else 1.0 for doc in docs
+        ]
 
     with patch(
-        "reflexio.server.services.retrieval.relevance_floor.score_pairs",
+        "reflexio.server.services.retrieval.relevance_floor.score_pairs_with_model",
         side_effect=fake_score,
     ):
         resp = uss.run_unified_search(
@@ -161,7 +165,7 @@ def test_floor_recency_falls_back_to_combined_score_when_unavailable(monkeypatch
         raise CrossEncoderUnavailableError("no model")
 
     with patch(
-        "reflexio.server.services.retrieval.relevance_floor.score_pairs",
+        "reflexio.server.services.retrieval.relevance_floor.score_pairs_with_model",
         side_effect=boom,
     ):
         resp = uss.run_unified_search(
@@ -188,12 +192,50 @@ def test_floor_disabled_returns_all(monkeypatch):
     )
     monkeypatch.setattr(uss, "_run_phase_b", lambda **_kw: ([], [], pbs))
 
-    resp = uss.run_unified_search(
-        request=UnifiedSearchRequest(query="q", user_id="u", top_k=5),
-        org_id="o",
-        storage=cast(BaseStorage, _FakeStorage()),
-        llm_client=cast(LiteLLMClient, object()),
-        prompt_manager=cast(PromptManager, object()),
-        retrieval_floor=RetrievalFloorConfig(enabled=False),
+    with patch(
+        "reflexio.server.services.retrieval.relevance_floor.score_pairs_with_model"
+    ) as mock_score:
+        resp = uss.run_unified_search(
+            request=UnifiedSearchRequest(query="q", user_id="u", top_k=5),
+            org_id="o",
+            storage=cast(BaseStorage, _FakeStorage()),
+            llm_client=cast(LiteLLMClient, object()),
+            prompt_manager=cast(PromptManager, object()),
+            retrieval_floor=RetrievalFloorConfig(enabled=False),
+        )
+
+    mock_score.assert_not_called()
+    assert [p.content for p in resp.user_playbooks] == ["a", "b"]
+
+
+def test_global_reranker_flag_disables_floor_and_pool(monkeypatch):
+    pbs = [_fake_user_playbook("a"), _fake_user_playbook("b")]
+    phase_b_calls = []
+    monkeypatch.setenv("REFLEXIO_RERANK_ENABLED", "false")
+    monkeypatch.setattr(
+        uss,
+        "_run_phase_a",
+        lambda **_kw: (ReformulationResult(standalone_query="q"), None, False),
     )
+
+    def phase_b(**kwargs):
+        phase_b_calls.append(kwargs)
+        return [], [], pbs
+
+    monkeypatch.setattr(uss, "_run_phase_b", phase_b)
+
+    with patch(
+        "reflexio.server.services.retrieval.relevance_floor.score_pairs_with_model"
+    ) as mock_score:
+        resp = uss.run_unified_search(
+            request=UnifiedSearchRequest(query="q", user_id="u", top_k=2),
+            org_id="o",
+            storage=cast(BaseStorage, _FakeStorage()),
+            llm_client=cast(LiteLLMClient, object()),
+            prompt_manager=cast(PromptManager, object()),
+            retrieval_floor=RetrievalFloorConfig(enabled=True, pool_size=30),
+        )
+
+    mock_score.assert_not_called()
+    assert phase_b_calls[0]["top_k"] == 2
     assert [p.content for p in resp.user_playbooks] == ["a", "b"]

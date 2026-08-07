@@ -13,9 +13,6 @@ from pathlib import Path
 import reflexio
 from reflexio.cli.env_loader import load_reflexio_env
 from reflexio.cli.utils import ServiceConfig, get_env_port, run_services
-from reflexio.server.llm.providers.embedding_service_provider import (
-    embedding_service_url,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -297,13 +294,9 @@ def parse_only_flag(only: str | None, default_services: set[str]) -> set[str]:
 
 
 def should_start_local_embedding_service() -> bool:
-    """Return True when backend startup depends on the local embedding daemon."""
-    provider = os.environ.get("REFLEXIO_EMBEDDING_PROVIDER", "").strip().lower()
-    if provider == "local_service":
-        return True
-    if provider in {"cloud", "internal_service", "inprocess", "off"}:
-        return False
-    return os.environ.get("CLAUDE_SMART_USE_LOCAL_EMBEDDING") == "1"
+    """Return True unless inference is explicitly routed to a remote service."""
+    remote_url = os.environ.get("REFLEXIO_EMBEDDING_SERVICE_URL", "").strip()
+    return not remote_url
 
 
 def _ensure_nextjs_dependencies(project_dir: Path) -> bool:
@@ -341,10 +334,6 @@ def execute(args: argparse.Namespace) -> None:
         only.add("embedding")
         os.environ["REFLEXIO_EMBEDDING_PROVIDER"] = os.environ.get(
             "REFLEXIO_EMBEDDING_PROVIDER", "local_service"
-        )
-        os.environ["REFLEXIO_EMBEDDING_SERVICE_URL"] = os.environ.get(
-            "REFLEXIO_EMBEDDING_SERVICE_URL",
-            embedding_service_url("local_service"),
         )
     docs_explicit = args.only is not None and "docs" in only
     services: list[ServiceConfig] = []

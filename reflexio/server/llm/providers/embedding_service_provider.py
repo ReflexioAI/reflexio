@@ -13,7 +13,10 @@ import logging
 import os
 import threading
 import time
+from dataclasses import dataclass
+from ipaddress import ip_address
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -21,63 +24,49 @@ from reflexio.server.tracing import profile_step
 
 _LOGGER = logging.getLogger(__name__)
 
-EmbeddingProviderMode = Literal[
-    "cloud", "local_service", "internal_service", "inprocess", "off"
-]
+EmbeddingProviderMode = Literal["cloud", "local_service", "internal_service", "off"]
 
 _ENV_PROVIDER = "REFLEXIO_EMBEDDING_PROVIDER"
 _ENV_SERVICE_URL = "REFLEXIO_EMBEDDING_SERVICE_URL"
 _ENV_TIMEOUT_MS = "REFLEXIO_EMBEDDING_SERVICE_TIMEOUT_MS"
 _ENV_EMBEDDING_PORT = "EMBEDDING_PORT"
 _ENV_DAEMON_HOST = "REFLEXIO_EMBEDDING_DAEMON_HOST"
-_ENV_LOCAL_SERVICE_PROBE_TIMEOUT_MS = (
-    "REFLEXIO_EMBEDDING_LOCAL_SERVICE_PROBE_TIMEOUT_MS"
-)
 _ENV_CLAUDE_SMART_LOCAL = "CLAUDE_SMART_USE_LOCAL_EMBEDDING"
 _ENV_MAX_TEXTS_PER_REQUEST = "REFLEXIO_EMBEDDING_SERVICE_MAX_TEXTS_PER_REQUEST"
 CUSTOM_EMBEDDING_MODEL = "custom"
-_INPROCESS_CUSTOM_MODEL = "local/nomic-embed-text-v1.5"
 _DEFAULT_LOCAL_PORT = 8072
 _DEFAULT_INTERNAL_SERVICE_TIMEOUT_MS = 2_000
 _DEFAULT_LOCAL_SERVICE_TIMEOUT_MS = 30_000
-_DEFAULT_LOCAL_SERVICE_PROBE_TIMEOUT_MS = 200
 # Each request embeds its whole ``input`` list in one ``model.encode()`` on the
 # service, so an unbounded request can exceed the client read timeout on a CPU
 # daemon. Cap texts per request and concatenate; encode batching is a separate
 # server-side knob (REFLEXIO_EMBED_BATCH_SIZE).
 _DEFAULT_MAX_TEXTS_PER_REQUEST = 32
-# A reachable daemon is stable, so positive probe results are cached long
-# enough that steady-state requests skip the sequential /health round trip.
-# Failures stay short-lived so a restarted daemon is re-adopted quickly and
-# the inprocess-fallback window stays small.
-_LOCAL_SERVICE_PROBE_CACHE_SECONDS = 60.0
-_LOCAL_SERVICE_PROBE_FAILURE_CACHE_SECONDS = 5.0
 # Keep-alive must expire below the ALB's default 60s idle timeout so the pool
 # never hands out a connection the load balancer already closed.
 _HTTP_KEEPALIVE_EXPIRY_SECONDS = 50.0
 _EMBEDDING_RETRY_BACKOFF_SECONDS = 0.1
-# ``embedding_provider_mode`` is called on every embedding request (often several
-# times per request), and a down daemon resolves to ``inprocess`` every time, so
-# an unconditional warning would flood the logs. Emit the fallback WARNING at most
-# once per this interval per process.
-_INPROCESS_FALLBACK_WARN_INTERVAL_SECONDS = 60.0
 _SERVICE_MODES = {"local_service", "internal_service"}
-_VALID_MODES = {"cloud", *_SERVICE_MODES, "inprocess", "off"}
-_local_service_probe_cache: tuple[float, bool, str | None] | None = None
-# Reason the most recent *fresh* /health probe failed (populated by
-# ``_local_service_status``), surfaced in the inprocess-fallback WARNING.
-_last_probe_failure_reason: str | None = None
-# Monotonic timestamp of the last inprocess-fallback WARNING, for rate limiting.
-_last_inprocess_fallback_warn_at: float | None = None
+_VALID_MODES = {"cloud", *_SERVICE_MODES, "off"}
 _http_client_lock = threading.Lock()
 _http_client_instance: httpx.Client | None = None
 _http_client_pid: int | None = None
-_configured_model_cache: dict[tuple[int, str], str] = {}
+_configured_model_cache: dict[tuple[int, str], InferenceServiceCapabilities] = {}
 _configured_model_lock = threading.Lock()
 
 
 class EmbeddingUnavailableError(RuntimeError):
     """Raised when the configured embedding provider is unavailable."""
+
+
+@dataclass(frozen=True)
+class InferenceServiceCapabilities:
+    """Process-cached model contract advertised by one inference service."""
+
+    configured_model: str
+    configured_reranker_model: str | None
+    reranker_enabled: bool
+    reranker_ready: bool
 
 
 def _local_service_url() -> str:
@@ -86,20 +75,29 @@ def _local_service_url() -> str:
     return f"http://{host}:{port}"
 
 
-def _local_service_probe_timeout_seconds() -> float:
-    raw = os.environ.get(_ENV_LOCAL_SERVICE_PROBE_TIMEOUT_MS)
-    if raw is None:
-        return _DEFAULT_LOCAL_SERVICE_PROBE_TIMEOUT_MS / 1000
+def inference_service_url() -> str:
+    """Return the shared local/internal inference-service base URL.
+
+    This resolver is model-agnostic so non-embedding capabilities such as
+    reranking can share the same daemon even when an organization uses cloud
+    embeddings.
+    """
+    configured = os.environ.get(_ENV_SERVICE_URL, "").strip()
+    return configured.rstrip("/") if configured else _local_service_url()
+
+
+def remote_inference_service_configured() -> bool:
+    """Return whether the configured inference URL targets a non-loopback host."""
+    configured = os.environ.get(_ENV_SERVICE_URL, "").strip()
+    if not configured:
+        return False
+    hostname = urlsplit(configured).hostname
+    if hostname is None or hostname.lower() == "localhost":
+        return False
     try:
-        timeout_ms = int(raw)
+        return not ip_address(hostname).is_loopback
     except ValueError:
-        _LOGGER.warning(
-            "%s must be an integer number of milliseconds; using %dms",
-            _ENV_LOCAL_SERVICE_PROBE_TIMEOUT_MS,
-            _DEFAULT_LOCAL_SERVICE_PROBE_TIMEOUT_MS,
-        )
-        return _DEFAULT_LOCAL_SERVICE_PROBE_TIMEOUT_MS / 1000
-    return max(timeout_ms, 1) / 1000
+        return True
 
 
 def embedding_service_url(mode: EmbeddingProviderMode | None = None) -> str:
@@ -110,11 +108,11 @@ def embedding_service_url(mode: EmbeddingProviderMode | None = None) -> str:
     requires an explicit URL because it is deployment-specific.
     """
     resolved = mode or embedding_provider_mode()
-    configured = os.environ.get(_ENV_SERVICE_URL)
+    configured = os.environ.get(_ENV_SERVICE_URL, "").strip()
     if configured:
-        return configured.rstrip("/")
+        return inference_service_url()
     if resolved == "local_service":
-        return _local_service_url()
+        return inference_service_url()
     raise EmbeddingUnavailableError(
         f"{_ENV_SERVICE_URL} is required when {_ENV_PROVIDER}={resolved}"
     )
@@ -157,26 +155,31 @@ def resolve_service_configured_model(
     """
     if model and model != CUSTOM_EMBEDDING_MODEL:
         return model
-    mode = embedding_provider_mode(CUSTOM_EMBEDDING_MODEL)
-    if mode == "inprocess":
-        # The legacy keyless in-process path has no health endpoint and remains
-        # intentionally Nomic-only. E5 is CUDA-service-only.
-        return _INPROCESS_CUSTOM_MODEL
-    if mode not in _SERVICE_MODES:
+    return resolve_inference_service_capabilities().configured_model
+
+
+def resolve_service_configured_reranker_model() -> str:
+    """Return the service-advertised concrete reranker model."""
+    model = resolve_inference_service_capabilities().configured_reranker_model
+    if model is None:
         raise EmbeddingUnavailableError(
-            "embedding_model_name='custom' requires a configured embedding service"
+            f"{inference_service_url()}/health did not return configured_reranker_model"
         )
+    return model
+
+
+def resolve_inference_service_capabilities() -> InferenceServiceCapabilities:
+    """Discover and process-cache both models with one ``/health`` request."""
+    mode: EmbeddingProviderMode = (
+        "internal_service"
+        if os.environ.get(_ENV_SERVICE_URL, "").strip()
+        else "local_service"
+    )
     service_url = embedding_service_url(mode)
     cache_key = (os.getpid(), service_url)
     cached = _configured_model_cache.get(cache_key)
     if cached is not None:
         return cached
-    if mode == "local_service" and service_url == _local_service_url():
-        reachable, configured_model = _local_service_status()
-        if reachable and configured_model:
-            with _configured_model_lock:
-                _configured_model_cache.setdefault(cache_key, configured_model)
-            return configured_model
     with _configured_model_lock:
         cached = _configured_model_cache.get(cache_key)
         if cached is not None:
@@ -187,7 +190,8 @@ def resolve_service_configured_model(
                 timeout=embedding_service_timeout_seconds(mode),
             )
             response.raise_for_status()
-            configured_model = response.json().get("configured_model")
+            body = response.json()
+            configured_model = body.get("configured_model")
         except (
             httpx.HTTPError,
             json.JSONDecodeError,
@@ -202,9 +206,19 @@ def resolve_service_configured_model(
             raise EmbeddingUnavailableError(
                 f"{service_url}/health did not return configured_model"
             )
-        configured_model = configured_model.strip()
-        _configured_model_cache[cache_key] = configured_model
-        return configured_model
+        reranker_model = body.get("configured_reranker_model")
+        if not isinstance(reranker_model, str) or not reranker_model.strip():
+            reranker_model = None
+        capabilities = InferenceServiceCapabilities(
+            configured_model=configured_model.strip(),
+            configured_reranker_model=(
+                reranker_model.strip() if reranker_model is not None else None
+            ),
+            reranker_enabled=body.get("reranker_enabled") is True,
+            reranker_ready=body.get("reranker_ready") is True,
+        )
+        _configured_model_cache[cache_key] = capabilities
+        return capabilities
 
 
 def _http_client() -> httpx.Client:
@@ -232,79 +246,9 @@ def _http_client() -> httpx.Client:
         return _http_client_instance
 
 
-def _local_service_status() -> tuple[bool, str | None]:
-    global _local_service_probe_cache, _last_probe_failure_reason
-    now = time.monotonic()
-    if _local_service_probe_cache is not None:
-        cached_at, cached_reachable, cached_model = _local_service_probe_cache
-        ttl = (
-            _LOCAL_SERVICE_PROBE_CACHE_SECONDS
-            if cached_reachable
-            else _LOCAL_SERVICE_PROBE_FAILURE_CACHE_SECONDS
-        )
-        if now - cached_at < ttl:
-            return cached_reachable, cached_model
-
-    reason: str | None = None
-    try:
-        response = _http_client().get(
-            f"{_local_service_url()}/health",
-            timeout=_local_service_probe_timeout_seconds(),
-        )
-        reachable = response.status_code < 500
-        body = response.json() if reachable else {}
-        active_model = body.get("configured_model") or body.get("active_model")
-        if not isinstance(active_model, str) or not active_model.strip():
-            active_model = None
-        else:
-            active_model = active_model.strip()
-        if not reachable:
-            reason = f"/health returned HTTP {response.status_code}"
-    except httpx.HTTPError as exc:
-        reachable = False
-        active_model = None
-        reason = f"{type(exc).__name__}: {exc}"
-    except ValueError as exc:
-        reachable = False
-        active_model = None
-        reason = f"invalid /health response: {exc}"
-    _last_probe_failure_reason = reason
-    _local_service_probe_cache = (now, reachable, active_model)
-    return reachable, active_model
-
-
-def _warn_inprocess_fallback(model: str | None, reason: str | None) -> None:
-    """Warn (rate-limited) that a ``local/*`` model fell back to the in-process embedder.
-
-    Emitted only when daemon-mode resolution for a ``local/*`` model fails the
-    ``/health`` probe (or the daemon serves a different model) and routing falls
-    back to ``inprocess`` — NOT when ``inprocess`` was configured explicitly. The
-    fallback loads a second copy of the embedding model into this worker process,
-    so operators need to distinguish it from an intentional in-process config.
-
-    Args:
-        model (str | None): The ``local/*`` embedding model being resolved.
-        reason (str | None): Why the daemon path was rejected, if known.
-    """
-    global _last_inprocess_fallback_warn_at
-    now = time.monotonic()
-    if (
-        _last_inprocess_fallback_warn_at is not None
-        and now - _last_inprocess_fallback_warn_at
-        < _INPROCESS_FALLBACK_WARN_INTERVAL_SECONDS
-    ):
-        return
-    _last_inprocess_fallback_warn_at = now
-    _LOGGER.warning(
-        "Embedding daemon probe at %s failed for model %r; falling back to an "
-        "in-process embedding model copy (a second model is loaded into this "
-        "worker process). Probe failure: %s. Further fallback warnings are "
-        "suppressed for %.0fs.",
-        _local_service_url(),
-        model,
-        reason or "unknown",
-        _INPROCESS_FALLBACK_WARN_INTERVAL_SECONDS,
-    )
+def inference_http_client() -> httpx.Client:
+    """Return the process/fork-safe keep-alive client for shared inference APIs."""
+    return _http_client()
 
 
 def _ordered_embeddings_from_response(
@@ -352,10 +296,9 @@ def _ordered_embeddings_from_response(
 def embedding_provider_mode(model: str | None = None) -> EmbeddingProviderMode:
     """Resolve the embedding provider mode for a model.
 
-    Explicit legacy env modes keep their historical behavior. With no explicit
-    env mode, routing is model-driven: ``local/*`` uses a configured daemon host
-    authoritatively, otherwise it uses the local daemon when reachable and falls
-    back to the in-process embedder. Cloud models use their provider directly.
+    Local models always use the separate inference-service process. Service
+    availability never changes the routing decision and never causes a model to
+    load inside an API worker. Cloud models use their provider directly.
     """
     configured = os.environ.get(_ENV_PROVIDER)
     if configured:
@@ -365,9 +308,13 @@ def embedding_provider_mode(model: str | None = None) -> EmbeddingProviderMode:
                 f"Invalid {_ENV_PROVIDER}={configured!r}; expected one of "
                 f"{', '.join(sorted(_VALID_MODES))}"
             )
-        if model and not _uses_embedding_service(model) and mode in _SERVICE_MODES:
+        if mode == "off":
+            return "off"
+        if model and not _uses_embedding_service(model):
             return "cloud"
-        return mode  # type: ignore[return-value]
+        if mode == "internal_service" or os.environ.get(_ENV_SERVICE_URL, "").strip():
+            return "internal_service"
+        return "local_service"
 
     if model and not _uses_embedding_service(model):
         return "cloud"
@@ -375,29 +322,14 @@ def embedding_provider_mode(model: str | None = None) -> EmbeddingProviderMode:
     if os.environ.get(_ENV_CLAUDE_SMART_LOCAL) == "1":
         return "local_service"
 
-    if os.environ.get(_ENV_SERVICE_URL):
+    if os.environ.get(_ENV_SERVICE_URL, "").strip():
         return "internal_service"
 
     if _uses_embedding_service(model) and os.environ.get(_ENV_DAEMON_HOST, "").strip():
         return "local_service"
 
     if _uses_embedding_service(model):
-        reachable, active_model = _local_service_status()
-        if reachable and (
-            model == CUSTOM_EMBEDDING_MODEL
-            or active_model is None
-            or active_model == model
-        ):
-            return "local_service"
-        if reachable:
-            reason = (
-                f"daemon is reachable but serves active_model={active_model!r}, "
-                f"not {model!r}"
-            )
-        else:
-            reason = _last_probe_failure_reason
-        _warn_inprocess_fallback(model, reason)
-        return "inprocess"
+        return "local_service"
     return "cloud"
 
 

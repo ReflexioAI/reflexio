@@ -41,6 +41,7 @@ from reflexio.models.config_schema import (
     SearchOptions,
 )
 from reflexio.server.llm.litellm_client import LiteLLMClient
+from reflexio.server.llm.rerank.common import reranker_enabled
 from reflexio.server.prompt.prompt_manager import PromptManager
 from reflexio.server.services.embedding_text import resolve_retrieval_threshold
 from reflexio.server.services.pre_retrieval import QueryReformulator
@@ -169,7 +170,7 @@ def run_unified_search(
     )
 
     floor_cfg = retrieval_floor or RetrievalFloorConfig()
-    floor_on = floor_cfg.enabled
+    floor_on = floor_cfg.enabled and reranker_enabled()
     recency_on = bool(recency and recency.enabled)
 
     # --- Phase A: query reformulation (+ temporal signals) + embedding ---

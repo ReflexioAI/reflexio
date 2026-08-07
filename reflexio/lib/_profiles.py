@@ -164,8 +164,8 @@ class ProfilesMixin(ReflexioBase):
         candidates = [p for p in all_profiles if p.profile_id in wanted]
         dropped = len(request.profile_ids) - len(candidates)
 
-        # Lazy import keeps test collection fast; the cross-encoder pulls in
-        # torch + sentence-transformers on first call.
+        # Lazy import keeps test collection fast; scoring is delegated to the
+        # shared inference service only when this explicit operation is called.
         from reflexio.server.llm.rerank import score_pairs
 
         scores = score_pairs(request.query, [p.content for p in candidates])

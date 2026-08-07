@@ -143,6 +143,16 @@ uv run reflexio services stop              # Stop all services
 
 > Alternative: `python -m reflexio.cli services start` or `./run_services.sh`
 
+Backend startup also launches the shared local inference service on port 8069.
+It serves embeddings and the optional English cross-encoder reranker; cloud
+embedding configurations still start it so reranking remains available. The
+deployment-wide `REFLEXIO_RERANK_ENABLED` flag defaults to `true`. Set it to
+`false` to skip reranker model loading/prewarm and disable reranker requests;
+automatic unified-search reranking remains separately off by default through
+`retrieval_floor.enabled`. If the loopback inference service is unavailable,
+automatic reranking is silently skipped and retrieval order is preserved. An
+unavailable remote/internal service is still reported while search fails open.
+
 Once running, open **[http://localhost:8062](http://localhost:8062)** to interactively browse and try out the API.
 <p align="center">
   <img src="docs/images/doc_website.png" width="800px" alt="Reflexio Doc Website">
