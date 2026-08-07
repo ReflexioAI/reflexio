@@ -2086,6 +2086,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             "CHECK (stage IS NULL OR stage IN",
             "CHECK (terminal_outcome IS NULL OR terminal_outcome IN",
             "'governance_erased'",
+            "'offline_tuner_open_world'",
         )
         if all(check in table_sql for check in required_checks):
             return
@@ -2106,6 +2107,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                     CHECK (optimizer_kind IN (
                         'gepa',
                         'offline_tuner_replay',
+                        'offline_tuner_open_world',
                         'offline_tuner_legacy',
                         'optimizer_legacy_unknown'
                     )),
@@ -3149,6 +3151,7 @@ CREATE TABLE IF NOT EXISTS playbook_optimization_jobs (
         CHECK (optimizer_kind IN (
             'gepa',
             'offline_tuner_replay',
+            'offline_tuner_open_world',
             'offline_tuner_legacy',
             'optimizer_legacy_unknown'
         )),
@@ -3249,7 +3252,8 @@ CREATE TABLE IF NOT EXISTS playbook_optimization_artifacts (
         'generation_selection',
         'replay_manifest',
         'candidate',
-        'candidate_search_projection'
+        'candidate_search_projection',
+        'open_world_evidence_bundle'
     )),
     content_json TEXT NOT NULL,
     content_digest TEXT NOT NULL,

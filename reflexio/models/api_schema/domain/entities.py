@@ -403,6 +403,7 @@ class AgentPlaybook(BaseModel):
 OptimizerKind = Literal[
     "gepa",
     "offline_tuner_replay",
+    "offline_tuner_open_world",
     "offline_tuner_legacy",
     "optimizer_legacy_unknown",
 ]
@@ -443,6 +444,7 @@ OptimizationArtifactKind = Literal[
     "replay_manifest",
     "candidate",
     "candidate_search_projection",
+    "open_world_evidence_bundle",
 ]
 
 Sha256Digest = str
