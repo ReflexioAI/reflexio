@@ -87,6 +87,21 @@ _API_KEY_CONFIG_FIELDS: dict[str, str] = {
 }
 
 
+def provider_env_vars() -> dict[str, str]:
+    """Return the env-var-to-provider mapping used for credential detection.
+
+    A read-only view for callers that need to ask about a *specific* credential
+    rather than "what is available" — notably the test suites' live-provider
+    skip gates, which must distinguish a real key from the placeholder that
+    ``ensure_provider_credential`` pins. Providers reached through a local CLI
+    rather than an API key (``claude-code``) have no entry here.
+
+    Returns:
+        dict[str, str]: Copy of the env var name to provider key mapping.
+    """
+    return dict(_ENV_TO_PROVIDER)
+
+
 def detect_available_providers(
     api_key_config: APIKeyConfig | None = None,
 ) -> list[str]:
