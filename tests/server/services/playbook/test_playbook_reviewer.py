@@ -408,7 +408,7 @@ def test_apply_decisions_uses_the_same_trimmed_candidate_id_as_validation():
 def test_reviewer_prompt_is_versioned_and_active():
     manager = PromptManager()
 
-    assert manager.get_active_version("playbook_candidate_review") == "1.1.0"
+    assert manager.get_active_version("playbook_candidate_review") == "1.2.0"
 
 
 def test_reviewer_prompt_preserves_grounded_procedures_and_forbids_substitutes():
@@ -449,6 +449,18 @@ def test_reviewer_prompt_preserves_grounded_procedures_and_forbids_substitutes()
         "`reject` retains no evidence ids",
         "those labels are call-local",
         "Existing `[X#]` playbooks are duplicate context only",
+        # Checks 7 and 8 are dose-dependent: compressing either has measured as
+        # a total loss of effect, not a partial one, and deleting check 8
+        # outright would leave the schema enforcing a code the model is never
+        # told about. The word-count assertion below bounds only GROWTH, so
+        # these anchors are what guard the documented hazard -- shrinkage.
+        "Absence in a record is not evidence of absence in fact",
+        "naming what the entry is ABOUT, not the verb it uses",
+        "Revision cannot rescue it",
+        # The discriminator. Without it check 8 rejected must-capture families
+        # (a retry bounded by an observed rejection; delivering announced work)
+        # because their TRIGGER is another system's output.
+        "does not disqualify an entry; only that output being the entry's PAYLOAD does",
     )
     for invariant in required_invariants:
         assert invariant in normalized
@@ -456,14 +468,39 @@ def test_reviewer_prompt_preserves_grounded_procedures_and_forbids_substitutes()
     # Keep the policy compact enough that chronology and evidence remain the
     # dominant context. Frontmatter is not included in the rendered prompt.
     #
-    # Raised 1000 -> 1050 in v1.1.0 to fit check 7 (absence). The check is
-    # dose-dependent on its own wording. Measured on one known-answer window:
-    #   ~70 words (as shipped)  -> 36% pruned (5/14), vs 0/14 for v1.0.0, p=0.041
-    #   ~30 words (premise only)-> 25% pruned (2/8)   [under-powered]
-    #   ~22 words (terse)       ->  0% pruned (0/8), code assigned but not rejected
-    # The terse form is inert, not merely weaker. Prefer displacing existing
-    # policy text over raising this again.
-    assert len(rendered.split()) <= 1_050
+    # This bound is a smoke test against unbounded growth, not the real gate.
+    # The real gate is measured behaviour: a change earns its words by pruning
+    # its target class while leaving a healthy window and a second tenant
+    # untouched. The in-repo half of that gate is
+    # test_reviewer_manifest_regression.py (real API, deselected by default);
+    # the production-window harness lives in the enterprise repo under
+    # docs_for_coding_agent/prompt-change-evaluation.md.
+    #
+    # Raised 1000 -> 1050 in v1.1.0 to fit check 7 (absence).
+    # Raised 1050 -> 1260 in v1.2.0 to fit check 8 (decision ownership),
+    # including the discriminator that keeps an entry whose TRIGGER is another
+    # system's output but whose subject is a choice the agent controls. That
+    # discriminator resolves a textual contradiction with "Useful cores to
+    # preserve"; it did NOT change measured behaviour (the manifest's
+    # must_capture families survived 12/12 with and without it), so do not cite
+    # it as a fix for a reproduced rejection.
+    #
+    # Both checks are dose-dependent on their own wording -- compression does
+    # not weaken them gracefully, it switches them off. Word counts below are of
+    # the check paragraph as shipped, counted the same way, so they can be
+    # compared against a future edit:
+    #   check 7 (70 words as shipped)
+    #     70 -> 36% pruned (p=0.041);  22 -> 0%, inert
+    #   check 8 (198 words as shipped, incl. the ~64-word discriminator)
+    #     134 -> 3/3 target pruned;  198 -> 4/4;  60 -> inert
+    # So do not "tidy" these checks shorter without re-measuring; a trim that
+    # reads as equivalent has twice measured as a total loss of effect.
+    #
+    # Consolidation was tried instead of raising, and measured worse: folding
+    # check 8 into the existing `internal_status` code pruned the target
+    # identically but cost 3 healthy entries, because that code must stay
+    # revisable while check 8 is fatal.
+    assert len(rendered.split()) <= 1_260
 
 
 @pytest.mark.parametrize(
@@ -541,32 +578,96 @@ def test_review_output_rejects_conflicting_single_candidate_wrapper_drift():
         )
 
 
-def test_absence_inference_requires_reject():
-    """`absence_inference` paired with accept/revise must not validate.
+@pytest.mark.parametrize("code", ["absence_inference", "not_agent_decision"])
+def test_fatal_reason_codes_require_reject(code: str):
+    """A fatal code paired with accept/revise must not validate.
 
-    The prompt tells the reviewer to reject outright, but wording is not an
-    invariant -- a revise would launder the unsupported claim into tidier prose
-    instead of removing it.
+    The prompt tells the reviewer to reject these outright, but wording is not
+    an invariant -- a revise would launder the defect into tidier prose instead
+    of removing it. Both codes name a defect with no salvageable core: one rests
+    on what the record lacks, the other is about a system the agent does not
+    drive, and rewording cannot change either subject.
     """
     from reflexio.server.services.playbook.components.reviewer import (
         CandidateReviewDecision,
     )
 
     ok = CandidateReviewDecision.model_validate(
-        {"id": "C1", "decision": "reject", "reason_code": "absence_inference"}
+        {"id": "C1", "decision": "reject", "reason_code": code}
     )
     assert ok.decision == "reject"
 
     for bad in ("accept", "revise"):
-        with pytest.raises(ValidationError):
+        # Match both the offending code and the decision. The code name is what
+        # an operator reads in a failed run; pinning the decision catches
+        # suffix-concatenating phrasings, which previously rendered "acceptd".
+        with pytest.raises(ValidationError, match=code) as excinfo:
             CandidateReviewDecision.model_validate(
-                {"id": "C1", "decision": bad, "reason_code": "absence_inference"}
+                {"id": "C1", "decision": bad, "reason_code": code}
             )
+        assert f"decision={bad!r} is invalid" in str(excinfo.value)
 
     # Other codes are unaffected: revise remains available to them.
-    assert (
-        CandidateReviewDecision.model_validate(
-            {"id": "C1", "decision": "revise", "reason_code": "unsupported_evidence"}
-        ).decision
-        == "revise"
+    # `internal_status` in particular MUST stay non-fatal. Folding check 8 into
+    # it was built and measured, and it destroyed healthy entries: an entry
+    # ABOUT an internal event is unsalvageable, but one merely RESTING ON an
+    # internal event as proof usually has a grounded core revision can keep.
+    for non_fatal in ("internal_status", "unsupported_evidence", "generic"):
+        assert (
+            CandidateReviewDecision.model_validate(
+                {"id": "C1", "decision": "revise", "reason_code": non_fatal}
+            ).decision
+            == "revise"
+        )
+
+
+def test_fatal_reason_code_set_is_pinned():
+    """Widening the fatal set must require a deliberate test edit.
+
+    Adding a code here changes runtime behaviour for every tenant with no other
+    signal -- `internal_status` was measured doing exactly that harm. Pinning
+    the set means the next widening cannot land silently.
+    """
+    from reflexio.server.services.playbook.components.reviewer import (
+        _FATAL_REASON_CODES,
+    )
+
+    assert {"absence_inference", "not_agent_decision"} == _FATAL_REASON_CODES
+
+
+def test_prompt_reason_codes_match_the_schema_literal():
+    """The prompt's enumerated codes and the Literal must agree, both ways.
+
+    Drift is silent and asymmetric. A code in the Literal but missing from the
+    prompt is a dead feature -- the model is never told it exists. A code in the
+    prompt but missing from the Literal fails validation for the ENTIRE review
+    output, not one decision, and `max_retries=0` means it fails closed.
+    """
+    import re
+    from typing import get_args
+
+    manager = PromptManager()
+    rendered = manager.render_prompt(
+        "playbook_candidate_review",
+        {
+            "agent_context_prompt": "Agent context.",
+            "playbook_definition": "Playbook definition.",
+            "tool_context": "Tools.",
+            "interaction_context": "Chronology.",
+            "artifact_availability": "Availability.",
+            "candidates": "Candidates.",
+            "existing_playbooks": "Existing.",
+        },
+    )
+    normalized = " ".join(rendered.split())
+    match = re.search(r"`reason_code` is exactly one of (.+?)\.", normalized, re.DOTALL)
+    assert match, "the active prompt must enumerate the allowed reason codes"
+    prompt_codes = set(re.findall(r"`([a-z_]+)`", match.group(1)))
+
+    literal_codes = set(
+        get_args(CandidateReviewDecision.model_fields["reason_code"].annotation)
+    )
+    assert prompt_codes == literal_codes, (
+        f"prompt-only: {sorted(prompt_codes - literal_codes)}; "
+        f"schema-only: {sorted(literal_codes - prompt_codes)}"
     )
