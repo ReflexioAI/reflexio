@@ -83,9 +83,15 @@ def real_generation_provider(
     machine whose only credential is, say, MiniMax -- even though model
     resolution would have picked MiniMax and the test would have run.
 
-    Selection follows the same priority order as
-    :func:`detect_available_providers`, so the provider named here is the one
-    ``resolve_model_name`` will pick.
+    Selection walks :func:`detect_available_providers` in its priority order
+    and returns the first eligible provider holding a real key. That matches
+    what ``resolve_model_name`` picks whenever every higher-priority detected
+    provider also holds a real key -- which the credential floor cannot
+    violate, since :func:`ensure_provider_credential` only ever pins
+    ``OPENAI_API_KEY`` and ``openai`` sits last in the priority order. An
+    environment that hand-sets some *other* provider's variable to the
+    placeholder string can still diverge; the caller sees a skip reason rather
+    than a wrong model in that case.
 
     Args:
         allowed (Collection[str] | None): Restrict to these provider keys, e.g.

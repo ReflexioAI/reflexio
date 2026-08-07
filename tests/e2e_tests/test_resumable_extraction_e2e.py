@@ -38,7 +38,7 @@ from reflexio.server.services.storage.storage_base import (
     build_scope_hash,
     human_feedback_scope,
 )
-from reflexio.test_support.llm_mock import litellm_is_patched, make_structured_finish
+from reflexio.test_support.llm_mock import make_structured_finish
 
 pytestmark = pytest.mark.e2e
 
@@ -161,8 +161,8 @@ def _seed_followup_ready_run(storage: SQLiteStorage) -> None:
 def _load_live_e2e_settings() -> tuple[str, str]:
     if os.environ.get("RUN_LIVE_RESUMABLE_E2E") != "true":
         pytest.skip("Set RUN_LIVE_RESUMABLE_E2E=true to run live resumable E2E")
-    if litellm_is_patched():
-        pytest.skip("Live resumable E2E requires an unpatched litellm.completion")
+    if os.environ.get("MOCK_LLM_RESPONSE", "").lower() == "true":
+        pytest.skip("Live resumable E2E requires MOCK_LLM_RESPONSE=false")
 
     dotenv_values_from_file: dict[str, str | None] = {}
     for start in (Path.cwd(), Path(__file__).resolve()):
