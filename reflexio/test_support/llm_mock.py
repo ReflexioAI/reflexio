@@ -38,7 +38,7 @@ import re
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, NonCallableMock, patch
 
 from reflexio.models.structured_output import find_schema_keyword as _find_schema_key
 from reflexio.test_support.llm_model_registry import get_model_registry
@@ -240,6 +240,41 @@ def cleanup_llm_mock(config: Any) -> None:  # noqa: ARG001
     if _litellm_patcher:
         _litellm_patcher.stop()
         _litellm_patcher = None
+
+
+def litellm_is_patched() -> bool:
+    """Report whether ``litellm.completion`` is currently a mock.
+
+    Returns:
+        bool: True when a patcher has replaced ``litellm.completion``.
+    """
+    import litellm
+
+    return isinstance(litellm.completion, NonCallableMock | MagicMock)
+
+
+def assert_litellm_unpatched() -> None:
+    """Fail a live-provider test that is about to assert against the mock.
+
+    Ask this rather than ``MOCK_LLM_RESPONSE``. That variable is set by
+    :func:`configure_llm_mock` when it patches, but the e2e conftest deletes it
+    for every ``requires_credentials`` test on the assumption the patch is
+    already off -- which holds only when :func:`_is_e2e_test_run` matched, i.e.
+    when the invocation *path* contained ``e2e_tests``. Run the same tests as
+    ``pytest -m e2e`` and the patch is live while the variable is gone, so an
+    env-var guard passes and the test quietly asserts against canned text from
+    whatever unrelated prompt the mock's heuristics matched.
+
+    Raises:
+        AssertionError: When ``litellm.completion`` is patched.
+    """
+    if litellm_is_patched():
+        raise AssertionError(
+            "litellm.completion is patched, so this live-provider test would "
+            "assert against canned mock text. Invoke it by a path containing "
+            "'e2e_tests' (e.g. `pytest tests/e2e_tests/test_x.py`); `-m e2e` "
+            "alone does not disable the session-level mock."
+        )
 
 
 @contextmanager

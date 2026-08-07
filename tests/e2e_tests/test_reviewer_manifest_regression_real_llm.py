@@ -28,7 +28,6 @@ Run it when changing the reviewer prompt:
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -48,6 +47,7 @@ from reflexio.server.services.playbook.components.reviewer import (
     PlaybookCandidateReviewer,
 )
 from reflexio.test_support.llm_credentials import real_generation_provider
+from reflexio.test_support.llm_mock import assert_litellm_unpatched
 from tests.server.test_utils import skip_low_priority
 
 # The model comes from `resolve_model_name(ModelRole.GENERATION)`, so the gate
@@ -132,10 +132,7 @@ def test_must_capture_families_survive_review(case: dict) -> None:
     the diagnostic, and an aggregate would let one regression hide behind
     eleven passes.
     """
-    assert os.environ.get("MOCK_LLM_RESPONSE", "").strip().lower() != "true", (
-        "this test asserts real reviewer behavior; against the mock every case "
-        "fails on schema parse. Invoke it by a path under tests/e2e_tests/."
-    )
+    assert_litellm_unpatched()
 
     sessions = _sessions_for(case)
     model = resolve_model_name(ModelRole.GENERATION)

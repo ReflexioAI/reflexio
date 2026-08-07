@@ -34,6 +34,7 @@ from reflexio.server.llm.litellm_client import (
     create_litellm_client,
 )
 from reflexio.test_support.llm_credentials import real_provider_key
+from reflexio.test_support.llm_mock import assert_litellm_unpatched
 from tests.server.llm.test_litellm_client import MathResult, create_minimal_png
 from tests.server.test_utils import skip_in_precommit, skip_low_priority
 
@@ -53,13 +54,10 @@ def _requires_unmocked_litellm() -> Iterator[None]:
     """Fail loudly rather than assert against the mock.
 
     The whole reason this file is under ``e2e_tests/``. If it is ever invoked
-    by a path that re-enables the global patch, every provider assertion below
+    in a way that leaves the global patch on, every provider assertion below
     would be checking canned mock text.
     """
-    assert os.environ.get("MOCK_LLM_RESPONSE", "").strip().lower() != "true", (
-        "these tests assert real provider behavior; invoke them by a path "
-        "under tests/e2e_tests/ so the global litellm mock stays off"
-    )
+    assert_litellm_unpatched()
     yield
 
 
