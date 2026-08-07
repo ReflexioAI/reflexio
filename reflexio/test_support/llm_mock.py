@@ -253,17 +253,52 @@ def litellm_is_patched() -> bool:
     return isinstance(litellm.completion, NonCallableMock | MagicMock)
 
 
+@contextmanager
+def unpatched_litellm() -> Iterator[None]:
+    """Suspend the session-level mock for the duration, then restore it.
+
+    :func:`configure_llm_mock` decides whether to patch from the invocation
+    *path* (:func:`_is_e2e_test_run` scans ``config.args`` for ``e2e_tests``),
+    so a live-provider test is mocked or not depending on how the command was
+    typed -- ``pytest tests/e2e_tests/`` leaves it unpatched while
+    ``pytest -m e2e`` does not. This makes the exemption a property of the
+    test instead: whoever knows a given test needs a real provider can lift
+    the patch for exactly that test, whatever the invocation.
+
+    ``MOCK_LLM_RESPONSE`` is cleared alongside the patch and restored with it,
+    because service code branches on that variable to skip LLM work entirely.
+
+    Yields:
+        None: A context in which ``litellm.completion`` is the real function.
+    """
+    patcher = _litellm_patcher
+    if patcher is None:
+        yield
+        return
+
+    previous_flag = os.environ.get("MOCK_LLM_RESPONSE")
+    patcher.stop()
+    os.environ.pop("MOCK_LLM_RESPONSE", None)
+    try:
+        yield
+    finally:
+        patcher.start()
+        if previous_flag is not None:
+            os.environ["MOCK_LLM_RESPONSE"] = previous_flag
+
+
 def assert_litellm_unpatched() -> None:
     """Fail a live-provider test that is about to assert against the mock.
 
-    Ask this rather than ``MOCK_LLM_RESPONSE``. That variable is set by
-    :func:`configure_llm_mock` when it patches, but the e2e conftest deletes it
-    for every ``requires_credentials`` test on the assumption the patch is
-    already off -- which holds only when :func:`_is_e2e_test_run` matched, i.e.
-    when the invocation *path* contained ``e2e_tests``. Run the same tests as
-    ``pytest -m e2e`` and the patch is live while the variable is gone, so an
-    env-var guard passes and the test quietly asserts against canned text from
-    whatever unrelated prompt the mock's heuristics matched.
+    Ask this rather than ``MOCK_LLM_RESPONSE``: the variable tracks the patch
+    but can be cleared independently of it, so it reports the mock's *intent*
+    rather than its state. This asks the patcher.
+
+    The e2e conftest lifts the session patch for ``requires_credentials``
+    tests via :func:`unpatched_litellm`, so this should hold for any invocation
+    of those. It stays as a backstop for a live test that is reached some other
+    way -- outside ``tests/e2e_tests/``, or without the marker the fixture keys
+    on -- where the patch would still be live.
 
     Raises:
         AssertionError: When ``litellm.completion`` is patched.
@@ -271,9 +306,9 @@ def assert_litellm_unpatched() -> None:
     if litellm_is_patched():
         raise AssertionError(
             "litellm.completion is patched, so this live-provider test would "
-            "assert against canned mock text. Invoke it by a path containing "
-            "'e2e_tests' (e.g. `pytest tests/e2e_tests/test_x.py`); `-m e2e` "
-            "alone does not disable the session-level mock."
+            "assert against canned mock text. Live tests belong under "
+            "tests/e2e_tests/ and must carry the requires_credentials marker; "
+            "the e2e conftest lifts the session patch for those."
         )
 
 

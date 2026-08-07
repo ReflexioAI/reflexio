@@ -26,7 +26,7 @@ from reflexio.models.config_schema import (
 )
 from reflexio.server.services.configurator.configurator import DefaultConfigurator
 from reflexio.server.services.tagging.tagging_scheduler import drain_tagging
-from reflexio.test_support.llm_mock import patched_litellm
+from reflexio.test_support.llm_mock import patched_litellm, unpatched_litellm
 
 _TEST_DATA_DIR = Path(__file__).resolve().parent.parent / "test_data"
 _SCENARIO_DIR = _TEST_DATA_DIR / "scenarios" / "e2e"
@@ -39,13 +39,19 @@ personalization facts from the conversation
 
 
 @pytest.fixture(autouse=True)
-def mock_llm(
-    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
-) -> Iterator[None]:
-    """Keep the standard E2E tier deterministic and credential-free."""
+def mock_llm(request: pytest.FixtureRequest) -> Iterator[None]:
+    """Keep the standard E2E tier deterministic and credential-free.
+
+    ``requires_credentials`` tests need the real provider, so the session-level
+    patch is *stopped* for them rather than having ``MOCK_LLM_RESPONSE``
+    deleted. Deleting the variable only removed the evidence: whether the patch
+    was live depended on the invocation path (``pytest -m e2e`` carries none,
+    so ``configure_llm_mock`` patched anyway), and a live-provider test would
+    then assert against canned mock text with nothing left to reveal it.
+    """
     if request.node.get_closest_marker("requires_credentials"):
-        monkeypatch.delenv("MOCK_LLM_RESPONSE", raising=False)
-        yield
+        with unpatched_litellm():
+            yield
         return
     with patched_litellm():
         yield
