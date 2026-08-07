@@ -1055,6 +1055,12 @@ class PlaybookAggregator:
             "retryable_failures": len(retryable_outcomes) + cluster_fence_losses,
             "cluster_fence_losses": cluster_fence_losses,
             "selected_rebuild_members": rebuilding_residual_count,
+            # Deferred for want of a vector, not for want of work. These are
+            # already dispositioned residual/embedding_pending, but `residual`
+            # sums three unrelated reasons, so a run starved of embeddings is
+            # indistinguishable from an idle one at the log line. Reported
+            # separately so "succeeded, created nothing" can be read correctly.
+            "embedding_pending": len(missing_embedding_ids),
         }
         self._enqueue_playbook_optimization(saved_playbooks)
         record_usage_event(

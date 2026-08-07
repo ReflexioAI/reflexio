@@ -263,7 +263,7 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
                     "agent_version=%s fence=%s pending=%s undisposed=%s residual=%s "
                     "invalidations=%s oldest_residual_age_seconds=%s "
                     "dirty_repairs=%s duration_ms=%s creations=%s supersessions=%s "
-                    "retryable_failures=%s",
+                    "retryable_failures=%s embedding_pending=%s",
                     context.org_id,
                     claim.agent_version,
                     claim.fence,
@@ -277,6 +277,7 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
                     result.get("playbooks_generated", 0),
                     result.get("supersessions", 0),
                     result.get("retryable_failures", 0),
+                    result.get("embedding_pending", 0),
                 )
 
     def _run_once(self) -> float:

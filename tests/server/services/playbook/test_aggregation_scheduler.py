@@ -239,3 +239,61 @@ def test_scheduler_keeps_sqlite_work_pending_when_vector_index_is_unavailable(
     assert state is not None and int(state[0]) == 1
     assert storage.supports_incremental_playbook_aggregation is False
     assert "blocked_missing_vector_index" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("run_result", "expected"),
+    [
+        ({"playbooks_generated": 0}, "embedding_pending=0"),
+        ({"playbooks_generated": 0, "embedding_pending": 2}, "embedding_pending=2"),
+    ],
+    ids=["idle_run", "starved_run"],
+)
+def test_succeeded_log_distinguishes_a_starved_run_from_an_idle_one(
+    monkeypatch, caplog, run_result: dict[str, int], expected: str
+) -> None:
+    """A run that created nothing for want of vectors must not read as idle.
+
+    Candidates without an embedding are dispositioned residual/embedding_pending,
+    but `residual` sums three unrelated reasons, so at the log line a run starved
+    of embeddings looked exactly like one with no work: `state=succeeded
+    creations=0`. That is the shape an embedding outage takes in the logs, so it
+    has to be readable there.
+    """
+    claim = PlaybookAggregationClaim("v1", "owner", 7, 3, 10_000)
+    storage = MagicMock(supports_incremental_playbook_aggregation=True)
+    storage.repair_playbook_aggregation_pending_state.return_value = []
+    storage.claim_due_playbook_aggregation.return_value = claim
+    storage.get_playbook_aggregation_backlog.return_value = PlaybookAggregationBacklog(
+        4, 1, 0, residual_retry_after_seconds=60
+    )
+    storage.get_playbook_aggregation_invalidations.return_value = []
+    storage.finish_playbook_aggregation_claim.return_value = True
+
+    class Aggregator:
+        def __init__(self, **kwargs: object) -> None: ...
+
+        def run(self, _request: object) -> dict[str, int]:
+            return run_result
+
+    monkeypatch.setattr(aggregation_scheduler, "PlaybookAggregator", Aggregator)
+    monkeypatch.setattr(aggregation_scheduler, "_aggregation_budget", lambda: 8)
+    monkeypatch.setattr(
+        "reflexio.lib.generation_client.create_generation_litellm_client",
+        lambda _context: MagicMock(),
+    )
+    monkeypatch.setattr(
+        aggregation_scheduler,
+        "run_with_operation_limit",
+        lambda *, fn, **_kwargs: fn(),
+    )
+    caplog.set_level(logging.INFO, logger=aggregation_scheduler.logger.name)
+
+    scheduler = aggregation_scheduler.PlaybookAggregationScheduler(
+        context_provider=lambda: [], worker_id="worker"
+    )
+    scheduler._run_context(_context(storage))
+
+    assert "state=succeeded" in caplog.text
+    assert "creations=0" in caplog.text
+    assert expected in caplog.text
