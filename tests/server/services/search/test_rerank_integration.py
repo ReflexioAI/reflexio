@@ -36,6 +36,8 @@ _IRRELEVANT_CONTENTS = [
 
 
 class _RerankResponse:
+    status_code = 200
+
     def __init__(self, documents: list[str]) -> None:
         self._documents = documents
 

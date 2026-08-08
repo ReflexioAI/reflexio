@@ -6,6 +6,8 @@ dashboard callers or empty result sets. Verifies that production-agent calls to
 the core search endpoints also emit one ``search_request`` event per request.
 """
 
+import threading
+from collections.abc import Iterator
 from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 
@@ -19,8 +21,23 @@ from reflexio.models.api_schema.ui.entities import (
 )
 from reflexio.models.config_schema import Config, StorageConfigSQLite
 from reflexio.server.api import create_app
+from reflexio.server.services.search_metering_worker import (
+    get_search_metering_worker,
+    reset_search_metering_worker_for_tests,
+)
 from reflexio.server.tracing import configure_tracer
 from reflexio.server.usage_metrics import UsageEvent, configure_usage_event_recorder
+
+
+@pytest.fixture(autouse=True)
+def _reset_search_metering_worker() -> Iterator[None]:
+    reset_search_metering_worker_for_tests()
+    yield
+    reset_search_metering_worker_for_tests()
+
+
+def _wait_for_search_metering() -> None:
+    assert get_search_metering_worker().wait_until_idle(timeout=2.0)
 
 
 def _make_profile_view(user_id: str = "u1") -> ProfileView:
@@ -84,6 +101,7 @@ def _patch_unified_search(
         "reflexio.server.cache.reflexio_cache.get_reflexio", return_value=mock_reflexio
     ):
         yield
+        _wait_for_search_metering()
 
 
 def _capture() -> list[UsageEvent]:
@@ -274,12 +292,36 @@ def test_metering_failure_does_not_break_search_response() -> None:
             resp = _client("production_agent").post(
                 "/api/search", json={"query": "x", "user_id": "u1"}
             )
+            _wait_for_search_metering()
         assert resp.status_code == 200
     finally:
         configure_usage_event_recorder(None)
 
     # Metering failed silently — no learning_applied event should have been emitted.
     assert [e for e in events if e.event_name == "learning_applied"] == []
+
+
+def test_unified_search_response_does_not_wait_for_metering_database_work(
+    monkeypatch,
+) -> None:
+    started = threading.Event()
+    release = threading.Event()
+
+    def blocked_meter(**_kwargs) -> bool:
+        started.set()
+        assert release.wait(timeout=2.0)
+        return True
+
+    monkeypatch.setattr(
+        "reflexio.server.routes._metering._meter_search_request", blocked_meter
+    )
+    with _patch_unified_search([], [], []):
+        resp = _client("production_agent").post(
+            "/api/search", json={"query": "x", "user_id": "u1"}
+        )
+        assert resp.status_code == 200
+        assert started.wait(timeout=1.0)
+        release.set()
 
 
 # --- Per-endpoint metering (the four non-unified routes) -----------------------
@@ -313,6 +355,7 @@ def _patch_service_method(method_name: str, response_attr: str, items: list):
         "reflexio.server.cache.reflexio_cache.get_reflexio", return_value=mock_reflexio
     ):
         yield
+        _wait_for_search_metering()
 
 
 # (path, payload, service method, response attribute, surfaced item factory)
