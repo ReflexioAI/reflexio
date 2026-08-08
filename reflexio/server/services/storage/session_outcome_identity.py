@@ -12,6 +12,7 @@ __all__ = [
     "CanonicalSessionTrajectory",
     "canonical_json_bytes",
     "canonical_session_trajectory",
+    "canonical_trajectory_bytes",
     "outcome_contract_digest",
     "trajectory_digest",
 ]
@@ -197,6 +198,11 @@ def _canonical_trajectory_json(value: object, *, depth: int = 0) -> str:
     return canonical_json_bytes(value).decode()
 
 
+def canonical_trajectory_bytes(trajectory: object) -> bytes:
+    """Encode a finalized session trajectory to its canonical UTF-8 bytes."""
+    return _canonical_trajectory_json(trajectory).encode("utf-8")
+
+
 def trajectory_digest(trajectory: object) -> str:
     """Hash the canonical finalized session trajectory."""
-    return sha256(_canonical_trajectory_json(trajectory).encode()).hexdigest()
+    return sha256(canonical_trajectory_bytes(trajectory)).hexdigest()
