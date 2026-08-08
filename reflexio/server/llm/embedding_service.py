@@ -29,6 +29,10 @@ from reflexio.server.llm.rerank.common import (
 from reflexio.server.llm.rerank.cross_encoder_model import CrossEncoderRunner
 
 logger = logging.getLogger(__name__)
+# The standalone inference service is operator-facing infrastructure. Keep its
+# lifecycle contract visible even when the hosting uvicorn process leaves the
+# root logger at WARNING.
+logger.setLevel(logging.INFO)
 
 MINILM_MODEL = "local/minilm-l6-v2"
 NOMIC_TEXT_MODEL = "local/nomic-embed-text-v1.5"
@@ -187,6 +191,17 @@ def create_embedding_app(
                 raise
         if reranker_enabled():
             runner.prewarm()
+        logger.info(
+            "event=inference_service_ready configured_model=%s "
+            "configured_reranker_model=%s embedding_device=%s "
+            "reranker_device=%s reranker_ready=%s hf_offline=%s",
+            default_model,
+            reranker_model,
+            os.environ.get("NOMIC_EMBED_DEVICE", "cpu"),
+            os.environ.get("REFLEXIO_RERANK_DEVICE", "cpu"),
+            runner.ready(),
+            os.environ.get("HF_HUB_OFFLINE", "0"),
+        )
         yield
 
     embedding_app = FastAPI(title="Reflexio Embedding Service", lifespan=lifespan)
