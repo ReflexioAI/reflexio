@@ -28,7 +28,7 @@ def _meter_applied_learnings(
     surfaced_count: int,
     request_id: str | None = None,
     session_id: str | None = None,
-) -> None:
+) -> bool:
     """Emit the ③ Application event via the OSS emission helper.
 
     No-op unless a production-agent caller surfaced >= 1 result.  The cheap
@@ -43,7 +43,7 @@ def _meter_applied_learnings(
         session_id: Optional session ID from the payload.
     """
     if caller_type != "production_agent" or surfaced_count <= 0:
-        return
+        return False
     try:
         from reflexio.server.billing_meter import record_applied_learnings
         from reflexio.server.billing_signals import platform_llm_from_config
@@ -60,10 +60,12 @@ def _meter_applied_learnings(
             request_id=request_id,
             session_id=session_id,
         )
+        return True
     except Exception:
         logger.warning(
             "applied-learnings metering failed for org %s", org_id, exc_info=True
         )
+        return False
 
 
 def _meter_search_request(
@@ -72,7 +74,7 @@ def _meter_search_request(
     caller_type: str,
     request_id: str | None = None,
     session_id: str | None = None,
-) -> None:
+) -> bool:
     """Emit one production-agent search request metric.
 
     Args:
@@ -82,7 +84,7 @@ def _meter_search_request(
         session_id: Optional session ID from the payload.
     """
     if caller_type != "production_agent":
-        return
+        return False
     try:
         from reflexio.server.billing_meter import record_search_request
 
@@ -92,7 +94,9 @@ def _meter_search_request(
             request_id=request_id,
             session_id=session_id,
         )
+        return True
     except Exception:
         logger.warning(
             "search-request metering failed for org %s", org_id, exc_info=True
         )
+        return False

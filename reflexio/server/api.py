@@ -540,8 +540,20 @@ def create_app(  # noqa: C901
                 for cap in capabilities.capabilities:
                     await cap.on_startup(ctx)
                     started_caps.append(cap)
+            from reflexio.server.services.search_metering_worker import (
+                start_search_metering_worker,
+            )
+
+            start_search_metering_worker()
             yield
         finally:
+            # Drain search metering while enterprise tracing and usage recorders
+            # are still installed. Capability shutdown clears both hooks.
+            from reflexio.server.services.search_metering_worker import (
+                stop_search_metering_worker,
+            )
+
+            stop_search_metering_worker(timeout=5.0)
             for cap in reversed(started_caps):
                 try:
                     await cap.on_shutdown()

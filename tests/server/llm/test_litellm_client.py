@@ -393,7 +393,7 @@ class TestLiteLLMClientAPIKeyOverride:
                 api_key="direct-openai-key",
                 azure_config=AzureOpenAIConfig(
                     api_key="azure-key",
-                    endpoint="https://azure.openai.azure.com/",  # type: ignore[arg-type]
+                    endpoint="https://example.com/",  # type: ignore[arg-type]
                     api_version="2024-02-15-preview",
                 ),
             ),
@@ -406,7 +406,7 @@ class TestLiteLLMClientAPIKeyOverride:
 
         # Azure model should resolve to Azure config
         assert client._api_key == "azure-key"
-        assert client._api_base == "https://azure.openai.azure.com/"
+        assert client._api_base == "https://example.com/"
         assert client._api_version == "2024-02-15-preview"
 
     def test_no_api_key_config_returns_none(self):

@@ -20,6 +20,7 @@ from reflexio.server.llm.rerank.common import (
     CrossEncoderUnavailableError,
     reranker_enabled,
 )
+from reflexio.server.tracing import profile_step
 
 _SERVICE_TIMEOUT_MS_ENV_VAR = "REFLEXIO_RERANK_SERVICE_TIMEOUT_MS"
 _DEFAULT_SERVICE_TIMEOUT_MS = 5_000
@@ -87,33 +88,47 @@ def _score_pairs_remote(
 ) -> list[float]:
     url = f"{service_url.rstrip('/')}/v1/rerank"
     payload = {"model": model, "query": query, "documents": docs}
-    try:
-        response = inference_http_client().post(
-            url,
-            json=payload,
-            timeout=_rerank_service_timeout_seconds(),
-        )
-        response.raise_for_status()
-        body = response.json()
-        return _ordered_scores_from_response(body.get("data"), len(docs))
-    except httpx.TransportError as exc:
-        raise CrossEncoderUnavailableError(
-            f"Rerank service request failed at {url}: {exc}",
-            report_failure=not expected_local_unavailability,
-        ) from exc
-    except httpx.HTTPStatusError as exc:
-        expected_local_503 = (
-            expected_local_unavailability
-            and exc.response.status_code == httpx.codes.SERVICE_UNAVAILABLE
-        )
-        raise CrossEncoderUnavailableError(
-            f"Rerank service request failed at {url}: {exc}",
-            report_failure=not expected_local_503,
-        ) from exc
-    except (ValueError, TypeError, KeyError, AttributeError) as exc:
-        raise CrossEncoderUnavailableError(
-            f"Rerank service request failed at {url}: {exc}"
-        ) from exc
+    timeout_seconds = _rerank_service_timeout_seconds()
+    with profile_step(
+        "search.rerank.api",
+        model=model,
+        document_count=len(docs),
+        timeout_ms=int(timeout_seconds * 1_000),
+        remote_service=not expected_local_unavailability,
+    ) as span:
+        try:
+            response = inference_http_client().post(
+                url,
+                json=payload,
+                timeout=timeout_seconds,
+            )
+            span.set_data("http_status_code", response.status_code)
+            response.raise_for_status()
+            body = response.json()
+            scores = _ordered_scores_from_response(body.get("data"), len(docs))
+            span.set_data("outcome", "success")
+            return scores
+        except httpx.TransportError as exc:
+            span.set_data("outcome", "transport_error")
+            raise CrossEncoderUnavailableError(
+                f"Rerank service request failed at {url}: {exc}",
+                report_failure=not expected_local_unavailability,
+            ) from exc
+        except httpx.HTTPStatusError as exc:
+            span.set_data("outcome", "http_error")
+            expected_local_503 = (
+                expected_local_unavailability
+                and exc.response.status_code == httpx.codes.SERVICE_UNAVAILABLE
+            )
+            raise CrossEncoderUnavailableError(
+                f"Rerank service request failed at {url}: {exc}",
+                report_failure=not expected_local_503,
+            ) from exc
+        except (ValueError, TypeError, KeyError, AttributeError) as exc:
+            span.set_data("outcome", "invalid_response")
+            raise CrossEncoderUnavailableError(
+                f"Rerank service request failed at {url}: {exc}"
+            ) from exc
 
 
 def _rerank_service_timeout_seconds() -> float:

@@ -68,10 +68,8 @@ from reflexio.server.auth import (
 from reflexio.server.cache import reflexio_cache
 from reflexio.server.rate_limit import limiter
 from reflexio.server.routes._common import _run_limited_api
-from reflexio.server.routes._metering import (
-    _meter_applied_learnings,
-)
 from reflexio.server.services.playbook.review_service import new_review_run_id
+from reflexio.server.services.search_metering_worker import enqueue_search_metering
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -413,10 +411,11 @@ def get_agent_playbooks(
         agent_playbooks=[to_agent_playbook_view(fb) for fb in response.agent_playbooks],
         msg=response.msg,
     )
-    _meter_applied_learnings(
+    enqueue_search_metering(
         org_id=org_id,
         caller_type=caller_type,
         surfaced_count=len(resp.agent_playbooks),
+        record_search_request=False,
         request_id=getattr(payload, "request_id", None),
         session_id=getattr(payload, "session_id", None),
     )

@@ -9,7 +9,6 @@ if TYPE_CHECKING:
 
 from fastapi import (
     APIRouter,
-    BackgroundTasks,
     Depends,
     HTTPException,
     Request,
@@ -45,14 +44,11 @@ from reflexio.server.cache import reflexio_cache
 from reflexio.server.llm.rerank.common import CrossEncoderUnavailableError
 from reflexio.server.rate_limit import limiter
 from reflexio.server.routes._common import _run_limited_api
-from reflexio.server.routes._metering import (
-    _meter_applied_learnings,
-    _meter_search_request,
-    _stamp_search_dependencies_done,
-)
+from reflexio.server.routes._metering import _stamp_search_dependencies_done
 from reflexio.server.services.retrieval_experiment import (
     active_retrieval_experiment_assignment,
 )
+from reflexio.server.services.search_metering_worker import enqueue_search_metering
 from reflexio.server.tracing import profile_step
 
 logger = logging.getLogger(__name__)
@@ -118,16 +114,11 @@ def search_user_profiles(
             msg=response.msg,
             experiment=assignment,
         )
-    _meter_search_request(
-        org_id=org_id,
-        caller_type=caller_type,
-        request_id=getattr(payload, "request_id", None),
-        session_id=getattr(payload, "session_id", None),
-    )
-    _meter_applied_learnings(
+    enqueue_search_metering(
         org_id=org_id,
         caller_type=caller_type,
         surfaced_count=len(resp.user_profiles),
+        record_search_request=True,
         request_id=getattr(payload, "request_id", None),
         session_id=getattr(payload, "session_id", None),
     )
@@ -256,16 +247,11 @@ def search_user_playbooks_endpoint(
             msg=response.msg,
             experiment=assignment,
         )
-    _meter_search_request(
-        org_id=org_id,
-        caller_type=caller_type,
-        request_id=getattr(payload, "request_id", None),
-        session_id=getattr(payload, "session_id", None),
-    )
-    _meter_applied_learnings(
+    enqueue_search_metering(
         org_id=org_id,
         caller_type=caller_type,
         surfaced_count=len(resp.user_playbooks),
+        record_search_request=True,
         request_id=getattr(payload, "request_id", None),
         session_id=getattr(payload, "session_id", None),
     )
@@ -325,16 +311,11 @@ def search_agent_playbooks_endpoint(
             msg=response.msg,
             experiment=assignment,
         )
-    _meter_search_request(
-        org_id=org_id,
-        caller_type=caller_type,
-        request_id=getattr(payload, "request_id", None),
-        session_id=getattr(payload, "session_id", None),
-    )
-    _meter_applied_learnings(
+    enqueue_search_metering(
         org_id=org_id,
         caller_type=caller_type,
         surfaced_count=len(resp.agent_playbooks),
+        record_search_request=True,
         request_id=getattr(payload, "request_id", None),
         session_id=getattr(payload, "session_id", None),
     )
@@ -350,7 +331,6 @@ def search_agent_playbooks_endpoint(
 def unified_search_endpoint(
     request: Request,
     payload: UnifiedSearchRequest,
-    background_tasks: BackgroundTasks,
     org_id: str = Depends(default_get_org_id),
     caller_type: str = Depends(default_get_caller_type),
     _gate: None = Depends(default_billing_gate("application")),  # noqa: B008
@@ -383,10 +363,11 @@ def unified_search_endpoint(
             msg="Retrieval withheld by experiment assignment",
             experiment=assignment,
         )
-        background_tasks.add_task(
-            _meter_search_request,
+        enqueue_search_metering(
             org_id=org_id,
             caller_type=caller_type,
+            surfaced_count=0,
+            record_search_request=True,
             request_id=payload.request_id,
             session_id=payload.session_id,
         )
@@ -431,20 +412,13 @@ def unified_search_endpoint(
                 rehydrated_text=response.rehydrated_text,
                 experiment=assignment,
             )
-        background_tasks.add_task(
-            _meter_search_request,
-            org_id=org_id,
-            caller_type=caller_type,
-            request_id=getattr(payload, "request_id", None),
-            session_id=getattr(payload, "session_id", None),
-        )
-        background_tasks.add_task(
-            _meter_applied_learnings,
+        enqueue_search_metering(
             org_id=org_id,
             caller_type=caller_type,
             surfaced_count=len(resp.profiles)
             + len(resp.agent_playbooks)
             + len(resp.user_playbooks),
+            record_search_request=True,
             request_id=getattr(payload, "request_id", None),
             session_id=getattr(payload, "session_id", None),
         )

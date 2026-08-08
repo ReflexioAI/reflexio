@@ -788,7 +788,7 @@ def test_fatal_code_backstop_still_raises_when_coercion_is_bypassed():
     )
 
     with pytest.raises(ValueError, match="absence_inference"):
-        bypassed.fatal_reason_codes_are_rejects()
+        bypassed.fatal_reason_codes_are_rejects()  # pyright: ignore[reportCallIssue]
 
 
 def test_public_reason_code_vocabulary_is_the_reviewer_set_plus_the_skip_code():

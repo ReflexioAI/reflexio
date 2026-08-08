@@ -218,7 +218,7 @@ Access: `SiteVarManager().get_site_var(key)` for raw values, `feature_flags.is_f
 - **Lineage**: `lineage/` resolves active records across superseded chains and schedules tombstone garbage collection for profile/playbook storage.
 - **Governance**: `governance/` defines subject-reference contracts and retention/barrier policy helpers used by storage and lineage paths.
 - **Persistence/config**: `storage/`, `configurator/`, and `operation_state_utils.py` provide storage abstractions, config loading, locks, bookmarks, progress, and cancellation.
-- **Usage metering**: `billing_meter.py` converts learning/search signals into optional `usage_events` without importing enterprise types.
+- **Usage metering**: `billing_meter.py` converts learning/search signals into optional `usage_events` without importing enterprise types; `services/search_metering_worker.py` keeps search-side writes off the customer response path with a bounded, fail-open process-local queue.
 
 ### Orchestrator
 
