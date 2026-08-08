@@ -33,11 +33,12 @@ from tests.server.test_utils import (
 
 pytestmark = pytest.mark.e2e
 
-# Providers the contradiction assertions have actually been validated against.
-# The `should_not_contain` checks grade a model's dedup judgement, so an
-# unvalidated provider's failure would read as a dedup-prompt regression rather
-# than an unproven model. Only MiniMax has been exercised here; openai and
-# anthropic match the sibling reviewer test's validated set.
+# Providers this scenario has been EXERCISED against -- not a claim that each
+# one passes. The `should_not_contain` checks grade a model's dedup judgement,
+# so restricting the set keeps a wholly untried provider from producing a
+# failure that reads as a dedup-prompt regression. MiniMax is measured and
+# partly failing (see the note in the test docstring); openai and anthropic
+# mirror the sibling reviewer test's set and are untried here.
 _DEDUP_CAPABLE = frozenset({"openai", "anthropic", "minimax"})
 
 

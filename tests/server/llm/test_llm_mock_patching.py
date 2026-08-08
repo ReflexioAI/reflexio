@@ -14,7 +14,11 @@ import os
 import pytest
 
 from reflexio.test_support import llm_mock
-from reflexio.test_support.llm_mock import litellm_is_patched, unpatched_litellm
+from reflexio.test_support.llm_mock import (
+    assert_litellm_unpatched,
+    litellm_is_patched,
+    unpatched_litellm,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -95,3 +99,44 @@ def test_leaves_no_flag_behind_when_none_was_set(
         assert os.environ.get("MOCK_LLM_RESPONSE") is None
 
     assert os.environ.get("MOCK_LLM_RESPONSE") is None
+
+
+def _real_looking_completion(*_args: object, **_kwargs: object) -> None:
+    """Stand-in for an unpatched ``litellm.completion`` (a plain function)."""
+    return
+
+
+def test_assert_unpatched_rejects_a_set_flag_with_the_patcher_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The mode the patcher-only check could not fail in.
+
+    Twelve service sites branch on ``MOCK_LLM_RESPONSE`` and return canned
+    payloads *without calling litellm*, so asking only the patcher reports a
+    clean bill while every one of them serves mock data.
+    """
+    import litellm
+
+    # The unit tier runs under the session-wide patch, so restore a real
+    # callable first -- otherwise the patcher branch fires and this would pass
+    # without ever reaching the flag check it exists to cover.
+    monkeypatch.setattr(litellm, "completion", _real_looking_completion)
+    monkeypatch.setattr(llm_mock, "_litellm_patcher", None)
+    monkeypatch.setenv("MOCK_LLM_RESPONSE", "true")
+
+    assert litellm_is_patched() is False
+    with pytest.raises(AssertionError, match="MOCK_LLM_RESPONSE=true"):
+        assert_litellm_unpatched()
+
+
+def test_assert_unpatched_passes_when_both_mechanisms_are_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Guards the inverse, so the check above cannot pass by always raising."""
+    import litellm
+
+    monkeypatch.setattr(litellm, "completion", _real_looking_completion)
+    monkeypatch.setattr(llm_mock, "_litellm_patcher", None)
+    monkeypatch.delenv("MOCK_LLM_RESPONSE", raising=False)
+
+    assert_litellm_unpatched()
