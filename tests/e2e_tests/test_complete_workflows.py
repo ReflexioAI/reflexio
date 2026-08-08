@@ -355,8 +355,10 @@ def test_profile_upgrade_downgrade_workflow(
     """Test profile upgrade and downgrade workflow."""
     user_id = "test_user_upgrade"
 
-    # Publish all interactions (≥6 exceeds stride=5, triggering auto-extraction
-    # which creates CURRENT profiles).
+    # Publish all interactions, which exceeds the fixture's _E2E_STRIDE_SIZE and
+    # so triggers auto-extraction, creating CURRENT profiles. (Restating the
+    # stride as a literal here is what went stale before: this said "stride=5"
+    # while the default was 8.)
     publish_response = reflexio_instance.publish_interaction(
         {
             "user_id": user_id,
@@ -840,7 +842,9 @@ def test_rerun_operations_consistency(
     # Record initial state
     initial_interactions = storage.get_all_interactions()
     initial_current_profiles = storage.get_user_profile(user_id, status_filter=[None])
-    initial_playbooks = storage.get_user_playbooks(playbook_name="test_playbook")
+    initial_playbooks = storage.get_user_playbooks(
+        playbook_name=SINGLETON_USER_PLAYBOOK_NAME
+    )
     initial_agent_success = storage.get_agent_success_evaluation_results(
         agent_version=agent_version
     )
@@ -851,6 +855,10 @@ def test_rerun_operations_consistency(
     initial_agent_success_count = len(initial_agent_success)
 
     assert initial_profile_count > 0, "Should have initial profiles"
+    # Without this floor, step 6's "playbooks unchanged" check compares 0 == 0
+    # and cannot fail — which is exactly how it survived querying the wrong
+    # playbook_name.
+    assert initial_playbook_count > 0, "Should have initial playbooks"
 
     # Step 2: Run rerun_profile_generation
     rerun_response = reflexio_instance.rerun_profile_generation(
@@ -884,7 +892,9 @@ def test_rerun_operations_consistency(
     )
 
     # Step 6: Verify playbooks unchanged
-    playbooks_after_rerun = storage.get_user_playbooks(playbook_name="test_playbook")
+    playbooks_after_rerun = storage.get_user_playbooks(
+        playbook_name=SINGLETON_USER_PLAYBOOK_NAME
+    )
     assert len(playbooks_after_rerun) == initial_playbook_count, (
         "User playbooks should remain unchanged"
     )

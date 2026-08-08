@@ -297,18 +297,25 @@ def unpatched_litellm() -> Iterator[None]:
 def assert_litellm_unpatched() -> None:
     """Fail a live-provider test that is about to assert against the mock.
 
-    Ask this rather than ``MOCK_LLM_RESPONSE``: the variable tracks the patch
-    but can be cleared independently of it, so it reports the mock's *intent*
-    rather than its state. This asks the patcher.
+    Checks BOTH mock mechanisms, because either alone can be satisfied while
+    the test still grades canned text:
+
+    * the patcher -- ``litellm.completion`` replaced by a mock;
+    * ``MOCK_LLM_RESPONSE`` -- read directly by service code that returns a
+      canned payload *without ever calling litellm* (e.g.
+      ``profile/components/extractor.py`` returns ``_generate_mock_profiles``
+      outright). Asking only the patcher passes cleanly in that state, so this
+      backstop could not fail in exactly the mode it advertises.
 
     The e2e conftest lifts the session patch for ``requires_credentials``
-    tests via :func:`unpatched_litellm`, so this should hold for any invocation
-    of those. It stays as a backstop for a live test that is reached some other
-    way -- outside ``tests/e2e_tests/``, or without the marker the fixture keys
-    on -- where the patch would still be live.
+    tests via :func:`unpatched_litellm`, which also pops the variable, so both
+    conditions hold for any invocation of those. This stays as a backstop for a
+    live test reached some other way -- outside ``tests/e2e_tests/``, or
+    without the marker the fixture keys on.
 
     Raises:
-        AssertionError: When ``litellm.completion`` is patched.
+        AssertionError: When ``litellm.completion`` is patched, or when
+            ``MOCK_LLM_RESPONSE`` is set to "true".
     """
     if litellm_is_patched():
         raise AssertionError(
@@ -316,6 +323,12 @@ def assert_litellm_unpatched() -> None:
             "assert against canned mock text. Live tests belong under "
             "tests/e2e_tests/ and must carry the requires_credentials marker; "
             "the e2e conftest lifts the session patch for those."
+        )
+    if os.getenv("MOCK_LLM_RESPONSE", "").lower() == "true":
+        raise AssertionError(
+            "MOCK_LLM_RESPONSE=true, so service code takes its canned branch "
+            "without calling litellm at all -- this live-provider test would "
+            "assert against mock payloads even though the patcher is off."
         )
 
 

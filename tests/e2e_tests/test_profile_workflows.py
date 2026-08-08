@@ -22,6 +22,8 @@ from reflexio.models.api_schema.service_schemas import (
     UserProfile,
 )
 from reflexio.models.config_schema import SINGLETON_USER_PLAYBOOK_NAME
+from reflexio.test_support.llm_credentials import real_generation_provider
+from reflexio.test_support.llm_mock import assert_litellm_unpatched
 from tests.e2e_tests.conftest import scenario_batch_to_interactions
 from tests.server.test_utils import (
     require_storage,
@@ -30,6 +32,13 @@ from tests.server.test_utils import (
 )
 
 pytestmark = pytest.mark.e2e
+
+# Providers this scenario has been exercised against. The `should_not_contain`
+# checks grade a model's dedup judgement, so restricting the set keeps a wholly
+# untried provider from producing a failure that reads as a dedup-prompt
+# regression. MiniMax passes; openai and anthropic mirror the sibling reviewer
+# test's set and are untried here.
+_DEDUP_CAPABLE = frozenset({"openai", "anthropic", "minimax"})
 
 
 @skip_in_precommit
@@ -1332,6 +1341,11 @@ def _assert_contradiction_resolved(
 
 @skip_in_precommit
 @skip_low_priority
+@pytest.mark.requires_credentials
+@pytest.mark.skipif(
+    not real_generation_provider(_DEDUP_CAPABLE),
+    reason=f"No real API key for a dedup-validated provider ({sorted(_DEDUP_CAPABLE)})",
+)
 @pytest.mark.parametrize("scenario_name", ["diet_reversal", "location_move"])
 def test_profile_dedup_resolves_contradiction(
     scenario_name: str,
@@ -1355,10 +1369,24 @@ def test_profile_dedup_resolves_contradiction(
     guidance in the updated profile_deduplication prompt: when NEW profiles
     contradict EXISTING ones, the newer information should win.
 
+    NOTE: this grades model judgement, so a failure means the dedup step did
+    not let the newer facts win — not that the pipeline is broken. Do not
+    silence it by loosening the assertion; that is the signal. (It was
+    intermittent until the fixture pinned ``skip_should_run_check``: the
+    pre-extraction gate was skipping batch 2 outright, so the stale batch-1
+    profile survived a dedup that never ran.)
+
     Args:
         scenario_name (str): Key into ``contradiction_scenarios`` (e.g.
             "diet_reversal", "location_move").
     """
+    # Asserts the dedup LLM lets newer facts win over contradictory older ones.
+    # In mock mode the profile extractor echoes a 50-character prefix of the
+    # last turn (`f"User mentioned: {content[:50]}"`, profile/components/
+    # extractor.py), so the batch-1 phrases this checks for absence are exactly
+    # what survives — the test can only pass against a real model.
+    assert_litellm_unpatched()
+
     scenario = contradiction_scenarios[scenario_name]
     user_id = f"{scenario_name}_user_{uuid.uuid4().hex[:8]}"
 

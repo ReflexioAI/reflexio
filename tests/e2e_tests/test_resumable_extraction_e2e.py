@@ -161,6 +161,13 @@ def _seed_followup_ready_run(storage: SQLiteStorage) -> None:
 def _load_live_e2e_settings() -> tuple[str, str]:
     if os.environ.get("RUN_LIVE_RESUMABLE_E2E") != "true":
         pytest.skip("Set RUN_LIVE_RESUMABLE_E2E=true to run live resumable E2E")
+
+    # Partial guard, deliberately kept. This E2E drives a separate server
+    # process, so the local variable does not describe that backend -- but the
+    # backend is normally started from this same shell and .env, which is the
+    # case it does catch. It is the only mock signal available without widening
+    # a production endpoint, and dropping it outright would leave this test with
+    # none at all.
     if os.environ.get("MOCK_LLM_RESPONSE", "").lower() == "true":
         pytest.skip("Live resumable E2E requires MOCK_LLM_RESPONSE=false")
 
@@ -188,6 +195,7 @@ def _load_live_e2e_settings() -> tuple[str, str]:
 
     if not api_key:
         pytest.skip("Live resumable E2E requires REFLEXIO_API_KEY")
+
     return str(base_url).rstrip("/"), str(api_key)
 
 
