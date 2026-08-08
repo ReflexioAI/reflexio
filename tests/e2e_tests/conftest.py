@@ -42,6 +42,14 @@ _CUSTOMER_SUPPORT_WINDOW_SIZE = 20
 # value — the test then asserts against zero profiles/playbooks and fails for a
 # reason that has nothing to do with what it covers. A stride of 1 means one
 # extraction pass per publish call, which is what these tests assume.
+#
+# ``skip_should_run_check=True`` is pinned alongside it for the same reason. It
+# is the OTHER gate that can suppress extraction: a real LLM decides whether a
+# batch is worth extracting, and on the small batches these tests publish it
+# says no often enough to be a coin flip ("Pre-extraction check returned False
+# ... skipping" -- observed on 2 of 4 dedup runs, where it read as the dedup
+# model failing to resolve a contradiction it was never asked about). No e2e
+# test covers the gate itself, so no coverage is lost.
 _E2E_STRIDE_SIZE = 1
 _CUSTOMER_SUPPORT_PROFILE_DEFINITION = """
 name, occupation, location, membership tier, order context, communication preferences,
@@ -191,9 +199,9 @@ def reflexio_instance_profile_only(
     """Create an Reflexio instance with only profile extraction config."""
     config = Config(
         stride_size=_E2E_STRIDE_SIZE,
+        skip_should_run_check=True,
         storage_config=sqlite_storage_config,
         agent_context_prompt="this is a sales agent",
-        skip_should_run_check=True,
         window_size=_CUSTOMER_SUPPORT_WINDOW_SIZE,
         user_playbook_extractor_config=None,
         profile_extractor_config=ProfileExtractorConfig(
@@ -226,6 +234,7 @@ def reflexio_instance_lifestyle_profile(
         storage_config=sqlite_storage_config,
         agent_context_prompt="this is a personal assistant that learns about the user over time",
         stride_size=_E2E_STRIDE_SIZE,
+        skip_should_run_check=True,
         profile_extractor_config=ProfileExtractorConfig(
             extractor_name="lifestyle_extractor",
             context_prompt="""
@@ -292,6 +301,7 @@ def reflexio_instance_playbook_only(
         storage_config=sqlite_storage_config,
         agent_context_prompt="this is a sales agent",
         stride_size=_E2E_STRIDE_SIZE,
+        skip_should_run_check=True,
         user_playbook_extractor_config=PlaybookConfig(
             extractor_name="test_playbook",
             extraction_definition_prompt="""
@@ -316,6 +326,7 @@ def reflexio_instance_agent_success_only(
     """Create an Reflexio instance with only agent success config."""
     config = Config(
         stride_size=_E2E_STRIDE_SIZE,
+        skip_should_run_check=True,
         storage_config=sqlite_storage_config,
         agent_context_prompt="this is a sales agent",
         agent_success_config=AgentSuccessConfig(
@@ -458,6 +469,7 @@ def reflexio_instance_playbook_source_filtering(
     """Create an Reflexio instance with playbook configs using request_sources_enabled filtering."""
     config = Config(
         stride_size=_E2E_STRIDE_SIZE,
+        skip_should_run_check=True,
         storage_config=sqlite_storage_config,
         agent_context_prompt="this is a sales agent",
         # Single playbook extractor, only enabled for the "api" source. The
@@ -496,6 +508,7 @@ def reflexio_instance_manual_profile(
     """
     config = Config(
         stride_size=_E2E_STRIDE_SIZE,
+        skip_should_run_check=True,
         storage_config=sqlite_storage_config,
         agent_context_prompt="this is a sales agent",
         window_size=10,  # Required for manual generation
@@ -536,6 +549,7 @@ def reflexio_instance_manual_playbook(
     """
     config = Config(
         stride_size=_E2E_STRIDE_SIZE,
+        skip_should_run_check=True,
         storage_config=sqlite_storage_config,
         agent_context_prompt="this is a sales agent",
         window_size=10,  # Required for manual generation
@@ -572,6 +586,7 @@ def reflexio_instance_multiple_profile_extractors(
     """
     config = Config(
         stride_size=_E2E_STRIDE_SIZE,
+        skip_should_run_check=True,
         storage_config=sqlite_storage_config,
         agent_context_prompt="this is a sales agent",
         window_size=20,
@@ -610,6 +625,7 @@ def reflexio_instance_multiple_playbook_extractors(
     """
     config = Config(
         stride_size=_E2E_STRIDE_SIZE,
+        skip_should_run_check=True,
         storage_config=sqlite_storage_config,
         agent_context_prompt="this is a sales agent",
         window_size=20,

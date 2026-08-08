@@ -33,12 +33,11 @@ from tests.server.test_utils import (
 
 pytestmark = pytest.mark.e2e
 
-# Providers this scenario has been EXERCISED against -- not a claim that each
-# one passes. The `should_not_contain` checks grade a model's dedup judgement,
-# so restricting the set keeps a wholly untried provider from producing a
-# failure that reads as a dedup-prompt regression. MiniMax is measured and
-# partly failing (see the note in the test docstring); openai and anthropic
-# mirror the sibling reviewer test's set and are untried here.
+# Providers this scenario has been exercised against. The `should_not_contain`
+# checks grade a model's dedup judgement, so restricting the set keeps a wholly
+# untried provider from producing a failure that reads as a dedup-prompt
+# regression. MiniMax passes; openai and anthropic mirror the sibling reviewer
+# test's set and are untried here.
 _DEDUP_CAPABLE = frozenset({"openai", "anthropic", "minimax"})
 
 
@@ -1370,12 +1369,12 @@ def test_profile_dedup_resolves_contradiction(
     guidance in the updated profile_deduplication prompt: when NEW profiles
     contradict EXISTING ones, the newer information should win.
 
-    NOTE: this grades model quality, not code. Measured over 4 runs against
-    minimax/MiniMax-M3, ``diet_reversal`` resolved the contradiction about half
-    the time (``location_move`` passed every run); a failure here reads
-    "the dedup prompt did not reliably override the older facts on this model",
-    not "the pipeline is broken". Do not silence it by loosening the assertion
-    — that is the signal.
+    NOTE: this grades model judgement, so a failure means the dedup step did
+    not let the newer facts win — not that the pipeline is broken. Do not
+    silence it by loosening the assertion; that is the signal. (It was
+    intermittent until the fixture pinned ``skip_should_run_check``: the
+    pre-extraction gate was skipping batch 2 outright, so the stale batch-1
+    profile survived a dedup that never ran.)
 
     Args:
         scenario_name (str): Key into ``contradiction_scenarios`` (e.g.

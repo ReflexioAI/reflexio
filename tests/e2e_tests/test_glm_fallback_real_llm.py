@@ -157,6 +157,43 @@ def _build_instance(storage_config: StorageConfigSQLite, org_id: str) -> Reflexi
     return Reflexio(org_id=org_id, configurator=configurator)
 
 
+# Explicit, first-person corrective instructions appended to the scenario.
+#
+# Why these exist: the customer-support scenario states its preferences
+# indirectly, so the playbook extractor produced a single vague candidate that
+# the quality reviewer then rejected (`accepted=0 rejected=1
+# reason_codes=generic:1`, and `preference_without_direct_user_evidence`) on
+# roughly four runs in five. The reviewer was right -- the defect was the input,
+# not the gate. These turns give it unambiguous user-stated evidence so the
+# assertion measures the fallback wiring this file is about, instead of grading
+# whether the model happened to infer a preference that round. Do NOT weaken the
+# reviewer or drop the playbook assertion to make this pass.
+_CORRECTIVE_TURNS: list[InteractionData] = [
+    InteractionData(
+        role="User",
+        content=(
+            "One more thing before you go: stop opening every reply with "
+            "'Great question!' -- just answer me directly."
+        ),
+    ),
+    InteractionData(
+        role="Agent",
+        content="Understood, I'll drop that opener and lead with the answer.",
+    ),
+    InteractionData(
+        role="User",
+        content=(
+            "And always give me the order number when you reference an order. "
+            "I had to scroll back twice to find it."
+        ),
+    ),
+    InteractionData(
+        role="Agent",
+        content="Noted -- I'll include the order number every time I mention an order.",
+    ),
+]
+
+
 def _publish_priya(
     instance: Reflexio, user_id: str, interactions: list[InteractionData]
 ) -> None:
@@ -164,7 +201,7 @@ def _publish_priya(
     response = instance.publish_interaction(
         {
             "user_id": user_id,
-            "interaction_data_list": interactions,
+            "interaction_data_list": [*interactions, *_CORRECTIVE_TURNS],
             "source": "test_glm_fallback",
             "agent_version": "glm_fallback_v1",
             "session_id": "glm_fallback_session",
