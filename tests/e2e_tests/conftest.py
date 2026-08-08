@@ -190,6 +190,7 @@ def reflexio_instance_profile_only(
 ) -> Reflexio:
     """Create an Reflexio instance with only profile extraction config."""
     config = Config(
+        stride_size=_E2E_STRIDE_SIZE,
         storage_config=sqlite_storage_config,
         agent_context_prompt="this is a sales agent",
         skip_should_run_check=True,
@@ -314,6 +315,7 @@ def reflexio_instance_agent_success_only(
 ) -> Reflexio:
     """Create an Reflexio instance with only agent success config."""
     config = Config(
+        stride_size=_E2E_STRIDE_SIZE,
         storage_config=sqlite_storage_config,
         agent_context_prompt="this is a sales agent",
         agent_success_config=AgentSuccessConfig(
@@ -455,6 +457,7 @@ def reflexio_instance_playbook_source_filtering(
 ) -> Reflexio:
     """Create an Reflexio instance with playbook configs using request_sources_enabled filtering."""
     config = Config(
+        stride_size=_E2E_STRIDE_SIZE,
         storage_config=sqlite_storage_config,
         agent_context_prompt="this is a sales agent",
         # Single playbook extractor, only enabled for the "api" source. The
@@ -492,6 +495,7 @@ def reflexio_instance_manual_profile(
     - manual_trigger=True on the extractor
     """
     config = Config(
+        stride_size=_E2E_STRIDE_SIZE,
         storage_config=sqlite_storage_config,
         agent_context_prompt="this is a sales agent",
         window_size=10,  # Required for manual generation
@@ -531,6 +535,7 @@ def reflexio_instance_manual_playbook(
     - window_size set (required for manual generation)
     """
     config = Config(
+        stride_size=_E2E_STRIDE_SIZE,
         storage_config=sqlite_storage_config,
         agent_context_prompt="this is a sales agent",
         window_size=10,  # Required for manual generation
@@ -566,6 +571,7 @@ def reflexio_instance_multiple_profile_extractors(
     under the singleton profile name regardless of the configured extractor_name.
     """
     config = Config(
+        stride_size=_E2E_STRIDE_SIZE,
         storage_config=sqlite_storage_config,
         agent_context_prompt="this is a sales agent",
         window_size=20,
@@ -603,6 +609,7 @@ def reflexio_instance_multiple_playbook_extractors(
     extractor_name, and the extractor runs for all sources.
     """
     config = Config(
+        stride_size=_E2E_STRIDE_SIZE,
         storage_config=sqlite_storage_config,
         agent_context_prompt="this is a sales agent",
         window_size=20,

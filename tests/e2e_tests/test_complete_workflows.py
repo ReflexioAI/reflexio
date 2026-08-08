@@ -855,6 +855,10 @@ def test_rerun_operations_consistency(
     initial_agent_success_count = len(initial_agent_success)
 
     assert initial_profile_count > 0, "Should have initial profiles"
+    # Without this floor, step 6's "playbooks unchanged" check compares 0 == 0
+    # and cannot fail — which is exactly how it survived querying the wrong
+    # playbook_name.
+    assert initial_playbook_count > 0, "Should have initial playbooks"
 
     # Step 2: Run rerun_profile_generation
     rerun_response = reflexio_instance.rerun_profile_generation(

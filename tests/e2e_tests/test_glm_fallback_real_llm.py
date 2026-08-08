@@ -34,7 +34,6 @@ publish is driven by the real ``Reflexio`` library entrypoint. No hand-injected
 from __future__ import annotations
 
 import logging
-import os
 from collections.abc import Iterator
 from contextlib import contextmanager
 from unittest.mock import patch
@@ -54,6 +53,7 @@ from reflexio.server.services.configurator.configurator import DefaultConfigurat
 from reflexio.server.services.storage.storage_base import BaseStorage
 from reflexio.server.services.tagging.tagging_scheduler import drain_tagging
 from reflexio.server.site_var.site_var_manager import SiteVarManager
+from reflexio.test_support.llm_credentials import real_provider_key
 from reflexio.test_support.skip_decorators import skip_low_priority
 
 pytestmark = [pytest.mark.e2e, pytest.mark.requires_credentials]
@@ -98,9 +98,14 @@ def _force_generation_model(model_name: str) -> Iterator[None]:
 
 
 def _require_glm_key() -> None:
-    """Skip when the real GLM key is absent (nothing to authenticate against)."""
-    if not os.environ.get("ZAI_API_KEY"):
-        pytest.skip("ZAI_API_KEY not set — real GLM key required for this test")
+    """Skip when the real GLM key is absent (nothing to authenticate against).
+
+    Uses ``real_provider_key`` rather than ``os.environ.get``: the credential
+    floor pins placeholder keys, which a plain getenv accepts and this helper
+    rejects.
+    """
+    if not real_provider_key("ZAI_API_KEY"):
+        pytest.skip("ZAI_API_KEY not set to a real key — required for this test")
 
 
 def _build_instance(storage_config: StorageConfigSQLite, org_id: str) -> Reflexio:

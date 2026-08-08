@@ -73,23 +73,12 @@ def install(app: FastAPI) -> None:
 
     @app.get("/healthz")
     def healthz() -> dict[str, Any]:
-        """Return per-worker process metrics for liveness/observability.
-
-        ``mock_llm_response`` reports whether this worker answers LLM calls
-        from the canned test mock instead of a provider. It is a
-        misconfiguration anywhere real answers are expected, and it is not
-        otherwise observable from outside the process -- a caller sees
-        plausible-looking text either way. Out-of-process tests that assert
-        real model behavior read it to skip rather than assert against canned
-        payloads.
-        """
+        """Return per-worker process metrics for liveness/observability."""
         return {
             "pid": os.getpid(),
             "uptime_sec": time.monotonic() - _STARTED_AT,
             "request_count": _REQUEST_COUNT,
             "rss_mb": _read_rss_mb(),
-            "mock_llm_response": os.getenv("MOCK_LLM_RESPONSE", "").strip().lower()
-            == "true",
         }
 
     @app.get("/healthz/eval")

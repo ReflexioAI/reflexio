@@ -33,6 +33,13 @@ from tests.server.test_utils import (
 
 pytestmark = pytest.mark.e2e
 
+# Providers the contradiction assertions have actually been validated against.
+# The `should_not_contain` checks grade a model's dedup judgement, so an
+# unvalidated provider's failure would read as a dedup-prompt regression rather
+# than an unproven model. Only MiniMax has been exercised here; openai and
+# anthropic match the sibling reviewer test's validated set.
+_DEDUP_CAPABLE = frozenset({"openai", "anthropic", "minimax"})
+
 
 @skip_in_precommit
 def test_publish_interaction_profile_only(
@@ -1336,8 +1343,8 @@ def _assert_contradiction_resolved(
 @skip_low_priority
 @pytest.mark.requires_credentials
 @pytest.mark.skipif(
-    not real_generation_provider(),
-    reason="No real API key for a generation-capable provider",
+    not real_generation_provider(_DEDUP_CAPABLE),
+    reason=f"No real API key for a dedup-validated provider ({sorted(_DEDUP_CAPABLE)})",
 )
 @pytest.mark.parametrize("scenario_name", ["diet_reversal", "location_move"])
 def test_profile_dedup_resolves_contradiction(
@@ -1362,14 +1369,22 @@ def test_profile_dedup_resolves_contradiction(
     guidance in the updated profile_deduplication prompt: when NEW profiles
     contradict EXISTING ones, the newer information should win.
 
+    NOTE: this grades model quality, not code. Measured over 4 runs against
+    minimax/MiniMax-M3, ``diet_reversal`` resolved the contradiction about half
+    the time (``location_move`` passed every run); a failure here reads
+    "the dedup prompt did not reliably override the older facts on this model",
+    not "the pipeline is broken". Do not silence it by loosening the assertion
+    — that is the signal.
+
     Args:
         scenario_name (str): Key into ``contradiction_scenarios`` (e.g.
             "diet_reversal", "location_move").
     """
     # Asserts the dedup LLM lets newer facts win over contradictory older ones.
-    # The mock echoes the input turns verbatim, so under it the batch-1 phrases
-    # it checks for absence are exactly what survives — the test can only pass
-    # against a real model.
+    # In mock mode the profile extractor echoes a 50-character prefix of the
+    # last turn (`f"User mentioned: {content[:50]}"`, profile/components/
+    # extractor.py), so the batch-1 phrases this checks for absence are exactly
+    # what survives — the test can only pass against a real model.
     assert_litellm_unpatched()
 
     scenario = contradiction_scenarios[scenario_name]

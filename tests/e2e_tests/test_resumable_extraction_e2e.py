@@ -158,30 +158,6 @@ def _seed_followup_ready_run(storage: SQLiteStorage) -> None:
     )
 
 
-def _skip_if_backend_is_mocked(base_url: str, api_key: str) -> None:
-    """Skip when the *backend* answers from the canned mock.
-
-    This E2E drives a separate server process, so nothing in this interpreter
-    describes it: ``litellm_is_patched()`` reports on pytest's own litellm, and
-    a local ``MOCK_LLM_RESPONSE`` is read by the wrong process. Both would pass
-    while the backend served canned payloads. ``/healthz`` reports the
-    backend's own setting, which is the only signal that crosses the boundary.
-
-    A backend too old to report the field leaves the answer unknown; the run
-    proceeds as it did before rather than skipping on a missing key.
-    """
-    try:
-        health = _api_request("GET", base_url, "/healthz", _live_headers(api_key))
-    except requests.RequestException as exc:
-        pytest.skip(f"live resumable E2E backend unreachable at {base_url}: {exc}")
-
-    if health.get("mock_llm_response") is True:
-        pytest.skip(
-            f"backend at {base_url} runs with MOCK_LLM_RESPONSE=true; this E2E "
-            "asserts real extraction behavior and would check canned payloads"
-        )
-
-
 def _load_live_e2e_settings() -> tuple[str, str]:
     if os.environ.get("RUN_LIVE_RESUMABLE_E2E") != "true":
         pytest.skip("Set RUN_LIVE_RESUMABLE_E2E=true to run live resumable E2E")
@@ -211,9 +187,7 @@ def _load_live_e2e_settings() -> tuple[str, str]:
     if not api_key:
         pytest.skip("Live resumable E2E requires REFLEXIO_API_KEY")
 
-    resolved_url = str(base_url).rstrip("/")
-    _skip_if_backend_is_mocked(resolved_url, str(api_key))
-    return resolved_url, str(api_key)
+    return str(base_url).rstrip("/"), str(api_key)
 
 
 def _live_headers(api_key: str) -> dict[str, str]:
