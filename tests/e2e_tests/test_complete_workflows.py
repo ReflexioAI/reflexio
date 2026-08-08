@@ -355,8 +355,10 @@ def test_profile_upgrade_downgrade_workflow(
     """Test profile upgrade and downgrade workflow."""
     user_id = "test_user_upgrade"
 
-    # Publish all interactions (≥6 exceeds stride=5, triggering auto-extraction
-    # which creates CURRENT profiles).
+    # Publish all interactions, which exceeds the fixture's _E2E_STRIDE_SIZE and
+    # so triggers auto-extraction, creating CURRENT profiles. (Restating the
+    # stride as a literal here is what went stale before: this said "stride=5"
+    # while the default was 8.)
     publish_response = reflexio_instance.publish_interaction(
         {
             "user_id": user_id,
