@@ -286,8 +286,13 @@ def stop_search_metering_worker(timeout: float = 5.0) -> int:
     global _worker  # noqa: PLW0603
     with _worker_lock:
         worker = _worker
-        _worker = None
-    return 0 if worker is None else worker.stop(timeout=timeout)
+    if worker is None:
+        return 0
+    abandoned = worker.stop(timeout=timeout)
+    with _worker_lock:
+        if _worker is worker:
+            _worker = None
+    return abandoned
 
 
 def reset_search_metering_worker_for_tests() -> None:

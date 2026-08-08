@@ -12,7 +12,9 @@ from reflexio.server.services.search_metering_worker import (
     SearchMeteringJob,
     SearchMeteringWorker,
     enqueue_search_metering,
+    get_search_metering_worker,
     reset_search_metering_worker_for_tests,
+    stop_search_metering_worker,
 )
 from reflexio.server.tracing import configure_tracer
 
@@ -32,7 +34,7 @@ def _job(*, surfaced_count: int = 1) -> SearchMeteringJob:
         surfaced_count=surfaced_count,
         record_search_request=True,
         request_id="request-1",
-        trace_context={"sentry-trace": "trace-parent"},
+        trace_context={"trace-context": "trace-parent"},
     )
 
 
@@ -63,7 +65,7 @@ def test_worker_records_both_metrics_and_linked_background_trace(monkeypatch) ->
             self.spans: list[tuple[str, RecordingSpan]] = []
 
         def capture_context(self) -> dict[str, str]:
-            return {"sentry-trace": "trace-parent"}
+            return {"trace-context": "trace-parent"}
 
         @contextmanager
         def transaction(
@@ -94,7 +96,7 @@ def test_worker_records_both_metrics_and_linked_background_trace(monkeypatch) ->
     assert tracer.transactions[0][:3] == (
         "search.metering",
         "queue.process",
-        {"sentry-trace": "trace-parent"},
+        {"trace-context": "trace-parent"},
     )
     assert tracer.transactions[0][3]["surfaced_count"] == 3
     assert [name for name, _span in tracer.spans] == [
@@ -171,6 +173,45 @@ def test_shutdown_abandons_only_queued_tail_after_timeout(monkeypatch) -> None:
     release.set()
     for thread in worker._threads:
         thread.join(timeout=1.0)
+
+
+def test_concurrent_enqueue_during_shutdown_uses_the_drained_worker(
+    monkeypatch,
+) -> None:
+    entered_stop = threading.Event()
+    release_stop = threading.Event()
+    calls: list[str] = []
+    worker = get_search_metering_worker()
+    original_stop = worker.stop
+
+    def blocking_stop(timeout: float = 5.0) -> int:
+        entered_stop.set()
+        assert release_stop.wait(timeout=2.0)
+        return original_stop(timeout=timeout)
+
+    def record_search(**_kwargs) -> bool:
+        calls.append("search_request")
+        return True
+
+    monkeypatch.setattr(worker, "stop", blocking_stop)
+    monkeypatch.setattr(metering, "_meter_search_request", record_search)
+
+    shutdown = threading.Thread(target=stop_search_metering_worker)
+    shutdown.start()
+    assert entered_stop.wait(timeout=1.0)
+    assert enqueue_search_metering(
+        org_id="org-1",
+        caller_type="production_agent",
+        surfaced_count=0,
+        record_search_request=True,
+    )
+    assert worker_module._worker is worker
+
+    release_stop.set()
+    shutdown.join(timeout=2.0)
+    assert not shutdown.is_alive()
+    assert calls == ["search_request"]
+    assert worker_module._worker is None
 
 
 def test_non_production_and_empty_applied_only_jobs_do_not_start_worker(
