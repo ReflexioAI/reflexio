@@ -30,6 +30,7 @@ from reflexio.server.services.storage import session_outcome_identity
 from reflexio.server.services.storage.session_outcome_identity import (
     canonical_json_bytes,
     canonical_session_trajectory,
+    canonical_trajectory_bytes,
     outcome_contract_digest,
     trajectory_digest,
 )
@@ -219,6 +220,57 @@ def test_outcome_contract_digest_changes_when_finalization_rule_changes() -> Non
 def test_trajectory_digest_changes_when_trajectory_data_changes() -> None:
     assert trajectory_digest({"messages": [{"role": "user", "content": "one"}]}) != (
         trajectory_digest({"messages": [{"role": "user", "content": "two"}]})
+    )
+
+
+def test_canonical_trajectory_bytes_returns_exact_utf8_representation() -> None:
+    assert canonical_trajectory_bytes(
+        {"value": 1.5, "message": "caf\N{LATIN SMALL LETTER E WITH ACUTE}"}
+    ) == (b'{"message":"caf\xc3\xa9","value":1.5}')
+
+
+def test_canonical_trajectory_bytes_ignores_mapping_insertion_order() -> None:
+    first = {"messages": [{"content": "hello", "role": "user"}], "session": "s1"}
+    second = {"session": "s1", "messages": [{"role": "user", "content": "hello"}]}
+
+    assert canonical_trajectory_bytes(first) == canonical_trajectory_bytes(second)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        {"value": float("nan")},
+        {"value": 2**53},
+        {"value": object()},
+        {1: "non-string-key"},
+        {"value": "\ud800"},
+    ],
+    ids=[
+        "non-finite-float",
+        "non-ijson-integer",
+        "unsupported-object",
+        "key",
+        "surrogate",
+    ],
+)
+def test_canonical_trajectory_bytes_rejects_the_same_values_as_digest(
+    value: object,
+) -> None:
+    with pytest.raises((TypeError, ValueError)) as digest_error:
+        trajectory_digest(value)
+
+    with pytest.raises(type(digest_error.value)) as bytes_error:
+        canonical_trajectory_bytes(value)
+
+    assert str(bytes_error.value) == str(digest_error.value)
+
+
+def test_trajectory_digest_hashes_canonical_trajectory_bytes() -> None:
+    trajectory = {"messages": [{"role": "user", "content": "hello"}]}
+
+    assert (
+        trajectory_digest(trajectory)
+        == sha256(canonical_trajectory_bytes(trajectory)).hexdigest()
     )
 
 

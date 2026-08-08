@@ -1075,6 +1075,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         self._migrate_user_playbook_publication_staging_columns()
         self._classify_legacy_playbook_optimization_jobs()
         self._enforce_playbook_optimization_job_constraints()
+        self._enforce_playbook_optimization_artifact_constraints()
         self._migrate_retire_profile_change_logs()
         self._migrate_retire_playbook_aggregation_change_logs()
         init_stall_state_table(self.conn)
@@ -2216,6 +2217,95 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             if violations:
                 raise sqlite3.IntegrityError(
                     f"foreign key check failed after optimizer migration: {violations}"
+                )
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+        finally:
+            self.conn.execute(
+                f"PRAGMA foreign_keys={'ON' if foreign_keys_enabled else 'OFF'}"
+            )
+
+    def _enforce_playbook_optimization_artifact_constraints(self) -> None:
+        """Rebuild legacy artifact tables with the current kind allowlist."""
+        table_sql_row = self.conn.execute(
+            """SELECT sql FROM sqlite_master
+               WHERE type = 'table' AND name = 'playbook_optimization_artifacts'"""
+        ).fetchone()
+        if table_sql_row is None:
+            return
+        table_sql = table_sql_row["sql"]
+        artifact_kinds = (
+            "'expected_population_manifest'",
+            "'generation_selection'",
+            "'replay_manifest'",
+            "'candidate'",
+            "'candidate_search_projection'",
+            "'open_world_evidence_bundle'",
+        )
+        if all(artifact_kind in table_sql for artifact_kind in artifact_kinds):
+            return
+
+        foreign_keys_enabled = bool(
+            self.conn.execute("PRAGMA foreign_keys").fetchone()[0]
+        )
+        self.conn.commit()
+        if foreign_keys_enabled:
+            self.conn.execute("PRAGMA foreign_keys=OFF")
+        try:
+            self.conn.execute("BEGIN IMMEDIATE")
+            self.conn.execute(
+                "DROP TABLE IF EXISTS playbook_optimization_artifacts_new"
+            )
+            self.conn.execute(
+                """
+                CREATE TABLE playbook_optimization_artifacts_new (
+                    artifact_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    job_id INTEGER NOT NULL,
+                    artifact_kind TEXT NOT NULL CHECK (artifact_kind IN (
+                        'expected_population_manifest',
+                        'generation_selection',
+                        'replay_manifest',
+                        'candidate',
+                        'candidate_search_projection',
+                        'open_world_evidence_bundle'
+                    )),
+                    content_json TEXT NOT NULL,
+                    content_digest TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    UNIQUE (job_id, artifact_kind),
+                    FOREIGN KEY (job_id)
+                        REFERENCES playbook_optimization_jobs(job_id)
+                        ON DELETE CASCADE
+                )
+                """
+            )
+            self.conn.execute(
+                """
+                INSERT INTO playbook_optimization_artifacts_new (
+                    artifact_id, job_id, artifact_kind, content_json,
+                    content_digest, created_at, updated_at
+                ) SELECT
+                    artifact_id, job_id, artifact_kind, content_json,
+                    content_digest, created_at, updated_at
+                FROM playbook_optimization_artifacts
+                """
+            )
+            self.conn.execute("DROP TABLE playbook_optimization_artifacts")
+            self.conn.execute(
+                "ALTER TABLE playbook_optimization_artifacts_new "
+                "RENAME TO playbook_optimization_artifacts"
+            )
+            self.conn.execute(
+                "CREATE INDEX idx_poa_job ON playbook_optimization_artifacts(job_id)"
+            )
+            violations = self.conn.execute("PRAGMA foreign_key_check").fetchall()
+            if violations:
+                raise sqlite3.IntegrityError(
+                    "foreign key check failed after optimizer artifact migration: "
+                    f"{violations}"
                 )
             self.conn.commit()
         except Exception:
