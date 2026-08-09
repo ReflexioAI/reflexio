@@ -2087,9 +2087,10 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             "CHECK (stage IS NULL OR stage IN",
             "CHECK (terminal_outcome IS NULL OR terminal_outcome IN",
             "'governance_erased'",
-            "'offline_tuner_open_world'",
         )
-        if all(check in table_sql for check in required_checks):
+        if all(check in table_sql for check in required_checks) and (
+            "'offline_tuner_open_world'" not in table_sql
+        ):
             return
         foreign_keys_enabled = bool(
             self.conn.execute("PRAGMA foreign_keys").fetchone()[0]
@@ -2099,6 +2100,10 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             self.conn.execute("PRAGMA foreign_keys=OFF")
         try:
             self.conn.execute("BEGIN IMMEDIATE")
+            sequence_high_water = self._autoincrement_high_water(
+                "playbook_optimization_jobs",
+                "job_id",
+            )
             self.conn.execute("DROP TABLE IF EXISTS playbook_optimization_jobs_new")
             self.conn.execute(
                 """
@@ -2108,7 +2113,6 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                     CHECK (optimizer_kind IN (
                         'gepa',
                         'offline_tuner_replay',
-                        'offline_tuner_open_world',
                         'offline_tuner_legacy',
                         'optimizer_legacy_unknown'
                     )),
@@ -2191,6 +2195,10 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                 "ALTER TABLE playbook_optimization_jobs_new "
                 "RENAME TO playbook_optimization_jobs"
             )
+            self._restore_autoincrement_high_water(
+                "playbook_optimization_jobs",
+                sequence_high_water,
+            )
             self.conn.execute(
                 "CREATE INDEX idx_poj_target "
                 "ON playbook_optimization_jobs(target_kind, target_id)"
@@ -2255,6 +2263,10 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             self.conn.execute("PRAGMA foreign_keys=OFF")
         try:
             self.conn.execute("BEGIN IMMEDIATE")
+            sequence_high_water = self._autoincrement_high_water(
+                "playbook_optimization_artifacts",
+                "artifact_id",
+            )
             self.conn.execute(
                 "DROP TABLE IF EXISTS playbook_optimization_artifacts_new"
             )
@@ -2298,6 +2310,10 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                 "ALTER TABLE playbook_optimization_artifacts_new "
                 "RENAME TO playbook_optimization_artifacts"
             )
+            self._restore_autoincrement_high_water(
+                "playbook_optimization_artifacts",
+                sequence_high_water,
+            )
             self.conn.execute(
                 "CREATE INDEX idx_poa_job ON playbook_optimization_artifacts(job_id)"
             )
@@ -2314,6 +2330,28 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         finally:
             self.conn.execute(
                 f"PRAGMA foreign_keys={'ON' if foreign_keys_enabled else 'OFF'}"
+            )
+
+    def _autoincrement_high_water(self, table_name: str, id_column: str) -> int:
+        sequence_row = self.conn.execute(
+            "SELECT MAX(seq) FROM sqlite_sequence WHERE name = ?",
+            (table_name,),
+        ).fetchone()
+        maximum_row = self.conn.execute(
+            f"SELECT MAX({id_column}) FROM {table_name}"  # noqa: S608
+        ).fetchone()
+        return max(sequence_row[0] or 0, maximum_row[0] or 0)
+
+    def _restore_autoincrement_high_water(
+        self,
+        table_name: str,
+        high_water: int,
+    ) -> None:
+        self.conn.execute("DELETE FROM sqlite_sequence WHERE name = ?", (table_name,))
+        if high_water:
+            self.conn.execute(
+                "INSERT INTO sqlite_sequence(name, seq) VALUES (?, ?)",
+                (table_name, high_water),
             )
 
     def _migrate_retire_profile_change_logs(self) -> None:
@@ -3241,7 +3279,6 @@ CREATE TABLE IF NOT EXISTS playbook_optimization_jobs (
         CHECK (optimizer_kind IN (
             'gepa',
             'offline_tuner_replay',
-            'offline_tuner_open_world',
             'offline_tuner_legacy',
             'optimizer_legacy_unknown'
         )),
