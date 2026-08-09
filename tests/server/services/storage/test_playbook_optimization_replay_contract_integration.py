@@ -14,6 +14,8 @@ from pydantic import ValidationError
 from reflexio.models.api_schema import service_schemas as schemas
 from reflexio.server.services.playbook.publication import canonical_json_bytes
 from reflexio.server.services.storage.error import (
+    OptimizationArtifactIntegrityError,
+    OptimizationJobIdentityConflictError,
     OptimizationJobLeaseLiveError,
     StorageError,
 )
@@ -113,8 +115,19 @@ def test_same_attempt_key_returns_one_active_job(storage: BaseStorage) -> None:
 def test_conflicting_active_identity_is_rejected(storage: BaseStorage) -> None:
     storage.create_or_get_playbook_optimization_job(_replay_job("d1", "a1"))
 
-    with pytest.raises(StorageError, match="immutable optimizer job identity"):
+    with pytest.raises(
+        OptimizationJobIdentityConflictError,
+        match="immutable optimizer job identity",
+    ):
         storage.create_or_get_playbook_optimization_job(_replay_job("d1", "a2"))
+
+
+def test_sqlite_rejects_open_world_optimizer_jobs(storage: BaseStorage) -> None:
+    open_world_job = _replay_job("open-world-discovery", "open-world-attempt")
+    open_world_job.optimizer_kind = "offline_tuner_open_world"
+
+    with pytest.raises(StorageError, match="CHECK constraint failed"):
+        storage.create_or_get_playbook_optimization_job(open_world_job)
 
 
 def test_gepa_publication_reclaim_contract_has_none_live_and_reclaimed_outcomes(
@@ -348,7 +361,10 @@ def test_artifact_upsert_canonicalizes_equivalent_json_and_requires_digest_and_c
             fence=claim.fence,
             now=5_001,
         )
-    with pytest.raises(StorageError, match="artifact digest conflict"):
+    with pytest.raises(
+        OptimizationArtifactIntegrityError,
+        match="artifact digest conflict",
+    ):
         storage.upsert_playbook_optimization_artifact(
             _artifact(
                 job_id=job.job_id,
@@ -357,6 +373,52 @@ def test_artifact_upsert_canonicalizes_equivalent_json_and_requires_digest_and_c
             fence=claim.fence,
             now=5_001,
         )
+
+
+def test_malformed_persisted_artifact_raises_typed_integrity_error(
+    storage: BaseStorage,
+) -> None:
+    job = storage.create_or_get_playbook_optimization_job(_replay_job("d1", "a1"))
+    claim = storage.claim_playbook_optimization_job(
+        job_id=job.job_id,
+        owner="worker-a",
+        lease_seconds=60,
+        now=5_000,
+    )
+    saved = storage.upsert_playbook_optimization_artifact(
+        _artifact(job_id=job.job_id),
+        fence=claim.fence,
+        now=5_001,
+    )
+    assert isinstance(storage, SQLiteStorage)
+    storage.conn.execute(
+        "UPDATE playbook_optimization_artifacts SET content_digest = ? "
+        "WHERE artifact_id = ?",
+        ("f" * 64, saved.artifact_id),
+    )
+    storage.conn.commit()
+
+    with pytest.raises(
+        OptimizationArtifactIntegrityError,
+        match="optimizer artifact row is malformed",
+    ):
+        storage.get_playbook_optimization_artifact(
+            job.job_id,
+            "expected_population_manifest",
+        )
+
+
+def test_artifact_storage_failures_remain_generic(storage: BaseStorage) -> None:
+    assert isinstance(storage, SQLiteStorage)
+    storage.conn.execute("DROP TABLE playbook_optimization_artifacts")
+
+    with pytest.raises(StorageError) as raised:
+        storage.get_playbook_optimization_artifact(
+            1,
+            "expected_population_manifest",
+        )
+
+    assert type(raised.value) is StorageError
 
 
 def test_artifact_model_rejects_malformed_json() -> None:
@@ -472,7 +534,7 @@ def test_previous_artifact_schema_is_upgraded_without_losing_constraints(
                job_id, optimizer_kind, target_kind, target_id, status,
                lease_owner, lease_fence, lease_expires_at, created_at, updated_at
            ) VALUES (
-               41, 'offline_tuner_open_world', 'user_playbook', 9, 'running',
+               41, 'offline_tuner_replay', 'user_playbook', 9, 'running',
                'worker-a', 3, 1000, 101, 102
            )"""
     )
@@ -554,6 +616,113 @@ def test_previous_artifact_schema_is_upgraded_without_losing_constraints(
 
     assert not hasattr(BaseStorage, "load_open_world_evidence_snapshot")
     assert not hasattr(SQLiteStorage, "load_open_world_evidence_snapshot")
+
+
+def test_optimizer_job_rebuild_preserves_deleted_id_high_water_and_repeats(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "legacy-job-sequence.db"
+    _create_legacy_optimizer_schema(db_path)
+    conn = sqlite3.connect(db_path)
+    conn.execute("DELETE FROM playbook_optimization_jobs WHERE job_id IN (5, 6)")
+    conn.commit()
+    conn.close()
+
+    first_store = SQLiteStorage(org_id="job-sequence-first", db_path=str(db_path))
+    first = first_store.create_playbook_optimization_job(_replay_job("d1", "a1"))
+    first_store.conn.close()
+    second_store = SQLiteStorage(org_id="job-sequence-second", db_path=str(db_path))
+    second = second_store.create_playbook_optimization_job(
+        _replay_job("d2", "a2").model_copy(update={"target_id": 42})
+    )
+    second_store.conn.close()
+
+    assert first.job_id == 7
+    assert second.job_id == 8
+
+
+def test_empty_optimizer_job_rebuild_preserves_deleted_id_high_water(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "empty-legacy-job-sequence.db"
+    _create_legacy_optimizer_schema(db_path)
+    conn = sqlite3.connect(db_path)
+    conn.execute("DELETE FROM playbook_optimization_jobs")
+    conn.commit()
+    conn.close()
+
+    store = SQLiteStorage(org_id="empty-job-sequence", db_path=str(db_path))
+    job = store.create_playbook_optimization_job(_replay_job("d1", "a1"))
+    store.conn.close()
+
+    assert job.job_id == 7
+
+
+def test_artifact_rebuild_preserves_deleted_id_high_water_and_repeats(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "legacy-artifact-sequence.db"
+    store = SQLiteStorage(org_id="artifact-sequence-setup", db_path=str(db_path))
+    parent = store.create_playbook_optimization_job(_replay_job("d1", "a1"))
+    store.conn.execute("DROP INDEX idx_poa_job")
+    store.conn.execute("DROP TABLE playbook_optimization_artifacts")
+    store.conn.executescript(
+        """
+        CREATE TABLE playbook_optimization_artifacts (
+            artifact_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_id INTEGER NOT NULL,
+            artifact_kind TEXT NOT NULL CHECK (artifact_kind IN ('candidate')),
+            content_json TEXT NOT NULL,
+            content_digest TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            UNIQUE (job_id, artifact_kind),
+            FOREIGN KEY (job_id) REFERENCES playbook_optimization_jobs(job_id)
+                ON DELETE CASCADE
+        );
+        CREATE INDEX idx_poa_job ON playbook_optimization_artifacts(job_id);
+        """
+    )
+    digest = sha256(b"{}").hexdigest()
+    store.conn.execute(
+        "INSERT INTO playbook_optimization_artifacts VALUES "
+        "(9, ?, 'candidate', '{}', ?, 1, 1)",
+        (parent.job_id, digest),
+    )
+    store.conn.execute("DELETE FROM playbook_optimization_artifacts")
+    store.conn.commit()
+    store.conn.close()
+
+    first_store = SQLiteStorage(org_id="artifact-sequence-first", db_path=str(db_path))
+    first_store.conn.execute(
+        "INSERT INTO playbook_optimization_artifacts "
+        "(job_id, artifact_kind, content_json, content_digest, created_at, updated_at) "
+        "VALUES (?, 'candidate', '{}', ?, 1, 1)",
+        (parent.job_id, digest),
+    )
+    first_id = first_store.conn.execute(
+        "SELECT artifact_id FROM playbook_optimization_artifacts"
+    ).fetchone()[0]
+    first_store.conn.execute("DELETE FROM playbook_optimization_artifacts")
+    first_store.conn.commit()
+    first_store.conn.close()
+
+    second_store = SQLiteStorage(
+        org_id="artifact-sequence-second", db_path=str(db_path)
+    )
+    second_store.conn.execute(
+        "INSERT INTO playbook_optimization_artifacts "
+        "(job_id, artifact_kind, content_json, content_digest, created_at, updated_at) "
+        "VALUES (?, 'candidate', '{}', ?, 1, 1)",
+        (parent.job_id, digest),
+    )
+    second_id = second_store.conn.execute(
+        "SELECT artifact_id FROM playbook_optimization_artifacts"
+    ).fetchone()[0]
+    second_store.conn.close()
+
+    assert first_id == 10
+    assert second_id == 11
 
 
 @pytest.mark.parametrize(

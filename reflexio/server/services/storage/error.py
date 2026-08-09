@@ -22,6 +22,14 @@ class OptimizationJobLeaseLiveError(StorageError):
     """Raised when an optimizer recovery attempt finds a non-expired lease."""
 
 
+class OptimizationJobIdentityConflictError(StorageError):
+    """Raised when one durable optimizer identity resolves to conflicting jobs."""
+
+
+class OptimizationArtifactIntegrityError(StorageError):
+    """Raised when a durable optimizer artifact is malformed or conflicts."""
+
+
 def require_non_empty_session_id(value: Any) -> str:
     """Return a stripped, non-empty request ``session_id`` or raise ``StorageError``.
 
