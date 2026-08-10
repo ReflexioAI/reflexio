@@ -65,28 +65,13 @@ class _HasSource(Protocol):
     def source(self) -> str | None: ...
 
 
-_OUTCOME_SOURCE_MODEL_FACTORIES: tuple[Callable[[str], _HasSource], ...] = (
-    lambda source: Request(
-        request_id="request-1",
-        user_id="user-1",
-        session_id="session-1",
-        source=source,
-    ),
+_STRICT_OUTCOME_SOURCE_INPUT_FACTORIES: tuple[Callable[[str], _HasSource], ...] = (
     lambda source: PublishUserInteractionRequest(
         user_id="user-1",
         session_id="session-1",
         interaction_data_list=[InteractionData(content="hello")],
         source=source,
     ),
-    lambda source: SessionOutcomeRecord(
-        user_id="user-1",
-        session_id="session-1",
-        outcome=SessionOutcomeKind.SUCCESS,
-        occurred_at=1,
-        source=source,
-        created_at=2,
-    ),
-    lambda source: SetSessionOutcomeResponse(success=True, source=source),
     lambda source: GetSessionOutcomesRequest(source=source),
     lambda source: GetRequestsRequest(source=source),
     lambda source: SearchUserProfileRequest(user_id="user-1", source=source),
@@ -96,11 +81,8 @@ _OUTCOME_SOURCE_MODEL_FACTORIES: tuple[Callable[[str], _HasSource], ...] = (
     lambda source: ManualPlaybookGenerationRequest(source=source),
     lambda source: RerunPlaybookGenerationRequest(source=source),
 )
-_OUTCOME_SOURCE_MODEL_IDS = (
-    "request",
+_STRICT_OUTCOME_SOURCE_INPUT_IDS = (
     "publish",
-    "record",
-    "set-response",
     "get-outcomes",
     "get-requests",
     "search-profiles",
@@ -113,9 +95,11 @@ _OUTCOME_SOURCE_MODEL_IDS = (
 
 
 @pytest.mark.parametrize(
-    "factory", _OUTCOME_SOURCE_MODEL_FACTORIES, ids=_OUTCOME_SOURCE_MODEL_IDS
+    "factory",
+    _STRICT_OUTCOME_SOURCE_INPUT_FACTORIES,
+    ids=_STRICT_OUTCOME_SOURCE_INPUT_IDS,
 )
-def test_outcome_source_models_accept_machine_label(
+def test_outcome_source_inputs_accept_machine_label(
     factory: Callable[[str], _HasSource],
 ) -> None:
     assert factory("support-agent:v2").source == "support-agent:v2"
@@ -123,11 +107,14 @@ def test_outcome_source_models_accept_machine_label(
 
 
 @pytest.mark.parametrize(
-    "factory", _OUTCOME_SOURCE_MODEL_FACTORIES, ids=_OUTCOME_SOURCE_MODEL_IDS
+    "factory",
+    _STRICT_OUTCOME_SOURCE_INPUT_FACTORIES,
+    ids=_STRICT_OUTCOME_SOURCE_INPUT_IDS,
 )
 @pytest.mark.parametrize(
     "source",
     [
+        "Legacy Source",
         "alice@example.com",
         "https://example.com/hook",
         "support agent",
@@ -138,7 +125,7 @@ def test_outcome_source_models_accept_machine_label(
         "a" * 129,
     ],
 )
-def test_outcome_source_models_reject_sensitive_or_free_form_values(
+def test_outcome_source_inputs_reject_sensitive_or_free_form_values(
     factory: Callable[[str], _HasSource],
     source: str,
 ) -> None:
@@ -147,12 +134,49 @@ def test_outcome_source_models_reject_sensitive_or_free_form_values(
 
 
 @pytest.mark.parametrize(
-    "factory", _OUTCOME_SOURCE_MODEL_FACTORIES, ids=_OUTCOME_SOURCE_MODEL_IDS
+    "factory",
+    _STRICT_OUTCOME_SOURCE_INPUT_FACTORIES,
+    ids=_STRICT_OUTCOME_SOURCE_INPUT_IDS,
 )
-def test_outcome_source_models_preserve_empty_source(
+def test_outcome_source_inputs_preserve_empty_source(
     factory: Callable[[str], _HasSource],
 ) -> None:
     assert factory("").source == ""
+
+
+_PERSISTED_OUTCOME_SOURCE_MODEL_FACTORIES: tuple[Callable[[str], _HasSource], ...] = (
+    lambda source: Request(
+        request_id="request-1",
+        user_id="user-1",
+        session_id="session-1",
+        source=source,
+    ),
+    lambda source: SessionOutcomeRecord(
+        user_id="user-1",
+        session_id="session-1",
+        outcome=SessionOutcomeKind.SUCCESS,
+        occurred_at=1,
+        source=source,
+        created_at=2,
+    ),
+    lambda source: SetSessionOutcomeResponse(success=True, source=source),
+)
+
+
+@pytest.mark.parametrize(
+    "factory",
+    _PERSISTED_OUTCOME_SOURCE_MODEL_FACTORIES,
+    ids=("request", "outcome", "finalization-response"),
+)
+@pytest.mark.parametrize(
+    "source",
+    ["Legacy Source", "legacy/source", "legacy-sourcé", "x" * 256],
+)
+def test_persisted_outcome_source_models_preserve_legacy_values(
+    factory: Callable[[str], _HasSource],
+    source: str,
+) -> None:
+    assert factory(source).source == source
 
 
 def test_optional_outcome_source_models_preserve_absence() -> None:

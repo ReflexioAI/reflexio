@@ -241,6 +241,10 @@ Publish request fields:
 | `force_extraction` | No | `False` for normal background publishing. `True` for manual learn-now, tests, or final flushes where you intentionally want extraction to run immediately. | `false` |
 | `wait_for_response` | SDK/query option | `False` on interactive paths. `True` only when the caller is prepared to wait for extraction results. | `false` |
 
+The source contract applies to new publish and filter inputs. Read responses may
+return historical source values created before this contract; Reflexio preserves
+those values exactly because source participates in session-outcome identity.
+
 Each interaction row should resemble Reflexio's `InteractionData` shape:
 
 ```json

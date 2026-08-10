@@ -10,6 +10,8 @@ from reflexio.models.api_schema.domain import (
     GetSessionOutcomesRequest,
     Request,
     SessionOutcomeKind,
+    SetSessionOutcomeRequest,
+    SetSessionOutcomeResponse,
 )
 from reflexio.server.services.storage.session_outcome_identity import (
     outcome_contract_digest,
@@ -18,6 +20,7 @@ from reflexio.server.services.storage.session_outcome_identity import (
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 from reflexio.server.services.storage.sqlite_storage._base import (
     _canonical_session_snapshot,
+    _epoch_to_iso,
     _prefetch_canonical_session_trajectory_digests,
 )
 
@@ -142,7 +145,7 @@ def test_migration_preserves_populated_legacy_outcomes_with_unambiguous_ids(
             "session_id": "c",
             "outcome": "success",
             "occurred_at": 101,
-            "source": "legacy-source-one",
+            "source": "Legacy Source",
             "label": "resolved:one",
             "value": 2.5,
             "metadata": {"nested": {"a": 1}, "legacy": True},
@@ -162,16 +165,23 @@ def test_migration_preserves_populated_legacy_outcomes_with_unambiguous_ids(
             "created_at": 202,
         },
     ]
-    for row in legacy_rows:
-        storage.add_request(
-            Request(
-                request_id=f"request-{row['session_id']}",
-                user_id=row["user_id"],
-                session_id=row["session_id"],
-                source=row["source"],
-                created_at=row["occurred_at"] - 1,
+    storage.conn.executemany(
+        """INSERT INTO requests (
+               request_id, user_id, created_at, source, session_id,
+               governance_subject_ref
+           ) VALUES (?, ?, ?, ?, ?, ?)""",
+        [
+            (
+                f"request-{row['session_id']}",
+                row["user_id"],
+                _epoch_to_iso(row["occurred_at"] - 1),
+                row["source"],
+                row["session_id"],
+                row["governance_subject_ref"],
             )
-        )
+            for row in legacy_rows
+        ],
+    )
     storage.conn.execute("DROP TABLE session_outcomes")
     storage.conn.executescript(_LEGACY_SESSION_OUTCOMES_DDL)
     for row in legacy_rows:
@@ -214,6 +224,9 @@ def test_migration_preserves_populated_legacy_outcomes_with_unambiguous_ids(
     assert records_by_session["c"].outcome_id == sha256(b'["a:b","c"]').hexdigest()
     assert records_by_session["b:c"].outcome_id == sha256(b'["a","b:c"]').hexdigest()
     assert records_by_session["c"].outcome_id != records_by_session["b:c"].outcome_id
+    persisted_request = migrated.get_request("request-c")
+    assert persisted_request is not None
+    assert persisted_request.source == "Legacy Source"
 
     for row in legacy_rows:
         record = records_by_session[row["session_id"]]
@@ -240,6 +253,43 @@ def test_migration_preserves_populated_legacy_outcomes_with_unambiguous_ids(
         assert record.finalized_trajectory_digest == trajectory_digest(
             _canonical_session_snapshot(migrated.conn, row["session_id"])
         )
+
+    legacy_identity_before = dict(rows_by_session["c"])
+    retry = migrated.record_session_outcome(
+        SetSessionOutcomeRequest(
+            session_id="c",
+            outcome=SessionOutcomeKind.SUCCESS,
+            occurred_at=101,
+            label="resolved:one",
+            value=2.5,
+            metadata={"nested": {"a": 1}, "legacy": True},
+        ),
+        created_at=103,
+        expected_context=migrated.get_session_outcome_context("c"),
+    )
+    response = SetSessionOutcomeResponse(
+        success=True,
+        recorded=retry.recorded,
+        user_id=retry.user_id,
+        source=retry.source,
+        outcome_id=retry.outcome_id,
+        outcome_revision=retry.outcome_revision,
+        outcome_contract_digest=retry.outcome_contract_digest,
+        finalized_trajectory_digest=retry.finalized_trajectory_digest,
+    )
+    legacy_identity_after = dict(
+        migrated.conn.execute(
+            "SELECT * FROM session_outcomes WHERE session_id = ?", ("c",)
+        ).fetchone()
+    )
+
+    assert retry.recorded is False
+    assert retry.reason is None
+    assert response.source == "Legacy Source"
+    assert legacy_identity_after == legacy_identity_before
+    assert legacy_identity_after["outcome_contract_digest"] == (
+        "a3faaa8073272084ffdcb3d1b12c410676829d8376495062b9600e55bfcc4dd4"
+    )
 
 
 def test_migration_defaults_null_legacy_outcome_revision_to_one(tmp_path) -> None:

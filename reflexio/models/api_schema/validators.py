@@ -21,7 +21,7 @@ import socket
 from typing import Annotated, Any, Literal
 from urllib.parse import urlparse
 
-from pydantic import AfterValidator, HttpUrl, StringConstraints
+from pydantic import AfterValidator, HttpUrl, StringConstraints, TypeAdapter
 
 # Embedding vector dimensions — must match config_schema.EMBEDDING_DIMENSIONS.
 # Duplicated here to avoid circular imports (config_schema imports from this module).
@@ -114,6 +114,16 @@ SessionOutcomeSource = (
     ]
 )
 """Outcome producer/workflow label; empty preserves the existing absent-source value."""
+
+PersistedSessionOutcomeSource = str
+"""Historical outcome source returned exactly as stored, without new-input validation."""
+
+_SESSION_OUTCOME_SOURCE_ADAPTER = TypeAdapter(SessionOutcomeSource)
+
+
+def validate_session_outcome_source(value: str) -> SessionOutcomeSource:
+    """Validate an outcome source before writing a new request."""
+    return _SESSION_OUTCOME_SOURCE_ADAPTER.validate_python(value)
 
 
 # =============================================================================

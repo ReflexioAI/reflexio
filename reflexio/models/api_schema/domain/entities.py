@@ -26,6 +26,7 @@ from ..common import (
 from ..validators import (
     EmbeddingVector,
     NonEmptyStr,
+    PersistedSessionOutcomeSource,
     SessionOutcomeSource,
     TimeRangeValidatorMixin,
     _validate_image_url,
@@ -279,8 +280,8 @@ class Request(BaseModel):
         user_id (str): Owner of the request.
         created_at (int): Unix epoch seconds at request creation. Defaults
             to the current UTC time.
-        source (str): Non-sensitive producer/workflow label. Non-empty values
-            use the session outcome source contract.
+        source (str): Producer/workflow label. Persisted reads preserve legacy
+            values verbatim; new publish inputs use the strict source contract.
         agent_version (str): The agent version that handled this request.
         session_id (str): Non-empty session this request belongs to.
         evaluation_only (bool): Whether this request is stored for
@@ -295,7 +296,7 @@ class Request(BaseModel):
     request_id: str
     user_id: str
     created_at: int = Field(default_factory=lambda: int(datetime.now(UTC).timestamp()))
-    source: SessionOutcomeSource = ""
+    source: PersistedSessionOutcomeSource = ""
     agent_version: str = ""
     session_id: NonEmptyStr
     evaluation_only: bool = False
@@ -831,13 +832,15 @@ class DeleteSessionResponse(BaseModel):
 
 
 class SessionOutcomeRecord(BaseModel):
+    """Persisted outcome row, including its immutable historical source."""
+
     outcome_id: NonEmptyStr | None = None
     outcome_revision: int | None = Field(default=None, ge=1)
     user_id: str
     session_id: NonEmptyStr
     outcome: SessionOutcomeKind
     occurred_at: int = Field(ge=0)
-    source: SessionOutcomeSource
+    source: PersistedSessionOutcomeSource
     label: str | None = Field(default=None, max_length=128)
     value: float | None = Field(default=None, allow_inf_nan=False)
     metadata: dict[str, Any] | None = None
@@ -914,7 +917,7 @@ class SetSessionOutcomeResponse(BaseModel):
     reason: SessionOutcomeFailureReason | None = None
     message: str = ""
     user_id: str | None = None
-    source: SessionOutcomeSource | None = None
+    source: PersistedSessionOutcomeSource | None = None
     outcome_id: NonEmptyStr | None = None
     outcome_revision: int | None = Field(default=None, ge=1)
     outcome_contract_digest: Sha256Digest | None = None
