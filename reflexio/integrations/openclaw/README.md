@@ -74,8 +74,7 @@ and `openclaw-smart repair`.
   `force_extraction=True` so the session's learnings are available before
   the next openClaw run.
 
-The full design lives in
-[`docs/superpowers/specs/2026-05-19-openclaw-smart-design.md`](../../../../docs/superpowers/specs/2026-05-19-openclaw-smart-design.md).
+A detailed design note also exists in Reflexio's private enterprise planning docs; it is not part of this standalone open-source package.
 
 ## Skills
 
