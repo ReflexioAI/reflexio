@@ -10,7 +10,10 @@ if TYPE_CHECKING:
     from reflexio.server.api_endpoints.request_context import RequestContext
     from reflexio.server.llm.litellm_client import LiteLLMClient
     from reflexio.server.services.deferred_learning_plan import GenerationComputePlan
-    from reflexio.server.services.storage.storage_base import BaseStorage
+    from reflexio.server.services.storage.storage_base import (
+        AgentRunRecord,
+        BaseStorage,
+    )
 
 from reflexio.models.api_schema.common import sanitise_for_log
 from reflexio.models.api_schema.domain.entities import LineageContext
@@ -45,6 +48,10 @@ from reflexio.server.services.playbook.playbook_service_utils import (
     has_expert_content,
     is_evidence_validated,
     uses_evidence_grounded_extraction,
+)
+from reflexio.server.services.playbook.review_window import (
+    PlaybookReviewWindowError,
+    reconstruct_playbook_review_window,
 )
 from reflexio.server.services.service_utils import (
     extract_interactions_from_request_interaction_data_models,
@@ -98,13 +105,20 @@ class PlaybookGenerationServiceConfig:
 
     request_id: str
     agent_version: str
-    user_id: str | None = None
+    user_id: str
     source: str | None = None
     allow_manual_trigger: bool = False
     rerun_start_time: int | None = None
     rerun_end_time: int | None = None
     auto_run: bool = True
     force_extraction: bool = False
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.user_id, str):
+            raise ValueError("Playbook generation requires a non-empty user_id")
+        self.user_id = self.user_id.strip()
+        if not self.user_id:
+            raise ValueError("Playbook generation requires a non-empty user_id")
 
 
 def _consolidation_search_keys(playbooks: list[UserPlaybook]) -> set[str]:
@@ -155,6 +169,7 @@ class PlaybookGenerationService(
         self.output_pending_status = output_pending_status
         self.skip_aggregation = skip_aggregation
         self._review_window_cache: list[RequestInteractionDataModel] | None = None
+        self._review_run: AgentRunRecord | None = None
 
     def _load_generation_service_config(
         self, request: PlaybookGenerationRequest
@@ -171,6 +186,7 @@ class PlaybookGenerationService(
         # One service instance can process multiple users in a batch. Never let
         # a review window loaded for the previous request cross that boundary.
         self._review_window_cache = None
+        self._review_run = None
         generation_request_id = request.request_id
         return PlaybookGenerationServiceConfig(
             request_id=generation_request_id,
@@ -189,37 +205,52 @@ class PlaybookGenerationService(
         return getattr(root_config, "user_playbook_extractor_config", None)
 
     def _review_interaction_window(
-        self, playbook_config: PlaybookConfig
+        self, _candidates: list[UserPlaybook]
     ) -> list[RequestInteractionDataModel]:
-        """Load the interaction window the reviewer reasons over, once per run.
-
-        The reviewer needs the same chronology extraction saw. Extraction runs in
-        a separate step that does not hand its window back, so this reloads it —
-        memoized because ``_resolve_write_plan`` may be reached more than once for
-        one generation.
-
-        Args:
-            playbook_config (PlaybookConfig): Config whose window/source filters
-                define the interaction window.
-
-        Returns:
-            list[RequestInteractionDataModel]: The reloaded interaction window.
-
-        Raises:
-            RuntimeError: If the configured source filter excludes the reviewer
-                reload after extraction already produced candidates.
-        """
+        """Reconstruct the exact persisted extraction window once per run."""
         if self._review_window_cache is None:
             if self.service_config is None:
-                raise RuntimeError("service_config must be set before review")
-            loaded_window = self._create_extractor(
-                playbook_config, self.service_config
-            )._get_interactions()
-            if loaded_window is None:
-                raise RuntimeError(
-                    "Normal playbook review source filter excluded its interaction window"
+                raise PlaybookReviewWindowError(
+                    "service_config must be set before playbook review"
                 )
-            self._review_window_cache = loaded_window
+            if not self.service_config.user_id:
+                raise PlaybookReviewWindowError(
+                    "Normal playbook review has no owning user_id"
+                )
+
+            run = self._review_run
+            if run is None:
+                if len(self._last_extraction_run_ids) != 1:
+                    raise PlaybookReviewWindowError(
+                        "Normal playbook review has no unambiguous extraction run"
+                    )
+                run = self.storage.get_agent_run(  # type: ignore[reportOptionalMemberAccess]
+                    self._last_extraction_run_ids[0]
+                )
+            if run is None:
+                raise PlaybookReviewWindowError(
+                    "Normal playbook review extraction run is missing"
+                )
+
+            binding = run.binding
+            if (
+                binding.extractor_kind != "playbook"
+                or binding.org_id != self.request_context.org_id
+                or binding.user_id != self.service_config.user_id
+                or binding.request_id != self.service_config.request_id
+            ):
+                raise PlaybookReviewWindowError(
+                    "Normal playbook review extraction run does not match its request"
+                )
+
+            self._review_window_cache = reconstruct_playbook_review_window(
+                storage=self.storage,  # type: ignore[arg-type]
+                source_interaction_ids=binding.source_interaction_ids,
+                user_id=self.service_config.user_id,
+                subject=(
+                    f"Playbook generation request {self.service_config.request_id}"
+                ),
+            )
         return self._review_window_cache
 
     def _load_extractor_config(self) -> PlaybookConfig | None:
@@ -406,10 +437,10 @@ class PlaybookGenerationService(
             and self.service_config is not None
             and os.getenv("MOCK_LLM_RESPONSE", "").lower() != "true"
         ):
-            review_interactions = self._review_interaction_window(playbook_config)
+            review_interactions = self._review_interaction_window(all_playbooks)
             if not review_interactions:
-                raise RuntimeError(
-                    "Normal playbook review could not reload its interaction window"
+                raise PlaybookReviewWindowError(
+                    "Normal playbook review could not reconstruct its interaction window"
                 )
             flat_review_interactions = (
                 extract_interactions_from_request_interaction_data_models(
@@ -637,6 +668,7 @@ class PlaybookGenerationService(
         all_playbooks: list[UserPlaybook],
         *,
         model_provenance: ModelProvenance | None = None,
+        extraction_run: AgentRunRecord | None = None,
     ) -> list[UserPlaybook]:
         """Permanent V3 wrapper: compute→persist→schedulers together (no fence).
 
@@ -649,7 +681,16 @@ class PlaybookGenerationService(
         """
         if model_provenance is not None:
             self._last_model_provenance = model_provenance
-        plan = self._resolve_write_plan([all_playbooks])
+        previous_review_run = self._review_run
+        previous_review_window = self._review_window_cache
+        if extraction_run is not None:
+            self._review_run = extraction_run
+            self._review_window_cache = None
+        try:
+            plan = self._resolve_write_plan([all_playbooks])
+        finally:
+            self._review_run = previous_review_run
+            self._review_window_cache = previous_review_window
         if plan is None:
             return []
         with self.storage.commit_scope():  # type: ignore[reportOptionalMemberAccess]

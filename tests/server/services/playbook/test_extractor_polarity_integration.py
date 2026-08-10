@@ -116,6 +116,7 @@ def service_config():
     return PlaybookGenerationServiceConfig(
         agent_version="1.0.0",
         request_id="test_request",
+        user_id="test_user",
         source="api",
     )
 
@@ -125,7 +126,7 @@ def neutral_request_interaction_models():
     """A neutral window — user is satisfied, no pushback / failure evidence."""
     request = Request(
         request_id="req_neutral",
-        user_id="user_neutral",
+        user_id="test_user",
         session_id="test_session",
         created_at=1000,
         source="api",
@@ -133,7 +134,7 @@ def neutral_request_interaction_models():
     interactions = [
         Interaction(
             interaction_id=101,
-            user_id="user_neutral",
+            user_id="test_user",
             content="Can you summarize my last invoice?",
             request_id="req_neutral",
             created_at=1000,
@@ -141,7 +142,7 @@ def neutral_request_interaction_models():
         ),
         Interaction(
             interaction_id=102,
-            user_id="user_neutral",
+            user_id="test_user",
             content="Here is the summary of your last invoice: ...",
             request_id="req_neutral",
             created_at=1001,
@@ -149,7 +150,7 @@ def neutral_request_interaction_models():
         ),
         Interaction(
             interaction_id=103,
-            user_id="user_neutral",
+            user_id="test_user",
             content="Thanks, that's exactly what I needed.",
             request_id="req_neutral",
             created_at=1002,
@@ -170,7 +171,7 @@ def failure_request_interaction_models():
     """A failure-evidence window — user pushes back on the agent's response."""
     request = Request(
         request_id="req_failure",
-        user_id="user_failure",
+        user_id="test_user",
         session_id="test_session",
         created_at=2000,
         source="api",
@@ -178,7 +179,7 @@ def failure_request_interaction_models():
     interactions = [
         Interaction(
             interaction_id=201,
-            user_id="user_failure",
+            user_id="test_user",
             content="Please cancel my subscription.",
             request_id="req_failure",
             created_at=2000,
@@ -186,7 +187,7 @@ def failure_request_interaction_models():
         ),
         Interaction(
             interaction_id=202,
-            user_id="user_failure",
+            user_id="test_user",
             content="Can you confirm you want to cancel? Are you sure?",
             request_id="req_failure",
             created_at=2001,
@@ -194,7 +195,7 @@ def failure_request_interaction_models():
         ),
         Interaction(
             interaction_id=203,
-            user_id="user_failure",
+            user_id="test_user",
             content="I already said yes, stop asking me to confirm.",
             request_id="req_failure",
             created_at=2002,

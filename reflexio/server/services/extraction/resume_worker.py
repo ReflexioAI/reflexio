@@ -6,6 +6,7 @@ import logging
 import uuid
 from collections import defaultdict
 from collections.abc import Callable, Sequence
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -45,6 +46,9 @@ from reflexio.server.services.playbook.playbook_service_utils import (
     construct_playbook_extraction_messages_from_sessions,
     has_expert_content,
     uses_evidence_grounded_extraction,
+)
+from reflexio.server.services.playbook.review_window import (
+    infer_playbook_review_user_id,
 )
 from reflexio.server.services.playbook.service import (
     PlaybookGenerationService,
@@ -256,6 +260,19 @@ class ExtractionResumeWorker:
             resumed += 1
         return resumed
 
+    def _with_resolved_playbook_user_id(self, run: AgentRunRecord) -> AgentRunRecord:
+        """Return a playbook run with a proven owner for legacy nullable rows."""
+        if run.binding.extractor_kind != "playbook":
+            return run
+        if run.binding.user_id and run.binding.user_id.strip():
+            return run
+        user_id = infer_playbook_review_user_id(
+            storage=self.storage,
+            source_interaction_ids=run.binding.source_interaction_ids,
+            subject=f"Playbook extraction run {run.id}",
+        )
+        return replace(run, binding=replace(run.binding, user_id=user_id))
+
     def run_once(self) -> AgentRunRecord | None:
         config = self.request_context.configurator.get_config()
         pending_config = config.pending_tool_call_config
@@ -283,6 +300,7 @@ class ExtractionResumeWorker:
             )
 
         try:
+            run = self._with_resolved_playbook_user_id(run)
             resolved_calls = self._load_resolved_tool_calls(run)
             if not resolved_calls:
                 raise ResumeWorkerError(
@@ -360,6 +378,7 @@ class ExtractionResumeWorker:
         config = self.request_context.configurator.get_config()
         pending_config = config.pending_tool_call_config
         try:
+            run = self._with_resolved_playbook_user_id(run)
             items, pending_tool_call_ids, model_provenance = (
                 self._items_from_committed_output(run)
             )
@@ -557,12 +576,15 @@ class ExtractionResumeWorker:
     ) -> tuple[list[Any], list[str], ModelProvenance | None]:
         if not isinstance(extractor_config, PlaybookConfig):
             raise ResumeWorkerError("Expected playbook extractor config")
+        user_id = run.binding.user_id
+        if not user_id:
+            raise ResumeWorkerError("Playbook resume requires user_id")
 
         agent_context = self.request_context.configurator.get_agent_context()
         service_config = PlaybookGenerationServiceConfig(
             request_id=run.binding.request_id,
             agent_version=run.binding.agent_version or "",
-            user_id=run.binding.user_id,
+            user_id=user_id,
             source=run.binding.source,
             auto_run=False,
             force_extraction=True,
@@ -802,6 +824,9 @@ class ExtractionResumeWorker:
     ) -> tuple[list[Any], list[str]]:
         if not isinstance(extractor_config, PlaybookConfig):
             raise ResumeWorkerError("Expected playbook extractor config")
+        user_id = run.binding.user_id
+        if not user_id:
+            raise ResumeWorkerError("Playbook finalization retry requires user_id")
         expert_mode = has_expert_content(
             extract_interactions_from_request_interaction_data_models(
                 request_interaction_data_models
@@ -840,7 +865,7 @@ class ExtractionResumeWorker:
         service_config = PlaybookGenerationServiceConfig(
             request_id=run.binding.request_id,
             agent_version=run.binding.agent_version or "",
-            user_id=run.binding.user_id,
+            user_id=user_id,
             source=run.binding.source,
             auto_run=False,
             force_extraction=True,
@@ -892,6 +917,9 @@ class ExtractionResumeWorker:
             )
             return
         if run.binding.extractor_kind == "playbook":
+            user_id = run.binding.user_id
+            if not user_id:
+                raise ResumeWorkerError("Playbook finalization requires user_id")
             service = PlaybookGenerationService(
                 llm_client=self.client,
                 request_context=self.request_context,
@@ -899,13 +927,15 @@ class ExtractionResumeWorker:
             service.service_config = PlaybookGenerationServiceConfig(
                 request_id=run.binding.request_id,
                 agent_version=run.binding.agent_version or "",
-                user_id=run.binding.user_id,
+                user_id=user_id,
                 source=run.binding.source,
                 auto_run=False,
                 force_extraction=True,
             )
             persisted_items = service._finalize_extracted_items(
-                items, model_provenance=model_provenance
+                items,
+                model_provenance=model_provenance,
+                extraction_run=run,
             )
             self._record_finalized_learnings(
                 run, persisted_items or [], entity_type="user_playbook"

@@ -129,6 +129,7 @@ def _minimal_playbook_service_config() -> PlaybookGenerationServiceConfig:
     return PlaybookGenerationServiceConfig(
         agent_version="1.0.0",
         request_id=_EVAL_REQUEST_ID,
+        user_id=_EVAL_USER_ID,
         source="api",
     )
 

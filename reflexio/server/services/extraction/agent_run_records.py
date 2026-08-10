@@ -46,7 +46,7 @@ def build_extractor_agent_run_record(
     *,
     org_id: str,
     extractor_kind: str,
-    user_id: str | None,
+    user_id: str,
     agent_version: str | None,
     source: str | None,
     request_interaction_data_models: list[RequestInteractionDataModel],
@@ -57,6 +57,19 @@ def build_extractor_agent_run_record(
     generation_request_id: str | None = None,
     request_id: str | None = None,
 ) -> AgentRunRecord:
+    user_id = user_id.strip()
+    if not user_id:
+        raise ValueError("Durable extraction runs require a non-empty user_id")
+    if any(
+        data_model.request.user_id != user_id
+        or any(
+            interaction.user_id != user_id for interaction in data_model.interactions
+        )
+        for data_model in request_interaction_data_models
+    ):
+        raise ValueError(
+            "Durable extraction run source evidence must belong to its user_id"
+        )
     if generation_request_id is not None:
         if request_id is not None and request_id != generation_request_id:
             raise TypeError(

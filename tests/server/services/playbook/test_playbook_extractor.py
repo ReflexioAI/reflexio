@@ -124,13 +124,14 @@ def service_config():
     return PlaybookGenerationServiceConfig(
         agent_version="1.0.0",
         request_id="test_request",
+        user_id="user1",
         source="api",
     )
 
 
 @pytest.fixture
 def sample_interactions():
-    """Create sample interactions from multiple users for testing."""
+    """Create sample interactions for the configured playbook owner."""
     return [
         Interaction(
             interaction_id=1,
@@ -150,7 +151,7 @@ def sample_interactions():
         ),
         Interaction(
             interaction_id=3,
-            user_id="user2",
+            user_id="user1",
             content="Could be faster",
             request_id="req2",
             created_at=1002,
@@ -171,7 +172,7 @@ def sample_request_interaction_models(sample_interactions):
     )
     request2 = Request(
         request_id="req2",
-        user_id="user2",
+        user_id="user1",
         session_id="test_session",
         created_at=1002,
         source="api",
@@ -257,18 +258,18 @@ class TestOperationStateKey:
 
 
 # ===============================
-# Test: Get Interactions (Not User-Scoped)
+# Test: Get Interactions
 # ===============================
 
 
 class TestGetInteractions:
-    """Tests for interaction collection logic (not user-scoped).
+    """Tests for user-scoped interaction collection logic.
 
     Note: Stride checking is handled upstream by BaseGenerationService._filter_configs_by_stride()
     before the extractor is created, so stride_size tests are at the service level.
     """
 
-    def test_passes_none_user_id_to_storage(
+    def test_passes_user_id_to_storage(
         self,
         request_context,
         mock_llm_client,
@@ -300,7 +301,7 @@ class TestGetInteractions:
         call_kwargs = request_context.storage.get_last_k_interactions_grouped.call_args[
             1
         ]
-        assert call_kwargs["user_id"] is None  # service_config.user_id is None
+        assert call_kwargs["user_id"] == "user1"
 
     def test_returns_interactions(
         self,
@@ -333,14 +334,14 @@ class TestGetInteractions:
         assert result is not None
         assert len(result) == 2  # Two sessions
 
-    def test_uses_window_size_with_none_user_id(
+    def test_uses_window_size_with_user_id(
         self,
         request_context,
         mock_llm_client,
         service_config,
         sample_request_interaction_models,
     ):
-        """Test that window size is used with user_id=None for all users."""
+        """Test that window size and required user scope are passed together."""
         config = PlaybookConfig(
             extractor_name="quality_playbook",
             extraction_definition_prompt="Evaluate agent quality",
@@ -362,12 +363,12 @@ class TestGetInteractions:
 
         extractor._get_interactions()
 
-        # Verify get_last_k_interactions_grouped was called with user_id=None
+        # Verify get_last_k_interactions_grouped received the required user scope.
         request_context.storage.get_last_k_interactions_grouped.assert_called_once()
         call_kwargs = request_context.storage.get_last_k_interactions_grouped.call_args[
             1
         ]
-        assert call_kwargs["user_id"] is None
+        assert call_kwargs["user_id"] == "user1"
         assert call_kwargs["k"] == 50
 
     def test_none_sources_enabled_gets_all_sources(
@@ -414,14 +415,14 @@ class TestGetInteractions:
 class TestUpdateOperationState:
     """Tests for operation state update logic."""
 
-    def test_run_bookmark_advance_carries_all_users_interactions(
+    def test_run_bookmark_advance_carries_returned_interactions(
         self,
         request_context,
         mock_llm_client,
         service_config,
         sample_request_interaction_models,
     ):
-        """run()'s outcome.bookmark_advance carries interactions from all users.
+        """run()'s outcome.bookmark_advance carries the returned interactions.
 
         The extractor no longer self-advances the bookmark (F1); it defers the
         advance onto the ExtractionOutcome for persist to apply atomically with
@@ -468,14 +469,14 @@ class TestUpdateOperationState:
 class TestRun:
     """Integration tests for the run() method."""
 
-    def test_run_collects_interactions_from_all_users(
+    def test_run_queries_interactions_for_required_user(
         self,
         request_context,
         mock_llm_client,
         service_config,
         sample_request_interaction_models,
     ):
-        """Test that run() collects interactions from all users."""
+        """Test that run() keeps storage discovery scoped to its user."""
         config = PlaybookConfig(
             extractor_name="quality_playbook",
             extraction_definition_prompt="Evaluate agent quality",
@@ -497,11 +498,11 @@ class TestRun:
         with patch.dict(os.environ, {"MOCK_LLM_RESPONSE": "true"}):
             extractor.run()
 
-        # Verify storage was queried with user_id=None
+        # Verify storage was queried with the required user ID.
         call_kwargs = request_context.storage.get_last_k_interactions_grouped.call_args[
             1
         ]
-        assert call_kwargs["user_id"] is None
+        assert call_kwargs["user_id"] == "user1"
 
     def test_run_returns_user_playbook(
         self,
@@ -703,7 +704,7 @@ class TestResumableAgentPath:
             patch.dict(os.environ, {"MOCK_LLM_RESPONSE": "false"}),
         ):
             playbooks = extractor.extract_playbook_entries(
-                sample_request_interaction_models
+                sample_request_interaction_models[:1]
             )
 
         assert len(playbooks) == 1
@@ -718,9 +719,9 @@ class TestResumableAgentPath:
         assert run is not None
         assert run.status == AgentRunStatus.AGENT_COMPLETED
         assert run.binding.org_id == "test_org"
-        assert run.binding.user_id is None
+        assert run.binding.user_id == "user1"
         assert run.binding.extractor_kind == "playbook"
-        assert run.binding.source_interaction_ids == [1, 2, 3]
+        assert run.binding.source_interaction_ids == [1, 2]
         assert run.generation_request_snapshot["output_schema_name"] == (
             "StructuredReferencedExtractedPlaybookList"
         )

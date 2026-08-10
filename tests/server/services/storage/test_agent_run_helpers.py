@@ -126,6 +126,42 @@ def test_build_extractor_agent_run_record_accepts_legacy_request_id_keyword():
     assert run.generation_request_snapshot["request_id"] == "legacy_req"
 
 
+@pytest.mark.parametrize("user_id", ["", "   "])
+def test_build_extractor_agent_run_record_requires_non_empty_user_id(user_id):
+    with pytest.raises(ValueError, match="non-empty user_id"):
+        build_extractor_agent_run_record(
+            org_id="org_1",
+            extractor_kind="playbook",
+            user_id=user_id,
+            generation_request_id="request_1",
+            agent_version="v1",
+            source="api",
+            request_interaction_data_models=_request_interaction_data_models(),
+            extractor_config=_ExtractorConfig(),
+            service_config={"request_id": "request_1"},
+            agent_context="context",
+        )
+
+
+def test_build_extractor_agent_run_record_rejects_cross_user_source_evidence():
+    request_models = _request_interaction_data_models()
+    request_models[0].interactions[0].user_id = "user_2"
+
+    with pytest.raises(ValueError, match="source evidence must belong"):
+        build_extractor_agent_run_record(
+            org_id="org_1",
+            extractor_kind="playbook",
+            user_id="user_1",
+            generation_request_id="request_1",
+            agent_version="v1",
+            source="api",
+            request_interaction_data_models=request_models,
+            extractor_config=_ExtractorConfig(),
+            service_config={"request_id": "request_1"},
+            agent_context="context",
+        )
+
+
 def test_build_extractor_agent_run_record_rejects_mismatched_request_id_alias():
     request_interaction_data_models = _request_interaction_data_models()
 
