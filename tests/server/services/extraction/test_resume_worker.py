@@ -203,7 +203,7 @@ def test_legacy_playbook_run_fails_closed_when_source_evidence_is_missing(
     _seed_interactions(storage)
     worker = ExtractionResumeWorker(request_context=request_context)
 
-    with pytest.raises(ValueError, match="missing persisted.*interactions"):
+    with pytest.raises(ValueError, match=r"missing persisted.*interactions"):
         worker._with_resolved_playbook_user_id(_legacy_ownerless_playbook_run([1, 999]))
 
 
