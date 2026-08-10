@@ -3665,6 +3665,39 @@ class TestLitellmIntegration:
         assert payload.model == "gpt-5-mini"
         assert payload.llm_provider == "openai"
 
+    def test_isolated_worker_error_retains_upstream_type(self, monkeypatch):
+        """The parent wrapper must retain enough type data for log severity."""
+        client = LiteLLMClient(LiteLLMConfig(model="gpt-5-mini"))
+        result_queue = MagicMock()
+        result_queue.get.return_value = (
+            "error",
+            _CompletionErrorSnapshot(
+                type_name="APIConnectionError",
+                message="connection failed",
+                model="gpt-5-mini",
+                llm_provider="openai",
+            ),
+        )
+        process = MagicMock()
+        process.is_alive.return_value = False
+        process_context = MagicMock()
+        process_context.Queue.return_value = result_queue
+        process_context.Process.return_value = process
+        monkeypatch.setattr(multiprocessing, "get_context", lambda: process_context)
+        monkeypatch.setattr(
+            client, "_should_process_isolate_completion", lambda *_args: True
+        )
+        params = {
+            "model": "gpt-5-mini",
+            "messages": self._messages(),
+            "timeout": 0.5,
+        }
+
+        with pytest.raises(LiteLLMClientError) as exc_info:
+            client._completion_with_hard_timeout(params, hard_timeout=5.0)
+
+        assert exc_info.value.upstream_error_type == "APIConnectionError"
+
     def test_hard_timeout_not_retried_at_client_level(self, monkeypatch):
         """A hard timeout is NOT retried at the client level. Same-model retry of
         a hang is exactly what produced the 490s in PYTHON-FASTAPI-62; the
@@ -3902,6 +3935,39 @@ class TestOwnedFallbackWalk:
             and "reason=transport_error" in record.message
             for record in caplog.records
         )
+
+    def test_isolated_transport_failure_is_warning_when_fallback_serves(
+        self, monkeypatch, caplog
+    ):
+        """A subprocess wrapper must not turn a recoverable outage into ERROR."""
+        client = LiteLLMClient(
+            LiteLLMConfig(
+                model="minimax/MiniMax-M3",
+                fallback_models=["zai/glm-5.2"],
+            )
+        )
+
+        def _complete(params, _hard_timeout):
+            if params["model"] == "minimax/MiniMax-M3":
+                raise LiteLLMClientError(
+                    "isolated worker failed",
+                    upstream_error_type="APIConnectionError",
+                )
+            return _make_completion_response("from-glm")
+
+        monkeypatch.setattr(client, "_completion_with_hard_timeout", _complete)
+        with caplog.at_level(logging.INFO):
+            result = client.generate_chat_response(self._messages())
+
+        assert result == "from-glm"
+        failed = [
+            record
+            for record in caplog.records
+            if "event=llm_request_end" in record.message
+            and "success=False" in record.message
+        ]
+        assert len(failed) == 1
+        assert failed[0].levelno == logging.WARNING
 
     def test_all_rungs_fail_raises_last_error(self, monkeypatch):
         client = LiteLLMClient(

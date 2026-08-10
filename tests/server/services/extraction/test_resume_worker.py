@@ -167,6 +167,76 @@ def _seed_interactions(storage: SQLiteStorage) -> None:
     )
 
 
+def _legacy_ownerless_playbook_run(source_interaction_ids: list[int]) -> AgentRunRecord:
+    return AgentRunRecord(
+        id="legacy_playbook_run",
+        binding=AgentBinding(
+            org_id="org_1",
+            extractor_kind="playbook",
+            user_id=None,
+            request_id="request_1",
+            agent_version="v1",
+            source="api",
+            source_interaction_ids=source_interaction_ids,
+        ),
+        status=AgentRunStatus.FINALIZATION_FAILED,
+        generation_request_snapshot={},
+    )
+
+
+def test_legacy_playbook_run_infers_owner_from_complete_source_evidence(
+    request_context, storage
+):
+    _seed_interactions(storage)
+    worker = ExtractionResumeWorker(request_context=request_context)
+
+    resolved = worker._with_resolved_playbook_user_id(
+        _legacy_ownerless_playbook_run([1, 2])
+    )
+
+    assert resolved.binding.user_id == "user_1"
+
+
+def test_legacy_playbook_run_fails_closed_when_source_evidence_is_missing(
+    request_context, storage
+):
+    _seed_interactions(storage)
+    worker = ExtractionResumeWorker(request_context=request_context)
+
+    with pytest.raises(ValueError, match=r"missing persisted.*interactions"):
+        worker._with_resolved_playbook_user_id(_legacy_ownerless_playbook_run([1, 999]))
+
+
+def test_legacy_playbook_run_fails_closed_for_multiple_source_owners(
+    request_context, storage
+):
+    _seed_interactions(storage)
+    storage.add_request(
+        Request(
+            request_id="request_2",
+            user_id="user_2",
+            created_at=1_002,
+            source="api",
+            agent_version="v1",
+            session_id="request_2",
+        )
+    )
+    storage._insert_interaction(
+        Interaction(
+            interaction_id=3,
+            user_id="user_2",
+            request_id="request_2",
+            created_at=1_002,
+            role="user",
+            content="Use a different tenant's evidence.",
+        )
+    )
+    worker = ExtractionResumeWorker(request_context=request_context)
+
+    with pytest.raises(ValueError, match="unambiguous interaction owner"):
+        worker._with_resolved_playbook_user_id(_legacy_ownerless_playbook_run([1, 3]))
+
+
 def _seed_ready_run(storage: SQLiteStorage) -> None:
     storage.create_agent_run(
         AgentRunRecord(
@@ -375,12 +445,16 @@ def test_resume_bills_only_items_that_survive_finalization(
     worker = ExtractionResumeWorker(request_context=request_context)
 
     with (
-        patch(finalize_path, return_value=[survivor]),
+        patch(finalize_path, return_value=[survivor]) as finalize,
         patch.object(worker, "_record_finalized_learnings") as record,
     ):
         worker._finalize_items(run, [dropped, survivor])
 
     record.assert_called_once_with(run, [survivor], entity_type=entity_type)
+    if extractor_kind == "playbook":
+        assert finalize.call_args.kwargs["extraction_run"] is run
+    else:
+        assert "extraction_run" not in finalize.call_args.kwargs
 
 
 def test_resume_worker_tagging_schedule_failure_is_best_effort(

@@ -151,10 +151,26 @@ class _StructuredAttempt:
 def _is_expected_transient_llm_error(exc: BaseException) -> bool:
     """True for expected transient upstream failures (timeout / connection /
     rate-limit / overload), including our own ``LLMHardTimeoutError`` (a
-    ``TimeoutError`` subclass raised when a provider hang is killed)."""
-    if isinstance(exc, TimeoutError):  # incl. LLMHardTimeoutError
-        return True
-    return type(exc).__name__ in _TRANSIENT_LLM_ERROR_NAMES
+    ``TimeoutError`` subclass raised when a provider hang is killed).
+
+    Subprocess-isolated calls cross a pickle boundary, so their concrete
+    provider exception cannot safely be re-raised in the parent. The wrapper
+    retains ``upstream_error_type`` explicitly; checking it here prevents an
+    expected provider outage from being promoted to an application ERROR just
+    because isolation made the outer type ``LiteLLMClientError``.
+    """
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, TimeoutError):  # incl. LLMHardTimeoutError
+            return True
+        if type(current).__name__ in _TRANSIENT_LLM_ERROR_NAMES:
+            return True
+        if getattr(current, "upstream_error_type", None) in _TRANSIENT_LLM_ERROR_NAMES:
+            return True
+        current = current.__cause__ or current.__context__
+    return False
 
 
 def _rung_reason(error: Exception | None) -> str:
@@ -860,7 +876,8 @@ class TextGenerationMixin:
             raise LiteLLMClientError(
                 "litellm.completion failed in isolated worker: "
                 f"{payload.type_name}: {payload.message} "
-                f"({', '.join(context_parts)})"
+                f"({', '.join(context_parts)})",
+                upstream_error_type=payload.type_name,
             )
         finally:
             result_queue.close()

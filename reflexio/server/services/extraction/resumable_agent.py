@@ -191,7 +191,7 @@ def run_resumable_extraction_agent(
     request_context: RequestContext,
     client: LiteLLMClient,
     extractor_kind: str,
-    user_id: str | None,
+    user_id: str,
     request_id: str,
     agent_version: str | None,
     source: str | None,

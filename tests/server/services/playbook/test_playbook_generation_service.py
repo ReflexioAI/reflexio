@@ -30,6 +30,11 @@ from reflexio.server.services.playbook.service import (
     PlaybookGenerationService,
     PlaybookGenerationServiceConfig,
 )
+from reflexio.server.services.storage.storage_base import (
+    AgentBinding,
+    AgentRunRecord,
+    AgentRunStatus,
+)
 
 
 def create_request_interaction_data_model(
@@ -53,6 +58,29 @@ def create_request_interaction_data_model(
 def _storage(service: PlaybookGenerationService) -> Any:
     assert service.storage is not None
     return cast(Any, service.storage)
+
+
+def _playbook_run(
+    *,
+    org_id: str = "0",
+    user_id: str | None = "test_user",
+    request_id: str = "test_request_id",
+    source_interaction_ids: list[int],
+) -> AgentRunRecord:
+    return AgentRunRecord(
+        id="run_for_review",
+        binding=AgentBinding(
+            org_id=org_id,
+            extractor_kind="playbook",
+            user_id=user_id,
+            request_id=request_id,
+            agent_version="1.0",
+            source="test_source",
+            source_interaction_ids=source_interaction_ids,
+        ),
+        status=AgentRunStatus.AGENT_COMPLETED,
+        generation_request_snapshot={},
+    )
 
 
 def _aggregation_enabled_config() -> Config:
@@ -695,6 +723,7 @@ def test_resolve_write_plan_reviews_grounded_normal_candidates_before_consolidat
         reviewed = candidate.model_copy(
             update={"content": "Treat the supplied answer as binding."}
         )
+        service._review_run = _playbook_run(source_interaction_ids=[44])
 
         with (
             patch(
@@ -726,76 +755,74 @@ def test_resolve_write_plan_reviews_grounded_normal_candidates_before_consolidat
         assert consolidator.deduplicate.call_args.args[0] == [[reviewed]]
 
 
-def test_review_interaction_window_raises_when_source_filter_excludes_window():
-    service = PlaybookGenerationService(
-        llm_client=MagicMock(), request_context=MagicMock()
-    )
-    service.service_config = PlaybookGenerationServiceConfig(
-        request_id="request",
-        agent_version="v1",
-    )
-    playbook_config = PlaybookConfig(
-        extractor_name="test_playbook",
-        extraction_definition_prompt="Review grounded lessons",
-    )
-    extractor = MagicMock()
-    extractor._get_interactions.return_value = None
-
-    with (
-        patch.object(service, "_create_extractor", return_value=extractor),
-        pytest.raises(RuntimeError, match="source filter excluded"),
-    ):
-        service._review_interaction_window(playbook_config)
+@pytest.mark.parametrize("user_id", [None, "", "   "])
+def test_playbook_generation_request_rejects_missing_user_id(user_id):
+    with pytest.raises(ValueError, match="user_id|String must not be empty"):
+        PlaybookGenerationRequest.model_validate(
+            {
+                "request_id": "test_request_id",
+                "agent_version": "1.0",
+                "user_id": user_id,
+            }
+        )
 
 
-def test_review_interaction_window_returns_honest_empty_window():
-    service = PlaybookGenerationService(
-        llm_client=MagicMock(), request_context=MagicMock()
-    )
-    service.service_config = PlaybookGenerationServiceConfig(
-        request_id="request",
-        agent_version="v1",
-    )
-    playbook_config = PlaybookConfig(
-        extractor_name="test_playbook",
-        extraction_definition_prompt="Review grounded lessons",
-    )
-    extractor = MagicMock()
-    extractor._get_interactions.return_value = []
-
-    with patch.object(service, "_create_extractor", return_value=extractor):
-        assert service._review_interaction_window(playbook_config) == []
+@pytest.mark.parametrize("user_id", [None, "", "   "])
+def test_playbook_generation_service_config_rejects_missing_user_id(user_id):
+    with pytest.raises(ValueError, match="non-empty user_id"):
+        PlaybookGenerationServiceConfig(
+            request_id="test_request_id",
+            agent_version="1.0",
+            user_id=cast(Any, user_id),
+        )
 
 
-def test_automatic_review_reloads_the_configured_extraction_window():
-    request_context = MagicMock()
-    service = PlaybookGenerationService(
-        llm_client=MagicMock(), request_context=request_context
-    )
-    service.service_config = PlaybookGenerationServiceConfig(
-        request_id="request",
-        agent_version="v1",
-        user_id="user-1",
-        source="chat",
-    )
-    playbook_config = PlaybookConfig(
-        extractor_name="test_playbook",
-        extraction_definition_prompt="Review grounded lessons",
-        request_sources_enabled=["chat"],
-        window_size_override=3,
-    )
-    expected_window = [MagicMock(spec=RequestInteractionDataModel)]
-    extractor = MagicMock()
-    extractor._get_interactions.return_value = expected_window
+def test_automatic_review_reconstructs_exact_persisted_extraction_window():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        service = PlaybookGenerationService(
+            llm_client=MagicMock(),
+            request_context=RequestContext(org_id="0", storage_base_dir=temp_dir),
+        )
+        service.service_config = PlaybookGenerationServiceConfig(
+            request_id="test_request_id",
+            agent_version="1.0",
+            user_id="test_user",
+            source="test_source",
+        )
+        request = Request(
+            request_id="source_request",
+            user_id="test_user",
+            source="test_source",
+            agent_version="1.0",
+            session_id="session_1",
+        )
+        _storage(service).add_request(request)
+        for interaction_id in (44, 45):
+            _storage(service).add_user_interaction(
+                "test_user",
+                Interaction(
+                    interaction_id=interaction_id,
+                    user_id="test_user",
+                    request_id="source_request",
+                    content=f"interaction {interaction_id}",
+                    role="user",
+                    created_at=interaction_id,
+                ),
+            )
+        service._review_run = _playbook_run(source_interaction_ids=[44])
+        candidate = UserPlaybook(
+            agent_version="1.0",
+            request_id="test_request_id",
+            user_id="test_user",
+            content="Use interaction 44.",
+            source_interaction_ids=[44],
+        )
 
-    with patch.object(
-        service, "_create_extractor", return_value=extractor
-    ) as create_extractor:
-        assert service._review_interaction_window(playbook_config) == expected_window
+        window = service._review_interaction_window([candidate])
 
-    create_extractor.assert_called_once_with(playbook_config, service.service_config)
-    extractor._get_interactions.assert_called_once_with()
-    request_context.storage.get_interactions_by_ids.assert_not_called()
+        assert [
+            item.interaction_id for group in window for item in group.interactions
+        ] == [44]
 
 
 def test_loading_a_new_generation_request_clears_the_review_window_cache():
@@ -814,6 +841,7 @@ def test_loading_a_new_generation_request_clears_the_review_window_cache():
 
     assert config.request_id == "request-2"
     assert service._review_window_cache is None
+    assert service._review_run is None
 
 
 def test_resolve_write_plan_fails_closed_for_strict_candidate_without_evidence():
@@ -864,6 +892,7 @@ def test_resolve_write_plan_fails_closed_for_strict_candidate_without_evidence()
             source_span=None,
             reader_angle="correction",
         )
+        service._review_run = _playbook_run(source_interaction_ids=[45])
 
         with (
             patch(

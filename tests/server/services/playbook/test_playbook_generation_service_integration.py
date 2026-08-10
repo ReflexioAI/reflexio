@@ -1,6 +1,7 @@
 """Integration tests for PlaybookGenerationService."""
 
 import contextlib
+from dataclasses import replace
 from datetime import UTC, datetime
 from unittest.mock import MagicMock
 
@@ -79,11 +80,32 @@ def mock_request_context():
     context = MagicMock(spec=RequestContext)
     context.org_id = "test_org_123"
     context.storage = MagicMock()
+    agent_runs = {}
+
+    def create_agent_run(record):
+        agent_runs[record.id] = record
+        return record
+
+    def update_agent_run_status(run_id, status, **updates):
+        record = agent_runs[run_id]
+        expected_statuses = updates.pop("expected_statuses", None)
+        if expected_statuses and record.status not in expected_statuses:
+            return record
+        if updates.pop("increment_resume_attempts", False):
+            updates["resume_attempts"] = record.resume_attempts + 1
+        if updates.pop("increment_finalization_attempts", False):
+            updates["finalization_attempts"] = record.finalization_attempts + 1
+        updates = {key: value for key, value in updates.items() if value is not None}
+        updated = replace(record, status=status, **updates)
+        agent_runs[run_id] = updated
+        return updated
+
+    context.storage.create_agent_run.side_effect = create_agent_run
+    context.storage.get_agent_run.side_effect = agent_runs.get
     # Mock get_operation_state to return None by default (no in-progress state)
     context.storage.get_operation_state.return_value = None
-    context.storage.update_agent_run_status.side_effect = (
-        lambda _run_id, status, **_kwargs: MagicMock(status=status)
-    )
+    context.storage.claim_due_playbook_aggregation.return_value = None
+    context.storage.update_agent_run_status.side_effect = update_agent_run_status
     # Mock try_acquire_in_progress_lock to return success
     context.storage.try_acquire_in_progress_lock.return_value = {"acquired": True}
     # Mock get_user_playbooks to return empty list (for existing playbooks check)
@@ -249,6 +271,16 @@ def test_playbook_generation_with_storage(
     mock_request_context.storage.get_last_k_interactions_grouped.return_value = (
         [request_interaction_data_model],
         test_interactions,
+    )
+    mock_request_context.storage.get_interactions_by_ids.side_effect = (
+        lambda interaction_ids: [
+            interaction
+            for interaction in test_interactions
+            if interaction.interaction_id in interaction_ids
+        ]
+    )
+    mock_request_context.storage.get_request.return_value = (
+        request_interaction_data_model.request
     )
 
     # Create playbook generation request with new API

@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from reflexio.models.api_schema.domain.entities import Interaction, UserPlaybook
 from reflexio.models.api_schema.internal_schema import RequestInteractionDataModel
+from reflexio.models.api_schema.validators import NonEmptyStr
 from reflexio.models.structured_output import (
     StrictStructuredOutput,
     normalize_provider_keys,
@@ -807,7 +808,7 @@ def ensure_playbook_content(
 class PlaybookGenerationRequest(BaseModel):
     request_id: str
     agent_version: str
-    user_id: str | None = None  # for per-user playbook extraction
+    user_id: NonEmptyStr
     source: str | None = None
     rerun_start_time: int | None = None  # Unix timestamp for rerun flows
     rerun_end_time: int | None = None  # Unix timestamp for rerun flows

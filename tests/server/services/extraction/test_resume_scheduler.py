@@ -134,3 +134,107 @@ def test_resume_scheduler_drains_all_orgs_and_stops_cleanly(monkeypatch):
     assert storage.expire_pending_tool_calls.called
     # The bootstrap org plus every discovered org are all drained.
     assert {"org_1", "org_2", "org_3"} <= set(drained_orgs)
+
+
+def test_resume_scheduler_stale_bootstrap_cannot_block_future_discovery(monkeypatch):
+    provider = MagicMock(side_effect=[["org_2"], ["org_3"]])
+    drained: list[str] = []
+    live_org_ids = {"org_2"}
+    factory_calls: list[str] = []
+
+    class FakeWorker:
+        def __init__(self, *, request_context):
+            self.request_context = request_context
+
+        def drain(self, *, max_runs: int) -> int:
+            drained.append(self.request_context.org_id)
+            return 0
+
+    monkeypatch.setattr(resume_scheduler, "pending_tool_calls_enabled", lambda _: True)
+    monkeypatch.setattr(resume_scheduler, "ExtractionResumeWorker", FakeWorker)
+
+    def factory(org_id: str):
+        factory_calls.append(org_id)
+        if org_id not in live_org_ids:
+            raise RuntimeError(f"stale org: {org_id}")
+        return _request_context(
+            org_id,
+            storage=SimpleNamespace(
+                expire_pending_tool_calls=MagicMock(return_value=0),
+                list_resumable_work_org_ids=MagicMock(return_value=["wrong-org"]),
+            ),
+        )
+
+    scheduler = resume_scheduler.ExtractionResumeScheduler(
+        request_context_factory=cast(Callable[[str], RequestContext], factory),
+        bootstrap_org_id="org_1",
+        org_id_provider=provider,
+    )
+
+    scheduler._run_once()
+    live_org_ids.clear()
+    live_org_ids.add("org_3")
+    scheduler._run_once()
+
+    assert provider.call_count == 2
+    assert drained == ["org_2", "org_3"]
+    assert factory_calls == ["org_2", "org_2", "org_3", "org_3"]
+    assert scheduler.bootstrap_org_id == "org_3"
+
+
+def test_resume_scheduler_provider_failure_still_drains_bootstrap(monkeypatch):
+    drained: list[str] = []
+    storage = SimpleNamespace(expire_pending_tool_calls=MagicMock(return_value=0))
+
+    class FakeWorker:
+        def __init__(self, *, request_context):
+            self.request_context = request_context
+
+        def drain(self, *, max_runs: int) -> int:
+            drained.append(self.request_context.org_id)
+            return 0
+
+    monkeypatch.setattr(resume_scheduler, "pending_tool_calls_enabled", lambda _: True)
+    monkeypatch.setattr(resume_scheduler, "ExtractionResumeWorker", FakeWorker)
+    scheduler = resume_scheduler.ExtractionResumeScheduler(
+        request_context_factory=cast(
+            Callable[[str], RequestContext],
+            lambda org_id: _request_context(org_id, storage=storage),
+        ),
+        bootstrap_org_id="org_1",
+        org_id_provider=MagicMock(side_effect=RuntimeError("registry unavailable")),
+    )
+
+    scheduler._run_once()
+
+    assert drained == ["org_1"]
+
+
+def test_resume_scheduler_expires_pending_calls_on_each_discovered_ref(monkeypatch):
+    storages = {
+        org_id: SimpleNamespace(expire_pending_tool_calls=MagicMock(return_value=0))
+        for org_id in ("org_1", "org_2")
+    }
+
+    class FakeWorker:
+        def __init__(self, *, request_context):
+            self.request_context = request_context
+
+        def drain(self, *, max_runs: int) -> int:
+            return 0
+
+    monkeypatch.setattr(resume_scheduler, "pending_tool_calls_enabled", lambda _: True)
+    monkeypatch.setattr(resume_scheduler, "ExtractionResumeWorker", FakeWorker)
+    scheduler = resume_scheduler.ExtractionResumeScheduler(
+        request_context_factory=cast(
+            Callable[[str], RequestContext],
+            lambda org_id: _request_context(org_id, storage=storages[org_id]),
+        ),
+        bootstrap_org_id="org_1",
+        org_id_provider=lambda: ["org_1", "org_2"],
+    )
+
+    scheduler._run_once()
+
+    storages["org_1"].expire_pending_tool_calls.assert_called_once()
+    storages["org_2"].expire_pending_tool_calls.assert_called_once()

@@ -10,7 +10,6 @@ from dataclasses import dataclass
 from typing import Literal
 
 from reflexio.models.api_schema.domain.entities import (
-    Interaction,
     LineageContext,
     ReviewUserPlaybookEdit,
     ReviewUserPlaybookResult,
@@ -33,6 +32,10 @@ from reflexio.server.services.playbook.playbook_edit_apply import apply_playbook
 from reflexio.server.services.playbook.playbook_service_utils import (
     is_evidence_validated,
 )
+from reflexio.server.services.playbook.review_window import (
+    PlaybookReviewWindowError,
+    reconstruct_playbook_review_window,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -51,10 +54,6 @@ def new_review_run_id() -> str:
 
 class _PlaybookReviewRaceError(RuntimeError):
     """A reviewed incumbent stopped being current before its apply."""
-
-
-class _PlaybookNotReviewableError(ValueError):
-    """A selected row's generation window or cited evidence is unavailable."""
 
 
 @dataclass
@@ -84,11 +83,11 @@ class UserPlaybookReviewService:
         playbook: UserPlaybook,
     ) -> list[RequestInteractionDataModel]:
         if not playbook.user_id:
-            raise _PlaybookNotReviewableError(
+            raise PlaybookReviewWindowError(
                 f"User playbook {playbook.user_playbook_id} has no owning user_id"
             )
         if not is_evidence_validated(playbook):
-            raise _PlaybookNotReviewableError(
+            raise PlaybookReviewWindowError(
                 f"User playbook {playbook.user_playbook_id} lacks validated evidence"
             )
 
@@ -99,7 +98,7 @@ class UserPlaybookReviewService:
             request_id=playbook.request_id,
         )
         if generation_run is None or not generation_run.binding.source_interaction_ids:
-            raise _PlaybookNotReviewableError(
+            raise PlaybookReviewWindowError(
                 f"User playbook {playbook.user_playbook_id} has no complete "
                 "generation-window provenance"
             )
@@ -116,63 +115,12 @@ class UserPlaybookReviewService:
                 ]
             )
         )
-        interactions_by_id = {
-            interaction.interaction_id: interaction
-            for interaction in self.storage.get_interactions_by_ids(source_ids)
-        }
-        missing_interaction_ids = [
-            interaction_id
-            for interaction_id in source_ids
-            if interaction_id not in interactions_by_id
-        ]
-        if missing_interaction_ids:
-            raise _PlaybookNotReviewableError(
-                f"User playbook {playbook.user_playbook_id} is missing persisted "
-                f"generation-window interactions: {missing_interaction_ids}"
-            )
-
-        interactions_by_request: dict[str, list[Interaction]] = {}
-        for interaction in interactions_by_id.values():
-            if interaction.user_id != playbook.user_id:
-                raise _PlaybookNotReviewableError(
-                    f"User playbook {playbook.user_playbook_id} has source interaction "
-                    f"{interaction.interaction_id} owned by another user"
-                )
-            interactions_by_request.setdefault(interaction.request_id, []).append(
-                interaction
-            )
-
-        review_window: list[RequestInteractionDataModel] = []
-        for request_id, interactions in interactions_by_request.items():
-            request = self.storage.get_request(request_id)
-            if request is None:
-                raise _PlaybookNotReviewableError(
-                    f"User playbook {playbook.user_playbook_id} is missing persisted "
-                    f"source request {request_id}"
-                )
-            if request.user_id != playbook.user_id:
-                raise _PlaybookNotReviewableError(
-                    f"User playbook {playbook.user_playbook_id} has source request "
-                    f"{request_id} owned by another user"
-                )
-            review_window.append(
-                RequestInteractionDataModel(
-                    session_id=request.session_id,
-                    request=request,
-                    interactions=sorted(
-                        interactions,
-                        key=lambda item: (item.created_at, item.interaction_id),
-                    ),
-                )
-            )
-
-        review_window.sort(
-            key=lambda group: (
-                group.interactions[0].created_at,
-                group.interactions[0].interaction_id,
-            )
+        return reconstruct_playbook_review_window(
+            storage=self.storage,
+            source_interaction_ids=source_ids,
+            user_id=playbook.user_id,
+            subject=f"User playbook {playbook.user_playbook_id}",
         )
-        return review_window
 
     def _existing_playbooks(
         self,
@@ -219,7 +167,7 @@ class UserPlaybookReviewService:
     @staticmethod
     def _skipped_result(
         playbook: UserPlaybook,
-        exc: _PlaybookNotReviewableError,
+        exc: PlaybookReviewWindowError,
     ) -> _ReviewedPlaybook:
         # The reason text is this service's own fail-closed message about the
         # row's provenance, never a raw storage/model error, so it is safe to
@@ -268,7 +216,7 @@ class UserPlaybookReviewService:
             candidates = [playbook]
             try:
                 window = self._review_window(playbook)
-            except _PlaybookNotReviewableError as exc:
+            except PlaybookReviewWindowError as exc:
                 # Selection is "newest current rows in a window", which cannot
                 # know whether a row is still reviewable. One unreviewable row
                 # must not cost the rest of the batch.
@@ -295,7 +243,7 @@ class UserPlaybookReviewService:
                     tool_context=tool_context,
                 )
             except PlaybookCandidateEvidenceError as exc:
-                unavailable = _PlaybookNotReviewableError(str(exc))
+                unavailable = PlaybookReviewWindowError(str(exc))
                 logger.info(
                     "event=playbook_review_skipped user_playbook_id=%d reason=%s",
                     playbook.user_playbook_id,

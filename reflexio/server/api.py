@@ -414,10 +414,11 @@ def create_app(  # noqa: C901
             logic. It is only consulted when ``REFLEXIO_DURABLE_LEARNING_QUEUE`` is
             on — when the flag is off ``maybe_start_durable_learning`` returns None
             without ever calling the provider.
-        resume_org_ids_provider: Optional zero-arg callable used only when the
-            bootstrap org is not available yet. This lets a multi-tenant deployment
-            defer the resume scheduler on an empty fleet and adopt its first real
-            org without restarting. The OSS default remains unchanged.
+        resume_org_ids_provider: Optional zero-arg callable consulted before the
+            bootstrap context on every scheduler tick. Its actionable org list is
+            authoritative, allowing a multi-tenant deployment to recover when the
+            prior bootstrap org disappears and to discover work across data refs.
+            The OSS default remains unchanged when no provider is supplied.
 
     Returns:
         Configured FastAPI application.

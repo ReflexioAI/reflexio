@@ -131,9 +131,11 @@ class LiteLLMClientError(Exception):
         message: str,
         *,
         first_parsed_provenance: ModelProvenance | None = None,
+        upstream_error_type: str | None = None,
     ) -> None:
         super().__init__(message)
         self.first_parsed_provenance = first_parsed_provenance
+        self.upstream_error_type = upstream_error_type
 
 
 class StructuredOutputRepairError(LiteLLMClientError):

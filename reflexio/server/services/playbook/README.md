@@ -20,6 +20,7 @@ Description: Evidence-grounded playbook extraction, candidate review, aggregatio
 | `playbook_service_constants.py` | Prompt IDs for all playbook operations |
 | `playbook_service_utils.py` | Request dataclasses, Pydantic output schemas, message construction utilities |
 | `playbook_evidence.py` | Strict evidence validation, call-local reference checks, and persisted provenance helpers |
+| `review_window.py` | Shared fail-closed reconstruction of persisted review chronology for automatic and manual review |
 | `review_service.py` | Time-window selection, persisted evidence reconstruction, reporting, and newest-first per-playbook apply |
 | `aggregation_trigger.py` | Converts post-generation activity into an idempotent durable scheduling signal |
 | `aggregation_scheduler.py` | Polling, fleet claim/lease handling, retries, and structured aggregation progress telemetry |
@@ -66,7 +67,10 @@ Every candidate must be accounted for exactly once as `accept`, `revise`, or
 `reject`. Revisions may narrow unsupported wording but cannot add evidence or
 create a lesson that extraction missed. Reviewer output receives one bounded
 repair attempt and otherwise fails closed. Expert and legacy extraction paths
-do not use this reviewer.
+do not use this reviewer. New user-playbook generation requires a non-empty
+`user_id`. A legacy durable run whose stored binding is null may resume only
+when every persisted source interaction and request proves the same owner;
+missing or mixed-owner evidence fails closed before review or persistence.
 
 ### Persisted Review (`review_service.py`)
 
@@ -77,9 +81,11 @@ generation window or cited evidence can no longer be reconstructed yields a
 
 Manual review reconstructs context from the full interaction window persisted on
 the row's finalized playbook-extraction run, plus any extra cited interactions
-retained through consolidation. It never substitutes the current extractor
-window or silently falls back to the smaller cited-evidence subset. Automatic
-post-generation review continues to use the generation call's configured window.
+retained through consolidation. Automatic review uses the exact
+`source_interaction_ids` on the extraction agent run, including when finalization
+is retried later. Neither path re-runs the sliding last-K query or silently falls
+back to a smaller evidence subset, so interactions published after extraction
+cannot change the review chronology.
 Only the playbook row's cited interaction IDs become candidate evidence units;
 the rest of the generation window is ancillary chronology. Evidence spans are
 rebuilt from those exact stored interactions instead of requiring every cited
