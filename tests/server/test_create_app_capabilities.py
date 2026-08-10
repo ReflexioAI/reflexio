@@ -121,6 +121,32 @@ def test_oss_startup_failure_clears_exempt_usage_recorder(monkeypatch) -> None:
     assert exc_info.value.status is UsageEventDeliveryStatus.UNKNOWN
 
 
+def test_oss_metering_startup_failure_clears_exempt_usage_recorder(
+    monkeypatch,
+) -> None:
+    usage_metrics.configure_usage_event_recorder(None)
+
+    def fail_start_search_metering_worker() -> None:
+        raise RuntimeError("startup guard failed")
+
+    monkeypatch.setattr(
+        "reflexio.server.services.search_metering_worker.start_search_metering_worker",
+        fail_start_search_metering_worker,
+    )
+
+    app = create_app(capabilities=None, mount_data_plane=False)
+    with pytest.raises(RuntimeError, match="startup guard failed"), TestClient(app):
+        pass
+
+    with pytest.raises(UsageEventDeliveryError) as exc_info:
+        usage_metrics.record_usage_event_strict(
+            org_id="7",
+            event_name="learnings_generated",
+            event_category="learning",
+        )
+    assert exc_info.value.status is UsageEventDeliveryStatus.UNKNOWN
+
+
 def test_partial_cleanup_invariant() -> None:
     """Already-started caps must be shut down; caps that never started must not be."""
     LifecycleCap.started = LifecycleCap.stopped = False
