@@ -2,6 +2,8 @@
 
 from typing import cast
 
+import pytest
+
 from reflexio.models.api_schema.domain import (
     GetSessionOutcomesRequest,
     Request,
@@ -61,6 +63,37 @@ def test_first_write_preserves_outcome_fields(storage: BaseStorage) -> None:
     assert records[0].outcome == SessionOutcomeKind.SUCCESS
     assert records[0].value == 12.0
     assert records[0].metadata == {"crm": "test"}
+
+
+def test_generic_retention_cannot_delete_finalized_session_outcomes(
+    storage: BaseStorage,
+) -> None:
+    storage.add_request(
+        Request(
+            request_id="retention-r1",
+            user_id="u1",
+            session_id="retention-session",
+            source="published",
+            created_at=100,
+        )
+    )
+    storage.record_session_outcome(
+        SetSessionOutcomeRequest(
+            session_id="retention-session",
+            outcome=SessionOutcomeKind.SUCCESS,
+            occurred_at=101,
+        ),
+        created_at=102,
+        expected_context=storage.get_session_outcome_context("retention-session"),
+    )
+
+    with pytest.raises(ValueError, match="Unknown retention target: session_outcomes"):
+        storage.delete_oldest_retention_target_rows("session_outcomes", 1)  # type: ignore[attr-defined]
+
+    [record] = storage.get_session_outcomes(
+        GetSessionOutcomesRequest(session_ids=["retention-session"])
+    )
+    assert record.outcome == SessionOutcomeKind.SUCCESS
 
 
 def test_exact_finalization_retry_is_idempotent(storage: BaseStorage) -> None:

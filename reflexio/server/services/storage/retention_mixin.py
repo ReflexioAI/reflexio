@@ -233,6 +233,8 @@ class RetentionMixin(ABC):
             statuses (tuple[str, ...] | None): When not None, restrict the
                 select to rows whose ``status`` is one of these values. An
                 empty tuple matches nothing (never every row).
+            older_than_epoch (int | None): When set, restrict the select to
+                rows whose target ordering column is strictly older.
         """
         raise NotImplementedError
 
