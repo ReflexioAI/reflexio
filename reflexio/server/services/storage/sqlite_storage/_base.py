@@ -23,7 +23,6 @@ from pathlib import Path
 from typing import Any, ClassVar, Literal
 
 from reflexio.models.api_schema.common import BlockingIssue
-from reflexio.models.api_schema.domain import SessionOutcomeKind
 from reflexio.models.api_schema.service_schemas import (
     AgentPlaybook,
     AgentSuccessEvaluationResult,
@@ -62,7 +61,9 @@ from reflexio.server.services.storage.error import (
 )
 from reflexio.server.services.storage.retention_mixin import RetentionMixin, chunked
 from reflexio.server.services.storage.session_outcome_identity import (
-    CanonicalSessionTrajectory,
+    OUTCOME_ALLOWED_VALUES,
+    CanonicalTrajectoryDigestAccumulator,
+    CanonicalTrajectoryDigestResult,
     canonical_json_bytes,
     canonical_session_trajectory,
     outcome_contract_digest,
@@ -76,7 +77,7 @@ from ._stall_state import init_stall_state_table
 
 logger = logging.getLogger(__name__)
 
-_OUTCOME_ALLOWED_VALUES = tuple(kind.value for kind in SessionOutcomeKind)
+_TRAJECTORY_FETCH_SIZE = 256
 _MINIMUM_SQLITE_VERSION = (3, 35, 0)
 _SQLITE_INITIALIZATION_LOCK_STRIPES = 64
 _sqlite_initialization_locks = tuple(
@@ -111,40 +112,83 @@ def _json_loads(text: str | None) -> Any:
     return json.loads(text)
 
 
-def _canonical_session_snapshot(
+def _canonical_session_trajectory_snapshot(
     conn: sqlite3.Connection, session_id: str
-) -> CanonicalSessionTrajectory:
-    """Return the durable session state used to bind an outcome finalization."""
-    request_rows = conn.execute(
-        """SELECT request_id, user_id, created_at, source, agent_version, session_id,
-                  evaluation_only, retrieval_experiment_id, retrieval_experiment_arm
-           FROM requests WHERE session_id = ?
-           ORDER BY created_at ASC, request_id ASC""",
+) -> CanonicalTrajectoryDigestResult:
+    """Hash and describe a complete bounded, ordered row stream."""
+    cursor = conn.execute(
+        """SELECT requests.request_id, requests.user_id, requests.created_at,
+                  requests.source, requests.agent_version, requests.session_id,
+                  requests.evaluation_only, requests.retrieval_experiment_id,
+                  requests.retrieval_experiment_arm,
+                  requests.governance_subject_ref,
+                  interactions.interaction_id,
+                  interactions.user_id AS interaction_user_id,
+                  interactions.request_id AS interaction_request_id,
+                  interactions.created_at AS interaction_created_at,
+                  interactions.content, interactions.role, interactions.token_count,
+                  interactions.user_action, interactions.user_action_description,
+                  interactions.interacted_image_url, interactions.image_encoding,
+                  interactions.shadow_content, interactions.expert_content,
+                  interactions.tools_used, interactions.citations,
+                  interactions.retrieved_learnings
+           FROM requests
+           LEFT JOIN interactions
+             ON interactions.request_id = requests.request_id
+           WHERE requests.session_id = ?
+           ORDER BY requests.created_at ASC, requests.request_id ASC,
+                    interactions.created_at ASC, interactions.interaction_id ASC""",
         (session_id,),
-    ).fetchall()
-    request_payloads = [dict(request) for request in request_rows]
-    interactions_by_request: dict[str, list[dict[str, object]]] = {
-        str(request["request_id"]): [] for request in request_rows
-    }
-    interaction_rows = conn.execute(
-        """SELECT interaction_id, user_id, request_id, created_at, content, role,
-                  token_count, user_action, user_action_description,
-                  interacted_image_url, image_encoding, shadow_content,
-                  expert_content, tools_used, citations, retrieved_learnings
-           FROM interactions
-           WHERE request_id IN (
-               SELECT request_id FROM requests WHERE session_id = ?
-           )
-           ORDER BY request_id ASC, created_at ASC, interaction_id ASC""",
-        (session_id,),
-    ).fetchall()
-    for interaction in interaction_rows:
-        interactions_by_request[str(interaction["request_id"])].append(
-            dict(interaction)
-        )
-    return canonical_session_trajectory(
-        session_id, request_payloads, interactions_by_request
     )
+    accumulator = CanonicalTrajectoryDigestAccumulator(session_id)
+    active_request_id: str | None = None
+    first_request: dict[str, object] | None = None
+    request_count = 0
+    while rows := cursor.fetchmany(_TRAJECTORY_FETCH_SIZE):
+        for row in rows:
+            request_id = str(row["request_id"])
+            if request_id != active_request_id:
+                if active_request_id is not None:
+                    accumulator.finish_request()
+                accumulator.start_request(row)
+                active_request_id = request_id
+                request_count += 1
+                if first_request is None:
+                    first_request = {
+                        key: row[key]
+                        for key in (
+                            "request_id",
+                            "user_id",
+                            "created_at",
+                            "source",
+                            "agent_version",
+                            "session_id",
+                            "evaluation_only",
+                            "retrieval_experiment_id",
+                            "retrieval_experiment_arm",
+                            "governance_subject_ref",
+                        )
+                    }
+            if row["interaction_id"] is None:
+                continue
+            interaction = dict(row)
+            interaction["user_id"] = row["interaction_user_id"]
+            interaction["request_id"] = row["interaction_request_id"]
+            interaction["created_at"] = row["interaction_created_at"]
+            accumulator.add_interaction(interaction)
+    if active_request_id is not None:
+        accumulator.finish_request()
+    return CanonicalTrajectoryDigestResult(
+        digest=accumulator.hexdigest(),
+        first_request=first_request,
+        request_count=request_count,
+    )
+
+
+def _canonical_session_trajectory_digest(
+    conn: sqlite3.Connection, session_id: str
+) -> str:
+    return _canonical_session_trajectory_snapshot(conn, session_id).digest
 
 
 def _prefetch_canonical_session_trajectory_digests(
@@ -1402,7 +1446,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                             or outcome_contract_digest(
                                 source=source,
                                 schema_version=1,
-                                allowed_values=_OUTCOME_ALLOWED_VALUES,
+                                allowed_values=OUTCOME_ALLOWED_VALUES,
                                 finalization_rule="first_write",
                             ),
                             existing_trajectory_digest

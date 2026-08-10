@@ -1,20 +1,22 @@
 """Session outcome storage contract."""
 
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
 from reflexio.models.api_schema.domain import (
     GetSessionOutcomesRequest,
+    Interaction,
     Request,
     SessionOutcomeFailureReason,
     SessionOutcomeKind,
     SetSessionOutcomeRequest,
 )
-from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
-from reflexio.server.services.storage.sqlite_storage._base import (
-    _canonical_session_snapshot,
+from reflexio.server.services.storage.session_outcome_identity import (
+    canonical_session_trajectory,
+    trajectory_digest,
 )
+from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 from reflexio.server.services.storage.storage_base import BaseStorage
 
 
@@ -297,36 +299,143 @@ def test_legacy_all_null_identity_changed_governance_context_conflicts(
     assert retry.reason == SessionOutcomeFailureReason.CONFLICTING_FINALIZATION
 
 
-def test_sqlite_canonical_snapshot_loads_interactions_in_one_query(
+class _NoFetchAllCursor:
+    def __init__(self, cursor: Any, fetch_sizes: list[int]) -> None:
+        self._cursor = cursor
+        self._fetch_sizes = fetch_sizes
+
+    def fetchall(self) -> Any:
+        raise AssertionError("session outcome finalization must not call fetchall")
+
+    def fetchmany(self, size: int) -> Any:
+        self._fetch_sizes.append(size)
+        return self._cursor.fetchmany(size)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._cursor, name)
+
+
+class _NoFetchAllConnection:
+    def __init__(self, connection: Any) -> None:
+        self._connection = connection
+        self.fetch_sizes: list[int] = []
+
+    def execute(self, *args: Any, **kwargs: Any) -> _NoFetchAllCursor:
+        return _NoFetchAllCursor(
+            self._connection.execute(*args, **kwargs), self.fetch_sizes
+        )
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._connection, name)
+
+
+def test_sqlite_large_finalization_streams_complete_digest_and_preserves_retry_contract(
     storage: BaseStorage,
 ) -> None:
     sqlite_storage = cast(SQLiteStorage, storage)
-    for index in range(3):
-        storage.add_request(
-            Request(
-                request_id=f"snapshot-r{index}",
-                user_id="snapshot-user",
-                session_id="snapshot-session",
-                source="published",
-                created_at=100 + index,
-            )
+    session_id = "large-streamed-session"
+    request_id = "large-streamed-request"
+    storage.add_request(
+        Request(
+            request_id=request_id,
+            user_id="stream-user",
+            session_id=session_id,
+            source="published",
+            created_at=100,
         )
-    statements: list[str] = []
-    sqlite_storage.conn.set_trace_callback(statements.append)
+    )
+    interactions = [
+        Interaction(
+            interaction_id=index + 1,
+            user_id="stream-user",
+            request_id=request_id,
+            created_at=101 + index,
+            content=f"complete-row-{index}",
+            token_count=index,
+        )
+        for index in range(300)
+    ]
+    sqlite_storage.add_user_interactions_bulk(
+        "stream-user", interactions, embeddings_prepared=True
+    )
+    request_rows = sqlite_storage.conn.execute(
+        """SELECT request_id, user_id, created_at, source, agent_version, session_id,
+                  evaluation_only, retrieval_experiment_id, retrieval_experiment_arm
+           FROM requests WHERE session_id = ?
+           ORDER BY created_at ASC, request_id ASC""",
+        (session_id,),
+    ).fetchall()
+    interaction_rows = sqlite_storage.conn.execute(
+        """SELECT interaction_id, user_id, request_id, created_at, content, role,
+                  token_count, user_action, user_action_description,
+                  interacted_image_url, image_encoding, shadow_content,
+                  expert_content, tools_used, citations, retrieved_learnings
+           FROM interactions WHERE request_id = ?
+           ORDER BY created_at ASC, interaction_id ASC""",
+        (request_id,),
+    ).fetchall()
+    expected_digest = trajectory_digest(
+        canonical_session_trajectory(
+            session_id,
+            [dict(row) for row in request_rows],
+            {request_id: [dict(row) for row in interaction_rows]},
+        )
+    )
+    outcome = SetSessionOutcomeRequest(
+        session_id=session_id,
+        outcome=SessionOutcomeKind.SUCCESS,
+        occurred_at=500,
+        metadata={"complete": True},
+    )
+    raw_connection = sqlite_storage.conn
+    guarded_connection = _NoFetchAllConnection(raw_connection)
+    cast(Any, sqlite_storage).conn = guarded_connection
     try:
-        snapshot = _canonical_session_snapshot(sqlite_storage.conn, "snapshot-session")
+        context = storage.get_session_outcome_context(session_id)
+        first = storage.record_session_outcome(
+            outcome, created_at=501, expected_context=context
+        )
+        retry = storage.record_session_outcome(
+            outcome,
+            created_at=502,
+            expected_context=storage.get_session_outcome_context(session_id),
+        )
     finally:
-        sqlite_storage.conn.set_trace_callback(None)
+        cast(Any, sqlite_storage).conn = raw_connection
 
-    interaction_queries = [
-        statement for statement in statements if "FROM interactions" in statement
-    ]
-    assert [item["request"]["request_id"] for item in snapshot["requests"]] == [
-        "snapshot-r0",
-        "snapshot-r1",
-        "snapshot-r2",
-    ]
-    assert len(interaction_queries) == 1
+    sqlite_storage.add_user_interactions_bulk(
+        "stream-user",
+        [
+            Interaction(
+                interaction_id=301,
+                user_id="stream-user",
+                request_id=request_id,
+                created_at=401,
+                content="post-finalization-row",
+            )
+        ],
+        embeddings_prepared=True,
+    )
+    guarded_connection = _NoFetchAllConnection(raw_connection)
+    cast(Any, sqlite_storage).conn = guarded_connection
+    try:
+        conflict = storage.record_session_outcome(
+            outcome,
+            created_at=503,
+            expected_context=storage.get_session_outcome_context(session_id),
+        )
+    finally:
+        cast(Any, sqlite_storage).conn = raw_connection
+
+    assert first.recorded is True
+    assert first.finalized_trajectory_digest == expected_digest
+    assert retry.recorded is False
+    assert retry.reason is None
+    assert retry.finalized_trajectory_digest == expected_digest
+    assert conflict.recorded is False
+    assert conflict.reason == SessionOutcomeFailureReason.CONFLICTING_FINALIZATION
+    assert guarded_connection.fetch_sizes
+    assert len(set(guarded_connection.fetch_sizes)) == 1
 
 
 def test_changed_contract_identity_is_conflicting_finalization(

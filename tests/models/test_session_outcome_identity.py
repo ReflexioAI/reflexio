@@ -28,6 +28,7 @@ from reflexio.models.api_schema.retriever_schema import (
 )
 from reflexio.server.services.storage import session_outcome_identity
 from reflexio.server.services.storage.session_outcome_identity import (
+    CanonicalTrajectoryDigestAccumulator,
     canonical_json_bytes,
     canonical_session_trajectory,
     canonical_trajectory_bytes,
@@ -642,3 +643,195 @@ def test_session_outcome_record_rejects_non_sha256_identity_digests(
 
 def test_trajectory_digest_matches_sha256_of_canonical_json() -> None:
     assert trajectory_digest({"b": 2, "a": 1}) == sha256(b'{"a":1,"b":2}').hexdigest()
+
+
+def test_streaming_trajectory_digest_matches_materialized_multi_request_json() -> None:
+    request_rows = [
+        {
+            "request_id": "request-b",
+            "user_id": "user-1",
+            "created_at": datetime(2026, 8, 10, 9, 0, tzinfo=UTC),
+            "source": "workflow:v2",
+            "agent_version": "agent-2",
+            "session_id": "session-1",
+            "evaluation_only": False,
+            "retrieval_experiment_id": "experiment-1",
+            "retrieval_experiment_arm": "treatment",
+        },
+        {
+            "request_id": "request-a",
+            "user_id": "user-1",
+            "created_at": "2026-08-10T09:01:00+00:00",
+            "source": "workflow:v2",
+            "agent_version": "agent-2",
+            "session_id": "session-1",
+            "evaluation_only": True,
+            "retrieval_experiment_id": None,
+            "retrieval_experiment_arm": None,
+        },
+    ]
+    interactions_by_request = {
+        "request-b": [
+            {
+                "interaction_id": 11,
+                "user_id": "user-1",
+                "request_id": "request-b",
+                "created_at": datetime(2026, 8, 10, 9, 0, 1, tzinfo=UTC),
+                "content": "nested payload",
+                "role": "User",
+                "token_count": 3,
+                "user_action": "none",
+                "user_action_description": None,
+                "interacted_image_url": "",
+                "image_encoding": None,
+                "shadow_content": "",
+                "expert_content": None,
+                "tools_used": '[{"input":{"z":1,"a":[true,null,{"x":"y"}]} }]',
+                "citations": [{"metadata": {"beta": 2, "alpha": 1}}],
+                "retrieved_learnings": {"items": [[1, 2], {"nested": [3.5]}]},
+            },
+            {
+                "interaction_id": "12",
+                "user_id": "user-1",
+                "request_id": "request-b",
+                "created_at": "2026-08-10T09:00:02+00:00",
+                "content": "second",
+                "role": "Assistant",
+                "token_count": None,
+                "user_action": "none",
+                "user_action_description": "",
+                "interacted_image_url": None,
+                "image_encoding": "",
+                "shadow_content": None,
+                "expert_content": "",
+                "tools_used": [],
+                "citations": "[]",
+                "retrieved_learnings": None,
+            },
+        ],
+        "request-a": [],
+    }
+    materialized = canonical_session_trajectory(
+        "session-1", request_rows, interactions_by_request
+    )
+    accumulator = CanonicalTrajectoryDigestAccumulator("session-1")
+
+    for request_row in request_rows:
+        accumulator.start_request(request_row)
+        for interaction_row in interactions_by_request[request_row["request_id"]]:
+            accumulator.add_interaction(interaction_row)
+        accumulator.finish_request()
+
+    assert accumulator.hexdigest() == trajectory_digest(materialized)
+
+
+def _streaming_request_row() -> dict[str, object]:
+    return {
+        "request_id": "request-1",
+        "user_id": "user-1",
+        "created_at": "2026-08-10T09:00:00+00:00",
+        "source": "workflow:v2",
+        "agent_version": "agent-2",
+        "session_id": "session-1",
+        "evaluation_only": False,
+        "retrieval_experiment_id": None,
+        "retrieval_experiment_arm": None,
+    }
+
+
+def _streaming_interaction_row(*, tools_used: object = ()) -> dict[str, object]:
+    return {
+        "interaction_id": 1,
+        "user_id": "user-1",
+        "request_id": "request-1",
+        "created_at": "2026-08-10T09:00:01+00:00",
+        "content": "nested payload",
+        "role": "User",
+        "token_count": 3,
+        "user_action": "none",
+        "user_action_description": "",
+        "interacted_image_url": "",
+        "image_encoding": "",
+        "shadow_content": "",
+        "expert_content": "",
+        "tools_used": tools_used,
+        "citations": [],
+        "retrieved_learnings": [],
+    }
+
+
+@pytest.mark.parametrize(
+    ("nested_container_count", "raises"),
+    [(95, False), (96, True)],
+    ids=["exact-boundary", "over-boundary"],
+)
+def test_streaming_trajectory_digest_has_materialized_depth_parity(
+    nested_container_count: int,
+    raises: bool,
+) -> None:
+    tools_used: object = "leaf"
+    for _ in range(nested_container_count):
+        tools_used = [tools_used]
+    request_row = _streaming_request_row()
+    interaction_row = _streaming_interaction_row(tools_used=tools_used)
+    materialized = canonical_session_trajectory(
+        "session-1", [request_row], {"request-1": [interaction_row]}
+    )
+    accumulator = CanonicalTrajectoryDigestAccumulator("session-1")
+    accumulator.start_request(request_row)
+
+    if raises:
+        with pytest.raises(
+            ValueError, match="canonical trajectory JSON exceeds maximum depth"
+        ):
+            trajectory_digest(materialized)
+        with pytest.raises(
+            ValueError, match="canonical trajectory JSON exceeds maximum depth"
+        ):
+            accumulator.add_interaction(interaction_row)
+    else:
+        accumulator.add_interaction(interaction_row)
+        accumulator.finish_request()
+        assert accumulator.hexdigest() == trajectory_digest(materialized)
+
+
+@pytest.mark.parametrize(
+    "first_error",
+    ["bad-request", "no-request", "wrong-request", "bad-json", "unfinished"],
+)
+def test_streaming_trajectory_digest_is_permanently_poisoned_after_error(
+    first_error: str,
+) -> None:
+    accumulator = CanonicalTrajectoryDigestAccumulator("session-1")
+    request_row = _streaming_request_row()
+
+    with pytest.raises((KeyError, RuntimeError, ValueError)):
+        if first_error == "bad-request":
+            accumulator.start_request({})
+        elif first_error == "no-request":
+            accumulator.add_interaction(_streaming_interaction_row())
+        else:
+            accumulator.start_request(request_row)
+            if first_error == "wrong-request":
+                accumulator.add_interaction(
+                    {
+                        **_streaming_interaction_row(),
+                        "request_id": "request-2",
+                    }
+                )
+            elif first_error == "bad-json":
+                accumulator.add_interaction(_streaming_interaction_row(tools_used="{"))
+            else:
+                accumulator.hexdigest()
+
+    for operation in (
+        lambda: accumulator.start_request(request_row),
+        lambda: accumulator.add_interaction(_streaming_interaction_row()),
+        accumulator.finish_request,
+        accumulator.hexdigest,
+    ):
+        with pytest.raises(
+            RuntimeError,
+            match="canonical trajectory digest accumulator is invalid$",
+        ):
+            operation()

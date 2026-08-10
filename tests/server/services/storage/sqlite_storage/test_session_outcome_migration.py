@@ -15,11 +15,10 @@ from reflexio.models.api_schema.domain import (
 )
 from reflexio.server.services.storage.session_outcome_identity import (
     outcome_contract_digest,
-    trajectory_digest,
 )
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 from reflexio.server.services.storage.sqlite_storage._base import (
-    _canonical_session_snapshot,
+    _canonical_session_trajectory_digest,
     _epoch_to_iso,
     _prefetch_canonical_session_trajectory_digests,
 )
@@ -250,8 +249,8 @@ def test_migration_preserves_populated_legacy_outcomes_with_unambiguous_ids(
             allowed_values={"success", "failure", "unknown"},
             finalization_rule="first_write",
         )
-        assert record.finalized_trajectory_digest == trajectory_digest(
-            _canonical_session_snapshot(migrated.conn, row["session_id"])
+        assert record.finalized_trajectory_digest == (
+            _canonical_session_trajectory_digest(migrated.conn, row["session_id"])
         )
 
     legacy_identity_before = dict(rows_by_session["c"])
@@ -412,8 +411,8 @@ def test_migration_prefetch_retains_only_trajectory_digests(tmp_path) -> None:
     )
 
     assert digests == {
-        "digest-session": trajectory_digest(
-            _canonical_session_snapshot(storage.conn, "digest-session")
+        "digest-session": _canonical_session_trajectory_digest(
+            storage.conn, "digest-session"
         )
     }
     assert all(isinstance(digest, str) for digest in digests.values())

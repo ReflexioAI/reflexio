@@ -2,7 +2,7 @@
 
 import json
 import sqlite3
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 from reflexio.models.api_schema.domain import (
@@ -13,8 +13,10 @@ from reflexio.models.api_schema.domain import (
 )
 from reflexio.server.services.storage.error import SubjectWriteBarrierError
 from reflexio.server.services.storage.session_outcome_identity import (
+    OUTCOME_ALLOWED_VALUES,
+    OUTCOME_FINALIZATION_RULE,
+    OUTCOME_SCHEMA_VERSION,
     outcome_contract_digest,
-    trajectory_digest,
 )
 from reflexio.server.services.storage.storage_base._session_outcomes import (
     SessionOutcomeContext,
@@ -22,14 +24,10 @@ from reflexio.server.services.storage.storage_base._session_outcomes import (
 )
 
 from ._base import (
-    _OUTCOME_ALLOWED_VALUES,
     SQLiteStorageBase,
-    _canonical_session_snapshot,
+    _canonical_session_trajectory_snapshot,
     _iso_to_epoch,
 )
-
-_OUTCOME_SCHEMA_VERSION = 1
-_OUTCOME_FINALIZATION_RULE = "first_write"
 
 
 def _canonical_metadata_json(metadata: object) -> str | None:
@@ -78,21 +76,26 @@ class SessionOutcomeStoreMixin:
                     source=str(existing["source"]),
                     existing=True,
                 )
-            rows = self.conn.execute(
+            first = self.conn.execute(
                 """SELECT user_id, source, created_at, request_id
                    FROM requests WHERE session_id = ?
-                   ORDER BY created_at ASC, request_id ASC""",
+                   ORDER BY created_at ASC, request_id ASC LIMIT 1""",
                 (session_id,),
-            ).fetchall()
-            if not rows:
+            ).fetchone()
+            if first is None:
                 return SessionOutcomeContext()
-            first = rows[0]
+            counts = self.conn.execute(
+                """SELECT COUNT(DISTINCT user_id) AS user_count,
+                          COUNT(DISTINCT COALESCE(source, '')) AS source_count
+                   FROM requests WHERE session_id = ?""",
+                (session_id,),
+            ).fetchone()
             return SessionOutcomeContext(
                 user_id=str(first["user_id"]),
                 source=str(first["source"]),
                 first_request_at=_iso_to_epoch(first["created_at"]),
-                user_contract_violation=len({str(row["user_id"]) for row in rows}) > 1,
-                source_contract_violation=len({str(row["source"]) for row in rows}) > 1,
+                user_contract_violation=int(counts["user_count"]) > 1,
+                source_contract_violation=int(counts["source_count"]) > 1,
             )
 
     @SQLiteStorageBase.handle_exceptions
@@ -111,12 +114,20 @@ class SessionOutcomeStoreMixin:
                     (request.session_id,),
                 ).fetchone()
                 if existing is not None:
-                    first = self.conn.execute(
+                    early_first = self.conn.execute(
                         """SELECT user_id, source, governance_subject_ref
                            FROM requests WHERE session_id = ?
                            ORDER BY created_at ASC, request_id ASC LIMIT 1""",
                         (request.session_id,),
                     ).fetchone()
+                    snapshot = (
+                        _canonical_session_trajectory_snapshot(
+                            self.conn, request.session_id
+                        )
+                        if early_first is not None
+                        else None
+                    )
+                    first = snapshot.first_request if snapshot is not None else None
                     source = (
                         str(first["source"])
                         if first is not None
@@ -132,11 +143,7 @@ class SessionOutcomeStoreMixin:
                     )
                     contract_digest = self._outcome_contract_digest(source)
                     current_snapshot_digest = (
-                        trajectory_digest(
-                            _canonical_session_snapshot(self.conn, request.session_id)
-                        )
-                        if first is not None
-                        else None
+                        snapshot.digest if snapshot is not None else None
                     )
                     stored_contract_digest = existing["outcome_contract_digest"]
                     stored_snapshot_digest = existing["finalized_trajectory_digest"]
@@ -196,21 +203,46 @@ class SessionOutcomeStoreMixin:
                             else None
                         ),
                     )
-                first = self.conn.execute(
-                    """SELECT user_id, source, created_at, request_id
+                barrier_first = self.conn.execute(
+                    """SELECT user_id, source, created_at, request_id,
+                              governance_subject_ref
                        FROM requests WHERE session_id = ?
                        ORDER BY created_at ASC, request_id ASC LIMIT 1""",
                     (request.session_id,),
                 ).fetchone()
-                if first is None:
+                if barrier_first is None:
                     self.conn.rollback()
                     return SessionOutcomeWriteResult(
                         recorded=False,
                         reason=SessionOutcomeFailureReason.UNKNOWN_SESSION,
                     )
+                barrier_user_id = str(barrier_first["user_id"])
+                subject_ref = str(
+                    barrier_first["governance_subject_ref"]
+                    or self._subject_ref_for_user_id(barrier_user_id)
+                )
+                try:
+                    self._assert_subject_writable_locked(subject_ref)
+                except SubjectWriteBarrierError:
+                    self.conn.rollback()
+                    return SessionOutcomeWriteResult(
+                        recorded=False,
+                        user_id=barrier_user_id,
+                        reason=SessionOutcomeFailureReason.SUBJECT_NOT_WRITABLE,
+                    )
+                snapshot = _canonical_session_trajectory_snapshot(
+                    self.conn, request.session_id
+                )
+                if snapshot.request_count == 0 or snapshot.first_request is None:
+                    self.conn.rollback()
+                    return SessionOutcomeWriteResult(
+                        recorded=False,
+                        reason=SessionOutcomeFailureReason.UNKNOWN_SESSION,
+                    )
+                first = snapshot.first_request
                 user_id = str(first["user_id"])
-                source = str(first["source"])
-                first_request_at = _iso_to_epoch(first["created_at"])
+                source = str(first["source"] or "")
+                first_request_at = _iso_to_epoch(cast(str, first["created_at"]))
                 if (
                     expected_context.user_id != user_id
                     or expected_context.source != source
@@ -231,20 +263,12 @@ class SessionOutcomeStoreMixin:
                         source=source,
                         reason=SessionOutcomeFailureReason.OCCURRED_BEFORE_SESSION,
                     )
-                subject_ref = self._subject_ref_for_user_id(user_id)
-                try:
-                    self._assert_subject_writable_locked(subject_ref)
-                except SubjectWriteBarrierError:
-                    self.conn.rollback()
-                    return SessionOutcomeWriteResult(
-                        recorded=False,
-                        user_id=user_id,
-                        reason=SessionOutcomeFailureReason.SUBJECT_NOT_WRITABLE,
-                    )
-                contract_digest = self._outcome_contract_digest(source)
-                snapshot_digest = trajectory_digest(
-                    _canonical_session_snapshot(self.conn, request.session_id)
+                subject_ref = str(
+                    first["governance_subject_ref"]
+                    or self._subject_ref_for_user_id(user_id)
                 )
+                contract_digest = self._outcome_contract_digest(source)
+                snapshot_digest = snapshot.digest
                 outcome_id = uuid4().hex
                 self.conn.execute(
                     """INSERT INTO session_outcomes
@@ -357,7 +381,7 @@ class SessionOutcomeStoreMixin:
     def _outcome_contract_digest(source: str) -> str:
         return outcome_contract_digest(
             source=source,
-            schema_version=_OUTCOME_SCHEMA_VERSION,
-            allowed_values=_OUTCOME_ALLOWED_VALUES,
-            finalization_rule=_OUTCOME_FINALIZATION_RULE,
+            schema_version=OUTCOME_SCHEMA_VERSION,
+            allowed_values=OUTCOME_ALLOWED_VALUES,
+            finalization_rule=OUTCOME_FINALIZATION_RULE,
         )
