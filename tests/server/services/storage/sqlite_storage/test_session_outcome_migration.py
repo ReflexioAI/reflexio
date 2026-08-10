@@ -330,7 +330,9 @@ def test_migration_rejects_zero_legacy_outcome_revision_atomically(tmp_path) -> 
     assert stranded_legacy_table is None
 
 
-def test_migration_prefetches_trajectory_inputs_in_bounded_chunks(tmp_path) -> None:
+def test_migration_streams_legacy_outcomes_and_trajectories_in_bounded_batches(
+    tmp_path,
+) -> None:
     db_path = str(tmp_path / "legacy-session-outcome-query-scaling.db")
     storage = SQLiteStorage(org_id="legacy-query-scaling", db_path=db_path)
     row_count = 501
@@ -378,13 +380,26 @@ def test_migration_prefetches_trajectory_inputs_in_bounded_chunks(tmp_path) -> N
     finally:
         storage.conn.set_trace_callback(None)
 
+    legacy_outcome_queries = [
+        statement
+        for statement in statements
+        if statement.lstrip().upper().startswith("SELECT")
+        and "FROM session_outcomes_legacy" in statement
+    ]
+    assert len(legacy_outcome_queries) == 2
+    assert all("LIMIT 256" in statement for statement in legacy_outcome_queries)
+    assert not any(
+        statement.strip() == "SELECT * FROM session_outcomes"
+        for statement in statements
+    )
     trajectory_input_queries = [
         statement
         for statement in statements
         if statement.lstrip().upper().startswith("SELECT")
-        and ("FROM requests" in statement or "FROM interactions" in statement)
+        and "FROM requests" in statement
     ]
-    assert len(trajectory_input_queries) == 4
+    assert len(trajectory_input_queries) == 2
+    assert all("LEFT JOIN interactions" in query for query in trajectory_input_queries)
     assert (
         storage.conn.execute("SELECT COUNT(*) FROM session_outcomes").fetchone()[0]
         == row_count

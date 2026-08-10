@@ -62,12 +62,11 @@ from reflexio.server.services.storage.error import (
 from reflexio.server.services.storage.retention_mixin import RetentionMixin, chunked
 from reflexio.server.services.storage.session_outcome_identity import (
     OUTCOME_ALLOWED_VALUES,
+    OUTCOME_FINALIZATION_RULE,
     CanonicalTrajectoryDigestAccumulator,
     CanonicalTrajectoryDigestResult,
     canonical_json_bytes,
-    canonical_session_trajectory,
     outcome_contract_digest,
-    trajectory_digest,
 )
 from reflexio.server.services.storage.storage_base import BaseStorage
 from reflexio.server.site_var.site_var_manager import SiteVarManager
@@ -78,6 +77,7 @@ from ._stall_state import init_stall_state_table
 logger = logging.getLogger(__name__)
 
 _TRAJECTORY_FETCH_SIZE = 256
+_SESSION_OUTCOME_MIGRATION_BATCH_SIZE = 256
 _MINIMUM_SQLITE_VERSION = (3, 35, 0)
 _SQLITE_INITIALIZATION_LOCK_STRIPES = 64
 _sqlite_initialization_locks = tuple(
@@ -194,22 +194,20 @@ def _canonical_session_trajectory_digest(
 def _prefetch_canonical_session_trajectory_digests(
     conn: sqlite3.Connection, session_ids: Sequence[str]
 ) -> dict[str, str]:
-    """Derive trajectory digests while retaining only one payload chunk."""
+    """Derive trajectory digests from ordered joined rows in bounded chunks."""
     digests: dict[str, str] = {}
     for session_id_chunk in chunked(list(dict.fromkeys(session_ids))):
         placeholders = ",".join("?" for _ in session_id_chunk)
-        request_rows = conn.execute(
-            f"""SELECT request_id, user_id, created_at, source, agent_version,
-                       session_id, evaluation_only, retrieval_experiment_id,
-                       retrieval_experiment_arm
-                FROM requests WHERE session_id IN ({placeholders})
-                ORDER BY session_id ASC, created_at ASC, request_id ASC""",  # noqa: S608
-            session_id_chunk,
-        ).fetchall()
-        interaction_rows = conn.execute(
-            f"""SELECT requests.session_id AS trajectory_session_id,
-                       interactions.interaction_id, interactions.user_id,
-                       interactions.request_id, interactions.created_at,
+        cursor = conn.execute(
+            f"""SELECT requests.request_id, requests.user_id, requests.created_at,
+                       requests.source, requests.agent_version, requests.session_id,
+                       requests.evaluation_only, requests.retrieval_experiment_id,
+                       requests.retrieval_experiment_arm,
+                       requests.governance_subject_ref,
+                       interactions.interaction_id,
+                       interactions.user_id AS interaction_user_id,
+                       interactions.request_id AS interaction_request_id,
+                       interactions.created_at AS interaction_created_at,
                        interactions.content, interactions.role,
                        interactions.token_count, interactions.user_action,
                        interactions.user_action_description,
@@ -217,38 +215,52 @@ def _prefetch_canonical_session_trajectory_digests(
                        interactions.image_encoding, interactions.shadow_content,
                        interactions.expert_content, interactions.tools_used,
                        interactions.citations, interactions.retrieved_learnings
-                FROM interactions
-                JOIN requests ON requests.request_id = interactions.request_id
+                FROM requests
+                LEFT JOIN interactions
+                  ON interactions.request_id = requests.request_id
                 WHERE requests.session_id IN ({placeholders})
-                ORDER BY requests.session_id ASC, interactions.request_id ASC,
+                ORDER BY requests.session_id ASC, requests.created_at ASC,
+                         requests.request_id ASC,
                          interactions.created_at ASC,
                          interactions.interaction_id ASC""",  # noqa: S608
             session_id_chunk,
-        ).fetchall()
-
-        requests_by_session: dict[str, list[dict[str, object]]] = {
-            session_id: [] for session_id in session_id_chunk
-        }
-        interactions_by_session: dict[str, dict[str, list[dict[str, object]]]] = {
-            session_id: {} for session_id in session_id_chunk
-        }
-        for request in request_rows:
-            session_id = str(request["session_id"])
-            requests_by_session[session_id].append(dict(request))
-            interactions_by_session[session_id][str(request["request_id"])] = []
-        for interaction in interaction_rows:
-            interaction_payload = dict(interaction)
-            session_id = str(interaction_payload.pop("trajectory_session_id"))
-            interactions_by_session[session_id][
-                str(interaction_payload["request_id"])
-            ].append(interaction_payload)
+        )
+        active_session_id: str | None = None
+        active_request_id: str | None = None
+        accumulator: CanonicalTrajectoryDigestAccumulator | None = None
+        while rows := cursor.fetchmany(_TRAJECTORY_FETCH_SIZE):
+            for row in rows:
+                session_id = str(row["session_id"])
+                request_id = str(row["request_id"])
+                if accumulator is None or session_id != active_session_id:
+                    if accumulator is not None:
+                        if active_request_id is not None:
+                            accumulator.finish_request()
+                        assert active_session_id is not None  # noqa: S101
+                        digests[active_session_id] = accumulator.hexdigest()
+                    accumulator = CanonicalTrajectoryDigestAccumulator(session_id)
+                    active_session_id = session_id
+                    active_request_id = None
+                if request_id != active_request_id:
+                    if active_request_id is not None:
+                        accumulator.finish_request()
+                    accumulator.start_request(row)
+                    active_request_id = request_id
+                if row["interaction_id"] is not None:
+                    interaction = dict(row)
+                    interaction["user_id"] = row["interaction_user_id"]
+                    interaction["request_id"] = row["interaction_request_id"]
+                    interaction["created_at"] = row["interaction_created_at"]
+                    accumulator.add_interaction(interaction)
+        if accumulator is not None:
+            if active_request_id is not None:
+                accumulator.finish_request()
+            assert active_session_id is not None  # noqa: S101
+            digests[active_session_id] = accumulator.hexdigest()
         for session_id in session_id_chunk:
-            digests[session_id] = trajectory_digest(
-                canonical_session_trajectory(
-                    session_id,
-                    requests_by_session[session_id],
-                    interactions_by_session[session_id],
-                )
+            digests.setdefault(
+                session_id,
+                CanonicalTrajectoryDigestAccumulator(session_id).hexdigest(),
             )
     return digests
 
@@ -1360,18 +1372,6 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                     self.conn.commit()
                     return
 
-                legacy_rows = self.conn.execute(
-                    "SELECT * FROM session_outcomes"
-                ).fetchall()
-                trajectory_digests = _prefetch_canonical_session_trajectory_digests(
-                    self.conn,
-                    [
-                        str(row["session_id"])
-                        for row in legacy_rows
-                        if "finalized_trajectory_digest" not in columns
-                        or not row["finalized_trajectory_digest"]
-                    ],
-                )
                 self.conn.execute(
                     "ALTER TABLE session_outcomes RENAME TO session_outcomes_legacy"
                 )
@@ -1394,67 +1394,108 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                         PRIMARY KEY (user_id, session_id)
                     )"""
                 )
-                for row in legacy_rows:
-                    source = str(row["source"])
-                    subject_ref = (
-                        row["governance_subject_ref"]
-                        if "governance_subject_ref" in columns
-                        else None
-                    )
-                    if subject_ref is None or not str(subject_ref).strip():
-                        subject_ref = self._subject_ref_for_user_id(str(row["user_id"]))
-                    existing_outcome_id = (
-                        row["outcome_id"] if "outcome_id" in columns else None
-                    )
-                    existing_contract_digest = (
-                        row["outcome_contract_digest"]
-                        if "outcome_contract_digest" in columns
-                        else None
-                    )
-                    existing_trajectory_digest = (
-                        row["finalized_trajectory_digest"]
-                        if "finalized_trajectory_digest" in columns
-                        else None
-                    )
-                    self.conn.execute(
-                        """INSERT INTO session_outcomes (
-                            outcome_id, outcome_revision, user_id, session_id, outcome,
-                            occurred_at, source, label, value, metadata,
-                            outcome_contract_digest, finalized_trajectory_digest,
-                            governance_subject_ref, created_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                        (
-                            existing_outcome_id
-                            or _legacy_session_outcome_id(
-                                str(row["user_id"]), str(row["session_id"])
-                            ),
+                last_user_id: str | None = None
+                last_session_id: str | None = None
+                while True:
+                    if last_user_id is None:
+                        legacy_rows = self.conn.execute(
+                            """SELECT * FROM session_outcomes_legacy
+                               ORDER BY user_id, session_id
+                               LIMIT ?""",
+                            (_SESSION_OUTCOME_MIGRATION_BATCH_SIZE,),
+                        ).fetchall()
+                    else:
+                        legacy_rows = self.conn.execute(
+                            """SELECT * FROM session_outcomes_legacy
+                               WHERE user_id > ?
+                                  OR (user_id = ? AND session_id > ?)
+                               ORDER BY user_id, session_id
+                               LIMIT ?""",
                             (
-                                row["outcome_revision"]
-                                if "outcome_revision" in columns
-                                and row["outcome_revision"] is not None
-                                else 1
+                                last_user_id,
+                                last_user_id,
+                                last_session_id,
+                                _SESSION_OUTCOME_MIGRATION_BATCH_SIZE,
                             ),
-                            row["user_id"],
-                            row["session_id"],
-                            row["outcome"],
-                            row["occurred_at"],
-                            source,
-                            row["label"] if "label" in columns else None,
-                            row["value"] if "value" in columns else None,
-                            row["metadata"] if "metadata" in columns else None,
-                            existing_contract_digest
-                            or outcome_contract_digest(
-                                source=source,
-                                schema_version=1,
-                                allowed_values=OUTCOME_ALLOWED_VALUES,
-                                finalization_rule="first_write",
-                            ),
-                            existing_trajectory_digest
-                            or trajectory_digests[str(row["session_id"])],
-                            subject_ref,
-                            row["created_at"],
-                        ),
+                        ).fetchall()
+                    if not legacy_rows:
+                        break
+                    trajectory_digests = _prefetch_canonical_session_trajectory_digests(
+                        self.conn,
+                        [
+                            str(row["session_id"])
+                            for row in legacy_rows
+                            if "finalized_trajectory_digest" not in columns
+                            or not row["finalized_trajectory_digest"]
+                        ],
                     )
+                    for row in legacy_rows:
+                        source = str(row["source"])
+                        subject_ref = (
+                            row["governance_subject_ref"]
+                            if "governance_subject_ref" in columns
+                            else None
+                        )
+                        if subject_ref is None or not str(subject_ref).strip():
+                            subject_ref = self._subject_ref_for_user_id(
+                                str(row["user_id"])
+                            )
+                        existing_outcome_id = (
+                            row["outcome_id"] if "outcome_id" in columns else None
+                        )
+                        existing_contract_digest = (
+                            row["outcome_contract_digest"]
+                            if "outcome_contract_digest" in columns
+                            else None
+                        )
+                        existing_trajectory_digest = (
+                            row["finalized_trajectory_digest"]
+                            if "finalized_trajectory_digest" in columns
+                            else None
+                        )
+                        self.conn.execute(
+                            """INSERT INTO session_outcomes (
+                                outcome_id, outcome_revision, user_id, session_id,
+                                outcome, occurred_at, source, label, value, metadata,
+                                outcome_contract_digest, finalized_trajectory_digest,
+                                governance_subject_ref, created_at
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                            (
+                                existing_outcome_id
+                                or _legacy_session_outcome_id(
+                                    str(row["user_id"]), str(row["session_id"])
+                                ),
+                                (
+                                    row["outcome_revision"]
+                                    if "outcome_revision" in columns
+                                    and row["outcome_revision"] is not None
+                                    else 1
+                                ),
+                                row["user_id"],
+                                row["session_id"],
+                                row["outcome"],
+                                row["occurred_at"],
+                                source,
+                                row["label"] if "label" in columns else None,
+                                row["value"] if "value" in columns else None,
+                                row["metadata"] if "metadata" in columns else None,
+                                existing_contract_digest
+                                or outcome_contract_digest(
+                                    source=source,
+                                    schema_version=1,
+                                    allowed_values=OUTCOME_ALLOWED_VALUES,
+                                    finalization_rule=OUTCOME_FINALIZATION_RULE,
+                                ),
+                                existing_trajectory_digest
+                                or trajectory_digests[str(row["session_id"])],
+                                subject_ref,
+                                row["created_at"],
+                            ),
+                        )
+                    last_user_id = str(legacy_rows[-1]["user_id"])
+                    last_session_id = str(legacy_rows[-1]["session_id"])
+                    if len(legacy_rows) < _SESSION_OUTCOME_MIGRATION_BATCH_SIZE:
+                        break
                 self.conn.execute("DROP TABLE session_outcomes_legacy")
                 self.conn.execute(
                     "CREATE INDEX idx_session_outcomes_occurred_at "

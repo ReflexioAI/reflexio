@@ -118,7 +118,8 @@ def register_global_sweep(fn: Callable[[int], int]) -> None:
         fn (Callable[[int], int]): Called with the current unix epoch; returns
             the number of rows it deleted.
     """
-    _global_sweep_hooks.append(fn)
+    if fn not in _global_sweep_hooks:
+        _global_sweep_hooks.append(fn)
 
 
 def clear_global_sweeps() -> None:
@@ -142,7 +143,8 @@ def register_always_global_sweep(fn: Callable[[int], int]) -> None:
         fn (Callable[[int], int]): Called with the current unix epoch; returns
             the number of rows it processed.
     """
-    _always_global_sweep_hooks.append(fn)
+    if fn not in _always_global_sweep_hooks:
+        _always_global_sweep_hooks.append(fn)
 
 
 def clear_always_global_sweeps() -> None:
@@ -172,7 +174,8 @@ def register_per_org_sweep(fn: Callable[[str, int], int]) -> None:
         fn (Callable[[str, int], int]): Called with ``(org_id, now)`` where
             ``now`` is the current unix epoch; returns the number of rows deleted.
     """
-    _per_org_sweep_hooks.append(fn)
+    if fn not in _per_org_sweep_hooks:
+        _per_org_sweep_hooks.append(fn)
 
 
 def clear_per_org_sweeps() -> None:
