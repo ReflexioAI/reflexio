@@ -65,7 +65,7 @@ class SearchMeteringWorker:
                 return False
             self._stop_event.clear()
             self._abort_event.clear()
-            self._threads = [
+            threads = [
                 threading.Thread(
                     target=self._worker_loop,
                     name=f"search-metering-worker-{index}",
@@ -73,8 +73,19 @@ class SearchMeteringWorker:
                 )
                 for index in range(self.worker_count)
             ]
-            for thread in self._threads:
-                thread.start()
+            started_threads: list[threading.Thread] = []
+            try:
+                for thread in threads:
+                    thread.start()
+                    started_threads.append(thread)
+            except BaseException:
+                self._stop_event.set()
+                for thread in started_threads:
+                    thread.join()
+                self._stop_event.clear()
+                self._threads = []
+                raise
+            self._threads = threads
             self._started = True
         logger.info(
             "event=search_metering_worker_started workers=%d queue_capacity=%d",

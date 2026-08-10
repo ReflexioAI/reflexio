@@ -125,6 +125,43 @@ def test_enqueue_returns_while_database_work_is_blocked(monkeypatch) -> None:
     assert worker.stop() == 0
 
 
+def test_partial_start_failure_stops_started_threads_and_allows_retry(
+    monkeypatch,
+) -> None:
+    worker = SearchMeteringWorker(worker_count=2)
+    original_start = threading.Thread.start
+    start_calls = 0
+    started_threads: list[threading.Thread] = []
+
+    def fail_second_start(thread: threading.Thread) -> None:
+        nonlocal start_calls
+        start_calls += 1
+        if start_calls == 2:
+            raise RuntimeError("thread start failed")
+        original_start(thread)
+        started_threads.append(thread)
+
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(threading.Thread, "start", fail_second_start)
+            with pytest.raises(RuntimeError, match="thread start failed"):
+                worker.start()
+
+        assert len(started_threads) == 1
+        assert not started_threads[0].is_alive()
+        assert worker._threads == []
+        assert worker._started is False
+
+        assert worker.start() is True
+        assert worker.stop() == 0
+        assert worker.start() is False
+    finally:
+        worker._stop_event.set()
+        for thread in worker._threads:
+            if thread.ident is not None:
+                thread.join(timeout=1.0)
+
+
 def test_full_queue_drops_without_backpressure_and_reports(monkeypatch) -> None:
     started = threading.Event()
     release = threading.Event()
