@@ -725,6 +725,54 @@ def test_streaming_trajectory_digest_matches_materialized_multi_request_json() -
     assert accumulator.hexdigest() == trajectory_digest(materialized)
 
 
+def test_streaming_trajectory_byte_count_matches_each_materialized_prefix() -> None:
+    request_row = _streaming_request_row()
+    interaction_row = _streaming_interaction_row()
+    accumulator = CanonicalTrajectoryDigestAccumulator("session-1")
+
+    assert accumulator.byte_count_if_finalized() == len(
+        canonical_trajectory_bytes(canonical_session_trajectory("session-1", [], {}))
+    )
+
+    accumulator.start_request(request_row)
+    assert accumulator.byte_count_if_finalized() == len(
+        canonical_trajectory_bytes(
+            canonical_session_trajectory("session-1", [request_row], {})
+        )
+    )
+
+    accumulator.add_interaction(interaction_row)
+    materialized = canonical_session_trajectory(
+        "session-1", [request_row], {"request-1": [interaction_row]}
+    )
+    assert accumulator.byte_count_if_finalized() == len(
+        canonical_trajectory_bytes(materialized)
+    )
+
+    accumulator.finish_request()
+    assert accumulator.byte_count_if_finalized() == len(
+        canonical_trajectory_bytes(materialized)
+    )
+    assert accumulator.hexdigest() == trajectory_digest(materialized)
+
+
+def test_streaming_trajectory_byte_count_handles_one_huge_interaction() -> None:
+    request_row = _streaming_request_row()
+    interaction_row = _streaming_interaction_row()
+    interaction_row["content"] = "x" * 100_000
+    materialized = canonical_session_trajectory(
+        "session-1", [request_row], {"request-1": [interaction_row]}
+    )
+    accumulator = CanonicalTrajectoryDigestAccumulator("session-1")
+
+    accumulator.start_request(request_row)
+    accumulator.add_interaction(interaction_row)
+
+    assert accumulator.byte_count_if_finalized() == len(
+        canonical_trajectory_bytes(materialized)
+    )
+
+
 def _streaming_request_row() -> dict[str, object]:
     return {
         "request_id": "request-1",

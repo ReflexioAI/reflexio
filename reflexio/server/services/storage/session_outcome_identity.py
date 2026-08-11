@@ -234,7 +234,8 @@ class CanonicalTrajectoryDigestAccumulator:
 
     def __init__(self, session_id: str) -> None:
         self._digest = sha256()
-        self._digest.update(b'{"requests":[')
+        self._byte_count = 0
+        self._update(b'{"requests":[')
         self._session_id = session_id
         self._request: CanonicalRequest | None = None
         self._request_count = 0
@@ -246,6 +247,10 @@ class CanonicalTrajectoryDigestAccumulator:
         if self._poisoned:
             raise RuntimeError("canonical trajectory digest accumulator is invalid")
 
+    def _update(self, encoded: bytes) -> None:
+        self._digest.update(encoded)
+        self._byte_count += len(encoded)
+
     def start_request(self, row: Mapping[str, object]) -> None:
         self._raise_if_poisoned()
         try:
@@ -255,8 +260,8 @@ class CanonicalTrajectoryDigestAccumulator:
                 raise RuntimeError("previous canonical request is not finished")
             request = _canonical_request(row)
             if self._request_count:
-                self._digest.update(b",")
-            self._digest.update(b'{"interactions":[')
+                self._update(b",")
+            self._update(b'{"interactions":[')
             self._request = request
             self._interaction_count = 0
         except Exception:
@@ -276,8 +281,8 @@ class CanonicalTrajectoryDigestAccumulator:
                 _canonical_interaction(row), depth=4
             )
             if self._interaction_count:
-                self._digest.update(b",")
-            self._digest.update(encoded)
+                self._update(b",")
+            self._update(encoded)
             self._interaction_count += 1
         except Exception:
             self._poisoned = True
@@ -289,11 +294,31 @@ class CanonicalTrajectoryDigestAccumulator:
             if self._request is None:
                 raise RuntimeError("canonical trajectory has no active request")
             encoded = _canonical_trajectory_bytes_at_depth(self._request, depth=3)
-            self._digest.update(b'],"request":')
-            self._digest.update(encoded)
-            self._digest.update(b"}")
+            self._update(b'],"request":')
+            self._update(encoded)
+            self._update(b"}")
             self._request = None
             self._request_count += 1
+        except Exception:
+            self._poisoned = True
+            raise
+
+    def byte_count_if_finalized(self) -> int:
+        """Return exact canonical bytes if the current stream ended now."""
+        self._raise_if_poisoned()
+        try:
+            byte_count = self._byte_count
+            if self._hexdigest is not None:
+                return byte_count
+            if self._request is not None:
+                encoded_request = _canonical_trajectory_bytes_at_depth(
+                    self._request, depth=3
+                )
+                byte_count += len(b'],"request":') + len(encoded_request) + 1
+            encoded_session_id = _canonical_trajectory_bytes_at_depth(
+                self._session_id, depth=1
+            )
+            return byte_count + len(b'],"session_id":') + len(encoded_session_id) + 1
         except Exception:
             self._poisoned = True
             raise
@@ -307,9 +332,9 @@ class CanonicalTrajectoryDigestAccumulator:
                 encoded_session_id = _canonical_trajectory_bytes_at_depth(
                     self._session_id, depth=1
                 )
-                self._digest.update(b'],"session_id":')
-                self._digest.update(encoded_session_id)
-                self._digest.update(b"}")
+                self._update(b'],"session_id":')
+                self._update(encoded_session_id)
+                self._update(b"}")
                 self._hexdigest = self._digest.hexdigest()
             return self._hexdigest
         except Exception:
