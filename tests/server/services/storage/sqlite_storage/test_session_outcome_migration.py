@@ -118,6 +118,11 @@ class _NoTrajectoryFetchAllCursor:
     def fetchall(self) -> Any:
         raise AssertionError("trajectory migration must not call fetchall")
 
+    def __iter__(self) -> Any:
+        raise AssertionError(
+            "trajectory migration must not iterate the cursor directly"
+        )
+
     def fetchmany(self, size: int) -> Any:
         self._fetch_sizes.append(size)
         return self._cursor.fetchmany(size)

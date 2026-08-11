@@ -689,7 +689,19 @@ def test_sqlite_context_normalizes_nullable_request_source() -> None:
     counts_cursor = MagicMock()
     counts_cursor.fetchone.return_value = {"user_count": 1, "source_count": 1}
     connection = MagicMock()
-    connection.execute.side_effect = [existing_cursor, first_cursor, counts_cursor]
+
+    def execute(statement: str, _parameters: tuple[str]) -> MagicMock:
+        if "FROM session_outcomes" in statement:
+            return existing_cursor
+        if "ORDER BY created_at ASC" in statement:
+            return first_cursor
+        if "COUNT(DISTINCT user_id)" in statement:
+            return counts_cursor
+        raise AssertionError(
+            f"unexpected SQL in nullable-source context test: {statement}"
+        )
+
+    connection.execute.side_effect = execute
     reader = SessionOutcomeStoreMixin()
     cast(Any, reader).conn = connection
     cast(Any, reader)._lock = RLock()
