@@ -100,26 +100,33 @@ def _normalize_messages(messages: Any, created_at: int | None) -> list[dict[str,
     return normalized
 
 
-def _extract_user_id(filters: Any) -> str | None:
-    """Pull a plain-string user_id from mem0 search filters.
+def _extract_identity(filters: Any, name: str) -> str | None:
+    """Pull a plain-string identity field from mem0 filters.
 
     Handles the top-level form ``{"user_id": "u1"}`` and one level of
     ``{"AND": [{"user_id": "u1"}, ...]}``. Operator forms like
-    ``{"user_id": {"in": [...]}}`` identify no single user and return None.
+    ``{"user_id": {"in": [...]}}`` identify no single value and return None.
     """
     if not isinstance(filters, dict):
         return None
-    if user_id := _nonempty_str(filters.get("user_id")):
-        return user_id
+    if value := _nonempty_str(filters.get(name)):
+        return value
     clauses = filters.get("AND")
     if not isinstance(clauses, list):
         return None
     for clause in clauses:
-        if isinstance(clause, dict) and (
-            user_id := _nonempty_str(clause.get("user_id"))
-        ):
-            return user_id
+        if isinstance(clause, dict) and (value := _nonempty_str(clause.get(name))):
+            return value
     return None
+
+
+def _resolve_add_identity(
+    options: Any, kwargs: dict[str, Any], name: str
+) -> str | None:
+    """Resolve an add identity, preferring legacy top-level kwargs."""
+    return _nonempty_str(kwargs.get(name)) or _extract_identity(
+        _opt(options, kwargs, "filters"), name
+    )
 
 
 class MemoryClient(_Mem0MemoryClient):
@@ -146,8 +153,10 @@ class MemoryClient(_Mem0MemoryClient):
             if reflexio_client is not None
             else _default_reflexio_client()
         )
-        # Groups this client instance's publishes when add() has no run_id.
-        self._session_id = f"mem0-{uuid.uuid4().hex}"
+        # Namespaces deterministic fallback sessions to this client instance.
+        # The derived UUID also includes user/agent identity so a long-lived
+        # client cannot group unrelated users or agents into one session.
+        self._session_namespace = uuid.uuid4()
         # Debounce: warn on the first Reflexio failure, DEBUG afterwards, so a
         # sustained outage doesn't spam the host application's logs.
         self._reflexio_failure_logged = False
@@ -176,10 +185,19 @@ class MemoryClient(_Mem0MemoryClient):
         if self._reflexio is None:
             return
         try:
-            user_id = _nonempty_str(kwargs.get("user_id"))
+            user_id = _resolve_add_identity(options, kwargs, "user_id")
             if user_id is None:
                 logger.debug("Skipping Reflexio publish: mem0 add() has no user_id")
                 return
+            agent_version = (
+                _resolve_add_identity(options, kwargs, "agent_id")
+                or resolve_agent_version()
+            )
+            run_id = _resolve_add_identity(options, kwargs, "run_id")
+            session_identity = f"{user_id}\0{agent_version}"
+            session_id = run_id or (
+                f"mem0-{uuid.uuid5(self._session_namespace, session_identity).hex}"
+            )
             # Only int (unix seconds) timestamps map to created_at; mem0 also
             # accepts datetime/ISO strings, which fall back to "now" here.
             timestamp = _opt(options, kwargs, "timestamp")
@@ -193,9 +211,8 @@ class MemoryClient(_Mem0MemoryClient):
                 user_id=user_id,
                 interactions=interactions,
                 source=_SOURCE,
-                agent_version=_nonempty_str(kwargs.get("agent_id"))
-                or resolve_agent_version(),
-                session_id=_nonempty_str(kwargs.get("run_id")) or self._session_id,
+                agent_version=agent_version,
+                session_id=session_id,
                 wait_for_response=False,
             )
         except Exception as exc:  # noqa: BLE001 — best-effort by contract.
@@ -211,14 +228,21 @@ class MemoryClient(_Mem0MemoryClient):
             # fail-and-warn on every blank mem0 search.
             return result
         try:
-            user_id = _extract_user_id(_opt(options, kwargs, "filters"))
+            filters = _opt(options, kwargs, "filters")
+            user_id = _extract_identity(filters, "user_id")
             if user_id is None:
                 logger.debug(
                     "Skipping Reflexio search augmentation: no plain user_id in filters"
                 )
                 return result
+            agent_version = (
+                _extract_identity(filters, "agent_id") or resolve_agent_version()
+            )
             response = self._reflexio.search(
-                query=query, user_id=user_id, top_k=_REFLEXIO_TOP_K
+                query=query,
+                user_id=user_id,
+                agent_version=agent_version,
+                top_k=_REFLEXIO_TOP_K,
             )
             # Build all three lists before assigning any key, so a failure
             # leaves the mem0 payload entirely untouched.

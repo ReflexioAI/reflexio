@@ -31,18 +31,71 @@ def test_publish_maps_ids_and_flags(wrapped_cls, reflexio_mock):
     assert kwargs["interactions"] == [{"role": "User", "content": "hello"}]
 
 
-def test_session_id_stable_per_instance_without_run_id(wrapped_cls, reflexio_mock):
+def test_publish_maps_ids_from_options_filters(wrapped_cls, reflexio_mock):
     client = _client(wrapped_cls, reflexio_mock)
-    client.add("a", user_id="u1")
-    client.add("b", user_id="u1")
+    client.add(
+        "hello",
+        types.SimpleNamespace(
+            filters={"user_id": "u-opt", "agent_id": "bot-opt", "run_id": "run-opt"}
+        ),
+    )
+    kwargs = reflexio_mock.publish_interaction.call_args.kwargs
+    assert kwargs["user_id"] == "u-opt"
+    assert kwargs["agent_version"] == "bot-opt"
+    assert kwargs["session_id"] == "run-opt"
+
+
+def test_add_kwargs_filters_override_options_filters(wrapped_cls, reflexio_mock):
+    client = _client(wrapped_cls, reflexio_mock)
+    client.add(
+        "hello",
+        types.SimpleNamespace(
+            filters={"user_id": "u-opt", "agent_id": "bot-opt", "run_id": "run-opt"}
+        ),
+        filters={"user_id": "u-kw", "agent_id": "bot-kw", "run_id": "run-kw"},
+    )
+    kwargs = reflexio_mock.publish_interaction.call_args.kwargs
+    assert kwargs["user_id"] == "u-kw"
+    assert kwargs["agent_version"] == "bot-kw"
+    assert kwargs["session_id"] == "run-kw"
+
+
+def test_add_top_level_identity_kwargs_override_filters(wrapped_cls, reflexio_mock):
+    client = _client(wrapped_cls, reflexio_mock)
+    client.add(
+        "hello",
+        filters={
+            "user_id": "u-filter",
+            "agent_id": "bot-filter",
+            "run_id": "run-filter",
+        },
+        user_id="u-direct",
+        agent_id="bot-direct",
+        run_id="run-direct",
+    )
+    kwargs = reflexio_mock.publish_interaction.call_args.kwargs
+    assert kwargs["user_id"] == "u-direct"
+    assert kwargs["agent_version"] == "bot-direct"
+    assert kwargs["session_id"] == "run-direct"
+
+
+def test_fallback_session_id_is_stable_and_scoped_to_user_and_agent(
+    wrapped_cls, reflexio_mock
+):
+    client = _client(wrapped_cls, reflexio_mock)
+    client.add("a", user_id="u1", agent_id="a1")
+    client.add("b", user_id="u1", agent_id="a1")
+    client.add("c", user_id="u2", agent_id="a1")
+    client.add("d", user_id="u1", agent_id="a2")
     sessions = [
         c.kwargs["session_id"] for c in reflexio_mock.publish_interaction.call_args_list
     ]
     assert sessions[0] == sessions[1]
     assert sessions[0].startswith("mem0-")
+    assert len(set(sessions)) == 3
 
     other = _client(wrapped_cls, reflexio_mock)
-    other.add("c", user_id="u1")
+    other.add("e", user_id="u1", agent_id="a1")
     assert (
         reflexio_mock.publish_interaction.call_args.kwargs["session_id"] != sessions[0]
     )

@@ -329,13 +329,17 @@ from reflexio.mem0 import MemoryClient
 client = MemoryClient(api_key="your-mem0-key")
 ```
 
-Every call still goes to mem0. In addition, `add()` publishes the conversation
-to Reflexio so it can learn playbooks (best-effort, never raises), and
-`search()` returns mem0's payload plus `reflexio_profiles`,
-`reflexio_user_playbooks`, and `reflexio_agent_playbooks` sibling keys.
-Reflexio credentials come from the `REFLEXIO_API_KEY` and `REFLEXIO_URL`
-environment variables, or pass `reflexio_client=ReflexioClient(...)`. When
-neither is configured, the wrapper is a pure pass-through (mem0 only).
+Every call still goes to mem0. After a successful mem0 `add()`, the wrapper
+best-effort publishes the conversation to Reflexio when a user identity and
+Reflexio credentials are available. A `search()` with a plain `user_id` filter
+adds `reflexio_profiles`, `reflexio_user_playbooks`, and
+`reflexio_agent_playbooks` sibling keys only when Reflexio augmentation
+succeeds. Reflexio failures are logged and swallowed; mem0 exceptions still
+propagate, and on skipped or failed augmentation the original mem0 payload is
+returned unchanged. Reflexio credentials come from the `REFLEXIO_API_KEY` and
+`REFLEXIO_URL` environment variables, or pass
+`reflexio_client=ReflexioClient(...)`. When neither is configured, the wrapper
+is a pure pass-through (mem0 only).
 
 > **Migration from the LangChain integration (removed in this release).** The
 > `reflexio.integrations.langchain` package and the `reflexio-client[langchain]`
