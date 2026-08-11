@@ -82,6 +82,13 @@ def test_no_plain_user_id_skips_augmentation(wrapped_cls, reflexio_mock):
     reflexio_mock.search.assert_not_called()
 
 
+def test_conflicting_filter_user_ids_skip_augmentation(wrapped_cls, reflexio_mock):
+    client = _client(wrapped_cls, reflexio_mock)
+    result = client.search("q", filters={"AND": [{"user_id": "u1"}, {"user_id": "u2"}]})
+    assert "reflexio_profiles" not in result
+    reflexio_mock.search.assert_not_called()
+
+
 def test_reflexio_failure_leaves_payload_untouched(wrapped_cls, reflexio_mock, caplog):
     reflexio_mock.search.side_effect = RuntimeError("reflexio down")
     client = _client(wrapped_cls, reflexio_mock)

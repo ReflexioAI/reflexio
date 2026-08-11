@@ -109,15 +109,20 @@ def _extract_identity(filters: Any, name: str) -> str | None:
     """
     if not isinstance(filters, dict):
         return None
+    values: list[str] = []
     if value := _nonempty_str(filters.get(name)):
-        return value
+        values.append(value)
     clauses = filters.get("AND")
-    if not isinstance(clauses, list):
+    if isinstance(clauses, list):
+        values.extend(
+            value
+            for clause in clauses
+            if isinstance(clause, dict)
+            if (value := _nonempty_str(clause.get(name)))
+        )
+    if not values or any(value != values[0] for value in values[1:]):
         return None
-    for clause in clauses:
-        if isinstance(clause, dict) and (value := _nonempty_str(clause.get(name))):
-            return value
-    return None
+    return values[0]
 
 
 def _resolve_add_identity(

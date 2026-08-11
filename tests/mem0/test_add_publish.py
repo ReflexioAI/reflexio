@@ -79,6 +79,12 @@ def test_add_top_level_identity_kwargs_override_filters(wrapped_cls, reflexio_mo
     assert kwargs["session_id"] == "run-direct"
 
 
+def test_conflicting_filter_user_ids_skip_publish(wrapped_cls, reflexio_mock):
+    client = _client(wrapped_cls, reflexio_mock)
+    client.add("hello", filters={"AND": [{"user_id": "u1"}, {"user_id": "u2"}]})
+    reflexio_mock.publish_interaction.assert_not_called()
+
+
 def test_fallback_session_id_is_stable_and_scoped_to_user_and_agent(
     wrapped_cls, reflexio_mock
 ):
