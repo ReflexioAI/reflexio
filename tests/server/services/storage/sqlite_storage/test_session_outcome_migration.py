@@ -4,6 +4,7 @@ import json
 import sqlite3
 from hashlib import sha256
 from math import ceil
+from typing import Any, cast
 
 import pytest
 
@@ -21,6 +22,7 @@ from reflexio.server.services.storage.session_outcome_identity import (
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 from reflexio.server.services.storage.sqlite_storage._base import (
     _SESSION_OUTCOME_MIGRATION_BATCH_SIZE,
+    _TRAJECTORY_FETCH_SIZE,
     _canonical_session_trajectory_digest,
     _epoch_to_iso,
     _prefetch_canonical_session_trajectory_digests,
@@ -106,6 +108,38 @@ CREATE TABLE session_outcomes (
     PRIMARY KEY (user_id, session_id)
 );
 """
+
+
+class _NoTrajectoryFetchAllCursor:
+    def __init__(self, cursor: Any, fetch_sizes: list[int]) -> None:
+        self._cursor = cursor
+        self._fetch_sizes = fetch_sizes
+
+    def fetchall(self) -> Any:
+        raise AssertionError("trajectory migration must not call fetchall")
+
+    def fetchmany(self, size: int) -> Any:
+        self._fetch_sizes.append(size)
+        return self._cursor.fetchmany(size)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._cursor, name)
+
+
+class _NoTrajectoryFetchAllConnection:
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+        self.fetch_sizes: list[int] = []
+
+    def execute(self, *args: Any, **kwargs: Any) -> Any:
+        cursor = self._connection.execute(*args, **kwargs)
+        statement = str(args[0]) if args else str(kwargs.get("sql", ""))
+        if "FROM requests" in statement and "LEFT JOIN interactions" in statement:
+            return _NoTrajectoryFetchAllCursor(cursor, self.fetch_sizes)
+        return cursor
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._connection, name)
 
 
 def _replace_session_outcomes_with_unconstrained_revision(
@@ -418,6 +452,75 @@ def test_migration_streams_legacy_outcomes_and_trajectories_in_bounded_batches(
         storage.conn.execute("SELECT COUNT(*) FROM session_outcomes").fetchone()[0]
         == row_count
     )
+
+
+def test_migration_streams_complete_digest_for_trajectory_over_fetch_window(
+    tmp_path,
+) -> None:
+    storage = SQLiteStorage(
+        org_id="legacy-large-trajectory",
+        db_path=str(tmp_path / "legacy-large-trajectory.db"),
+    )
+    session_id = "large-trajectory-session"
+    request_id = "large-trajectory-request"
+    user_id = "large-trajectory-user"
+    source = "legacy-source"
+    storage.add_request(
+        Request(
+            request_id=request_id,
+            user_id=user_id,
+            session_id=session_id,
+            source=source,
+            created_at=100,
+        )
+    )
+    interaction_count = _TRAJECTORY_FETCH_SIZE + 1
+    storage.conn.executemany(
+        """INSERT INTO interactions (
+               interaction_id, user_id, request_id, created_at, content
+           ) VALUES (?, ?, ?, ?, ?)""",
+        [
+            (
+                index + 1,
+                user_id,
+                request_id,
+                _epoch_to_iso(101 + index),
+                f"trajectory-row-{index}",
+            )
+            for index in range(interaction_count)
+        ],
+    )
+    expected_digest = _canonical_session_trajectory_digest(storage.conn, session_id)
+    storage.conn.execute("DROP TABLE session_outcomes")
+    storage.conn.executescript(_LEGACY_SESSION_OUTCOMES_DDL)
+    storage.conn.execute(
+        """INSERT INTO session_outcomes (
+               user_id, session_id, outcome, occurred_at, source,
+               governance_subject_ref, created_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (user_id, session_id, "success", 500, source, "subject-large", 501),
+    )
+    storage.conn.commit()
+
+    raw_connection = storage.conn
+    guarded_connection = _NoTrajectoryFetchAllConnection(raw_connection)
+    cast(Any, storage).conn = guarded_connection
+    try:
+        storage._migrate_session_outcomes_schema()
+    finally:
+        cast(Any, storage).conn = raw_connection
+
+    migrated = raw_connection.execute(
+        """SELECT finalized_trajectory_digest FROM session_outcomes
+           WHERE session_id = ?""",
+        (session_id,),
+    ).fetchone()
+    assert migrated is not None
+    assert migrated["finalized_trajectory_digest"] == expected_digest
+    assert len(guarded_connection.fetch_sizes) == (
+        ceil(interaction_count / _TRAJECTORY_FETCH_SIZE) + 1
+    )
+    assert set(guarded_connection.fetch_sizes) == {_TRAJECTORY_FETCH_SIZE}
 
 
 def test_migration_prefetch_retains_only_trajectory_digests(tmp_path) -> None:
