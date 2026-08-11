@@ -48,11 +48,11 @@ from reflexio.server.routes._metering import _stamp_search_dependencies_done
 from reflexio.server.services.retrieval_experiment import (
     active_retrieval_experiment_assignment,
 )
-from reflexio.server.services.search_metering_worker import enqueue_search_metering
 from reflexio.server.services.search_exposure import (
     SearchExposureBatch,
     record_search_exposures,
 )
+from reflexio.server.services.search_metering_worker import enqueue_search_metering
 from reflexio.server.tracing import profile_step
 
 logger = logging.getLogger(__name__)

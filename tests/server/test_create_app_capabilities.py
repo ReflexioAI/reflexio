@@ -100,15 +100,15 @@ def test_capabilities_none_is_unchanged() -> None:
 def test_oss_startup_failure_clears_exempt_usage_recorder(monkeypatch) -> None:
     usage_metrics.configure_usage_event_recorder(None)
 
-    def fail_startup_guards() -> None:
+    def fail_startup_guard() -> None:
         raise RuntimeError("startup guard failed")
 
     monkeypatch.setattr(
-        "reflexio.server.llm.providers.embedder_warmup.run_startup_config_guards",
-        fail_startup_guards,
+        "reflexio.server.llm.model_defaults.validate_llm_availability",
+        fail_startup_guard,
     )
 
-    app = create_app(capabilities=None, mount_data_plane=False)
+    app = create_app(capabilities=None, mount_data_plane=True)
     with pytest.raises(RuntimeError, match="startup guard failed"), TestClient(app):
         pass
 
