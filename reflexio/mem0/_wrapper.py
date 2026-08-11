@@ -100,15 +100,16 @@ def _normalize_messages(messages: Any, created_at: int | None) -> list[dict[str,
     return normalized
 
 
-def _extract_identity(filters: Any, name: str) -> str | None:
+def _extract_identity(filters: Any, name: str) -> tuple[str | None, bool]:
     """Pull a plain-string identity field from mem0 filters.
 
     Handles the top-level form ``{"user_id": "u1"}`` and one level of
     ``{"AND": [{"user_id": "u1"}, ...]}``. Operator forms like
-    ``{"user_id": {"in": [...]}}`` identify no single value and return None.
+    ``{"user_id": {"in": [...]}}`` identify no single value. The boolean
+    reports whether multiple plain values conflict.
     """
     if not isinstance(filters, dict):
-        return None
+        return None, False
     values: list[str] = []
     if value := _nonempty_str(filters.get(name)):
         values.append(value)
@@ -120,18 +121,20 @@ def _extract_identity(filters: Any, name: str) -> str | None:
             if isinstance(clause, dict)
             if (value := _nonempty_str(clause.get(name)))
         )
-    if not values or any(value != values[0] for value in values[1:]):
-        return None
-    return values[0]
+    if not values:
+        return None, False
+    if any(value != values[0] for value in values[1:]):
+        return None, True
+    return values[0], False
 
 
 def _resolve_add_identity(
     options: Any, kwargs: dict[str, Any], name: str
-) -> str | None:
+) -> tuple[str | None, bool]:
     """Resolve an add identity, preferring legacy top-level kwargs."""
-    return _nonempty_str(kwargs.get(name)) or _extract_identity(
-        _opt(options, kwargs, "filters"), name
-    )
+    if value := _nonempty_str(kwargs.get(name)):
+        return value, False
+    return _extract_identity(_opt(options, kwargs, "filters"), name)
 
 
 class MemoryClient(_Mem0MemoryClient):
@@ -190,15 +193,18 @@ class MemoryClient(_Mem0MemoryClient):
         if self._reflexio is None:
             return
         try:
-            user_id = _resolve_add_identity(options, kwargs, "user_id")
+            user_id, user_conflict = _resolve_add_identity(options, kwargs, "user_id")
+            agent_id, agent_conflict = _resolve_add_identity(
+                options, kwargs, "agent_id"
+            )
+            run_id, run_conflict = _resolve_add_identity(options, kwargs, "run_id")
+            if user_conflict or agent_conflict or run_conflict:
+                logger.debug("Skipping Reflexio publish: conflicting mem0 identities")
+                return
             if user_id is None:
                 logger.debug("Skipping Reflexio publish: mem0 add() has no user_id")
                 return
-            agent_version = (
-                _resolve_add_identity(options, kwargs, "agent_id")
-                or resolve_agent_version()
-            )
-            run_id = _resolve_add_identity(options, kwargs, "run_id")
+            agent_version = agent_id or resolve_agent_version()
             session_identity = f"{user_id}\0{agent_version}"
             session_id = run_id or (
                 f"mem0-{uuid.uuid5(self._session_namespace, session_identity).hex}"
@@ -234,15 +240,20 @@ class MemoryClient(_Mem0MemoryClient):
             return result
         try:
             filters = _opt(options, kwargs, "filters")
-            user_id = _extract_identity(filters, "user_id")
+            user_id, user_conflict = _extract_identity(filters, "user_id")
+            agent_id, agent_conflict = _extract_identity(filters, "agent_id")
+            _, run_conflict = _extract_identity(filters, "run_id")
+            if user_conflict or agent_conflict or run_conflict:
+                logger.debug(
+                    "Skipping Reflexio search augmentation: conflicting mem0 identities"
+                )
+                return result
             if user_id is None:
                 logger.debug(
                     "Skipping Reflexio search augmentation: no plain user_id in filters"
                 )
                 return result
-            agent_version = (
-                _extract_identity(filters, "agent_id") or resolve_agent_version()
-            )
+            agent_version = agent_id or resolve_agent_version()
             response = self._reflexio.search(
                 query=query,
                 user_id=user_id,

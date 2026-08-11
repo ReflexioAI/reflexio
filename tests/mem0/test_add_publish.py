@@ -50,7 +50,12 @@ def test_add_kwargs_filters_override_options_filters(wrapped_cls, reflexio_mock)
     client.add(
         "hello",
         types.SimpleNamespace(
-            filters={"user_id": "u-opt", "agent_id": "bot-opt", "run_id": "run-opt"}
+            filters={
+                "AND": [
+                    {"user_id": "u1", "agent_id": "a1", "run_id": "r1"},
+                    {"user_id": "u2", "agent_id": "a2", "run_id": "r2"},
+                ]
+            }
         ),
         filters={"user_id": "u-kw", "agent_id": "bot-kw", "run_id": "run-kw"},
     )
@@ -65,9 +70,10 @@ def test_add_top_level_identity_kwargs_override_filters(wrapped_cls, reflexio_mo
     client.add(
         "hello",
         filters={
-            "user_id": "u-filter",
-            "agent_id": "bot-filter",
-            "run_id": "run-filter",
+            "AND": [
+                {"user_id": "u1", "agent_id": "a1", "run_id": "r1"},
+                {"user_id": "u2", "agent_id": "a2", "run_id": "r2"},
+            ]
         },
         user_id="u-direct",
         agent_id="bot-direct",
@@ -79,9 +85,18 @@ def test_add_top_level_identity_kwargs_override_filters(wrapped_cls, reflexio_mo
     assert kwargs["session_id"] == "run-direct"
 
 
-def test_conflicting_filter_user_ids_skip_publish(wrapped_cls, reflexio_mock):
+@pytest.mark.parametrize("identity", ["user_id", "agent_id", "run_id"])
+def test_conflicting_filter_identities_skip_publish(
+    identity, wrapped_cls, reflexio_mock
+):
     client = _client(wrapped_cls, reflexio_mock)
-    client.add("hello", filters={"AND": [{"user_id": "u1"}, {"user_id": "u2"}]})
+    client.add(
+        "hello",
+        filters={
+            "user_id": "u1",
+            "AND": [{identity: "first"}, {identity: "second"}],
+        },
+    )
     reflexio_mock.publish_interaction.assert_not_called()
 
 
