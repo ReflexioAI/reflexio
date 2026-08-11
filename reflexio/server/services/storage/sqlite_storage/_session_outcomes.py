@@ -129,7 +129,7 @@ class SessionOutcomeStoreMixin:
                     )
                     first = snapshot.first_request if snapshot is not None else None
                     source = (
-                        str(first["source"])
+                        str(first["source"] or "")
                         if first is not None
                         else str(existing["source"])
                     )
@@ -149,7 +149,7 @@ class SessionOutcomeStoreMixin:
                     stored_snapshot_digest = existing["finalized_trajectory_digest"]
                     server_context_matches = first is None or (
                         str(existing["user_id"]) == str(first["user_id"])
-                        and str(existing["source"]) == str(first["source"])
+                        and str(existing["source"]) == str(first["source"] or "")
                         and str(existing["governance_subject_ref"]) == subject_ref
                     )
                     exact_retry = (

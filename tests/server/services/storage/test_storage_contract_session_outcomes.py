@@ -19,6 +19,9 @@ from reflexio.server.services.storage.session_outcome_identity import (
     trajectory_digest,
 )
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
+from reflexio.server.services.storage.sqlite_storage._base import (
+    _TRAJECTORY_FETCH_SIZE,
+)
 from reflexio.server.services.storage.sqlite_storage._session_outcomes import (
     SessionOutcomeStoreMixin,
 )
@@ -135,6 +138,62 @@ def test_exact_finalization_retry_is_idempotent(storage: BaseStorage) -> None:
     assert retry.outcome_revision == first.outcome_revision == 1
     assert retry.outcome_contract_digest == first.outcome_contract_digest
     assert retry.finalized_trajectory_digest == first.finalized_trajectory_digest
+
+
+def test_sqlite_legacy_null_source_finalization_retry_is_idempotent(
+    storage: BaseStorage,
+) -> None:
+    sqlite_storage = cast(SQLiteStorage, storage)
+    storage.add_request(
+        Request(
+            request_id="legacy-null-source-r1",
+            user_id="u1",
+            session_id="legacy-null-source",
+            source="",
+            created_at=100,
+        )
+    )
+    schema_sql = sqlite_storage.conn.execute(
+        "SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'requests'"
+    ).fetchone()["sql"]
+    nullable_schema_sql = schema_sql.replace(
+        "source TEXT NOT NULL DEFAULT ''", "source TEXT DEFAULT ''", 1
+    )
+    sqlite_storage.conn.execute("PRAGMA writable_schema = ON")
+    sqlite_storage.conn.execute(
+        "UPDATE sqlite_schema SET sql = ? WHERE type = 'table' AND name = 'requests'",
+        (nullable_schema_sql,),
+    )
+    schema_version = sqlite_storage.conn.execute("PRAGMA schema_version").fetchone()[0]
+    sqlite_storage.conn.execute(f"PRAGMA schema_version = {schema_version + 1}")
+    sqlite_storage.conn.execute("PRAGMA writable_schema = OFF")
+    sqlite_storage.conn.execute(
+        "UPDATE requests SET source = NULL WHERE request_id = ?",
+        ("legacy-null-source-r1",),
+    )
+    sqlite_storage.conn.commit()
+
+    request = SetSessionOutcomeRequest(
+        session_id="legacy-null-source",
+        outcome=SessionOutcomeKind.SUCCESS,
+        occurred_at=101,
+    )
+    context = storage.get_session_outcome_context("legacy-null-source")
+    first = storage.record_session_outcome(
+        request, created_at=102, expected_context=context
+    )
+    retry = storage.record_session_outcome(
+        request,
+        created_at=103,
+        expected_context=storage.get_session_outcome_context("legacy-null-source"),
+    )
+
+    assert context.source == ""
+    assert first.recorded is True
+    assert first.source == ""
+    assert retry.recorded is False
+    assert retry.reason is None
+    assert retry.source == ""
 
 
 def test_legacy_all_null_identity_exact_retry_uses_available_context(
@@ -439,12 +498,14 @@ def test_sqlite_large_finalization_streams_complete_digest_and_preserves_retry_c
     assert retry.finalized_trajectory_digest == expected_digest
     assert conflict.recorded is False
     assert conflict.reason == SessionOutcomeFailureReason.CONFLICTING_FINALIZATION
-    all_fetch_sizes = [
-        *initial_retry_connection.fetch_sizes,
-        *conflict_connection.fetch_sizes,
-    ]
-    assert all_fetch_sizes
-    assert len(set(all_fetch_sizes)) == 1
+    assert initial_retry_connection.fetch_sizes
+    assert conflict_connection.fetch_sizes
+    assert all(
+        size == _TRAJECTORY_FETCH_SIZE for size in initial_retry_connection.fetch_sizes
+    )
+    assert all(
+        size == _TRAJECTORY_FETCH_SIZE for size in conflict_connection.fetch_sizes
+    )
 
 
 def test_changed_contract_identity_is_conflicting_finalization(
