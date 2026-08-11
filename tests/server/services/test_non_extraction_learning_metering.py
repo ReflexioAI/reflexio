@@ -170,7 +170,10 @@ def test_resumable_playbook_bills_consolidation_replacement_id() -> None:
         worker._finalize_items(run, [original_candidate])
 
     finalizer.assert_called_once_with(
-        [original_candidate], model_provenance=None, finalization_run_id=run.id
+        [original_candidate],
+        model_provenance=None,
+        extraction_run=run,
+        finalization_run_id=run.id,
     )
     assert len(events) == 1
     assert events[0].count_value == 1
