@@ -154,12 +154,8 @@ def test_direct_user_playbook_search_records_final_results_before_metering() -> 
     with (
         _search_results(playbooks),
         patch(
-            "reflexio.server.routes.search._meter_search_request",
-            side_effect=lambda **_kwargs: order.append("meter_search"),
-        ),
-        patch(
-            "reflexio.server.routes.search._meter_applied_learnings",
-            side_effect=lambda **_kwargs: order.append("meter_applied"),
+            "reflexio.server.routes.search.enqueue_search_metering",
+            side_effect=lambda **_kwargs: order.append("meter_enqueue"),
         ),
     ):
         response = _client().post(
@@ -173,7 +169,7 @@ def test_direct_user_playbook_search_records_final_results_before_metering() -> 
         )
 
     assert response.status_code == 200, response.text
-    assert order == ["record", "meter_search", "meter_applied"]
+    assert order == ["record", "meter_enqueue"]
     assert len(recorder.batches) == 1
     batch = recorder.batches[0]
     assert batch.org_id == "org-1"
@@ -197,12 +193,8 @@ def test_direct_user_playbook_recorder_failure_prevents_metering_and_success() -
     with (
         _search_results([_playbook(21, "Direct first")]),
         patch(
-            "reflexio.server.routes.search._meter_search_request",
-            side_effect=lambda **_kwargs: order.append("meter_search"),
-        ),
-        patch(
-            "reflexio.server.routes.search._meter_applied_learnings",
-            side_effect=lambda **_kwargs: order.append("meter_applied"),
+            "reflexio.server.routes.search.enqueue_search_metering",
+            side_effect=lambda **_kwargs: order.append("meter_enqueue"),
         ),
     ):
         response = _client().post(
