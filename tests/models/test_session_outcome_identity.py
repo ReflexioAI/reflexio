@@ -880,6 +880,6 @@ def test_streaming_trajectory_digest_is_permanently_poisoned_after_error(
     ):
         with pytest.raises(
             RuntimeError,
-            match="canonical trajectory digest accumulator is invalid$",
+            match=r"canonical trajectory digest accumulator is invalid$",
         ):
             operation()

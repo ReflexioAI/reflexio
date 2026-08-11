@@ -92,7 +92,7 @@ class SessionOutcomeStoreMixin:
             ).fetchone()
             return SessionOutcomeContext(
                 user_id=str(first["user_id"]),
-                source=str(first["source"]),
+                source=str(first["source"] or ""),
                 first_request_at=_iso_to_epoch(first["created_at"]),
                 user_contract_violation=int(counts["user_count"]) > 1,
                 source_contract_violation=int(counts["source_count"]) > 1,

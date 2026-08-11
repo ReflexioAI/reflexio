@@ -1,6 +1,8 @@
 """Session outcome storage contract."""
 
+from threading import RLock
 from typing import Any, cast
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -17,6 +19,9 @@ from reflexio.server.services.storage.session_outcome_identity import (
     trajectory_digest,
 )
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
+from reflexio.server.services.storage.sqlite_storage._session_outcomes import (
+    SessionOutcomeStoreMixin,
+)
 from reflexio.server.services.storage.storage_base import BaseStorage
 
 
@@ -388,8 +393,8 @@ def test_sqlite_large_finalization_streams_complete_digest_and_preserves_retry_c
         metadata={"complete": True},
     )
     raw_connection = sqlite_storage.conn
-    guarded_connection = _NoFetchAllConnection(raw_connection)
-    cast(Any, sqlite_storage).conn = guarded_connection
+    initial_retry_connection = _NoFetchAllConnection(raw_connection)
+    cast(Any, sqlite_storage).conn = initial_retry_connection
     try:
         context = storage.get_session_outcome_context(session_id)
         first = storage.record_session_outcome(
@@ -416,8 +421,8 @@ def test_sqlite_large_finalization_streams_complete_digest_and_preserves_retry_c
         ],
         embeddings_prepared=True,
     )
-    guarded_connection = _NoFetchAllConnection(raw_connection)
-    cast(Any, sqlite_storage).conn = guarded_connection
+    conflict_connection = _NoFetchAllConnection(raw_connection)
+    cast(Any, sqlite_storage).conn = conflict_connection
     try:
         conflict = storage.record_session_outcome(
             outcome,
@@ -434,8 +439,12 @@ def test_sqlite_large_finalization_streams_complete_digest_and_preserves_retry_c
     assert retry.finalized_trajectory_digest == expected_digest
     assert conflict.recorded is False
     assert conflict.reason == SessionOutcomeFailureReason.CONFLICTING_FINALIZATION
-    assert guarded_connection.fetch_sizes
-    assert len(set(guarded_connection.fetch_sizes)) == 1
+    all_fetch_sizes = [
+        *initial_retry_connection.fetch_sizes,
+        *conflict_connection.fetch_sizes,
+    ]
+    assert all_fetch_sizes
+    assert len(set(all_fetch_sizes)) == 1
 
 
 def test_changed_contract_identity_is_conflicting_finalization(
@@ -605,6 +614,29 @@ def test_empty_request_source_is_preserved(storage: BaseStorage) -> None:
         GetSessionOutcomesRequest(session_ids=["empty-source"])
     )
     assert record.source == ""
+
+
+def test_sqlite_context_normalizes_nullable_request_source() -> None:
+    existing_cursor = MagicMock()
+    existing_cursor.fetchone.return_value = None
+    first_cursor = MagicMock()
+    first_cursor.fetchone.return_value = {
+        "user_id": "u1",
+        "source": None,
+        "created_at": "1970-01-01T00:01:40+00:00",
+    }
+    counts_cursor = MagicMock()
+    counts_cursor.fetchone.return_value = {"user_count": 1, "source_count": 1}
+    connection = MagicMock()
+    connection.execute.side_effect = [existing_cursor, first_cursor, counts_cursor]
+    reader = SessionOutcomeStoreMixin()
+    cast(Any, reader).conn = connection
+    cast(Any, reader)._lock = RLock()
+
+    context = reader.get_session_outcome_context("nullable-source")
+
+    assert context.source == ""
+    assert context.first_request_at == 100
 
 
 def test_clear_outcomes_survives_governance_secret_rotation(

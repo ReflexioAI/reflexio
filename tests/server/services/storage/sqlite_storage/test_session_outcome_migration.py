@@ -3,6 +3,7 @@
 import json
 import sqlite3
 from hashlib import sha256
+from math import ceil
 
 import pytest
 
@@ -13,11 +14,13 @@ from reflexio.models.api_schema.domain import (
     SetSessionOutcomeRequest,
     SetSessionOutcomeResponse,
 )
+from reflexio.server.services.storage.retention_mixin import RETENTION_DELETE_CHUNK
 from reflexio.server.services.storage.session_outcome_identity import (
     outcome_contract_digest,
 )
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 from reflexio.server.services.storage.sqlite_storage._base import (
+    _SESSION_OUTCOME_MIGRATION_BATCH_SIZE,
     _canonical_session_trajectory_digest,
     _epoch_to_iso,
     _prefetch_canonical_session_trajectory_digests,
@@ -386,8 +389,12 @@ def test_migration_streams_legacy_outcomes_and_trajectories_in_bounded_batches(
         if statement.lstrip().upper().startswith("SELECT")
         and "FROM session_outcomes_legacy" in statement
     ]
-    assert len(legacy_outcome_queries) == 2
-    assert all("LIMIT 256" in statement for statement in legacy_outcome_queries)
+    migration_batch_count = ceil(row_count / _SESSION_OUTCOME_MIGRATION_BATCH_SIZE)
+    assert len(legacy_outcome_queries) == migration_batch_count
+    assert all(
+        f"LIMIT {_SESSION_OUTCOME_MIGRATION_BATCH_SIZE}" in statement
+        for statement in legacy_outcome_queries
+    )
     assert not any(
         statement.strip() == "SELECT * FROM session_outcomes"
         for statement in statements
@@ -398,7 +405,14 @@ def test_migration_streams_legacy_outcomes_and_trajectories_in_bounded_batches(
         if statement.lstrip().upper().startswith("SELECT")
         and "FROM requests" in statement
     ]
-    assert len(trajectory_input_queries) == 2
+    expected_trajectory_query_count = sum(
+        ceil(
+            min(_SESSION_OUTCOME_MIGRATION_BATCH_SIZE, row_count - batch_start)
+            / RETENTION_DELETE_CHUNK
+        )
+        for batch_start in range(0, row_count, _SESSION_OUTCOME_MIGRATION_BATCH_SIZE)
+    )
+    assert len(trajectory_input_queries) == expected_trajectory_query_count
     assert all("LEFT JOIN interactions" in query for query in trajectory_input_queries)
     assert (
         storage.conn.execute("SELECT COUNT(*) FROM session_outcomes").fetchone()[0]
