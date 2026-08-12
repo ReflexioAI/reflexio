@@ -47,7 +47,7 @@ async def test_async_inherited_deletes_remain_mem0_only(
     async_wrapped_cls, reflexio_mock
 ):
     client = async_wrapped_cls(api_key="mk", reflexio_client=reflexio_mock)
-    assert await client.delete("m1", delete_linked=True) == {"id": "m1"}
+    assert await client.delete("m1") == {"id": "m1"}
     assert await client.delete_users(user_id="u1") == {"message": "ok"}
     assert await client.reset() == {"message": "reset"}
     reflexio_mock.clear_user_data.assert_not_called()

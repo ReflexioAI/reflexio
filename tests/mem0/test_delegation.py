@@ -9,7 +9,7 @@ def test_isinstance_of_mem0_client(wrapped_cls, mem0_stub, reflexio_mock):
 def test_unwrapped_methods_hit_base_without_reflexio(wrapped_cls, reflexio_mock):
     client = wrapped_cls(api_key="mk", reflexio_client=reflexio_mock)
     assert client.get("m1") == {"id": "m1"}
-    assert client.delete("m1", delete_linked=True) == {"id": "m1"}
+    assert client.delete("m1") == {"id": "m1"}
     assert client.delete_all(user_id="u1") == {"message": "ok"}
     assert client.delete_users(user_id="u1") == {"message": "ok"}
     assert client.reset() == {"message": "reset"}

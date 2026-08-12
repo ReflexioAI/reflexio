@@ -59,8 +59,8 @@ class StubMemoryClient:
         self.calls.append(("delete_all", options, kwargs))
         return {"message": "ok"}
 
-    def delete(self, memory_id, delete_linked=False):
-        self.calls.append(("delete", memory_id, delete_linked))
+    def delete(self, memory_id):
+        self.calls.append(("delete", memory_id))
         return {"id": memory_id}
 
     def delete_users(self, user_id=None, agent_id=None, app_id=None, run_id=None):
@@ -87,8 +87,8 @@ class StubAsyncMemoryClient(StubMemoryClient):
     async def delete_all(self, options=None, **kwargs):
         return super().delete_all(options, **kwargs)
 
-    async def delete(self, memory_id, delete_linked=False):
-        return super().delete(memory_id, delete_linked)
+    async def delete(self, memory_id):
+        return super().delete(memory_id)
 
     async def delete_users(self, user_id=None, agent_id=None, app_id=None, run_id=None):
         return super().delete_users(user_id, agent_id, app_id, run_id)
