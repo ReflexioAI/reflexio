@@ -348,9 +348,11 @@ learnings = result["reflexio"]
 agent playbooks. Reflexio never rewrites the query or injects these values into
 a prompt; the application decides how to validate and format retrieved text as
 prompt context. Reflexio credentials come from `REFLEXIO_API_KEY` and
-`REFLEXIO_URL`, or from `reflexio_client=ReflexioClient(...)`. Wrapper-created
-clients use a five-second timeout. Reflexio failures never change a successful
-mem0 `add()` result and are represented safely in opted-in search results.
+`REFLEXIO_URL`, or can be passed directly as `reflexio_api_key=` with optional
+`reflexio_url_endpoint=`. Advanced callers can instead inject
+`reflexio_client=ReflexioClient(...)`. Wrapper-created clients use a five-second
+timeout. Reflexio failures never change a successful mem0 `add()` result and are
+represented safely in opted-in search results.
 
 `client.reflexio` exposes scoped Reflexio cleanup methods. Inherited mem0
 `delete*` methods and `reset()` remain mem0-only. `MemoryClient` and

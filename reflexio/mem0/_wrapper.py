@@ -79,28 +79,53 @@ def _validate_timeout(timeout: Any) -> float:
     return normalized
 
 
-def _default_reflexio_client(timeout: float) -> ReflexioClient | None:
-    """Build an environment-configured client, or return None for pass-through."""
-    if not (os.environ.get("REFLEXIO_API_KEY") or os.environ.get("REFLEXIO_URL")):
+def _default_reflexio_client(
+    timeout: float,
+    api_key: str | None,
+    url_endpoint: str | None,
+) -> ReflexioClient | None:
+    """Build a wrapper-owned client, or return None for pass-through."""
+    if not (
+        api_key
+        or url_endpoint
+        or os.environ.get("REFLEXIO_API_KEY")
+        or os.environ.get("REFLEXIO_URL")
+    ):
         logger.info(
             "REFLEXIO_API_KEY / REFLEXIO_URL not set; reflexio.mem0 runs in "
             "pass-through mode (mem0 only, no Reflexio calls)"
         )
         return None
+    client_kwargs: dict[str, Any] = {"timeout": timeout}
+    if api_key is not None:
+        client_kwargs["api_key"] = api_key
+    if url_endpoint is not None:
+        client_kwargs["url_endpoint"] = url_endpoint
     try:
-        return ReflexioClient(timeout=timeout)
+        return ReflexioClient(**client_kwargs)
     except Exception:  # noqa: BLE001 - construction cannot break mem0.
         logger.warning("Failed to construct ReflexioClient")
         return None
 
 
 def _configure_reflexio(
-    reflexio_client: ReflexioClient | None, reflexio_timeout: float | None
+    reflexio_client: ReflexioClient | None,
+    reflexio_timeout: float | None,
+    reflexio_api_key: str | None,
+    reflexio_url_endpoint: str | None,
 ) -> ReflexioClient | None:
     if reflexio_client is not None:
-        if reflexio_timeout is not None:
+        if any(
+            value is not None
+            for value in (
+                reflexio_timeout,
+                reflexio_api_key,
+                reflexio_url_endpoint,
+            )
+        ):
             raise ValueError(
-                "reflexio_timeout cannot be combined with an injected reflexio_client"
+                "inline Reflexio configuration cannot be combined with an injected "
+                "reflexio_client"
             )
         _validate_timeout(reflexio_client.timeout)
         return reflexio_client
@@ -109,7 +134,11 @@ def _configure_reflexio(
         if reflexio_timeout is None
         else reflexio_timeout
     )
-    return _default_reflexio_client(timeout)
+    return _default_reflexio_client(
+        timeout,
+        api_key=reflexio_api_key,
+        url_endpoint=reflexio_url_endpoint,
+    )
 
 
 def _opt(options: Any, kwargs: dict[str, Any], name: str) -> Any:
@@ -300,8 +329,15 @@ class _WrapperState:
         self,
         reflexio_client: ReflexioClient | None,
         reflexio_timeout: float | None,
+        reflexio_api_key: str | None,
+        reflexio_url_endpoint: str | None,
     ) -> None:
-        self._reflexio_client = _configure_reflexio(reflexio_client, reflexio_timeout)
+        self._reflexio_client = _configure_reflexio(
+            reflexio_client,
+            reflexio_timeout,
+            reflexio_api_key,
+            reflexio_url_endpoint,
+        )
         self._session_namespace = uuid.uuid4()
         self._reflexio_failure_logged = False
 
@@ -400,11 +436,18 @@ class MemoryClient(_WrapperState, _Mem0MemoryClient):
         host: str | None = None,
         client: httpx.Client | None = None,
         *,
+        reflexio_api_key: str | None = None,
+        reflexio_url_endpoint: str | None = None,
         reflexio_client: ReflexioClient | None = None,
         reflexio_timeout: float | None = None,
     ) -> None:
         _Mem0MemoryClient.__init__(self, api_key=api_key, host=host, client=client)
-        self._initialize_reflexio(reflexio_client, reflexio_timeout)
+        self._initialize_reflexio(
+            reflexio_client,
+            reflexio_timeout,
+            reflexio_api_key,
+            reflexio_url_endpoint,
+        )
         self._reflexio_facade = ReflexioFacade(
             self._reflexio_client, self._resolved_user, self._resolved_session
         )
@@ -485,11 +528,18 @@ class AsyncMemoryClient(_WrapperState, _Mem0AsyncMemoryClient):
         host: str | None = None,
         client: httpx.AsyncClient | None = None,
         *,
+        reflexio_api_key: str | None = None,
+        reflexio_url_endpoint: str | None = None,
         reflexio_client: ReflexioClient | None = None,
         reflexio_timeout: float | None = None,
     ) -> None:
         _Mem0AsyncMemoryClient.__init__(self, api_key=api_key, host=host, client=client)
-        self._initialize_reflexio(reflexio_client, reflexio_timeout)
+        self._initialize_reflexio(
+            reflexio_client,
+            reflexio_timeout,
+            reflexio_api_key,
+            reflexio_url_endpoint,
+        )
         self._reflexio_facade = AsyncReflexioFacade(
             self._reflexio_client, self._resolved_user, self._resolved_session
         )

@@ -301,11 +301,92 @@ def test_wrapper_timeout_overrides_created_client_timeout(wrapped_cls, monkeypat
     assert constructor_calls == [{"timeout": 1.25}]
 
 
-def test_timeout_configuration_and_injected_client_are_mutually_exclusive(
-    wrapped_cls, reflexio_mock
+@pytest.mark.parametrize("client_fixture", ["wrapped_cls", "async_wrapped_cls"])
+@pytest.mark.parametrize(
+    ("constructor_kwargs", "expected_reflexio_kwargs"),
+    [
+        (
+            {"reflexio_api_key": "rflx-test"},
+            {"api_key": "rflx-test", "timeout": 5.0},
+        ),
+        (
+            {
+                "reflexio_api_key": "rflx-test",
+                "reflexio_url_endpoint": "http://localhost:8081",
+                "reflexio_timeout": 1.25,
+            },
+            {
+                "api_key": "rflx-test",
+                "url_endpoint": "http://localhost:8081",
+                "timeout": 1.25,
+            },
+        ),
+        (
+            {"reflexio_url_endpoint": "http://localhost:8081"},
+            {"url_endpoint": "http://localhost:8081", "timeout": 5.0},
+        ),
+    ],
+)
+def test_inline_reflexio_configuration_constructs_sync_and_async_clients(
+    client_fixture,
+    constructor_kwargs,
+    expected_reflexio_kwargs,
+    request,
+    monkeypatch,
+):
+    monkeypatch.delenv("REFLEXIO_API_KEY", raising=False)
+    monkeypatch.delenv("REFLEXIO_URL", raising=False)
+    client_class = request.getfixturevalue(client_fixture)
+    import reflexio.mem0._wrapper as wrapper_module
+
+    created = types.SimpleNamespace(
+        timeout=constructor_kwargs.get("reflexio_timeout", 5.0)
+    )
+    constructor_calls = []
+
+    def construct(**kwargs):
+        constructor_calls.append(kwargs)
+        return created
+
+    monkeypatch.setattr(wrapper_module, "ReflexioClient", construct)
+    client = client_class(api_key="mk", **constructor_kwargs)
+
+    assert client.reflexio.configured is True
+    assert constructor_calls == [expected_reflexio_kwargs]
+
+
+def test_inline_key_without_url_preserves_reflexio_sdk_default(
+    wrapped_cls, monkeypatch
+):
+    from reflexio.client.client import BACKEND_URL
+
+    monkeypatch.delenv("REFLEXIO_API_KEY", raising=False)
+    monkeypatch.delenv("REFLEXIO_URL", raising=False)
+
+    client = wrapped_cls(api_key="mk", reflexio_api_key="rflx-test")
+
+    assert client._reflexio_client is not None
+    assert client._reflexio_client.api_key == "rflx-test"
+    assert client._reflexio_client.base_url == BACKEND_URL
+
+
+@pytest.mark.parametrize(
+    "inline_configuration",
+    [
+        {"reflexio_api_key": "rflx-test"},
+        {"reflexio_url_endpoint": "http://localhost:8081"},
+        {"reflexio_timeout": 1.0},
+    ],
+)
+def test_inline_configuration_and_injected_client_are_mutually_exclusive(
+    wrapped_cls, reflexio_mock, inline_configuration
 ):
     with pytest.raises(ValueError, match="cannot be combined"):
-        wrapped_cls(api_key="mk", reflexio_client=reflexio_mock, reflexio_timeout=1.0)
+        wrapped_cls(
+            api_key="mk",
+            reflexio_client=reflexio_mock,
+            **inline_configuration,
+        )
 
 
 @pytest.mark.parametrize("timeout", [0, -1, float("inf"), float("nan"), "5"])

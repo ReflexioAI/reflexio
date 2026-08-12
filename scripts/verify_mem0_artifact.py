@@ -91,6 +91,14 @@ def _assert_signatures() -> None:
         for name in base_init.parameters:
             assert name in wrapper_init.parameters
             assert wrapper_init.parameters[name].kind == base_init.parameters[name].kind
+        for name in (
+            "reflexio_api_key",
+            "reflexio_url_endpoint",
+            "reflexio_client",
+            "reflexio_timeout",
+        ):
+            assert wrapper_init.parameters[name].kind is inspect.Parameter.KEYWORD_ONLY
+            assert wrapper_init.parameters[name].default is None
         signature = inspect.signature(wrapper.search)
         assert (
             signature.parameters["include_reflexio"].kind
