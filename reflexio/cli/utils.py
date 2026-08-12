@@ -504,8 +504,24 @@ def run_services(
     for path in supervisor.stop_request_paths.values():
         remove_pidfile(path)
 
+    service_names = {svc.name for svc in services}
+    gate_local_embedding = {"embedding", "backend"}.issubset(service_names)
+
     try:
+        if gate_local_embedding:
+            embedding = next(svc for svc in services if svc.name == "embedding")
+            supervisor.start_service(embedding)
+            if not _wait_for_all_ready(
+                {"embedding": supervisor.ready_events["embedding"]},
+                {"embedding": supervisor.processes["embedding"]},
+            ):
+                raise RuntimeError(
+                    "embedding service did not become ready before backend startup"
+                )
+
         for svc in services:
+            if gate_local_embedding and svc.name == "embedding":
+                continue
             supervisor.start_service(svc)
         supervisor.write_current_pidfile()
     except (OSError, RuntimeError):
