@@ -9,7 +9,7 @@ afterwards so other tests never see them.
 import sys
 import types
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -59,6 +59,51 @@ class StubMemoryClient:
         self.calls.append(("delete_all", options, kwargs))
         return {"message": "ok"}
 
+    def delete(self, memory_id, delete_linked=False):
+        self.calls.append(("delete", memory_id, delete_linked))
+        return {"id": memory_id}
+
+    def delete_users(self, user_id=None, agent_id=None, app_id=None, run_id=None):
+        self.calls.append(("delete_users", user_id, agent_id, app_id, run_id))
+        return {"message": "ok"}
+
+    def reset(self):
+        self.calls.append(("reset",))
+        return {"message": "reset"}
+
+
+class StubAsyncMemoryClient(StubMemoryClient):
+    """Async hosted-client stand-in with the same observable test state."""
+
+    async def add(self, messages, options=None, **kwargs):
+        return super().add(messages, options, **kwargs)
+
+    async def search(self, query, options=None, **kwargs):
+        return super().search(query, options, **kwargs)
+
+    async def get_all(self, options=None, **kwargs):
+        return super().get_all(options, **kwargs)
+
+    async def delete_all(self, options=None, **kwargs):
+        return super().delete_all(options, **kwargs)
+
+    async def delete(self, memory_id, delete_linked=False):
+        return super().delete(memory_id, delete_linked)
+
+    async def delete_users(self, user_id=None, agent_id=None, app_id=None, run_id=None):
+        return super().delete_users(user_id, agent_id, app_id, run_id)
+
+    async def reset(self):
+        return super().reset()
+
+
+class AddMemoryOptions:  # pragma: no cover - import/type surface only
+    pass
+
+
+class SearchMemoryOptions:  # pragma: no cover - import/type surface only
+    pass
+
 
 def _purge_reflexio_mem0_modules():
     for name in [n for n in list(sys.modules) if n.startswith("reflexio.mem0")]:
@@ -72,13 +117,21 @@ def _purge_reflexio_mem0_modules():
 def mem0_stub(monkeypatch):
     """Install a stub ``mem0`` module and yield it; clean up bound imports."""
     module: Any = types.ModuleType("mem0")
+    module.__path__ = []
     module.MemoryClient = StubMemoryClient
     module.Memory = type("Memory", (), {})
     module.AsyncMemory = type("AsyncMemory", (), {})
-    module.AsyncMemoryClient = type("AsyncMemoryClient", (), {})
+    module.AsyncMemoryClient = StubAsyncMemoryClient
+    client_module: Any = types.ModuleType("mem0.client")
+    client_module.__path__ = []
+    types_module: Any = types.ModuleType("mem0.client.types")
+    types_module.AddMemoryOptions = AddMemoryOptions
+    types_module.SearchMemoryOptions = SearchMemoryOptions
     for name in [n for n in list(sys.modules) if n == "mem0" or n.startswith("mem0.")]:
         monkeypatch.delitem(sys.modules, name, raising=False)
     monkeypatch.setitem(sys.modules, "mem0", module)
+    monkeypatch.setitem(sys.modules, "mem0.client", client_module)
+    monkeypatch.setitem(sys.modules, "mem0.client.types", types_module)
     _purge_reflexio_mem0_modules()
     yield module
     _purge_reflexio_mem0_modules()
@@ -90,6 +143,14 @@ def wrapped_cls(mem0_stub):
     from reflexio.mem0 import MemoryClient
 
     return MemoryClient
+
+
+@pytest.fixture
+def async_wrapped_cls(mem0_stub):
+    """The async wrapper class, imported against the async hosted stub."""
+    from reflexio.mem0 import AsyncMemoryClient
+
+    return AsyncMemoryClient
 
 
 class FakeView:
@@ -106,11 +167,19 @@ class FakeView:
 def reflexio_mock():
     """MagicMock ReflexioClient with an empty-but-valid unified search result."""
     mock = MagicMock()
+    mock.timeout = 5.0
+    mock.publish_interaction.return_value = types.SimpleNamespace(success=True)
     mock.search.return_value = types.SimpleNamespace(
+        success=True,
         profiles=[FakeView({"profile_id": "p1", "content": "prefers jazz"})],
         user_playbooks=[FakeView({"user_playbook_id": 7, "content": "greet by name"})],
         agent_playbooks=[
             FakeView({"agent_playbook_id": 3, "content": "confirm order"})
         ],
     )
+    mock.publish_interaction_async = AsyncMock(
+        return_value=types.SimpleNamespace(success=True)
+    )
+    mock.search_async = AsyncMock(return_value=mock.search.return_value)
+    mock._make_async_request = AsyncMock(return_value={"success": True})
     return mock

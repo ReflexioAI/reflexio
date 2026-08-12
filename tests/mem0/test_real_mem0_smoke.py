@@ -21,17 +21,17 @@ def _fresh_reflexio_mem0():
 
 
 def test_wrapper_binds_against_real_mem0():
-    from reflexio.mem0 import MemoryClient
+    from reflexio.mem0 import AsyncMemoryClient, MemoryClient
 
     assert issubclass(MemoryClient, mem0.MemoryClient)
+    assert issubclass(AsyncMemoryClient, mem0.AsyncMemoryClient)
     # The methods the wrapper overrides must exist on the real base.
     for method in ("add", "search", "get_all"):
         assert callable(getattr(mem0.MemoryClient, method))
 
 
-def test_reexports_match_real_mem0():
+def test_local_reexports_match_real_mem0():
     import reflexio.mem0 as wrapper_module
 
     assert wrapper_module.Memory is mem0.Memory
     assert wrapper_module.AsyncMemory is mem0.AsyncMemory
-    assert wrapper_module.AsyncMemoryClient is mem0.AsyncMemoryClient

@@ -176,7 +176,7 @@ class ReflexioClient:
     _thread_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="reflexio")
 
     def __init__(
-        self, api_key: str = "", url_endpoint: str = "", timeout: int = 300
+        self, api_key: str = "", url_endpoint: str = "", timeout: float = 300
     ) -> None:
         """Initialize the Reflexio client.
 
@@ -283,7 +283,7 @@ class ReflexioClient:
     async def _make_async_request(
         self, method: str, endpoint: str, headers: dict | None = None, **kwargs: Any
     ) -> Any:
-        """Make an async HTTP request to the API."""
+        """Make an async HTTP request with sync-transport safety parity."""
         url = urljoin(self.base_url, endpoint)
 
         # Merge auth headers with any provided headers
@@ -291,12 +291,40 @@ class ReflexioClient:
         if headers:
             request_headers.update(headers)
 
+        kwargs.setdefault("timeout", aiohttp.ClientTimeout(total=self.timeout))
+        kwargs.setdefault("allow_redirects", False)
         async with aiohttp.ClientSession() as async_session:
             response = await async_session.request(
                 method, url, headers=request_headers, **kwargs
             )
+            if 300 <= response.status < 400:
+                raise ReflexioAPIError(
+                    f"Unexpected redirect from {method} {url} "
+                    f"(status {response.status})"
+                )
             response.raise_for_status()
-            return await response.json()
+            content = await response.read()
+            if not content:
+                return {}
+            content_type = response.headers.get("Content-Type", "").lower()
+            if content_type and "json" not in content_type:
+                body_preview = content.decode(errors="replace")[:200]
+                raise ReflexioAPIError(
+                    f"Expected JSON from {method} {url} but got "
+                    f"Content-Type={content_type} (status {response.status}). "
+                    f"Body preview: {body_preview!r}. "
+                    "Is REFLEXIO_URL pointing at the API host?"
+                )
+            try:
+                return await response.json(content_type=None)
+            except (aiohttp.ContentTypeError, ValueError) as exc:
+                body_preview = content.decode(errors="replace")[:200]
+                raise ReflexioAPIError(
+                    f"{method} {url} returned status {response.status} but "
+                    f"the body is not valid JSON: {exc}. "
+                    f"Body preview: {body_preview!r}. "
+                    "Is REFLEXIO_URL pointing at the API host?"
+                ) from exc
 
     def _make_request(
         self, method: str, endpoint: str, headers: dict | None = None, **kwargs: Any
@@ -412,6 +440,57 @@ class ReflexioClient:
         )
         return PublishUserInteractionResponse(**response)
 
+    def _build_publish_interaction_request(
+        self,
+        *,
+        user_id: str,
+        interactions: Sequence[InteractionData | dict],
+        source: str,
+        agent_version: str,
+        session_id: str | None,
+        skip_aggregation: bool,
+        force_extraction: bool,
+        evaluation_only: bool,
+        override_learning_stall: bool,
+        retrieval_experiment_id: str | None,
+        retrieval_experiment_arm: Literal["treatment", "holdout"] | None,
+    ) -> PublishUserInteractionRequest:
+        """Validate and build the request shared by sync and async publishing."""
+        if session_id is None or not session_id.strip():
+            raise ValueError("session_id is required and cannot be empty")
+        interaction_data_list = [
+            (
+                InteractionData(**interaction_request)
+                if isinstance(interaction_request, dict)
+                else interaction_request
+            )
+            for interaction_request in interactions
+        ]
+        return PublishUserInteractionRequest(
+            session_id=session_id,
+            user_id=user_id,
+            interaction_data_list=interaction_data_list,
+            source=source,
+            agent_version=agent_version,
+            skip_aggregation=skip_aggregation,
+            force_extraction=force_extraction,
+            evaluation_only=evaluation_only,
+            override_learning_stall=override_learning_stall,
+            retrieval_experiment_id=retrieval_experiment_id,
+            retrieval_experiment_arm=retrieval_experiment_arm,
+        )
+
+    def _finalize_publish_response(
+        self,
+        request: PublishUserInteractionRequest,
+        result: PublishUserInteractionResponse,
+    ) -> PublishUserInteractionResponse:
+        if local_warnings := request.payload_warnings():
+            result.warnings = [*result.warnings, *local_warnings]
+        self._cache.invalidate("get_profiles")
+        self._cache.invalidate("get_agent_playbooks")
+        return result
+
     def publish_interaction(
         self,
         user_id: str,
@@ -496,23 +575,12 @@ class ReflexioClient:
                 refer to the list as you passed it. The list is bounded, so on
                 a large batch treat it as a sample.
         """
-        if session_id is None or not session_id.strip():
-            raise ValueError("session_id is required and cannot be empty")
-
-        interaction_data_list = [
-            (
-                InteractionData(**interaction_request)
-                if isinstance(interaction_request, dict)
-                else interaction_request
-            )
-            for interaction_request in interactions
-        ]
-        request = PublishUserInteractionRequest(
-            session_id=session_id,
+        request = self._build_publish_interaction_request(
             user_id=user_id,
-            interaction_data_list=interaction_data_list,
+            interactions=interactions,
             source=source,
             agent_version=agent_version,
+            session_id=session_id,
             skip_aggregation=skip_aggregation,
             force_extraction=force_extraction,
             evaluation_only=evaluation_only,
@@ -529,11 +597,41 @@ class ReflexioClient:
         # what it was never told. Without this, unrecognised fields are reported
         # over raw HTTP but invisible through the SDK, which is the primary
         # integration path and the one this method's docstring promises.
-        if local_warnings := request.payload_warnings():
-            result.warnings = [*result.warnings, *local_warnings]
-        self._cache.invalidate("get_profiles")
-        self._cache.invalidate("get_agent_playbooks")
-        return result
+        return self._finalize_publish_response(request, result)
+
+    async def publish_interaction_async(
+        self,
+        user_id: str,
+        interactions: Sequence[InteractionData | dict],
+        source: str = "",
+        agent_version: str = DEFAULT_AGENT_VERSION,
+        session_id: str | None = None,
+        wait_for_response: bool = False,
+        skip_aggregation: bool = False,
+        force_extraction: bool = False,
+        evaluation_only: bool = False,
+        override_learning_stall: bool = False,
+        retrieval_experiment_id: str | None = None,
+        retrieval_experiment_arm: Literal["treatment", "holdout"] | None = None,
+    ) -> PublishUserInteractionResponse:
+        """Native-async counterpart to :meth:`publish_interaction`."""
+        request = self._build_publish_interaction_request(
+            user_id=user_id,
+            interactions=interactions,
+            source=source,
+            agent_version=agent_version,
+            session_id=session_id,
+            skip_aggregation=skip_aggregation,
+            force_extraction=force_extraction,
+            evaluation_only=evaluation_only,
+            override_learning_stall=override_learning_stall,
+            retrieval_experiment_id=retrieval_experiment_id,
+            retrieval_experiment_arm=retrieval_experiment_arm,
+        )
+        result = await self._publish_interaction_async(
+            request, wait_for_response=wait_for_response
+        )
+        return self._finalize_publish_response(request, result)
 
     def get_learning_status(self, request_id: str) -> str:
         """Poll the learning status for a previously published request.
@@ -2773,6 +2871,53 @@ class ReflexioClient:
             interaction_id=interaction_id,
         )
         response = self._make_request(
+            "POST", "/api/search", json=req.model_dump(mode="json")
+        )
+        return UnifiedSearchViewResponse(**response)
+
+    async def search_async(
+        self,
+        request: UnifiedSearchRequest | dict | None = None,
+        *,
+        query: str | None = None,
+        top_k: int | None = None,
+        threshold: float | None = None,
+        agent_version: str | None = None,
+        playbook_name: str | None = None,
+        user_id: str | None = None,
+        tags: list[str] | None = None,
+        entity_types: list[str] | None = None,
+        agent_playbook_status_filter: list[PlaybookStatus | str] | None = None,
+        enable_reformulation: bool | None = None,
+        enable_agent_answer: bool | None = None,
+        conversation_history: list[ConversationTurn] | list[dict] | None = None,
+        search_mode: SearchMode | str | None = None,
+        request_id: str | None = None,
+        session_id: str | None = None,
+        interaction_id: int | None = None,
+    ) -> UnifiedSearchViewResponse:
+        """Native-async counterpart to :meth:`search`."""
+        req = self._build_request(
+            request,
+            UnifiedSearchRequest,
+            query=query,
+            top_k=top_k,
+            threshold=threshold,
+            agent_version=agent_version,
+            playbook_name=playbook_name,
+            user_id=user_id,
+            tags=tags,
+            entity_types=entity_types,
+            agent_playbook_status_filter=agent_playbook_status_filter,
+            enable_reformulation=enable_reformulation,
+            enable_agent_answer=enable_agent_answer,
+            conversation_history=conversation_history,
+            search_mode=search_mode,
+            request_id=request_id,
+            session_id=session_id,
+            interaction_id=interaction_id,
+        )
+        response = await self._make_async_request(
             "POST", "/api/search", json=req.model_dump(mode="json")
         )
         return UnifiedSearchViewResponse(**response)

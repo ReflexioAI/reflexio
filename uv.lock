@@ -5335,7 +5335,7 @@ requires-dist = [
     { name = "json-repair", specifier = ">=0.30.0" },
     { name = "litellm", specifier = ">=1.80.11" },
     { name = "markdown", marker = "extra == 'benchmark'", specifier = ">=3.10.2" },
-    { name = "mem0ai", marker = "extra == 'mem0'", specifier = ">=2.0,<3.0" },
+    { name = "mem0ai", marker = "extra == 'mem0'", specifier = ">=2.0,<2.1" },
     { name = "nltk", specifier = ">=3.9.3" },
     { name = "openai", specifier = ">=2.8.0" },
     { name = "openpyxl", marker = "extra == 'benchmark'", specifier = ">=3.1.5" },

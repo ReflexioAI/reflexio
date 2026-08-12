@@ -15,8 +15,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# mem0 has shipped breaking API changes in minor releases; cap below 3.0.
-mem0 = ["mem0ai>=2.0,<3.0"]
+# Keep the lightweight client on the same certified mem0 line as reflexio-ai.
+mem0 = ["mem0ai>=2.0,<2.1"]
 
 [build-system]
 requires = ["hatchling"]

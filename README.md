@@ -329,17 +329,33 @@ from reflexio.mem0 import MemoryClient
 client = MemoryClient(api_key="your-mem0-key")
 ```
 
-Every call still goes to mem0. After a successful mem0 `add()`, the wrapper
-best-effort publishes the conversation to Reflexio when a user identity and
-Reflexio credentials are available. A `search()` with a plain `user_id` filter
-adds `reflexio_profiles`, `reflexio_user_playbooks`, and
-`reflexio_agent_playbooks` sibling keys only when Reflexio augmentation
-succeeds. Reflexio failures are logged and swallowed; mem0 exceptions still
-propagate, and on skipped or failed augmentation the original mem0 payload is
-returned unchanged. Reflexio credentials come from the `REFLEXIO_API_KEY` and
-`REFLEXIO_URL` environment variables, or pass
-`reflexio_client=ReflexioClient(...)`. When neither is configured, the wrapper
-is a pure pass-through (mem0 only).
+Hosted sync and async `add()` calls still run mem0 first, then best-effort
+publish the same conversation to Reflexio. Normal `search()` is exactly mem0:
+it makes no Reflexio call and returns mem0's original object. Opt in when you
+want both result sets:
+
+```python
+result = client.search(
+    query,
+    filters={"user_id": "user-123", "agent_id": "support-bot"},
+    include_reflexio=True,
+)
+memories = result["results"]
+learnings = result["reflexio"]
+```
+
+`learnings` contains a stable status, reason, profiles, user playbooks, and
+agent playbooks. Reflexio never rewrites the query or injects these values into
+a prompt; the application decides how to validate and format retrieved text as
+prompt context. Reflexio credentials come from `REFLEXIO_API_KEY` and
+`REFLEXIO_URL`, or from `reflexio_client=ReflexioClient(...)`. Wrapper-created
+clients use a five-second timeout. Reflexio failures never change a successful
+mem0 `add()` result and are represented safely in opted-in search results.
+
+`client.reflexio` exposes scoped Reflexio cleanup methods. Inherited mem0
+`delete*` methods and `reset()` remain mem0-only. `MemoryClient` and
+`AsyncMemoryClient` are wrapped; local `Memory` and `AsyncMemory` remain exact
+mem0 exports. The integration supports `mem0ai>=2.0,<2.1`.
 
 > **Migration from the LangChain integration (removed in this release).** The
 > `reflexio.integrations.langchain` package and the `reflexio-client[langchain]`

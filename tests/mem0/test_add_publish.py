@@ -24,7 +24,7 @@ def test_publish_maps_ids_and_flags(wrapped_cls, reflexio_mock):
     client.add("hello", user_id="u1", agent_id="support-bot", run_id="run-42")
     kwargs = reflexio_mock.publish_interaction.call_args.kwargs
     assert kwargs["user_id"] == "u1"
-    assert kwargs["session_id"] == "run-42"
+    assert kwargs["session_id"].startswith("mem0-run-v1-")
     assert kwargs["agent_version"] == "support-bot"
     assert kwargs["source"] == "mem0"
     assert kwargs["wait_for_response"] is False
@@ -42,7 +42,7 @@ def test_publish_maps_ids_from_options_filters(wrapped_cls, reflexio_mock):
     kwargs = reflexio_mock.publish_interaction.call_args.kwargs
     assert kwargs["user_id"] == "u-opt"
     assert kwargs["agent_version"] == "bot-opt"
-    assert kwargs["session_id"] == "run-opt"
+    assert kwargs["session_id"].startswith("mem0-run-v1-")
 
 
 def test_add_kwargs_filters_override_options_filters(wrapped_cls, reflexio_mock):
@@ -62,7 +62,7 @@ def test_add_kwargs_filters_override_options_filters(wrapped_cls, reflexio_mock)
     kwargs = reflexio_mock.publish_interaction.call_args.kwargs
     assert kwargs["user_id"] == "u-kw"
     assert kwargs["agent_version"] == "bot-kw"
-    assert kwargs["session_id"] == "run-kw"
+    assert kwargs["session_id"].startswith("mem0-run-v1-")
 
 
 def test_add_top_level_identity_kwargs_override_filters(wrapped_cls, reflexio_mock):
@@ -82,10 +82,10 @@ def test_add_top_level_identity_kwargs_override_filters(wrapped_cls, reflexio_mo
     kwargs = reflexio_mock.publish_interaction.call_args.kwargs
     assert kwargs["user_id"] == "u-direct"
     assert kwargs["agent_version"] == "bot-direct"
-    assert kwargs["session_id"] == "run-direct"
+    assert kwargs["session_id"].startswith("mem0-run-v1-")
 
 
-@pytest.mark.parametrize("identity", ["user_id", "agent_id", "run_id"])
+@pytest.mark.parametrize("identity", ["user_id", "agent_id", "app_id", "run_id"])
 def test_conflicting_filter_identities_skip_publish(
     identity, wrapped_cls, reflexio_mock
 ):
@@ -112,7 +112,7 @@ def test_fallback_session_id_is_stable_and_scoped_to_user_and_agent(
         c.kwargs["session_id"] for c in reflexio_mock.publish_interaction.call_args_list
     ]
     assert sessions[0] == sessions[1]
-    assert sessions[0].startswith("mem0-")
+    assert sessions[0].startswith("mem0-run-v1-")
     assert len(set(sessions)) == 3
 
     other = _client(wrapped_cls, reflexio_mock)
@@ -120,6 +120,42 @@ def test_fallback_session_id_is_stable_and_scoped_to_user_and_agent(
     assert (
         reflexio_mock.publish_interaction.call_args.kwargs["session_id"] != sessions[0]
     )
+
+
+def test_app_id_isolates_user_agent_and_explicit_run(wrapped_cls, reflexio_mock):
+    client = _client(wrapped_cls, reflexio_mock)
+    client.add(
+        "first", user_id="same-user", agent_id="same-agent", app_id="app-a", run_id="r"
+    )
+    first = reflexio_mock.publish_interaction.call_args.kwargs
+    client.add(
+        "second", user_id="same-user", agent_id="same-agent", app_id="app-b", run_id="r"
+    )
+    second = reflexio_mock.publish_interaction.call_args.kwargs
+    assert first["user_id"].startswith("mem0-user-v1-")
+    assert first["agent_version"].startswith("mem0-agent-v1-")
+    assert first["user_id"] != second["user_id"]
+    assert first["agent_version"] != second["agent_version"]
+    assert first["session_id"] != second["session_id"]
+
+
+def test_scope_encoding_is_delimiter_safe(wrapped_cls, reflexio_mock):
+    client = _client(wrapped_cls, reflexio_mock)
+    client.add("a", user_id="c雪", agent_id="d", app_id="a\0b", run_id="e")
+    first = reflexio_mock.publish_interaction.call_args.kwargs
+    client.add("b", user_id="b\0c雪", agent_id="d", app_id="a", run_id="e")
+    second = reflexio_mock.publish_interaction.call_args.kwargs
+    assert first["user_id"] != second["user_id"]
+    assert first["session_id"] != second["session_id"]
+
+
+def test_reused_run_id_is_isolated_across_users(wrapped_cls, reflexio_mock):
+    client = _client(wrapped_cls, reflexio_mock)
+    client.add("a", user_id="u1", agent_id="agent", run_id="same-run")
+    first = reflexio_mock.publish_interaction.call_args.kwargs["session_id"]
+    client.add("b", user_id="u2", agent_id="agent", run_id="same-run")
+    second = reflexio_mock.publish_interaction.call_args.kwargs["session_id"]
+    assert first != second
 
 
 def test_agent_version_defaults_when_no_agent_id(
@@ -209,7 +245,7 @@ def test_default_reflexio_client_failure_degrades(wrapped_cls, monkeypatch):
         lambda **_: (_ for _ in ()).throw(RuntimeError("no env")),
     )
     client = wrapped_cls(api_key="mk")
-    assert client._reflexio is None
+    assert client.reflexio.configured is False
     assert client.add("hi", user_id="u1") is client.add_result
 
 
@@ -217,10 +253,76 @@ def test_unconfigured_env_yields_none_client(wrapped_cls, monkeypatch):
     monkeypatch.delenv("REFLEXIO_API_KEY", raising=False)
     monkeypatch.delenv("REFLEXIO_URL", raising=False)
     client = wrapped_cls(api_key="mk")
-    assert client._reflexio is None
+    assert client.reflexio.configured is False
     # Pure pass-through: mem0 result comes back, nothing else happens.
     assert client.add("hi", user_id="u1") is client.add_result
-    assert "reflexio_profiles" not in client.search("q", filters={"user_id": "u1"})
+    assert "reflexio" not in client.search("q", filters={"user_id": "u1"})
+
+
+@pytest.mark.parametrize("environment", ["key", "url"])
+def test_environment_configuration_creates_five_second_client(
+    environment, wrapped_cls, monkeypatch
+):
+    import reflexio.mem0._wrapper as wrapper_module
+
+    monkeypatch.delenv("REFLEXIO_API_KEY", raising=False)
+    monkeypatch.delenv("REFLEXIO_URL", raising=False)
+    monkeypatch.setenv(
+        "REFLEXIO_API_KEY" if environment == "key" else "REFLEXIO_URL",
+        "test-key" if environment == "key" else "http://localhost:8081",
+    )
+    created = types.SimpleNamespace(timeout=5.0)
+    constructor_calls = []
+
+    def construct(**kwargs):
+        constructor_calls.append(kwargs)
+        return created
+
+    monkeypatch.setattr(wrapper_module, "ReflexioClient", construct)
+    client = wrapped_cls(api_key="mk")
+    assert client.reflexio.configured is True
+    assert constructor_calls == [{"timeout": 5.0}]
+
+
+def test_wrapper_timeout_overrides_created_client_timeout(wrapped_cls, monkeypatch):
+    import reflexio.mem0._wrapper as wrapper_module
+
+    monkeypatch.setenv("REFLEXIO_URL", "http://localhost:8081")
+    created = types.SimpleNamespace(timeout=1.25)
+    constructor_calls = []
+
+    def construct(**kwargs):
+        constructor_calls.append(kwargs)
+        return created
+
+    monkeypatch.setattr(wrapper_module, "ReflexioClient", construct)
+    client = wrapped_cls(api_key="mk", reflexio_timeout=1.25)
+    assert client.reflexio.configured is True
+    assert constructor_calls == [{"timeout": 1.25}]
+
+
+def test_timeout_configuration_and_injected_client_are_mutually_exclusive(
+    wrapped_cls, reflexio_mock
+):
+    with pytest.raises(ValueError, match="cannot be combined"):
+        wrapped_cls(api_key="mk", reflexio_client=reflexio_mock, reflexio_timeout=1.0)
+
+
+@pytest.mark.parametrize("timeout", [0, -1, float("inf"), float("nan"), "5"])
+def test_invalid_timeout_rejected(wrapped_cls, timeout):
+    with pytest.raises(ValueError, match="finite positive"):
+        wrapped_cls(api_key="mk", reflexio_timeout=timeout)
+
+
+def test_publish_success_false_is_logged_and_mem0_result_returned(
+    wrapped_cls, reflexio_mock, caplog
+):
+    reflexio_mock.publish_interaction.return_value.success = False
+    client = _client(wrapped_cls, reflexio_mock)
+    with caplog.at_level("WARNING"):
+        result = client.add("hi", user_id="u1")
+    assert result is client.add_result
+    assert "Best-effort Reflexio publish failed" in caplog.text
 
 
 def test_timestamp_kwargs_overrides_options(wrapped_cls, reflexio_mock):
@@ -249,7 +351,7 @@ def test_repeat_failures_warn_once_then_debug(wrapped_cls, reflexio_mock, caplog
     with caplog.at_level("DEBUG", logger="reflexio.mem0._wrapper"):
         client.add("hi", user_id="u1")
         client.add("hi again", user_id="u1")
-        client.search("q", filters={"user_id": "u1"})
+        client.search("q", filters={"user_id": "u1"}, include_reflexio=True)
     failures = [
         r
         for r in caplog.records
