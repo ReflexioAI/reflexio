@@ -1,0 +1,58 @@
+name: mem0 compatibility
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  installed-artifact:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        distribution: [full, client]
+        mem0: [minimum, latest]
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+
+      - name: Build wheel
+        shell: bash
+        run: |
+          if [[ "${{ matrix.distribution }}" == "full" ]]; then
+            uv build --wheel
+          else
+            (cd client_dist && uv build --wheel)
+          fi
+
+      - name: Install built wheel and mem0
+        shell: bash
+        run: |
+          python -m venv /tmp/reflexio-mem0-venv
+          source /tmp/reflexio-mem0-venv/bin/activate
+          if [[ "${{ matrix.distribution }}" == "full" ]]; then
+            wheel=$(find dist -name '*.whl' -print -quit)
+          else
+            wheel=$(find client_dist/dist -name '*.whl' -print -quit)
+          fi
+          if [[ "${{ matrix.mem0 }}" == "minimum" ]]; then
+            python -m pip install "${wheel}[mem0]" "mem0ai==2.0.0"
+          else
+            python -m pip install "${wheel}[mem0]" "mem0ai>=2.0,<2.1"
+          fi
+
+      - name: Verify installed contract
+        shell: bash
+        run: |
+          source /tmp/reflexio-mem0-venv/bin/activate
+          cd /tmp
+          python "$GITHUB_WORKSPACE/scripts/verify_mem0_artifact.py"

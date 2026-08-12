@@ -309,6 +309,55 @@ client.set_config(reflexio.SetConfigRequest(
 Reflexio integrates with popular AI agent frameworks out of the box:
 
 - **[OpenClaw](reflexio/integrations/openclaw/README.md)** -- Native integration with the OpenClaw agent framework.
+- **mem0** -- Drop-in wrapper for the mem0 managed-platform client.
+
+### mem0 drop-in wrapper
+
+Already using [mem0](https://mem0.ai)? Install the extra and change one import —
+no other code changes:
+
+```bash
+pip install 'reflexio-ai[mem0]'
+```
+
+```python
+# Before
+from mem0 import MemoryClient
+# After
+from reflexio.mem0 import MemoryClient
+
+client = MemoryClient(api_key="your-mem0-key")
+```
+
+Hosted sync and async `add()` calls still run mem0 first, then best-effort
+publish the same conversation to Reflexio. Normal `search()` is exactly mem0:
+it makes no Reflexio call and returns mem0's original object. Opt in when you
+want both result sets:
+
+```python
+result = client.search(
+    query,
+    filters={"user_id": "user-123", "agent_id": "support-bot"},
+    include_reflexio=True,
+)
+memories = result["results"]
+learnings = result["reflexio"]
+```
+
+`learnings` contains a stable status, reason, profiles, user playbooks, and
+agent playbooks. Reflexio never rewrites the query or injects these values into
+a prompt; the application decides how to validate and format retrieved text as
+prompt context. Reflexio credentials come from `REFLEXIO_API_KEY` and
+`REFLEXIO_URL`, or can be passed directly as `reflexio_api_key=` with optional
+`reflexio_url_endpoint=`. Advanced callers can instead inject
+`reflexio_client=ReflexioClient(...)`. Wrapper-created clients use a five-second
+timeout. Reflexio failures never change a successful mem0 `add()` result and are
+represented safely in opted-in search results.
+
+`client.reflexio` exposes scoped Reflexio cleanup methods. Inherited mem0
+`delete*` methods and `reset()` remain mem0-only. `MemoryClient` and
+`AsyncMemoryClient` are wrapped; local `Memory` and `AsyncMemory` remain exact
+mem0 exports. The integration supports `mem0ai>=2.0,<2.1`.
 
 > **Migration from the LangChain integration (removed in this release).** The
 > `reflexio.integrations.langchain` package and the `reflexio-client[langchain]`

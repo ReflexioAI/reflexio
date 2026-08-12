@@ -127,3 +127,31 @@ def test_publish_interaction_sends_retrieval_experiment_attribution(
     sent = mock_session.request.call_args.kwargs["json"]
     assert sent["retrieval_experiment_id"] == "exp-1"
     assert sent["retrieval_experiment_arm"] == "treatment"
+
+
+@pytest.mark.asyncio
+async def test_publish_interaction_async_uses_shared_validation_and_warnings(
+    monkeypatch,
+):
+    client = ReflexioClient(api_key="test_key")
+    captured = {}
+
+    async def fake_publish(request, wait_for_response=False):
+        captured["request"] = request
+        captured["wait_for_response"] = wait_for_response
+        from reflexio.models.api_schema.service_schemas import (
+            PublishUserInteractionResponse,
+        )
+
+        return PublishUserInteractionResponse(success=True)
+
+    monkeypatch.setattr(client, "_publish_interaction_async", fake_publish)
+    result = await client.publish_interaction_async(
+        user_id="user",
+        interactions=[{"content": "real", "Content": "typo"}],
+        session_id="s",
+    )
+
+    assert captured["request"].session_id == "s"
+    assert captured["wait_for_response"] is False
+    assert any("Content" in warning for warning in result.warnings)

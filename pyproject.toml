@@ -57,6 +57,9 @@ dependencies = [
 
 [project.optional-dependencies]
 notebooks = ["pandas>=3.0.2"]
+# The wrapper is contract-tested against the mem0 2.0 line. Minor releases
+# have shipped breaking API changes, so certify each new line before widening.
+mem0 = ["mem0ai>=2.0,<2.1"]
 benchmark = [
     "datasets>=4.8.4",
     "fire>=0.7.1",
