@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from typing import ClassVar
 from unittest.mock import MagicMock, patch
 
 import aiohttp
@@ -49,7 +50,7 @@ async def test_make_async_request_applies_total_timeout_and_disables_redirects(
 
     class FakeResponse:
         status = 200
-        headers = {"Content-Type": "application/json"}
+        headers: ClassVar[dict[str, str]] = {"Content-Type": "application/json"}
 
         def raise_for_status(self):
             return None

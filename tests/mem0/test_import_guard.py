@@ -1,5 +1,6 @@
 """Import behavior of reflexio.mem0 with and without mem0ai installed."""
 
+import builtins
 import subprocess
 import sys
 
@@ -14,6 +15,22 @@ def test_missing_mem0_raises_helpful_import_error(monkeypatch):
     monkeypatch.setitem(sys.modules, "mem0", None)
     with pytest.raises(ImportError, match=r"reflexio-ai\[mem0\]"):
         import reflexio.mem0  # noqa: F401
+    _purge_reflexio_mem0_modules()
+
+
+def test_installed_mem0_import_failure_is_preserved(monkeypatch):
+    _purge_reflexio_mem0_modules()
+    original_import = builtins.__import__
+
+    def fail_inside_mem0(name, *args, **kwargs):
+        if name == "mem0":
+            raise ModuleNotFoundError("No module named 'httpx'", name="httpx")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fail_inside_mem0)
+    with pytest.raises(ModuleNotFoundError, match="httpx") as exc_info:
+        import reflexio.mem0  # noqa: F401
+    assert exc_info.value.name == "httpx"
     _purge_reflexio_mem0_modules()
 
 

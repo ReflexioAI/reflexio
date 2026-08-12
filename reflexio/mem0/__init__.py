@@ -12,7 +12,9 @@ remains exactly mem0 unless ``include_reflexio=True`` is requested. Local
 
 try:
     from mem0 import AsyncMemory, Memory
-except ImportError as exc:
+except ModuleNotFoundError as exc:
+    if exc.name != "mem0":
+        raise
     raise ImportError(
         "reflexio.mem0 requires the optional dependency 'mem0ai'. "
         "Install it with: pip install 'reflexio-ai[mem0]'"
