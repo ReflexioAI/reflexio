@@ -24,7 +24,9 @@ from collections.abc import Callable
 
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.cache.reflexio_cache import get_reflexio
+from reflexio.server.services.deferred_learning_plan import DeferredLearningPlan
 from reflexio.server.services.generation_service import GenerationService
+from reflexio.server.services.storage.storage_base import AgentRunStatus, BaseStorage
 from reflexio.server.services.storage.storage_base._learning_jobs import LearningJob
 
 logger = logging.getLogger(__name__)
@@ -151,6 +153,7 @@ class DurableLearningWorker:
             return False
 
         gen: GenerationService | None = None
+        plan: DeferredLearningPlan | None = None
         try:
             reflexio = get_reflexio(
                 org_id=ctx.org_id, storage_base_dir=ctx.storage_base_dir
@@ -202,7 +205,16 @@ class DurableLearningWorker:
 
             # POST-COMMIT — billing / telemetry / tagging / off-thread schedulers
             # + the per-user lock release, only for the winning worker.
-            gen.emit_deferred_learning_side_effects(plan)
+            try:
+                gen.emit_deferred_learning_side_effects(plan)
+            except Exception:
+                logger.exception(
+                    "event=learning_job_side_effects_failed "
+                    "job_id=%s org_id=%s user_id=%s",
+                    job.job_id,
+                    job.org_id,
+                    job.user_id,
+                )
             logger.info(
                 "event=learning_job_done job_id=%s org_id=%s user_id=%s",
                 job.job_id,
@@ -210,23 +222,25 @@ class DurableLearningWorker:
                 job.user_id,
             )
             return True
-        except _SupersededError:
+        except _SupersededError as exc:
             logger.info(
                 "event=learning_job_superseded job_id=%s org_id=%s",
                 job.job_id,
                 job.org_id,
             )
+            self._abandon_computed_agent_runs(storage, plan, exc)
             # The persist rolled back and emit never ran, so the per-user lock is
             # still held by this compute — release it so the reclaim isn't blocked.
             self._release_user_lock(gen, job)
             return False
-        except Exception:
+        except Exception as exc:
             logger.exception(
                 "event=learning_job_failed job_id=%s org_id=%s user_id=%s",
                 job.job_id,
                 job.org_id,
                 job.user_id,
             )
+            self._abandon_computed_agent_runs(storage, plan, exc)
             # emit (which releases the lock) never ran on this path — release the
             # per-user lock so a failed job doesn't strand it.
             self._release_user_lock(gen, job)
@@ -236,6 +250,28 @@ class DurableLearningWorker:
                 job_id=job.job_id, claim_token=claim_token, dead=dead
             )
             return False
+
+    @staticmethod
+    def _abandon_computed_agent_runs(
+        storage: BaseStorage,
+        plan: DeferredLearningPlan | None,
+        exc: Exception,
+    ) -> None:
+        """Make runs from a rolled-back durable attempt non-resumable."""
+        if plan is None:
+            return
+        run_ids = {
+            run_id
+            for pair in (plan.profile, plan.playbook)
+            if pair is not None
+            for run_id in pair[1].extraction_run_ids
+        }
+        for run_id in run_ids:
+            storage.update_agent_run_status(
+                run_id,
+                AgentRunStatus.FAILED,
+                last_error=f"durable learning attempt abandoned: {exc}",
+            )
 
     def _release_user_lock(
         self, gen: GenerationService | None, job: LearningJob

@@ -9,7 +9,10 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from reflexio.server.api_endpoints.request_context import RequestContext
     from reflexio.server.llm.litellm_client import LiteLLMClient
-    from reflexio.server.services.deferred_learning_plan import GenerationComputePlan
+    from reflexio.server.services.deferred_learning_plan import (
+        ExtractorBookmarkAdvance,
+        GenerationComputePlan,
+    )
     from reflexio.server.services.storage.storage_base import (
         AgentRunRecord,
         BaseStorage,
@@ -663,6 +666,11 @@ class PlaybookGenerationService(
         superseded one) — the phantom-billing gate.
         """
         super().emit_generation_side_effects(plan)
+        if (
+            plan.finalization_result is not None
+            and not plan.finalization_result.won_receipt
+        ):
+            return
         write_plan = plan.write_plan
         if write_plan is not None:
             self._dispatch_playbook_schedulers(write_plan)
@@ -700,11 +708,10 @@ class PlaybookGenerationService(
         finalization_run_id: str | None = None,
     ) -> FinalizationResult:
         """Finalize playbooks and expose the atomic receipt winner internally."""
-        entity_type = "user_playbook"
         if finalization_run_id is not None:
             receipt = self.storage.get_agent_run_finalization_receipt(  # type: ignore[reportOptionalMemberAccess]
                 run_id=finalization_run_id,
-                entity_type=entity_type,
+                entity_type="user_playbook",
             )
             if receipt is not None:
                 # Receipts make persistence/billing idempotent. Derived schedulers
@@ -722,7 +729,6 @@ class PlaybookGenerationService(
         finally:
             self._review_run = previous_review_run
             self._review_window_cache = previous_review_window
-        learning_ids: list[str] = []
         if finalization_run_id is None:
             if plan is not None:
                 with self.storage.commit_scope():  # type: ignore[reportOptionalMemberAccess]
@@ -741,6 +747,32 @@ class PlaybookGenerationService(
                 won_receipt=False,
             )
 
+        result = self._finalize_write_plan_with_outcome(
+            plan,
+            finalization_run_id=finalization_run_id,
+            bookmark_advance=None,
+        )
+        if plan is not None and result.won_receipt:
+            self._dispatch_playbook_schedulers(plan)
+        return result
+
+    def _finalize_write_plan_with_outcome(
+        self,
+        write_plan: PlaybookWritePlan | None,
+        *,
+        finalization_run_id: str,
+        bookmark_advance: ExtractorBookmarkAdvance | None,
+    ) -> FinalizationResult:
+        """Commit a resolved playbook plan, bookmark, and receipt atomically."""
+        entity_type = "user_playbook"
+        receipt = self.storage.get_agent_run_finalization_receipt(  # type: ignore[reportOptionalMemberAccess]
+            run_id=finalization_run_id,
+            entity_type=entity_type,
+        )
+        if receipt is not None:
+            return FinalizationResult(receipt, won_receipt=False)
+        learning_ids: list[str] = []
+
         try:
             with self.storage.commit_scope():  # type: ignore[reportOptionalMemberAccess]
                 receipt = self.storage.get_agent_run_finalization_receipt(  # type: ignore[reportOptionalMemberAccess]
@@ -749,13 +781,14 @@ class PlaybookGenerationService(
                 )
                 if receipt is not None:
                     return FinalizationResult(receipt, won_receipt=False)
-                if plan is not None:
-                    self._persist_write_plan(plan)
+                if write_plan is not None:
+                    self._persist_write_plan(write_plan)
                     learning_ids = [
                         str(playbook.user_playbook_id)
-                        for playbook in plan.new_playbooks
+                        for playbook in write_plan.new_playbooks
                         if playbook.user_playbook_id
                     ]
+                self._apply_bookmark_advance(bookmark_advance)
                 inserted = self.storage.save_agent_run_finalization_receipt(  # type: ignore[reportOptionalMemberAccess]
                     run_id=finalization_run_id,
                     entity_type=entity_type,
@@ -773,8 +806,6 @@ class PlaybookGenerationService(
                     "finalization receipt disappeared after insert conflict"
                 ) from None
             return FinalizationResult(receipt, won_receipt=False)
-        if plan is not None:
-            self._dispatch_playbook_schedulers(plan)
         return FinalizationResult(learning_ids, won_receipt=True)
 
     def _apply_consolidation_lineage(

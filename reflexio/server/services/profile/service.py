@@ -31,6 +31,7 @@ from reflexio.server.services.base_generation_service import (
     StatusChangeOperation,
 )
 from reflexio.server.services.deferred_learning_plan import (
+    ExtractorBookmarkAdvance,
     FinalizationResult,
     ProfileWritePlan,
     _FinalizationReceiptAlreadyExistsError,
@@ -365,11 +366,10 @@ class ProfileGenerationService(
         finalization_run_id: str | None = None,
     ) -> FinalizationResult:
         """Finalize profiles and expose the atomic receipt winner internally."""
-        entity_type = "profile"
         if finalization_run_id is not None:
             receipt = self.storage.get_agent_run_finalization_receipt(  # type: ignore[reportOptionalMemberAccess]
                 run_id=finalization_run_id,
-                entity_type=entity_type,
+                entity_type="profile",
             )
             if receipt is not None:
                 return FinalizationResult(receipt, won_receipt=False)
@@ -392,6 +392,37 @@ class ProfileGenerationService(
                     self._persist_write_plan(plan)
             return FinalizationResult(learning_ids, won_receipt=False)
 
+        return self._finalize_write_plan_with_outcome(
+            plan,
+            finalization_run_id=finalization_run_id,
+            bookmark_advance=None,
+        )
+
+    def _finalize_write_plan_with_outcome(
+        self,
+        write_plan: ProfileWritePlan | None,
+        *,
+        finalization_run_id: str,
+        bookmark_advance: ExtractorBookmarkAdvance | None,
+    ) -> FinalizationResult:
+        """Commit a resolved profile plan, bookmark, and receipt atomically."""
+        entity_type = "profile"
+        receipt = self.storage.get_agent_run_finalization_receipt(  # type: ignore[reportOptionalMemberAccess]
+            run_id=finalization_run_id,
+            entity_type=entity_type,
+        )
+        if receipt is not None:
+            return FinalizationResult(receipt, won_receipt=False)
+        learning_ids = (
+            [
+                str(profile.profile_id)
+                for profile in write_plan.new_profiles
+                if profile.profile_id
+            ]
+            if write_plan is not None
+            else []
+        )
+
         try:
             with self.storage.commit_scope():  # type: ignore[reportOptionalMemberAccess]
                 receipt = self.storage.get_agent_run_finalization_receipt(  # type: ignore[reportOptionalMemberAccess]
@@ -400,8 +431,9 @@ class ProfileGenerationService(
                 )
                 if receipt is not None:
                     return FinalizationResult(receipt, won_receipt=False)
-                if plan is not None:
-                    self._persist_write_plan(plan)
+                if write_plan is not None:
+                    self._persist_write_plan(write_plan)
+                self._apply_bookmark_advance(bookmark_advance)
                 inserted = self.storage.save_agent_run_finalization_receipt(  # type: ignore[reportOptionalMemberAccess]
                     run_id=finalization_run_id,
                     entity_type=entity_type,

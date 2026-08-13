@@ -147,11 +147,11 @@ class GenerationComputePlan:
     """Resolved compute output of one ``BaseGenerationService`` run (gate b).
 
     ``compute_generation`` runs the prepare gate + extractor + dedup/embedding
-    resolution (``_resolve_write_plan``) and drives the ``agent_run`` rows to
-    their terminal state (``_finalize_extraction_runs`` — agent_run only, §4.3),
-    issuing **no** learning DB write. ``persist_generation`` applies
-    ``write_plan`` + the extractor bookmark advance inside the fence;
-    ``emit_generation_side_effects`` fires the post-commit telemetry + billing.
+    resolution (``_resolve_write_plan``), issuing **no** learning DB write and
+    leaving receipt-aware ``agent_run`` rows non-terminal. ``persist_generation``
+    applies ``write_plan`` + the extractor bookmark advance + immutable receipt
+    inside the fence; ``emit_generation_side_effects`` terminalizes the run and
+    fires post-commit telemetry + billing.
 
     The billing inputs (``extraction_run_ids`` / ``token_totals`` /
     ``billable_count`` / ``prepared``) and telemetry's ``generated_count`` are
@@ -179,6 +179,8 @@ class GenerationComputePlan:
         extraction_run_ids: Snapshot of the run's ``agent_run`` ids.
         token_totals: Snapshot of the run's LLM token totals (billing cost
             facet), or ``None`` when the extractor reported none.
+        finalization_result: Receipt ownership recorded by persistence. ``None``
+            for services that do not use receipt-aware inline finalization.
     """
 
     prepared: PreparedGenerationRun[Any]
@@ -189,6 +191,7 @@ class GenerationComputePlan:
     generation_start: float
     extraction_run_ids: list[str]
     token_totals: RunTokenTotals | None
+    finalization_result: FinalizationResult | None = None
 
 
 @dataclass
