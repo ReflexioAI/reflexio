@@ -27,7 +27,7 @@
 
 ---
 
-### Migration from claude_code integration (removed in this release)
+### Migration from the removed claude_code integration
 
 The `reflexio setup claude-code` command and its hook files have been removed.
 The replacement is **[claude-smart](https://github.com/ReflexioAI/claude-smart)**,
@@ -47,9 +47,9 @@ for the modern equivalent.
 ---
 
 ## What is Reflexio?
-Reflexio is an **AI agent self-improvement harness** that enables your AI agents to continuously learn from real user interactions. It turns user corrections into persisted behavioral improvements for agents and capturing successful execution paths for reuse.  
+Reflexio is an **AI agent self-improvement harness** that enables your AI agents to continuously learn from real user interactions. It turns user corrections into persisted behavioral improvements for agents and captures successful execution paths for reuse.
 
-What one user teaches, every user benefits from.  
+User-specific learnings stay scoped to that user; lessons that recur across users can be aggregated into shared agent playbooks and approved for reuse.
 
 As your agent is used more, it becomes smarter, faster, and more effective at solving domain-specific tasks.
 The moat for AI agents is what your agent learns from every interaction it handles.  
@@ -72,7 +72,7 @@ Publish conversations from your agent, and Reflexio closes the self-improvement 
 
 - **Never Repeat the Same Mistake**: Transforms user corrections and interaction signals into improved decision-making processes — so agents adapt their behavior and avoid repeating the same mistakes.
 - **Lock In What Works**: Persists successful strategies and workflows so your agent reuses proven paths instead of starting from scratch.
-- **Transfer Learning Across Users**: What one user teaches, every user benefits from — corrections and successful strategies from one individual propagate to improve the agent for everyone, no retraining required.
+- **Transfer Learning Across Users**: Corrections and successful strategies that recur across users can be aggregated into shared agent playbooks; approved playbooks improve the agent for everyone without retraining.
 - **Learn from Human Experts**: Publish expert-provided ideal responses alongside agent responses — Reflexio automatically extracts actionable playbooks from the differences.
 
 > **For developers**: See [developer.md](developer.md) for project structure, environment setup, testing, and coding guidelines.
@@ -103,8 +103,9 @@ Publish conversations from your agent, and Reflexio closes the self-improvement 
 
 | Tool | Description |
 | --- | --- |
-| [uv](https://docs.astral.sh/uv/getting-started/installation/) | Python package manager |
-| [Node.js](https://nodejs.org/) >= 18 | Frontend runtime |
+| [Python](https://www.python.org/) >= 3.12 | Required for PyPI and source installs |
+| [uv](https://docs.astral.sh/uv/getting-started/installation/) | Required when running from source |
+| [Node.js](https://nodejs.org/) >= 18 | Required only for the local docs site in a source checkout |
 
 <p align="center">
   <img src="docs/images/demo.gif" width="800px" alt="Reflexio Demo">
@@ -118,9 +119,13 @@ Publish conversations from your agent, and Reflexio closes the self-improvement 
 pip install reflexio-ai
 
 # start/stop services. data saved under ~/.reflexio
-reflexio services start           # API (8061), Docs (8062), SQLite storage
+reflexio services start           # API (8061), inference (8069), SQLite storage
 reflexio services stop            # Stop all services
 ```
+
+The PyPI package does not ship the local docs site. Use the
+[hosted documentation](https://www.reflexio.ai/docs), or clone the repository
+if you want to run the docs locally.
 
 **Option B — Clone from source** (for contributors):
 
@@ -137,33 +142,36 @@ uv sync                                    # Python (includes workspace packages
 npm --prefix docs install                  # API docs
 
 # start/stop services. data saved under ~/.reflexio
-uv run reflexio services start             # API (8061), Docs (8062), SQLite storage
+uv run reflexio services start             # API (8061), Docs (8062), inference (8069), SQLite
 uv run reflexio services stop              # Stop all services
 ```
 
-> Alternative: `python -m reflexio.cli services start` or `./run_services.sh`
+> Source-checkout alternatives: `python -m reflexio.cli services start` or `./run_services.sh`
 
-Backend startup also launches the shared local inference service on port 8069.
-It serves embeddings and the optional English cross-encoder reranker; cloud
-embedding configurations still start it so reranking remains available. The
-deployment-wide `REFLEXIO_RERANK_ENABLED` flag defaults to `true`. Set it to
-`false` to skip reranker model loading/prewarm and disable reranker requests;
-automatic unified-search reranking remains separately off by default through
-`retrieval_floor.enabled`. If the loopback inference service is unavailable,
-automatic reranking is silently skipped and retrieval order is preserved. An
-unavailable remote/internal service is still reported while search fails open.
+When the backend is selected, the launcher also starts the local inference
+service on port 8069 unless `REFLEXIO_EMBEDDING_SERVICE_URL` points to a remote
+service. It serves embeddings and the optional cross-encoder reranker; cloud
+embedding configurations still use it for reranking. The deployment-wide
+`REFLEXIO_RERANK_ENABLED` flag defaults to `true`. Set it to `false` to skip
+reranker model loading/prewarm and disable reranker requests. Automatic
+unified-search relevance flooring (which includes reranking) remains separately
+off by default through `retrieval_floor.enabled`. If the loopback inference
+service is unavailable, automatic reranking is silently skipped and retrieval
+order is preserved. An unavailable remote/internal service is reported while
+search still fails open.
 
-Once running, open **[http://localhost:8062](http://localhost:8062)** to interactively browse and try out the API.
+For a source checkout, open **[http://localhost:8062](http://localhost:8062)**
+to interactively browse and try out the API.
 <p align="center">
   <img src="docs/images/doc_website.png" width="800px" alt="Reflexio Doc Website">
 </p>
 
 ### Try it in 30 seconds (CLI)
 
-Reflexio ships a first-class CLI — the fastest way to see the loop end-to-end with no code. Publish a real multi-turn conversation where the user **corrects** the agent (that's the signal Reflexio learns from), then search for what was extracted:
+Reflexio ships a first-class CLI — the fastest way to see the loop end-to-end with no code. Publish a real multi-turn conversation where the user **corrects** the agent (that's the signal Reflexio learns from), then search for what was extracted. In a source checkout, prefix these commands with `uv run`.
 
 ```shell
-uv run reflexio publish --user-id alice --wait --data '{
+reflexio publish --user-id alice --session-id deploy-demo-1 --wait --data '{
   "interactions": [
     {"role": "user",      "content": "Deploy the new service."},
     {"role": "assistant", "content": "Starting deployment to us-east-1..."},
@@ -173,10 +181,15 @@ uv run reflexio publish --user-id alice --wait --data '{
 }'
 
 # Search the extracted profiles and playbooks
-uv run reflexio search "deployment region"
+reflexio search "deployment region" --user-id alice
 ```
 
-One conversation, two artifacts: a user profile (`production region is us-west-2`) and an agent playbook (`confirm region before deploying`). See the [CLI reference](reflexio/cli/README.md) for all input modes (inline JSON, `--file`, `--stdin`) and the full command list.
+Depending on the configured model and extraction gates, this conversation can
+produce a user profile (`production region is us-west-2`) and a user playbook
+(`confirm region before deploying`). Agent playbooks are created later by
+aggregating recurring user playbooks across users and enter the approval
+workflow. See the [CLI reference](reflexio/cli/README.md) for all input modes
+(inline JSON, `--file`, `--stdin`) and the full command list.
 
 ### Integrate with the Python SDK
 
@@ -188,7 +201,7 @@ client = reflexio.ReflexioClient(
 )
 
 # Publish a multi-turn conversation where the user corrects the agent —
-# Reflexio extracts a profile ("prod region = us-west-2") and a playbook
+# Reflexio can extract a profile ("prod region = us-west-2") and a playbook
 # ("confirm region before deploying").
 client.publish_interaction(
     user_id="alice",
@@ -198,18 +211,20 @@ client.publish_interaction(
         {"role": "user",      "content": "Wait — we never deploy production to us-east-1. Always use us-west-2."},
         {"role": "assistant", "content": "Understood. Switching to us-west-2."},
     ],
+    session_id="deploy-demo-1",
 )
 ```
 
-Reflexio will automatically generate profiles and extract playbooks in the background.
+By default, Reflexio queues profile and playbook extraction in the background;
+the configured models and extraction gates determine which artifacts are produced.
 
 ## Features
 
 ### Profile Generation
 
-- Extracts behavioral profiles from conversations using configurable extractors
+- Extracts stable facts about users and their environments with one configurable profile extractor
 - Supports versioning (current → pending → archived) with upgrade/downgrade workflows
-- Multiple extractors run in parallel with independent windows and strides
+- Supports global extraction windows and strides with profile-specific overrides
 
 [Read more about user profiles →](https://www.reflexio.ai/docs/concepts/user-profiles)
 
@@ -227,27 +242,27 @@ Reflexio will automatically generate profiles and extract playbooks in the backg
 - Reflexio automatically compares agent vs. expert responses, focusing on substantive differences (missing info, incorrect approach, reasoning gaps) while ignoring stylistic ones
 - Generates actionable playbooks as trigger/instruction/pitfall SOPs that teach the agent what to do differently
 
-[Read more about interactions & expert content →](https://www.reflexio.ai/docs/concepts/interactions#5-expert-content-for-learning-from-experts)
+[Read more about interactions & expert content →](https://www.reflexio.ai/docs/build/user-interactions#expert-examples)
 
 ### Agent Success Evaluation
 
-- Session-level evaluation triggered automatically (10 min after last request)
-- Shadow comparison mode: A/B test regular vs shadow agent responses
+- Session-level evaluation sampled automatically (5% by default) and scheduled 10 minutes after the session's last request
+- Per-turn head-to-head comparison when an assistant interaction includes `shadow_content`
 - Tool usage analysis for blocking issue detection
-- **Causal measurement of Reflexio's impact** — source-set comparison on the Evaluation page groups evaluated sessions by the first request's `source`
+- Source-set comparison groups evaluated sessions by the first request's `source`; it supports a causal claim only when sessions are assigned randomly
 
-[Read more about evaluation →](https://www.reflexio.ai/docs/examples/agent-evaluation)
+[Read more about evaluation →](https://www.reflexio.ai/docs/build/agent-evaluation)
 
 ### Search & Retrieval
 
 - Hybrid search (vector + full-text) across profiles and playbooks
-- LLM-powered query rewriting for improved recall
+- Optional LLM-powered query reformulation for improved recall
 - Unified search across all entity types in parallel
 - **Fast at scale**: unified search across ~3,000 indexed rows (profile + user playbook + agent playbook, ~1,000 rows each, queried in parallel) runs at **~57 ms p50 / ~73 ms p95** — measured service-layer with local SQLite on an Apple Silicon MacBook, 30 trials × 20 fixed queries. See the [full benchmark report](reflexio/benchmarks/retrieval_latency/results/report.md) or reproduce with [`reflexio.benchmarks.retrieval_latency`](reflexio/benchmarks/retrieval_latency/README.md).
 
 ### Multi-Provider LLM Support
 
-- OpenAI, Anthropic, Google Gemini, OpenRouter, Azure, MiniMax, and custom endpoints
+- OpenAI and Azure OpenAI, Anthropic, OpenRouter, Google Gemini, MiniMax, DeepSeek, DashScope/Qwen, Zhipu AI/GLM, Moonshot/Kimi, xAI/Grok, and custom OpenAI-compatible endpoints
 - Powered by LiteLLM — configure your preferred provider via API keys or custom endpoints
 
 ## SDK Usage
@@ -282,27 +297,26 @@ client.publish_interaction(
 
 # Search profiles
 profiles = client.search_user_profiles(
-    reflexio.SearchUserProfileRequest(query="deployment region preference")
+    user_id="user-123",
+    query="deployment region preference",
 )
 
 # Search agent playbooks
-playbooks = client.get_agent_playbooks(
-    reflexio.GetAgentPlaybooksRequest(agent_version="v1")
-)
+playbooks = client.get_agent_playbooks(agent_version="v1")
 ```
 
 ### Configuration
 
 ```python
-# Update org configuration
-client.set_config(reflexio.SetConfigRequest(
-    config=reflexio.Config(
-        api_key_config=reflexio.APIKeyConfig(openai="sk-..."),
-        profile_extractor_config=reflexio.ProfileExtractorConfig(...),
-        user_playbook_extractor_config=reflexio.PlaybookConfig(...),
-    )
-))
+# Apply a targeted configuration change without resending the full Config.
+client.update_config({
+    "window_size": 20,
+    "stride_size": 10,
+})
 ```
+
+Use `set_config()` only when replacing the complete configuration, including
+its required `storage_config`.
 
 ## Integrations
 
@@ -359,9 +373,9 @@ represented safely in opted-in search results.
 `AsyncMemoryClient` are wrapped; local `Memory` and `AsyncMemory` remain exact
 mem0 exports. The integration supports `mem0ai>=2.0,<2.1`.
 
-> **Migration from the LangChain integration (removed in this release).** The
-> `reflexio.integrations.langchain` package and the `reflexio-client[langchain]`
-> extra have been removed. To inject Reflexio context into a LangChain chain or
+> **Migration from the removed LangChain integration.** The
+> `reflexio.integrations.langchain` package and its optional extra have been
+> removed. To inject Reflexio context into a LangChain chain or
 > agent, call the Reflexio client's search API directly and add the formatted
 > results to your prompt (e.g. as a system message) — no framework-specific glue
 > is required.
@@ -369,13 +383,16 @@ mem0 exports. The integration supports `mem0ai>=2.0,<2.1`.
 ## Architecture
 
 ```
-Client (SDK / Web UI)
+Client (SDK / CLI / HTTP API)
   → FastAPI Backend
-    → Reflexio Orchestrator
-      → GenerationService
-        ├─ ProfileGenerationService  → Extractor(s) → Deduplicator → Storage
-        ├─ PlaybookGenerationService → Extractor(s) → Deduplicator → Storage
-        └─ GroupEvaluationScheduler  → Evaluator(s) → Storage (deferred 10 min)
+    ├─ ProfileGenerationService  → ProfileExtractor → Consolidator → Storage
+    ├─ PlaybookGenerationService → UserPlaybookExtractor → Consolidator
+    │                              → User playbooks (Storage)
+    │                              → Aggregator → Agent playbooks (Storage)
+    ├─ GroupEvaluationScheduler  → AgentSuccessEvaluator → Storage
+    │                              (sampled; deferred 10 min)
+    ├─ ShadowComparisonWorker    → Per-turn judge → Storage
+    └─ UnifiedSearchService      → Profiles + user/agent playbooks
 ```
 
 See [developer.md](developer.md) for project structure, supported LLM providers, and development setup.
