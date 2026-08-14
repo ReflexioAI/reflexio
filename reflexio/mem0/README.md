@@ -17,7 +17,7 @@ Description: Drop-in mem0 hosted-client wrappers that keep mem0 behavior while m
 
 ## Architecture Pattern
 
-The wrapper is pass-through by default: construction must not fail when Reflexio is absent, and Reflexio failures must not change a successful mem0 result. `_wrapper.py` owns identity extraction from top-level args and simple one-level `AND` filters, message normalization, stable scope hashing, async/sync publish paths, and namespace-collision protection for opted-in search augmentation. `_facade.py` owns explicit Reflexio lifecycle calls and raises `ReflexioNotConfiguredError` only when the caller directly invokes a Reflexio operation without configuration.
+The wrapper is pass-through by default: construction must not fail when Reflexio is absent, and Reflexio failures must not change a successful mem0 result. An injected `reflexio_client` cannot be combined with inline Reflexio settings (`reflexio_timeout`, `reflexio_api_key`, or `reflexio_url_endpoint`). `_wrapper.py` owns identity extraction from top-level args and simple one-level `AND` filters, message normalization, stable scope hashing, async/sync publish paths, and namespace-collision protection for opted-in search augmentation. `_facade.py` owns explicit Reflexio lifecycle calls and raises `ReflexioNotConfiguredError` only when the caller directly invokes a Reflexio operation without configuration.
 
 ## Key Contracts
 

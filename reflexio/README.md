@@ -114,7 +114,7 @@ Description: Optional compatibility layer for hosted mem0 clients that preserves
 3. **Scoped operations** - `user_id`, `app_id`, `agent_id`, and `run_id` are mapped into deterministic Reflexio user/session scopes.
 
 ### Architecture Pattern
-Pass-through wrapper around mem0 hosted clients. Reflexio is configured via environment, inline kwargs, or injected `ReflexioClient`; absent Reflexio configuration leaves mem0 behavior unchanged. `search()` is mem0-only unless `include_reflexio=True`, which reserves a `reflexio` namespace on returned results.
+Pass-through wrapper around mem0-hosted clients. Reflexio is configured via environment, inline kwargs, or injected `ReflexioClient`; absent Reflexio configuration leaves mem0 behavior unchanged. `search()` is mem0-only unless `include_reflexio=True`, which reserves a `reflexio` namespace on returned results.
 
 ## server
 Description: FastAPI backend server that processes user interactions to generate profiles, extract playbooks, and evaluate agent success
