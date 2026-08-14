@@ -7,6 +7,7 @@ Describe the code structure and component dependencies for source code of reflex
 - [models and client](#models-and-client)
 - [cli](#cli)
 - [reflexio_lib](#reflexio_lib)
+- [mem0](#mem0)
 - [server](#server)
 - [data](#data)
 - [See Also](#see-also)
@@ -25,6 +26,7 @@ Reflexio is a user profiling and agent playbook system with three main access pa
 - `server` - FastAPI backend with LLM-based processing services
 - `data` - Bundled configs and local fixtures
 - `docs` - Next.js API documentation site
+- `mem0` - Optional mem0 hosted-client compatibility wrapper that mirrors learning into Reflexio
 
 ## models and client
 Description: Shared data contracts and the Python SDK used by external applications, the CLI, and server endpoint helpers
@@ -95,6 +97,24 @@ Direct programmatic access without HTTP/API layer:
 
 ### Architecture Pattern
 Creates `RequestContext` and directly calls `GenerationService` - bypasses FastAPI layer. Methods are **synchronous** unlike `ReflexioClient`.
+
+## mem0
+Description: Optional compatibility layer for hosted mem0 clients that preserves mem0 behavior while adding Reflexio learning.
+
+**Detailed Documentation**: See [`reflexio/mem0/README.md`](mem0/README.md) for wrapper internals, identity scoping, and failure-mode contracts.
+
+### Main Entry Points
+- **Public exports**: `mem0/__init__.py` - `MemoryClient`, `AsyncMemoryClient`, local `Memory`/`AsyncMemory` re-exports, and Reflexio helper classes.
+- **Hosted wrappers**: `mem0/_wrapper.py` - Sync/async mem0 client subclasses that mirror `add()` calls and optionally enrich `search()`.
+- **Lifecycle facade**: `mem0/_facade.py` - Explicit `client.reflexio` cleanup/delete operations scoped to mem0 identities.
+
+### Purpose
+1. **One-import migration** - mem0 users can install `reflexio-ai[mem0]` and switch imports to `reflexio.mem0`.
+2. **Best-effort learning mirror** - mem0 writes remain primary; Reflexio publish/search side effects are optional and fail-open.
+3. **Scoped operations** - `user_id`, `app_id`, `agent_id`, and `run_id` are mapped into deterministic Reflexio user/session scopes.
+
+### Architecture Pattern
+Pass-through wrapper around mem0 hosted clients. Reflexio is configured via environment, inline kwargs, or injected `ReflexioClient`; absent Reflexio configuration leaves mem0 behavior unchanged. `search()` is mem0-only unless `include_reflexio=True`, which reserves a `reflexio` namespace on returned results.
 
 ## server
 Description: FastAPI backend server that processes user interactions to generate profiles, extract playbooks, and evaluate agent success
@@ -191,3 +211,4 @@ Referenced by `SimpleConfigurator` for loading configs and by database operation
 - [Site Variables README](server/site_var/README.md) -- global configuration and feature flags
 - [Retrieval Latency Benchmarks](benchmarks/retrieval_latency/README.md) -- search performance benchmarking
 - [OpenClaw Integration](integrations/openclaw/README.md) -- federated OpenClaw plugin setup and behavior
+- [mem0 Wrapper](mem0/README.md) -- hosted mem0 compatibility wrapper and Reflexio mirroring contracts
