@@ -407,7 +407,7 @@ def test_apply_decisions_uses_the_same_trimmed_candidate_id_as_validation():
 def test_reviewer_prompt_is_versioned_and_active():
     manager = PromptManager()
 
-    assert manager.get_active_version("playbook_candidate_review") == "1.2.0"
+    assert manager.get_active_version("playbook_candidate_review") == "1.3.0"
 
 
 def test_reviewer_prompt_preserves_grounded_procedures_and_forbids_substitutes():
@@ -460,6 +460,12 @@ def test_reviewer_prompt_preserves_grounded_procedures_and_forbids_substitutes()
         # (a retry bounded by an observed rejection; delivering announced work)
         # because their TRIGGER is another system's output.
         "does not disqualify an entry; only that output being the entry's PAYLOAD does",
+        # The subject gate. Ordering is the whole mechanism: naming the subject
+        # BEFORE weighing evidence is what makes it fire, because the failure it
+        # fixes is the reviewer going down the evidence axis and never asking.
+        "First name, in your own words, what the entry is ABOUT",
+        "before asking\nwhether any of its clauses are supported".replace("\n", " "),
+        "is not a core to preserve, it is\nthe same subject in gentler words".replace("\n", " "),
     )
     for invariant in required_invariants:
         assert invariant in normalized
@@ -477,6 +483,11 @@ def test_reviewer_prompt_preserves_grounded_procedures_and_forbids_substitutes()
     # docs_for_coding_agent/prompt-change-evaluation.md.
     #
     # Raised 1000 -> 1050 in v1.1.0 to fit check 7 (absence).
+    # Raised 1260 -> 1360 in v1.3.0 to fit the subject gate in decision rule 1.
+    # Measured paired over frozen pools, 24 runs: known-bad leak 8/20 -> 1/20
+    # (p=0.039) while healthy-window retention ROSE 48/58 -> 53/58. A variant
+    # with the explanatory clauses cut leaks 5/20 (p=0.508), so the clauses are
+    # load-bearing -- do not trim them to reclaim the words.
     # Raised 1050 -> 1260 in v1.2.0 to fit check 8 (decision ownership),
     # including the discriminator that keeps an entry whose TRIGGER is another
     # system's output but whose subject is a choice the agent controls. That
@@ -500,7 +511,7 @@ def test_reviewer_prompt_preserves_grounded_procedures_and_forbids_substitutes()
     # check 8 into the existing `internal_status` code pruned the target
     # identically but cost 3 healthy entries, because that code must stay
     # revisable while check 8 is fatal.
-    assert len(rendered.split()) <= 1_260
+    assert len(rendered.split()) <= 1_360
 
 
 @pytest.mark.parametrize(
