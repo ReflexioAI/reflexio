@@ -470,6 +470,17 @@ def test_reviewer_prompt_preserves_grounded_procedures_and_forbids_substitutes()
     for invariant in required_invariants:
         assert invariant in normalized
 
+    # Position, not just presence. Ordering IS the mechanism here: the defect is
+    # the reviewer reaching the evidence question first and never asking about
+    # the subject, so a regression that keeps the words but restores
+    # evidence-first would leave every substring assertion above green.
+    gate = normalized.index("First name, in your own words, what the entry is ABOUT")
+    for later in ("`accept` when the candidate", "`revise` when removing"):
+        assert gate < normalized.index(later), (
+            "the subject gate must precede the accept/revise branches; it is the "
+            "step that decides whether they are reached at all"
+        )
+
     # Keep the policy compact enough that chronology and evidence remain the
     # dominant context. Frontmatter is not included in the rendered prompt.
     #
