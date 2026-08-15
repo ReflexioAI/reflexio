@@ -346,7 +346,7 @@ def test_run_services_aborts_when_local_embedding_is_not_ready(
     monkeypatch.setattr(utils.subprocess, "Popen", fake_popen)
     monkeypatch.setattr(utils, "_wait_for_all_ready", lambda *_args: False)
 
-    with pytest.raises(RuntimeError, match="embedding.*ready"):
+    with pytest.raises(RuntimeError, match=r"embedding.*ready"):
         utils.run_services(
             [
                 utils.ServiceConfig(name="embedding", command=["embedding"]),
