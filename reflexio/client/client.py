@@ -895,6 +895,8 @@ class ReflexioClient:
         threshold: float | None = None,
         enable_reformulation: bool | None = None,
         search_mode: SearchMode | None = None,
+        request_id: str | None = None,
+        session_id: str | None = None,
     ) -> SearchUserPlaybooksViewResponse:
         """Search for user playbooks with semantic/text search and filtering.
 
@@ -912,6 +914,10 @@ class ReflexioClient:
             threshold (Optional[float]): Similarity threshold for vector search.
                 When omitted, the embedding model's default is used.
             enable_reformulation (Optional[bool]): Enable LLM query reformulation (default: False)
+            request_id (Optional[str]): Caller correlation ID for the search turn,
+                at most 255 characters.
+            session_id (Optional[str]): Caller session ID for the search turn,
+                at most 255 characters.
 
         Returns:
             SearchUserPlaybooksViewResponse: Response containing matching user playbooks
@@ -931,6 +937,8 @@ class ReflexioClient:
             threshold=threshold,
             enable_reformulation=enable_reformulation,
             search_mode=search_mode,
+            request_id=request_id,
+            session_id=session_id,
         )
         response = self._make_request(
             "POST", "/api/search_user_playbooks", json=req.model_dump(mode="json")

@@ -71,6 +71,18 @@ export const userPlaybookMethods: MethodDef[] = [
         description: "Filter by user (via request_id linkage to requests table)",
       },
       {
+        name: "request_id",
+        type: "string",
+        required: false,
+        description: "Caller correlation ID, at most 255 characters",
+      },
+      {
+        name: "session_id",
+        type: "string",
+        required: false,
+        description: "Caller session ID, at most 255 characters",
+      },
+      {
         name: "agent_version",
         type: "string",
         required: false,
