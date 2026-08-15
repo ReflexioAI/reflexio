@@ -1,9 +1,17 @@
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 from reflexio.server.billing_meter import (
+    ReceiptBillingDeliveryError,
+    emit_learnings_generated_records_strict,
     record_applied_learnings,
     record_extraction_tokens,
     record_learnings_generated,
+)
+from reflexio.server.usage_metrics import (
+    UsageEventDeliveryError,
+    UsageEventDeliveryStatus,
 )
 
 HOOK = "reflexio.server.billing_meter.record_usage_event"
@@ -110,3 +118,29 @@ def test_record_applied_learnings_noop_for_empty_result():
             platform_storage=None,
         )
     hook.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "status",
+    [UsageEventDeliveryStatus.FAILED, UsageEventDeliveryStatus.REJECTED],
+)
+def test_strict_receipt_billing_preserves_delivery_status(status):
+    configurator = MagicMock()
+    configurator.get_config.return_value = None
+
+    with (
+        patch(
+            "reflexio.server.billing_meter.record_usage_event_strict",
+            side_effect=UsageEventDeliveryError(status),
+        ),
+        pytest.raises(ReceiptBillingDeliveryError) as exc_info,
+    ):
+        emit_learnings_generated_records_strict(
+            org_id="org1",
+            configurator=configurator,
+            learning_ids=["profile-1"],
+            source="resumable_extraction",
+            entity_type="profile",
+        )
+
+    assert exc_info.value.status is status

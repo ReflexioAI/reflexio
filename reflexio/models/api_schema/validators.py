@@ -18,10 +18,10 @@ import ipaddress
 import os
 import re
 import socket
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 from urllib.parse import urlparse
 
-from pydantic import AfterValidator, HttpUrl
+from pydantic import AfterValidator, HttpUrl, StringConstraints, TypeAdapter
 
 # Embedding vector dimensions — must match config_schema.EMBEDDING_DIMENSIONS.
 # Duplicated here to avoid circular imports (config_schema imports from this module).
@@ -102,6 +102,28 @@ OptionalNonEmptyStr = Annotated[
 
 EmbeddingVector = Annotated[list[float], AfterValidator(_check_embedding_dimensions)]
 """Embedding vector that must be either empty or exactly EMBEDDING_DIMENSIONS (512) floats."""
+
+
+SESSION_OUTCOME_SOURCE_PATTERN = r"^[a-z0-9][a-z0-9._:-]{0,127}$"
+
+SessionOutcomeSource = (
+    Literal[""]
+    | Annotated[
+        str,
+        StringConstraints(max_length=128, pattern=SESSION_OUTCOME_SOURCE_PATTERN),
+    ]
+)
+"""Outcome producer/workflow label; empty preserves the existing absent-source value."""
+
+PersistedSessionOutcomeSource = str
+"""Historical outcome source returned exactly as stored, without new-input validation."""
+
+_SESSION_OUTCOME_SOURCE_ADAPTER = TypeAdapter(SessionOutcomeSource)
+
+
+def validate_session_outcome_source(value: str) -> SessionOutcomeSource:
+    """Validate an outcome source before writing a new request."""
+    return _SESSION_OUTCOME_SOURCE_ADAPTER.validate_python(value)
 
 
 # =============================================================================

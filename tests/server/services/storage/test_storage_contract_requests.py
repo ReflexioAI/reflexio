@@ -9,6 +9,7 @@ from reflexio.models.api_schema.service_schemas import (
     Request,
     UserActionType,
 )
+from reflexio.server.services.storage.error import StorageError
 from reflexio.server.services.storage.storage_base import BaseStorage
 
 pytestmark = pytest.mark.integration
@@ -31,6 +32,14 @@ def _make_request(
 
 
 class TestRequestCRUD:
+    def test_add_request_rejects_legacy_source(self, storage: BaseStorage) -> None:
+        request = _make_request("legacy-source-write", "u1", source="Legacy Source")
+
+        with pytest.raises(StorageError):
+            storage.add_request(request)
+
+        assert storage.get_request(request.request_id) is None
+
     def test_add_and_get_request(self, storage: BaseStorage) -> None:
         req = _make_request("r1", "u1")
         storage.add_request(req)

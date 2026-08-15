@@ -29,6 +29,7 @@ from .ui.entities import (
 )
 from .validators import (
     NonEmptyStr,
+    SessionOutcomeSource,
     TimeRangeValidatorMixin,
 )
 
@@ -63,7 +64,7 @@ class SearchUserProfileRequest(BaseModel):
     start_time: datetime | None = None
     end_time: datetime | None = None
     top_k: int | None = Field(default=10, gt=0)
-    source: str | None = None
+    source: SessionOutcomeSource | None = None
     custom_feature: str | None = None
     extractor_name: str | None = (
         None  # Deprecated compatibility field; accepted but ignored.
@@ -196,7 +197,7 @@ class GetUserProfilesRequest(BaseModel):
     start_time: datetime | None = None
     end_time: datetime | None = None
     top_k: int | None = Field(default=30, gt=0)
-    source: str | None = None
+    source: SessionOutcomeSource | None = None
     profile_time_to_live: str | None = None
     status_filter: list[Status | None] | None = None
     tags: list[str] | None = None
@@ -318,27 +319,27 @@ class SearchUserPlaybookRequest(BaseModel):
         start_time (datetime, optional): Start time for created_at filter
         end_time (datetime, optional): End time for created_at filter
         status_filter (list[Optional[Status]], optional): Filter by status (None for CURRENT, PENDING, ARCHIVED)
-        top_k (int, optional): Maximum number of results to return. Defaults to 10
+        top_k (int, optional): Maximum results to return, up to 100. Defaults to 10
         threshold (float, optional): Similarity threshold for vector search.
             When omitted, the embedding model's default is used.
     """
 
     query: str | None = None
-    user_id: str | None = None
+    user_id: str | None = Field(default=None, max_length=255)
     agent_version: str | None = None
     playbook_name: str | None = None
     start_time: datetime | None = None
     end_time: datetime | None = None
     status_filter: list[Status | None] | None = None
     tags: list[str] | None = None
-    top_k: int | None = Field(default=10, gt=0)
+    top_k: int | None = Field(default=10, gt=0, le=100)
     threshold: float | None = Field(default=None, ge=0.0, le=1.0)
     enable_reformulation: bool | None = False
     search_mode: SearchMode = SearchMode.HYBRID
     # Caller correlation IDs for billing attribution on the Application line.
     # Optional; consumed by _meter_applied_learnings in server/api.py.
-    request_id: str | None = None
-    session_id: str | None = None
+    request_id: str | None = Field(default=None, max_length=255)
+    session_id: str | None = Field(default=None, max_length=255)
 
     @model_validator(mode="after")
     def check_time_range(self) -> Self:
@@ -478,7 +479,7 @@ class GetRequestsRequest(BaseModel):
     user_id: str | None = None
     request_id: str | None = None
     session_id: str | None = None
-    source: str | None = None
+    source: SessionOutcomeSource | None = None
     start_time: datetime | None = None
     end_time: datetime | None = None
     top_k: int | None = Field(
@@ -794,7 +795,8 @@ class UnifiedSearchRequest(BaseModel):
 
     Args:
         query (str): Search query text
-        top_k (int, optional): Maximum results per entity type. Defaults to 5
+        top_k (int, optional): Maximum results per entity type, up to 100.
+            Defaults to 5.
         threshold (float, optional): Similarity threshold for vector search.
             When omitted, the embedding model's default is used.
         agent_version (str, optional): Filter by agent version (agent_playbooks, user_playbooks)
@@ -812,11 +814,11 @@ class UnifiedSearchRequest(BaseModel):
     """
 
     query: NonEmptyStr
-    top_k: int | None = Field(default=5, gt=0)
+    top_k: int | None = Field(default=5, gt=0, le=100)
     threshold: float | None = Field(default=None, ge=0.0, le=1.0)
     agent_version: str | None = None
     playbook_name: str | None = None
-    user_id: str | None = None
+    user_id: str | None = Field(default=None, max_length=255)
     tags: list[str] | None = None
     entity_types: list[UnifiedSearchEntityType] | None = None
     agent_playbook_status_filter: list[PlaybookStatus] | None = None
@@ -829,8 +831,8 @@ class UnifiedSearchRequest(BaseModel):
     # ``session_id`` additionally enables session-scoped result dedup: items
     # already served to the same (org, session) are skipped and the next-best
     # matches backfilled (see server/services/retrieval/session_dedup.py).
-    request_id: str | None = None
-    session_id: str | None = None
+    request_id: str | None = Field(default=None, max_length=255)
+    session_id: str | None = Field(default=None, max_length=255)
     interaction_id: int | None = Field(default=None, gt=0)
 
 

@@ -23,9 +23,11 @@ logger = logging.getLogger(__name__)
 # Bot protection configuration
 REQUEST_TIMEOUT_SECONDS = 60
 SYNC_REQUEST_TIMEOUT_SECONDS = (
-    600  # Longer timeout for synchronous processing (wait_for_response=true)
+    600  # Longer timeout for synchronous long-running processing.
 )
-SYNC_REQUEST_PATHS = frozenset({"/api/review_user_playbooks"})
+SYNC_REQUEST_PATHS = frozenset(
+    {"/api/review_user_playbooks", "/api/run_playbook_aggregation"}
+)
 SUSPICIOUS_USER_AGENTS = ["bot", "crawler", "spider", "scraper", "curl", "wget"]
 ALLOWED_EMPTY_UA_PATHS = ["/health", "/"]  # Paths that allow empty user agents
 DEFAULT_MAX_BODY_BYTES = 10 * 1024 * 1024

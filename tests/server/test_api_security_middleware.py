@@ -174,6 +174,40 @@ def test_playbook_review_uses_synchronous_request_timeout(monkeypatch):
     assert observed["timeout"] == SYNC_REQUEST_TIMEOUT_SECONDS
 
 
+def test_playbook_aggregation_post_uses_synchronous_request_timeout_without_wait_query(
+    monkeypatch,
+):
+    observed: dict[str, float | None] = {}
+
+    async def fake_wait_for(awaitable, *, timeout=None):
+        observed["timeout"] = timeout
+        return await awaitable
+
+    async def call_next(_request):
+        from starlette.responses import Response
+
+        return Response()
+
+    monkeypatch.setattr(asyncio, "wait_for", fake_wait_for)
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "scheme": "http",
+            "path": "/api/run_playbook_aggregation",
+            "raw_path": b"/api/run_playbook_aggregation",
+            "query_string": b"",
+            "headers": [],
+            "client": ("testclient", 50000),
+            "server": ("testserver", 80),
+        }
+    )
+
+    asyncio.run(TimeoutMiddleware(FastAPI()).dispatch(request, call_next))
+
+    assert observed["timeout"] == SYNC_REQUEST_TIMEOUT_SECONDS
+
+
 def test_security_headers_are_added(monkeypatch):
     monkeypatch.delenv("REFLEXIO_ALLOWED_ORIGINS", raising=False)
 

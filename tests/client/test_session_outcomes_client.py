@@ -3,6 +3,9 @@
 import inspect
 from typing import Any
 
+import pytest
+from pydantic import ValidationError
+
 from reflexio import ReflexioClient
 
 
@@ -53,3 +56,23 @@ def test_get_session_outcomes_has_no_untyped_filter_kwargs() -> None:
         parameter.kind is not inspect.Parameter.VAR_KEYWORD
         for parameter in parameters.values()
     )
+
+
+def test_mark_session_outcome_rejects_partial_server_identity(monkeypatch) -> None:
+    client = ReflexioClient(api_key="test-key", url_endpoint="http://localhost:8000")
+    monkeypatch.setattr(
+        client,
+        "_make_request",
+        lambda *_args, **_kwargs: {
+            "success": True,
+            "recorded": False,
+            "outcome_id": "partial-outcome",
+        },
+    )
+
+    with pytest.raises(ValidationError, match="all populated or all null"):
+        client.mark_session_outcome(
+            session_id="session-1",
+            outcome="success",
+            occurred_at=1,
+        )

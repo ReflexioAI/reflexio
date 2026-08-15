@@ -13,13 +13,30 @@ import uuid
 from collections.abc import Mapping
 from typing import Any
 
-from reflexio.server.usage_metrics import record_usage_event
+from reflexio.server.usage_metrics import (
+    UsageEventDeliveryError,
+    UsageEventDeliveryStatus,
+    record_usage_event,
+    record_usage_event_strict,
+)
 
 logger = logging.getLogger(__name__)
 
 _INTERNAL = (
     "internal"  # == BillingCallerType.INTERNAL.value (kept literal; OSS stays clean)
 )
+
+
+class ReceiptBillingDeliveryError(RuntimeError):
+    """A durable finalization receipt still has an undelivered billing event."""
+
+    def __init__(
+        self,
+        status: UsageEventDeliveryStatus,
+        message: str = "receipt-backed learning billing delivery failed",
+    ) -> None:
+        super().__init__(message)
+        self.status = status
 
 
 def record_extraction_tokens(
@@ -91,11 +108,10 @@ def record_learnings_generated(
 ) -> None:
     """Emit the Learning value facet — number of profiles/playbooks generated.
 
-    Documented FALLBACK for callers that genuinely lack a per-record id list
-    (e.g. dedup/consolidation can reduce the persisted count below the raw
-    extracted count, so there is no safe 1:1 id per unit of ``count``). Prefer
-    :func:`record_learnings_generated_records` whenever the caller has the
-    durable learning ids in scope. No-op when ``count <= 0``.
+    Intended for online extraction paths that have a known billable count but
+    do not retain a complete per-record id list. Resumable finalization must
+    use :func:`record_learnings_generated_records_strict` and skip items without
+    durable ids. No-op when ``count <= 0``.
 
     Emits a single event carrying ``event_key`` when the caller has a durable
     retry identity, otherwise synthesizes ``f"learn-batch:{uuid4()}"``. This
@@ -181,7 +197,7 @@ def record_learnings_generated_records(
     Args:
         org_id: Organisation identifier.
         learning_ids: Ids of the learnings durably generated in this run
-            (e.g. ``profile_id`` / ``user_playbook_id`` / ``agent_playbook_id``).
+            (e.g. ``profile_id`` / ``user_playbook_id``).
         platform_llm: True iff the platform supplies the LLM for this org.
         platform_storage: True iff the platform supplies storage; None defers to rollup.
         pipeline: Optional pipeline tag (e.g. ``"playbook"``).
@@ -194,9 +210,82 @@ def record_learnings_generated_records(
         entity_type: Optional entity type (e.g. ``"profile"``).
         metadata: Optional path-specific usage metadata (shared across events).
     """
+    _record_learnings_generated_records(
+        record_event=record_usage_event,
+        org_id=org_id,
+        learning_ids=learning_ids,
+        platform_llm=platform_llm,
+        platform_storage=platform_storage,
+        pipeline=pipeline,
+        user_id=user_id,
+        request_id=request_id,
+        session_id=session_id,
+        source=source,
+        agent_version=agent_version,
+        playbook_name=playbook_name,
+        entity_type=entity_type,
+        metadata=metadata,
+    )
+
+
+def record_learnings_generated_records_strict(
+    *,
+    org_id: str,
+    learning_ids: list[str],
+    platform_llm: bool | None,
+    platform_storage: bool | None,
+    pipeline: str | None = None,
+    user_id: str | None = None,
+    request_id: str | None = None,
+    session_id: str | None = None,
+    source: str | None = None,
+    agent_version: str | None = None,
+    playbook_name: str | None = None,
+    entity_type: str | None = None,
+    metadata: Mapping[str, Any] | None = None,
+    created_at: float | None = None,
+) -> None:
+    """Strict per-record emission for receipt-backed finalization only."""
+    _record_learnings_generated_records(
+        record_event=record_usage_event_strict,
+        org_id=org_id,
+        learning_ids=learning_ids,
+        platform_llm=platform_llm,
+        platform_storage=platform_storage,
+        pipeline=pipeline,
+        user_id=user_id,
+        request_id=request_id,
+        session_id=session_id,
+        source=source,
+        agent_version=agent_version,
+        playbook_name=playbook_name,
+        entity_type=entity_type,
+        metadata=metadata,
+        created_at=created_at,
+    )
+
+
+def _record_learnings_generated_records(
+    *,
+    record_event: Any,
+    org_id: str,
+    learning_ids: list[str],
+    platform_llm: bool | None,
+    platform_storage: bool | None,
+    pipeline: str | None,
+    user_id: str | None,
+    request_id: str | None,
+    session_id: str | None,
+    source: str | None,
+    agent_version: str | None,
+    playbook_name: str | None,
+    entity_type: str | None,
+    metadata: Mapping[str, Any] | None,
+    created_at: float | None = None,
+) -> None:
     key_entity_type = entity_type or "_"
     for learning_id in learning_ids:
-        record_usage_event(
+        record_event(
             org_id=org_id,
             event_name="learnings_generated",
             event_category="learning",
@@ -215,6 +304,7 @@ def record_learnings_generated_records(
             platform_storage=platform_storage,
             caller_type=_INTERNAL,
             metadata=metadata,
+            created_at=created_at,
         )
 
 
@@ -235,20 +325,21 @@ def emit_learnings_generated(
 ) -> None:
     """Resolve ``platform_llm`` from config and emit the Learning value facet.
 
-    Convenience wrapper for non-extraction learning-mutation paths such as
-    resumable-extraction finalization, aggregation, and offline-tuner auto-apply. It
-    owns the ``configurator.get_config()`` + ``platform_llm_from_config`` lookup so
-    each call site stays a thin one-liner, and — critically — is **guarded**: the
-    product path must never fail because metering failed, so config resolution and
-    emission are wrapped and any exception is logged and swallowed (mirroring the
-    extraction path's ``_record_billing_learning_events``). No-op when
-    ``count <= 0``.
+    Convenience wrapper for count-based online extraction callers. It owns the
+    ``configurator.get_config()`` + ``platform_llm_from_config`` lookup so the
+    call site stays a thin one-liner, and — critically — is **guarded**: the
+    product path must never fail because metering failed, so config resolution
+    and emission are wrapped and any exception is logged and swallowed
+    (mirroring the extraction path's ``_record_billing_learning_events``).
+    Resumable finalization must use
+    :func:`emit_learnings_generated_records_strict`.
+    No-op when ``count <= 0``.
 
     Args:
         org_id: Organisation identifier.
         configurator: Object exposing ``get_config()`` for platform-LLM resolution.
         count: Number of learnings durably produced by this path.
-        source: Metering source/path label (e.g. ``"offline_optimizer"``).
+        source: Metering source/path label (e.g. ``"online_extraction"``).
         pipeline: Optional pipeline tag (e.g. ``"playbook"``).
         user_id: Optional user ID tied to the generated learning.
         request_id: Optional request correlation ID.
@@ -305,22 +396,20 @@ def emit_learnings_generated_records(
 ) -> None:
     """Resolve ``platform_llm`` from config and emit one event per learning id.
 
-    Entity-backed counterpart to :func:`emit_learnings_generated`, currently
-    adopted by two of the non-extraction learning-mutation paths —
-    resumable-extraction finalization and aggregation — the callers with
-    durable per-record ids in scope. Extraction and offline-tuner auto-apply do
-    not have a safe 1:1 id per unit of count (see
-    :func:`record_learnings_generated_records`) and use the count-based
-    :func:`emit_learnings_generated` fallback instead. Same guard semantics:
-    config resolution and emission are wrapped and any exception is logged
-    and swallowed — the product path must never fail because metering
-    failed. No-op when ``learning_ids`` is empty.
+    Ordinary fail-open per-record counterpart to
+    :func:`emit_learnings_generated`. Receipt-backed resumable finalization uses
+    :func:`emit_learnings_generated_records_strict`; items without durable ids
+    are not billable on that path. Online extraction uses the count-based
+    :func:`record_learnings_generated` helper because it does not retain a safe
+    1:1 id per generated unit. Config resolution and emission are wrapped and
+    any exception is logged and swallowed — the product path must never fail
+    because metering failed. No-op when ``learning_ids`` is empty.
 
     Args:
         org_id: Organisation identifier.
         configurator: Object exposing ``get_config()`` for platform-LLM resolution.
         learning_ids: Ids of the learnings durably produced by this path.
-        source: Metering source/path label (e.g. ``"aggregation"``).
+        source: Metering source/path label (e.g. ``"resumable_extraction"``).
         pipeline: Optional pipeline tag (e.g. ``"playbook"``).
         user_id: Optional user ID tied to the generated learning.
         request_id: Optional request correlation ID.
@@ -357,6 +446,49 @@ def emit_learnings_generated_records(
             org_id,
             exc_info=True,
         )
+
+
+def emit_learnings_generated_records_strict(
+    *,
+    org_id: str,
+    configurator: Any,
+    learning_ids: list[str],
+    source: str,
+    pipeline: str | None = None,
+    user_id: str | None = None,
+    request_id: str | None = None,
+    agent_version: str | None = None,
+    playbook_name: str | None = None,
+    entity_type: str | None = None,
+    metadata: Mapping[str, Any] | None = None,
+    created_at: float | None = None,
+) -> None:
+    """Strict receipt-backed counterpart to the ordinary fail-open emitter."""
+    if not learning_ids:
+        return
+    from reflexio.server.billing_signals import platform_llm_from_config
+
+    try:
+        config = configurator.get_config()
+        record_learnings_generated_records_strict(
+            org_id=org_id,
+            learning_ids=learning_ids,
+            platform_llm=platform_llm_from_config(config),
+            platform_storage=None,
+            pipeline=pipeline,
+            user_id=user_id,
+            request_id=request_id,
+            source=source,
+            agent_version=agent_version,
+            playbook_name=playbook_name,
+            entity_type=entity_type,
+            metadata=metadata,
+            created_at=created_at,
+        )
+    except UsageEventDeliveryError as exc:
+        raise ReceiptBillingDeliveryError(exc.status) from exc
+    except Exception as exc:
+        raise ReceiptBillingDeliveryError(UsageEventDeliveryStatus.UNKNOWN) from exc
 
 
 def record_applied_learnings(

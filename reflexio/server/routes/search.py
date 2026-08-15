@@ -48,6 +48,10 @@ from reflexio.server.routes._metering import _stamp_search_dependencies_done
 from reflexio.server.services.retrieval_experiment import (
     active_retrieval_experiment_assignment,
 )
+from reflexio.server.services.search_exposure import (
+    SearchExposureBatch,
+    record_search_exposures,
+)
 from reflexio.server.services.search_metering_worker import enqueue_search_metering
 from reflexio.server.tracing import profile_step
 
@@ -247,6 +251,17 @@ def search_user_playbooks_endpoint(
             msg=response.msg,
             experiment=assignment,
         )
+        if caller_type == "production_agent" and response.user_playbooks:
+            record_search_exposures(
+                SearchExposureBatch(
+                    org_id=org_id,
+                    request_id=payload.request_id,
+                    session_id=payload.session_id,
+                    interaction_id=None,
+                    user_id=payload.user_id,
+                    user_playbooks=tuple(response.user_playbooks),
+                )
+            )
     enqueue_search_metering(
         org_id=org_id,
         caller_type=caller_type,
@@ -411,6 +426,17 @@ def unified_search_endpoint(
                 agent_trace=response.agent_trace,
                 rehydrated_text=response.rehydrated_text,
                 experiment=assignment,
+            )
+        if caller_type == "production_agent":
+            record_search_exposures(
+                SearchExposureBatch(
+                    org_id=org_id,
+                    request_id=payload.request_id,
+                    session_id=payload.session_id,
+                    interaction_id=payload.interaction_id,
+                    user_id=payload.user_id,
+                    user_playbooks=tuple(response.user_playbooks),
+                )
             )
         enqueue_search_metering(
             org_id=org_id,

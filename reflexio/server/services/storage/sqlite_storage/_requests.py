@@ -11,6 +11,7 @@ from reflexio.models.api_schema.internal_schema import (
 from reflexio.models.api_schema.service_schemas import (
     Request,
 )
+from reflexio.models.api_schema.validators import validate_session_outcome_source
 
 from ._base import (
     SQLiteStorageBase,
@@ -40,6 +41,7 @@ class RequestMixin:
 
     @SQLiteStorageBase.handle_exceptions
     def add_request(self, request: Request) -> None:
+        source = validate_session_outcome_source(request.source)
         created_at_iso = _epoch_to_iso(request.created_at)
         subject_ref = self._subject_ref_for_user_id(request.user_id)
         with self._lock:
@@ -58,7 +60,7 @@ class RequestMixin:
                         request.request_id,
                         request.user_id,
                         created_at_iso,
-                        request.source,
+                        source,
                         request.agent_version,
                         request.session_id,
                         1 if request.evaluation_only else 0,

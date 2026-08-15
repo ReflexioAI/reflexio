@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import json
+import threading
 from collections.abc import Generator
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -18,12 +21,14 @@ from reflexio.models.api_schema.domain.entities import (
     UserProfile,
 )
 from reflexio.models.api_schema.domain.enums import PlaybookStatus
+from reflexio.models.api_schema.domain.governance import UserEraseResult
 from reflexio.models.api_schema.retriever_schema import SearchAgentPlaybookRequest
 from reflexio.models.config_schema import SearchMode
 from reflexio.server.services.governance import service as governance_service_module
 from reflexio.server.services.governance.config import governance_subject_ref
 from reflexio.server.services.governance.service import GovernanceService
 from reflexio.server.services.storage.error import SubjectWriteBarrierError
+from reflexio.server.services.storage.governance_claims import PurgeExecutionClaim
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 
 pytestmark = pytest.mark.integration
@@ -115,6 +120,154 @@ def _eval_result(
         evaluation_name="governance-local-e2e",
         is_success=True,
     )
+
+
+def _insert_session_outcome(
+    storage: SQLiteStorage,
+    *,
+    outcome_id: str,
+    user_id: str,
+    session_id: str,
+    subject_ref: str,
+) -> None:
+    storage.conn.execute(
+        """INSERT INTO session_outcomes (
+               outcome_id, outcome_revision, user_id, session_id, outcome,
+               occurred_at, source, label, value, metadata,
+               outcome_contract_digest, finalized_trajectory_digest,
+               governance_subject_ref, created_at
+           ) VALUES (?, 1, ?, ?, 'success', 100, 'test', NULL, NULL, NULL,
+                     ?, ?, ?, 101)""",
+        (outcome_id, user_id, session_id, "a" * 64, "b" * 64, subject_ref),
+    )
+    storage.conn.commit()
+
+
+def test_purge_execution_heartbeat_serializes_concurrent_renewals() -> None:
+    initial_claim = PurgeExecutionClaim(
+        purge_id="purge-1",
+        owner="owner-1",
+        fence=1,
+        expires_at=300,
+    )
+    first_renewed_claim = PurgeExecutionClaim(
+        purge_id="purge-1",
+        owner="owner-1",
+        fence=1,
+        expires_at=400,
+    )
+    second_renewed_claim = PurgeExecutionClaim(
+        purge_id="purge-1",
+        owner="owner-1",
+        fence=1,
+        expires_at=401,
+    )
+
+    class RenewalProgress:
+        def __init__(self) -> None:
+            self.event = threading.Event()
+            self._lock = threading.Lock()
+            self.source: str | None = None
+
+        def record(self, source: str) -> None:
+            with self._lock:
+                if self.event.is_set():
+                    return
+                self.source = source
+                self.event.set()
+
+    class BlockingRenewalStorage:
+        def __init__(self, progress: RenewalProgress) -> None:
+            self._progress = progress
+            self.claims: list[PurgeExecutionClaim] = []
+            self._calls_lock = threading.Lock()
+            self.first_renewal_started = threading.Event()
+            self.release_first_renewal = threading.Event()
+            self.second_renewal_started = threading.Event()
+
+        def renew_purge_operation_execution_claim(
+            self,
+            _purge_id: str,
+            claim: PurgeExecutionClaim,
+            *,
+            lease_ttl_seconds: int,
+        ) -> PurgeExecutionClaim:
+            assert lease_ttl_seconds == 300
+            with self._calls_lock:
+                self.claims.append(claim)
+                call_number = len(self.claims)
+            if call_number == 1:
+                self.first_renewal_started.set()
+                assert self.release_first_renewal.wait(timeout=5)
+                return first_renewed_claim
+            self._progress.record("storage")
+            self.second_renewal_started.set()
+            return second_renewed_claim
+
+    class TrackingRenewalLock:
+        def __init__(self, progress: RenewalProgress) -> None:
+            self._progress = progress
+            self._lock = threading.Lock()
+            self._attempts_lock = threading.Lock()
+            self._attempts = 0
+            self.second_renewal_attempted = threading.Event()
+
+        def __enter__(self) -> TrackingRenewalLock:
+            with self._attempts_lock:
+                self._attempts += 1
+                if self._attempts == 2:
+                    self._progress.record("renewal lock")
+            self._lock.acquire()
+            return self
+
+        def __exit__(self, *_exc: object) -> None:
+            self._lock.release()
+
+    progress = RenewalProgress()
+    storage = BlockingRenewalStorage(progress)
+    heartbeat = governance_service_module._PurgeExecutionHeartbeat(
+        storage=storage,
+        purge_id="purge-1",
+        execution_claim=initial_claim,
+    )
+    renewal_lock = TrackingRenewalLock(progress)
+    cast_heartbeat: Any = heartbeat
+    cast_heartbeat._renewal_lock = renewal_lock
+    errors: list[Exception] = []
+
+    def renew() -> None:
+        try:
+            heartbeat.renew_now()
+        except Exception as exc:
+            errors.append(exc)
+
+    allow_second_renewal = threading.Event()
+
+    def renew_second() -> None:
+        assert allow_second_renewal.wait(timeout=5)
+        renew()
+
+    first = threading.Thread(target=renew)
+    second = threading.Thread(target=renew_second)
+    first.start()
+    second.start()
+    try:
+        assert storage.first_renewal_started.wait(timeout=5)
+        allow_second_renewal.set()
+        assert progress.event.wait(timeout=5)
+        assert progress.source == "renewal lock"
+        assert not storage.second_renewal_started.is_set()
+    finally:
+        allow_second_renewal.set()
+        storage.release_first_renewal.set()
+        first.join(timeout=5)
+        second.join(timeout=5)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert errors == []
+    assert storage.claims == [initial_claim, first_renewed_claim]
+    assert heartbeat.claim() == second_renewed_claim
 
 
 @pytest.fixture
@@ -306,6 +459,7 @@ def test_local_governance_e2e_erases_exports_audits_and_preserves_org_agent_play
     assert erased.deleted_counts["requests"] == 1
     assert erased.deleted_counts["user_playbooks"] == 2
     assert erased.deleted_counts["agent_success_evaluation_results"] == 1
+    assert erased.deleted_counts["session_outcomes"] == 0
     assert erased.rebuilt_agent_playbook_ids == []
 
     assert storage.get_user_interaction("alice") == []
@@ -437,6 +591,55 @@ def test_local_governance_e2e_erases_exports_audits_and_preserves_org_agent_play
     assert len(erase_events_after_retry) == 1
 
 
+def test_governance_erasure_uses_authoritative_user_for_session_outcomes_and_receipts(
+    storage: SQLiteStorage,
+) -> None:
+    alice_ref = governance_subject_ref(
+        storage.org_id, "alice", "test-governance-secret"
+    )
+    bob_ref = governance_subject_ref(storage.org_id, "bob", "test-governance-secret")
+    _insert_session_outcome(
+        storage,
+        outcome_id="alice-stale-ref",
+        user_id="alice",
+        session_id="alice-session",
+        subject_ref=bob_ref,
+    )
+    _insert_session_outcome(
+        storage,
+        outcome_id="bob-conflicting-ref",
+        user_id="bob",
+        session_id="bob-session",
+        subject_ref=alice_ref,
+    )
+    service = GovernanceService(
+        storage=storage,
+        org_id=storage.org_id,
+        ref_secret="test-governance-secret",
+    )
+
+    erased = service.erase_user(user_id="alice", request_id="erase-outcomes")
+    retried = service.erase_user(user_id="alice", request_id="erase-outcomes")
+
+    remaining = storage.conn.execute(
+        "SELECT outcome_id, user_id FROM session_outcomes ORDER BY outcome_id"
+    ).fetchall()
+    assert [(row["outcome_id"], row["user_id"]) for row in remaining] == [
+        ("bob-conflicting-ref", "bob")
+    ]
+    assert erased.deleted_counts["session_outcomes"] == 1
+    assert retried.deleted_counts == erased.deleted_counts
+    audit = next(
+        event
+        for event in storage.list_audit_events(subject_ref=alice_ref)
+        if event.operation == "ERASE"
+    )
+    assert audit.detail is not None
+    deleted_counts = audit.detail["deleted_counts"]
+    assert isinstance(deleted_counts, dict)
+    assert deleted_counts["session_outcomes"] == 1
+
+
 def test_governance_service_persists_actor_context_in_audit(
     storage: SQLiteStorage,
 ) -> None:
@@ -515,6 +718,54 @@ def test_completed_erase_retry_reconstructs_response(
     assert second.purge_id == first.purge_id
     assert second.deleted_counts == first.deleted_counts
     assert second.rebuilt_agent_playbook_ids == first.rebuilt_agent_playbook_ids
+
+
+@pytest.mark.parametrize("corrupt_binding", ["purge", "snapshot"])
+def test_completed_erase_retry_rejects_corrupt_authoritative_binding(
+    storage: SQLiteStorage,
+    monkeypatch: pytest.MonkeyPatch,
+    corrupt_binding: str,
+) -> None:
+    monkeypatch.setenv("REFLEXIO_GOVERNANCE_REF_SECRET", "test-governance-secret")
+    service = GovernanceService(
+        storage=storage,
+        org_id=storage.org_id,
+        ref_secret="test-governance-secret",
+    )
+    completed = service.erase_user(
+        user_id="alice",
+        request_id=f"erase-retry-corrupt-{corrupt_binding}",
+    )
+
+    if corrupt_binding == "purge":
+        storage.conn.execute(
+            """UPDATE purge_operations SET authoritative_user_digest = ?
+               WHERE org_id = ? AND purge_id = ?""",
+            ("a" * 64, storage.org_id, completed.purge_id),
+        )
+    else:
+        snapshot = next(
+            target
+            for target in storage.list_purge_targets(
+                completed.purge_id, phase="prepare_targets"
+            )
+            if target.target_name == "target_snapshot"
+        )
+        detail = dict(snapshot.detail or {})
+        detail["authoritative_user_digest"] = "a" * 64
+        storage.conn.execute(
+            """UPDATE purge_operation_targets SET detail = ?
+               WHERE org_id = ? AND purge_id = ? AND target_name = 'target_snapshot'
+                 AND target_ref = 'all' AND phase = 'prepare_targets'""",
+            (json.dumps(detail), storage.org_id, completed.purge_id),
+        )
+    storage.conn.commit()
+
+    with pytest.raises(ValueError, match="authoritative user identity"):
+        service.erase_user(
+            user_id="alice",
+            request_id=f"erase-retry-corrupt-{corrupt_binding}",
+        )
 
 
 def test_erase_fails_fast_when_service_and_storage_ref_secrets_differ(
@@ -629,10 +880,21 @@ def test_second_erase_conflict_preserves_original_barrier_and_write_block(
         idempotency_key="idem_conflict_first",
         operation_type="user_erasure",
         scope_type="user",
+        authoritative_user_id="alice",
         subject_ref=subject_ref,
         request_ref="reqref_v1_00000000000000000000000000000061",
     )
-    storage.begin_subject_erasure_barrier(subject_ref, first_purge.purge_id)
+    first_claim = storage.claim_purge_operation_execution(
+        first_purge.purge_id,
+        lease_owner="test-conflict-first",
+        lease_ttl_seconds=30,
+    )
+    assert first_claim is not None
+    storage.begin_subject_erasure_barrier(
+        subject_ref,
+        first_purge.purge_id,
+        execution_claim=first_claim,
+    )
     service = GovernanceService(
         storage=storage,
         org_id=storage.org_id,
@@ -721,6 +983,7 @@ def test_subject_erasure_lifecycle_retry_is_idempotent_and_counted(
             storage: SQLiteStorage,
             subject_ref: str,
             purge_id: str,
+            execution_claim: PurgeExecutionClaim,
         ) -> None:
             del subject_ref
             self.calls += 1
@@ -740,6 +1003,7 @@ def test_subject_erasure_lifecycle_retry_is_idempotent_and_counted(
                 status="complete",
                 detail={"count": 2},
                 deleted_count=2,
+                execution_claim=execution_claim,
             )
 
     lifecycle = RetrySafeLifecycle()
@@ -785,6 +1049,571 @@ def test_subject_erasure_lifecycle_retry_is_idempotent_and_counted(
     assert snapshot.detail["status"] == "complete"
 
 
+def test_duplicate_erase_waits_for_lifecycle_winner_beyond_old_deadline(
+    storage: SQLiteStorage,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class SlowSingleUseLifecycle:
+        def __init__(self) -> None:
+            self.first_call_started = threading.Event()
+            self.release_first_call = threading.Event()
+            self._lock = threading.Lock()
+            self.calls = 0
+            self.duplicate_rejections = 0
+
+        def erase_subject(
+            self,
+            *,
+            storage: SQLiteStorage,
+            subject_ref: str,
+            purge_id: str,
+            execution_claim: object,
+        ) -> None:
+            del storage, subject_ref, purge_id, execution_claim
+            with self._lock:
+                self.calls += 1
+                call_number = self.calls
+            if call_number == 1:
+                self.first_call_started.set()
+                assert self.release_first_call.wait(timeout=5)
+                return
+            self.duplicate_rejections += 1
+            raise RuntimeError("provider lifecycle already running")
+
+    lifecycle = SlowSingleUseLifecycle()
+    service = GovernanceService(
+        storage=storage,
+        org_id=storage.org_id,
+        ref_secret="test-governance-secret",
+        subject_erasure_lifecycle=lifecycle,
+    )
+
+    def release_winner_on_duplicate_poll(_seconds: float) -> None:
+        lifecycle.release_first_call.set()
+        threading.Event().wait(0.001)
+
+    monkeypatch.setattr(service, "_sleep", release_winner_on_duplicate_poll)
+    winner_results: list[UserEraseResult] = []
+    winner_errors: list[BaseException] = []
+
+    def run_winner() -> None:
+        try:
+            winner_results.append(
+                service.erase_user(user_id="alice", request_id="erase-slow-duplicate")
+            )
+        except BaseException as exc:
+            winner_errors.append(exc)
+
+    winner = threading.Thread(target=run_winner)
+    winner.start()
+    assert lifecycle.first_call_started.wait(timeout=5)
+
+    try:
+        duplicate = service.erase_user(
+            user_id="alice", request_id="erase-slow-duplicate"
+        )
+    finally:
+        lifecycle.release_first_call.set()
+        winner.join(timeout=5)
+
+    assert not winner.is_alive()
+    assert winner_errors == []
+    assert len(winner_results) == 1
+    winner_result = winner_results[0]
+    assert duplicate.status == "complete"
+    assert duplicate.purge_id == winner_result.purge_id
+    assert storage.get_purge_operation(duplicate.purge_id).status == "complete"
+    barrier = storage.get_subject_write_barrier(duplicate.subject_ref)
+    assert barrier is not None
+    assert barrier.status == "erased"
+    assert lifecycle.calls == 1
+    assert lifecycle.duplicate_rejections == 0
+
+
+def test_duplicate_erase_wait_is_bounded_with_exponential_backoff(
+    storage: SQLiteStorage,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class ControlledWaitGovernanceService(GovernanceService):
+        def __init__(self, **kwargs) -> None:
+            super().__init__(**kwargs)
+            self.now = 0.0
+            self.sleep_delays: list[float] = []
+
+        def _monotonic(self) -> float:
+            return self.now
+
+        def _sleep(self, seconds: float) -> None:
+            self.sleep_delays.append(seconds)
+            self.now += seconds
+
+    service = ControlledWaitGovernanceService(
+        storage=storage,
+        org_id=storage.org_id,
+        ref_secret="test-governance-secret",
+    )
+    claim_attempts = 0
+
+    def reject_duplicate_claim(*args, **kwargs):
+        nonlocal claim_attempts
+        del args, kwargs
+        claim_attempts += 1
+        if claim_attempts > 100:
+            raise AssertionError("duplicate claim wait exceeded its attempt bound")
+
+    monkeypatch.setattr(
+        storage,
+        "claim_purge_operation_execution",
+        reject_duplicate_claim,
+    )
+    with pytest.raises(RuntimeError, match="retry later") as exc_info:
+        service.erase_user(user_id="alice", request_id="erase-bounded-duplicate")
+
+    assert (
+        type(exc_info.value) is governance_service_module.GovernanceEraseRetryLaterError
+    )
+    assert service.sleep_delays[:5] == pytest.approx([0.05, 0.1, 0.2, 0.4, 0.8])
+    assert max(service.sleep_delays) == 1.0
+    assert sum(service.sleep_delays) == pytest.approx(5.0)
+
+
+def test_healthy_slow_lifecycle_renews_lease_and_duplicate_converges(
+    storage: SQLiteStorage,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_now = {"value": 100}
+    monkeypatch.setattr(
+        governance_service_module,
+        "_PURGE_EXECUTION_HEARTBEAT_SECONDS",
+        0.01,
+    )
+
+    from reflexio.server.services.storage.sqlite_storage.governance import (
+        _purge as sqlite_purge_module,
+    )
+
+    monkeypatch.setattr(sqlite_purge_module, "_epoch_now", lambda: fake_now["value"])
+    original_renew = storage.renew_purge_operation_execution_claim
+    renewal_confirmed = threading.Event()
+    renewals_by_owner: dict[str, int] = {}
+
+    def observed_renew(*args, **kwargs):
+        claim = args[1]
+        renewals_by_owner[claim.owner] = renewals_by_owner.get(claim.owner, 0) + 1
+        renewed = original_renew(*args, **kwargs)
+        if renewals_by_owner[claim.owner] >= 3:
+            renewal_confirmed.set()
+        return renewed
+
+    monkeypatch.setattr(
+        storage,
+        "renew_purge_operation_execution_claim",
+        observed_renew,
+    )
+
+    class SlowSingleUseLifecycle:
+        def __init__(self) -> None:
+            self.first_call_started = threading.Event()
+            self.release_first_call = threading.Event()
+            self._lock = threading.Lock()
+            self.calls = 0
+
+        def erase_subject(
+            self,
+            *,
+            storage: SQLiteStorage,
+            subject_ref: str,
+            purge_id: str,
+            execution_claim: object,
+        ) -> None:
+            del storage, subject_ref, purge_id, execution_claim
+            with self._lock:
+                self.calls += 1
+                call_number = self.calls
+            if call_number != 1:
+                raise RuntimeError("provider lifecycle already running")
+            self.first_call_started.set()
+            fake_now["value"] = 350
+            assert renewal_confirmed.wait(timeout=5)
+            fake_now["value"] = 401
+            assert self.release_first_call.wait(timeout=5)
+
+    lifecycle = SlowSingleUseLifecycle()
+    service = GovernanceService(
+        storage=storage,
+        org_id=storage.org_id,
+        ref_secret="test-governance-secret",
+        subject_erasure_lifecycle=lifecycle,
+    )
+    winner_results: list[UserEraseResult] = []
+    winner_errors: list[BaseException] = []
+    duplicate_results: list[UserEraseResult] = []
+    duplicate_errors: list[BaseException] = []
+
+    def run_winner() -> None:
+        try:
+            winner_results.append(
+                service.erase_user(user_id="alice", request_id="erase-renewed-slow")
+            )
+        except BaseException as exc:
+            winner_errors.append(exc)
+
+    def run_duplicate() -> None:
+        try:
+            duplicate_results.append(
+                service.erase_user(user_id="alice", request_id="erase-renewed-slow")
+            )
+        except BaseException as exc:
+            duplicate_errors.append(exc)
+
+    winner = threading.Thread(target=run_winner)
+    winner.start()
+    assert lifecycle.first_call_started.wait(timeout=5)
+    assert renewal_confirmed.wait(timeout=5)
+
+    duplicate = threading.Thread(target=run_duplicate)
+    duplicate.start()
+    lifecycle.release_first_call.set()
+    winner.join(timeout=5)
+    duplicate.join(timeout=5)
+
+    assert not winner.is_alive()
+    assert not duplicate.is_alive()
+    assert winner_errors == []
+    assert duplicate_errors == []
+    assert len(winner_results) == 1
+    assert len(duplicate_results) == 1
+    assert duplicate_results[0].status == "complete"
+    assert duplicate_results[0].purge_id == winner_results[0].purge_id
+    assert lifecycle.calls == 1
+
+
+def test_heartbeat_renewal_loss_fences_external_lifecycle_and_retry_converges(
+    storage: SQLiteStorage,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_now = {"value": 100}
+    monkeypatch.setattr(
+        governance_service_module,
+        "_PURGE_EXECUTION_HEARTBEAT_SECONDS",
+        0.01,
+    )
+    from reflexio.server.services.storage.sqlite_storage.governance import (
+        _purge as sqlite_purge_module,
+    )
+
+    monkeypatch.setattr(sqlite_purge_module, "_epoch_now", lambda: fake_now["value"])
+    original_renew = storage.renew_purge_operation_execution_claim
+    first_owner: list[str] = []
+    renewals_by_owner: dict[str, int] = {}
+    renewal_lost = threading.Event()
+
+    def fail_first_owner_heartbeat(*args, **kwargs):
+        claim = args[1]
+        if not first_owner:
+            first_owner.append(claim.owner)
+        renewals_by_owner[claim.owner] = renewals_by_owner.get(claim.owner, 0) + 1
+        if claim.owner == first_owner[0] and renewals_by_owner[claim.owner] == 2:
+            renewal_lost.set()
+            raise RuntimeError("simulated heartbeat renewal loss")
+        return original_renew(*args, **kwargs)
+
+    monkeypatch.setattr(
+        storage,
+        "renew_purge_operation_execution_claim",
+        fail_first_owner_heartbeat,
+    )
+    original_apply = storage.apply_governance_user_data_delete
+
+    def apply_then_wait_for_renewal_loss(*args, **kwargs):
+        result = original_apply(*args, **kwargs)
+        assert renewal_lost.wait(timeout=5)
+        return result
+
+    monkeypatch.setattr(
+        storage,
+        "apply_governance_user_data_delete",
+        apply_then_wait_for_renewal_loss,
+    )
+
+    class CountingLifecycle:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def erase_subject(self, **_kwargs) -> None:
+            self.calls += 1
+
+    lifecycle = CountingLifecycle()
+    service = GovernanceService(
+        storage=storage,
+        org_id=storage.org_id,
+        ref_secret="test-governance-secret",
+        subject_erasure_lifecycle=lifecycle,
+    )
+
+    with pytest.raises(ValueError, match="heartbeat renewal was lost"):
+        service.erase_user(user_id="alice", request_id="erase-renewal-loss")
+
+    assert lifecycle.calls == 0
+    purge_id = str(
+        storage.conn.execute("SELECT purge_id FROM purge_operations").fetchone()[
+            "purge_id"
+        ]
+    )
+    assert storage.get_purge_operation(purge_id).status == "running"
+    assert storage.list_audit_events() == []
+
+    fake_now["value"] = 401
+    recovered = service.erase_user(
+        user_id="alice",
+        request_id="erase-renewal-loss",
+    )
+
+    assert recovered.status == "complete"
+    assert lifecycle.calls == 1
+    assert storage.get_purge_operation(purge_id).status == "complete"
+
+
+def test_synchronous_renewal_loss_skips_lifecycle_and_retry_converges(
+    storage: SQLiteStorage,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_renew = storage.renew_purge_operation_execution_claim
+    renewal_attempts = 0
+    renewal_failed = threading.Event()
+    lifecycle_called = threading.Event()
+
+    def fail_mandatory_lifecycle_renewal(*args, **kwargs):
+        nonlocal renewal_attempts
+        renewal_attempts += 1
+        if renewal_attempts == 2:
+            renewal_failed.set()
+            raise RuntimeError("simulated synchronous renewal loss")
+        return original_renew(*args, **kwargs)
+
+    monkeypatch.setattr(
+        storage,
+        "renew_purge_operation_execution_claim",
+        fail_mandatory_lifecycle_renewal,
+    )
+
+    class CountingLifecycle:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def erase_subject(self, **_kwargs) -> None:
+            self.calls += 1
+            lifecycle_called.set()
+
+    lifecycle = CountingLifecycle()
+    service = GovernanceService(
+        storage=storage,
+        org_id=storage.org_id,
+        ref_secret="test-governance-secret",
+        subject_erasure_lifecycle=lifecycle,
+    )
+
+    with pytest.raises(ValueError, match="heartbeat renewal was lost"):
+        service.erase_user(user_id="alice", request_id="erase-sync-renewal-loss")
+
+    purge_id = str(
+        storage.conn.execute("SELECT purge_id FROM purge_operations").fetchone()[
+            "purge_id"
+        ]
+    )
+    purge = storage.get_purge_operation(purge_id)
+    assert purge.subject_ref is not None
+    barrier = storage.get_subject_write_barrier(purge.subject_ref)
+    assert renewal_attempts == 2
+    assert renewal_failed.is_set()
+    assert not lifecycle_called.is_set()
+    assert lifecycle.calls == 0
+    assert purge.status == "running"
+    assert barrier is not None
+    assert barrier.status == "erasing"
+    assert storage.list_audit_events() == []
+
+    storage.conn.execute(
+        "UPDATE purge_operations SET execution_claim_expires_at = 0 WHERE purge_id = ?",
+        (purge_id,),
+    )
+    storage.conn.commit()
+
+    def fail_if_recovery_polls(_seconds: float) -> None:
+        raise AssertionError("expired synchronous-renewal claim did not recover")
+
+    monkeypatch.setattr(service, "_sleep", fail_if_recovery_polls)
+
+    recovered = service.erase_user(
+        user_id="alice",
+        request_id="erase-sync-renewal-loss",
+    )
+
+    assert recovered.status == "complete"
+    assert lifecycle_called.is_set()
+    assert lifecycle.calls == 1
+    assert storage.get_purge_operation(purge_id).status == "complete"
+
+
+def test_stale_running_erase_claim_recovers_after_crash(
+    storage: SQLiteStorage,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = GovernanceService(
+        storage=storage,
+        org_id=storage.org_id,
+        ref_secret="test-governance-secret",
+    )
+    original_begin_barrier = storage.begin_subject_erasure_barrier
+    crash_once = True
+
+    def crash_after_claim(subject_ref: str, purge_id: str, **kwargs):
+        nonlocal crash_once
+        if crash_once:
+            crash_once = False
+            raise SystemExit("simulated crash after claim")
+        return original_begin_barrier(subject_ref, purge_id, **kwargs)
+
+    monkeypatch.setattr(
+        storage,
+        "begin_subject_erasure_barrier",
+        crash_after_claim,
+    )
+
+    with pytest.raises(SystemExit, match="simulated crash after claim"):
+        service.erase_user(user_id="alice", request_id="erase-crash-after-claim")
+
+    storage.conn.execute("UPDATE purge_operations SET execution_claim_expires_at = 0")
+    storage.conn.commit()
+
+    def fail_if_duplicate_polls(_seconds: float) -> None:
+        raise AssertionError("stale running claim did not recover")
+
+    monkeypatch.setattr(service, "_sleep", fail_if_duplicate_polls)
+
+    recovered = service.erase_user(
+        user_id="alice",
+        request_id="erase-crash-after-claim",
+    )
+
+    assert recovered.status == "complete"
+    assert storage.get_purge_operation(recovered.purge_id).status == "complete"
+    barrier = storage.get_subject_write_barrier(recovered.subject_ref)
+    assert barrier is not None
+    assert barrier.status == "erased"
+
+
+def test_delete_committed_before_completion_retry_converges_idempotently(
+    storage: SQLiteStorage,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = GovernanceService(
+        storage=storage,
+        org_id=storage.org_id,
+        ref_secret="test-governance-secret",
+    )
+    original_complete = storage.complete_subject_erasure_barrier_after_empty_check
+    completion_attempts = 0
+
+    def crash_after_delete_targets(*args, **kwargs):
+        nonlocal completion_attempts
+        completion_attempts += 1
+        if completion_attempts == 1:
+            raise SystemExit("simulated crash after delete")
+        return original_complete(*args, **kwargs)
+
+    monkeypatch.setattr(
+        storage,
+        "complete_subject_erasure_barrier_after_empty_check",
+        crash_after_delete_targets,
+    )
+
+    with pytest.raises(SystemExit, match="simulated crash after delete"):
+        service.erase_user(user_id="alice", request_id="erase-crash-after-delete")
+
+    storage.conn.execute("UPDATE purge_operations SET execution_claim_expires_at = 0")
+    storage.conn.commit()
+
+    delete_targets_after_crash = storage.list_purge_targets(
+        storage.conn.execute("SELECT purge_id FROM purge_operations").fetchone()[
+            "purge_id"
+        ],
+        phase="delete",
+    )
+    assert delete_targets_after_crash
+    assert all(target.status == "complete" for target in delete_targets_after_crash)
+
+    def fail_if_duplicate_polls(_seconds: float) -> None:
+        raise AssertionError("stale post-delete claim did not recover")
+
+    monkeypatch.setattr(service, "_sleep", fail_if_duplicate_polls)
+
+    recovered = service.erase_user(
+        user_id="alice",
+        request_id="erase-crash-after-delete",
+    )
+
+    assert recovered.status == "complete"
+    assert storage.get_purge_operation(recovered.purge_id).status == "complete"
+    assert completion_attempts == 2
+
+
+def test_pending_duplicate_erase_has_one_durable_execution_owner(
+    storage: SQLiteStorage,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_begin = storage.begin_purge_operation
+    both_pending = threading.Barrier(2)
+
+    def synchronized_begin(*args, **kwargs):
+        purge = original_begin(*args, **kwargs)
+        both_pending.wait(timeout=5)
+        return purge
+
+    monkeypatch.setattr(storage, "begin_purge_operation", synchronized_begin)
+
+    class CountingLifecycle:
+        def __init__(self) -> None:
+            self.calls = 0
+            self._lock = threading.Lock()
+
+        def erase_subject(self, **_kwargs) -> None:
+            with self._lock:
+                self.calls += 1
+
+    lifecycle = CountingLifecycle()
+    service = GovernanceService(
+        storage=storage,
+        org_id=storage.org_id,
+        ref_secret="test-governance-secret",
+        subject_erasure_lifecycle=lifecycle,
+    )
+    results: list[UserEraseResult] = []
+    errors: list[BaseException] = []
+
+    def erase() -> None:
+        try:
+            results.append(
+                service.erase_user(user_id="alice", request_id="erase-pending-race")
+            )
+        except BaseException as exc:
+            errors.append(exc)
+
+    callers = [threading.Thread(target=erase) for _ in range(2)]
+    for caller in callers:
+        caller.start()
+    for caller in callers:
+        caller.join(timeout=5)
+
+    assert all(not caller.is_alive() for caller in callers)
+    assert errors == []
+    assert len(results) == 2
+    assert results[0].purge_id == results[1].purge_id
+    assert all(result.status == "complete" for result in results)
+    assert lifecycle.calls == 1
+    assert storage.get_purge_operation(results[0].purge_id).status == "complete"
+
+
 def test_session_export_paginates_by_returned_rows_when_requests_are_missing() -> None:
     class _Storage:
         def __init__(self) -> None:
@@ -809,3 +1638,58 @@ def test_session_export_paginates_by_returned_rows_when_requests_are_missing() -
     assert storage.calls == [0, 1000]
     assert [request.request_id for request in requests] == ["req-1"]
     assert sessions == [{"session_id": "session-a", "request_ids": ["req-1"]}]
+
+
+def test_rebuild_agent_playbooks_forwards_the_active_execution_claim() -> None:
+    target = SimpleNamespace(
+        target_name="agent_playbook",
+        target_ref="17",
+        status="running",
+        detail={"remaining_source_windows": []},
+    )
+
+    class _Storage:
+        def __init__(self) -> None:
+            self.applied: list[dict[str, object]] = []
+
+        def list_purge_targets(self, purge_id: str, *, phase: str):
+            assert purge_id == "purge_claimed_rebuild"
+            assert phase == "rebuild_without_erased_sources"
+            return [target]
+
+        def get_user_playbooks_by_ids_any_user(self, ids: list[int]):
+            assert ids == []
+            return []
+
+        def apply_governance_agent_playbook_rebuild(self, **kwargs: object) -> None:
+            self.applied.append(kwargs)
+
+    storage = _Storage()
+    service = GovernanceService(storage=storage, org_id="org", ref_secret="secret")
+    claim = PurgeExecutionClaim(
+        purge_id="purge_claimed_rebuild",
+        owner="worker-a",
+        fence=1,
+        expires_at=2_000_000_000,
+    )
+
+    rebuilt_ids = service._rebuild_agent_playbooks(
+        "purge_claimed_rebuild",
+        execution_claim=claim,
+    )
+
+    assert rebuilt_ids == [17]
+    assert storage.applied == [
+        {
+            "purge_id": "purge_claimed_rebuild",
+            "agent_playbook_id": 17,
+            "remaining_source_windows": [],
+            "content": None,
+            "trigger": None,
+            "rationale": None,
+            "blocking_issue": None,
+            "expanded_terms": None,
+            "tags": None,
+            "execution_claim": claim,
+        }
+    ]

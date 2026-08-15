@@ -465,7 +465,9 @@ def test_reviewer_prompt_preserves_grounded_procedures_and_forbids_substitutes()
         # fixes is the reviewer going down the evidence axis and never asking.
         "First name, in your own words, what the entry is ABOUT",
         "before asking\nwhether any of its clauses are supported".replace("\n", " "),
-        "is not a core to preserve, it is\nthe same subject in gentler words".replace("\n", " "),
+        "is not a core to preserve, it is\nthe same subject in gentler words".replace(
+            "\n", " "
+        ),
     )
     for invariant in required_invariants:
         assert invariant in normalized

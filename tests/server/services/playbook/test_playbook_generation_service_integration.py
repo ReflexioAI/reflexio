@@ -80,6 +80,7 @@ def mock_request_context():
     context = MagicMock(spec=RequestContext)
     context.org_id = "test_org_123"
     context.storage = MagicMock()
+    context.storage.get_agent_run_finalization_receipt.return_value = None
     agent_runs = {}
 
     def create_agent_run(record):

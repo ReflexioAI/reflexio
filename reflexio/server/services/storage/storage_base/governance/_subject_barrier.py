@@ -7,6 +7,7 @@ from reflexio.models.api_schema.domain.governance import (
     PurgeOperation,
     SubjectWriteBarrier,
 )
+from reflexio.server.services.storage.governance_claims import PurgeExecutionClaim
 
 
 class SubjectBarrierMixin(ABC):
@@ -20,7 +21,11 @@ class SubjectBarrierMixin(ABC):
 
     @abstractmethod
     def begin_subject_erasure_barrier(
-        self, subject_ref: str, purge_id: str
+        self,
+        subject_ref: str,
+        purge_id: str,
+        *,
+        execution_claim: PurgeExecutionClaim,
     ) -> SubjectWriteBarrier:
         raise NotImplementedError
 
@@ -30,7 +35,12 @@ class SubjectBarrierMixin(ABC):
 
     @abstractmethod
     def complete_subject_erasure_barrier_after_empty_check(
-        self, purge_id: str, audit_event: AuditEvent
+        self,
+        purge_id: str,
+        audit_event: AuditEvent,
+        *,
+        authoritative_user_id: str,
+        execution_claim: PurgeExecutionClaim,
     ) -> PurgeOperation:
         raise NotImplementedError
 
@@ -41,6 +51,8 @@ class SubjectBarrierMixin(ABC):
         purge_id: str,
         error_code: str,
         error_detail: str,
+        *,
+        execution_claim: PurgeExecutionClaim,
     ) -> SubjectWriteBarrier:
         raise NotImplementedError
 

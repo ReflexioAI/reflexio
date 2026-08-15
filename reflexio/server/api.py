@@ -474,64 +474,73 @@ def create_app(  # noqa: C901
         durable_learning_scheduler = None
         aggregation_scheduler = None
         started_caps: list = []
-        if mounts_data_plane:
-            _log_multi_worker_daemons()
-            log_publish_hardware_capacity()
-            validate_llm_availability()
-            # The scheduler discovers every org with resumable work each tick and
-            # drives a per-org worker with org-scoped claims, so it is not limited
-            # to the bootstrap org. The bootstrap org is only used to read config
-            # and to seed cross-org discovery.
-            bootstrap_org_id = _resolve_lifespan_org_id(get_org_id)
-            scheduler = maybe_start_resume_scheduler(
-                lambda org_id: RequestContext(org_id=org_id),
-                bootstrap_org_id=bootstrap_org_id,
-                org_id_provider=resume_org_ids_provider,
+        if capabilities is None:
+            from reflexio.server.usage_metrics import (
+                configure_usage_event_recorder,
+                exempt_usage_event_recorder,
             )
-            # Register the missing-vector backfill sweep (opt-in via
-            # REFLEXIO_MISSING_VECTOR_BACKFILL_ENABLED) BEFORE starting the GC
-            # scheduler, so its per-org hook is visible when maybe_start_lineage_gc
-            # evaluates its start conditions. No-op when the flag is off.
-            install_missing_vector_backfill_sweep()
-            gc_scheduler = maybe_start_lineage_gc(
-                lambda org_id: RequestContext(org_id=org_id),
-                bootstrap_org_id=bootstrap_org_id,
-            )
-            # Durable learning drains the learning_jobs queue per org. Gated on
-            # REFLEXIO_DURABLE_LEARNING_QUEUE; the default provider discovers
-            # orgs-with-work via the bootstrap storage (single-ref). A deployment
-            # may inject its own discovery via ``durable_org_ids_provider`` (e.g.
-            # enterprise cross-ref fan-out); when None the single-ref default runs.
-            durable_learning_scheduler = maybe_start_durable_learning(
-                lambda org_id: RequestContext(org_id=org_id),
-                bootstrap_org_id=bootstrap_org_id,
-                org_ids_provider=durable_org_ids_provider,
-            )
-            # Enterprise owns cross-org aggregation through its capability.
-            # OSS still needs a startup-owned scheduler so pending SQLite work
-            # drains after a restart even when no new publish arrives.
-            if capabilities is None:
-                from reflexio.server.services.playbook.aggregation_scheduler import (
-                    ensure_local_playbook_aggregation_scheduler,
-                )
 
-                try:
-                    aggregation_context = RequestContext(org_id=bootstrap_org_id)
-                    aggregation_scheduler = ensure_local_playbook_aggregation_scheduler(
-                        aggregation_context
-                    )
-                except Exception:  # noqa: BLE001
-                    # A composition root may intentionally install an enterprise
-                    # configurator while exercising the OSS app shape without
-                    # enterprise deployment settings. The post-persist trigger
-                    # still starts the same scheduler lazily once a real context
-                    # exists.
-                    logger.warning(
-                        "playbook aggregation scheduler startup deferred: "
-                        "bootstrap context is unavailable",
-                        exc_info=True,
-                    )
+            configure_usage_event_recorder(exempt_usage_event_recorder)
         try:
+            if mounts_data_plane:
+                _log_multi_worker_daemons()
+                log_publish_hardware_capacity()
+                validate_llm_availability()
+                # The scheduler discovers every org with resumable work each tick and
+                # drives a per-org worker with org-scoped claims, so it is not limited
+                # to the bootstrap org. The bootstrap org is only used to read config
+                # and to seed cross-org discovery.
+                bootstrap_org_id = _resolve_lifespan_org_id(get_org_id)
+                scheduler = maybe_start_resume_scheduler(
+                    lambda org_id: RequestContext(org_id=org_id),
+                    bootstrap_org_id=bootstrap_org_id,
+                    org_id_provider=resume_org_ids_provider,
+                )
+                # Register the missing-vector backfill sweep (opt-in via
+                # REFLEXIO_MISSING_VECTOR_BACKFILL_ENABLED) BEFORE starting the GC
+                # scheduler, so its per-org hook is visible when maybe_start_lineage_gc
+                # evaluates its start conditions. No-op when the flag is off.
+                install_missing_vector_backfill_sweep()
+                gc_scheduler = maybe_start_lineage_gc(
+                    lambda org_id: RequestContext(org_id=org_id),
+                    bootstrap_org_id=bootstrap_org_id,
+                )
+                # Durable learning drains the learning_jobs queue per org. Gated on
+                # REFLEXIO_DURABLE_LEARNING_QUEUE; the default provider discovers
+                # orgs-with-work via the bootstrap storage (single-ref). A deployment
+                # may inject its own discovery via ``durable_org_ids_provider`` (e.g.
+                # enterprise cross-ref fan-out); when None the single-ref default runs.
+                durable_learning_scheduler = maybe_start_durable_learning(
+                    lambda org_id: RequestContext(org_id=org_id),
+                    bootstrap_org_id=bootstrap_org_id,
+                    org_ids_provider=durable_org_ids_provider,
+                )
+                # Enterprise owns cross-org aggregation through its capability.
+                # OSS still needs a startup-owned scheduler so pending SQLite work
+                # drains after a restart even when no new publish arrives.
+                if capabilities is None:
+                    from reflexio.server.services.playbook.aggregation_scheduler import (
+                        ensure_local_playbook_aggregation_scheduler,
+                    )
+
+                    try:
+                        aggregation_context = RequestContext(org_id=bootstrap_org_id)
+                        aggregation_scheduler = (
+                            ensure_local_playbook_aggregation_scheduler(
+                                aggregation_context
+                            )
+                        )
+                    except Exception:  # noqa: BLE001
+                        # A composition root may intentionally install an enterprise
+                        # configurator while exercising the OSS app shape without
+                        # enterprise deployment settings. The post-persist trigger
+                        # still starts the same scheduler lazily once a real context
+                        # exists.
+                        logger.warning(
+                            "playbook aggregation scheduler startup deferred: "
+                            "bootstrap context is unavailable",
+                            exc_info=True,
+                        )
             if capabilities is not None:
                 ctx = (
                     app_context_factory()
@@ -555,6 +564,12 @@ def create_app(  # noqa: C901
             )
 
             stop_search_metering_worker(timeout=5.0)
+            if capabilities is None:
+                from reflexio.server.usage_metrics import (
+                    configure_usage_event_recorder,
+                )
+
+                configure_usage_event_recorder(None)
             for cap in reversed(started_caps):
                 try:
                     await cap.on_shutdown()

@@ -27,6 +27,26 @@ if TYPE_CHECKING:
 
 
 @dataclass(frozen=True)
+class FinalizationResult:
+    """Internal outcome of resumable learning finalization.
+
+    ``won_receipt`` is true only for the caller whose learning writes and
+    immutable finalization receipt committed together. Receipt-reuse callers
+    still receive the winner's ordered ids and may replay retry-safe durable
+    obligations, such as billing records keyed by those ids. They must not
+    replay winner-only derived work such as optimization, aggregation, or
+    tagging.
+    """
+
+    learning_ids: list[str]
+    won_receipt: bool
+
+
+class _FinalizationReceiptAlreadyExistsError(Exception):
+    """Rollback signal for a finalization transaction that lost receipt ownership."""
+
+
+@dataclass(frozen=True)
 class ExtractorBookmarkAdvance:
     """The extractor stride-bookmark advance, deferred out of the extractor (F1).
 
@@ -127,23 +147,27 @@ class GenerationComputePlan:
     """Resolved compute output of one ``BaseGenerationService`` run (gate b).
 
     ``compute_generation`` runs the prepare gate + extractor + dedup/embedding
-    resolution (``_resolve_write_plan``) and drives the ``agent_run`` rows to
-    their terminal state (``_finalize_extraction_runs`` — agent_run only, §4.3),
-    issuing **no** learning DB write. ``persist_generation`` applies
-    ``write_plan`` + the extractor bookmark advance inside the fence;
-    ``emit_generation_side_effects`` fires the post-commit telemetry + billing.
+    resolution (``_resolve_write_plan``), issuing **no** learning DB write and
+    leaving receipt-aware ``agent_run`` rows non-terminal. ``persist_generation``
+    applies ``write_plan`` + the extractor bookmark advance + immutable receipt
+    inside the fence; ``emit_generation_side_effects`` terminalizes the run and
+    fires post-commit telemetry + billing.
 
     The billing inputs (``extraction_run_ids`` / ``token_totals`` /
-    ``generated_count`` / ``prepared``) are **snapshotted at compute time** so
-    the fence-crossing emit reads this plan rather than the reused service
-    instance's mutable ``_last_*`` accumulators (purity contract, plan §File
-    Structure). See ``emit_generation_side_effects`` for the single-use-instance
-    invariant that also keeps the money helper's ``self._last_*`` reads safe.
+    ``billable_count`` / ``prepared``) and telemetry's ``generated_count`` are
+    **snapshotted at compute time** so the fence-crossing emit reads this plan
+    rather than the reused service instance's mutable ``_last_*`` accumulators
+    (purity contract, plan §File Structure). See
+    ``emit_generation_side_effects`` for the single-use-instance invariant that
+    also keeps the money helper's ``self._last_*`` reads safe.
 
     Attributes:
         prepared: The prepared generation run (identifier / extractor_name /
             extractor_config), reused by emit for telemetry + billing input.
-        generated_count: Learnings produced by this extraction run.
+        generated_count: Raw learnings produced by the extractor, used for
+            generation-success telemetry.
+        billable_count: Retained write-plan learnings eligible for online billing;
+            zero for services that do not emit learning billing.
         write_plan: The resolved write-plan (``ProfileWritePlan`` /
             ``PlaybookWritePlan`` in Tasks 6-7, a ``_LegacyItems`` shim marker
             until then) or ``None`` when the extractor produced nothing.
@@ -155,15 +179,19 @@ class GenerationComputePlan:
         extraction_run_ids: Snapshot of the run's ``agent_run`` ids.
         token_totals: Snapshot of the run's LLM token totals (billing cost
             facet), or ``None`` when the extractor reported none.
+        finalization_result: Receipt ownership recorded by persistence. ``None``
+            for services that do not use receipt-aware inline finalization.
     """
 
     prepared: PreparedGenerationRun[Any]
     generated_count: int
+    billable_count: int
     write_plan: Any
     bookmark_advance: ExtractorBookmarkAdvance | None
     generation_start: float
     extraction_run_ids: list[str]
     token_totals: RunTokenTotals | None
+    finalization_result: FinalizationResult | None = None
 
 
 @dataclass

@@ -1,4 +1,4 @@
-"""Regression coverage for reverting the session-outcome identity schema."""
+"""Regression coverage for rebuilding session-outcome identity after rollback."""
 
 from unittest.mock import patch
 
@@ -42,7 +42,7 @@ def _storage(db_path: str) -> SQLiteStorage:
         return SQLiteStorage(org_id="downgrade-org", db_path=db_path)
 
 
-def test_identity_schema_is_downgraded_and_current_writes_resume(tmp_path) -> None:
+def test_identity_schema_is_preserved_and_current_writes_resume(tmp_path) -> None:
     db_path = str(tmp_path / "identity-schema.db")
     storage = _storage(db_path)
     for session_id in ("kept", "unknown", "new"):
@@ -84,6 +84,8 @@ def test_identity_schema_is_downgraded_and_current_writes_resume(tmp_path) -> No
         row["name"]
         for row in migrated.conn.execute("PRAGMA table_info(session_outcomes)")
     } == {
+        "outcome_id",
+        "outcome_revision",
         "user_id",
         "session_id",
         "outcome",
@@ -92,13 +94,17 @@ def test_identity_schema_is_downgraded_and_current_writes_resume(tmp_path) -> No
         "label",
         "value",
         "metadata",
+        "outcome_contract_digest",
+        "finalized_trajectory_digest",
         "governance_subject_ref",
         "created_at",
     }
     records = migrated.get_session_outcomes(GetSessionOutcomesRequest())
-    assert [(record.session_id, record.outcome) for record in records] == [
-        ("kept", SessionOutcomeKind.SUCCESS)
-    ]
+    records_by_session = {record.session_id: record for record in records}
+    assert records_by_session["kept"].outcome is SessionOutcomeKind.SUCCESS
+    assert records_by_session["kept"].outcome_id == "outcome-kept"
+    assert records_by_session["unknown"].outcome is SessionOutcomeKind.UNKNOWN
+    assert records_by_session["unknown"].outcome_id == "outcome-unknown"
 
     request = SetSessionOutcomeRequest(
         session_id="new", outcome=SessionOutcomeKind.FAILURE, occurred_at=101
@@ -165,29 +171,28 @@ def test_legacy_schema_backfills_required_subject_ref(
     )
 
 
-def test_legacy_empty_subject_default_is_rebuilt_and_backfilled(tmp_path) -> None:
+def test_identity_empty_subject_default_is_rebuilt_without_changing_identity(
+    tmp_path,
+) -> None:
     db_path = str(tmp_path / "legacy-empty-subject-default.db")
     storage = _storage(db_path)
     storage.conn.execute("DROP TABLE session_outcomes")
     storage.conn.executescript(
-        """CREATE TABLE session_outcomes (
-            user_id TEXT NOT NULL,
-            session_id TEXT NOT NULL,
-            outcome TEXT NOT NULL CHECK (outcome IN ('success', 'failure')),
-            occurred_at INTEGER NOT NULL,
-            source TEXT NOT NULL,
-            label TEXT,
-            value REAL,
-            metadata TEXT,
-            governance_subject_ref TEXT NOT NULL DEFAULT '',
-            created_at INTEGER NOT NULL,
-            PRIMARY KEY (user_id, session_id)
-        );"""
+        _IDENTITY_SCHEMA.replace(
+            "governance_subject_ref TEXT NOT NULL,",
+            "governance_subject_ref TEXT NOT NULL DEFAULT '',",
+        )
     )
     storage.conn.execute(
         """INSERT INTO session_outcomes (
-               user_id, session_id, outcome, occurred_at, source, created_at
-           ) VALUES ('legacy-user', 'legacy-session', 'success', 101, 'legacy', 102)"""
+               outcome_id, outcome_revision, user_id, session_id, outcome,
+               occurred_at, source, outcome_contract_digest,
+               finalized_trajectory_digest, created_at
+           ) VALUES (
+               'stable-outcome-id', 3, 'legacy-user', 'legacy-session', 'unknown',
+               101, 'legacy', ?, ?, 102
+           )""",
+        ("a" * 64, "b" * 64),
     )
     storage.conn.commit()
     storage.conn.close()
@@ -195,12 +200,25 @@ def test_legacy_empty_subject_default_is_rebuilt_and_backfilled(tmp_path) -> Non
     migrated = _storage(db_path)
 
     row = migrated.conn.execute(
-        "SELECT governance_subject_ref FROM session_outcomes"
+        """SELECT outcome_id, outcome_revision, outcome_contract_digest,
+                  finalized_trajectory_digest, governance_subject_ref
+           FROM session_outcomes"""
     ).fetchone()
     assert row is not None
+    assert row["outcome_id"] == "stable-outcome-id"
+    assert row["outcome_revision"] == 3
+    assert row["outcome_contract_digest"] == "a" * 64
+    assert row["finalized_trajectory_digest"] == "b" * 64
     assert row["governance_subject_ref"] == migrated._subject_ref_for_user_id(
         "legacy-user"
     )
+    subject_column = next(
+        item
+        for item in migrated.conn.execute("PRAGMA table_info(session_outcomes)")
+        if item["name"] == "governance_subject_ref"
+    )
+    assert subject_column["notnull"] == 1
+    assert subject_column["dflt_value"] is None
 
 
 def test_sqlite_versions_without_returning_and_drop_column_are_rejected(

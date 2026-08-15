@@ -24,6 +24,7 @@ from reflexio.models.config_schema import (
     StorageConfigSQLite,
     ToolUseConfig,
 )
+from reflexio.server import usage_metrics
 from reflexio.server.services.configurator.configurator import DefaultConfigurator
 from reflexio.server.services.tagging.tagging_scheduler import drain_tagging
 from reflexio.test_support.llm_mock import (
@@ -56,6 +57,18 @@ name, occupation, location, membership tier, order context, communication prefer
 formatting preferences, timeline preferences, and other durable customer-support
 personalization facts from the conversation
 """
+
+
+@pytest.fixture(autouse=True)
+def _install_oss_usage_event_exemption() -> Iterator[None]:
+    """Match the explicit billing exemption installed by the OSS app lifespan."""
+    usage_metrics.configure_usage_event_recorder(
+        usage_metrics.exempt_usage_event_recorder
+    )
+    try:
+        yield
+    finally:
+        usage_metrics.configure_usage_event_recorder(None)
 
 
 @pytest.fixture(autouse=True)

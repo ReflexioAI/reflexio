@@ -14,6 +14,8 @@ from pydantic import ValidationError
 from reflexio.models.api_schema import service_schemas as schemas
 from reflexio.server.services.playbook.publication import canonical_json_bytes
 from reflexio.server.services.storage.error import (
+    OptimizationArtifactIntegrityError,
+    OptimizationJobIdentityConflictError,
     OptimizationJobLeaseLiveError,
     StorageError,
 )
@@ -113,8 +115,19 @@ def test_same_attempt_key_returns_one_active_job(storage: BaseStorage) -> None:
 def test_conflicting_active_identity_is_rejected(storage: BaseStorage) -> None:
     storage.create_or_get_playbook_optimization_job(_replay_job("d1", "a1"))
 
-    with pytest.raises(StorageError, match="immutable optimizer job identity"):
+    with pytest.raises(
+        OptimizationJobIdentityConflictError,
+        match="immutable optimizer job identity",
+    ):
         storage.create_or_get_playbook_optimization_job(_replay_job("d1", "a2"))
+
+
+def test_sqlite_rejects_open_world_optimizer_jobs(storage: BaseStorage) -> None:
+    open_world_job = _replay_job("open-world-discovery", "open-world-attempt")
+    open_world_job.optimizer_kind = "offline_tuner_open_world"
+
+    with pytest.raises(StorageError, match="CHECK constraint failed"):
+        storage.create_or_get_playbook_optimization_job(open_world_job)
 
 
 def test_gepa_publication_reclaim_contract_has_none_live_and_reclaimed_outcomes(
@@ -348,7 +361,10 @@ def test_artifact_upsert_canonicalizes_equivalent_json_and_requires_digest_and_c
             fence=claim.fence,
             now=5_001,
         )
-    with pytest.raises(StorageError, match="artifact digest conflict"):
+    with pytest.raises(
+        OptimizationArtifactIntegrityError,
+        match="artifact digest conflict",
+    ):
         storage.upsert_playbook_optimization_artifact(
             _artifact(
                 job_id=job.job_id,
@@ -357,6 +373,52 @@ def test_artifact_upsert_canonicalizes_equivalent_json_and_requires_digest_and_c
             fence=claim.fence,
             now=5_001,
         )
+
+
+def test_malformed_persisted_artifact_raises_typed_integrity_error(
+    storage: BaseStorage,
+) -> None:
+    job = storage.create_or_get_playbook_optimization_job(_replay_job("d1", "a1"))
+    claim = storage.claim_playbook_optimization_job(
+        job_id=job.job_id,
+        owner="worker-a",
+        lease_seconds=60,
+        now=5_000,
+    )
+    saved = storage.upsert_playbook_optimization_artifact(
+        _artifact(job_id=job.job_id),
+        fence=claim.fence,
+        now=5_001,
+    )
+    assert isinstance(storage, SQLiteStorage)
+    storage.conn.execute(
+        "UPDATE playbook_optimization_artifacts SET content_digest = ? "
+        "WHERE artifact_id = ?",
+        ("f" * 64, saved.artifact_id),
+    )
+    storage.conn.commit()
+
+    with pytest.raises(
+        OptimizationArtifactIntegrityError,
+        match="optimizer artifact row is malformed",
+    ):
+        storage.get_playbook_optimization_artifact(
+            job.job_id,
+            "expected_population_manifest",
+        )
+
+
+def test_artifact_storage_failures_remain_generic(storage: BaseStorage) -> None:
+    assert isinstance(storage, SQLiteStorage)
+    storage.conn.execute("DROP TABLE playbook_optimization_artifacts")
+
+    with pytest.raises(StorageError) as raised:
+        storage.get_playbook_optimization_artifact(
+            1,
+            "expected_population_manifest",
+        )
+
+    assert type(raised.value) is StorageError
 
 
 def test_artifact_model_rejects_malformed_json() -> None:
@@ -427,6 +489,240 @@ def test_artifact_model_uses_publication_numeric_contract() -> None:
             content_json='{"value":1.0}',
             content_digest="a" * 64,
         )
+
+
+def test_previous_artifact_schema_is_upgraded_without_losing_constraints(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "previous-artifact-schema.db"
+    initial_store = SQLiteStorage(
+        org_id="previous-artifact-schema", db_path=str(db_path)
+    )
+    initial_store.conn.close()
+
+    legacy_content = '{"source":"legacy"}'
+    legacy_digest = sha256(legacy_content.encode()).hexdigest()
+    conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("DROP INDEX idx_poa_job")
+    conn.execute("DROP TABLE playbook_optimization_artifacts")
+    conn.executescript(
+        """
+        CREATE TABLE playbook_optimization_artifacts (
+            artifact_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_id INTEGER NOT NULL,
+            artifact_kind TEXT NOT NULL CHECK (artifact_kind IN (
+                'expected_population_manifest',
+                'generation_selection',
+                'replay_manifest',
+                'candidate',
+                'candidate_search_projection'
+            )),
+            content_json TEXT NOT NULL,
+            content_digest TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            UNIQUE (job_id, artifact_kind),
+            FOREIGN KEY (job_id) REFERENCES playbook_optimization_jobs(job_id)
+                ON DELETE CASCADE
+        );
+        CREATE INDEX idx_poa_job ON playbook_optimization_artifacts(job_id);
+        """
+    )
+    conn.execute(
+        """INSERT INTO playbook_optimization_jobs (
+               job_id, optimizer_kind, target_kind, target_id, status,
+               lease_owner, lease_fence, lease_expires_at, created_at, updated_at
+           ) VALUES (
+               41, 'offline_tuner_replay', 'user_playbook', 9, 'running',
+               'worker-a', 3, 1000, 101, 102
+           )"""
+    )
+    conn.execute(
+        """INSERT INTO playbook_optimization_artifacts (
+               artifact_id, job_id, artifact_kind, content_json, content_digest,
+               created_at, updated_at
+           ) VALUES (77, 41, 'candidate', ?, ?, 103, 104)""",
+        (legacy_content, legacy_digest),
+    )
+    conn.commit()
+    conn.close()
+
+    store = SQLiteStorage(org_id="previous-artifact-schema", db_path=str(db_path))
+    try:
+        legacy_row = store.conn.execute(
+            "SELECT * FROM playbook_optimization_artifacts WHERE artifact_id = 77"
+        ).fetchone()
+        assert dict(legacy_row) == {
+            "artifact_id": 77,
+            "job_id": 41,
+            "artifact_kind": "candidate",
+            "content_json": legacy_content,
+            "content_digest": legacy_digest,
+            "created_at": 103,
+            "updated_at": 104,
+        }
+        assert store.conn.execute("PRAGMA foreign_key_check").fetchall() == []
+        assert store.conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+
+        with pytest.raises(sqlite3.IntegrityError):
+            store.conn.execute(
+                """INSERT INTO playbook_optimization_artifacts VALUES
+                   (78, 41, 'candidate', '{}', ?, 105, 106)""",
+                (sha256(b"{}").hexdigest(),),
+            )
+        store.conn.rollback()
+        assert (
+            store.conn.execute(
+                """SELECT 1 FROM sqlite_master
+               WHERE type = 'index' AND name = 'idx_poa_job'"""
+            ).fetchone()
+            is not None
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            store.conn.execute(
+                """INSERT INTO playbook_optimization_artifacts VALUES
+                   (79, 41, 'unknown_kind', '{}', ?, 105, 106)""",
+                (sha256(b"{}").hexdigest(),),
+            )
+        store.conn.rollback()
+
+        evidence_json = '{"cases":[1]}'
+        evidence = schemas.PlaybookOptimizationArtifact(
+            job_id=41,
+            artifact_kind="open_world_evidence_bundle",
+            content_json=evidence_json,
+            content_digest=sha256(evidence_json.encode()).hexdigest(),
+            created_at=107,
+            updated_at=108,
+        )
+        saved = store.upsert_playbook_optimization_artifact(evidence, fence=3, now=500)
+        assert (
+            store.get_playbook_optimization_artifact(41, "open_world_evidence_bundle")
+            == saved
+        )
+
+        assert store.migrate() is True
+        store.conn.execute("DELETE FROM playbook_optimization_jobs WHERE job_id = 41")
+        store.conn.commit()
+        assert (
+            store.conn.execute(
+                "SELECT COUNT(*) FROM playbook_optimization_artifacts WHERE job_id = 41"
+            ).fetchone()[0]
+            == 0
+        )
+    finally:
+        store.conn.close()
+
+    assert not hasattr(BaseStorage, "load_open_world_evidence_snapshot")
+    assert not hasattr(SQLiteStorage, "load_open_world_evidence_snapshot")
+
+
+def test_optimizer_job_rebuild_preserves_deleted_id_high_water_and_repeats(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "legacy-job-sequence.db"
+    _create_legacy_optimizer_schema(db_path)
+    conn = sqlite3.connect(db_path)
+    conn.execute("DELETE FROM playbook_optimization_jobs WHERE job_id IN (5, 6)")
+    conn.commit()
+    conn.close()
+
+    first_store = SQLiteStorage(org_id="job-sequence-first", db_path=str(db_path))
+    first = first_store.create_playbook_optimization_job(_replay_job("d1", "a1"))
+    first_store.conn.close()
+    second_store = SQLiteStorage(org_id="job-sequence-second", db_path=str(db_path))
+    second = second_store.create_playbook_optimization_job(
+        _replay_job("d2", "a2").model_copy(update={"target_id": 42})
+    )
+    second_store.conn.close()
+
+    assert first.job_id == 7
+    assert second.job_id == 8
+
+
+def test_empty_optimizer_job_rebuild_preserves_deleted_id_high_water(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "empty-legacy-job-sequence.db"
+    _create_legacy_optimizer_schema(db_path)
+    conn = sqlite3.connect(db_path)
+    conn.execute("DELETE FROM playbook_optimization_jobs")
+    conn.commit()
+    conn.close()
+
+    store = SQLiteStorage(org_id="empty-job-sequence", db_path=str(db_path))
+    job = store.create_playbook_optimization_job(_replay_job("d1", "a1"))
+    store.conn.close()
+
+    assert job.job_id == 7
+
+
+def test_artifact_rebuild_preserves_deleted_id_high_water_and_repeats(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "legacy-artifact-sequence.db"
+    store = SQLiteStorage(org_id="artifact-sequence-setup", db_path=str(db_path))
+    parent = store.create_playbook_optimization_job(_replay_job("d1", "a1"))
+    store.conn.execute("DROP INDEX idx_poa_job")
+    store.conn.execute("DROP TABLE playbook_optimization_artifacts")
+    store.conn.executescript(
+        """
+        CREATE TABLE playbook_optimization_artifacts (
+            artifact_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_id INTEGER NOT NULL,
+            artifact_kind TEXT NOT NULL CHECK (artifact_kind IN ('candidate')),
+            content_json TEXT NOT NULL,
+            content_digest TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            UNIQUE (job_id, artifact_kind),
+            FOREIGN KEY (job_id) REFERENCES playbook_optimization_jobs(job_id)
+                ON DELETE CASCADE
+        );
+        CREATE INDEX idx_poa_job ON playbook_optimization_artifacts(job_id);
+        """
+    )
+    digest = sha256(b"{}").hexdigest()
+    store.conn.execute(
+        "INSERT INTO playbook_optimization_artifacts VALUES "
+        "(9, ?, 'candidate', '{}', ?, 1, 1)",
+        (parent.job_id, digest),
+    )
+    store.conn.execute("DELETE FROM playbook_optimization_artifacts")
+    store.conn.commit()
+    store.conn.close()
+
+    first_store = SQLiteStorage(org_id="artifact-sequence-first", db_path=str(db_path))
+    first_store.conn.execute(
+        "INSERT INTO playbook_optimization_artifacts "
+        "(job_id, artifact_kind, content_json, content_digest, created_at, updated_at) "
+        "VALUES (?, 'candidate', '{}', ?, 1, 1)",
+        (parent.job_id, digest),
+    )
+    first_id = first_store.conn.execute(
+        "SELECT artifact_id FROM playbook_optimization_artifacts"
+    ).fetchone()[0]
+    first_store.conn.execute("DELETE FROM playbook_optimization_artifacts")
+    first_store.conn.commit()
+    first_store.conn.close()
+
+    second_store = SQLiteStorage(
+        org_id="artifact-sequence-second", db_path=str(db_path)
+    )
+    second_store.conn.execute(
+        "INSERT INTO playbook_optimization_artifacts "
+        "(job_id, artifact_kind, content_json, content_digest, created_at, updated_at) "
+        "VALUES (?, 'candidate', '{}', ?, 1, 1)",
+        (parent.job_id, digest),
+    )
+    second_id = second_store.conn.execute(
+        "SELECT artifact_id FROM playbook_optimization_artifacts"
+    ).fetchone()[0]
+    second_store.conn.close()
+
+    assert first_id == 10
+    assert second_id == 11
 
 
 @pytest.mark.parametrize(

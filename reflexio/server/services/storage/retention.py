@@ -8,6 +8,7 @@ from dataclasses import dataclass
 
 DEFAULT_ROW_RETENTION_LIMIT = 250_000
 ROW_RETENTION_DELETE_FRACTION = 0.20
+OPEN_WORLD_EVIDENCE_RETENTION_WINDOW_SECONDS = 14 * 24 * 60 * 60
 TOMBSTONE_STATUSES = ("archived", "merged", "superseded", "expired")
 
 
@@ -20,6 +21,8 @@ class RetentionTarget:
     order_column: str
     id_columns: tuple[str, ...]
     priority_statuses: tuple[str, ...] = ()
+    minimum_age_seconds: int = 0
+    fixed_row_limit: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -130,6 +133,14 @@ RETENTION_TARGETS: tuple[RetentionTarget, ...] = (
         "created_at",
         ("retrieval_log_id",),
     ),
+    RetentionTarget(
+        "user_playbook_exposure_events",
+        "user_playbook_exposure_events",
+        "ingested_at",
+        ("exposure_event_id",),
+        minimum_age_seconds=OPEN_WORLD_EVIDENCE_RETENTION_WINDOW_SECONDS,
+        fixed_row_limit=DEFAULT_ROW_RETENTION_LIMIT,
+    ),
     RetentionTarget("skills", "skills", "created_at", ("skill_id",)),
 )
 
@@ -186,12 +197,16 @@ RETENTION_CASCADES: dict[str, tuple[CascadeRef, ...]] = {
 def get_row_retention_limits() -> dict[str, int]:
     """Return per-target row limits from env with code defaults.
 
-    ``REFLEXIO_ROW_LIMIT_<TARGET>`` takes precedence for every target.
+    ``REFLEXIO_ROW_LIMIT_<TARGET>`` takes precedence for targets without a
+    ``fixed_row_limit``. Fixed targets explicitly reject that override path.
     ``INTERACTION_CLEANUP_THRESHOLD`` remains the legacy override for
     interactions when the new variable is not present.
     """
     limits: dict[str, int] = {}
     for target in RETENTION_TARGETS:
+        if target.fixed_row_limit is not None:
+            limits[target.name] = target.fixed_row_limit
+            continue
         env_name = f"REFLEXIO_ROW_LIMIT_{target.name.upper()}"
         default = DEFAULT_ROW_RETENTION_LIMIT
         if target.name == "interactions":

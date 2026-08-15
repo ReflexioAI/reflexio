@@ -35,6 +35,7 @@ from typing import TYPE_CHECKING, cast
 from reflexio.models.api_schema.domain import AgentPlaybookSourceWindow
 from reflexio.models.api_schema.domain.enums import Status
 from reflexio.server.services.embedding_text import playbook_trigger_embedding_text
+from reflexio.server.services.storage.governance_claims import PurgeExecutionClaim
 from reflexio.server.services.storage.governance_validation import (
     _canonicalize_governance_windows,
     _parse_governance_window_list,
@@ -81,6 +82,9 @@ class RebuildHideMixin:
     # Provided via MRO by the co-composed PurgeOperationStoreMixin (purge bucket);
     # reached here by the cross-bucket rebuild-hide method.
     _record_purge_target_locked: Callable[..., None]
+    _assert_purge_operation_execution_claim_locked: Callable[
+        [str, PurgeExecutionClaim | None], None
+    ]
 
     def _replace_agent_playbook_source_windows_locked(
         self, agent_playbook_id: int, windows: list[AgentPlaybookSourceWindow]
@@ -137,11 +141,19 @@ class RebuildHideMixin:
                 (agent_playbook_id, json.dumps(embedding)),
             )
 
-    def hide_governance_agent_playbooks_for_rebuild(self, purge_id: str) -> list[int]:
+    def hide_governance_agent_playbooks_for_rebuild(
+        self,
+        purge_id: str,
+        *,
+        execution_claim: PurgeExecutionClaim,
+    ) -> list[int]:
         purge_id = _validate_governance_purge_id("purge_id", purge_id)
         with self._lock:
             try:
                 self.conn.execute("BEGIN IMMEDIATE")
+                self._assert_purge_operation_execution_claim_locked(
+                    purge_id, execution_claim
+                )
                 target_rows = self.conn.execute(
                     """SELECT target_ref
                        FROM purge_operation_targets
@@ -202,6 +214,8 @@ class RebuildHideMixin:
         blocking_issue: dict[str, object] | None,
         expanded_terms: str | None,
         tags: list[str] | None,
+        *,
+        execution_claim: PurgeExecutionClaim,
     ) -> None:
         purge_id = _validate_governance_purge_id("purge_id", purge_id)
         windows = _parse_governance_window_list(
@@ -210,13 +224,18 @@ class RebuildHideMixin:
         canonical_remaining_windows = [window.model_dump() for window in windows]
         content_value = content or ""
         trigger_value = trigger or None
-        embedding_text = playbook_trigger_embedding_text(trigger_value)
-        embedding = (
-            self._deps()._get_embedding(embedding_text) if embedding_text else []
-        )
+        embedding: list[float] = []
+        if windows:
+            embedding_text = playbook_trigger_embedding_text(trigger_value)
+            embedding = (
+                self._deps()._get_embedding(embedding_text) if embedding_text else []
+            )
         with self._lock:
             try:
-                self.conn.execute("BEGIN")
+                self.conn.execute("BEGIN IMMEDIATE")
+                self._assert_purge_operation_execution_claim_locked(
+                    purge_id, execution_claim
+                )
                 rebuild_target_row = self.conn.execute(
                     """SELECT status, detail
                        FROM purge_operation_targets

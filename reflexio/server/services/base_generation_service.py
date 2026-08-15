@@ -29,6 +29,7 @@ from reflexio.server.services.base_generation import (
 )
 from reflexio.server.services.deferred_learning_plan import (
     ExtractorBookmarkAdvance,
+    FinalizationResult,
     GenerationComputePlan,
 )
 from reflexio.server.services.extractor_config_utils import (
@@ -210,9 +211,9 @@ class BaseGenerationService(
     ABC,
     Generic[TExtractorConfig, TExtractor, TGenerationServiceConfig, TRequest],  # noqa: UP046
 ):
-    # Only profile/playbook GENERATION services emit extraction-run billing here.
-    # Non-extraction learning mutation paths emit their value facet at their own
-    # durable-success point.
+    # Only online profile/playbook extraction services emit extraction-run billing
+    # here. Resumable-extraction finalization emits separately; derived mutation
+    # paths emit no additional learnings_generated events.
     # Default is False so any future subclass is safe by default (opt-IN).
     EMITS_LEARNING_BILLING: bool = False
     """
@@ -342,11 +343,20 @@ class BaseGenerationService(
             results: List of all results from extractors (one per successful extractor)
         """
 
-    def _finalize_extracted_items(self, items: list) -> list:
+    def _finalize_extracted_items(
+        self,
+        items: list,
+        *,
+        finalization_run_id: str | None = None,
+    ) -> list[str] | None:
         """Persist already-flattened extracted items through the service path."""
+        if finalization_run_id is not None:
+            raise NotImplementedError(
+                "Receipt-aware finalization must be implemented by resumable services"
+            )
         if items:
             self._process_results([items])
-        return items
+        return None
 
     @abstractmethod
     def _should_track_in_progress(self) -> bool:
@@ -578,7 +588,11 @@ class BaseGenerationService(
             plan = self.compute_generation(request)
             if plan is None:
                 return
-            self.persist_generation(plan)
+            try:
+                self.persist_generation(plan)
+            except Exception as exc:
+                self._mark_extraction_runs_finalization_failed(exc)
+                raise
             self.emit_generation_side_effects(plan)
         except Exception as e:
             self._record_generation_event(
@@ -599,11 +613,11 @@ class BaseGenerationService(
     def compute_generation(self, request: TRequest) -> GenerationComputePlan | None:
         """Compute half of one generation run — NO learning DB write, NO fence.
 
-        Runs the prepare gate, the extractor (thread-pool LLM tool-loop), dedup
-        + embedding resolution (``_resolve_write_plan``), and drives the
-        ``agent_run`` rows to their terminal state (``_finalize_extraction_runs``
-        — agent_run only, §4.3). Snapshots the billing inputs onto the returned
-        plan so ``emit_generation_side_effects`` never depends on the reused
+        Runs the prepare gate, the extractor (thread-pool LLM tool-loop), and
+        dedup + embedding resolution (``_resolve_write_plan``). Agent runs stay
+        non-terminal until receipt-aware persistence commits and
+        ``emit_generation_side_effects`` finalizes them. Snapshots the billing
+        inputs onto the returned plan so emit does not depend on the reused
         instance's mutable ``_last_*``.
 
         Returns a resolved ``GenerationComputePlan`` for persist/emit, or
@@ -634,18 +648,24 @@ class BaseGenerationService(
         self._last_bookmark_advance = None
         self._last_model_provenance = None
         result = self._execute_extractor(prepared.extractor_config, prepared.identifier)
-        generated_count = self._count_generated_results(result)
 
         try:
             write_plan = self._resolve_write_plan([result]) if result else None
-            self._finalize_extraction_runs()
         except Exception as exc:
             self._mark_extraction_runs_finalization_failed(exc)
             raise
 
+        generated_count = self._count_generated_results(result)
+        billable_count = (
+            self._count_retained_online_learnings(write_plan)
+            if self.EMITS_LEARNING_BILLING
+            else 0
+        )
+
         return GenerationComputePlan(
             prepared=prepared,
             generated_count=generated_count,
+            billable_count=billable_count,
             write_plan=write_plan,
             bookmark_advance=self._last_bookmark_advance,
             generation_start=generation_start,
@@ -667,6 +687,31 @@ class BaseGenerationService(
         atomically with the row writes it corresponds to (F1) — and it is
         applied in exactly one place, so it is never double-applied.
         """
+        if self.EMITS_LEARNING_BILLING and plan.extraction_run_ids:
+            if len(plan.extraction_run_ids) != 1:
+                raise RuntimeError(
+                    "Receipt-aware generation requires exactly one extraction run"
+                )
+            finalization_run_id = plan.extraction_run_ids[0]
+            extraction_run = (
+                self.storage.get_agent_run(finalization_run_id)
+                if self.storage is not None
+                else None
+            )
+            if extraction_run is None:
+                raise RuntimeError(
+                    "Receipt-aware generation extraction run could not be resolved"
+                )
+            # A pending-tool run has not produced its final learning set yet.
+            # Its resume worker must remain free to persist that set and create
+            # the immutable receipt after the tool dependency resolves.
+            if not extraction_run.pending_tool_call_ids:
+                plan.finalization_result = self._finalize_write_plan_with_outcome(
+                    plan.write_plan,
+                    finalization_run_id=finalization_run_id,
+                    bookmark_advance=plan.bookmark_advance,
+                )
+                return
         if plan.write_plan is not None:
             self._persist_write_plan(plan.write_plan)
         self._apply_bookmark_advance(plan.bookmark_advance)
@@ -676,7 +721,8 @@ class BaseGenerationService(
 
         Runs only for a fence-winning job (the durable worker calls it after the
         scope commits; ``.run()`` calls it inline). Reads the plan's compute-time
-        snapshot (``generated_count`` / ``prepared`` / ``generation_start``) so a
+        snapshot (``generated_count`` / ``billable_count`` / ``prepared`` /
+        ``generation_start``) so a
         fence-lost job never emits.
 
         Billing purity note (round-2 finding): ``_record_billing_learning_events``
@@ -693,6 +739,16 @@ class BaseGenerationService(
         is exactly as compute left it when emit runs. The plan still snapshots the
         billing inputs so a future durable reuse can re-plumb locally.
         """
+        try:
+            self._finalize_extraction_runs()
+        except Exception as exc:
+            self._mark_extraction_runs_finalization_failed(exc)
+            raise
+        if (
+            plan.finalization_result is not None
+            and not plan.finalization_result.won_receipt
+        ):
+            return
         self._record_generation_event(
             event_name="generation_succeeded",
             outcome="success",
@@ -708,7 +764,19 @@ class BaseGenerationService(
             },
         )
         self._record_billing_learning_events(
-            prepared=plan.prepared, generated_count=plan.generated_count
+            prepared=plan.prepared, generated_count=plan.billable_count
+        )
+
+    def _finalize_write_plan_with_outcome(
+        self,
+        write_plan: Any,
+        *,
+        finalization_run_id: str,
+        bookmark_advance: ExtractorBookmarkAdvance | None,
+    ) -> FinalizationResult:
+        """Persist one precomputed inline plan through a receipt-aware finalizer."""
+        raise NotImplementedError(
+            "Receipt-aware plan finalization must be implemented by learning services"
         )
 
     @abstractmethod

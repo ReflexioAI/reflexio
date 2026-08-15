@@ -23,7 +23,7 @@ export const unifiedSearchMethods: MethodDef[] = [
         type: "number",
         required: false,
         default: 5,
-        description: "Maximum results per entity type",
+        description: "Maximum results per entity type, from 1 to 100",
       },
       {
         name: "threshold",
@@ -50,7 +50,8 @@ export const unifiedSearchMethods: MethodDef[] = [
         name: "user_id",
         type: "string",
         required: false,
-        description: "Filter by user ID (profiles, user_playbooks)",
+        description:
+          "Filter by user ID (profiles, user_playbooks), at most 255 characters",
       },
       {
         name: "entity_types",
@@ -91,11 +92,25 @@ export const unifiedSearchMethods: MethodDef[] = [
         enumValues: ["vector", "fts", "hybrid"],
       },
       {
+        name: "request_id",
+        type: "string",
+        required: false,
+        description:
+          "Caller correlation ID for the search turn, at most 255 characters",
+      },
+      {
         name: "session_id",
         type: "string",
         required: false,
         description:
-          "Agent session this search serves. When set, results already returned to the same session are skipped and next-best matches backfilled; searches without it neither read nor record session dedup state",
+          "Agent session this search serves, at most 255 characters. When set, results already returned to the same session are skipped and next-best matches backfilled; searches without it neither read nor record session dedup state",
+      },
+      {
+        name: "interaction_id",
+        type: "number",
+        required: false,
+        description:
+          "Caller interaction ID for the search turn; must be a positive integer (minimum 1)",
       },
     ],
   },

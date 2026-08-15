@@ -58,6 +58,7 @@ strings before deleting old import paths in the same PR.
 | `pre_retrieval/` | `QueryReformulator` (`_query_reformulator.py`) + `DocumentExpander` (`_document_expander.py`) - query rewrite and doc expansion for recall. Compact by design; see [README](pre_retrieval/README.md). |
 | `tagging/` | `TaggingService` (`service.py`) + deferred `tagging_scheduler.py` - post-generation profile/playbook tagging. Compact by design; see [README](tagging/README.md). |
 | `unified_search_service.py` | `run_unified_search()` — two-phase parallel search across profiles / agent playbooks / user playbooks. |
+| `search_exposure.py` | Optional synchronous recorder contract for final user-playbook result sets. Enterprise capability registration installs the recorder and makes authenticated unified/direct search fail closed before metering/response. Shared `create_app()` has no default recorder; other constructions persist exposures only when they register one. Direct search omits empty batches. |
 | `retrieval/` | `relevance_floor.py` — result relevance thresholding. `temporal.py` — temporal post-processing driven by reformulation signals: query time windows → per-arm SQL filters, near-duplicate freshness collapse for current-value questions, timestamp ordering for latest-value questions. `user_context_guard.py` — high-precision detection of explicit personalization opt-outs, including Simplified and Traditional Chinese, before user-context retrieval. (Superseded/expired rows are already excluded by storage search SQL.) |
 
 ## Persistence & Config

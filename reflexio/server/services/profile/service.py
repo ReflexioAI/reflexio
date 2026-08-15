@@ -30,7 +30,12 @@ from reflexio.server.services.base_generation_service import (
     BaseGenerationService,
     StatusChangeOperation,
 )
-from reflexio.server.services.deferred_learning_plan import ProfileWritePlan
+from reflexio.server.services.deferred_learning_plan import (
+    ExtractorBookmarkAdvance,
+    FinalizationResult,
+    ProfileWritePlan,
+    _FinalizationReceiptAlreadyExistsError,
+)
 from reflexio.server.services.profile.components.extractor import ProfileExtractor
 from reflexio.server.services.profile.profile_generation_service_utils import (
     ProfileGenerationRequest,
@@ -337,23 +342,116 @@ class ProfileGenerationService(
         all_new_profiles: list[UserProfile],
         *,
         model_provenance: ModelProvenance | None = None,
-    ) -> list[UserProfile]:
+        finalization_run_id: str | None = None,
+    ) -> list[str]:
         """Permanent V3 wrapper: compute-then-persist together (no external fence).
 
-        Kept for the synchronous resume/manual callers
-        (``ExtractionResumeWorker`` calls this directly). Routes them through the
-        same ``_resolve_write_plan`` (compute) + ``_persist_write_plan``
-        (persist) split the durable worker uses — with no external
-        ``commit_scope`` — so the result is identical to the pre-split monolith.
+        Compatibility surface for synchronous callers that expect ordered
+        learning ids. Routes them through the same ``_resolve_write_plan``
+        (compute) + ``_persist_write_plan`` (persist) split the durable worker
+        uses, with no external ``commit_scope``, so the result is identical to
+        the pre-split monolith.
         """
+        return self._finalize_extracted_items_with_outcome(
+            all_new_profiles,
+            model_provenance=model_provenance,
+            finalization_run_id=finalization_run_id,
+        ).learning_ids
+
+    def _finalize_extracted_items_with_outcome(
+        self,
+        all_new_profiles: list[UserProfile],
+        *,
+        model_provenance: ModelProvenance | None = None,
+        finalization_run_id: str | None = None,
+    ) -> FinalizationResult:
+        """Finalize profiles and expose the atomic receipt winner internally."""
+        if finalization_run_id is not None:
+            receipt = self.storage.get_agent_run_finalization_receipt(  # type: ignore[reportOptionalMemberAccess]
+                run_id=finalization_run_id,
+                entity_type="profile",
+            )
+            if receipt is not None:
+                return FinalizationResult(receipt, won_receipt=False)
         if model_provenance is not None:
             self._last_model_provenance = model_provenance
         plan = self._resolve_write_plan([all_new_profiles])
-        if plan is None:
-            return []
-        with self.storage.commit_scope():  # type: ignore[reportOptionalMemberAccess]
-            self._persist_write_plan(plan)
-        return plan.new_profiles
+        # Profile IDs are assigned before persistence, unlike database-assigned playbook IDs.
+        learning_ids = (
+            [
+                str(profile.profile_id)
+                for profile in plan.new_profiles
+                if profile.profile_id
+            ]
+            if plan is not None
+            else []
+        )
+        if finalization_run_id is None:
+            if plan is not None:
+                with self.storage.commit_scope():  # type: ignore[reportOptionalMemberAccess]
+                    self._persist_write_plan(plan)
+            return FinalizationResult(learning_ids, won_receipt=False)
+
+        return self._finalize_write_plan_with_outcome(
+            plan,
+            finalization_run_id=finalization_run_id,
+            bookmark_advance=None,
+        )
+
+    def _finalize_write_plan_with_outcome(
+        self,
+        write_plan: ProfileWritePlan | None,
+        *,
+        finalization_run_id: str,
+        bookmark_advance: ExtractorBookmarkAdvance | None,
+    ) -> FinalizationResult:
+        """Commit a resolved profile plan, bookmark, and receipt atomically."""
+        entity_type = "profile"
+        receipt = self.storage.get_agent_run_finalization_receipt(  # type: ignore[reportOptionalMemberAccess]
+            run_id=finalization_run_id,
+            entity_type=entity_type,
+        )
+        if receipt is not None:
+            return FinalizationResult(receipt, won_receipt=False)
+        learning_ids = (
+            [
+                str(profile.profile_id)
+                for profile in write_plan.new_profiles
+                if profile.profile_id
+            ]
+            if write_plan is not None
+            else []
+        )
+
+        try:
+            with self.storage.commit_scope():  # type: ignore[reportOptionalMemberAccess]
+                receipt = self.storage.get_agent_run_finalization_receipt(  # type: ignore[reportOptionalMemberAccess]
+                    run_id=finalization_run_id,
+                    entity_type=entity_type,
+                )
+                if receipt is not None:
+                    return FinalizationResult(receipt, won_receipt=False)
+                if write_plan is not None:
+                    self._persist_write_plan(write_plan)
+                self._apply_bookmark_advance(bookmark_advance)
+                inserted = self.storage.save_agent_run_finalization_receipt(  # type: ignore[reportOptionalMemberAccess]
+                    run_id=finalization_run_id,
+                    entity_type=entity_type,
+                    learning_ids=learning_ids,
+                )
+                if not inserted:
+                    raise _FinalizationReceiptAlreadyExistsError
+        except _FinalizationReceiptAlreadyExistsError:
+            receipt = self.storage.get_agent_run_finalization_receipt(  # type: ignore[reportOptionalMemberAccess]
+                run_id=finalization_run_id,
+                entity_type=entity_type,
+            )
+            if receipt is None:
+                raise RuntimeError(
+                    "finalization receipt disappeared after insert conflict"
+                ) from None
+            return FinalizationResult(receipt, won_receipt=False)
+        return FinalizationResult(learning_ids, won_receipt=True)
 
     def check_and_update_profiles(self, profiles: list[UserProfile]) -> None:
         """check if the profiles are expired and update them if they are"""

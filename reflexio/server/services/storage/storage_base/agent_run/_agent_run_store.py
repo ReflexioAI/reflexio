@@ -24,6 +24,29 @@ class AgentRunStoreABC:
     def get_agent_run(self, run_id: str) -> AgentRunRecord | None:
         raise NotImplementedError(f"{type(self).__name__} does not support agent runs")
 
+    def get_agent_run_finalization_receipt(
+        self,
+        *,
+        run_id: str,
+        entity_type: str,
+    ) -> list[str] | None:
+        """Return the committed learning ids, or ``None`` when no receipt exists.
+
+        A committed empty receipt returns ``[]`` and must remain distinguishable
+        from a missing receipt so finalization stays idempotent.
+        """
+        raise NotImplementedError(f"{type(self).__name__} does not support agent runs")
+
+    def save_agent_run_finalization_receipt(
+        self,
+        *,
+        run_id: str,
+        entity_type: str,
+        learning_ids: list[str],
+    ) -> bool:
+        """Persist an immutable run-to-learning binding and report insert ownership."""
+        raise NotImplementedError(f"{type(self).__name__} does not support agent runs")
+
     def get_latest_finalized_agent_run_for_request(
         self,
         *,

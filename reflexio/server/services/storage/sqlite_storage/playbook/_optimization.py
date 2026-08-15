@@ -6,6 +6,8 @@ import time
 from hashlib import sha256
 from typing import Any
 
+from pydantic import ValidationError
+
 from reflexio.models.api_schema.domain.entities import canonicalize_artifact_json
 from reflexio.models.api_schema.service_schemas import (
     OptimizationArtifactKind,
@@ -25,6 +27,8 @@ from reflexio.server.services.playbook.publication import (
     canonical_json_bytes,
 )
 from reflexio.server.services.storage.error import (
+    OptimizationArtifactIntegrityError,
+    OptimizationJobIdentityConflictError,
     OptimizationJobLeaseLiveError,
     StorageError,
 )
@@ -86,15 +90,20 @@ def _row_to_playbook_optimization_job(row: sqlite3.Row) -> PlaybookOptimizationJ
 def _row_to_playbook_optimization_artifact(
     row: sqlite3.Row,
 ) -> PlaybookOptimizationArtifact:
-    return PlaybookOptimizationArtifact(
-        artifact_id=row["artifact_id"],
-        job_id=row["job_id"],
-        artifact_kind=row["artifact_kind"],
-        content_json=row["content_json"],
-        content_digest=row["content_digest"],
-        created_at=row["created_at"],
-        updated_at=row["updated_at"],
-    )
+    try:
+        return PlaybookOptimizationArtifact(
+            artifact_id=row["artifact_id"],
+            job_id=row["job_id"],
+            artifact_kind=row["artifact_kind"],
+            content_json=row["content_json"],
+            content_digest=row["content_digest"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+    except (ValidationError, ValueError) as exc:
+        raise OptimizationArtifactIntegrityError(
+            "optimizer artifact row is malformed"
+        ) from exc
 
 
 def _job_insert_values(job: PlaybookOptimizationJob) -> tuple[Any, ...]:
@@ -531,7 +540,9 @@ class OptimizationJobStoreMixin:
                     and by_attempt is not None
                     and by_discovery["job_id"] != by_attempt["job_id"]
                 ):
-                    raise ValueError("conflicting immutable optimizer job identity")
+                    raise OptimizationJobIdentityConflictError(
+                        "conflicting immutable optimizer job identity"
+                    )
                 existing = by_discovery or by_attempt
                 if existing is not None:
                     if (
@@ -542,7 +553,9 @@ class OptimizationJobStoreMixin:
                             and existing["attempt_key"] != job.attempt_key
                         )
                     ):
-                        raise ValueError("conflicting immutable optimizer job identity")
+                        raise OptimizationJobIdentityConflictError(
+                            "conflicting immutable optimizer job identity"
+                        )
                     result = _row_to_playbook_optimization_job(existing)
                 else:
                     cur = self.conn.execute(_JOB_INSERT_SQL, _job_insert_values(job))
@@ -801,7 +814,9 @@ class OptimizationJobStoreMixin:
             sha256(artifact_content_json.encode()).hexdigest()
             != artifact.content_digest
         ):
-            raise ValueError("optimizer artifact digest does not match content")
+            raise OptimizationArtifactIntegrityError(
+                "optimizer artifact digest does not match content"
+            )
         written_at = self._lease_now(now)
         with self._lock:
             owns_transaction = self._own_transaction()
@@ -825,9 +840,13 @@ class OptimizationJobStoreMixin:
                 ).fetchone()
                 if existing is not None:
                     if existing["content_digest"] != artifact.content_digest:
-                        raise ValueError("optimizer artifact digest conflict")
+                        raise OptimizationArtifactIntegrityError(
+                            "optimizer artifact digest conflict"
+                        )
                     if existing["content_json"] != artifact_content_json:
-                        raise ValueError("optimizer artifact content conflict")
+                        raise OptimizationArtifactIntegrityError(
+                            "optimizer artifact content conflict"
+                        )
                     result = _row_to_playbook_optimization_artifact(existing)
                 else:
                     cur = self.conn.execute(

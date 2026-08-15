@@ -18,6 +18,7 @@ import threading
 import unicodedata
 from collections.abc import Callable, Generator, Sequence
 from datetime import UTC, datetime
+from hashlib import sha256
 from pathlib import Path
 from typing import Any, ClassVar, Literal
 
@@ -58,7 +59,15 @@ from reflexio.server.services.storage.error import (
     StorageError,
     require_non_empty_session_id,
 )
-from reflexio.server.services.storage.retention_mixin import RetentionMixin
+from reflexio.server.services.storage.retention_mixin import RetentionMixin, chunked
+from reflexio.server.services.storage.session_outcome_identity import (
+    OUTCOME_ALLOWED_VALUES,
+    OUTCOME_FINALIZATION_RULE,
+    CanonicalTrajectoryDigestAccumulator,
+    CanonicalTrajectoryDigestResult,
+    canonical_json_bytes,
+    outcome_contract_digest,
+)
 from reflexio.server.services.storage.storage_base import BaseStorage
 from reflexio.server.site_var.site_var_manager import SiteVarManager
 
@@ -67,6 +76,8 @@ from ._stall_state import init_stall_state_table
 
 logger = logging.getLogger(__name__)
 
+_TRAJECTORY_FETCH_SIZE = 256
+_SESSION_OUTCOME_MIGRATION_BATCH_SIZE = 256
 _MINIMUM_SQLITE_VERSION = (3, 35, 0)
 _SQLITE_INITIALIZATION_LOCK_STRIPES = 64
 _sqlite_initialization_locks = tuple(
@@ -99,6 +110,164 @@ def _json_loads(text: str | None) -> Any:
     if not text:
         return None
     return json.loads(text)
+
+
+def _canonical_session_trajectory_snapshot(
+    conn: sqlite3.Connection, session_id: str
+) -> CanonicalTrajectoryDigestResult:
+    """Hash and describe a complete bounded, ordered row stream."""
+    cursor = conn.execute(
+        """SELECT requests.request_id, requests.user_id, requests.created_at,
+                  requests.source, requests.agent_version, requests.session_id,
+                  requests.evaluation_only, requests.retrieval_experiment_id,
+                  requests.retrieval_experiment_arm,
+                  requests.governance_subject_ref,
+                  interactions.interaction_id,
+                  interactions.user_id AS interaction_user_id,
+                  interactions.request_id AS interaction_request_id,
+                  interactions.created_at AS interaction_created_at,
+                  interactions.content, interactions.role, interactions.token_count,
+                  interactions.user_action, interactions.user_action_description,
+                  interactions.interacted_image_url, interactions.image_encoding,
+                  interactions.shadow_content, interactions.expert_content,
+                  interactions.tools_used, interactions.citations,
+                  interactions.retrieved_learnings
+           FROM requests
+           LEFT JOIN interactions
+             ON interactions.request_id = requests.request_id
+           WHERE requests.session_id = ?
+           ORDER BY requests.created_at ASC, requests.request_id ASC,
+                    interactions.created_at ASC, interactions.interaction_id ASC""",
+        (session_id,),
+    )
+    accumulator = CanonicalTrajectoryDigestAccumulator(session_id)
+    active_request_id: str | None = None
+    first_request: dict[str, object] | None = None
+    request_count = 0
+    while rows := cursor.fetchmany(_TRAJECTORY_FETCH_SIZE):
+        for row in rows:
+            request_id = str(row["request_id"])
+            if request_id != active_request_id:
+                if active_request_id is not None:
+                    accumulator.finish_request()
+                accumulator.start_request(row)
+                active_request_id = request_id
+                request_count += 1
+                if first_request is None:
+                    first_request = {
+                        key: row[key]
+                        for key in (
+                            "request_id",
+                            "user_id",
+                            "created_at",
+                            "source",
+                            "agent_version",
+                            "session_id",
+                            "evaluation_only",
+                            "retrieval_experiment_id",
+                            "retrieval_experiment_arm",
+                            "governance_subject_ref",
+                        )
+                    }
+            if row["interaction_id"] is None:
+                continue
+            interaction = dict(row)
+            interaction["user_id"] = row["interaction_user_id"]
+            interaction["request_id"] = row["interaction_request_id"]
+            interaction["created_at"] = row["interaction_created_at"]
+            accumulator.add_interaction(interaction)
+    if active_request_id is not None:
+        accumulator.finish_request()
+    return CanonicalTrajectoryDigestResult(
+        digest=accumulator.hexdigest(),
+        first_request=first_request,
+        request_count=request_count,
+    )
+
+
+def _canonical_session_trajectory_digest(
+    conn: sqlite3.Connection, session_id: str
+) -> str:
+    return _canonical_session_trajectory_snapshot(conn, session_id).digest
+
+
+def _prefetch_canonical_session_trajectory_digests(
+    conn: sqlite3.Connection, session_ids: Sequence[str]
+) -> dict[str, str]:
+    """Derive trajectory digests from ordered joined rows in bounded chunks."""
+    digests: dict[str, str] = {}
+    for session_id_chunk in chunked(list(dict.fromkeys(session_ids))):
+        placeholders = ",".join("?" for _ in session_id_chunk)
+        cursor = conn.execute(
+            f"""SELECT requests.request_id, requests.user_id, requests.created_at,
+                       requests.source, requests.agent_version, requests.session_id,
+                       requests.evaluation_only, requests.retrieval_experiment_id,
+                       requests.retrieval_experiment_arm,
+                       requests.governance_subject_ref,
+                       interactions.interaction_id,
+                       interactions.user_id AS interaction_user_id,
+                       interactions.request_id AS interaction_request_id,
+                       interactions.created_at AS interaction_created_at,
+                       interactions.content, interactions.role,
+                       interactions.token_count, interactions.user_action,
+                       interactions.user_action_description,
+                       interactions.interacted_image_url,
+                       interactions.image_encoding, interactions.shadow_content,
+                       interactions.expert_content, interactions.tools_used,
+                       interactions.citations, interactions.retrieved_learnings
+                FROM requests
+                LEFT JOIN interactions
+                  ON interactions.request_id = requests.request_id
+                WHERE requests.session_id IN ({placeholders})
+                ORDER BY requests.session_id ASC, requests.created_at ASC,
+                         requests.request_id ASC,
+                         interactions.created_at ASC,
+                         interactions.interaction_id ASC""",  # noqa: S608
+            session_id_chunk,
+        )
+        active_session_id: str | None = None
+        active_request_id: str | None = None
+        accumulator: CanonicalTrajectoryDigestAccumulator | None = None
+        while rows := cursor.fetchmany(_TRAJECTORY_FETCH_SIZE):
+            for row in rows:
+                session_id = str(row["session_id"])
+                request_id = str(row["request_id"])
+                if accumulator is None or session_id != active_session_id:
+                    if accumulator is not None:
+                        if active_request_id is not None:
+                            accumulator.finish_request()
+                        assert active_session_id is not None  # noqa: S101
+                        digests[active_session_id] = accumulator.hexdigest()
+                    accumulator = CanonicalTrajectoryDigestAccumulator(session_id)
+                    active_session_id = session_id
+                    active_request_id = None
+                if request_id != active_request_id:
+                    if active_request_id is not None:
+                        accumulator.finish_request()
+                    accumulator.start_request(row)
+                    active_request_id = request_id
+                if row["interaction_id"] is not None:
+                    interaction = dict(row)
+                    interaction["user_id"] = row["interaction_user_id"]
+                    interaction["request_id"] = row["interaction_request_id"]
+                    interaction["created_at"] = row["interaction_created_at"]
+                    accumulator.add_interaction(interaction)
+        if accumulator is not None:
+            if active_request_id is not None:
+                accumulator.finish_request()
+            assert active_session_id is not None  # noqa: S101
+            digests[active_session_id] = accumulator.hexdigest()
+        for session_id in session_id_chunk:
+            digests.setdefault(
+                session_id,
+                CanonicalTrajectoryDigestAccumulator(session_id).hexdigest(),
+            )
+    return digests
+
+
+def _legacy_session_outcome_id(user_id: str, session_id: str) -> str:
+    """Return a delimiter-safe immutable identity for a migrated legacy outcome."""
+    return sha256(canonical_json_bytes([user_id, session_id])).hexdigest()
 
 
 _FTS5_OPERATORS = frozenset({"OR", "AND", "NOT"})
@@ -915,13 +1084,27 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         # _DDL creates an index over these columns. Upgrade legacy request tables
         # before executescript so index creation cannot fail on missing columns.
         self._migrate_request_retrieval_experiment()
-        self._migrate_session_outcomes_schema()
         with self._lock:
+            session_outcome_columns = {
+                row["name"]
+                for row in self.conn.execute(
+                    "PRAGMA table_info(session_outcomes)"
+                ).fetchall()
+            }
+            if (
+                session_outcome_columns
+                and "governance_subject_ref" not in session_outcome_columns
+            ):
+                self.conn.execute(
+                    "ALTER TABLE session_outcomes "
+                    "ADD COLUMN governance_subject_ref TEXT"
+                )
             cur = self.conn.cursor()
             cur.executescript(_DDL)
             init_governance_tables(self.conn)
             init_playbook_aggregation_tables(self.conn)
             self.conn.commit()
+        self._migrate_session_outcomes_schema()
         if self._has_sqlite_vec:
             self._create_vec_tables()
             self._migrate_vec_tables()
@@ -948,6 +1131,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         self._migrate_user_playbook_publication_staging_columns()
         self._classify_legacy_playbook_optimization_jobs()
         self._enforce_playbook_optimization_job_constraints()
+        self._enforce_playbook_optimization_artifact_constraints()
         self._migrate_retire_profile_change_logs()
         self._migrate_retire_playbook_aggregation_change_logs()
         init_stall_state_table(self.conn)
@@ -1015,120 +1199,6 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                     "VALUES (?, '')",
                     (version_sentinel_rowid,),
                 )
-                self.conn.commit()
-            except Exception:
-                self.conn.rollback()
-                raise
-
-    def _migrate_session_outcomes_schema(self) -> None:
-        """Restore the pre-identity outcome schema after downgrading #407."""
-        with self._lock:
-            table_info = self.conn.execute(
-                "PRAGMA table_info(session_outcomes)"
-            ).fetchall()
-            if not table_info:
-                return
-            expected_columns = {
-                "user_id",
-                "session_id",
-                "outcome",
-                "occurred_at",
-                "source",
-                "label",
-                "value",
-                "metadata",
-                "governance_subject_ref",
-                "created_at",
-            }
-            columns = {str(row["name"]): row for row in table_info}
-            table = self.conn.execute(
-                "SELECT sql FROM sqlite_master WHERE type = 'table' "
-                "AND name = 'session_outcomes'"
-            ).fetchone()
-            table_sql = str(table["sql"] or "") if table is not None else ""
-            governance_column = columns.get("governance_subject_ref")
-            has_empty_subject_default = (
-                governance_column is not None
-                and governance_column["dflt_value"] in ("''", '""')
-            )
-            identity_columns = {
-                "outcome_id",
-                "outcome_revision",
-                "outcome_contract_digest",
-                "finalized_trajectory_digest",
-            }
-            if (
-                expected_columns.issubset(columns)
-                and not identity_columns.intersection(columns)
-                and governance_column is not None
-                and int(governance_column["notnull"]) == 1
-                and not has_empty_subject_default
-                and "'unknown'" not in table_sql
-            ):
-                return
-
-            self.conn.execute("BEGIN IMMEDIATE")
-            try:
-                legacy_rows = self.conn.execute(
-                    "SELECT * FROM session_outcomes"
-                ).fetchall()
-                self.conn.execute(
-                    "ALTER TABLE session_outcomes RENAME TO session_outcomes_legacy"
-                )
-                self.conn.execute(
-                    """CREATE TABLE session_outcomes (
-                        user_id TEXT NOT NULL,
-                        session_id TEXT NOT NULL,
-                        outcome TEXT NOT NULL CHECK (outcome IN ('success', 'failure')),
-                        occurred_at INTEGER NOT NULL,
-                        source TEXT NOT NULL,
-                        label TEXT,
-                        value REAL,
-                        metadata TEXT,
-                        governance_subject_ref TEXT NOT NULL,
-                        created_at INTEGER NOT NULL,
-                        PRIMARY KEY (user_id, session_id)
-                    )"""
-                )
-                compatible_rows = [
-                    row
-                    for row in legacy_rows
-                    if row["outcome"] in ("success", "failure")
-                ]
-                for row in compatible_rows:
-                    subject_ref = (
-                        row["governance_subject_ref"]
-                        if "governance_subject_ref" in columns
-                        else None
-                    )
-                    if subject_ref is None or not str(subject_ref).strip():
-                        subject_ref = self._subject_ref_for_user_id(str(row["user_id"]))
-                    self.conn.execute(
-                        """INSERT INTO session_outcomes (
-                               user_id, session_id, outcome, occurred_at, source,
-                               label, value, metadata, governance_subject_ref, created_at
-                           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                        (
-                            row["user_id"],
-                            row["session_id"],
-                            row["outcome"],
-                            row["occurred_at"],
-                            row["source"],
-                            row["label"] if "label" in columns else None,
-                            row["value"] if "value" in columns else None,
-                            row["metadata"] if "metadata" in columns else None,
-                            subject_ref,
-                            row["created_at"],
-                        ),
-                    )
-                dropped_unknown = len(legacy_rows) - len(compatible_rows)
-                if dropped_unknown:
-                    logger.warning(
-                        "Dropped %d unrepresentable 'unknown' session outcomes while "
-                        "restoring the pre-#407 schema",
-                        dropped_unknown,
-                    )
-                self.conn.execute("DROP TABLE session_outcomes_legacy")
                 self.conn.commit()
             except Exception:
                 self.conn.rollback()
@@ -1236,6 +1306,220 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                 emb = _json_loads(r["embedding"])
                 if emb:
                     self._vec_upsert(vec_table, r["rid"], emb)
+
+    def _migrate_session_outcomes_schema(self) -> None:
+        """Rebuild legacy outcome rows with immutable v1 finalization identities."""
+        with self._lock:
+            self.conn.execute("BEGIN IMMEDIATE")
+            try:
+                table_info = self.conn.execute(
+                    "PRAGMA table_info(session_outcomes)"
+                ).fetchall()
+                columns = {str(row["name"]): row for row in table_info}
+                table = self.conn.execute(
+                    "SELECT sql FROM sqlite_master WHERE type = 'table' "
+                    "AND name = 'session_outcomes'"
+                ).fetchone()
+                table_sql = (table["sql"] if table is not None else "") or ""
+                identity_columns = {
+                    "outcome_id",
+                    "outcome_revision",
+                    "outcome_contract_digest",
+                    "finalized_trajectory_digest",
+                }
+                expected_columns = identity_columns | {
+                    "user_id",
+                    "session_id",
+                    "outcome",
+                    "occurred_at",
+                    "source",
+                    "label",
+                    "value",
+                    "metadata",
+                    "governance_subject_ref",
+                    "created_at",
+                }
+                subject_column = columns.get("governance_subject_ref")
+                has_empty_subject_default = (
+                    subject_column is not None
+                    and subject_column["dflt_value"] in ("''", '""')
+                )
+                schema_is_canonical = (
+                    expected_columns.issubset(columns)
+                    and "'unknown'" in table_sql
+                    and subject_column is not None
+                    and int(subject_column["notnull"]) == 1
+                    and not has_empty_subject_default
+                )
+                if schema_is_canonical:
+                    rows_missing_subject_ref = self.conn.execute(
+                        """SELECT user_id, session_id FROM session_outcomes
+                           WHERE governance_subject_ref IS NULL
+                              OR trim(governance_subject_ref) = ''"""
+                    ).fetchall()
+                    self.conn.executemany(
+                        """UPDATE session_outcomes SET governance_subject_ref = ?
+                           WHERE user_id = ? AND session_id = ?""",
+                        [
+                            (
+                                self._subject_ref_for_user_id(str(row["user_id"])),
+                                row["user_id"],
+                                row["session_id"],
+                            )
+                            for row in rows_missing_subject_ref
+                        ],
+                    )
+                    self.conn.commit()
+                    return
+
+                self.conn.execute(
+                    "ALTER TABLE session_outcomes RENAME TO session_outcomes_legacy"
+                )
+                self.conn.execute(
+                    """CREATE TABLE session_outcomes (
+                        outcome_id TEXT NOT NULL UNIQUE,
+                        outcome_revision INTEGER NOT NULL CHECK (outcome_revision >= 1),
+                        user_id TEXT NOT NULL,
+                        session_id TEXT NOT NULL,
+                        outcome TEXT NOT NULL CHECK (outcome IN ('success', 'failure', 'unknown')),
+                        occurred_at INTEGER NOT NULL,
+                        source TEXT NOT NULL,
+                        label TEXT,
+                        value REAL,
+                        metadata TEXT,
+                        outcome_contract_digest TEXT NOT NULL,
+                        finalized_trajectory_digest TEXT NOT NULL,
+                        governance_subject_ref TEXT NOT NULL,
+                        created_at INTEGER NOT NULL,
+                        PRIMARY KEY (user_id, session_id)
+                    )"""
+                )
+                last_user_id: str | None = None
+                last_session_id: str | None = None
+                while True:
+                    if last_user_id is None:
+                        legacy_rows = self.conn.execute(
+                            """SELECT * FROM session_outcomes_legacy
+                               ORDER BY user_id, session_id
+                               LIMIT ?""",
+                            (_SESSION_OUTCOME_MIGRATION_BATCH_SIZE,),
+                        ).fetchall()
+                    else:
+                        legacy_rows = self.conn.execute(
+                            """SELECT * FROM session_outcomes_legacy
+                               WHERE user_id > ?
+                                  OR (user_id = ? AND session_id > ?)
+                               ORDER BY user_id, session_id
+                               LIMIT ?""",
+                            (
+                                last_user_id,
+                                last_user_id,
+                                last_session_id,
+                                _SESSION_OUTCOME_MIGRATION_BATCH_SIZE,
+                            ),
+                        ).fetchall()
+                    if not legacy_rows:
+                        break
+                    trajectory_digests = _prefetch_canonical_session_trajectory_digests(
+                        self.conn,
+                        [
+                            str(row["session_id"])
+                            for row in legacy_rows
+                            if "finalized_trajectory_digest" not in columns
+                            or not row["finalized_trajectory_digest"]
+                        ],
+                    )
+                    for row in legacy_rows:
+                        source = str(row["source"])
+                        subject_ref = (
+                            row["governance_subject_ref"]
+                            if "governance_subject_ref" in columns
+                            else None
+                        )
+                        if subject_ref is None or not str(subject_ref).strip():
+                            subject_ref = self._subject_ref_for_user_id(
+                                str(row["user_id"])
+                            )
+                        existing_outcome_id = (
+                            row["outcome_id"] if "outcome_id" in columns else None
+                        )
+                        existing_contract_digest = (
+                            row["outcome_contract_digest"]
+                            if "outcome_contract_digest" in columns
+                            else None
+                        )
+                        existing_trajectory_digest = (
+                            row["finalized_trajectory_digest"]
+                            if "finalized_trajectory_digest" in columns
+                            else None
+                        )
+                        self.conn.execute(
+                            """INSERT INTO session_outcomes (
+                                outcome_id, outcome_revision, user_id, session_id,
+                                outcome, occurred_at, source, label, value, metadata,
+                                outcome_contract_digest, finalized_trajectory_digest,
+                                governance_subject_ref, created_at
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                            (
+                                existing_outcome_id
+                                or _legacy_session_outcome_id(
+                                    str(row["user_id"]), str(row["session_id"])
+                                ),
+                                (
+                                    row["outcome_revision"]
+                                    if "outcome_revision" in columns
+                                    and row["outcome_revision"] is not None
+                                    else 1
+                                ),
+                                row["user_id"],
+                                row["session_id"],
+                                row["outcome"],
+                                row["occurred_at"],
+                                source,
+                                row["label"] if "label" in columns else None,
+                                row["value"] if "value" in columns else None,
+                                row["metadata"] if "metadata" in columns else None,
+                                existing_contract_digest
+                                or outcome_contract_digest(
+                                    source=source,
+                                    schema_version=1,
+                                    allowed_values=OUTCOME_ALLOWED_VALUES,
+                                    finalization_rule=OUTCOME_FINALIZATION_RULE,
+                                ),
+                                existing_trajectory_digest
+                                or trajectory_digests[str(row["session_id"])],
+                                subject_ref,
+                                row["created_at"],
+                            ),
+                        )
+                    last_user_id = str(legacy_rows[-1]["user_id"])
+                    last_session_id = str(legacy_rows[-1]["session_id"])
+                    if len(legacy_rows) < _SESSION_OUTCOME_MIGRATION_BATCH_SIZE:
+                        break
+                self.conn.execute("DROP TABLE session_outcomes_legacy")
+                self.conn.execute(
+                    "CREATE INDEX idx_session_outcomes_occurred_at "
+                    "ON session_outcomes(occurred_at)"
+                )
+                self.conn.execute(
+                    "CREATE INDEX idx_session_outcomes_session_id "
+                    "ON session_outcomes(session_id)"
+                )
+                self.conn.execute(
+                    "CREATE INDEX idx_session_outcomes_source_outcome "
+                    "ON session_outcomes(source, outcome)"
+                )
+                self.conn.execute(
+                    "CREATE INDEX idx_session_outcomes_label ON session_outcomes(label)"
+                )
+                self.conn.execute(
+                    "CREATE INDEX idx_session_outcomes_subject_ref "
+                    "ON session_outcomes(governance_subject_ref)"
+                )
+                self.conn.commit()
+            except Exception:
+                self.conn.rollback()
+                raise
 
     def _migrate_interactions_schema(self) -> None:
         """Add new columns to existing interactions table if missing."""
@@ -1889,7 +2173,9 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             "CHECK (terminal_outcome IS NULL OR terminal_outcome IN",
             "'governance_erased'",
         )
-        if all(check in table_sql for check in required_checks):
+        if all(check in table_sql for check in required_checks) and (
+            "'offline_tuner_open_world'" not in table_sql
+        ):
             return
         foreign_keys_enabled = bool(
             self.conn.execute("PRAGMA foreign_keys").fetchone()[0]
@@ -1899,6 +2185,10 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             self.conn.execute("PRAGMA foreign_keys=OFF")
         try:
             self.conn.execute("BEGIN IMMEDIATE")
+            sequence_high_water = self._autoincrement_high_water(
+                "playbook_optimization_jobs",
+                "job_id",
+            )
             self.conn.execute("DROP TABLE IF EXISTS playbook_optimization_jobs_new")
             self.conn.execute(
                 """
@@ -1990,6 +2280,10 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                 "ALTER TABLE playbook_optimization_jobs_new "
                 "RENAME TO playbook_optimization_jobs"
             )
+            self._restore_autoincrement_high_water(
+                "playbook_optimization_jobs",
+                sequence_high_water,
+            )
             self.conn.execute(
                 "CREATE INDEX idx_poj_target "
                 "ON playbook_optimization_jobs(target_kind, target_id)"
@@ -2024,6 +2318,125 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         finally:
             self.conn.execute(
                 f"PRAGMA foreign_keys={'ON' if foreign_keys_enabled else 'OFF'}"
+            )
+
+    def _enforce_playbook_optimization_artifact_constraints(self) -> None:
+        """Rebuild legacy artifact tables with the current kind allowlist."""
+        table_sql_row = self.conn.execute(
+            """SELECT sql FROM sqlite_master
+               WHERE type = 'table' AND name = 'playbook_optimization_artifacts'"""
+        ).fetchone()
+        if table_sql_row is None:
+            return
+        table_sql = table_sql_row["sql"]
+        artifact_kinds = (
+            "'expected_population_manifest'",
+            "'generation_selection'",
+            "'replay_manifest'",
+            "'candidate'",
+            "'candidate_search_projection'",
+            "'open_world_evidence_bundle'",
+        )
+        if all(artifact_kind in table_sql for artifact_kind in artifact_kinds):
+            return
+
+        foreign_keys_enabled = bool(
+            self.conn.execute("PRAGMA foreign_keys").fetchone()[0]
+        )
+        self.conn.commit()
+        if foreign_keys_enabled:
+            self.conn.execute("PRAGMA foreign_keys=OFF")
+        try:
+            self.conn.execute("BEGIN IMMEDIATE")
+            sequence_high_water = self._autoincrement_high_water(
+                "playbook_optimization_artifacts",
+                "artifact_id",
+            )
+            self.conn.execute(
+                "DROP TABLE IF EXISTS playbook_optimization_artifacts_new"
+            )
+            self.conn.execute(
+                """
+                CREATE TABLE playbook_optimization_artifacts_new (
+                    artifact_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    job_id INTEGER NOT NULL,
+                    artifact_kind TEXT NOT NULL CHECK (artifact_kind IN (
+                        'expected_population_manifest',
+                        'generation_selection',
+                        'replay_manifest',
+                        'candidate',
+                        'candidate_search_projection',
+                        'open_world_evidence_bundle'
+                    )),
+                    content_json TEXT NOT NULL,
+                    content_digest TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    UNIQUE (job_id, artifact_kind),
+                    FOREIGN KEY (job_id)
+                        REFERENCES playbook_optimization_jobs(job_id)
+                        ON DELETE CASCADE
+                )
+                """
+            )
+            self.conn.execute(
+                """
+                INSERT INTO playbook_optimization_artifacts_new (
+                    artifact_id, job_id, artifact_kind, content_json,
+                    content_digest, created_at, updated_at
+                ) SELECT
+                    artifact_id, job_id, artifact_kind, content_json,
+                    content_digest, created_at, updated_at
+                FROM playbook_optimization_artifacts
+                """
+            )
+            self.conn.execute("DROP TABLE playbook_optimization_artifacts")
+            self.conn.execute(
+                "ALTER TABLE playbook_optimization_artifacts_new "
+                "RENAME TO playbook_optimization_artifacts"
+            )
+            self._restore_autoincrement_high_water(
+                "playbook_optimization_artifacts",
+                sequence_high_water,
+            )
+            self.conn.execute(
+                "CREATE INDEX idx_poa_job ON playbook_optimization_artifacts(job_id)"
+            )
+            violations = self.conn.execute("PRAGMA foreign_key_check").fetchall()
+            if violations:
+                raise sqlite3.IntegrityError(
+                    "foreign key check failed after optimizer artifact migration: "
+                    f"{violations}"
+                )
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+        finally:
+            self.conn.execute(
+                f"PRAGMA foreign_keys={'ON' if foreign_keys_enabled else 'OFF'}"
+            )
+
+    def _autoincrement_high_water(self, table_name: str, id_column: str) -> int:
+        sequence_row = self.conn.execute(
+            "SELECT MAX(seq) FROM sqlite_sequence WHERE name = ?",
+            (table_name,),
+        ).fetchone()
+        maximum_row = self.conn.execute(
+            f"SELECT MAX({id_column}) FROM {table_name}"  # noqa: S608
+        ).fetchone()
+        return max(sequence_row[0] or 0, maximum_row[0] or 0)
+
+    def _restore_autoincrement_high_water(
+        self,
+        table_name: str,
+        high_water: int,
+    ) -> None:
+        self.conn.execute("DELETE FROM sqlite_sequence WHERE name = ?", (table_name,))
+        if high_water:
+            self.conn.execute(
+                "INSERT INTO sqlite_sequence(name, seq) VALUES (?, ?)",
+                (table_name, high_water),
             )
 
     def _migrate_retire_profile_change_logs(self) -> None:
@@ -2274,6 +2687,9 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         retrieval_experiment_arm_expr = (
             "retrieval_experiment_arm" if "retrieval_experiment_arm" in cols else "NULL"
         )
+        governance_subject_ref_expr = (
+            "governance_subject_ref" if "governance_subject_ref" in cols else "NULL"
+        )
         # NOTE: this rebuild hardcodes the full `requests` column set. If a
         # future migration adds a column to `requests`, it MUST be added here
         # too (and to the SELECT below) or the rebuild will silently drop it.
@@ -2288,7 +2704,8 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                 session_id TEXT NOT NULL CHECK (trim(session_id) != ''),
                 evaluation_only INTEGER NOT NULL DEFAULT 0,
                 retrieval_experiment_id TEXT,
-                retrieval_experiment_arm TEXT
+                retrieval_experiment_arm TEXT,
+                governance_subject_ref TEXT
             );
             INSERT INTO requests_new
                 (
@@ -2300,7 +2717,8 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                     session_id,
                     evaluation_only,
                     retrieval_experiment_id,
-                    retrieval_experiment_arm
+                    retrieval_experiment_arm,
+                    governance_subject_ref
                 )
             SELECT
                 request_id,
@@ -2315,7 +2733,8 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                 END,
                 {evaluation_only_expr},
                 {retrieval_experiment_id_expr},
-                {retrieval_experiment_arm_expr}
+                {retrieval_experiment_arm_expr},
+                {governance_subject_ref_expr}
             FROM requests;
             DROP TABLE requests;
             ALTER TABLE requests_new RENAME TO requests;
@@ -2324,6 +2743,8 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             CREATE INDEX IF NOT EXISTS idx_requests_created_at ON requests(created_at);
             CREATE INDEX IF NOT EXISTS idx_requests_retrieval_experiment
                 ON requests(retrieval_experiment_id, user_id, session_id, created_at, request_id);
+            CREATE INDEX IF NOT EXISTS idx_requests_governance_subject_ref
+                ON requests(governance_subject_ref);
             """
         )
         self.conn.commit()
@@ -2618,7 +3039,6 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                 "SELECT rowid, profile_id FROM profiles WHERE user_id = ?",
                 (user_id,),
             ).fetchall()
-            subject_ref = self._subject_ref_for_user_id(user_id)
 
             # Build a rowid lookup for FTS/vec cleanup (SQLite-specific need).
             profile_rowid_by_id: dict[str, int] = {
@@ -2669,9 +3089,8 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                 "DELETE FROM interactions WHERE user_id = ?", (user_id,)
             )
             session_outcomes_cur = self.conn.execute(
-                """DELETE FROM session_outcomes
-                   WHERE user_id = ? OR governance_subject_ref = ?""",
-                (user_id, subject_ref),
+                "DELETE FROM session_outcomes WHERE user_id = ?",
+                (user_id,),
             )
             requests_cur = self.conn.execute(
                 "DELETE FROM requests WHERE user_id = ?", (user_id,)
@@ -2800,14 +3219,18 @@ CREATE INDEX IF NOT EXISTS idx_requests_retrieval_experiment
     ON requests(retrieval_experiment_id, user_id, session_id, created_at, request_id);
 
 CREATE TABLE IF NOT EXISTS session_outcomes (
+    outcome_id TEXT NOT NULL UNIQUE,
+    outcome_revision INTEGER NOT NULL CHECK (outcome_revision >= 1),
     user_id TEXT NOT NULL,
     session_id TEXT NOT NULL,
-    outcome TEXT NOT NULL CHECK (outcome IN ('success', 'failure')),
+    outcome TEXT NOT NULL CHECK (outcome IN ('success', 'failure', 'unknown')),
     occurred_at INTEGER NOT NULL,
     source TEXT NOT NULL,
     label TEXT,
     value REAL,
     metadata TEXT,
+    outcome_contract_digest TEXT NOT NULL,
+    finalized_trajectory_digest TEXT NOT NULL,
     governance_subject_ref TEXT NOT NULL,
     created_at INTEGER NOT NULL,
     PRIMARY KEY (user_id, session_id)
@@ -3041,7 +3464,8 @@ CREATE TABLE IF NOT EXISTS playbook_optimization_artifacts (
         'generation_selection',
         'replay_manifest',
         'candidate',
-        'candidate_search_projection'
+        'candidate_search_projection',
+        'open_world_evidence_bundle'
     )),
     content_json TEXT NOT NULL,
     content_digest TEXT NOT NULL,
@@ -3186,6 +3610,14 @@ CREATE TABLE IF NOT EXISTS _agent_runs (
 );
 CREATE INDEX IF NOT EXISTS idx_agent_runs_ready ON _agent_runs(status, next_resume_at, updated_at);
 CREATE INDEX IF NOT EXISTS idx_agent_runs_binding ON _agent_runs(org_id, extractor_kind, user_id);
+
+CREATE TABLE IF NOT EXISTS _agent_run_finalization_receipts (
+    run_id TEXT PRIMARY KEY,
+    entity_type TEXT NOT NULL CHECK (entity_type IN ('profile', 'user_playbook')),
+    learning_ids TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    FOREIGN KEY (run_id) REFERENCES _agent_runs(id) ON DELETE CASCADE
+);
 
 CREATE TABLE IF NOT EXISTS _pending_tool_calls (
     id TEXT PRIMARY KEY,

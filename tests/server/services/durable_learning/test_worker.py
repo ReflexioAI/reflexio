@@ -28,15 +28,25 @@ from __future__ import annotations
 import tempfile
 import threading
 import time
+from datetime import UTC, datetime, timedelta
 from unittest import mock
 
 import pytest
 
 from reflexio.models.api_schema.domain.entities import Interaction, Request
 from reflexio.server.api_endpoints.request_context import RequestContext
-from reflexio.server.services.deferred_learning_plan import DeferredLearningPlan
+from reflexio.server.services.base_generation_service import PreparedGenerationRun
+from reflexio.server.services.deferred_learning_plan import (
+    DeferredLearningPlan,
+    GenerationComputePlan,
+)
 from reflexio.server.services.durable_learning.worker import DurableLearningWorker
 from reflexio.server.services.generation_service import GenerationService
+from reflexio.server.services.storage.storage_base import (
+    AgentBinding,
+    AgentRunRecord,
+    AgentRunStatus,
+)
 
 # ---------------------------------------------------------------------------
 # Module-level fixture: disable the local ONNX embedder for all tests.
@@ -122,6 +132,78 @@ def _setup_job(
             force_extraction=force_extraction,
             skip_aggregation=skip_aggregation,
         )
+
+
+def _seed_completed_agent_run(
+    storage,
+    *,
+    org_id: str,
+    request_id: str,
+    run_id: str,
+    extractor_kind: str,
+) -> None:
+    storage.create_agent_run(
+        AgentRunRecord(
+            id=run_id,
+            binding=AgentBinding(
+                org_id=org_id,
+                extractor_kind=extractor_kind,
+                user_id="test_user",
+                request_id=request_id,
+                agent_version="v1",
+                source="test_src",
+            ),
+            status=AgentRunStatus.AGENT_COMPLETED,
+            generation_request_snapshot={"request_id": request_id},
+            committed_output={f"{extractor_kind}s": []},
+        )
+    )
+
+
+def _deferred_plan_with_runs(
+    *,
+    request_id: str,
+    profile_run_id: str,
+    playbook_run_id: str,
+) -> DeferredLearningPlan:
+    def generation_plan(run_id: str, extractor_name: str) -> GenerationComputePlan:
+        return GenerationComputePlan(
+            prepared=PreparedGenerationRun(
+                extractor_config=mock.Mock(),
+                extractor_name=extractor_name,
+                identifier=f"{extractor_name}_generation",
+            ),
+            generated_count=0,
+            billable_count=0,
+            write_plan=None,
+            bookmark_advance=None,
+            generation_start=0.0,
+            extraction_run_ids=[run_id],
+            token_totals=None,
+        )
+
+    return DeferredLearningPlan(
+        request_id=request_id,
+        user_id="test_user",
+        agent_version="v1",
+        lock_acquired=True,
+        profile=(mock.Mock(), generation_plan(profile_run_id, "profile")),
+        playbook=(mock.Mock(), generation_plan(playbook_run_id, "playbook")),
+    )
+
+
+def _assert_runs_abandoned(storage, *run_ids: str) -> None:
+    for run_id in run_ids:
+        run = storage.get_agent_run(run_id)
+        assert run is not None and run.status == AgentRunStatus.FAILED
+    assert (
+        storage.claim_finalization_failed_agent_run(
+            org_id=storage.org_id,
+            worker_id="resume-worker",
+            now=datetime.now(UTC) + timedelta(days=1),
+        )
+        is None
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -554,6 +636,233 @@ def test_superseded_job_does_not_commit_outputs():
             "superseded worker must NOT commit profile writes: "
             f"before={profiles_before}, after={profiles_after}"
         )
+
+
+def test_persist_failure_abandons_computed_agent_runs():
+    """A rolled-back durable persist cannot leave resumable agent runs behind."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        factory = _factory(tmp_dir)
+        ctx = factory("org_persist_failure")
+        assert ctx.storage is not None
+        _setup_job(
+            ctx.storage,
+            org_id="org_persist_failure",
+            user_id="test_user",
+            request_id="req_persist_failure",
+        )
+        run_ids = ("profile-persist-failure", "playbook-persist-failure")
+        _seed_completed_agent_run(
+            ctx.storage,
+            org_id="org_persist_failure",
+            request_id="req_persist_failure",
+            run_id=run_ids[0],
+            extractor_kind="profile",
+        )
+        _seed_completed_agent_run(
+            ctx.storage,
+            org_id="org_persist_failure",
+            request_id="req_persist_failure",
+            run_id=run_ids[1],
+            extractor_kind="playbook",
+        )
+        [job] = ctx.storage.claim_learning_jobs(
+            claimed_by="persist-failure-worker", limit=1, lease_seconds=300
+        )
+        plan = _deferred_plan_with_runs(
+            request_id="req_persist_failure",
+            profile_run_id=run_ids[0],
+            playbook_run_id=run_ids[1],
+        )
+
+        with (
+            mock.patch.object(
+                GenerationService, "compute_deferred_learning", return_value=plan
+            ),
+            mock.patch.object(
+                GenerationService,
+                "persist_deferred_learning",
+                side_effect=RuntimeError("persist failed"),
+            ),
+        ):
+            processed = DurableLearningWorker(factory)._process_job(
+                factory("org_persist_failure"), job
+            )
+
+        assert processed is False
+        _assert_runs_abandoned(ctx.storage, *run_ids)
+
+
+def test_superseded_job_abandons_computed_agent_runs():
+    """Fence loss abandons every run computed by the superseded attempt."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        factory = _factory(tmp_dir)
+        ctx = factory("org_run_supersede")
+        assert ctx.storage is not None
+        _setup_job(
+            ctx.storage,
+            org_id="org_run_supersede",
+            user_id="test_user",
+            request_id="req_run_supersede",
+        )
+        [stale_job] = ctx.storage.claim_learning_jobs(
+            claimed_by="stale-worker", limit=1, lease_seconds=-1
+        )
+        [live_job] = ctx.storage.claim_learning_jobs(
+            claimed_by="live-worker", limit=1, lease_seconds=300
+        )
+        assert stale_job.claim_token != live_job.claim_token
+
+        run_ids = ("profile-run-supersede", "playbook-run-supersede")
+        _seed_completed_agent_run(
+            ctx.storage,
+            org_id="org_run_supersede",
+            request_id="req_run_supersede",
+            run_id=run_ids[0],
+            extractor_kind="profile",
+        )
+        _seed_completed_agent_run(
+            ctx.storage,
+            org_id="org_run_supersede",
+            request_id="req_run_supersede",
+            run_id=run_ids[1],
+            extractor_kind="playbook",
+        )
+        plan = _deferred_plan_with_runs(
+            request_id="req_run_supersede",
+            profile_run_id=run_ids[0],
+            playbook_run_id=run_ids[1],
+        )
+
+        with mock.patch.object(
+            GenerationService, "compute_deferred_learning", return_value=plan
+        ):
+            processed = DurableLearningWorker(factory)._process_job(
+                factory("org_run_supersede"), stale_job
+            )
+
+        assert processed is False
+        _assert_runs_abandoned(ctx.storage, *run_ids)
+
+
+def test_post_commit_emit_failure_preserves_completed_job_and_agent_runs():
+    """A post-commit side-effect failure cannot undo the durable winner."""
+    from reflexio.models.api_schema.domain.entities import LineageContext
+    from reflexio.models.api_schema.service_schemas import UserProfile
+    from reflexio.server.services.deferred_learning_plan import (
+        ProfileWritePlan,
+    )
+    from reflexio.server.services.profile.service import ProfileGenerationService
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        factory = _factory(tmp_dir)
+        ctx = factory("org_post_commit_emit_failure")
+        assert ctx.storage is not None
+        _setup_job(
+            ctx.storage,
+            org_id="org_post_commit_emit_failure",
+            user_id="test_user",
+            request_id="req_post_commit_emit_failure",
+            force_extraction=True,
+            skip_aggregation=True,
+        )
+        [job] = ctx.storage.claim_learning_jobs(
+            claimed_by="post-commit-worker", limit=1, lease_seconds=300
+        )
+
+        computed_plans: list[DeferredLearningPlan] = []
+        run_id = "profile-post-commit-emit-failure"
+        _seed_completed_agent_run(
+            ctx.storage,
+            org_id="org_post_commit_emit_failure",
+            request_id="req_post_commit_emit_failure",
+            run_id=run_id,
+            extractor_kind="profile",
+        )
+
+        def build_plan(self, **_kwargs):
+            profile = UserProfile(
+                profile_id="profile-post-commit",
+                user_id="test_user",
+                content="This durable profile survived a post-commit emit failure.",
+                last_modified_timestamp=1_000,
+                generated_from_request_id="req_post_commit_emit_failure",
+            )
+            generation_plan = GenerationComputePlan(
+                prepared=PreparedGenerationRun(
+                    extractor_config=mock.Mock(),
+                    identifier="profile_generation",
+                    extractor_name="profile",
+                ),
+                generated_count=1,
+                billable_count=1,
+                write_plan=ProfileWritePlan(
+                    user_id="test_user",
+                    request_id="req_post_commit_emit_failure",
+                    new_profiles=[profile],
+                    superseded_ids=[],
+                    lineage_contexts=[LineageContext(op_kind="create")],
+                ),
+                bookmark_advance=None,
+                generation_start=0.0,
+                extraction_run_ids=[run_id],
+                token_totals=None,
+            )
+            plan = DeferredLearningPlan(
+                request_id="req_post_commit_emit_failure",
+                user_id="test_user",
+                agent_version="v1",
+                lock_acquired=True,
+                profile=(
+                    ProfileGenerationService(self.client, self.request_context),
+                    generation_plan,
+                ),
+                playbook=None,
+            )
+            computed_plans.append(plan)
+            return plan
+
+        def emit_then_raise(self, plan):
+            assert plan.profile is not None
+            for extraction_run_id in plan.profile[1].extraction_run_ids:
+                self.request_context.storage.update_agent_run_status(
+                    extraction_run_id,
+                    AgentRunStatus.FINALIZED,
+                    pending_tool_call_ids=[],
+                )
+            raise RuntimeError("post-commit emit failed")
+
+        with (
+            mock.patch.object(
+                GenerationService,
+                "compute_deferred_learning",
+                build_plan,
+            ),
+            mock.patch.object(
+                GenerationService,
+                "emit_deferred_learning_side_effects",
+                emit_then_raise,
+            ),
+        ):
+            processed = DurableLearningWorker(factory)._process_job(
+                factory("org_post_commit_emit_failure"), job
+            )
+
+        assert len(computed_plans) == 1
+        plan = computed_plans[0]
+        assert plan.profile is not None
+        generation_plan = plan.profile[1]
+        assert generation_plan.finalization_result is not None
+        assert generation_plan.finalization_result.won_receipt is True
+        run = ctx.storage.get_agent_run(run_id)
+        assert run is not None and run.status == AgentRunStatus.FINALIZED
+        assert ctx.storage.get_agent_run_finalization_receipt(
+            run_id=run_id,
+            entity_type="profile",
+        ) == ["profile-post-commit"]
+
+        assert processed is True
+        assert ctx.storage.count_learning_jobs_by_status("done") == 1
+        assert ctx.storage.count_all_profiles() == 1
 
 
 # ---------------------------------------------------------------------------

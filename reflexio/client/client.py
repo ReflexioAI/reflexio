@@ -528,7 +528,9 @@ class ReflexioClient:
         Args:
             user_id: The user ID.
             interactions: List of interaction data.
-            source: The source of the interaction.
+            source: Non-sensitive producer/workflow label. A non-empty value
+                must match ``^[a-z0-9][a-z0-9._:-]{0,127}$`` and must not
+                contain user identifiers or PII.
             agent_version: The agent version.
             session_id: Required non-empty session ID for grouping requests.
             wait_for_response: If True, the **server** waits for
@@ -893,6 +895,8 @@ class ReflexioClient:
         threshold: float | None = None,
         enable_reformulation: bool | None = None,
         search_mode: SearchMode | None = None,
+        request_id: str | None = None,
+        session_id: str | None = None,
     ) -> SearchUserPlaybooksViewResponse:
         """Search for user playbooks with semantic/text search and filtering.
 
@@ -906,10 +910,14 @@ class ReflexioClient:
             end_time (Optional[datetime]): End time for created_at filter
             status_filter (Optional[list[Optional[Status]]]): Filter by status (None for CURRENT, PENDING, ARCHIVED)
             tags (Optional[list[str]]): Match playbooks having any of these tags.
-            top_k (Optional[int]): Maximum number of results to return (default: 10)
+            top_k (Optional[int]): Maximum results to return, from 1 to 100 (default: 10)
             threshold (Optional[float]): Similarity threshold for vector search.
                 When omitted, the embedding model's default is used.
             enable_reformulation (Optional[bool]): Enable LLM query reformulation (default: False)
+            request_id (Optional[str]): Caller correlation ID for the search turn,
+                at most 255 characters.
+            session_id (Optional[str]): Caller session ID for the search turn,
+                at most 255 characters.
 
         Returns:
             SearchUserPlaybooksViewResponse: Response containing matching user playbooks
@@ -929,6 +937,8 @@ class ReflexioClient:
             threshold=threshold,
             enable_reformulation=enable_reformulation,
             search_mode=search_mode,
+            request_id=request_id,
+            session_id=session_id,
         )
         response = self._make_request(
             "POST", "/api/search_user_playbooks", json=req.model_dump(mode="json")
@@ -1210,13 +1220,20 @@ class ReflexioClient:
         value: float | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> SetSessionOutcomeResponse:
-        """Record the first terminal outcome for a published session.
+        """Record the immutable first outcome for a published session.
 
         The session must already contain at least one published request. Reflexio
         derives both ``user_id`` and ``source`` from the earliest request ordered
-        by ``(created_at, request_id)``. Only the first outcome is recorded;
-        retries return ``success=True`` and ``recorded=False``. Sessions are not
-        required to report an outcome.
+        by ``(created_at, request_id)``. New canonical rows bind the outcome to
+        the server-owned outcome contract and canonical finalized trajectory. An
+        exact canonical retry must match the payload, contract, and trajectory;
+        otherwise it is rejected with ``reason="conflicting_finalization"``.
+        Rolling-upgrade rows with all four identity fields null compare the
+        caller payload and any available server-derived session context, but
+        cannot compare absent contract or trajectory digests. An accepted retry
+        preserves all four null identity fields and returns ``success=True`` and
+        ``recorded=False``. Sessions may report ``success``, ``failure``, or
+        ``unknown`` and are not required to report an outcome.
         """
         request = SetSessionOutcomeRequest(
             session_id=session_id,
@@ -2822,12 +2839,14 @@ class ReflexioClient:
         Args:
             request (Optional[UnifiedSearchRequest]): The search request object (alternative to kwargs)
             query (str): Search query text
-            top_k (Optional[int]): Maximum results per entity type (default: 5)
+            top_k (Optional[int]): Maximum results per entity type, from 1 to 100
+                (default: 5).
             threshold (Optional[float]): Similarity threshold for vector search.
                 When omitted, the embedding model's default is used.
             agent_version (Optional[str]): Filter by agent version (agent_playbooks, user_playbooks)
             playbook_name (Optional[str]): Filter by playbook name (agent_playbooks, user_playbooks)
-            user_id (Optional[str]): Filter by user ID (profiles, user_playbooks)
+            user_id (Optional[str]): Filter by user ID (profiles, user_playbooks),
+                at most 255 characters.
             tags (Optional[list[str]]): Match entities having any requested tag.
             entity_types (Optional[list[str]]): Entity types to search. Valid values:
                 "profiles", "user_playbooks", "agent_playbooks".
@@ -2843,9 +2862,12 @@ class ReflexioClient:
                 the configured search backend supports it (default: False).
             conversation_history (Optional[list[ConversationTurn] | list[dict]]): Prior conversation turns for context-aware query reformulation. Accepts ConversationTurn objects or dicts with "role" and "content" keys.
             search_mode (Optional[SearchMode | str]): Search mode to use. Accepts SearchMode enum or string value ("vector", "fts", "hybrid").
-            request_id (Optional[str]): Caller correlation id for the search turn.
-            session_id (Optional[str]): Caller session id for the search turn.
-            interaction_id (Optional[int]): Caller interaction id for the search turn.
+            request_id (Optional[str]): Caller correlation ID for the search turn,
+                at most 255 characters.
+            session_id (Optional[str]): Caller session ID for the search turn,
+                at most 255 characters. Also enables session-scoped result deduplication.
+            interaction_id (Optional[int]): Caller interaction ID for the search
+                turn; must be a positive integer (minimum 1).
 
         Returns:
             UnifiedSearchViewResponse: Combined search results from all entity types
