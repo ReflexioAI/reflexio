@@ -251,7 +251,7 @@ def search_user_playbooks_endpoint(
             msg=response.msg,
             experiment=assignment,
         )
-        if response.user_playbooks:
+        if caller_type == "production_agent" and response.user_playbooks:
             record_search_exposures(
                 SearchExposureBatch(
                     org_id=org_id,
@@ -427,16 +427,17 @@ def unified_search_endpoint(
                 rehydrated_text=response.rehydrated_text,
                 experiment=assignment,
             )
-        record_search_exposures(
-            SearchExposureBatch(
-                org_id=org_id,
-                request_id=payload.request_id,
-                session_id=payload.session_id,
-                interaction_id=payload.interaction_id,
-                user_id=payload.user_id,
-                user_playbooks=tuple(response.user_playbooks),
+        if caller_type == "production_agent":
+            record_search_exposures(
+                SearchExposureBatch(
+                    org_id=org_id,
+                    request_id=payload.request_id,
+                    session_id=payload.session_id,
+                    interaction_id=payload.interaction_id,
+                    user_id=payload.user_id,
+                    user_playbooks=tuple(response.user_playbooks),
+                )
             )
-        )
         enqueue_search_metering(
             org_id=org_id,
             caller_type=caller_type,

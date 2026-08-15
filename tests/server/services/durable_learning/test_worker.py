@@ -29,14 +29,17 @@ import tempfile
 import threading
 import time
 from datetime import UTC, datetime, timedelta
-from types import SimpleNamespace
 from unittest import mock
 
 import pytest
 
 from reflexio.models.api_schema.domain.entities import Interaction, Request
 from reflexio.server.api_endpoints.request_context import RequestContext
-from reflexio.server.services.deferred_learning_plan import DeferredLearningPlan
+from reflexio.server.services.base_generation_service import PreparedGenerationRun
+from reflexio.server.services.deferred_learning_plan import (
+    DeferredLearningPlan,
+    GenerationComputePlan,
+)
 from reflexio.server.services.durable_learning.worker import DurableLearningWorker
 from reflexio.server.services.generation_service import GenerationService
 from reflexio.server.services.storage.storage_base import (
@@ -163,13 +166,29 @@ def _deferred_plan_with_runs(
     profile_run_id: str,
     playbook_run_id: str,
 ) -> DeferredLearningPlan:
+    def generation_plan(run_id: str, extractor_name: str) -> GenerationComputePlan:
+        return GenerationComputePlan(
+            prepared=PreparedGenerationRun(
+                extractor_config=mock.Mock(),
+                extractor_name=extractor_name,
+                identifier=f"{extractor_name}_generation",
+            ),
+            generated_count=0,
+            billable_count=0,
+            write_plan=None,
+            bookmark_advance=None,
+            generation_start=0.0,
+            extraction_run_ids=[run_id],
+            token_totals=None,
+        )
+
     return DeferredLearningPlan(
         request_id=request_id,
         user_id="test_user",
         agent_version="v1",
         lock_acquired=True,
-        profile=(mock.Mock(), SimpleNamespace(extraction_run_ids=[profile_run_id])),
-        playbook=(mock.Mock(), SimpleNamespace(extraction_run_ids=[playbook_run_id])),
+        profile=(mock.Mock(), generation_plan(profile_run_id, "profile")),
+        playbook=(mock.Mock(), generation_plan(playbook_run_id, "playbook")),
     )
 
 
@@ -730,7 +749,6 @@ def test_post_commit_emit_failure_preserves_completed_job_and_agent_runs():
     from reflexio.models.api_schema.domain.entities import LineageContext
     from reflexio.models.api_schema.service_schemas import UserProfile
     from reflexio.server.services.deferred_learning_plan import (
-        GenerationComputePlan,
         ProfileWritePlan,
     )
     from reflexio.server.services.profile.service import ProfileGenerationService
@@ -770,7 +788,8 @@ def test_post_commit_emit_failure_preserves_completed_job_and_agent_runs():
                 generated_from_request_id="req_post_commit_emit_failure",
             )
             generation_plan = GenerationComputePlan(
-                prepared=SimpleNamespace(
+                prepared=PreparedGenerationRun(
+                    extractor_config=mock.Mock(),
                     identifier="profile_generation",
                     extractor_name="profile",
                 ),

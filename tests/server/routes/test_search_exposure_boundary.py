@@ -57,11 +57,11 @@ def _search_results(playbooks: list[UserPlaybook]) -> Iterator[MagicMock]:
         yield reflexio
 
 
-def _client() -> TestClient:
+def _client(caller_type: str = "production_agent") -> TestClient:
     return TestClient(
         create_app(
             get_org_id=lambda: "org-1",
-            get_caller_type=lambda: "production_agent",
+            get_caller_type=lambda: caller_type,
         ),
         raise_server_exceptions=False,
     )
@@ -78,6 +78,35 @@ class _Recorder:
             self.order.append("record")
         self.batches.append(batch)
         self.completed = True
+
+
+@pytest.mark.parametrize("path", ["/api/search", "/api/search_user_playbooks"])
+def test_only_production_searches_record_exposures(path: str) -> None:
+    recorder = _Recorder()
+    register_service(SEARCH_EXPOSURE_RECORDER, recorder)
+
+    with _search_results([_playbook(11, "First")]):
+        dashboard_response = _client("dashboard").post(
+            path,
+            json={
+                "query": "inspect",
+                "user_id": "user-1",
+                "request_id": "dashboard-request",
+            },
+        )
+        production_response = _client("production_agent").post(
+            path,
+            json={
+                "query": "answer",
+                "user_id": "user-1",
+                "request_id": "production-request",
+            },
+        )
+
+    assert dashboard_response.status_code == 200, dashboard_response.text
+    assert production_response.status_code == 200, production_response.text
+    assert len(recorder.batches) == 1
+    assert recorder.batches[0].request_id == "production-request"
 
 
 def test_unified_search_records_the_final_user_playbook_set_before_return() -> None:
