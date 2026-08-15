@@ -111,7 +111,7 @@ Publish conversations from your agent, and Reflexio closes the self-improvement 
 Check the SQLite runtime linked to Python with:
 
 ```shell
-uv run python -c "import sqlite3; print(sqlite3.sqlite_version_info)"
+python -c "import sqlite3; print(sqlite3.sqlite_version_info)"
 ```
 
 <p align="center">
