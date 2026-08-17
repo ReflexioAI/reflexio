@@ -33,7 +33,12 @@ from reflexio.server.services.storage.error import (
     StorageError,
 )
 
-_FAILURE_OUTCOMES = {"generation_failed", "replay_failed", "publication_failed"}
+_FAILURE_OUTCOMES = {
+    "generation_failed",
+    "replay_failed",
+    "publication_failed",
+    "infrastructure_failure",
+}
 _ABSTENTION_OUTCOMES = {
     "insufficient_negative_evidence",
     "insufficient_positive_evidence",
@@ -46,13 +51,20 @@ _ABSTENTION_OUTCOMES = {
     "candidate_regressed",
     "candidate_did_not_improve",
     "incumbent_changed",
+    "no_grounded_hypothesis",
+    "analyst_unqualified",
+    "heldout_evidence_failed",
+    "stale_incumbent",
+    "governance_invalidated",
 }
-_STAGE_PREDECESSORS: dict[str, str] = {
-    "candidate_generated": "evidence_frozen",
-    "replay_running": "candidate_generated",
-    "replay_evaluated": "replay_running",
-    "publishing": "replay_evaluated",
-    "applied": "publishing",
+_STAGE_PREDECESSORS: dict[str, tuple[str, str]] = {
+    "discovery_analyzed": ("evidence_frozen", "evidence_frozen"),
+    "candidate_generated": ("evidence_frozen", "discovery_analyzed"),
+    "replay_running": ("candidate_generated", "candidate_generated"),
+    "replay_evaluated": ("replay_running", "replay_running"),
+    "held_out_analyzed": ("candidate_generated", "candidate_generated"),
+    "publishing": ("replay_evaluated", "replay_evaluated"),
+    "applied": ("publishing", "publishing"),
 }
 
 
@@ -714,7 +726,7 @@ class OptimizationJobStoreMixin:
         now: int | None = None,
     ) -> bool:
         advanced_at = self._lease_now(now)
-        predecessor = _STAGE_PREDECESSORS.get(stage)
+        predecessors = _STAGE_PREDECESSORS.get(stage)
         terminal_status: str | None = None
         if stage == "applied":
             if terminal_outcome not in (None, "applied"):
@@ -729,10 +741,12 @@ class OptimizationJobStoreMixin:
             if terminal_outcome not in _ABSTENTION_OUTCOMES:
                 return False
             terminal_status = "skipped"
-        elif predecessor is None or terminal_outcome is not None:
+        elif predecessors is None or terminal_outcome is not None:
             return False
         with self._lock:
             if terminal_status is None:
+                if predecessors is None:
+                    return False
                 cur = self.conn.execute(
                     """UPDATE playbook_optimization_jobs
                        SET stage = ?, updated_at = ?
@@ -740,8 +754,15 @@ class OptimizationJobStoreMixin:
                          AND status IN ('pending', 'running')
                          AND lease_fence = ?
                          AND lease_expires_at > ?
-                         AND stage = ?""",
-                    (stage, advanced_at, job_id, fence, advanced_at, predecessor),
+                         AND stage IN (?, ?)""",
+                    (
+                        stage,
+                        advanced_at,
+                        job_id,
+                        fence,
+                        advanced_at,
+                        *predecessors,
+                    ),
                 )
             elif stage == "applied":
                 cur = self.conn.execute(
@@ -782,9 +803,11 @@ class OptimizationJobStoreMixin:
                          AND lease_expires_at > ?
                          AND stage IN (
                              'evidence_frozen',
+                             'discovery_analyzed',
                              'candidate_generated',
                              'replay_running',
                              'replay_evaluated',
+                             'held_out_analyzed',
                              'publishing'
                          )""",
                     (

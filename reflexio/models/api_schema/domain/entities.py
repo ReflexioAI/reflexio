@@ -412,9 +412,11 @@ OptimizerKind = Literal[
 
 OptimizationJobStage = Literal[
     "evidence_frozen",
+    "discovery_analyzed",
     "candidate_generated",
     "replay_running",
     "replay_evaluated",
+    "held_out_analyzed",
     "publishing",
     "applied",
     "abstained",
@@ -438,6 +440,12 @@ OptimizationTerminalOutcome = Literal[
     "replay_failed",
     "publication_failed",
     "governance_erased",
+    "no_grounded_hypothesis",
+    "analyst_unqualified",
+    "heldout_evidence_failed",
+    "stale_incumbent",
+    "governance_invalidated",
+    "infrastructure_failure",
 ]
 
 OptimizationArtifactKind = Literal[
@@ -447,6 +455,9 @@ OptimizationArtifactKind = Literal[
     "candidate",
     "candidate_search_projection",
     "open_world_evidence_bundle",
+    "open_world_discovery_memo",
+    "open_world_candidate",
+    "open_world_attempt_decision",
 ]
 
 Sha256Digest = str

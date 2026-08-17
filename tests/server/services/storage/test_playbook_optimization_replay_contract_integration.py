@@ -252,7 +252,13 @@ def test_stage_advancement_is_linear(storage: BaseStorage) -> None:
     ("stage", "outcome", "expected_status"),
     [
         ("abstained", "candidate_did_not_improve", "skipped"),
+        ("abstained", "no_grounded_hypothesis", "skipped"),
+        ("abstained", "analyst_unqualified", "skipped"),
+        ("abstained", "heldout_evidence_failed", "skipped"),
+        ("abstained", "stale_incumbent", "skipped"),
+        ("abstained", "governance_invalidated", "skipped"),
         ("failed", "generation_failed", "failed"),
+        ("failed", "infrastructure_failure", "failed"),
     ],
 )
 def test_terminal_stage_records_outcome_and_releases_lease(
@@ -587,20 +593,27 @@ def test_previous_artifact_schema_is_upgraded_without_losing_constraints(
             )
         store.conn.rollback()
 
-        evidence_json = '{"cases":[1]}'
-        evidence = schemas.PlaybookOptimizationArtifact(
-            job_id=41,
-            artifact_kind="open_world_evidence_bundle",
-            content_json=evidence_json,
-            content_digest=sha256(evidence_json.encode()).hexdigest(),
-            created_at=107,
-            updated_at=108,
-        )
-        saved = store.upsert_playbook_optimization_artifact(evidence, fence=3, now=500)
-        assert (
-            store.get_playbook_optimization_artifact(41, "open_world_evidence_bundle")
-            == saved
-        )
+        for artifact_kind in (
+            "open_world_evidence_bundle",
+            "open_world_discovery_memo",
+            "open_world_candidate",
+            "open_world_attempt_decision",
+        ):
+            content_json = f'{{"artifact_kind":"{artifact_kind}"}}'
+            artifact = schemas.PlaybookOptimizationArtifact(
+                job_id=41,
+                artifact_kind=artifact_kind,
+                content_json=content_json,
+                content_digest=sha256(content_json.encode()).hexdigest(),
+                created_at=107,
+                updated_at=108,
+            )
+            saved = store.upsert_playbook_optimization_artifact(
+                artifact,
+                fence=3,
+                now=500,
+            )
+            assert store.get_playbook_optimization_artifact(41, artifact_kind) == saved
 
         assert store.migrate() is True
         store.conn.execute("DELETE FROM playbook_optimization_jobs WHERE job_id = 41")
