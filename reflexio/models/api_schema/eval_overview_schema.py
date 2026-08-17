@@ -12,6 +12,7 @@ from typing import Literal, Self
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from reflexio.models.api_schema.domain import CitationKind
+from reflexio.models.api_schema.ui.entities import EvaluationResultView
 from reflexio.models.api_schema.validators import NonEmptyStr
 from reflexio.models.structured_output import StrictStructuredOutput
 
@@ -277,10 +278,26 @@ class SourceSetEvaluationMetrics(BaseModel):
     braintrust_tiles: list[BraintrustTileRow] = Field(default_factory=list)
 
 
+class EvaluationSessionKey(BaseModel):
+    """Collision-safe identity for one evaluated user session."""
+
+    user_id: str
+    session_id: str
+
+
+class SourceSessions(BaseModel):
+    """Evaluated session IDs grouped by their first request source."""
+
+    source: str
+    session_ids: list[str] = Field(default_factory=list)
+    sessions: list[EvaluationSessionKey] = Field(default_factory=list)
+
+
 class SourceSetComparison(BaseModel):
     """Comparison payload for request-source cohorts."""
 
     available_sources: list[str] = Field(default_factory=list)
+    source_sessions: list[SourceSessions] = Field(default_factory=list)
     sets: list[SourceSetEvaluationMetrics] = Field(default_factory=list)
     unmatched_session_count: int = Field(default=0, ge=0)
 
@@ -294,6 +311,7 @@ class GetEvaluationOverviewResponse(BaseModel):
     shadow_win_rate_trend: ShadowWinRateTrend = Field(
         default_factory=ShadowWinRateTrend
     )
+    recent_results: list[EvaluationResultView] = Field(default_factory=list)
     source_set_comparison: SourceSetComparison = Field(
         default_factory=SourceSetComparison
     )

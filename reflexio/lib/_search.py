@@ -58,11 +58,14 @@ class SearchMixin(ReflexioBase):
                         ),
                         limit=request.limit or 100,
                         agent_version=request.agent_version,
+                        include_embedding=False,
                     )
                 )
             else:
                 results = self._get_storage().get_agent_success_evaluation_results(
-                    limit=request.limit or 100, agent_version=request.agent_version
+                    limit=request.limit or 100,
+                    agent_version=request.agent_version,
+                    include_embedding=False,
                 )
             return GetAgentSuccessEvaluationResultsResponse(
                 success=True,

@@ -69,6 +69,13 @@ class TestGetAgentSuccessEvaluationResults:
 
         assert response.success is True
         assert len(response.agent_success_evaluation_results) == 1
+        _get_storage(
+            mixin
+        ).get_agent_success_evaluation_results.assert_called_once_with(
+            limit=50,
+            agent_version=None,
+            include_embedding=False,
+        )
 
     def test_storage_not_configured(self):
         """Returns empty list when storage is not configured."""

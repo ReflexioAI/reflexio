@@ -315,8 +315,14 @@ class TestLiteLLMClientAPIKeyOverride:
         assert client._api_base is None
         assert client._api_version is None
 
-    def test_create_client_with_azure_openai_config(self):
+    def test_create_client_with_azure_openai_config(self, monkeypatch):
         """Test creating a client with Azure OpenAI configuration."""
+        monkeypatch.setattr(
+            "reflexio.models.api_schema.validators.socket.getaddrinfo",
+            lambda _host, port, *_args, **_kwargs: [
+                (2, 1, 0, "", ("93.184.216.34", port or 443))
+            ],
+        )
         api_key_config = APIKeyConfig(
             openai=OpenAIConfig(
                 azure_config=AzureOpenAIConfig(

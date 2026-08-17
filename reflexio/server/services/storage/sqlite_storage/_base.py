@@ -864,7 +864,9 @@ def _row_to_agent_playbook(row: sqlite3.Row) -> AgentPlaybook:
     )
 
 
-def _row_to_eval_result(row: sqlite3.Row) -> AgentSuccessEvaluationResult:
+def _row_to_eval_result(
+    row: sqlite3.Row, *, include_embedding: bool = True
+) -> AgentSuccessEvaluationResult:
     d = dict(row)
     return AgentSuccessEvaluationResult(
         result_id=d["result_id"],
@@ -885,7 +887,7 @@ def _row_to_eval_result(row: sqlite3.Row) -> AgentSuccessEvaluationResult:
         user_turns_to_resolution=d.get("user_turns_to_resolution"),
         is_escalated=bool(d.get("is_escalated", False)),
         tags=_json_loads(d.get("tags")),
-        embedding=[],
+        embedding=(_json_loads(d.get("embedding")) or [] if include_embedding else []),
     )
 
 

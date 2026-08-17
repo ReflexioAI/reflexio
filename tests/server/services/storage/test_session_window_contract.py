@@ -337,6 +337,45 @@ def test_eval_result_window_read_filters_in_storage_contract(
     assert {r.session_id for r in v1_inside} == {"inside"}
 
 
+def test_eval_result_reads_can_omit_embeddings_without_changing_default(
+    storage: BaseStorage,
+) -> None:
+    embedding = [0.25] * 512
+    storage.save_agent_success_evaluation_results(
+        [
+            AgentSuccessEvaluationResult(
+                user_id="u1",
+                session_id="embedding-contract",
+                agent_version="v1",
+                evaluation_name="overall_success",
+                is_success=False,
+                failure_type="wrong_answer",
+                failure_reason="incorrect",
+                embedding=embedding,
+                created_at=200,
+            )
+        ]
+    )
+    sqlite_storage = cast(SQLiteStorage, storage)
+
+    default_rows = storage.get_agent_success_evaluation_results_in_window(150, 250)
+    with patch.object(
+        sqlite_storage,
+        "_fetchall",
+        wraps=sqlite_storage._fetchall,
+    ) as fetchall:
+        lightweight_rows = storage.get_agent_success_evaluation_results_in_window(
+            150,
+            250,
+            include_embedding=False,
+        )
+
+    assert default_rows[0].embedding == embedding
+    assert lightweight_rows[0].embedding == []
+    selected_columns = str(fetchall.call_args.args[0]).split("FROM", maxsplit=1)[0]
+    assert "embedding" not in selected_columns
+
+
 def test_targeted_eval_result_id_lookup(
     storage: BaseStorage,
 ) -> None:

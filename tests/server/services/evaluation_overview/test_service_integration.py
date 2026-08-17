@@ -120,6 +120,40 @@ def test_service_returns_empty_state_when_no_results() -> None:
     assert response.hero.state == "empty"
     assert response.context_tiles.success.current == 0.0
     assert response.rule_attribution == []
+    assert response.recent_results == []
+
+
+def test_service_returns_newest_100_embedding_free_results() -> None:
+    results = [
+        _eval_result(
+            result_id=index,
+            session_id=f"s{index}",
+            is_success=index % 2 == 0,
+            created_at=1_700_000_000 + index,
+        )
+        for index in range(1, 106)
+    ]
+    for result in results:
+        result.embedding = [0.25] * 512
+    storage = _storage_with_results(list(reversed(results[::2])) + results[1::2])
+    config = Config(storage_config=StorageConfigSQLite())
+
+    response = EvaluationOverviewService(storage=storage, config=config).run(
+        GetEvaluationOverviewRequest(
+            from_ts=1_700_000_000,
+            to_ts=1_700_000_200,
+            include_shadow=False,
+        )
+    )
+
+    assert [row.result_id for row in response.recent_results] == list(range(105, 5, -1))
+    assert all("embedding" not in row.model_dump() for row in response.recent_results)
+    storage.get_agent_success_evaluation_results_in_window.assert_called_once_with(
+        from_ts=1_699_395_200,
+        to_ts=1_700_000_200,
+        agent_version=None,
+        include_embedding=False,
+    )
 
 
 def test_service_reports_single_recent_success_as_100_percent() -> None:
@@ -342,9 +376,125 @@ def test_service_limits_source_lookup_to_window_when_no_source_sets() -> None:
     )
 
     assert response.source_set_comparison.available_sources == ["current-source"]
+    assert [
+        group.model_dump() for group in response.source_set_comparison.source_sessions
+    ] == [
+        {
+            "source": "current-source",
+            "session_ids": ["current"],
+            "sessions": [{"user_id": "u1", "session_id": "current"}],
+        }
+    ]
     storage.get_first_requests_by_user_session_pairs.assert_called_once_with(
         [("u1", "current")]
     )
+
+
+def test_service_groups_source_sessions_without_duplicate_session_ids() -> None:
+    now = int(time.time())
+    results = [
+        _eval_result(result_id=1, session_id="shared", is_success=True, created_at=now),
+        _eval_result(
+            result_id=2, session_id="shared", is_success=False, created_at=now
+        ),
+        _eval_result(result_id=3, session_id="other", is_success=True, created_at=now),
+    ]
+    storage = _storage_with_results(results)
+    storage.get_first_requests_by_user_session_pairs.return_value = {
+        ("u1", "shared"): SessionFirstRequest(
+            session_id="shared",
+            user_id="u1",
+            source="api",
+            created_at=now,
+        ),
+        ("u1", "other"): SessionFirstRequest(
+            session_id="other",
+            user_id="u1",
+            source="web",
+            created_at=now,
+        ),
+    }
+
+    response = EvaluationOverviewService(
+        storage=storage,
+        config=Config(storage_config=StorageConfigSQLite()),
+    ).run(
+        GetEvaluationOverviewRequest(
+            from_ts=now - 60,
+            to_ts=now,
+            include_shadow=False,
+        )
+    )
+
+    assert [
+        group.model_dump() for group in response.source_set_comparison.source_sessions
+    ] == [
+        {
+            "source": "api",
+            "session_ids": ["shared"],
+            "sessions": [{"user_id": "u1", "session_id": "shared"}],
+        },
+        {
+            "source": "web",
+            "session_ids": ["other"],
+            "sessions": [{"user_id": "u1", "session_id": "other"}],
+        },
+    ]
+
+
+def test_service_preserves_user_identity_when_session_ids_collide() -> None:
+    now = int(time.time())
+    results = [
+        _eval_result(
+            result_id=1,
+            user_id="user-api",
+            session_id="shared",
+            is_success=True,
+            created_at=now,
+        ),
+        _eval_result(
+            result_id=2,
+            user_id="user-web",
+            session_id="shared",
+            is_success=False,
+            created_at=now,
+        ),
+    ]
+    storage = _storage_with_results(results)
+    storage.get_first_requests_by_user_session_pairs.return_value = {
+        ("user-api", "shared"): SessionFirstRequest(
+            session_id="shared",
+            user_id="user-api",
+            source="api",
+            created_at=now,
+        ),
+        ("user-web", "shared"): SessionFirstRequest(
+            session_id="shared",
+            user_id="user-web",
+            source="web",
+            created_at=now,
+        ),
+    }
+
+    response = EvaluationOverviewService(
+        storage=storage,
+        config=Config(storage_config=StorageConfigSQLite()),
+    ).run(
+        GetEvaluationOverviewRequest(
+            from_ts=now - 60,
+            to_ts=now,
+            include_shadow=False,
+        )
+    )
+
+    groups = {
+        group.source: [session.model_dump() for session in group.sessions]
+        for group in response.source_set_comparison.source_sessions
+    }
+    assert groups == {
+        "api": [{"user_id": "user-api", "session_id": "shared"}],
+        "web": [{"user_id": "user-web", "session_id": "shared"}],
+    }
 
 
 def test_service_loads_baseline_sources_when_source_sets_requested() -> None:

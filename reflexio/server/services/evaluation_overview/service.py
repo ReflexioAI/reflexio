@@ -26,6 +26,7 @@ from reflexio.models.api_schema.eval_overview_schema import (
     BraintrustTileRow,
     BucketLiteral,
     ContextTile,
+    EvaluationSessionKey,
     EvaluationSourceSetRequest,
     GetEvaluationOverviewRequest,
     GetEvaluationOverviewResponse,
@@ -36,9 +37,11 @@ from reflexio.models.api_schema.eval_overview_schema import (
     RuleAttributionRow,
     ScoreDistribution,
     ShadowWinRateTrend,
+    SourceSessions,
     SourceSetComparison,
     SourceSetEvaluationMetrics,
 )
+from reflexio.models.api_schema.ui.converters import to_evaluation_result_view
 from reflexio.models.config_schema import Config
 from reflexio.server.services.evaluation_overview.components.distribution import (
     BUCKET_LABELS,
@@ -91,6 +94,8 @@ class EvaluationOverviewService:
             always be empty, so every tile would display "no baseline"
             regardless of how much data the org has.
         """
+        total_started_at = time.perf_counter()
+
         # Tile + distribution baselines are always last-7d-vs-prior-7d,
         # anchored to ``request.to_ts`` (which is "now" from the frontend's
         # perspective).
@@ -104,6 +109,7 @@ class EvaluationOverviewService:
             from_ts=load_from,
             to_ts=request.to_ts,
             agent_version=None,
+            include_embedding=False,
         )
         self._log_phase("eval_results", start, rows=len(all_results))
 
@@ -190,15 +196,35 @@ class EvaluationOverviewService:
             prior_scores=prior_scores,
         )
 
-        return GetEvaluationOverviewResponse(
+        recent_results = [
+            to_evaluation_result_view(result)
+            for result in sorted(
+                results,
+                key=lambda result: (result.created_at, result.result_id),
+                reverse=True,
+            )[:100]
+        ]
+        response = GetEvaluationOverviewResponse(
             hero=hero,
             context_tiles=tiles,
             rule_attribution=attribution,
             score_distribution=distribution,
             braintrust_tiles=braintrust_tiles,
             shadow_win_rate_trend=shadow_win_rate_trend,
+            recent_results=recent_results,
             source_set_comparison=source_set_comparison,
         )
+        response_size_bytes = len(response.model_dump_json().encode("utf-8"))
+        self._log_phase(
+            "total",
+            total_started_at,
+            from_ts=request.from_ts,
+            to_ts=request.to_ts,
+            results=len(results),
+            sources=len(source_set_comparison.available_sources),
+            response_bytes=response_size_bytes,
+        )
+        return response
 
     # --- private helpers ---
 
@@ -385,8 +411,29 @@ class EvaluationOverviewService:
         available_sources = sorted(
             {session_sources.get((r.user_id, r.session_id), "") for r in results}
         )
+        sessions_by_source: dict[str, set[ResultKey]] = defaultdict(set)
+        for result in results:
+            if result.session_id:
+                source = session_sources.get((result.user_id, result.session_id), "")
+                sessions_by_source[source].add((result.user_id, result.session_id))
+        source_sessions = [
+            SourceSessions(
+                source=source,
+                session_ids=sorted(
+                    {session_id for _, session_id in sessions_by_source[source]}
+                ),
+                sessions=[
+                    EvaluationSessionKey(user_id=user_id, session_id=session_id)
+                    for user_id, session_id in sorted(sessions_by_source[source])
+                ],
+            )
+            for source in available_sources
+        ]
         if not source_sets:
-            return SourceSetComparison(available_sources=available_sources)
+            return SourceSetComparison(
+                available_sources=available_sources,
+                source_sessions=source_sessions,
+            )
 
         requested_sources = {source for s in source_sets for source in s.sources}
         unmatched = sum(
@@ -438,6 +485,7 @@ class EvaluationOverviewService:
             )
         return SourceSetComparison(
             available_sources=available_sources,
+            source_sessions=source_sessions,
             sets=rows,
             unmatched_session_count=unmatched,
         )

@@ -40,6 +40,7 @@ class AgentEvaluationResultStoreMixin:
         agent_version: str | None = None,
         user_id: str | None = None,
         only_untagged: bool = False,
+        include_embedding: bool = True,
     ) -> list[AgentSuccessEvaluationResult]:
         """Get agent success evaluation results from storage.
 
@@ -48,6 +49,7 @@ class AgentEvaluationResultStoreMixin:
             agent_version (str, optional): The agent version to filter by. If None, returns all results.
             user_id (str, optional): The user id to filter by. If None, returns all users.
             only_untagged (bool): When true, return only rows awaiting tagging.
+            include_embedding (bool): When false, omit embedding data from the read.
 
         Returns:
             list[AgentSuccessEvaluationResult]: List of agent success evaluation result objects
@@ -71,6 +73,7 @@ class AgentEvaluationResultStoreMixin:
         to_ts: int,
         agent_version: str | None = None,
         limit: int | None = None,
+        include_embedding: bool = True,
     ) -> list[AgentSuccessEvaluationResult]:
         """Return eval results in ``[from_ts, to_ts]``.
 
@@ -81,6 +84,7 @@ class AgentEvaluationResultStoreMixin:
         rows = self.get_agent_success_evaluation_results(
             limit=limit or 10_000,
             agent_version=agent_version,
+            include_embedding=include_embedding,
         )
         return [r for r in rows if from_ts <= r.created_at <= to_ts]
 

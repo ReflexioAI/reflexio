@@ -29,6 +29,13 @@ from .._base import (
     _row_to_eval_result,
 )
 
+_EVAL_RESULT_COLUMNS = (
+    "result_id, user_id, session_id, agent_version, evaluation_name, is_success, "
+    "failure_type, failure_reason, regular_vs_shadow, "
+    "number_of_correction_per_session, user_turns_to_resolution, is_escalated, "
+    "tags, created_at"
+)
+
 
 class AgentEvaluationResultStoreMixin:
     """Mixin providing agent success evaluation result CRUD for SQLite storage."""
@@ -108,8 +115,14 @@ class AgentEvaluationResultStoreMixin:
         agent_version: str | None = None,
         user_id: str | None = None,
         only_untagged: bool = False,
+        include_embedding: bool = True,
     ) -> list[AgentSuccessEvaluationResult]:
-        sql = "SELECT * FROM agent_success_evaluation_result"
+        columns = (
+            f"{_EVAL_RESULT_COLUMNS}, embedding"
+            if include_embedding
+            else _EVAL_RESULT_COLUMNS
+        )
+        sql = f"SELECT {columns} FROM agent_success_evaluation_result"
         params: list[Any] = []
         clauses: list[str] = []
         if agent_version is not None:
@@ -125,7 +138,9 @@ class AgentEvaluationResultStoreMixin:
         sql += " ORDER BY created_at DESC LIMIT ?"
         params.append(limit)
         rows = self._fetchall(sql, params)
-        return [_row_to_eval_result(r) for r in rows]
+        return [
+            _row_to_eval_result(r, include_embedding=include_embedding) for r in rows
+        ]
 
     @SQLiteStorageBase.handle_exceptions
     def update_agent_success_evaluation_result_tags(
@@ -192,9 +207,15 @@ class AgentEvaluationResultStoreMixin:
         to_ts: int,
         agent_version: str | None = None,
         limit: int | None = None,
+        include_embedding: bool = True,
     ) -> list[AgentSuccessEvaluationResult]:
-        sql = """SELECT * FROM agent_success_evaluation_result
-                 WHERE created_at >= ? AND created_at <= ?"""
+        columns = (
+            f"{_EVAL_RESULT_COLUMNS}, embedding"
+            if include_embedding
+            else _EVAL_RESULT_COLUMNS
+        )
+        sql = f"""SELECT {columns} FROM agent_success_evaluation_result
+                  WHERE created_at >= ? AND created_at <= ?"""
         params: list[Any] = [_epoch_to_iso(from_ts), _epoch_to_iso(to_ts)]
         if agent_version is not None:
             sql += " AND agent_version = ?"
@@ -204,7 +225,9 @@ class AgentEvaluationResultStoreMixin:
             sql += " LIMIT ?"
             params.append(limit)
         rows = self._fetchall(sql, params)
-        return [_row_to_eval_result(r) for r in rows]
+        return [
+            _row_to_eval_result(r, include_embedding=include_embedding) for r in rows
+        ]
 
     @SQLiteStorageBase.handle_exceptions
     def get_agent_success_evaluation_result_ids(
