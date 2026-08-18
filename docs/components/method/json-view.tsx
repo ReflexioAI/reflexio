@@ -59,7 +59,7 @@ const colorMap: Record<TokenType, string> = {
   key: "text-blue-700 dark:text-blue-400",
   string: "text-emerald-700 dark:text-emerald-400",
   number: "text-amber-700 dark:text-amber-400",
-  boolean: "text-purple-700 dark:text-purple-400",
+  boolean: "text-[#53701A] dark:text-[#A7C957]",
   null: "text-red-600 dark:text-red-400",
   punctuation: "text-muted-foreground",
 };
