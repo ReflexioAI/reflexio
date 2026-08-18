@@ -72,6 +72,44 @@ def test_open_world_analysis_stage_path_round_trips(storage: SQLiteStorage) -> N
     assert persisted.stage == "held_out_analyzed"
 
 
+@pytest.mark.parametrize(
+    ("stage", "outcome", "expected_status"),
+    [
+        ("abstained", "no_grounded_hypothesis", "skipped"),
+        ("abstained", "analyst_unqualified", "skipped"),
+        ("abstained", "heldout_evidence_failed", "skipped"),
+        ("abstained", "stale_incumbent", "skipped"),
+        ("abstained", "governance_invalidated", "skipped"),
+        ("failed", "infrastructure_failure", "failed"),
+    ],
+)
+def test_open_world_terminal_outcomes_are_durable(
+    storage: SQLiteStorage,
+    stage: schemas.OptimizationJobStage,
+    outcome: schemas.OptimizationTerminalOutcome,
+    expected_status: str,
+) -> None:
+    job = storage.create_playbook_optimization_job(_job())
+    claim = storage.claim_playbook_optimization_job(
+        job_id=job.job_id,
+        owner="worker-a",
+        lease_seconds=60,
+        now=2_000,
+    )
+
+    assert storage.advance_playbook_optimization_stage(
+        job_id=job.job_id,
+        fence=claim.fence,
+        stage=stage,
+        terminal_outcome=outcome,
+        now=2_001,
+    )
+    persisted = storage.get_playbook_optimization_job(job.job_id)
+    assert persisted is not None
+    assert persisted.status == expected_status
+    assert persisted.terminal_outcome == outcome
+
+
 def test_legacy_optimizer_kind_allowlist_is_rebuilt_for_open_world_job(
     tmp_path: Path,
 ) -> None:

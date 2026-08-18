@@ -253,12 +253,9 @@ def test_stage_advancement_is_linear(storage: BaseStorage) -> None:
     ("stage", "outcome", "expected_status"),
     [
         ("abstained", "candidate_did_not_improve", "skipped"),
-        ("abstained", "no_grounded_hypothesis", "skipped"),
-        ("abstained", "analyst_unqualified", "skipped"),
-        ("abstained", "heldout_evidence_failed", "skipped"),
-        ("abstained", "stale_incumbent", "skipped"),
-        ("abstained", "governance_invalidated", "skipped"),
         ("failed", "generation_failed", "failed"),
+        ("failed", "replay_failed", "failed"),
+        ("failed", "publication_failed", "failed"),
         ("failed", "infrastructure_failure", "failed"),
     ],
 )
@@ -865,8 +862,11 @@ def _claimed_job_at_stage(
     stage: schemas.OptimizationJobStage,
     *,
     now: int,
+    optimizer_kind: schemas.OptimizerKind = "offline_tuner_replay",
 ) -> tuple[int, int]:
-    job = storage.create_or_get_playbook_optimization_job(_replay_job("d1", "a1"))
+    job = _replay_job("d1", "a1")
+    job.optimizer_kind = optimizer_kind
+    job = storage.create_or_get_playbook_optimization_job(job)
     claim = storage.claim_playbook_optimization_job(
         job_id=job.job_id,
         owner="worker-a",
@@ -883,22 +883,21 @@ def _claimed_job_at_stage(
 
 
 @pytest.mark.parametrize(
-    ("current_stage", "target_stage"),
+    ("optimizer_kind", "current_stage", "target_stage"),
     [
-        ("candidate_generated", "discovery_analyzed"),
-        ("discovery_analyzed", "discovery_analyzed"),
-        ("evidence_frozen", "held_out_analyzed"),
-        ("held_out_analyzed", "held_out_analyzed"),
-        ("held_out_analyzed", "publishing"),
-        ("discovery_analyzed", "replay_running"),
+        ("offline_tuner_open_world", "candidate_generated", "replay_running"),
+        ("offline_tuner_replay", "candidate_generated", "held_out_analyzed"),
     ],
 )
-def test_widened_analysis_stage_rejects_invalid_predecessor(
+def test_optimizer_kind_rejects_cross_family_stage(
     storage: BaseStorage,
+    optimizer_kind: schemas.OptimizerKind,
     current_stage: schemas.OptimizationJobStage,
     target_stage: schemas.OptimizationJobStage,
 ) -> None:
-    job_id, fence = _claimed_job_at_stage(storage, current_stage, now=7_000)
+    job_id, fence = _claimed_job_at_stage(
+        storage, current_stage, now=7_000, optimizer_kind=optimizer_kind
+    )
 
     assert (
         storage.advance_playbook_optimization_stage(
@@ -916,21 +915,32 @@ def test_widened_analysis_stage_rejects_invalid_predecessor(
 
 
 @pytest.mark.parametrize(
-    ("current_stage", "terminal_stage", "outcome"),
+    ("optimizer_kind", "current_stage", "terminal_stage", "outcome"),
     [
-        ("evidence_frozen", "abstained", "infrastructure_failure"),
-        ("held_out_analyzed", "abstained", "applied"),
-        ("discovery_analyzed", "failed", "stale_incumbent"),
-        ("publishing", "applied", "heldout_evidence_failed"),
+        (
+            "offline_tuner_open_world",
+            "candidate_generated",
+            "abstained",
+            "candidate_did_not_improve",
+        ),
+        (
+            "offline_tuner_replay",
+            "candidate_generated",
+            "abstained",
+            "no_grounded_hypothesis",
+        ),
     ],
 )
-def test_widened_terminal_stage_rejects_outcome_from_another_family(
+def test_optimizer_kind_rejects_cross_family_terminal_outcome(
     storage: BaseStorage,
+    optimizer_kind: schemas.OptimizerKind,
     current_stage: schemas.OptimizationJobStage,
     terminal_stage: schemas.OptimizationJobStage,
     outcome: schemas.OptimizationTerminalOutcome,
 ) -> None:
-    job_id, fence = _claimed_job_at_stage(storage, current_stage, now=7_000)
+    job_id, fence = _claimed_job_at_stage(
+        storage, current_stage, now=7_000, optimizer_kind=optimizer_kind
+    )
 
     assert (
         storage.advance_playbook_optimization_stage(
@@ -952,7 +962,12 @@ def test_widened_terminal_stage_rejects_outcome_from_another_family(
 def test_widened_terminal_outcome_rejects_stale_lease_and_settled_job(
     storage: BaseStorage,
 ) -> None:
-    job_id, fence = _claimed_job_at_stage(storage, "held_out_analyzed", now=7_000)
+    job_id, fence = _claimed_job_at_stage(
+        storage,
+        "held_out_analyzed",
+        now=7_000,
+        optimizer_kind="offline_tuner_open_world",
+    )
     assert isinstance(storage, SQLiteStorage)
 
     def _abstain(*, at_fence: int, now: int) -> bool:

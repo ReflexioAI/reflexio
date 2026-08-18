@@ -33,38 +33,52 @@ from reflexio.server.services.storage.error import (
     StorageError,
 )
 
-_FAILURE_OUTCOMES = {
-    "generation_failed",
-    "replay_failed",
-    "publication_failed",
-    "infrastructure_failure",
+_STAGE_PREDECESSORS_BY_OPTIMIZER: dict[str, dict[str, tuple[str, str]]] = {
+    "offline_tuner_replay": {
+        "candidate_generated": ("evidence_frozen", "evidence_frozen"),
+        "replay_running": ("candidate_generated", "candidate_generated"),
+        "replay_evaluated": ("replay_running", "replay_running"),
+        "publishing": ("replay_evaluated", "replay_evaluated"),
+        "applied": ("publishing", "publishing"),
+    },
+    "offline_tuner_open_world": {
+        "discovery_analyzed": ("evidence_frozen", "evidence_frozen"),
+        "candidate_generated": ("discovery_analyzed", "discovery_analyzed"),
+        "held_out_analyzed": ("candidate_generated", "candidate_generated"),
+    },
 }
-_ABSTENTION_OUTCOMES = {
-    "insufficient_negative_evidence",
-    "insufficient_positive_evidence",
-    "insufficient_coverage",
-    "replay_unsupported",
-    "deployment_unsupported",
-    "incomplete_replay_scope",
-    "insufficient_replay_cases",
-    "replay_inconclusive",
-    "candidate_regressed",
-    "candidate_did_not_improve",
-    "incumbent_changed",
-    "no_grounded_hypothesis",
-    "analyst_unqualified",
-    "heldout_evidence_failed",
-    "stale_incumbent",
-    "governance_invalidated",
-}
-_STAGE_PREDECESSORS: dict[str, tuple[str, str]] = {
-    "discovery_analyzed": ("evidence_frozen", "evidence_frozen"),
-    "candidate_generated": ("evidence_frozen", "discovery_analyzed"),
-    "replay_running": ("candidate_generated", "candidate_generated"),
-    "replay_evaluated": ("replay_running", "replay_running"),
-    "held_out_analyzed": ("candidate_generated", "candidate_generated"),
-    "publishing": ("replay_evaluated", "replay_evaluated"),
-    "applied": ("publishing", "publishing"),
+_TERMINAL_OUTCOMES_BY_OPTIMIZER = {
+    "offline_tuner_replay": {
+        "failed": {
+            "generation_failed",
+            "replay_failed",
+            "publication_failed",
+            "infrastructure_failure",
+        },
+        "abstained": {
+            "insufficient_negative_evidence",
+            "insufficient_positive_evidence",
+            "insufficient_coverage",
+            "replay_unsupported",
+            "deployment_unsupported",
+            "incomplete_replay_scope",
+            "insufficient_replay_cases",
+            "replay_inconclusive",
+            "candidate_regressed",
+            "candidate_did_not_improve",
+            "incumbent_changed",
+        },
+    },
+    "offline_tuner_open_world": {
+        "failed": {"infrastructure_failure"},
+        "abstained": {
+            "no_grounded_hypothesis",
+            "analyst_unqualified",
+            "heldout_evidence_failed",
+            "stale_incumbent",
+            "governance_invalidated",
+        },
+    },
 }
 
 
@@ -726,24 +740,34 @@ class OptimizationJobStoreMixin:
         now: int | None = None,
     ) -> bool:
         advanced_at = self._lease_now(now)
-        predecessors = _STAGE_PREDECESSORS.get(stage)
-        terminal_status: str | None = None
-        if stage == "applied":
-            if terminal_outcome not in (None, "applied"):
-                return False
-            terminal_outcome = "applied"
-            terminal_status = "completed"
-        elif stage == "failed":
-            if terminal_outcome not in _FAILURE_OUTCOMES:
-                return False
-            terminal_status = "failed"
-        elif stage == "abstained":
-            if terminal_outcome not in _ABSTENTION_OUTCOMES:
-                return False
-            terminal_status = "skipped"
-        elif predecessors is None or terminal_outcome is not None:
-            return False
         with self._lock:
+            row = self.conn.execute(
+                "SELECT optimizer_kind FROM playbook_optimization_jobs WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()
+            if row is None:
+                return False
+            optimizer_kind = row["optimizer_kind"]
+            predecessors = _STAGE_PREDECESSORS_BY_OPTIMIZER.get(
+                optimizer_kind, {}
+            ).get(stage)
+            terminal_status: str | None = None
+            if stage == "applied":
+                if (
+                    optimizer_kind != "offline_tuner_replay"
+                    or terminal_outcome not in (None, "applied")
+                ):
+                    return False
+                terminal_outcome = "applied"
+                terminal_status = "completed"
+            elif stage in ("failed", "abstained"):
+                if terminal_outcome not in _TERMINAL_OUTCOMES_BY_OPTIMIZER.get(
+                    optimizer_kind, {}
+                ).get(stage, set()):
+                    return False
+                terminal_status = "failed" if stage == "failed" else "skipped"
+            elif predecessors is None or terminal_outcome is not None:
+                return False
             if terminal_status is None:
                 if predecessors is None:
                     return False
@@ -752,6 +776,7 @@ class OptimizationJobStoreMixin:
                        SET stage = ?, updated_at = ?
                        WHERE job_id = ?
                          AND status IN ('pending', 'running')
+                         AND optimizer_kind = ?
                          AND lease_fence = ?
                          AND lease_expires_at > ?
                          AND stage IN (?, ?)""",
@@ -759,6 +784,7 @@ class OptimizationJobStoreMixin:
                         stage,
                         advanced_at,
                         job_id,
+                        optimizer_kind,
                         fence,
                         advanced_at,
                         *predecessors,
@@ -775,6 +801,7 @@ class OptimizationJobStoreMixin:
                            updated_at = ?
                        WHERE job_id = ?
                          AND status IN ('pending', 'running')
+                         AND optimizer_kind = 'offline_tuner_replay'
                          AND lease_fence = ?
                          AND lease_expires_at > ?
                          AND stage = 'publishing'""",
@@ -789,8 +816,16 @@ class OptimizationJobStoreMixin:
                     ),
                 )
             else:
+                active_stages = tuple(
+                    predecessor
+                    for stages in _STAGE_PREDECESSORS_BY_OPTIMIZER.get(
+                        optimizer_kind, {}
+                    ).values()
+                    for predecessor in stages
+                )
+                placeholders = ", ".join("?" for _ in active_stages)
                 cur = self.conn.execute(
-                    """UPDATE playbook_optimization_jobs
+                    f"""UPDATE playbook_optimization_jobs
                        SET stage = ?,
                            terminal_outcome = ?,
                            status = ?,
@@ -799,25 +834,20 @@ class OptimizationJobStoreMixin:
                            updated_at = ?
                        WHERE job_id = ?
                          AND status IN ('pending', 'running')
+                         AND optimizer_kind = ?
                          AND lease_fence = ?
                          AND lease_expires_at > ?
-                         AND stage IN (
-                             'evidence_frozen',
-                             'discovery_analyzed',
-                             'candidate_generated',
-                             'replay_running',
-                             'replay_evaluated',
-                             'held_out_analyzed',
-                             'publishing'
-                         )""",
+                         AND stage IN ({placeholders})""",
                     (
                         stage,
                         terminal_outcome,
                         terminal_status,
                         advanced_at,
                         job_id,
+                        optimizer_kind,
                         fence,
                         advanced_at,
+                        *active_stages,
                     ),
                 )
             if self._own_transaction():
