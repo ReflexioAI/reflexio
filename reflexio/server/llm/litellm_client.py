@@ -63,6 +63,7 @@ from reflexio.server.llm._litellm_subprocess import (
     _PromptTokenDetailsSnapshot as _PromptTokenDetailsSnapshot,
 )
 from reflexio.server.llm._litellm_text_generation import (
+    ProviderRequestGuardError,
     StructuredOutputValidator,
     TextGenerationMixin,
 )
@@ -101,6 +102,7 @@ __all__ = [
     "LiteLLMConfig",
     "LiteLLMClientError",
     "StructuredOutputRepairError",
+    "ProviderRequestGuardError",
     "StructuredOutputValidator",
     "ToolCallingChatResponse",
     "create_litellm_client",
