@@ -49,6 +49,19 @@ _ORDINARY_STAGES = (
     "held_out_analyzed",
     "publishing",
 )
+_INVALID_STAGE_REQUESTS = (
+    ("evidence_frozen", None),
+    ("failed", None),
+    ("abstained", None),
+    ("unknown_stage", None),
+    ("unknown_stage", "unknown_terminal_outcome"),
+    ("failed", "unknown_terminal_outcome"),
+    ("abstained", "unknown_terminal_outcome"),
+    *(
+        (stage, "infrastructure_failure")
+        for stage in ("evidence_frozen", *_ORDINARY_STAGES)
+    ),
+)
 _ALL_TERMINAL_OUTCOMES = (
     "applied",
     "insufficient_negative_evidence",
@@ -971,6 +984,80 @@ def _claimed_job_at_stage(
     )
     storage.conn.commit()
     return job.job_id, claim.fence
+
+
+def _optimization_job_row(storage: BaseStorage, job_id: int) -> dict[str, object]:
+    assert isinstance(storage, SQLiteStorage)
+    row = storage.conn.execute(
+        "SELECT * FROM playbook_optimization_jobs WHERE job_id = ?", (job_id,)
+    ).fetchone()
+    assert row is not None
+    return dict(row)
+
+
+def test_invalid_stage_inputs_leave_sqlite_job_unchanged(
+    storage: BaseStorage,
+) -> None:
+    case = 0
+    for optimizer_kind in _STAGE_PATHS_BY_OPTIMIZER:
+        for stage, terminal_outcome in _INVALID_STAGE_REQUESTS:
+            case += 1
+            job_id, fence = _claimed_job_at_stage(
+                storage,
+                "evidence_frozen",
+                now=7_000,
+                optimizer_kind=cast(schemas.OptimizerKind, optimizer_kind),
+                target_id=50_000 + case,
+            )
+            before = _optimization_job_row(storage, job_id)
+
+            assert (
+                storage.advance_playbook_optimization_stage(
+                    job_id=job_id,
+                    fence=fence,
+                    stage=cast(schemas.OptimizationJobStage, stage),
+                    terminal_outcome=cast(
+                        schemas.OptimizationTerminalOutcome | None, terminal_outcome
+                    ),
+                    now=7_001,
+                )
+                is False
+            )
+            assert _optimization_job_row(storage, job_id) == before
+
+    for optimizer_kind in (
+        "gepa",
+        "offline_tuner_legacy",
+        "optimizer_legacy_unknown",
+    ):
+        for stage, terminal_outcome in (
+            ("candidate_generated", None),
+            ("failed", "infrastructure_failure"),
+            ("abstained", "candidate_did_not_improve"),
+        ):
+            case += 1
+            job_id, fence = _claimed_job_at_stage(
+                storage,
+                "evidence_frozen",
+                now=7_000,
+                optimizer_kind=cast(schemas.OptimizerKind, optimizer_kind),
+                target_id=60_000 + case,
+            )
+            before = _optimization_job_row(storage, job_id)
+
+            assert (
+                storage.advance_playbook_optimization_stage(
+                    job_id=job_id,
+                    fence=fence,
+                    stage=cast(schemas.OptimizationJobStage, stage),
+                    terminal_outcome=cast(
+                        schemas.OptimizationTerminalOutcome | None, terminal_outcome
+                    ),
+                    now=7_001,
+                )
+                is False
+            )
+            assert _optimization_job_row(storage, job_id) == before
 
 
 def test_optimizer_kind_stage_matrix_is_exact(storage: BaseStorage) -> None:
