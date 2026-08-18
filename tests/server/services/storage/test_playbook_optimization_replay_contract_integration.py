@@ -859,6 +859,129 @@ def test_ordinary_stage_advance_rejects_governance_erased(
     assert persisted.terminal_outcome is None
 
 
+def _claimed_job_at_stage(
+    storage: BaseStorage,
+    stage: schemas.OptimizationJobStage,
+    *,
+    now: int,
+) -> tuple[int, int]:
+    job = storage.create_or_get_playbook_optimization_job(_replay_job("d1", "a1"))
+    claim = storage.claim_playbook_optimization_job(
+        job_id=job.job_id,
+        owner="worker-a",
+        lease_seconds=60,
+        now=now,
+    )
+    assert isinstance(storage, SQLiteStorage)
+    storage.conn.execute(
+        "UPDATE playbook_optimization_jobs SET stage = ? WHERE job_id = ?",
+        (stage, job.job_id),
+    )
+    storage.conn.commit()
+    return job.job_id, claim.fence
+
+
+@pytest.mark.parametrize(
+    ("current_stage", "target_stage"),
+    [
+        ("candidate_generated", "discovery_analyzed"),
+        ("discovery_analyzed", "discovery_analyzed"),
+        ("evidence_frozen", "held_out_analyzed"),
+        ("held_out_analyzed", "held_out_analyzed"),
+        ("held_out_analyzed", "publishing"),
+        ("discovery_analyzed", "replay_running"),
+    ],
+)
+def test_widened_analysis_stage_rejects_invalid_predecessor(
+    storage: BaseStorage,
+    current_stage: schemas.OptimizationJobStage,
+    target_stage: schemas.OptimizationJobStage,
+) -> None:
+    job_id, fence = _claimed_job_at_stage(storage, current_stage, now=7_000)
+
+    assert (
+        storage.advance_playbook_optimization_stage(
+            job_id=job_id,
+            fence=fence,
+            stage=target_stage,
+            now=7_001,
+        )
+        is False
+    )
+    persisted = storage.get_playbook_optimization_job(job_id)
+    assert persisted is not None
+    assert persisted.stage == current_stage
+    assert persisted.status == "running"
+
+
+@pytest.mark.parametrize(
+    ("current_stage", "terminal_stage", "outcome"),
+    [
+        ("evidence_frozen", "abstained", "infrastructure_failure"),
+        ("held_out_analyzed", "abstained", "applied"),
+        ("discovery_analyzed", "failed", "stale_incumbent"),
+        ("publishing", "applied", "heldout_evidence_failed"),
+    ],
+)
+def test_widened_terminal_stage_rejects_outcome_from_another_family(
+    storage: BaseStorage,
+    current_stage: schemas.OptimizationJobStage,
+    terminal_stage: schemas.OptimizationJobStage,
+    outcome: schemas.OptimizationTerminalOutcome,
+) -> None:
+    job_id, fence = _claimed_job_at_stage(storage, current_stage, now=7_000)
+
+    assert (
+        storage.advance_playbook_optimization_stage(
+            job_id=job_id,
+            fence=fence,
+            stage=terminal_stage,
+            terminal_outcome=outcome,
+            now=7_001,
+        )
+        is False
+    )
+    persisted = storage.get_playbook_optimization_job(job_id)
+    assert persisted is not None
+    assert persisted.stage == current_stage
+    assert persisted.status == "running"
+    assert persisted.terminal_outcome is None
+
+
+def test_widened_terminal_outcome_rejects_stale_lease_and_settled_job(
+    storage: BaseStorage,
+) -> None:
+    job_id, fence = _claimed_job_at_stage(storage, "held_out_analyzed", now=7_000)
+    assert isinstance(storage, SQLiteStorage)
+
+    def _abstain(*, at_fence: int, now: int) -> bool:
+        return storage.advance_playbook_optimization_stage(
+            job_id=job_id,
+            fence=at_fence,
+            stage="abstained",
+            terminal_outcome="stale_incumbent",
+            now=now,
+        )
+
+    assert _abstain(at_fence=fence + 1, now=7_001) is False
+    assert _abstain(at_fence=fence, now=7_060) is False
+
+    storage.conn.execute(
+        "UPDATE playbook_optimization_jobs SET stage = 'failed' WHERE job_id = ?",
+        (job_id,),
+    )
+    storage.conn.commit()
+    assert _abstain(at_fence=fence, now=7_001) is False
+
+    storage.conn.execute(
+        "UPDATE playbook_optimization_jobs "
+        "SET stage = 'held_out_analyzed', status = 'completed' WHERE job_id = ?",
+        (job_id,),
+    )
+    storage.conn.commit()
+    assert _abstain(at_fence=fence, now=7_001) is False
+
+
 def _create_legacy_optimizer_schema(db_path: Path) -> None:
     conn = sqlite3.connect(db_path)
     conn.executescript(
