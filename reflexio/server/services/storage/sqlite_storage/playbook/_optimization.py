@@ -10,6 +10,8 @@ from pydantic import ValidationError
 
 from reflexio.models.api_schema.domain.entities import canonicalize_artifact_json
 from reflexio.models.api_schema.service_schemas import (
+    OpenWorldQualificationClassCount,
+    OpenWorldQualificationRecord,
     OptimizationArtifactKind,
     OptimizationJobClaim,
     OptimizationJobStage,
@@ -27,6 +29,7 @@ from reflexio.server.services.playbook.publication import (
     canonical_json_bytes,
 )
 from reflexio.server.services.storage.error import (
+    OpenWorldQualificationConflictError,
     OptimizationArtifactIntegrityError,
     OptimizationJobIdentityConflictError,
     OptimizationJobLeaseLiveError,
@@ -252,6 +255,47 @@ from .._base import (
     _json_dumps,
     _json_loads,
 )
+
+_QUALIFICATION_SELECT_SQL = """SELECT * FROM offline_tuner_open_world_qualifications
+   WHERE component_identity_digest = ? AND suite_digest = ?"""
+
+_QUALIFICATION_INSERT_SQL = """INSERT INTO offline_tuner_open_world_qualifications
+   (component_identity_digest, suite_digest, schema_version, result_digest,
+    passed, class_counts_json, observation_digests_json, created_at)
+   VALUES (?, ?, ?, ?, ?, ?, ?, ?)"""
+
+
+def _qualification_insert_values(
+    record: OpenWorldQualificationRecord,
+) -> tuple[Any, ...]:
+    return (
+        record.component_identity_digest,
+        record.suite_digest,
+        record.schema_version,
+        record.result_digest,
+        int(record.passed),
+        json.dumps([count.model_dump() for count in record.class_counts]),
+        json.dumps(list(record.observation_digests)),
+        record.created_at,
+    )
+
+
+def _row_to_open_world_qualification_record(
+    row: sqlite3.Row,
+) -> OpenWorldQualificationRecord:
+    return OpenWorldQualificationRecord(
+        schema_version=row["schema_version"],
+        component_identity_digest=row["component_identity_digest"],
+        suite_digest=row["suite_digest"],
+        result_digest=row["result_digest"],
+        class_counts=tuple(
+            OpenWorldQualificationClassCount(**count)
+            for count in json.loads(row["class_counts_json"])
+        ),
+        passed=bool(row["passed"]),
+        observation_digests=tuple(json.loads(row["observation_digests_json"])),
+        created_at=row["created_at"],
+    )
 
 
 def _row_to_playbook_optimization_candidate(
@@ -940,6 +984,53 @@ class OptimizationJobStoreMixin:
                 if owns_transaction:
                     self.conn.rollback()
                 raise
+
+    @SQLiteStorageBase.handle_exceptions
+    def persist_open_world_qualification_record(
+        self, record: OpenWorldQualificationRecord
+    ) -> OpenWorldQualificationRecord:
+        with self._lock:
+            owns_transaction = self._own_transaction()
+            if owns_transaction:
+                self.conn.execute("BEGIN IMMEDIATE")
+            try:
+                existing = self.conn.execute(
+                    _QUALIFICATION_SELECT_SQL,
+                    (record.component_identity_digest, record.suite_digest),
+                ).fetchone()
+                if existing is not None:
+                    stored = _row_to_open_world_qualification_record(existing)
+                    if stored.semantic_key() != record.semantic_key():
+                        raise OpenWorldQualificationConflictError(
+                            "open-world qualification record conflicts with the "
+                            "record already cached for this identity and suite"
+                        )
+                else:
+                    self.conn.execute(
+                        _QUALIFICATION_INSERT_SQL,
+                        _qualification_insert_values(record),
+                    )
+                    stored = record
+                if owns_transaction:
+                    self.conn.commit()
+                return stored
+            except Exception:
+                if owns_transaction:
+                    self.conn.rollback()
+                raise
+
+    @SQLiteStorageBase.handle_exceptions
+    def load_open_world_qualification_record(
+        self,
+        *,
+        component_identity_digest: str,
+        suite_digest: str,
+    ) -> OpenWorldQualificationRecord | None:
+        row = self._fetchone(
+            _QUALIFICATION_SELECT_SQL,
+            (component_identity_digest, suite_digest),
+        )
+        return None if row is None else _row_to_open_world_qualification_record(row)
 
     @SQLiteStorageBase.handle_exceptions
     def get_playbook_optimization_artifact(

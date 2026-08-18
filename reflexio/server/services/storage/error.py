@@ -30,6 +30,10 @@ class OptimizationArtifactIntegrityError(StorageError):
     """Raised when a durable optimizer artifact is malformed or conflicts."""
 
 
+class OpenWorldQualificationConflictError(StorageError):
+    """Raised when a cached qualification key resolves to a conflicting result."""
+
+
 def require_non_empty_session_id(value: Any) -> str:
     """Return a stripped, non-empty request ``session_id`` or raise ``StorageError``.
 

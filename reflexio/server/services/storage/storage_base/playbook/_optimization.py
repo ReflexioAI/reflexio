@@ -3,6 +3,7 @@
 from abc import abstractmethod
 
 from reflexio.models.api_schema.domain import (
+    OpenWorldQualificationRecord,
     OptimizationArtifactKind,
     OptimizationJobClaim,
     OptimizationJobStage,
@@ -167,6 +168,49 @@ class OptimizationJobStoreMixin:
         """Return one typed singleton artifact when present."""
         raise NotImplementedError(
             "Storage backend does not support replay-gated playbook optimization"
+        )
+
+    def persist_open_world_qualification_record(
+        self, record: OpenWorldQualificationRecord
+    ) -> OpenWorldQualificationRecord:
+        """Persist one immutable qualification result and return the stored row.
+
+        The cache key is ``(component_identity_digest, suite_digest)``. The
+        first insert controls ``created_at``; replaying a semantically
+        identical record is idempotent and returns the stored row unchanged.
+
+        Args:
+            record (OpenWorldQualificationRecord): The result to persist.
+
+        Returns:
+            OpenWorldQualificationRecord: The durable record for this key.
+
+        Raises:
+            OpenWorldQualificationConflictError: If a record already exists for
+                the key and differs in any field other than ``created_at``.
+        """
+        raise NotImplementedError(
+            "Storage backend does not support open-world analyst qualification"
+        )
+
+    def load_open_world_qualification_record(
+        self,
+        *,
+        component_identity_digest: str,
+        suite_digest: str,
+    ) -> OpenWorldQualificationRecord | None:
+        """Load the cached qualification result for one exact identity/suite pair.
+
+        Args:
+            component_identity_digest (str): Pinned analyst component identity.
+            suite_digest (str): Canonical qualification-suite digest.
+
+        Returns:
+            OpenWorldQualificationRecord | None: The stored record, or ``None``
+                when this key has never been qualified.
+        """
+        raise NotImplementedError(
+            "Storage backend does not support open-world analyst qualification"
         )
 
     @abstractmethod

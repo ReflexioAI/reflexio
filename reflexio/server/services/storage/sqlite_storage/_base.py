@@ -3543,6 +3543,28 @@ CREATE TABLE IF NOT EXISTS playbook_optimization_artifacts (
 CREATE INDEX IF NOT EXISTS idx_poa_job
     ON playbook_optimization_artifacts(job_id);
 
+CREATE TABLE IF NOT EXISTS offline_tuner_open_world_qualifications (
+    component_identity_digest TEXT NOT NULL,
+    suite_digest TEXT NOT NULL,
+    schema_version TEXT NOT NULL,
+    result_digest TEXT NOT NULL,
+    passed INTEGER NOT NULL CHECK (passed IN (0, 1)),
+    class_counts_json TEXT NOT NULL,
+    observation_digests_json TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (component_identity_digest, suite_digest)
+);
+CREATE TRIGGER IF NOT EXISTS offline_tuner_open_world_qualifications_no_update
+BEFORE UPDATE ON offline_tuner_open_world_qualifications
+BEGIN
+    SELECT RAISE(ABORT, 'open-world qualification records are immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS offline_tuner_open_world_qualifications_no_delete
+BEFORE DELETE ON offline_tuner_open_world_qualifications
+BEGIN
+    SELECT RAISE(ABORT, 'open-world qualification records are immutable');
+END;
+
 CREATE TABLE IF NOT EXISTS playbook_optimization_candidates (
     candidate_id INTEGER PRIMARY KEY AUTOINCREMENT,
     job_id INTEGER NOT NULL,
