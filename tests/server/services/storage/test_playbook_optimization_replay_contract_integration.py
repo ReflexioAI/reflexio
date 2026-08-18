@@ -122,12 +122,13 @@ def test_conflicting_active_identity_is_rejected(storage: BaseStorage) -> None:
         storage.create_or_get_playbook_optimization_job(_replay_job("d1", "a2"))
 
 
-def test_sqlite_rejects_open_world_optimizer_jobs(storage: BaseStorage) -> None:
+def test_sqlite_persists_open_world_optimizer_jobs(storage: BaseStorage) -> None:
     open_world_job = _replay_job("open-world-discovery", "open-world-attempt")
     open_world_job.optimizer_kind = "offline_tuner_open_world"
 
-    with pytest.raises(StorageError, match="CHECK constraint failed"):
-        storage.create_or_get_playbook_optimization_job(open_world_job)
+    saved = storage.create_or_get_playbook_optimization_job(open_world_job)
+
+    assert saved.optimizer_kind == "offline_tuner_open_world"
 
 
 def test_gepa_publication_reclaim_contract_has_none_live_and_reclaimed_outcomes(

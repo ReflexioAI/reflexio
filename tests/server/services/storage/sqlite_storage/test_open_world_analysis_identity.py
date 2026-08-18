@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from collections.abc import Generator
 from hashlib import sha256
 from pathlib import Path
@@ -29,7 +30,7 @@ def storage(tmp_path: Path) -> Generator[SQLiteStorage]:
 
 def _job() -> schemas.PlaybookOptimizationJob:
     return schemas.PlaybookOptimizationJob(
-        optimizer_kind="offline_tuner_replay",
+        optimizer_kind="offline_tuner_open_world",
         target_kind="user_playbook",
         target_id=41,
         discovery_key="discovery-key",
@@ -69,6 +70,36 @@ def test_open_world_analysis_stage_path_round_trips(storage: SQLiteStorage) -> N
     persisted = storage.get_playbook_optimization_job(job.job_id)
     assert persisted is not None
     assert persisted.stage == "held_out_analyzed"
+
+
+def test_legacy_optimizer_kind_allowlist_is_rebuilt_for_open_world_job(
+    tmp_path: Path,
+) -> None:
+    db_path = str(tmp_path / "legacy-optimizer-kind.db")
+    initial = SQLiteStorage(org_id="legacy-optimizer-kind", db_path=db_path)
+    table_sql = initial.conn.execute(
+        "SELECT sql FROM sqlite_master "
+        "WHERE type = 'table' AND name = 'playbook_optimization_jobs'"
+    ).fetchone()[0]
+    initial.conn.close()
+
+    legacy_table_sql = table_sql.replace("'offline_tuner_open_world',", "")
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("PRAGMA foreign_keys = OFF")
+        conn.execute("DROP TABLE playbook_optimization_jobs")
+        conn.execute(legacy_table_sql)
+        conn.commit()
+    finally:
+        conn.close()
+
+    upgraded = SQLiteStorage(org_id="legacy-optimizer-kind", db_path=db_path)
+    try:
+        job = upgraded.create_playbook_optimization_job(_job())
+    finally:
+        upgraded.conn.close()
+
+    assert job.optimizer_kind == "offline_tuner_open_world"
 
 
 @pytest.mark.parametrize(

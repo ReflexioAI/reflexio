@@ -2212,7 +2212,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             "'infrastructure_failure'",
         )
         if all(check in table_sql for check in required_checks) and (
-            "'offline_tuner_open_world'" not in table_sql
+            "'offline_tuner_open_world'" in table_sql
         ):
             return
         foreign_keys_enabled = bool(
@@ -2236,6 +2236,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                     CHECK (optimizer_kind IN (
                         'gepa',
                         'offline_tuner_replay',
+                        'offline_tuner_open_world',
                         'offline_tuner_legacy',
                         'optimizer_legacy_unknown'
                     )),
@@ -3416,6 +3417,7 @@ CREATE TABLE IF NOT EXISTS playbook_optimization_jobs (
         CHECK (optimizer_kind IN (
             'gepa',
             'offline_tuner_replay',
+            'offline_tuner_open_world',
             'offline_tuner_legacy',
             'optimizer_legacy_unknown'
         )),
