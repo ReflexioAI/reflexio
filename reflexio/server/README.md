@@ -462,11 +462,12 @@ Key files:
 - `shadow_comparison/judge.py`: Per-turn regular-vs-shadow judge
 - `shadow_comparison/dispatcher.py` and `shadow_comparison/worker.py`: Publish-time dispatch and bounded background execution for shadow verdict writes
 - `shadow_comparison/outcome.py`: Verdict outcome model helpers
-- `evaluation_overview/service.py`: Aggregates evaluation-page metrics
+- `evaluation_overview/service.py`: Bulk-loads evaluation-page metrics, first-request sources, citations, Braintrust scores, and optional shadow verdicts; source-set cohorts are computed server-side so the dashboard does not re-aggregate.
 - `evaluation_overview/components/hero_state.py`, `evaluation_overview/components/distribution.py`, `evaluation_overview/components/rule_attribution.py`, `evaluation_overview/components/shadow_aggregation.py`: Focused aggregation helpers
 - `evaluation_overview/eval_sampler.py`: Evaluation sampling helpers that remain root-level
+- `models/api_schema/eval_overview_schema.py`: `GetEvaluationOverviewRequest/Response`, including optional `source_sets` input and `source_set_comparison` output keyed by `(user_id, session_id)`.
 
-**Pattern**: Session-level agent success evaluation remains in `agent_success_evaluation/`; dashboard-facing rollups and per-turn shadow verdict analysis live in these companion directories.
+**Pattern**: Session-level agent success evaluation remains in `agent_success_evaluation/`; dashboard-facing rollups, first-source cohort comparisons, and per-turn shadow verdict analysis live in these companion directories.
 
 ### Playbook Optimizer and Braintrust
 
