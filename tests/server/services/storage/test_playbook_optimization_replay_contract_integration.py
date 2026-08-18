@@ -1079,6 +1079,9 @@ def test_optimizer_kind_stage_matrix_is_exact(storage: BaseStorage) -> None:
                     if target_stage in stages
                     else False
                 )
+                before = (
+                    _optimization_job_row(storage, job_id) if not expected else None
+                )
 
                 assert (
                     storage.advance_playbook_optimization_stage(
@@ -1089,6 +1092,8 @@ def test_optimizer_kind_stage_matrix_is_exact(storage: BaseStorage) -> None:
                     )
                     is expected
                 )
+                if before is not None:
+                    assert _optimization_job_row(storage, job_id) == before
                 persisted = storage.get_playbook_optimization_job(job_id)
                 assert persisted is not None
                 assert persisted.stage == (target_stage if expected else current_stage)
@@ -1118,6 +1123,9 @@ def test_optimizer_kind_terminal_outcome_matrix_is_exact(
                             terminal_stage
                         ]
                     )
+                    before = (
+                        _optimization_job_row(storage, job_id) if not expected else None
+                    )
 
                     assert (
                         storage.advance_playbook_optimization_stage(
@@ -1131,6 +1139,8 @@ def test_optimizer_kind_terminal_outcome_matrix_is_exact(
                         )
                         is expected
                     )
+                    if before is not None:
+                        assert _optimization_job_row(storage, job_id) == before
                     persisted = storage.get_playbook_optimization_job(job_id)
                     assert persisted is not None
                     assert persisted.stage == (
@@ -1157,6 +1167,9 @@ def test_optimizer_kind_terminal_outcome_matrix_is_exact(
                     and current_stage == "publishing"
                     and outcome in (None, "applied")
                 )
+                before = (
+                    _optimization_job_row(storage, job_id) if not expected else None
+                )
 
                 assert (
                     storage.advance_playbook_optimization_stage(
@@ -1170,6 +1183,8 @@ def test_optimizer_kind_terminal_outcome_matrix_is_exact(
                     )
                     is expected
                 )
+                if before is not None:
+                    assert _optimization_job_row(storage, job_id) == before
                 persisted = storage.get_playbook_optimization_job(job_id)
                 assert persisted is not None
                 assert persisted.stage == ("applied" if expected else current_stage)
