@@ -47,6 +47,21 @@ _STAGE_PREDECESSORS_BY_OPTIMIZER: dict[str, dict[str, tuple[str, str]]] = {
         "held_out_analyzed": ("candidate_generated", "candidate_generated"),
     },
 }
+_ACTIVE_STAGES_BY_OPTIMIZER = {
+    "offline_tuner_replay": (
+        "evidence_frozen",
+        "candidate_generated",
+        "replay_running",
+        "replay_evaluated",
+        "publishing",
+    ),
+    "offline_tuner_open_world": (
+        "evidence_frozen",
+        "discovery_analyzed",
+        "candidate_generated",
+        "held_out_analyzed",
+    ),
+}
 _TERMINAL_OUTCOMES_BY_OPTIMIZER = {
     "offline_tuner_replay": {
         "failed": {
@@ -748,14 +763,14 @@ class OptimizationJobStoreMixin:
             if row is None:
                 return False
             optimizer_kind = row["optimizer_kind"]
-            predecessors = _STAGE_PREDECESSORS_BY_OPTIMIZER.get(
-                optimizer_kind, {}
-            ).get(stage)
+            predecessors = _STAGE_PREDECESSORS_BY_OPTIMIZER.get(optimizer_kind, {}).get(
+                stage
+            )
             terminal_status: str | None = None
             if stage == "applied":
-                if (
-                    optimizer_kind != "offline_tuner_replay"
-                    or terminal_outcome not in (None, "applied")
+                if optimizer_kind != "offline_tuner_replay" or terminal_outcome not in (
+                    None,
+                    "applied",
                 ):
                     return False
                 terminal_outcome = "applied"
@@ -816,13 +831,7 @@ class OptimizationJobStoreMixin:
                     ),
                 )
             else:
-                active_stages = tuple(
-                    predecessor
-                    for stages in _STAGE_PREDECESSORS_BY_OPTIMIZER.get(
-                        optimizer_kind, {}
-                    ).values()
-                    for predecessor in stages
-                )
+                active_stages = _ACTIVE_STAGES_BY_OPTIMIZER.get(optimizer_kind, ())
                 placeholders = ", ".join("?" for _ in active_stages)
                 cur = self.conn.execute(
                     f"""UPDATE playbook_optimization_jobs
