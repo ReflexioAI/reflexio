@@ -1372,6 +1372,9 @@ class UserPlaybookStoreMixin:
         if playbook_name:
             conditions.append("up.playbook_name = ?")
             params.append(playbook_name)
+        if request.source:
+            conditions.append("up.source = ?")
+            params.append(request.source)
         if start_time:
             conditions.append("up.created_at >= ?")
             params.append(_epoch_to_iso(start_time))

@@ -625,6 +625,24 @@ def test_phase_b_passes_tag_filter_to_every_fanout_leg() -> None:
     ]
 
 
+def test_phase_b_passes_source_filter_to_every_fanout_leg() -> None:
+    storage = _fanout_storage()
+
+    _run_phase_b(
+        request=UnifiedSearchRequest(query="billing", user_id="user-1", source="api"),
+        org_id="test-org",
+        storage=storage,
+        embedding=[0.1] * 1536,
+        query="billing",
+        top_k=5,
+        threshold=0.3,
+    )
+
+    assert storage.search_user_profile.call_args.args[0].source == "api"
+    assert storage.search_agent_playbooks.call_args.args[0].source == "api"
+    assert storage.search_user_playbooks.call_args.args[0].source == "api"
+
+
 class TestEmbeddingFailureDegradesToFTS(unittest.TestCase):
     """D2/D3: embedding-generation failure degrades the whole search to FTS."""
 

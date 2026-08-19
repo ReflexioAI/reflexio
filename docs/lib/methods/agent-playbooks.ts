@@ -79,6 +79,13 @@ export const agentPlaybookMethods: MethodDef[] = [
         description: "Filter by playbook name",
       },
       {
+        name: "source",
+        type: "string",
+        required: false,
+        description:
+          "Match agent playbooks linked to at least one user playbook with this exact source",
+      },
+      {
         name: "start_time",
         type: "datetime",
         required: false,
@@ -94,7 +101,7 @@ export const agentPlaybookMethods: MethodDef[] = [
         name: "status_filter",
         type: "json",
         required: false,
-        description: `Status filter as JSON array. Values: ${STATUS_ENUM.join(", ")}, null (for current)`,
+        description: `Lifecycle status filter as JSON array. Values: ${STATUS_ENUM.join(", ")}, null (for current). Defaults to current and pending`,
       },
       {
         name: "playbook_status_filter",
