@@ -208,6 +208,10 @@ class OptimizationJobStoreMixin:
         Returns:
             OpenWorldQualificationRecord | None: The stored record, or ``None``
                 when this key has never been qualified.
+
+        Raises:
+            StorageError: If a stored row fails to validate against
+                ``OpenWorldQualificationRecord`` when reconstructed.
         """
         raise NotImplementedError(
             "Storage backend does not support open-world analyst qualification"
