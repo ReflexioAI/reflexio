@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Generator
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -20,6 +21,10 @@ pytestmark = pytest.mark.integration
 _COMPONENT_DIGEST = "a" * 64
 _SUITE_DIGEST = "b" * 64
 _RESULT_DIGEST = "c" * 64
+
+# Bounded concurrency for the independent-connection writer tests below: enough
+# threads to exercise real SQLite lock contention without saturating the host.
+_CONCURRENT_WRITERS = 6
 
 
 @pytest.fixture
@@ -254,6 +259,184 @@ def test_immutability_triggers_survive_reopen(db_path: str) -> None:
         reopened.conn.rollback()
     finally:
         reopened.conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Concurrent writers on INDEPENDENT SQLite connections (separate SQLiteStorage
+# instances over the same db file, not one instance shared across threads) --
+# real cross-connection lock contention, not just the in-process RLock.
+# Synchronization is via ThreadPoolExecutor.submit()/.result(); no sleeps.
+# ---------------------------------------------------------------------------
+
+
+def test_concurrent_identical_writes_converge_on_independent_connections(
+    db_path: str,
+) -> None:
+    stores = [
+        SQLiteStorage(org_id="open-world-qualification", db_path=db_path)
+        for _ in range(_CONCURRENT_WRITERS)
+    ]
+    try:
+        with ThreadPoolExecutor(max_workers=_CONCURRENT_WRITERS) as pool:
+            futures = [
+                pool.submit(store.persist_open_world_qualification_record, _record())
+                for store in stores
+            ]
+            results = [future.result() for future in futures]
+    finally:
+        for store in stores:
+            store.conn.close()
+
+    assert all(result == _record() for result in results)
+
+    verify_store = SQLiteStorage(org_id="open-world-qualification", db_path=db_path)
+    try:
+        rows = verify_store.conn.execute(
+            "SELECT COUNT(*) FROM offline_tuner_open_world_qualifications"
+        ).fetchone()[0]
+        loaded = verify_store.load_open_world_qualification_record(
+            component_identity_digest=_COMPONENT_DIGEST,
+            suite_digest=_SUITE_DIGEST,
+        )
+    finally:
+        verify_store.conn.close()
+    assert rows == 1
+    assert loaded == _record()
+
+
+def test_concurrent_conflicting_writes_yield_one_winner_and_one_intact_row(
+    db_path: str,
+) -> None:
+    variants = [
+        _record(result_digest=f"{index:064x}") for index in range(_CONCURRENT_WRITERS)
+    ]
+    stores = [
+        SQLiteStorage(org_id="open-world-qualification", db_path=db_path)
+        for _ in variants
+    ]
+    try:
+        with ThreadPoolExecutor(max_workers=_CONCURRENT_WRITERS) as pool:
+            futures = [
+                pool.submit(store.persist_open_world_qualification_record, variant)
+                for store, variant in zip(stores, variants, strict=True)
+            ]
+            outcomes: list[tuple[str, object]] = []
+            for future in futures:
+                try:
+                    outcomes.append(("winner", future.result()))
+                except OpenWorldQualificationConflictError as exc:
+                    outcomes.append(("conflict", exc))
+    finally:
+        for store in stores:
+            store.conn.close()
+
+    winners = [record for kind, record in outcomes if kind == "winner"]
+    conflicts = [exc for kind, exc in outcomes if kind == "conflict"]
+
+    assert len(winners) == 1
+    assert len(conflicts) == len(variants) - 1
+    assert all(
+        isinstance(exc, OpenWorldQualificationConflictError) for exc in conflicts
+    )
+    assert winners[0] in variants
+
+    verify_store = SQLiteStorage(org_id="open-world-qualification", db_path=db_path)
+    try:
+        rows = verify_store.conn.execute(
+            "SELECT COUNT(*) FROM offline_tuner_open_world_qualifications"
+        ).fetchone()[0]
+        loaded = verify_store.load_open_world_qualification_record(
+            component_identity_digest=_COMPONENT_DIGEST,
+            suite_digest=_SUITE_DIGEST,
+        )
+    finally:
+        verify_store.conn.close()
+    assert rows == 1
+    assert loaded == winners[0]
+
+
+# ---------------------------------------------------------------------------
+# Upgrade from a pre-Task-9 schema: a DB that predates this table must
+# self-upgrade on normal storage initialization, in place, with existing data
+# intact. Dropping the table (SQLite auto-drops its triggers with it) on a
+# fully-initialized modern schema reproduces exactly what an old DB on disk
+# looks like, without hand-reconstructing legacy DDL.
+# ---------------------------------------------------------------------------
+
+
+def _qualification_schema_objects(
+    conn: sqlite3.Connection,
+) -> tuple[set[str], set[str]]:
+    tables = {
+        row[0]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master"
+            " WHERE type = 'table' AND name = 'offline_tuner_open_world_qualifications'"
+        )
+    }
+    triggers = {
+        row[0]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master"
+            " WHERE type = 'trigger'"
+            " AND name LIKE 'offline_tuner_open_world_qualifications_%'"
+        )
+    }
+    return tables, triggers
+
+
+def test_upgrade_from_pre_task_9_schema_installs_table_and_triggers(
+    db_path: str,
+) -> None:
+    baseline = SQLiteStorage(org_id="open-world-qualification", db_path=db_path)
+    try:
+        # optimizer_kind="gepa" (not a legacy kind) so re-running migrate() on
+        # the second, upgraded instance does not itself retire this sentinel
+        # job as part of unrelated legacy-optimizer cleanup -- that would
+        # confound this test's "unrelated data survives" assertion below.
+        sentinel_job = baseline.create_playbook_optimization_job(
+            schemas.PlaybookOptimizationJob(
+                optimizer_kind="gepa", target_kind="agent_playbook", target_id=1
+            )
+        )
+    finally:
+        baseline.conn.close()
+
+    raw = sqlite3.connect(db_path)
+    try:
+        raw.execute("DROP TABLE offline_tuner_open_world_qualifications")
+        raw.commit()
+        assert _qualification_schema_objects(raw) == (set(), set())
+    finally:
+        raw.close()
+
+    upgraded = SQLiteStorage(org_id="open-world-qualification", db_path=db_path)
+    try:
+        tables, triggers = _qualification_schema_objects(upgraded.conn)
+        assert tables == {"offline_tuner_open_world_qualifications"}
+        assert triggers == {
+            "offline_tuner_open_world_qualifications_no_update",
+            "offline_tuner_open_world_qualifications_no_delete",
+        }
+
+        # Pre-existing, unrelated data survives the upgrade untouched.
+        assert (
+            upgraded.get_playbook_optimization_job(sentinel_job.job_id) == sentinel_job
+        )
+
+        # The reinstalled table is immediately usable and immutable.
+        persisted = upgraded.persist_open_world_qualification_record(_record())
+        assert persisted == _record()
+        with pytest.raises(sqlite3.IntegrityError):
+            upgraded.conn.execute(
+                "UPDATE offline_tuner_open_world_qualifications SET passed = 0"
+            )
+        upgraded.conn.rollback()
+        with pytest.raises(sqlite3.IntegrityError):
+            upgraded.conn.execute("DELETE FROM offline_tuner_open_world_qualifications")
+        upgraded.conn.rollback()
+    finally:
+        upgraded.conn.close()
 
 
 def test_qualification_cache_surface_is_narrow() -> None:

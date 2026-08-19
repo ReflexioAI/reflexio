@@ -149,3 +149,91 @@ def test_record_is_immutable() -> None:
 
     with pytest.raises(ValidationError):
         record.passed = False  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
+# Strictness: coercible-but-wrong-typed values must be rejected outright,
+# not silently converted. Pydantic's default (lax) mode would happily accept
+# every value below; these guard the ``strict=True`` model config.
+# ---------------------------------------------------------------------------
+
+
+def test_bool_is_rejected_for_class_count_required() -> None:
+    with pytest.raises(ValidationError):
+        OpenWorldQualificationClassCount(
+            qualification_class="abstention", required=True, passed_required=0
+        )
+
+
+def test_bool_is_rejected_for_class_count_passed_required() -> None:
+    with pytest.raises(ValidationError):
+        OpenWorldQualificationClassCount(
+            qualification_class="abstention", required=2, passed_required=False
+        )
+
+
+def test_numeric_string_is_rejected_for_class_count_required() -> None:
+    with pytest.raises(ValidationError):
+        OpenWorldQualificationClassCount(
+            qualification_class="abstention",
+            required="2",  # type: ignore[arg-type]
+            passed_required=0,
+        )
+
+
+def test_numeric_string_is_rejected_for_class_count_passed_required() -> None:
+    with pytest.raises(ValidationError):
+        OpenWorldQualificationClassCount(
+            qualification_class="abstention",
+            required=2,
+            passed_required="2",  # type: ignore[arg-type]
+        )
+
+
+def test_float_is_rejected_for_class_count_required() -> None:
+    with pytest.raises(ValidationError):
+        OpenWorldQualificationClassCount(
+            qualification_class="abstention",
+            required=2.0,  # type: ignore[arg-type]
+            passed_required=0,
+        )
+
+
+def test_int_is_rejected_for_record_passed() -> None:
+    with pytest.raises(ValidationError):
+        _record(passed=1)
+
+
+def test_numeric_string_is_rejected_for_record_passed() -> None:
+    with pytest.raises(ValidationError):
+        _record(passed="true")
+
+
+def test_numeric_string_is_rejected_for_created_at() -> None:
+    with pytest.raises(ValidationError):
+        _record(created_at="1700000000")
+
+
+def test_bool_is_rejected_for_created_at() -> None:
+    with pytest.raises(ValidationError):
+        _record(created_at=True)
+
+
+def test_float_is_rejected_for_created_at() -> None:
+    with pytest.raises(ValidationError):
+        _record(created_at=1_700_000_000.0)
+
+
+def test_int_is_rejected_for_digest_fields() -> None:
+    with pytest.raises(ValidationError):
+        _record(component_identity_digest=int(_COMPONENT_DIGEST, 16))  # type: ignore[arg-type]
+
+
+def test_list_is_rejected_for_class_counts() -> None:
+    with pytest.raises(ValidationError):
+        _record(class_counts=list(_class_counts()))  # type: ignore[arg-type]
+
+
+def test_list_is_rejected_for_observation_digests() -> None:
+    with pytest.raises(ValidationError):
+        _record(observation_digests=["0" * 64, "1" * 64])  # type: ignore[arg-type]

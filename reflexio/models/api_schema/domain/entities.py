@@ -670,7 +670,7 @@ class OpenWorldQualificationClassCount(BaseModel):
     by the reducer, and these values exist only to explain one result.
     """
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     qualification_class: OpenWorldQualificationClass
     required: int = Field(ge=0)
@@ -693,7 +693,7 @@ class OpenWorldQualificationRecord(BaseModel):
     digests of the observations that produced it.
     """
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     schema_version: Literal["offline-tuner-open-world-qualification-result-v1"] = (
         "offline-tuner-open-world-qualification-result-v1"
