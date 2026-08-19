@@ -113,7 +113,14 @@ _TERMINAL_OUTCOMES_BY_OPTIMIZER: dict[str, dict[str, frozenset[str]]] = {
         ),
     },
     "offline_tuner_open_world": {
-        "failed": frozenset({"infrastructure_failure"}),
+        "failed": frozenset(
+            {
+                "infrastructure_failure",
+                "analyst_unqualified",
+                "stale_incumbent",
+                "governance_invalidated",
+            }
+        ),
         "abstained": frozenset(
             {
                 "no_grounded_hypothesis",

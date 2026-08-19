@@ -88,7 +88,12 @@ _TERMINAL_OUTCOMES_BY_OPTIMIZER = {
         },
     },
     "offline_tuner_open_world": {
-        "failed": {"infrastructure_failure"},
+        "failed": {
+            "infrastructure_failure",
+            "analyst_unqualified",
+            "stale_incumbent",
+            "governance_invalidated",
+        },
         "abstained": {
             "no_grounded_hypothesis",
             "analyst_unqualified",

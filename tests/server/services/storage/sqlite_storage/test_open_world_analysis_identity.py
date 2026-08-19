@@ -110,6 +110,74 @@ def test_open_world_terminal_outcomes_are_durable(
     assert persisted.terminal_outcome == outcome
 
 
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        "infrastructure_failure",
+        "analyst_unqualified",
+        "stale_incumbent",
+        "governance_invalidated",
+    ],
+)
+def test_open_world_failed_terminal_outcomes_are_durable(
+    storage: SQLiteStorage,
+    outcome: schemas.OptimizationTerminalOutcome,
+) -> None:
+    job = storage.create_playbook_optimization_job(_job())
+    claim = storage.claim_playbook_optimization_job(
+        job_id=job.job_id,
+        owner="worker-a",
+        lease_seconds=60,
+        now=2_000,
+    )
+
+    assert storage.advance_playbook_optimization_stage(
+        job_id=job.job_id,
+        fence=claim.fence,
+        stage="failed",
+        terminal_outcome=outcome,
+        now=2_001,
+    )
+    persisted = storage.get_playbook_optimization_job(job.job_id)
+    assert persisted is not None
+    assert persisted.stage == "failed"
+    assert persisted.status == "failed"
+    assert persisted.terminal_outcome == outcome
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        pytest.param("no_grounded_hypothesis", id="open-world-abstention"),
+        pytest.param("generation_failed", id="replay-family-failure"),
+    ],
+)
+def test_open_world_failed_stage_rejects_unrelated_outcomes(
+    storage: SQLiteStorage,
+    outcome: schemas.OptimizationTerminalOutcome,
+) -> None:
+    job = storage.create_playbook_optimization_job(_job())
+    claim = storage.claim_playbook_optimization_job(
+        job_id=job.job_id,
+        owner="worker-a",
+        lease_seconds=60,
+        now=2_000,
+    )
+
+    assert not storage.advance_playbook_optimization_stage(
+        job_id=job.job_id,
+        fence=claim.fence,
+        stage="failed",
+        terminal_outcome=outcome,
+        now=2_001,
+    )
+    persisted = storage.get_playbook_optimization_job(job.job_id)
+    assert persisted is not None
+    assert persisted.stage == "evidence_frozen"
+    assert persisted.status == "running"
+    assert persisted.terminal_outcome is None
+
+
 def test_legacy_optimizer_kind_allowlist_is_rebuilt_for_open_world_job(
     tmp_path: Path,
 ) -> None:

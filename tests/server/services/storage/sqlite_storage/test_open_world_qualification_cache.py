@@ -120,21 +120,27 @@ def test_failed_result_is_persisted_and_loadable(storage: SQLiteStorage) -> None
     assert loaded.class_counts[-1].passed_required == 2
 
 
-@pytest.mark.parametrize(
-    ("passed", "failed_class_index"),
-    [
-        pytest.param(1, 0, id="passed-true-with-failed-class"),
-        pytest.param(0, None, id="passed-false-with-all-classes-passed"),
-    ],
-)
-def test_load_rejects_inconsistent_legacy_qualification_rows(
+def test_population_failure_with_passing_class_counts_round_trips(
     storage: SQLiteStorage,
-    passed: int,
-    failed_class_index: int | None,
+) -> None:
+    record = _record(passed=False)
+
+    persisted = storage.persist_open_world_qualification_record(record)
+    loaded = storage.load_open_world_qualification_record(
+        component_identity_digest=_COMPONENT_DIGEST,
+        suite_digest=_SUITE_DIGEST,
+    )
+
+    assert persisted == record
+    assert loaded == record
+    assert all(count.passed_required == count.required for count in record.class_counts)
+
+
+def test_load_rejects_passed_legacy_row_with_class_deficit(
+    storage: SQLiteStorage,
 ) -> None:
     class_counts = [count.model_dump() for count in _class_counts()]
-    if failed_class_index is not None:
-        class_counts[failed_class_index]["passed_required"] = 2
+    class_counts[0]["passed_required"] = 2
     storage.conn.execute(
         """INSERT INTO offline_tuner_open_world_qualifications
            (component_identity_digest, suite_digest, schema_version, result_digest,
@@ -145,7 +151,7 @@ def test_load_rejects_inconsistent_legacy_qualification_rows(
             _SUITE_DIGEST,
             schemas.OPEN_WORLD_QUALIFICATION_RECORD_SCHEMA_VERSION,
             _RESULT_DIGEST,
-            passed,
+            1,
             json.dumps(class_counts),
             json.dumps([]),
             1_700_000_000,
@@ -153,7 +159,7 @@ def test_load_rejects_inconsistent_legacy_qualification_rows(
     )
     storage.conn.commit()
 
-    with pytest.raises(StorageError, match="passed must equal"):
+    with pytest.raises(StorageError, match="passed=true requires every class"):
         storage.load_open_world_qualification_record(
             component_identity_digest=_COMPONENT_DIGEST,
             suite_digest=_SUITE_DIGEST,
