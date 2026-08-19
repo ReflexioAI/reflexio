@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from collections.abc import Generator
 from concurrent.futures import ThreadPoolExecutor
@@ -12,6 +13,7 @@ import pytest
 from reflexio.models.api_schema import service_schemas as schemas
 from reflexio.server.services.storage.error import (
     OpenWorldQualificationConflictError,
+    StorageError,
 )
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 from reflexio.server.services.storage.storage_base import BaseStorage
@@ -118,6 +120,46 @@ def test_failed_result_is_persisted_and_loadable(storage: SQLiteStorage) -> None
     assert loaded.class_counts[-1].passed_required == 2
 
 
+@pytest.mark.parametrize(
+    ("passed", "failed_class_index"),
+    [
+        pytest.param(1, 0, id="passed-true-with-failed-class"),
+        pytest.param(0, None, id="passed-false-with-all-classes-passed"),
+    ],
+)
+def test_load_rejects_inconsistent_legacy_qualification_rows(
+    storage: SQLiteStorage,
+    passed: int,
+    failed_class_index: int | None,
+) -> None:
+    class_counts = [count.model_dump() for count in _class_counts()]
+    if failed_class_index is not None:
+        class_counts[failed_class_index]["passed_required"] = 2
+    storage.conn.execute(
+        """INSERT INTO offline_tuner_open_world_qualifications
+           (component_identity_digest, suite_digest, schema_version, result_digest,
+            passed, class_counts_json, observation_digests_json, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            _COMPONENT_DIGEST,
+            _SUITE_DIGEST,
+            schemas.OPEN_WORLD_QUALIFICATION_RECORD_SCHEMA_VERSION,
+            _RESULT_DIGEST,
+            passed,
+            json.dumps(class_counts),
+            json.dumps([]),
+            1_700_000_000,
+        ),
+    )
+    storage.conn.commit()
+
+    with pytest.raises(StorageError, match="passed must equal"):
+        storage.load_open_world_qualification_record(
+            component_identity_digest=_COMPONENT_DIGEST,
+            suite_digest=_SUITE_DIGEST,
+        )
+
+
 def test_exact_replay_is_idempotent(storage: SQLiteStorage) -> None:
     first = storage.persist_open_world_qualification_record(_record())
     second = storage.persist_open_world_qualification_record(_record())
@@ -151,7 +193,17 @@ def test_first_insert_controls_created_at(storage: SQLiteStorage) -> None:
     "conflicting",
     [
         {"result_digest": "d" * 64},
-        {"passed": False},
+        {
+            "class_counts": _class_counts()[:-1]
+            + (
+                schemas.OpenWorldQualificationClassCount(
+                    qualification_class="prompt_injection_resistance",
+                    required=3,
+                    passed_required=2,
+                ),
+            ),
+            "passed": False,
+        },
         {"observation_digests": ("0" * 64,)},
         {
             "class_counts": _class_counts()[:-1]

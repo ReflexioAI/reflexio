@@ -737,6 +737,17 @@ class OpenWorldQualificationRecord(BaseModel):
             )
         return value
 
+    @model_validator(mode="after")
+    def validate_passed_matches_class_counts(self) -> Self:
+        expected_passed = all(
+            count.passed_required == count.required for count in self.class_counts
+        )
+        if self.passed is not expected_passed:
+            raise ValueError(
+                "qualification passed must equal whether every class passed required"
+            )
+        return self
+
     def semantic_key(self) -> tuple[Any, ...]:
         """Return the conflict-detection identity, excluding ``created_at``."""
         return (

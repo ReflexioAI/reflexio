@@ -103,6 +103,16 @@ def test_passed_required_may_not_exceed_required() -> None:
         _record(class_counts=_class_counts(support=(1, 2)))
 
 
+def test_passed_true_is_rejected_when_one_class_failed() -> None:
+    with pytest.raises(ValidationError, match="passed must equal"):
+        _record(class_counts=_class_counts(support=(2, 1)), passed=True)
+
+
+def test_passed_false_is_rejected_when_every_class_passed() -> None:
+    with pytest.raises(ValidationError, match="passed must equal"):
+        _record(class_counts=_class_counts(), passed=False)
+
+
 def test_zero_required_class_is_accepted() -> None:
     record = _record(class_counts=_class_counts(refutation=(0, 0)))
 
