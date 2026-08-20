@@ -147,6 +147,21 @@ def _request(**changes: object) -> ProvisionalPublicationRequest:
     return ProvisionalPublicationRequest(**values)  # type: ignore[arg-type]
 
 
+class _PublicationClaimImpostor:
+    job_id = 7
+    owner = "worker-a"
+    fence = 3
+
+
+class _PublicationSearchProjectionImpostor:
+    preserved_trigger = "refund"
+    candidate_content_digest = _digest("new content")
+
+
+class _DecisionProofEnvelopeImpostor:
+    optimizer_kind = "offline_tuner_open_world"
+
+
 def test_provisional_publication_contract_accepts_exact_content_only_bindings() -> None:
     request = _request()
 
@@ -155,6 +170,21 @@ def test_provisional_publication_contract_accepts_exact_content_only_bindings() 
         request.incumbent_snapshot_json
     )
     assert request.qualification_authority.epoch == 7
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("publication_claim", _PublicationClaimImpostor()),
+        ("projection", _PublicationSearchProjectionImpostor()),
+        ("decision_proof", _DecisionProofEnvelopeImpostor()),
+    ],
+)
+def test_provisional_publication_rejects_structurally_matching_subcontract_impostors(
+    field: str, value: object
+) -> None:
+    with pytest.raises(ValueError, match=f"{field} must be"):
+        _request(**{field: value})
 
 
 def test_provisional_publication_result_accepts_complete_terminal_shapes() -> None:

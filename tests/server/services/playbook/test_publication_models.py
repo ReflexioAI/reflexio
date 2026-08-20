@@ -269,6 +269,30 @@ def test_publication_request_binds_content_optimizer_and_canonical_epochs() -> N
         )
 
 
+def test_legacy_publication_request_rejects_open_world_optimizer() -> None:
+    with pytest.raises(ValueError, match="optimizer_kind is not publishable"):
+        PublicationRequest(
+            optimizer_kind="offline_tuner_open_world",
+            job_id=7,
+            attempt_key="attempt-7",
+            publication_claim=PublicationClaim(job_id=7, owner="worker-a", fence=3),
+            worker_fence=11,
+            incumbent_user_playbook_id=101,
+            incumbent_content_digest=_digest("old content"),
+            incumbent_trigger="refund",
+            incumbent_semantic_digest=incumbent_user_playbook_semantic_digest(
+                content_digest=_digest("old content"), trigger="refund"
+            ),
+            revised_content="new content",
+            projection=_projection(),
+            decision_proof=_proof(),
+            subject_epochs_json=_canonical(
+                {"subjects": [{"epoch": 0, "ref": "subject:1"}]}
+            ),
+            request_id="request-7",
+        )
+
+
 def test_publication_request_rejects_wrong_claim_kind_and_non_apply_decision() -> None:
     canonical = _canonical(
         {

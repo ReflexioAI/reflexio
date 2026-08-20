@@ -17,7 +17,8 @@ PublishableOptimizerKind = Literal[
 ]
 PublicationSource = Literal["gepa", "offline_optimizer"]
 
-_PUBLISHABLE_OPTIMIZERS = frozenset(
+_LEGACY_PUBLICATION_OPTIMIZERS = frozenset({"gepa", "offline_tuner_replay"})
+_DECISION_PROOF_OPTIMIZERS = frozenset(
     {"gepa", "offline_tuner_replay", "offline_tuner_open_world"}
 )
 _PROJECTION_SCHEMA_VERSION = "offline-tuner-candidate-search-projection-v1"
@@ -111,15 +112,20 @@ def _canonical_payload(name: str, value: str) -> object:
     return payload
 
 
-def _validate_optimizer(value: object) -> None:
-    if value not in _PUBLISHABLE_OPTIMIZERS:
+def _validate_legacy_publication_optimizer(value: object) -> None:
+    if value not in _LEGACY_PUBLICATION_OPTIMIZERS:
+        raise ValueError("optimizer_kind is not publishable")
+
+
+def _validate_decision_proof_optimizer(value: object) -> None:
+    if value not in _DECISION_PROOF_OPTIMIZERS:
         raise ValueError("optimizer_kind is not publishable")
 
 
 def publication_source_for_optimizer(
     optimizer_kind: OptimizerKind,
 ) -> PublicationSource:
-    _validate_optimizer(optimizer_kind)
+    _validate_legacy_publication_optimizer(optimizer_kind)
     return "offline_optimizer" if optimizer_kind != "gepa" else "gepa"
 
 
@@ -161,7 +167,7 @@ class DecisionProofEnvelope:
     decision: Literal["apply"]
 
     def __post_init__(self) -> None:
-        _validate_optimizer(self.optimizer_kind)
+        _validate_decision_proof_optimizer(self.optimizer_kind)
         _require_text("decision proof schema_version", self.schema_version)
         _require_digest("decision proof digest", self.digest)
         if self.decision != "apply":
@@ -270,7 +276,7 @@ class PublicationRequest:
     request_id: str
 
     def __post_init__(self) -> None:
-        _validate_optimizer(self.optimizer_kind)
+        _validate_legacy_publication_optimizer(self.optimizer_kind)
         if type(self.job_id) is not int or self.job_id <= 0:
             raise ValueError("publication job_id must be positive")
         _require_text("publication attempt_key", self.attempt_key)
@@ -413,6 +419,12 @@ class ProvisionalPublicationRequest:
     def __post_init__(self) -> None:
         if self.optimizer_kind != "offline_tuner_open_world":
             raise ValueError("optimizer_kind must be offline_tuner_open_world")
+        if type(self.publication_claim) is not PublicationClaim:
+            raise ValueError("publication_claim must be PublicationClaim")
+        if type(self.projection) is not PublicationSearchProjection:
+            raise ValueError("projection must be PublicationSearchProjection")
+        if type(self.decision_proof) is not DecisionProofEnvelope:
+            raise ValueError("decision_proof must be DecisionProofEnvelope")
         if type(self.job_id) is not int or self.job_id <= 0:
             raise ValueError("provisional publication job_id must be positive")
         _require_text("provisional publication attempt_key", self.attempt_key)
