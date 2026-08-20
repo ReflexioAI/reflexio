@@ -35,7 +35,7 @@ Description: Shared data contracts and the Python SDK used by external applicati
 **Path**: `models/`
 
 #### Main Entry Points
-- **API Schemas**: `models/api_schema/` - Pydantic request/response models for public API surfaces
+- **API Schemas**: `models/api_schema/` - Pydantic request/response models for public API surfaces, including source-aware profile/playbook search requests in `retriever_schema.py`
 - **Internal Schemas**: `models/api_schema/internal_schema.py` - Storage-facing profile, playbook, request, evaluation, and agent-run models
 - **Validators**: `models/api_schema/validators.py` - Cross-schema validation helpers
 
@@ -57,7 +57,7 @@ Description: Python SDK for interacting with Reflexio API remotely
 #### Purpose
 Remote API client for applications to:
 1. **Publish interactions** - Send user interactions to server for processing
-2. **Search/retrieve data** - Query profiles, interactions, playbooks, evaluations, and context
+2. **Search/retrieve data** - Query profiles, interactions, playbooks, evaluations, and context; profile/user-playbook/agent-playbook searches accept source filters when callers need source-scoped retrieval
 3. **Track deferred learning** - Poll `get_learning_status(request_id)` after `publish_interaction(..., wait_for_response=False)` queues extraction
 4. **Manage profiles/playbooks** - Delete, regenerate, and update status where supported by API endpoints
 5. **Configure** - Set/get organization configuration
