@@ -264,3 +264,97 @@ def test_maybe_start_lineage_gc_reads_module_provider_hook(tmp_path):
     finally:
         set_org_id_provider(None)
     assert gc_module._org_id_provider_hook is None
+
+
+# ---------------------------------------------------------------------------
+# The injected provider is AUTHORITATIVE: the bootstrap seed must not be
+# unioned back in after the provider deliberately filtered it out.
+#
+# The seed is resolved by lowest org id with no predicate, so in a managed
+# deployment it is routinely an abandoned unverified signup whose tenant schema
+# is never exposed to PostgREST. Re-adding it made every tick sweep an org the
+# provider had judged unsweepable, raising PGRST106 forever (prod, org_23).
+# ---------------------------------------------------------------------------
+
+
+def test_provider_result_is_not_polluted_by_an_unsweepable_bootstrap():
+    """A seed the provider excluded must NOT come back via the bootstrap union.
+
+    This is the regression: `enumerate_active_org_ids` correctly dropped the
+    unverified seed, and `_discover_org_ids` put it straight back.
+    """
+    bootstrap_ctx = RequestContext.__new__(RequestContext)
+    bootstrap_ctx.org_id = "org_unverified_seed"
+    bootstrap_ctx.storage = MagicMock()
+
+    sched = LineageGCScheduler(
+        request_context_factory=lambda _org_id: bootstrap_ctx,
+        bootstrap_org_id="org_unverified_seed",
+        # The enterprise enumeration filtered the seed out on purpose.
+        org_id_provider=lambda: ["org_b"],
+    )
+
+    org_ids = sched._discover_org_ids(bootstrap_ctx)
+
+    assert org_ids == ["org_b"], (
+        "the injected provider is authoritative; an org it excluded must not be "
+        f"re-added as the bootstrap seed (got {org_ids})"
+    )
+    assert "org_unverified_seed" not in org_ids
+
+
+def test_empty_provider_result_is_respected():
+    """'Nothing is sweepable' is a legitimate answer, not a reason to use the seed."""
+    bootstrap_ctx = RequestContext.__new__(RequestContext)
+    bootstrap_ctx.org_id = "org_unverified_seed"
+    bootstrap_ctx.storage = MagicMock()
+
+    sched = LineageGCScheduler(
+        request_context_factory=lambda _org_id: bootstrap_ctx,
+        bootstrap_org_id="org_unverified_seed",
+        org_id_provider=list,
+    )
+
+    assert sched._discover_org_ids(bootstrap_ctx) == []
+
+
+def test_provider_failure_still_falls_back_to_the_bootstrap_org():
+    """A RAISING provider keeps the seed fallback -- a deliberate, logged degradation.
+
+    Distinct from an empty result: here we have no information, so sweeping the
+    seed is better than sweeping nothing.
+    """
+    bootstrap_ctx = RequestContext.__new__(RequestContext)
+    bootstrap_ctx.org_id = "org_bootstrap"
+    bootstrap_ctx.storage = MagicMock()
+
+    def exploding_provider() -> list[str]:
+        raise RuntimeError("control-plane unreachable")
+
+    sched = LineageGCScheduler(
+        request_context_factory=lambda _org_id: bootstrap_ctx,
+        bootstrap_org_id="org_bootstrap",
+        org_id_provider=exploding_provider,
+    )
+
+    assert sched._discover_org_ids(bootstrap_ctx) == ["org_bootstrap"]
+
+
+def test_oss_single_tenant_path_still_unions_the_bootstrap_org():
+    """Without a provider the seed is still unioned -- OSS GC must not regress.
+
+    There `list_org_ids()` can be empty or NotImplementedError, and the
+    bootstrap org is genuinely the only org GC would otherwise reach.
+    """
+    storage = MagicMock()
+    storage.list_org_ids.return_value = []
+    bootstrap_ctx = RequestContext.__new__(RequestContext)
+    bootstrap_ctx.org_id = "org_only"
+    bootstrap_ctx.storage = storage
+
+    sched = LineageGCScheduler(
+        request_context_factory=lambda _org_id: bootstrap_ctx,
+        bootstrap_org_id="org_only",
+    )
+
+    assert sched._discover_org_ids(bootstrap_ctx) == ["org_only"]
