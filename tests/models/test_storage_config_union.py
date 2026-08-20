@@ -241,16 +241,12 @@ class TestTypeTagCompatibility:
         self, label: str, payload: dict[str, object]
     ) -> None:
         """Persisted documents must not gain a key from this change."""
-        dumped = _ADAPTER.dump_python(
-            _ADAPTER.validate_python(payload), mode="json"
-        )
+        dumped = _ADAPTER.dump_python(_ADAPTER.validate_python(payload), mode="json")
         assert "type" not in dumped, (
             f"{label}: serializing the tag would rewrite every org's stored "
             f"config blob at the next boot upgrade"
         )
-        assert set(dumped) == set(payload) | {
-            k for k in dumped if dumped[k] is None
-        }
+        assert set(dumped) == set(payload) | {k for k in dumped if dumped[k] is None}
 
 
 def test_round_trip_preserves_the_backend() -> None:
