@@ -161,7 +161,18 @@ def test_find_pids_on_port_detects_bound_socket_without_listen() -> None:
         sock.bind(("127.0.0.1", 0))
         port = sock.getsockname()[1]
 
-        assert os.getpid() in utils.find_pids_on_port(port)
+        detected = utils.find_pids_on_port(port)
+        if sys.platform.startswith("linux") and os.getpid() not in detected:
+            probe = utils.subprocess.run(
+                ["ss", "-tanpH", "sport", "=", f":{port}"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if f"pid={os.getpid()}" not in probe.stdout:
+                pytest.skip("ss cannot expose process metadata for this socket")
+
+        assert os.getpid() in detected
 
 
 def test_requested_port_conflicts_detect_duplicate_service_ports(
