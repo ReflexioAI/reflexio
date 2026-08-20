@@ -9,14 +9,19 @@ from dataclasses import dataclass
 from hashlib import sha256
 from typing import Literal, Protocol
 
-from reflexio.models.api_schema.domain.entities import OptimizerKind
+from reflexio.models.api_schema.domain.entities import OptimizerKind, UserPlaybook
 
 PublicationOutcome = Literal["applied", "incumbent_changed"]
-PublishableOptimizerKind = Literal["gepa", "offline_tuner_replay"]
+PublishableOptimizerKind = Literal[
+    "gepa", "offline_tuner_replay", "offline_tuner_open_world"
+]
 PublicationSource = Literal["gepa", "offline_optimizer"]
 
-_PUBLISHABLE_OPTIMIZERS = frozenset({"gepa", "offline_tuner_replay"})
+_PUBLISHABLE_OPTIMIZERS = frozenset(
+    {"gepa", "offline_tuner_replay", "offline_tuner_open_world"}
+)
 _PROJECTION_SCHEMA_VERSION = "offline-tuner-candidate-search-projection-v1"
+_USER_PLAYBOOK_FULL_VERSION_SCHEMA = "user-playbook-full-version-v1"
 _CANONICAL_DECIMAL = re.compile(r"-?(?:0|[1-9][0-9]*)(?:\.[0-9]*[1-9])?\Z")
 PUBLICATION_SUBJECT_EPOCHS_METADATA_KEY = "publication_subject_epochs"
 PUBLICATION_PROOF_JSON_METADATA_KEY = "publication_proof_json"
@@ -115,7 +120,7 @@ def publication_source_for_optimizer(
     optimizer_kind: OptimizerKind,
 ) -> PublicationSource:
     _validate_optimizer(optimizer_kind)
-    return "offline_optimizer" if optimizer_kind == "offline_tuner_replay" else "gepa"
+    return "offline_optimizer" if optimizer_kind != "gepa" else "gepa"
 
 
 def incumbent_user_playbook_semantic_digest(
@@ -325,6 +330,188 @@ class PublicationRequest:
 
 
 @dataclass(frozen=True)
+class QualificationAuthorityRef:
+    epoch: int
+    authority_digest: str
+    discovery_component_identity_digest: str
+    discovery_qualification_suite_digest: str
+    discovery_qualification_result_digest: str
+    held_out_component_identity_digest: str
+    held_out_qualification_suite_digest: str
+    held_out_qualification_result_digest: str
+    candidate_generator_identity_digest: str
+    candidate_generator_authorization_digest: str
+
+    def __post_init__(self) -> None:
+        if type(self.epoch) is not int or self.epoch <= 0:
+            raise ValueError("qualification authority epoch must be positive")
+        for field in (
+            "authority_digest",
+            "discovery_component_identity_digest",
+            "discovery_qualification_suite_digest",
+            "discovery_qualification_result_digest",
+            "held_out_component_identity_digest",
+            "held_out_qualification_suite_digest",
+            "held_out_qualification_result_digest",
+            "candidate_generator_identity_digest",
+            "candidate_generator_authorization_digest",
+        ):
+            _require_digest(f"qualification authority {field}", getattr(self, field))
+
+
+def _validated_full_version_snapshot(
+    *,
+    incumbent_snapshot_json: str,
+    incumbent_full_version_fingerprint: str,
+    incumbent_user_playbook_id: int,
+) -> UserPlaybook:
+    _require_digest(
+        "incumbent full version fingerprint", incumbent_full_version_fingerprint
+    )
+    payload = _canonical_payload("incumbent_snapshot_json", incumbent_snapshot_json)
+    if sha256(incumbent_snapshot_json.encode("utf-8")).hexdigest() != (
+        incumbent_full_version_fingerprint
+    ):
+        raise ValueError("incumbent full version fingerprint does not match snapshot")
+    if (
+        not isinstance(payload, dict)
+        or set(payload) != {"schema_version", "user_playbook"}
+        or payload.get("schema_version") != _USER_PLAYBOOK_FULL_VERSION_SCHEMA
+        or not isinstance(payload.get("user_playbook"), dict)
+    ):
+        raise ValueError("incumbent snapshot is not a full user playbook version")
+    snapshot = UserPlaybook.model_validate(payload["user_playbook"])
+    expected_playbook = snapshot.model_dump(mode="json", exclude={"embedding"}) | {
+        "governance_subject_ref": snapshot.governance_subject_ref,
+        "retired_at": snapshot.retired_at,
+    }
+    if payload["user_playbook"] != expected_playbook:
+        raise ValueError("incumbent snapshot is not a full user playbook version")
+    if snapshot.user_playbook_id != incumbent_user_playbook_id:
+        raise ValueError("incumbent_user_playbook_id does not match snapshot")
+    return snapshot
+
+
+@dataclass(frozen=True)
+class ProvisionalPublicationRequest:
+    optimizer_kind: Literal["offline_tuner_open_world"]
+    job_id: int
+    attempt_key: str
+    publication_claim: PublicationClaim
+    worker_fence: int
+    incumbent_user_playbook_id: int
+    incumbent_full_version_fingerprint: str
+    incumbent_snapshot_json: str
+    revised_content: str
+    projection: PublicationSearchProjection
+    decision_proof: DecisionProofEnvelope
+    subject_epochs_json: str
+    qualification_authority: QualificationAuthorityRef
+    evidence_bundle_digest: str
+    candidate_digest: str
+
+    def __post_init__(self) -> None:
+        if self.optimizer_kind != "offline_tuner_open_world":
+            raise ValueError("optimizer_kind must be offline_tuner_open_world")
+        if type(self.job_id) is not int or self.job_id <= 0:
+            raise ValueError("provisional publication job_id must be positive")
+        _require_text("provisional publication attempt_key", self.attempt_key)
+        if self.publication_claim.job_id != self.job_id:
+            raise ValueError("publication claim job_id must match request job_id")
+        if type(self.worker_fence) is not int or self.worker_fence <= 0:
+            raise ValueError("worker_fence must be positive")
+        if (
+            type(self.incumbent_user_playbook_id) is not int
+            or self.incumbent_user_playbook_id <= 0
+        ):
+            raise ValueError("incumbent_user_playbook_id must be positive")
+        snapshot = _validated_full_version_snapshot(
+            incumbent_snapshot_json=self.incumbent_snapshot_json,
+            incumbent_full_version_fingerprint=self.incumbent_full_version_fingerprint,
+            incumbent_user_playbook_id=self.incumbent_user_playbook_id,
+        )
+        _require_text("revised_content", self.revised_content)
+        if self.revised_content == snapshot.content:
+            raise ValueError("revised_content must differ from incumbent content")
+        if self.projection.preserved_trigger != snapshot.trigger:
+            raise ValueError("search projection must preserve incumbent trigger")
+        if self.decision_proof.optimizer_kind != self.optimizer_kind:
+            raise ValueError("decision proof optimizer_kind must match request")
+        if sha256(self.revised_content.encode("utf-8")).hexdigest() != (
+            self.projection.candidate_content_digest
+        ):
+            raise ValueError("revised content digest must match search projection")
+        epochs = _canonical_payload("subject_epochs_json", self.subject_epochs_json)
+        if (
+            not isinstance(epochs, dict)
+            or set(epochs) != {"subjects"}
+            or not isinstance(epochs.get("subjects"), list)
+            or not epochs["subjects"]
+        ):
+            raise ValueError("subject epochs must contain a non-empty subjects list")
+        subject_refs: set[str] = set()
+        for item in epochs["subjects"]:
+            if not isinstance(item, dict):
+                raise ValueError("subject epochs must contain objects")
+            if set(item) != {"ref", "epoch"}:
+                raise ValueError("subject epochs must use ref and epoch fields")
+            subject_ref = item["ref"]
+            epoch = item["epoch"]
+            if (
+                not isinstance(subject_ref, str)
+                or not subject_ref
+                or type(epoch) is not int
+                or epoch < 0
+            ):
+                raise ValueError("subject epochs contain an invalid identity or epoch")
+            if subject_ref in subject_refs:
+                raise ValueError("subject epochs must contain unique subject refs")
+            subject_refs.add(subject_ref)
+        if not isinstance(self.qualification_authority, QualificationAuthorityRef):
+            raise ValueError("qualification authority is invalid")
+        _require_digest("evidence bundle digest", self.evidence_bundle_digest)
+        _require_digest("candidate digest", self.candidate_digest)
+
+
+@dataclass(frozen=True)
+class ProvisionalPublicationResult:
+    job_id: int
+    outcome: Literal["provisional", "incumbent_changed"]
+    successor_user_playbook_id: int | None
+    deployment_lifecycle_id: int | None
+    observation_deadline: int | None
+
+    def __post_init__(self) -> None:
+        if type(self.job_id) is not int or self.job_id <= 0:
+            raise ValueError("provisional publication result job_id must be positive")
+        if self.outcome not in {"provisional", "incumbent_changed"}:
+            raise ValueError("provisional publication result outcome is invalid")
+        if self.outcome == "provisional":
+            if (
+                type(self.successor_user_playbook_id) is not int
+                or self.successor_user_playbook_id <= 0
+                or type(self.deployment_lifecycle_id) is not int
+                or self.deployment_lifecycle_id <= 0
+                or type(self.observation_deadline) is not int
+                or self.observation_deadline <= 0
+            ):
+                raise ValueError(
+                    "provisional publication requires successor lifecycle and deadline"
+                )
+        elif any(
+            value is not None
+            for value in (
+                self.successor_user_playbook_id,
+                self.deployment_lifecycle_id,
+                self.observation_deadline,
+            )
+        ):
+            raise ValueError(
+                "incumbent_changed provisional publication cannot have successor state"
+            )
+
+
+@dataclass(frozen=True)
 class PublicationResult:
     job_id: int
     outcome: PublicationOutcome
@@ -367,6 +554,22 @@ class UserPlaybookPublicationStore(Protocol):
     def load_user_playbook_publication_result(
         self, job_id: int
     ) -> PublicationResult | None: ...
+
+    def claim_user_playbook_provisional_publication(
+        self, *, job_id: int, owner: str, worker_fence: int
+    ) -> PublicationClaim: ...
+
+    def stage_user_playbook_provisional_publication(
+        self, request: ProvisionalPublicationRequest
+    ) -> None: ...
+
+    def commit_user_playbook_provisional_publication(
+        self, request: ProvisionalPublicationRequest
+    ) -> ProvisionalPublicationResult: ...
+
+    def load_user_playbook_provisional_publication_result(
+        self, job_id: int
+    ) -> ProvisionalPublicationResult | None: ...
 
 
 class UserPlaybookPublicationService:
@@ -418,10 +621,14 @@ __all__ = [
     "PublicationRequest",
     "PublicationResult",
     "PublicationSearchProjection",
+    "ProvisionalPublicationRequest",
+    "ProvisionalPublicationResult",
+    "PublishableOptimizerKind",
     "PUBLICATION_INCUMBENT_CONTENT_DIGEST_METADATA_KEY",
     "PUBLICATION_INCUMBENT_SEMANTIC_DIGEST_METADATA_KEY",
     "PUBLICATION_INCUMBENT_TRIGGER_METADATA_KEY",
     "PUBLICATION_SUBJECT_EPOCHS_METADATA_KEY",
+    "QualificationAuthorityRef",
     "UserPlaybookPublicationService",
     "UserPlaybookPublicationStore",
     "canonical_json_bytes",

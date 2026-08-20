@@ -11,6 +11,8 @@ from reflexio.models.config_schema import SearchOptions
 
 if TYPE_CHECKING:
     from reflexio.server.services.playbook.publication import (
+        ProvisionalPublicationRequest,
+        ProvisionalPublicationResult,
         PublicationClaim,
         PublicationRequest,
         PublicationResult,
@@ -56,6 +58,38 @@ class UserPlaybookStoreMixin:
         """Load the immutable terminal publication result for a job."""
         raise NotImplementedError(
             "Storage backend does not support atomic user-playbook publication"
+        )
+
+    def claim_user_playbook_provisional_publication(
+        self, *, job_id: int, owner: str, worker_fence: int
+    ) -> "PublicationClaim":
+        """Claim one open-world provisional publication attempt."""
+        raise NotImplementedError(
+            "Storage backend does not support provisional user-playbook publication"
+        )
+
+    def stage_user_playbook_provisional_publication(
+        self, request: "ProvisionalPublicationRequest"
+    ) -> None:
+        """Persist one open-world provisional payload outside visible tables."""
+        raise NotImplementedError(
+            "Storage backend does not support provisional user-playbook publication"
+        )
+
+    def commit_user_playbook_provisional_publication(
+        self, request: "ProvisionalPublicationRequest"
+    ) -> "ProvisionalPublicationResult":
+        """Atomically commit one provisional successor or changed incumbent."""
+        raise NotImplementedError(
+            "Storage backend does not support provisional user-playbook publication"
+        )
+
+    def load_user_playbook_provisional_publication_result(
+        self, job_id: int
+    ) -> "ProvisionalPublicationResult | None":
+        """Load the immutable terminal provisional publication result."""
+        raise NotImplementedError(
+            "Storage backend does not support provisional user-playbook publication"
         )
 
     @abstractmethod
