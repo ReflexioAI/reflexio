@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from enum import IntEnum, StrEnum
 from typing import Any, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 
 from .api_schema.validators import (
     NonEmptyStr,
@@ -198,14 +198,48 @@ class StorageConfigTest(IntEnum):
 
 
 class StorageConfigSQLite(BaseModel):
-    """SQLite storage configuration."""
+    """SQLite storage configuration.
 
+    ``extra="forbid"`` is load-bearing, not stylistic. ``StorageConfig`` is an
+    *untagged* union and this is its only member with no required fields, so
+    without it this model is a catch-all: any payload that fails the stricter
+    members silently lands here instead of raising. A Supabase config that lost
+    its ``db_url`` used to validate as SQLite, dropping ``url``/``key``/``schema``
+    on the floor -- which routed a managed tenant to a local file, produced a
+    storage object with no ``_rpc``, and surfaced only as a background sweep
+    erroring every few seconds (org 56, 2026-08).
+
+    An empty payload still resolves here on purpose: that is the legitimate OSS
+    local-mode default (``local_file_config_storage._default_storage_config``).
+    """
+
+    model_config = ConfigDict(
+        populate_by_name=True, serialize_by_alias=True, extra="forbid"
+    )
+
+    # Declared so the union is discriminated by tag where a tag is present, and
+    # so the ``type`` the config API emits round-trips back in. Defaulted
+    # because blobs persisted before this field existed do not carry it, and
+    # excluded from serialization so the persisted document shape is unchanged
+    # -- the boot-time config upgrade rewrites every org's blob, and this is not
+    # the change that should alter what it writes.
+    storage_type: Literal["sqlite"] = Field(
+        default="sqlite", alias="type", exclude=True
+    )
     db_path: str | None = None  # None = use LOCAL_STORAGE_PATH env var default
 
 
 class StorageConfigSupabase(BaseModel):
-    model_config = ConfigDict(populate_by_name=True, serialize_by_alias=True)
+    # extra="forbid" keeps this distinguishable from the other union members --
+    # see StorageConfigSQLite for why an untagged union needs it.
+    model_config = ConfigDict(
+        populate_by_name=True, serialize_by_alias=True, extra="forbid"
+    )
 
+    # Accepted on input, excluded from output -- see StorageConfigSQLite.
+    storage_type: Literal["supabase"] = Field(
+        default="supabase", alias="type", exclude=True
+    )
     url: NonEmptyStr
     key: NonEmptyStr
     db_url: NonEmptyStr
@@ -215,7 +249,13 @@ class StorageConfigSupabase(BaseModel):
 
 
 class StorageConfigPostgres(BaseModel):
-    model_config = ConfigDict(populate_by_name=True, serialize_by_alias=True)
+    # extra="forbid" keeps this distinguishable from the other union members --
+    # see StorageConfigSQLite for why an untagged union needs it. Without it a
+    # Supabase config missing only its ``key`` validated as Postgres and
+    # connected by a path nobody intended.
+    model_config = ConfigDict(
+        populate_by_name=True, serialize_by_alias=True, extra="forbid"
+    )
 
     storage_type: Literal["postgres"] = Field(default="postgres", alias="type")
     db_url: NonEmptyStr
@@ -243,6 +283,10 @@ StorageConfig = (
     | StorageConfigManagedSupabase
     | None
 )
+
+# Used by validate_stored_config to check storage_config strictly, outside the
+# lenient whole-Config pass that would otherwise relax these models' extra rules.
+_STORAGE_CONFIG_ADAPTER: TypeAdapter[StorageConfig] = TypeAdapter(StorageConfig)
 
 
 class AzureOpenAIConfig(BaseModel):
@@ -1048,4 +1092,14 @@ def validate_stored_config(data: dict[str, Any]) -> Config:
     the model's strict ``extra="forbid"`` behavior.
     """
     normalized = normalize_legacy_config_shape(data)
+    # Validate storage_config on its own, strictly, BEFORE the lenient pass
+    # below. ``extra="ignore"`` cascades into nested models, so it overrides each
+    # StorageConfig member's ``extra="forbid"`` -- without this pre-check a
+    # Supabase config that lost its ``db_url`` validates as SQLite here and the
+    # org is silently rerouted to a local file. Schema-evolution leniency is
+    # meant for Config's own retired fields, not for reinterpreting which
+    # storage backend an org is on.
+    storage_config = normalized.get("storage_config")
+    if isinstance(storage_config, dict):
+        _STORAGE_CONFIG_ADAPTER.validate_python(storage_config)
     return Config.model_validate(normalized, extra="ignore")
