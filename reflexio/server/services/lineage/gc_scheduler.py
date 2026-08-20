@@ -216,17 +216,33 @@ class LineageGCScheduler(ThreadedScheduler):
         logger.info("event=lineage_gc_scheduler_stopped")
 
     def _discover_org_ids(self, bootstrap_ctx: RequestContext) -> list[str]:
-        """Return every known org, always including the bootstrap org.
+        """Return the orgs this tick should sweep.
 
         When an ``org_id_provider`` was injected (managed/multi-tenant mode), it
-        is the authoritative org-id source and ``storage.list_org_ids()`` is not
-        consulted. Otherwise the OSS single-tenant path is used unchanged
-        (``storage.list_org_ids()`` with a visible NotImplementedError fallback).
-        The bootstrap org is always unioned in either way.
+        is the authoritative org-id source: ``storage.list_org_ids()`` is not
+        consulted and the bootstrap org is NOT unioned in. Otherwise the OSS
+        single-tenant path is used unchanged (``storage.list_org_ids()`` with a
+        visible NotImplementedError fallback), and the bootstrap org is unioned
+        because there it is genuinely the only org GC would otherwise reach.
+
+        The bootstrap org is a *discovery seed*, resolved by the lowest org id
+        with no predicate — so in a managed deployment it can easily be an
+        abandoned unverified signup. Unioning it back after a provider has
+        deliberately filtered it re-admits an org the provider judged
+        unsweepable, and sweeping such an org raises PostgREST ``PGRST106``
+        ("Invalid schema") on every tick, because a tenant schema is only
+        exposed once its org is verified. That is not hypothetical: it ran in
+        production against ``org_23`` (see ``expiry_reclamation.org_enumeration``,
+        whose ``_is_sweepable`` docstring warns against exactly this caller).
+
+        A provider that returns an EMPTY list is still authoritative — "nothing
+        is sweepable" is a legitimate answer and must not be overridden by the
+        seed. Only a provider that *raised* falls back to the bootstrap org,
+        which is a deliberate, logged degradation.
         """
         if self.org_id_provider is not None:
             try:
-                org_ids = list(self.org_id_provider())
+                return list(self.org_id_provider())
             except Exception:
                 capture_anomaly(
                     "lineage.gc.org_id_provider_failed",
@@ -237,21 +253,21 @@ class LineageGCScheduler(ThreadedScheduler):
                     "— falling back to bootstrap org only",
                     self.bootstrap_org_id,
                 )
+                return [bootstrap_ctx.org_id]
+
+        storage = getattr(bootstrap_ctx, "storage", None)
+        org_ids: list[str] = []
+        if storage is not None:
+            try:
+                org_ids = storage.list_org_ids()
+            except NotImplementedError:
+                logger.warning(
+                    "event=lineage_gc_list_org_ids_not_implemented "
+                    "backend=%s bootstrap_org_id=%s — GC will only process bootstrap org",
+                    type(storage).__name__,
+                    bootstrap_ctx.org_id,
+                )
                 org_ids = []
-        else:
-            storage = getattr(bootstrap_ctx, "storage", None)
-            org_ids = []
-            if storage is not None:
-                try:
-                    org_ids = storage.list_org_ids()
-                except NotImplementedError:
-                    logger.warning(
-                        "event=lineage_gc_list_org_ids_not_implemented "
-                        "backend=%s bootstrap_org_id=%s — GC will only process bootstrap org",
-                        type(storage).__name__,
-                        bootstrap_ctx.org_id,
-                    )
-                    org_ids = []
         if bootstrap_ctx.org_id not in org_ids:
             org_ids = [bootstrap_ctx.org_id, *org_ids]
         return org_ids
