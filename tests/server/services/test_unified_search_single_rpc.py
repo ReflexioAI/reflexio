@@ -91,10 +91,13 @@ def _run_phase_b(
     *,
     user_id: str | None = "u",
     tags: list[str] | None = None,
+    source: str | None = None,
     recency_on: bool = False,
 ):
     return uss._run_phase_b(
-        request=UnifiedSearchRequest(query="q", user_id=user_id, tags=tags, top_k=5),
+        request=UnifiedSearchRequest(
+            query="q", user_id=user_id, tags=tags, source=source, top_k=5
+        ),
         org_id="o",
         storage=cast(BaseStorage, storage),
         embedding=[0.1, 0.2],
@@ -150,6 +153,15 @@ def test_single_rpc_passes_tag_filter(monkeypatch):
     _run_phase_b(storage, tags=["billing", "support"])
 
     assert storage.combined_calls[0]["tags"] == ["billing", "support"]
+
+
+def test_single_rpc_passes_source_filter(monkeypatch):
+    monkeypatch.delenv("REFLEXIO_UNIFIED_SEARCH_SINGLE_RPC", raising=False)
+    storage = _CombinedStorage()
+
+    _run_phase_b(storage, source="api")
+
+    assert storage.combined_calls[0]["source"] == "api"
 
 
 def test_single_rpc_passes_tag_filter_on_scored_path(monkeypatch):

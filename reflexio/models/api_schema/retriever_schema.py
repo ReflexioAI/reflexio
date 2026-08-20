@@ -316,6 +316,7 @@ class SearchUserPlaybookRequest(BaseModel):
         user_id (str, optional): Filter by user (via request_id linkage to requests table)
         agent_version (str, optional): Filter by agent version
         playbook_name (str, optional): Filter by playbook name
+        source (str, optional): Filter by exact interaction source
         start_time (datetime, optional): Start time for created_at filter
         end_time (datetime, optional): End time for created_at filter
         status_filter (list[Optional[Status]], optional): Filter by status (None for CURRENT, PENDING, ARCHIVED)
@@ -328,6 +329,7 @@ class SearchUserPlaybookRequest(BaseModel):
     user_id: str | None = Field(default=None, max_length=255)
     agent_version: str | None = None
     playbook_name: str | None = None
+    source: SessionOutcomeSource | None = None
     start_time: datetime | None = None
     end_time: datetime | None = None
     status_filter: list[Status | None] | None = None
@@ -372,9 +374,12 @@ class SearchAgentPlaybookRequest(BaseModel):
             assignment when an experiment is active.
         agent_version (str, optional): Filter by agent version
         playbook_name (str, optional): Filter by playbook name
+        source (str, optional): Match agent playbooks linked to at least one
+            user playbook with this exact source
         start_time (datetime, optional): Start time for created_at filter
         end_time (datetime, optional): End time for created_at filter
-        status_filter (list[Optional[Status]], optional): Filter by status (None for CURRENT, PENDING, ARCHIVED)
+        status_filter (list[Optional[Status]], optional): Filter by lifecycle status.
+            Defaults to CURRENT and PENDING when omitted.
         playbook_status_filter (PlaybookStatus | list[PlaybookStatus], optional):
             Filter by playbook approval status. Accepts either a single
             ``PlaybookStatus`` (matched with ``=``) or a list (matched with
@@ -390,6 +395,7 @@ class SearchAgentPlaybookRequest(BaseModel):
     user_id: NonEmptyStr | None = None
     agent_version: str | None = None
     playbook_name: str | None = None
+    source: SessionOutcomeSource | None = None
     start_time: datetime | None = None
     end_time: datetime | None = None
     status_filter: list[Status | None] | None = None
@@ -802,6 +808,8 @@ class UnifiedSearchRequest(BaseModel):
         agent_version (str, optional): Filter by agent version (agent_playbooks, user_playbooks)
         playbook_name (str, optional): Filter by playbook name (agent_playbooks, user_playbooks)
         user_id (str, optional): Filter by user ID (profiles, user_playbooks)
+        source (str, optional): Filter all selected entity types by exact
+            source. Agent playbooks match through linked user playbooks.
         tags (list[str], optional): Match entities having any requested tag.
         entity_types (list[str], optional): Entity types to search. When omitted,
             searches profiles, user_playbooks, and agent_playbooks.
@@ -819,6 +827,7 @@ class UnifiedSearchRequest(BaseModel):
     agent_version: str | None = None
     playbook_name: str | None = None
     user_id: str | None = Field(default=None, max_length=255)
+    source: SessionOutcomeSource | None = None
     tags: list[str] | None = None
     entity_types: list[UnifiedSearchEntityType] | None = None
     agent_playbook_status_filter: list[PlaybookStatus] | None = None

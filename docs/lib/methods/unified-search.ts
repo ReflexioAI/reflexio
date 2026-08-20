@@ -54,6 +54,13 @@ export const unifiedSearchMethods: MethodDef[] = [
           "Filter by user ID (profiles, user_playbooks), at most 255 characters",
       },
       {
+        name: "source",
+        type: "string",
+        required: false,
+        description:
+          "Filter every selected entity by exact source; agent playbooks match through linked user playbooks",
+      },
+      {
         name: "entity_types",
         type: "json",
         required: false,

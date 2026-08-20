@@ -887,6 +887,7 @@ class ReflexioClient:
         user_id: str | None = None,
         agent_version: str | None = None,
         playbook_name: str | None = None,
+        source: str | None = None,
         start_time: datetime | None = None,
         end_time: datetime | None = None,
         status_filter: list[Status | None] | None = None,
@@ -906,6 +907,7 @@ class ReflexioClient:
             user_id (Optional[str]): Filter by user (via request_id linkage to requests table)
             agent_version (Optional[str]): Filter by agent version
             playbook_name (Optional[str]): Filter by playbook name
+            source (Optional[str]): Filter by exact interaction source.
             start_time (Optional[datetime]): Start time for created_at filter
             end_time (Optional[datetime]): End time for created_at filter
             status_filter (Optional[list[Optional[Status]]]): Filter by status (None for CURRENT, PENDING, ARCHIVED)
@@ -929,6 +931,7 @@ class ReflexioClient:
             user_id=user_id,
             agent_version=agent_version,
             playbook_name=playbook_name,
+            source=source,
             start_time=start_time,
             end_time=end_time,
             status_filter=status_filter,
@@ -953,6 +956,7 @@ class ReflexioClient:
         user_id: str | None = None,
         agent_version: str | None = None,
         playbook_name: str | None = None,
+        source: str | None = None,
         start_time: datetime | None = None,
         end_time: datetime | None = None,
         status_filter: list[Status | None] | None = None,
@@ -972,9 +976,12 @@ class ReflexioClient:
                 retrieval-experiment assignment; it does not filter agent playbooks.
             agent_version (Optional[str]): Filter by agent version
             playbook_name (Optional[str]): Filter by playbook name
+            source (Optional[str]): Match agent playbooks linked to at least one
+                user playbook with this exact source.
             start_time (Optional[datetime]): Start time for created_at filter
             end_time (Optional[datetime]): End time for created_at filter
-            status_filter (Optional[list[Optional[Status]]]): Filter by status (None for CURRENT, PENDING, ARCHIVED)
+            status_filter (Optional[list[Optional[Status]]]): Filter by lifecycle status.
+                Defaults to CURRENT and PENDING when omitted.
             playbook_status_filter (Optional[PlaybookStatus]): Filter by playbook status (PENDING, APPROVED, REJECTED)
             tags (Optional[list[str]]): Match playbooks having any of these tags.
             top_k (Optional[int]): Maximum number of results to return (default: 10)
@@ -992,6 +999,7 @@ class ReflexioClient:
             user_id=user_id,
             agent_version=agent_version,
             playbook_name=playbook_name,
+            source=source,
             start_time=start_time,
             end_time=end_time,
             status_filter=status_filter,
@@ -2820,6 +2828,7 @@ class ReflexioClient:
         agent_version: str | None = None,
         playbook_name: str | None = None,
         user_id: str | None = None,
+        source: str | None = None,
         tags: list[str] | None = None,
         entity_types: list[str] | None = None,
         agent_playbook_status_filter: list[PlaybookStatus | str] | None = None,
@@ -2847,6 +2856,8 @@ class ReflexioClient:
             playbook_name (Optional[str]): Filter by playbook name (agent_playbooks, user_playbooks)
             user_id (Optional[str]): Filter by user ID (profiles, user_playbooks),
                 at most 255 characters.
+            source (Optional[str]): Filter every selected entity type by exact
+                source. Agent playbooks match through linked user playbooks.
             tags (Optional[list[str]]): Match entities having any requested tag.
             entity_types (Optional[list[str]]): Entity types to search. Valid values:
                 "profiles", "user_playbooks", "agent_playbooks".
@@ -2881,6 +2892,7 @@ class ReflexioClient:
             agent_version=agent_version,
             playbook_name=playbook_name,
             user_id=user_id,
+            source=source,
             tags=tags,
             entity_types=entity_types,
             agent_playbook_status_filter=agent_playbook_status_filter,
@@ -2907,6 +2919,7 @@ class ReflexioClient:
         agent_version: str | None = None,
         playbook_name: str | None = None,
         user_id: str | None = None,
+        source: str | None = None,
         tags: list[str] | None = None,
         entity_types: list[str] | None = None,
         agent_playbook_status_filter: list[PlaybookStatus | str] | None = None,
@@ -2928,6 +2941,7 @@ class ReflexioClient:
             agent_version=agent_version,
             playbook_name=playbook_name,
             user_id=user_id,
+            source=source,
             tags=tags,
             entity_types=entity_types,
             agent_playbook_status_filter=agent_playbook_status_filter,

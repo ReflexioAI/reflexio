@@ -95,6 +95,12 @@ export const userPlaybookMethods: MethodDef[] = [
         description: "Filter by playbook name",
       },
       {
+        name: "source",
+        type: "string",
+        required: false,
+        description: "Filter by exact interaction source",
+      },
+      {
         name: "start_time",
         type: "datetime",
         required: false,

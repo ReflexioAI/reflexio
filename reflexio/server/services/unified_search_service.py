@@ -516,6 +516,7 @@ def _run_phase_b(
                     start_time,
                     end_time,
                     tags=request.tags,
+                    source=request.source,
                 )
                 if "profiles" in entity_types
                 else None
@@ -535,6 +536,7 @@ def _run_phase_b(
                     start_time,
                     end_time,
                     tags=request.tags,
+                    source=request.source,
                 )
                 if "agent_playbooks" in entity_types
                 else None
@@ -545,6 +547,7 @@ def _run_phase_b(
                     user_id=request.user_id,
                     agent_version=request.agent_version,
                     playbook_name=request.playbook_name,
+                    source=request.source,
                     tags=request.tags,
                     status_filter=None,
                     threshold=threshold,
@@ -652,6 +655,7 @@ def _run_phase_b_single_rpc(
         user_id=request.user_id,
         agent_version=request.agent_version,
         playbook_name=request.playbook_name,
+        source=request.source,
         tags=request.tags,
         agent_playbook_statuses=statuses,
         search_mode=search_mode,
@@ -920,6 +924,7 @@ def _search_agent_playbooks_via_storage(
     start_time: datetime | None = None,
     end_time: datetime | None = None,
     tags: list[str] | None = None,
+    source: str | None = None,
 ) -> list[AgentPlaybook]:
     """Search agent playbooks, restricted to one or more approval statuses.
 
@@ -945,6 +950,7 @@ def _search_agent_playbooks_via_storage(
             query=query,
             agent_version=agent_version,
             playbook_name=playbook_name,
+            source=source,
             tags=tags,
             status_filter=[None],
             playbook_status_filter=statuses,
@@ -978,6 +984,7 @@ def _search_profiles_via_storage(
     start_time: datetime | None = None,
     end_time: datetime | None = None,
     tags: list[str] | None = None,
+    source: str | None = None,
 ) -> list[UserProfile]:
     """Search profiles via storage.search_user_profile, returning [] on error or missing user_id.
 
@@ -1014,6 +1021,7 @@ def _search_profiles_via_storage(
                     top_k=top_k,
                     threshold=threshold,
                     tags=tags,
+                    source=source,
                     search_mode=search_mode,
                     start_time=start_time,
                     end_time=end_time,

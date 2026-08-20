@@ -106,6 +106,57 @@ async def test_unified_search_async_uses_native_transport(monkeypatch) -> None:
     assert captured["json"]["top_k"] == 4
 
 
+def test_playbook_and_unified_searches_serialize_source(monkeypatch) -> None:
+    client = ReflexioClient(api_key="test-key", url_endpoint="http://localhost:8000")
+    payloads: dict[str, dict[str, Any]] = {}
+
+    def fake_make_request(method: str, path: str, **kwargs: Any) -> dict[str, Any]:
+        payloads[path] = kwargs["json"]
+        if path == "/api/search_user_playbooks":
+            return {"success": True, "user_playbooks": []}
+        if path == "/api/search_agent_playbooks":
+            return {"success": True, "agent_playbooks": []}
+        return {
+            "success": True,
+            "profiles": [],
+            "agent_playbooks": [],
+            "user_playbooks": [],
+        }
+
+    monkeypatch.setattr(client, "_make_request", fake_make_request)
+
+    client.search_user_playbooks(query="billing", source="api")
+    client.search_agent_playbooks(query="billing", source="api")
+    client.search(query="billing", source="api")
+
+    assert payloads["/api/search_user_playbooks"]["source"] == "api"
+    assert payloads["/api/search_agent_playbooks"]["source"] == "api"
+    assert payloads["/api/search"]["source"] == "api"
+
+
+@pytest.mark.asyncio
+async def test_unified_search_async_serializes_source(monkeypatch) -> None:
+    client = ReflexioClient(api_key="test-key", url_endpoint="http://localhost:8000")
+    captured: dict[str, Any] = {}
+
+    async def fake_make_async_request(
+        method: str, path: str, **kwargs: Any
+    ) -> dict[str, Any]:
+        captured.update(kwargs)
+        return {
+            "success": True,
+            "profiles": [],
+            "agent_playbooks": [],
+            "user_playbooks": [],
+        }
+
+    monkeypatch.setattr(client, "_make_async_request", fake_make_async_request)
+
+    await client.search_async(query="billing", source="webhook")
+
+    assert captured["json"]["source"] == "webhook"
+
+
 def test_unified_search_docs_track_schema_contract() -> None:
     top_k_schema = _non_null_schema("top_k")
     identifier_limit = _non_null_schema("request_id")["maxLength"]

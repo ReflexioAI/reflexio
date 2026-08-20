@@ -913,6 +913,17 @@ class AgentPlaybookStoreMixin:
         if playbook_name:
             conditions.append("ap.playbook_name = ?")
             params.append(playbook_name)
+        if request.source:
+            conditions.append(
+                "EXISTS ("
+                "SELECT 1 FROM agent_playbook_source_user_playbooks apsup "
+                "JOIN user_playbooks source_up "
+                "ON source_up.user_playbook_id = apsup.user_playbook_id "
+                "WHERE apsup.agent_playbook_id = ap.agent_playbook_id "
+                "AND source_up.source = ?"
+                ")"
+            )
+            params.append(request.source)
         if start_time:
             conditions.append("ap.created_at >= ?")
             params.append(_epoch_to_iso(start_time))
@@ -935,9 +946,8 @@ class AgentPlaybookStoreMixin:
             conditions.append(frag)
             params.extend(sparams)
         else:
-            _ph = ",".join("?" * len(_AGENT_PLAYBOOK_DEFAULT_EXCLUDED_STATUSES))
-            conditions.append(f"(ap.status IS NULL OR ap.status NOT IN ({_ph}))")
-            params.extend(_AGENT_PLAYBOOK_DEFAULT_EXCLUDED_STATUSES)
+            conditions.append("(ap.status IS NULL OR ap.status = ?)")
+            params.append(Status.PENDING.value)
         tag_frag, tag_params = _build_tags_sql("ap", request.tags)
         if tag_frag:
             conditions.append(tag_frag)

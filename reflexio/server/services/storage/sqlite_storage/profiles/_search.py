@@ -222,7 +222,7 @@ class ProfileSearchMixin:
             conditions.append("p.last_modified_timestamp <= ?")
             params.append(int(req.end_time.timestamp()))
         if req.source:
-            conditions.append("LOWER(p.source) = LOWER(?)")
+            conditions.append("p.source = ?")
             params.append(req.source)
         if status_filter is not None:
             frag, sparams = _build_status_sql(status_filter)
