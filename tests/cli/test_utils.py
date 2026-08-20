@@ -7,6 +7,7 @@ import os
 import shutil
 import signal
 import socket
+import sys
 import tempfile
 import threading
 from pathlib import Path
@@ -150,8 +151,8 @@ def test_find_pids_on_port_falls_back_to_ss(monkeypatch) -> None:
 
 
 @pytest.mark.skipif(
-    shutil.which("lsof") is None and shutil.which("ss") is None,
-    reason="neither lsof nor ss is available",
+    shutil.which("ss" if sys.platform.startswith("linux") else "lsof") is None,
+    reason="the platform's bound-socket inspection tool is unavailable",
 )
 def test_find_pids_on_port_detects_bound_socket_without_listen() -> None:
     # Regression: an orphaned process can hold a port bound without listening

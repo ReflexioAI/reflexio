@@ -4,6 +4,7 @@ import logging
 
 from fastapi.testclient import TestClient
 
+from reflexio.server.llm import embedding_service
 from reflexio.server.llm.embedding_service import create_embedding_app
 from reflexio.server.llm.rerank.common import (
     MULTILINGUAL_RERANK_MODEL,
@@ -140,6 +141,7 @@ def test_service_lifespan_prewarms_runner_directly() -> None:
 def test_service_lifespan_logs_operator_model_and_device_contract(
     monkeypatch, caplog
 ) -> None:
+    monkeypatch.setattr(embedding_service, "_ACTIVE_MODEL", None)
     monkeypatch.setenv("NOMIC_EMBED_DEVICE", "cuda")
     monkeypatch.setenv("REFLEXIO_RERANK_DEVICE", "cuda")
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
