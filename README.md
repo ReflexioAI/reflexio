@@ -420,7 +420,7 @@ We welcome contributions! Please see [developer.md](developer.md) for guidelines
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=ReflexioAI/reflexio&type=Date)](https://star-history.com/#ReflexioAI/reflexio&Date)
+[![Star History Chart](https://star-history.dera.page/svg?repos=ReflexioAI/reflexio&type=Date)](https://star-history.dera.page/#ReflexioAI/reflexio&Date)
 
 ## License
 
