@@ -15,6 +15,7 @@ from reflexio.server.services.playbook.publication import (
     PublicationClaim,
     PublicationSearchProjection,
     QualificationAuthorityRef,
+    UserPlaybookProvisionalPublicationStore,
     UserPlaybookPublicationStore,
 )
 
@@ -162,6 +163,14 @@ class _DecisionProofEnvelopeImpostor:
     optimizer_kind = "offline_tuner_open_world"
 
 
+class _QualificationAuthorityRefImpostor:
+    epoch = 7
+
+
+class _QualificationAuthorityRefSubclass(QualificationAuthorityRef):
+    pass
+
+
 def test_provisional_publication_contract_accepts_exact_content_only_bindings() -> None:
     request = _request()
 
@@ -250,6 +259,20 @@ def test_provisional_publication_rejects_claim_projection_and_authority_drift() 
         _request(qualification_authority=replace(_authority(), epoch=0))
 
 
+@pytest.mark.parametrize(
+    "authority",
+    [
+        _QualificationAuthorityRefImpostor(),
+        _QualificationAuthorityRefSubclass(**_authority().__dict__),
+    ],
+)
+def test_provisional_publication_requires_an_exact_qualification_authority_ref(
+    authority: object,
+) -> None:
+    with pytest.raises(ValueError, match="qualification authority must be"):
+        _request(qualification_authority=authority)
+
+
 def test_provisional_publication_rejects_full_snapshot_fingerprint_and_field_drift() -> (
     None
 ):
@@ -270,6 +293,41 @@ def test_provisional_publication_rejects_full_snapshot_fingerprint_and_field_dri
     changed_snapshot = snapshot.replace("old content", "drifted content")
     with pytest.raises(ValueError, match="full version fingerprint"):
         _request(incumbent_snapshot_json=changed_snapshot)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("created_at", True, "full user playbook version"),
+        ("created_at", 123.0, "canonical JSON"),
+    ],
+)
+def test_provisional_publication_rejects_coerced_full_snapshot_scalars(
+    field: str, value: object, message: str
+) -> None:
+    payload = json.loads(_incumbent_snapshot())
+    payload["user_playbook"][field] = value
+    snapshot = _canonical(payload)
+
+    with pytest.raises(ValueError, match=message):
+        _request(
+            incumbent_snapshot_json=snapshot,
+            incumbent_full_version_fingerprint=_digest(snapshot),
+        )
+
+
+def test_provisional_publication_accepts_serialized_enum_full_snapshot() -> None:
+    payload = json.loads(_incumbent_snapshot())
+    payload["user_playbook"]["status"] = "archived"
+    snapshot = _canonical(payload)
+
+    assert (
+        _request(
+            incumbent_snapshot_json=snapshot,
+            incumbent_full_version_fingerprint=_digest(snapshot),
+        ).incumbent_snapshot_json
+        == snapshot
+    )
 
 
 @pytest.mark.parametrize(
@@ -299,21 +357,42 @@ def test_provisional_publication_result_rejects_incomplete_terminal_shapes(
         )
 
 
-def test_provisional_publication_store_exposes_distinct_durable_operations() -> None:
+def test_provisional_publication_store_keeps_legacy_and_provisional_contracts_separate() -> (
+    None
+):
+    provisional_operations = (
+        "claim_user_playbook_provisional_publication",
+        "stage_user_playbook_provisional_publication",
+        "commit_user_playbook_provisional_publication",
+        "load_user_playbook_provisional_publication_result",
+    )
+
+    assert all(
+        operation not in UserPlaybookPublicationStore.__dict__
+        for operation in provisional_operations
+    )
+    assert (
+        UserPlaybookPublicationStore
+        in UserPlaybookProvisionalPublicationStore.__bases__
+    )
+    assert (
+        "load_open_world_provisional_publication_retry"
+        not in UserPlaybookProvisionalPublicationStore.__dict__
+    )
     assert tuple(
         signature(
-            UserPlaybookPublicationStore.claim_user_playbook_provisional_publication
+            UserPlaybookProvisionalPublicationStore.claim_user_playbook_provisional_publication
         ).parameters
     ) == ("self", "job_id", "owner", "worker_fence")
     assert callable(
-        UserPlaybookPublicationStore.claim_user_playbook_provisional_publication
+        UserPlaybookProvisionalPublicationStore.claim_user_playbook_provisional_publication
     )
     assert callable(
-        UserPlaybookPublicationStore.stage_user_playbook_provisional_publication
+        UserPlaybookProvisionalPublicationStore.stage_user_playbook_provisional_publication
     )
     assert callable(
-        UserPlaybookPublicationStore.commit_user_playbook_provisional_publication
+        UserPlaybookProvisionalPublicationStore.commit_user_playbook_provisional_publication
     )
     assert callable(
-        UserPlaybookPublicationStore.load_user_playbook_provisional_publication_result
+        UserPlaybookProvisionalPublicationStore.load_user_playbook_provisional_publication_result
     )

@@ -391,7 +391,9 @@ def _validated_full_version_snapshot(
         "governance_subject_ref": snapshot.governance_subject_ref,
         "retired_at": snapshot.retired_at,
     }
-    if payload["user_playbook"] != expected_playbook:
+    if canonical_json_bytes(payload["user_playbook"]) != canonical_json_bytes(
+        expected_playbook
+    ):
         raise ValueError("incumbent snapshot is not a full user playbook version")
     if snapshot.user_playbook_id != incumbent_user_playbook_id:
         raise ValueError("incumbent_user_playbook_id does not match snapshot")
@@ -479,8 +481,10 @@ class ProvisionalPublicationRequest:
             if subject_ref in subject_refs:
                 raise ValueError("subject epochs must contain unique subject refs")
             subject_refs.add(subject_ref)
-        if not isinstance(self.qualification_authority, QualificationAuthorityRef):
-            raise ValueError("qualification authority is invalid")
+        if type(self.qualification_authority) is not QualificationAuthorityRef:
+            raise ValueError(
+                "qualification authority must be QualificationAuthorityRef"
+            )
         _require_digest("evidence bundle digest", self.evidence_bundle_digest)
         _require_digest("candidate digest", self.candidate_digest)
 
@@ -567,6 +571,10 @@ class UserPlaybookPublicationStore(Protocol):
         self, job_id: int
     ) -> PublicationResult | None: ...
 
+
+class UserPlaybookProvisionalPublicationStore(UserPlaybookPublicationStore, Protocol):
+    """Durable Phase 4 provisional publication operations."""
+
     def claim_user_playbook_provisional_publication(
         self, *, job_id: int, owner: str, worker_fence: int
     ) -> PublicationClaim: ...
@@ -641,6 +649,7 @@ __all__ = [
     "PUBLICATION_INCUMBENT_TRIGGER_METADATA_KEY",
     "PUBLICATION_SUBJECT_EPOCHS_METADATA_KEY",
     "QualificationAuthorityRef",
+    "UserPlaybookProvisionalPublicationStore",
     "UserPlaybookPublicationService",
     "UserPlaybookPublicationStore",
     "canonical_json_bytes",
