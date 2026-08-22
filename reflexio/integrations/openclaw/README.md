@@ -74,8 +74,9 @@ and `openclaw-smart repair`.
   `force_extraction=True` so the session's learnings are available before
   the next openClaw run.
 
-The full design lives in
-[`docs/superpowers/specs/2026-05-19-openclaw-smart-design.md`](../../../../docs/superpowers/specs/2026-05-19-openclaw-smart-design.md).
+The standalone package keeps this README focused on install/runtime behavior; the
+full design note is maintained in Reflexio's internal planning docs rather than
+shipped with the open-source distribution.
 
 ## Skills
 
