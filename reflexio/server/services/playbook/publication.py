@@ -112,6 +112,35 @@ def _canonical_payload(name: str, value: str) -> object:
     return payload
 
 
+def _validate_subject_epochs_json(value: str) -> None:
+    epochs = _canonical_payload("subject_epochs_json", value)
+    if (
+        not isinstance(epochs, dict)
+        or set(epochs) != {"subjects"}
+        or not isinstance(epochs.get("subjects"), list)
+        or not epochs["subjects"]
+    ):
+        raise ValueError("subject epochs must contain a non-empty subjects list")
+    subject_refs: set[str] = set()
+    for item in epochs["subjects"]:
+        if not isinstance(item, dict):
+            raise ValueError("subject epochs must contain objects")
+        if set(item) != {"ref", "epoch"}:
+            raise ValueError("subject epochs must use ref and epoch fields")
+        subject_ref = item["ref"]
+        epoch = item["epoch"]
+        if (
+            not isinstance(subject_ref, str)
+            or not subject_ref
+            or type(epoch) is not int
+            or epoch < 0
+        ):
+            raise ValueError("subject epochs contain an invalid identity or epoch")
+        if subject_ref in subject_refs:
+            raise ValueError("subject epochs must contain unique subject refs")
+        subject_refs.add(subject_ref)
+
+
 def _validate_legacy_publication_optimizer(value: object) -> None:
     if value not in _LEGACY_PUBLICATION_OPTIMIZERS:
         raise ValueError("optimizer_kind is not publishable")
@@ -307,32 +336,7 @@ class PublicationRequest:
             self.projection.candidate_content_digest
         ):
             raise ValueError("revised content digest must match search projection")
-        epochs = _canonical_payload("subject_epochs_json", self.subject_epochs_json)
-        if (
-            not isinstance(epochs, dict)
-            or set(epochs) != {"subjects"}
-            or not isinstance(epochs.get("subjects"), list)
-            or not epochs["subjects"]
-        ):
-            raise ValueError("subject epochs must contain a non-empty subjects list")
-        subject_refs: set[str] = set()
-        for item in epochs["subjects"]:
-            if not isinstance(item, dict):
-                raise ValueError("subject epochs must contain objects")
-            if set(item) != {"ref", "epoch"}:
-                raise ValueError("subject epochs must use ref and epoch fields")
-            subject_ref = item["ref"]
-            epoch = item["epoch"]
-            if (
-                not isinstance(subject_ref, str)
-                or not subject_ref
-                or type(epoch) is not int
-                or epoch < 0
-            ):
-                raise ValueError("subject epochs contain an invalid identity or epoch")
-            if subject_ref in subject_refs:
-                raise ValueError("subject epochs must contain unique subject refs")
-            subject_refs.add(subject_ref)
+        _validate_subject_epochs_json(self.subject_epochs_json)
 
 
 @dataclass(frozen=True)
@@ -455,32 +459,7 @@ class ProvisionalPublicationRequest:
             self.projection.candidate_content_digest
         ):
             raise ValueError("revised content digest must match search projection")
-        epochs = _canonical_payload("subject_epochs_json", self.subject_epochs_json)
-        if (
-            not isinstance(epochs, dict)
-            or set(epochs) != {"subjects"}
-            or not isinstance(epochs.get("subjects"), list)
-            or not epochs["subjects"]
-        ):
-            raise ValueError("subject epochs must contain a non-empty subjects list")
-        subject_refs: set[str] = set()
-        for item in epochs["subjects"]:
-            if not isinstance(item, dict):
-                raise ValueError("subject epochs must contain objects")
-            if set(item) != {"ref", "epoch"}:
-                raise ValueError("subject epochs must use ref and epoch fields")
-            subject_ref = item["ref"]
-            epoch = item["epoch"]
-            if (
-                not isinstance(subject_ref, str)
-                or not subject_ref
-                or type(epoch) is not int
-                or epoch < 0
-            ):
-                raise ValueError("subject epochs contain an invalid identity or epoch")
-            if subject_ref in subject_refs:
-                raise ValueError("subject epochs must contain unique subject refs")
-            subject_refs.add(subject_ref)
+        _validate_subject_epochs_json(self.subject_epochs_json)
         if type(self.qualification_authority) is not QualificationAuthorityRef:
             raise ValueError(
                 "qualification authority must be QualificationAuthorityRef"
