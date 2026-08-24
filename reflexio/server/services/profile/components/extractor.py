@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 import os
-import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
@@ -11,6 +10,7 @@ from reflexio.models.api_schema.service_schemas import (
     UserProfile,
 )
 from reflexio.models.config_schema import ProfileExtractorConfig
+from reflexio.models.profile_id import new_profile_id
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.llm.token_accounting import RunTokenTotals, sum_trace_tokens
@@ -50,19 +50,6 @@ PROFILE_EXTRACTION_MAX_RETRIES = 2
 
 # Maximum number of existing profiles to include in extraction prompt for context
 MAX_EXISTING_PROFILES_FOR_CONTEXT = 5
-
-
-def new_profile_id() -> str:
-    """Generate a short (12-char hex) profile id.
-
-    Format chosen for LLM copy fidelity: full ``str(uuid.uuid4())`` is 36
-    characters of hex+dashes, error-prone for smaller LLMs to copy verbatim.
-    Twelve hex chars is short enough for high-fidelity copy and long enough
-    that birthday-paradox collision probability is vanishingly small at any
-    realistic per-user scale (16^12 ~= 2.8e14 unique values; PRIMARY KEY
-    constraint catches the rare collision).
-    """
-    return uuid.uuid4().hex[:12]
 
 
 class ProfileExtractor:

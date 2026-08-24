@@ -5,7 +5,6 @@ and against existing profiles in the database using hybrid search and LLM.
 
 import logging
 import os
-import uuid
 from collections import Counter
 from datetime import UTC, datetime
 
@@ -13,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from reflexio.models.api_schema.retriever_schema import SearchUserProfileRequest
 from reflexio.models.api_schema.service_schemas import Status, UserProfile
+from reflexio.models.profile_id import new_profile_id
 from reflexio.models.structured_output import StrictStructuredOutput
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.error_reporting import capture_anomaly
@@ -826,7 +826,7 @@ class ProfileConsolidator(BaseDeduplicator):
                 )
 
             merged_profile = UserProfile(
-                profile_id=str(uuid.uuid4()),
+                profile_id=new_profile_id(),
                 user_id=user_id,
                 content=group.merged_content,
                 last_modified_timestamp=now_ts,

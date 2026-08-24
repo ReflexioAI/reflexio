@@ -2,7 +2,6 @@ import asyncio
 import logging
 import os
 import time
-import uuid
 import warnings
 from collections.abc import Callable, Coroutine, Sequence
 from concurrent.futures import ThreadPoolExecutor
@@ -63,6 +62,7 @@ from reflexio.models.api_schema.retriever_schema import (
     UpdateUserPlaybookResponse,
 )
 from reflexio.models.config_schema import SearchMode
+from reflexio.models.profile_id import new_profile_id
 
 IS_TEST_ENV = os.environ.get("IS_TEST_ENV", "false").strip() == "true"
 
@@ -1924,7 +1924,7 @@ class ReflexioClient:
         if isinstance(profile, UserProfile):
             return profile
         data = dict(profile)
-        data.setdefault("profile_id", f"cli-{uuid.uuid4().hex[:12]}")
+        data.setdefault("profile_id", new_profile_id())
         data.setdefault("last_modified_timestamp", int(datetime.now(UTC).timestamp()))
         data.setdefault("generated_from_request_id", "cli-manual")
         data.setdefault("source", "cli-manual")
@@ -1948,8 +1948,8 @@ class ReflexioClient:
                 - user_id (str): The user the profile belongs to.
                 - content (str): The profile content (used for embedding).
                 When passing dicts, missing required fields are auto-populated
-                client-side with sensible defaults: ``profile_id`` becomes
-                ``f"cli-{uuid4.hex[:12]}"``, ``last_modified_timestamp`` is set to
+                client-side with sensible defaults: ``profile_id`` becomes a
+                canonical UUIDv4 string, ``last_modified_timestamp`` is set to
                 ``int(datetime.now(UTC).timestamp())``, and
                 ``generated_from_request_id`` defaults to ``"cli-manual"``.
 
