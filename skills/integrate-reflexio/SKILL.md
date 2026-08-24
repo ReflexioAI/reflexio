@@ -70,8 +70,9 @@ If the desired cross-service user-memory boundary or agent-playbook aggregation 
 1. Read the target repository's instructions and inspect its actual agent request path before editing.
 2. Identify the user request handler, agent or model call, response completion point, identity source, session lifecycle, tool records, feedback signals, and existing retry/job infrastructure.
 3. Apply the identity-design rules above, present the proposed mapping, and clarify any ambiguous user-memory or agent-learning boundary before implementation.
-4. Select one integration route:
-   - For Python, read [references/python-client.md](references/python-client.md) and use `reflexio-client`.
+4. Select one integration route after inspecting the target application's declared runtime:
+   - For Python 3.12 or newer, read [references/python-client.md](references/python-client.md) and use `reflexio-client`.
+   - For Python older than 3.12, or when the supported version cannot be raised safely, read [references/http-api.md](references/http-api.md) and use the application's existing HTTP library. Do not upgrade the application's Python requirement solely to install Reflexio unless the developer explicitly approves that migration.
    - For other languages, read [references/http-api.md](references/http-api.md) and add a small typed HTTP adapter using the project's existing HTTP library.
 5. Implement the runtime loop below at the narrowest existing lifecycle seam.
 6. Add focused tests and run the target repository's normal lint, type, and test checks for the changed path.
@@ -98,7 +99,7 @@ Record every injected item's stable `kind` and `learning_id`, even if the agent 
 
 Publish the completed user and agent turns with the same `user_id`, `session_id`, `source`, and `agent_version`. Attach all injected learning references to the agent interaction as `retrieved_learnings`. Include compact tool-use, citation, expert-answer, or explicit outcome fields only when the host already exposes trustworthy values for them.
 
-Publish after streaming completes. Use the native async client in async applications. A publish failure must not replace an otherwise valid agent response, but it must remain observable and retryable through the application's existing queue or retry mechanism. Do not start an untracked background task in a short-lived or serverless process.
+Publish after streaming completes. Use the native async client in async applications. A publish failure must not replace an otherwise valid agent response, but it must remain observable. Retry automatically only when replay is idempotency-safe: the HTTP route must persist one caller-generated `request_id` with the buffered batch and reuse it for every attempt. The current Python client's public publish methods do not accept a caller-supplied `request_id`, so do not blindly replay an ambiguous timeout or disconnect that may have occurred after the server accepted the request. If the application requires durable retries, use the HTTP route or an existing reconciliation mechanism that proves the batch was not already accepted. Do not start an untracked background task in a short-lived or serverless process.
 
 Do not add `force_extraction=True` or `wait_for_response=True` to the normal production request path. Those controls are for explicit demos or tests.
 

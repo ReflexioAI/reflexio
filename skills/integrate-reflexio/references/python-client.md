@@ -1,5 +1,7 @@
 # Python client integration
 
+Use this route only when the target application supports Python 3.12 or newer. For an older Python runtime, use [the HTTP integration](http-api.md); do not raise the application's Python requirement solely for Reflexio without the developer's explicit approval.
+
 Install the lightweight Hosted Enterprise client in the target application:
 
 ```bash
@@ -110,6 +112,12 @@ await client.publish_interaction_async(...)
 Keep the normal defaults `wait_for_response=False`, `force_extraction=False`, and `skip_aggregation=False`. The call still waits for the HTTP response; `wait_for_response=False` means the server queues extraction instead of processing it synchronously.
 
 Create the client once at the application's normal client/service lifetime rather than once per token or tool event.
+
+## Retry safety
+
+The public `publish_interaction` and `publish_interaction_async` methods do not accept a caller-supplied `request_id`. A timeout or connection loss is therefore ambiguous: the server may have accepted the publish even though the client did not receive its response. Do not automatically replay such a failure, because the retry would receive a new request ID and could duplicate the interaction batch.
+
+Local validation failures are permanent and should not be retried. If the host requires a durable at-least-once queue, use [the HTTP integration](http-api.md) so the queue can persist and reuse a stable `request_id`, or use an existing reconciliation mechanism that can prove the original publish was not accepted.
 
 ## Connection check
 
