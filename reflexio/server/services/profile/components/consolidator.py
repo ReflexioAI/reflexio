@@ -813,6 +813,13 @@ class ProfileConsolidator(BaseDeduplicator):
             metadata_sources = group_new_profiles or group_existing_profiles
             merged_custom_features = self._merge_custom_features(metadata_sources)
             merged_extractor_names = self._merge_extractor_names(metadata_sources)
+            merged_source_interaction_ids = list(
+                dict.fromkeys(
+                    source_id
+                    for profile in group_new_profiles + group_existing_profiles
+                    for source_id in profile.source_interaction_ids
+                )
+            )
 
             # Determine TTL
             try:
@@ -837,6 +844,7 @@ class ProfileConsolidator(BaseDeduplicator):
                 source=template_profile.source,
                 status=template_profile.status,
                 extractor_names=merged_extractor_names,
+                source_interaction_ids=merged_source_interaction_ids,
             )
             self.consolidated_output_indices.add(len(result_profiles))
             result_profiles.append(merged_profile)

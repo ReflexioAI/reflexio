@@ -639,6 +639,73 @@ class TestBuildDeduplicatedResults:
         assert str(uuid.UUID(merged_profile.profile_id)) == merged_profile.profile_id
         assert merged_profile.profile_time_to_live == ProfileTimeToLive.ONE_MONTH
 
+    @pytest.mark.parametrize(
+        ("item_ids", "expected_source_ids"),
+        [
+            (["NEW-0", "NEW-1"], [101, 102, 103]),
+            (["EXISTING-0", "EXISTING-1"], [102, 201, 202, 203]),
+            (["NEW-0", "EXISTING-0"], [101, 102, 201]),
+        ],
+        ids=["new-only", "existing-only", "mixed"],
+    )
+    def test_merged_profile_preserves_source_interaction_ids(
+        self,
+        mock_request_context,
+        mock_llm_client,
+        mock_site_var_manager,
+        sample_profiles,
+        item_ids,
+        expected_source_ids,
+    ):
+        """Merged profiles retain the ordered union of member provenance."""
+        sample_profiles[0].source_interaction_ids = [101, 102]
+        sample_profiles[1].source_interaction_ids = [102, 103]
+        existing_profiles = [
+            UserProfile(
+                profile_id="existing-0",
+                user_id="test_user",
+                content="Existing profile zero",
+                last_modified_timestamp=int(datetime.now(UTC).timestamp()),
+                generated_from_request_id="existing-request",
+                source_interaction_ids=[102, 201],
+            ),
+            UserProfile(
+                profile_id="existing-1",
+                user_id="test_user",
+                content="Existing profile one",
+                last_modified_timestamp=int(datetime.now(UTC).timestamp()),
+                generated_from_request_id="existing-request",
+                source_interaction_ids=[201, 202, 203],
+            ),
+        ]
+        dedup_output = ProfileDeduplicationOutput(
+            duplicate_groups=[
+                ProfileDuplicateGroup(
+                    item_ids=item_ids,
+                    merged_content="Merged profile",
+                    merged_time_to_live="one_month",
+                )
+            ],
+        )
+
+        result_profiles, _, _ = ProfileConsolidator(
+            request_context=mock_request_context,
+            llm_client=mock_llm_client,
+        )._build_deduplicated_results(
+            new_profiles=sample_profiles,
+            existing_profiles=existing_profiles,
+            dedup_output=dedup_output,
+            user_id="test_user",
+            request_id="test_request",
+        )
+
+        merged_profile = next(
+            profile
+            for profile in result_profiles
+            if profile.content == "Merged profile"
+        )
+        assert merged_profile.source_interaction_ids == expected_source_ids
+
     def test_build_deduplicated_results_preserves_unique(
         self,
         mock_request_context,
