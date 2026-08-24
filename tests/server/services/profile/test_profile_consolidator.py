@@ -645,8 +645,9 @@ class TestBuildDeduplicatedResults:
             (["NEW-0", "NEW-1"], [101, 102, 103]),
             (["EXISTING-0", "EXISTING-1"], [102, 201, 202, 203]),
             (["NEW-0", "EXISTING-0"], [101, 102, 201]),
+            (["EXISTING-0", "NEW-0"], [102, 201, 101]),
         ],
-        ids=["new-only", "existing-only", "mixed"],
+        ids=["new-only", "existing-only", "mixed", "mixed-reversed"],
     )
     def test_merged_profile_preserves_source_interaction_ids(
         self,

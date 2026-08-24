@@ -721,6 +721,7 @@ class ProfileConsolidator(BaseDeduplicator):
         for group in dedup_output.duplicate_groups:
             group_new_indices: list[int] = []
             group_existing_indices: list[int] = []
+            group_profiles_in_item_order: list[UserProfile] = []
 
             for item_id in group.item_ids:
                 parsed = parse_item_id(item_id)
@@ -729,8 +730,12 @@ class ProfileConsolidator(BaseDeduplicator):
                 prefix, idx = parsed
                 if prefix == "NEW":
                     group_new_indices.append(idx)
+                    if 0 <= idx < len(new_profiles):
+                        group_profiles_in_item_order.append(new_profiles[idx])
                 elif prefix == "EXISTING":
                     group_existing_indices.append(idx)
+                    if 0 <= idx < len(existing_profiles):
+                        group_profiles_in_item_order.append(existing_profiles[idx])
 
             # Reject groups that overlap with profiles already consumed by a
             # deletion directive. Merging such a group would write a
@@ -816,7 +821,7 @@ class ProfileConsolidator(BaseDeduplicator):
             merged_source_interaction_ids = list(
                 dict.fromkeys(
                     source_id
-                    for profile in group_new_profiles + group_existing_profiles
+                    for profile in group_profiles_in_item_order
                     for source_id in profile.source_interaction_ids
                 )
             )
