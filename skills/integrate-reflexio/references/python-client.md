@@ -1,6 +1,6 @@
 # Python client integration
 
-Use this route only when the target application supports Python 3.12 or newer. For an older Python runtime, use [the HTTP integration](http-api.md); do not raise the application's Python requirement solely for Reflexio without the developer's explicit approval.
+Current `reflexio-client` and `reflexio-ai` releases require Python 3.12 or newer. For a Python 3.10 or 3.11 target, use [the HTTP integration](http-api.md) to call Hosted Enterprise or a separately deployed backend on a compatible runtime. Do not raise the application's Python requirement solely for Reflexio without the developer's explicit approval, and do not silently pin an older Reflexio release.
 
 Install the lightweight Hosted Enterprise client in the target application:
 
@@ -117,7 +117,7 @@ Create the client once at the application's normal client/service lifetime rathe
 
 The public `publish_interaction` and `publish_interaction_async` methods do not accept a caller-supplied `request_id`. A timeout or connection loss is therefore ambiguous: the server may have accepted the publish even though the client did not receive its response. Do not automatically replay such a failure, because the retry would receive a new request ID and could duplicate the interaction batch.
 
-Local validation failures are permanent and should not be retried. If the host requires a durable at-least-once queue, use [the HTTP integration](http-api.md) so the queue can persist and reuse a stable `request_id`, or use an existing reconciliation mechanism that can prove the original publish was not accepted.
+Local validation failures are permanent and should not be retried. Raw HTTP does not make ambiguous replay safe either: its optional `request_id` is not backed by atomic idempotency. A durable at-least-once queue needs an existing reconciliation mechanism that can prove the original publish was not accepted, or server-side atomic idempotency, before it automatically retries.
 
 ## Connection check
 

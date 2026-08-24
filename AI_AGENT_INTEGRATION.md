@@ -91,8 +91,8 @@ Complete these steps in order:
      visibly influenced the answer.
    - Publish `citations` only when an item materially influenced the answer.
 9. Add flush and retry paths:
-   - Retry unpublished buffers on session start or before the next prompt only
-     when the retry reuses a persisted caller-generated `request_id`.
+   - Quarantine an unpublished buffer when a timeout, disconnect, or `5xx`
+     leaves acceptance ambiguous; do not automatically replay it.
    - Flush before transcript compaction/reset if the host supports it.
    - Flush on session end.
 10. Add a manual learn-now path:
@@ -191,7 +191,13 @@ application's existing configuration system:
 REFLEXIO_URL="http://localhost:8061/"
 ```
 
-For Local OSS development, install the full package and start the backend:
+Current `reflexio-ai` releases also require Python 3.12 or newer. Python 3.10
+and 3.11 applications cannot run the current Local OSS package in-process. On
+those runtimes, call Hosted Enterprise or a separately deployed Local OSS
+backend through HTTP instead of installing an older package implicitly.
+
+For Local OSS development on Python 3.12 or newer, install the full package and
+start the backend:
 
 ```shell
 pip install reflexio-ai
@@ -321,8 +327,8 @@ Use a durable local buffer between the agent host and Reflexio:
 4. Convert unpublished records into Reflexio interactions.
 5. Call `publish_interaction`.
 6. Mark a high-water point only after a successful publish.
-7. Retry unpublished records only when every attempt reuses the batch's
-   persisted caller-generated `request_id`.
+7. Quarantine an unpublished batch for reconciliation when its acceptance is
+   ambiguous; do not put it into an automatic retry loop.
 
 Python SDK example:
 
@@ -396,9 +402,11 @@ def publish_turns(
 ```
 
 Advance the buffer watermark only for `"advance"`. Preserve a `"quarantine"`
-batch for reconciliation without automatically resending it. If the host needs
-automatic durable retries, use the HTTP route with a persisted `request_id`
-instead of this SDK pattern.
+batch for reconciliation without automatically resending it. Neither the
+current SDK nor the raw HTTP route guarantees atomic idempotent replay. A host
+that requires durable at-least-once delivery needs an application-specific
+reconciliation mechanism, or server-side atomic idempotency, before enabling
+automatic retries.
 
 Use `wait_for_response=False` on interactive paths. Use `force_extraction=True`
 only for explicit "learn now", session-final flushes, tests, or workflows where
@@ -497,11 +505,10 @@ generic handler. Treat **any** `4xx` other than `408`/`429` the same way you
 treat a `ValidationError`: it is a permanent rejection, not a retryable failure.
 A `5xx`, timeout, or connection loss is potentially transient, but it is also
 ambiguous: the server may have accepted the publish before the response was
-lost. Retry only with a caller-generated `request_id` that was persisted with
-the buffered batch and reused for every attempt. The current Python client's
-public publish methods do not accept that value, so do not blindly replay an
-ambiguous SDK failure; use the raw HTTP route when durable at-least-once retry
-is required.
+lost. Do not blindly replay an ambiguous publish. The optional HTTP
+`request_id` is useful for correlation, but current replay detection is not an
+atomic idempotency guarantee. Quarantine the batch for reconciliation unless
+the host can prove the server did not accept it.
 
 ### Extraction Is Gated — Don't Expect a Result From One Publish
 
@@ -612,7 +619,7 @@ by agent framework.
 | Required moment | What to do |
 | --- | --- |
 | Setup/install | For Hosted Enterprise, install dependencies and ensure `REFLEXIO_API_KEY` can be resolved. Default Local OSS does not require a Hosted credential. Configure `REFLEXIO_URL` only for an explicitly requested override. |
-| Session start | Start or health-check the local backend if using local Reflexio. Retry old unpublished buffers only when replay is idempotency-safe. |
+| Session start | Start or health-check the local backend if using local Reflexio. Reconcile old unpublished buffers; do not automatically replay an ambiguously accepted publish. |
 | Before prompt/plan | Search Reflexio with the user's task and inject compact relevant context. |
 | Before tool use | If the host supports it, search with the tool command/edit target and inject tool-specific rules. This is useful before file edits or shell commands. |
 | After tool use | Buffer the tool name plus compact input/output/result metadata. |
@@ -664,8 +671,8 @@ Follow these rules for production agent integrations:
 - Never let Reflexio exceptions fail the user's agent turn.
 - Buffer locally before network calls.
 - Advance publish watermarks only after success.
-- Retry failed publishes later only with a persisted caller-generated
-  `request_id`; do not blindly replay ambiguous SDK failures.
+- Quarantine ambiguous publish failures for reconciliation; neither the SDK nor
+  raw HTTP currently guarantees atomic idempotent replay.
 - Truncate large tool fields before publishing.
 - Do not run extraction synchronously on every turn.
 - Make retrieval query-aware; do not dump all memory into every prompt.
@@ -674,17 +681,17 @@ Follow these rules for production agent integrations:
 
 ## Direct HTTP Fallback
 
-Use the SDK on Python 3.12 or newer when caller-controlled idempotency is not
-required. For older Python runtimes, other languages, or durable retry queues,
-call the HTTP API directly.
+Use the SDK on Python 3.12 or newer. For older Python runtimes or other
+languages, call the HTTP API directly. The HTTP route does not add an atomic
+idempotency guarantee.
 
 1. Discover routes from `GET /openapi.json` instead of guessing endpoint paths.
 2. Include `Content-Type: application/json`.
 3. Include a normal `User-Agent`, for example `User-Agent: my-agent-reflexio`.
 4. Include `Authorization: Bearer <REFLEXIO_API_KEY>` when using managed
    Reflexio.
-5. Generate one `request_id` per publish batch, persist it with the batch, and
-   reuse it for every retry.
+5. If supplied, treat `request_id` as correlation metadata, not as an
+   idempotency key.
 
 Core routes:
 
@@ -708,8 +715,8 @@ Run these checks before considering the integration complete:
    with `force_extraction=True`.
 3. Start a new agent session and confirm the relevant learning is injected.
 4. Stop Reflexio, run a normal agent turn, and confirm the agent still works.
-5. Restart Reflexio and confirm an idempotency-safe buffered turn is retried
-   with its original `request_id` and published once.
+5. Restart Reflexio and confirm an ambiguously failed buffered turn remains
+   quarantined for reconciliation rather than being published again.
 6. Confirm no secrets or oversized tool outputs are stored in the buffer.
 7. Confirm changing `user_id` hides user-scoped profiles/playbooks.
 8. Confirm shared agent playbooks are filtered by `agent_version`.
@@ -739,9 +746,8 @@ A complete integration has this shape:
 - Tool calls are buffered as compact `tools_used` records when the host exposes
   them.
 - Assistant completion or session-end hooks publish unpublished records.
-- Failed publishes leave the watermark unchanged only when a later replay can
-  reuse the persisted caller-generated `request_id`; ambiguous SDK failures are
-  reconciled rather than blindly replayed.
+- Ambiguous publish failures leave the watermark unchanged and are quarantined
+  for reconciliation rather than blindly replayed.
 - Prompt or planning hooks search Reflexio and inject compact context.
 - Tool hooks search Reflexio before risky or mutating actions when supported.
 - User-scoped learnings use the chosen `user_id` boundary.

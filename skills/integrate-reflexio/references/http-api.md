@@ -60,7 +60,6 @@ POST /api/publish_interaction
 
 ```json
 {
-  "request_id": "stable-id-for-this-publish-batch",
   "user_id": "stable-user-id",
   "session_id": "stable-session-id",
   "source": "support-agent:v2",
@@ -82,9 +81,9 @@ POST /api/publish_interaction
 }
 ```
 
-Generate `request_id` once when the publish batch is added to the host's durable buffer, persist it with that batch, and reuse the exact value for every attempt. Never generate a new request ID during a retry; the stable ID is what prevents an ambiguous timeout from creating a second stored request.
+`request_id` is optional correlation metadata, not an idempotency key. Current replay detection is not atomic, so repeated or concurrent submissions can still reject or duplicate work. Do not rely on a caller-supplied value to make an ambiguous replay safe.
 
-Use the same identity values as search. Treat permanent `4xx` validation failures differently from potentially retryable timeouts, connection failures, `429`, and `5xx` responses, and retry those transient classes only with the original `request_id`. Keep failures observable without replacing a valid agent response.
+Use the same identity values as search. Treat permanent `4xx` validation failures as rejected publishes. A timeout, connection loss, or `5xx` is ambiguous because the server may have accepted the request before the response was lost; quarantine that batch for reconciliation rather than automatically replaying it. Retry only when the host can prove the server did not accept the request. Keep failures observable without replacing a valid agent response.
 
 ## Read-only connection check
 
