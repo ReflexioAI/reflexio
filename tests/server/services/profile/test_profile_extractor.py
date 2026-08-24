@@ -13,6 +13,7 @@ import os
 import tempfile
 from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
+from uuid import UUID
 
 import pytest
 
@@ -896,6 +897,10 @@ class TestConvertRawToUserProfiles:
         )
 
         assert len(result) == 2
+        assert all(UUID(profile.profile_id).version == 4 for profile in result)
+        assert all(
+            str(UUID(profile.profile_id)) == profile.profile_id for profile in result
+        )
         assert result[0].content == "User prefers dark mode"
         assert result[0].user_id == "test_user"
         # Singleton extraction no longer records per-extractor provenance.

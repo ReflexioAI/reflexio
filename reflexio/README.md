@@ -37,6 +37,7 @@ Description: Shared data contracts and the Python SDK used by external applicati
 #### Main Entry Points
 - **API Schemas**: `models/api_schema/` - Pydantic request/response models for public API surfaces
 - **Internal Schemas**: `models/api_schema/internal_schema.py` - Storage-facing profile, playbook, request, evaluation, and agent-run models
+- **Profile IDs**: `models/profile_id.py` - Canonical UUIDv4 generation for Reflexio-created profiles
 - **Validators**: `models/api_schema/validators.py` - Cross-schema validation helpers
 
 #### Purpose

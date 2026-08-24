@@ -635,6 +635,8 @@ class TestBuildDeduplicatedResults:
             None,
         )
         assert merged_profile is not None
+        assert uuid.UUID(merged_profile.profile_id).version == 4
+        assert str(uuid.UUID(merged_profile.profile_id)) == merged_profile.profile_id
         assert merged_profile.profile_time_to_live == ProfileTimeToLive.ONE_MONTH
 
     def test_build_deduplicated_results_preserves_unique(

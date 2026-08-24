@@ -76,6 +76,10 @@ def test_publish_interaction_profile_only(
     final_profiles = require_storage(reflexio_instance_profile_only).get_all_profiles()
     assert len(final_profiles) > 0
     assert final_profiles[0].content.strip() != ""
+    for profile in final_profiles:
+        parsed_profile_id = uuid.UUID(profile.profile_id)
+        assert parsed_profile_id.version == 4
+        assert str(parsed_profile_id) == profile.profile_id
 
     # Verify profile change logs were created
     final_change_logs = (
