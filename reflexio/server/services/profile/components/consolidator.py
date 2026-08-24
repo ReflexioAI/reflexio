@@ -721,6 +721,7 @@ class ProfileConsolidator(BaseDeduplicator):
         for group in dedup_output.duplicate_groups:
             group_new_indices: list[int] = []
             group_existing_indices: list[int] = []
+            group_profiles_in_item_order: list[UserProfile] = []
 
             for item_id in group.item_ids:
                 parsed = parse_item_id(item_id)
@@ -729,8 +730,12 @@ class ProfileConsolidator(BaseDeduplicator):
                 prefix, idx = parsed
                 if prefix == "NEW":
                     group_new_indices.append(idx)
+                    if 0 <= idx < len(new_profiles):
+                        group_profiles_in_item_order.append(new_profiles[idx])
                 elif prefix == "EXISTING":
                     group_existing_indices.append(idx)
+                    if 0 <= idx < len(existing_profiles):
+                        group_profiles_in_item_order.append(existing_profiles[idx])
 
             # Reject groups that overlap with profiles already consumed by a
             # deletion directive. Merging such a group would write a
@@ -813,6 +818,13 @@ class ProfileConsolidator(BaseDeduplicator):
             metadata_sources = group_new_profiles or group_existing_profiles
             merged_custom_features = self._merge_custom_features(metadata_sources)
             merged_extractor_names = self._merge_extractor_names(metadata_sources)
+            merged_source_interaction_ids = list(
+                dict.fromkeys(
+                    source_id
+                    for profile in group_profiles_in_item_order
+                    for source_id in profile.source_interaction_ids
+                )
+            )
 
             # Determine TTL
             try:
@@ -837,6 +849,7 @@ class ProfileConsolidator(BaseDeduplicator):
                 source=template_profile.source,
                 status=template_profile.status,
                 extractor_names=merged_extractor_names,
+                source_interaction_ids=merged_source_interaction_ids,
             )
             self.consolidated_output_indices.add(len(result_profiles))
             result_profiles.append(merged_profile)
