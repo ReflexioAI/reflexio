@@ -4,6 +4,37 @@ This guide is written for an AI coding agent that has been asked to add
 Reflexio to another AI agent, editor plugin, CLI assistant, or agent framework.
 Follow it as an implementation checklist.
 
+For a portable coding-agent workflow, use the canonical
+[`integrate-reflexio` skill](skills/integrate-reflexio/SKILL.md). The skill is a
+distribution artifact for agent builders; it is not meant to run against this
+Reflexio source repository.
+
+Use either handoff:
+
+1. Point a coding agent working in the agent application's repository to
+   `https://github.com/ReflexioAI/reflexio/blob/main/skills/integrate-reflexio/SKILL.md`
+   with this prompt:
+
+   ```text
+   Integrate Reflexio Enterprise into this agent repository. Follow
+   https://github.com/ReflexioAI/reflexio/blob/main/skills/integrate-reflexio/SKILL.md
+   and its linked references. Treat this repository as the integration target;
+   do not modify the Reflexio source repository.
+   ```
+
+2. Copy the complete `skills/integrate-reflexio/` directory into the agent
+   application's project-level skill location:
+
+| Coding agent | Destination in the agent application | Explicit invocation |
+| --- | --- | --- |
+| Codex | `.agents/skills/integrate-reflexio/` | `$integrate-reflexio` |
+| Claude Code | `.claude/skills/integrate-reflexio/` | `/integrate-reflexio` |
+| Cursor | `.agents/skills/integrate-reflexio/` | `/integrate-reflexio` |
+
+Copy the whole directory so `SKILL.md`, `agents/openai.yaml`, and `references/`
+remain together. The application integration itself belongs in the agent
+builder's repository; the copied skill is only the coding-agent workflow.
+
 Reflexio integration has two jobs:
 
 1. Publish useful interaction history so Reflexio can extract user profiles and
@@ -26,9 +57,10 @@ Complete these steps in order:
    - Set `agent_version` to the boundary where generalized playbooks should
      transfer across users.
 2. Add Reflexio configuration loading:
-   - Read `REFLEXIO_URL`.
-   - Read `REFLEXIO_API_KEY` for managed Reflexio.
-   - Keep local Reflexio as the no-key default when appropriate.
+   - Read `REFLEXIO_API_KEY` for Hosted Enterprise.
+   - Use the client's Hosted Enterprise endpoint by default.
+   - Only read or set `REFLEXIO_URL` when the user explicitly requests a
+     custom or self-hosted endpoint.
 3. Add a Reflexio client wrapper:
    - Use short timeouts on interactive paths.
    - Catch exceptions and return neutral values.
@@ -134,31 +166,33 @@ make this choice explicit in code and tests.
 
 ## Install and Configure Reflexio
 
-Prefer the Python SDK for integrations written in Python:
+For Hosted Enterprise integrations written in Python, install the lightweight
+client:
 
 ```shell
-pip install reflexio-ai
+pip install reflexio-client
 ```
 
-For local development, start the backend:
+Then set only the API key. `ReflexioClient()` defaults to
+`https://www.reflexio.ai/`:
 
 ```shell
-reflexio services start
+REFLEXIO_API_KEY="..."
 ```
 
-The local API defaults to `http://localhost:8061/`. If you need a different
-backend, read these values from environment or `~/.reflexio/.env`:
+Do not add `REFLEXIO_URL` for this default path. If the user explicitly requests
+a custom or self-hosted endpoint, set the override through the host
+application's existing configuration system:
 
 ```shell
 REFLEXIO_URL="http://localhost:8061/"
-REFLEXIO_API_KEY=""
 ```
 
-For managed Reflexio, set both:
+For Local OSS development, install the full package and start the backend:
 
 ```shell
-REFLEXIO_URL="https://www.reflexio.ai/"
-REFLEXIO_API_KEY="..."
+pip install reflexio-ai
+reflexio services start
 ```
 
 Implementation rule: if Reflexio is unavailable, the agent must continue
@@ -291,17 +325,12 @@ Python SDK example:
 from __future__ import annotations
 
 import logging
-import os
 from pydantic import ValidationError
 from reflexio import ReflexioClient
 
 
 def reflexio_client() -> ReflexioClient:
-    return ReflexioClient(
-        url_endpoint=os.environ.get("REFLEXIO_URL", "http://localhost:8061/"),
-        api_key=os.environ.get("REFLEXIO_API_KEY", ""),
-        timeout=5,
-    )
+    return ReflexioClient(timeout=5)
 
 
 def publish_turns(
@@ -552,7 +581,7 @@ by agent framework.
 
 | Required moment | What to do |
 | --- | --- |
-| Setup/install | Install dependencies, create config, and ensure `REFLEXIO_URL` / `REFLEXIO_API_KEY` can be resolved. |
+| Setup/install | For Hosted Enterprise, install dependencies and ensure `REFLEXIO_API_KEY` can be resolved. Default Local OSS does not require a Hosted credential. Configure `REFLEXIO_URL` only for an explicitly requested override. |
 | Session start | Start or health-check the local backend if using local Reflexio. Retry old unpublished buffers. |
 | Before prompt/plan | Search Reflexio with the user's task and inject compact relevant context. |
 | Before tool use | If the host supports it, search with the tool command/edit target and inject tool-specific rules. This is useful before file edits or shell commands. |

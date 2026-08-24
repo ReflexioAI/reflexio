@@ -1,0 +1,4 @@
+interface:
+  display_name: "Integrate Reflexio"
+  short_description: "Wire Reflexio into an existing AI agent."
+  default_prompt: "Use $integrate-reflexio to integrate Reflexio Enterprise into the current agent application repository and verify the runtime loop."
