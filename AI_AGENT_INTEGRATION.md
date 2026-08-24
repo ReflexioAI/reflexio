@@ -4,6 +4,38 @@ This guide is written for an AI coding agent that has been asked to add
 Reflexio to another AI agent, editor plugin, CLI assistant, or agent framework.
 Follow it as an implementation checklist.
 
+For a portable coding-agent workflow, use the canonical
+[`integrate-reflexio` skill](skills/integrate-reflexio/SKILL.md). The skill is a
+distribution artifact for agent builders; it is not meant to run against this
+Reflexio source repository. Its runtime and verification contract is normative;
+this longer guide supplies supporting concepts and background.
+
+Use either handoff:
+
+1. Point a coding agent working in the agent application's repository to
+   `https://github.com/ReflexioAI/reflexio/blob/main/skills/integrate-reflexio/SKILL.md`
+   with this prompt:
+
+   ```text
+   Integrate Reflexio Enterprise into this agent repository. Follow
+   https://github.com/ReflexioAI/reflexio/blob/main/skills/integrate-reflexio/SKILL.md
+   and its linked references. Treat this repository as the integration target;
+   do not modify the Reflexio source repository.
+   ```
+
+2. Copy the complete `skills/integrate-reflexio/` directory into the agent
+   application's project-level skill location:
+
+| Coding agent | Destination in the agent application | Explicit invocation |
+| --- | --- | --- |
+| Codex | `.agents/skills/integrate-reflexio/` | `$integrate-reflexio` |
+| Claude Code | `.claude/skills/integrate-reflexio/` | `/integrate-reflexio` |
+| Cursor | `.agents/skills/integrate-reflexio/` | `/integrate-reflexio` |
+
+Copy the whole directory so `SKILL.md`, `agents/openai.yaml`, and `references/`
+remain together. The application integration itself belongs in the agent
+builder's repository; the copied skill is only the coding-agent workflow.
+
 Reflexio integration has two jobs:
 
 1. Publish useful interaction history so Reflexio can extract user profiles and
@@ -26,9 +58,10 @@ Complete these steps in order:
    - Set `agent_version` to the boundary where generalized playbooks should
      transfer across users.
 2. Add Reflexio configuration loading:
-   - Read `REFLEXIO_URL`.
-   - Read `REFLEXIO_API_KEY` for managed Reflexio.
-   - Keep local Reflexio as the no-key default when appropriate.
+   - Read `REFLEXIO_API_KEY` for Hosted Enterprise.
+   - Use the client's Hosted Enterprise endpoint by default.
+   - Only read or set `REFLEXIO_URL` when the user explicitly requests a
+     custom or self-hosted endpoint.
 3. Add a Reflexio client wrapper:
    - Use short timeouts on interactive paths.
    - Catch exceptions and return neutral values.
@@ -53,12 +86,13 @@ Complete these steps in order:
    - Render user playbooks as user/project-specific rules.
    - Render agent playbooks as shared agent rules.
    - Keep injected context short and query-relevant.
-8. Track citations:
-   - Record which injected items were shown to the agent.
-   - Publish citations on assistant turns when those items influenced the
-     answer.
+8. Track retrieval and influence separately:
+   - Publish every injected item as `retrieved_learnings`, whether or not it
+     visibly influenced the answer.
+   - Publish `citations` only when an item materially influenced the answer.
 9. Add flush and retry paths:
-   - Retry unpublished buffers on session start or before the next prompt.
+   - Quarantine an unpublished buffer when a timeout, disconnect, or `5xx`
+     leaves acceptance ambiguous; do not automatically replay it.
    - Flush before transcript compaction/reset if the host supports it.
    - Flush on session end.
 10. Add a manual learn-now path:
@@ -134,31 +168,40 @@ make this choice explicit in code and tests.
 
 ## Install and Configure Reflexio
 
-Prefer the Python SDK for integrations written in Python:
+For Hosted Enterprise integrations on Python 3.12 or newer, install the
+lightweight client. On an older Python runtime, use the HTTP API rather than
+raising the application's Python requirement without the developer's approval:
 
 ```shell
-pip install reflexio-ai
+pip install reflexio-client
 ```
 
-For local development, start the backend:
+Then set only the API key. `ReflexioClient()` defaults to
+`https://www.reflexio.ai/`:
 
 ```shell
-reflexio services start
+REFLEXIO_API_KEY="..."
 ```
 
-The local API defaults to `http://localhost:8061/`. If you need a different
-backend, read these values from environment or `~/.reflexio/.env`:
+Do not add `REFLEXIO_URL` for this default path. If the user explicitly requests
+a custom or self-hosted endpoint, set the override through the host
+application's existing configuration system:
 
 ```shell
 REFLEXIO_URL="http://localhost:8061/"
-REFLEXIO_API_KEY=""
 ```
 
-For managed Reflexio, set both:
+Current `reflexio-ai` releases also require Python 3.12 or newer. Python 3.10
+and 3.11 applications cannot run the current Local OSS package in-process. On
+those runtimes, call Hosted Enterprise or a separately deployed Local OSS
+backend through HTTP instead of installing an older package implicitly.
+
+For Local OSS development on Python 3.12 or newer, install the full package and
+start the backend:
 
 ```shell
-REFLEXIO_URL="https://www.reflexio.ai/"
-REFLEXIO_API_KEY="..."
+pip install reflexio-ai
+reflexio services start
 ```
 
 Implementation rule: if Reflexio is unavailable, the agent must continue
@@ -268,7 +311,8 @@ Interaction row fields:
 | `interacted_image_url` | No | URL of an image the user interacted with, if relevant and safe to store. | `"https://example.com/screenshot.png"` |
 | `image_encoding` | No | Base64-encoded image data when the image is part of the interaction. Prefer URLs or omit images unless needed. | `"iVBORw0KGgoAAA..."` |
 | `tools_used` | No | On assistant turns, compact metadata for tools the assistant used. Avoid raw huge outputs. | `[{"tool_name": "Bash", "tool_data": {"input": "pnpm test -- --run", "output": "passed"}}]` |
-| `citations` | No | Reflexio profile/playbook ids that influenced the assistant answer. Use ids from the context-injection registry. | `[{"kind": "playbook", "real_id": "42", "tag": "s1", "title": "Use pnpm in this repo"}]` |
+| `retrieved_learnings` | No | Every Reflexio item injected into the assistant context, including items that did not visibly influence the answer. | `[{"kind": "agent_playbook", "learning_id": "42"}]` |
+| `citations` | No | Reflexio profile/playbook ids that materially influenced the assistant answer. Use ids from the context-injection registry. | `[{"kind": "agent_playbook", "real_id": "42", "tag": "s1", "title": "Use pnpm in this repo"}]` |
 
 Do not publish secrets, raw huge files, or unbounded tool output. Redact or
 truncate before buffering.
@@ -283,7 +327,8 @@ Use a durable local buffer between the agent host and Reflexio:
 4. Convert unpublished records into Reflexio interactions.
 5. Call `publish_interaction`.
 6. Mark a high-water point only after a successful publish.
-7. Retry unpublished records on the next hook/session if publish fails.
+7. Quarantine an unpublished batch for reconciliation when its acceptance is
+   ambiguous; do not put it into an automatic retry loop.
 
 Python SDK example:
 
@@ -291,17 +336,14 @@ Python SDK example:
 from __future__ import annotations
 
 import logging
-import os
+from typing import Literal
+
 from pydantic import ValidationError
 from reflexio import ReflexioClient
 
 
 def reflexio_client() -> ReflexioClient:
-    return ReflexioClient(
-        url_endpoint=os.environ.get("REFLEXIO_URL", "http://localhost:8061/"),
-        api_key=os.environ.get("REFLEXIO_API_KEY", ""),
-        timeout=5,
-    )
+    return ReflexioClient(timeout=5)
 
 
 def publish_turns(
@@ -310,9 +352,9 @@ def publish_turns(
     user_id: str,
     agent_version: str,
     interactions: list[dict],
-) -> bool:
+) -> Literal["advance", "quarantine"]:
     if not interactions:
-        return True
+        return "advance"
 
     client = reflexio_client()
     try:
@@ -327,8 +369,8 @@ def publish_turns(
             skip_aggregation=False,
         )
     except ValidationError as exc:
-        # The payload is invalid, so retrying can never succeed. Return True to
-        # advance the high-water mark and stop re-sending it — see "A rejected
+        # The payload is invalid, so retrying can never succeed. Advance the
+        # high-water mark and stop re-sending it — see "A rejected
         # batch is not a retryable failure" below. Log the exception TYPE, not
         # the exception: a ValidationError renders the offending input, and
         # logging.exception would additionally capture frame locals holding the
@@ -338,9 +380,16 @@ def publish_turns(
             len(interactions),
             type(exc).__name__,
         )
-        return True
-    except Exception:
-        return False
+        return "advance"
+    except Exception as exc:
+        # The request may have reached the server before the response was lost.
+        # Keep the batch for reconciliation, but do not put it back into an
+        # automatic retry loop: the public SDK cannot reuse a request_id.
+        logging.error(
+            "quarantining batch with ambiguous publish outcome (%s)",
+            type(exc).__name__,
+        )
+        return "quarantine"
 
     # Outside the try above, and defensive about the shape — see
     # "Read `warnings`" below for why both matter.
@@ -349,8 +398,15 @@ def publish_turns(
         for warning in warnings:
             logging.warning("reflexio dropped part of the payload: %s", warning)
 
-    return True
+    return "advance"
 ```
+
+Advance the buffer watermark only for `"advance"`. Preserve a `"quarantine"`
+batch for reconciliation without automatically resending it. Neither the
+current SDK nor the raw HTTP route guarantees atomic idempotent replay. A host
+that requires durable at-least-once delivery needs an application-specific
+reconciliation mechanism, or server-side atomic idempotency, before enabling
+automatic retries.
 
 Use `wait_for_response=False` on interactive paths. Use `force_extraction=True`
 only for explicit "learn now", session-final flushes, tests, or workflows where
@@ -447,7 +503,12 @@ rather than through the SDK — rejection arrives as an HTTP `422` inside your
 transport's error type, not as a `ValidationError`, and falls straight into the
 generic handler. Treat **any** `4xx` other than `408`/`429` the same way you
 treat a `ValidationError`: it is a permanent rejection, not a retryable failure.
-Only `5xx`, timeouts, and connection errors deserve a retry.
+A `5xx`, timeout, or connection loss is potentially transient, but it is also
+ambiguous: the server may have accepted the publish before the response was
+lost. Do not blindly replay an ambiguous publish. The optional HTTP
+`request_id` is useful for correlation, but current replay detection is not an
+atomic idempotency guarantee. Quarantine the batch for reconciliation unless
+the host can prove the server did not accept it.
 
 ### Extraction Is Gated — Don't Expect a Result From One Publish
 
@@ -480,7 +541,7 @@ def search_reflexio(user_id: str, agent_version: str, query: str):
         user_id=user_id,
         agent_version=agent_version,
         entity_types=["profiles", "user_playbooks", "agent_playbooks"],
-        agent_playbook_status_filter=["pending", "approved"],
+        agent_playbook_status_filter=["approved"],
         enable_agent_answer=False,
         top_k=3,
         search_mode="hybrid",
@@ -494,18 +555,18 @@ This search shape gives the current user their own profiles and user playbooks,
 plus shared agent playbooks generated for the same `agent_version`.
 
 `search` returns a `UnifiedSearchViewResponse` with one list per entity type.
-These are the fields you need to render context and, later, build the citation
-registry:
+These are the fields you need to render context and build the retrieval registry:
 
-| Result list | Id field (use as `citations.real_id`) | `citations.kind` | Title/text field |
+| Result list | Stable ID | `retrieved_learnings.kind` | Title/text field |
 | --- | --- | --- | --- |
 | `profiles` (`ProfileView`) | `profile_id` | `"profile"` | `content` |
-| `user_playbooks` (`UserPlaybookView`) | `user_playbook_id` | `"playbook"` | `playbook_name` |
-| `agent_playbooks` (`AgentPlaybookView`) | `agent_playbook_id` | `"playbook"` | `playbook_name` |
+| `user_playbooks` (`UserPlaybookView`) | `user_playbook_id` | `"user_playbook"` | `playbook_name` |
+| `agent_playbooks` (`AgentPlaybookView`) | `agent_playbook_id` | `"agent_playbook"` | `playbook_name` |
 
-When you assign a short tag (`[p1]`, `[r1]`, `[s1]`) to an injected item, store
-the mapping `tag -> (kind, real_id, title)` from these fields. That mapping is
-exactly what you publish back as `citations` on the assistant turn.
+Publish every injected identity back as `retrieved_learnings` using its canonical
+kind and stable ID. When you assign a short tag (`[p1]`, `[r1]`, `[s1]`) to an
+injected item, you may also store `tag -> (kind, real_id, title)` for a `citation`
+when the item materially influences the response.
 
 Inject the results as short, instruction-like context. Keep the model-facing
 format compact and auditable:
@@ -523,18 +584,23 @@ User/project preferences:
 - [p1] The user prefers concise root READMEs and detailed implementation docs elsewhere.
 ```
 
-Save a registry from `[r1]`, `[s1]`, and `[p1]` to the real Reflexio ids. When
-the assistant response cites or materially follows those items, publish the
-assistant turn with `citations`:
+Save a registry from `[r1]`, `[s1]`, and `[p1]` to the real Reflexio ids. Publish
+all three as `retrieved_learnings`; when the assistant response materially
+follows `[s1]`, also publish that item as a `citation`:
 
 ```json
 {
   "role": "Assistant",
   "content": "Implemented the focused docs change.",
+  "retrieved_learnings": [
+    {"kind": "user_playbook", "learning_id": "stored-user-playbook-id"},
+    {"kind": "agent_playbook", "learning_id": "stored-agent-playbook-id"},
+    {"kind": "profile", "learning_id": "stored-profile-id"}
+  ],
   "citations": [
     {
-      "kind": "playbook",
-      "real_id": "stored-playbook-id",
+      "kind": "agent_playbook",
+      "real_id": "stored-agent-playbook-id",
       "tag": "s1",
       "title": "Verify release pins upstream"
     }
@@ -542,8 +608,8 @@ assistant turn with `citations`:
 }
 ```
 
-This feedback loop lets Reflexio evaluate whether injected learnings were useful
-or need revision.
+This distinction lets Reflexio compare what was shown with what actually
+influenced the response.
 
 ## Hook Mapping
 
@@ -552,8 +618,8 @@ by agent framework.
 
 | Required moment | What to do |
 | --- | --- |
-| Setup/install | Install dependencies, create config, and ensure `REFLEXIO_URL` / `REFLEXIO_API_KEY` can be resolved. |
-| Session start | Start or health-check the local backend if using local Reflexio. Retry old unpublished buffers. |
+| Setup/install | For Hosted Enterprise, install dependencies and ensure `REFLEXIO_API_KEY` can be resolved. Default Local OSS does not require a Hosted credential. Configure `REFLEXIO_URL` only for an explicitly requested override. |
+| Session start | Start or health-check the local backend if using local Reflexio. Reconcile old unpublished buffers; do not automatically replay an ambiguously accepted publish. |
 | Before prompt/plan | Search Reflexio with the user's task and inject compact relevant context. |
 | Before tool use | If the host supports it, search with the tool command/edit target and inject tool-specific rules. This is useful before file edits or shell commands. |
 | After tool use | Buffer the tool name plus compact input/output/result metadata. |
@@ -605,7 +671,8 @@ Follow these rules for production agent integrations:
 - Never let Reflexio exceptions fail the user's agent turn.
 - Buffer locally before network calls.
 - Advance publish watermarks only after success.
-- Retry failed publishes later.
+- Quarantine ambiguous publish failures for reconciliation; neither the SDK nor
+  raw HTTP currently guarantees atomic idempotent replay.
 - Truncate large tool fields before publishing.
 - Do not run extraction synchronously on every turn.
 - Make retrieval query-aware; do not dump all memory into every prompt.
@@ -614,14 +681,17 @@ Follow these rules for production agent integrations:
 
 ## Direct HTTP Fallback
 
-Use the SDK when possible. If the integration language cannot use the SDK, call
-the HTTP API directly.
+Use the SDK on Python 3.12 or newer. For older Python runtimes or other
+languages, call the HTTP API directly. The HTTP route does not add an atomic
+idempotency guarantee.
 
 1. Discover routes from `GET /openapi.json` instead of guessing endpoint paths.
 2. Include `Content-Type: application/json`.
 3. Include a normal `User-Agent`, for example `User-Agent: my-agent-reflexio`.
 4. Include `Authorization: Bearer <REFLEXIO_API_KEY>` when using managed
    Reflexio.
+5. If supplied, treat `request_id` as correlation metadata, not as an
+   idempotency key.
 
 Core routes:
 
@@ -645,7 +715,8 @@ Run these checks before considering the integration complete:
    with `force_extraction=True`.
 3. Start a new agent session and confirm the relevant learning is injected.
 4. Stop Reflexio, run a normal agent turn, and confirm the agent still works.
-5. Restart Reflexio and confirm the buffered turn is retried and published.
+5. Restart Reflexio and confirm an ambiguously failed buffered turn remains
+   quarantined for reconciliation rather than being published again.
 6. Confirm no secrets or oversized tool outputs are stored in the buffer.
 7. Confirm changing `user_id` hides user-scoped profiles/playbooks.
 8. Confirm shared agent playbooks are filtered by `agent_version`.
@@ -664,8 +735,8 @@ Run these checks before considering the integration complete:
   flush.
 - Injecting every stored learning instead of query-relevant search results.
 - Letting Reflexio outages break the host agent.
-- Forgetting citations, which makes it harder for Reflexio to learn whether old
-  guidance was useful.
+- Forgetting `retrieved_learnings`, which hides what context was injected, or
+  forgetting citations for the subset that materially influenced the response.
 
 ## Final Shape
 
@@ -675,7 +746,8 @@ A complete integration has this shape:
 - Tool calls are buffered as compact `tools_used` records when the host exposes
   them.
 - Assistant completion or session-end hooks publish unpublished records.
-- Failed publishes leave the watermark unchanged for retry.
+- Ambiguous publish failures leave the watermark unchanged and are quarantined
+  for reconciliation rather than blindly replayed.
 - Prompt or planning hooks search Reflexio and inject compact context.
 - Tool hooks search Reflexio before risky or mutating actions when supported.
 - User-scoped learnings use the chosen `user_id` boundary.

@@ -408,7 +408,13 @@ See [developer.md](developer.md) for project structure, supported LLM providers,
 
 For comprehensive guides, examples, and API reference, visit the **[Reflexio Documentation](https://www.reflexio.ai/docs)**.
 
-For coding agents adding Reflexio to another agent, see **[Integrating an AI Agent with Reflexio](AI_AGENT_INTEGRATION.md)**.
+For coding agents adding Reflexio to another agent, use the portable
+**[`integrate-reflexio` skill](skills/integrate-reflexio/SKILL.md)**. Read
+**[Integrating an AI Agent with Reflexio](AI_AGENT_INTEGRATION.md)** for
+supporting concepts and background.
+Copy the skill into the agent application's repository for Codex, Claude Code,
+or Cursor, or point a coding agent at the linked skill while it works in that
+application repository. The skill is not intended to modify Reflexio itself.
 
 ## Community
 
