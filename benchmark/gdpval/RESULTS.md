@@ -5,10 +5,10 @@
 Modern AI agents already try to improve themselves between runs: they
 cache skills, remember prior plans, and get faster on tasks they have
 seen before. This raises a pointed question: **is there still room
-for an external self-improvement layer to add measurable value on top
+for an external learning platform to add measurable value on top
 of an agent that is already self-improving?**
 
-We test **Reflexio**, a layer that reads a completed run of a task
+We test **Reflexio**, a learning platform that reads a completed run of a task
 and produces a concrete, copy-pasteable recipe for the next run of
 the same task, on **five real knowledge-work tasks** from the public
 OpenAI GDPVal benchmark. These five tasks were selected because the

@@ -162,7 +162,7 @@ REFLEXIO_API_KEY="..."
 ```
 
 Implementation rule: if Reflexio is unavailable, the agent must continue
-normally. Treat Reflexio as a best-effort learning layer, not as a dependency
+normally. Treat Reflexio as a best-effort learning platform, not as a dependency
 that can break user work.
 
 ## Configure an LLM Provider
