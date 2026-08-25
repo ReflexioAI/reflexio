@@ -5,7 +5,7 @@
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-green)](https://github.com/ReflexioAI/reflexio/blob/main/LICENSE)
 [![Downloads](https://static.pepy.tech/badge/reflexio-ai/month)](https://pepy.tech/project/reflexio-ai)
 
-The official Python SDK for [Reflexio](https://www.reflexio.ai/) — the adaptive memory layer for AI agents. Reflexio automatically extracts user profiles, generates playbooks, and evaluates agent performance from conversation data. This client provides type-safe, sync-first access to the full Reflexio API. For source code and contributions, see the [GitHub repository](https://github.com/ReflexioAI/reflexio).
+The official Python SDK for [Reflexio](https://www.reflexio.ai/) — the learning platform for AI agents. Reflexio automatically extracts user profiles, generates playbooks, and evaluates agent performance from conversation data. This client provides type-safe, sync-first access to the full Reflexio API. For source code and contributions, see the [GitHub repository](https://github.com/ReflexioAI/reflexio).
 
 ## Table of Contents
 
