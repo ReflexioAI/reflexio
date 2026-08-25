@@ -27,6 +27,12 @@
 
 ---
 
+### Try managed Reflexio free
+
+Prefer a hosted experience? **[Start at Reflexio.ai](https://www.reflexio.ai) for free and get a 30-day Pro trial.** Managed Reflexio includes advanced features such as enhanced retrieval and continuous RL-driven improvement—without infrastructure to operate yourself.
+
+---
+
 ### Migration from the removed claude_code integration
 
 The `reflexio setup claude-code` command and its hook files have been removed.
