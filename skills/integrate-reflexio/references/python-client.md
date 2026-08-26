@@ -80,6 +80,8 @@ retrieved_learnings = [
 
 Do not flatten the three result types into an undifferentiated instruction list. Render profiles as user facts/preferences and playbooks as behavioral guidance.
 
+Also retain `results.experiment` when it is present. It is the server-assigned retrieval-experiment identity for this request; do not recalculate or replace it.
+
 ## Publish the completed turn
 
 Use the synchronous method for a synchronous application:
@@ -92,6 +94,10 @@ client.publish_interaction(
     session_id=session_id,
     source=source,
     agent_version=agent_version,
+    retrieval_experiment_id=(
+        results.experiment.experiment_id if results.experiment else None
+    ),
+    retrieval_experiment_arm=(results.experiment.arm if results.experiment else None),
     interactions=[
         InteractionData(role="User", content=user_message),
         InteractionData(
@@ -102,6 +108,8 @@ client.publish_interaction(
     ],
 )
 ```
+
+When no experiment is active, leave both values as `None`. When an assignment is returned, publish both values together, including for a holdout response with no retrieved learnings.
 
 In an async application, use the native async equivalent with the same arguments:
 
@@ -129,4 +137,4 @@ identity = client.whoami()
 
 Inspect the returned identity or the raised exception. Do not print the API key.
 
-For additional examples and complete method parameters, consult the [Reflexio developer documentation](https://www.reflexio.ai/docs), especially [search](https://www.reflexio.ai/docs/build/search), [publishing interactions](https://www.reflexio.ai/docs/build/user-interactions), and the [API reference](https://www.reflexio.ai/docs/api-reference).
+For additional examples and complete method parameters, start with the [documentation index for agents](https://www.reflexio.ai/docs/llms.txt), then consult [search](https://www.reflexio.ai/docs/build/search), [publishing interactions](https://www.reflexio.ai/docs/build/user-interactions), and the [API reference](https://www.reflexio.ai/docs/api-reference).

@@ -52,6 +52,8 @@ The successful response contains `profiles`, `user_playbooks`, and `agent_playbo
 
 Convert numeric playbook IDs to strings when creating `retrieved_learnings`.
 
+If the response includes `experiment`, retain its `experiment_id` and `arm` exactly as returned. A holdout response is successful even though its learning arrays are empty.
+
 ## Publish after the response completes
 
 ```http
@@ -81,6 +83,17 @@ POST /api/publish_interaction
 }
 ```
 
+When search returned `experiment`, add both values at the publish payload's top level:
+
+```json
+{
+  "retrieval_experiment_id": "experiment-id-returned-by-search",
+  "retrieval_experiment_arm": "treatment"
+}
+```
+
+The arm may instead be `holdout`. Omit both fields when search returned no assignment; never send only one of them.
+
 `request_id` is optional correlation metadata, not an idempotency key. Current replay detection is not atomic, so repeated or concurrent submissions can still reject or duplicate work. Do not rely on a caller-supplied value to make an ambiguous replay safe.
 
 Use the same identity values as search. Treat permanent `4xx` validation failures as rejected publishes. A timeout, connection loss, or `5xx` is ambiguous because the server may have accepted the request before the response was lost; quarantine that batch for reconciliation rather than automatically replaying it. Retry only when the host can prove the server did not accept the request. Keep failures observable without replacing a valid agent response.
@@ -93,4 +106,4 @@ GET /api/whoami
 
 Use the same headers. A successful identity response verifies the endpoint and API key without publishing customer or synthetic interaction data.
 
-For additional examples and complete request and response fields, consult the [Reflexio developer documentation](https://www.reflexio.ai/docs), especially [search](https://www.reflexio.ai/docs/build/search), [publishing interactions](https://www.reflexio.ai/docs/build/user-interactions), and the [API reference](https://www.reflexio.ai/docs/api-reference).
+For additional examples and complete request and response fields, start with the [documentation index for agents](https://www.reflexio.ai/docs/llms.txt), then consult [search](https://www.reflexio.ai/docs/build/search), [publishing interactions](https://www.reflexio.ai/docs/build/user-interactions), and the [API reference](https://www.reflexio.ai/docs/api-reference).
