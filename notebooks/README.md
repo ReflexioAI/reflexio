@@ -6,13 +6,13 @@ Interactive tutorials for learning Reflexio, from your first workflow to advance
 
 | # | Notebook | Level | Time | Description |
 |---|----------|-------|------|-------------|
-| 00 | [Quickstart](00_quickstart.ipynb) | Beginner | 5 min | End-to-end setup and first publish/search cycle |
-| 01 | [Interactions](01_interactions.ipynb) | Beginner | 12 min | Publish conversations and search extracted data |
-| 02 | [Profiles](02_profiles.ipynb) | Beginner | 12 min | Explore how Reflexio builds persistent user profiles from interactions |
-| 03 | [Playbooks](03_playbook.ipynb) | Intermediate | 15 min | Create, aggregate, and govern agent playbooks |
+| 00 | [Quickstart](00_quickstart.ipynb) | Beginner | 5 min | Retrieve, inject, publish learning IDs, and inspect quality |
+| 01 | [Interactions](01_interactions.ipynb) | Beginner | 12 min | Publish turns, tools, and retrieved-learning attribution |
+| 02 | [Profiles](02_profiles.ipynb) | Beginner | 12 min | Explore user profiles and per-profile relevance/impact |
+| 03 | [Playbooks](03_playbook.ipynb) | Intermediate | 15 min | Create, aggregate, and evaluate retrieved playbooks |
 | 04 | [Configuration](04_configuration.ipynb) | Intermediate | 15 min | Customize extraction prompts, models, and pipeline behavior |
 | 05 | [Concurrent Sessions](05_concurrent_sessions.ipynb) | Advanced | 15 min | Simulate multi-user load and verify data isolation |
-| 06 | [Simulation](06_real_world_simulation.ipynb) | Advanced | 20 min | Run a multi-turn simulation and watch profiles evolve over time |
+| 06 | [Simulation](06_real_world_simulation.ipynb) | Advanced | 20 min | Generate context-aware turns and inspect learning impact |
 | 07 | [mem0 Drop-In Wrapper](07_mem0_dropin_wrapper.ipynb) | Beginner | 10 min | Keep your mem0 code, add Reflexio learning with a one-line import change (needs `MEM0_API_KEY` and `pip install 'reflexio-ai[mem0]'`) |
 
 ## Prerequisites
@@ -24,10 +24,32 @@ Interactive tutorials for learning Reflexio, from your first workflow to advance
 ## Quick Start
 
 ```bash
-pip install reflexio-client
+pip install 'reflexio-ai[notebooks]' jupyter
 uv run reflexio services start --only backend   # start the server
 jupyter notebook notebooks/00_quickstart.ipynb
 ```
+
+
+## Recommended Retrieval and Quality Loop
+
+**Retrieve → inject → publish `retrieved_learnings` → grade → inspect.**
+Attach every injected profile or playbook's stable `{kind, learning_id}` to the
+assistant turn, including context it did not cite. Build the prompt and references
+from the same retained subset. Seed turns and turns without injected context omit
+the field. Never invent IDs or report discarded search results.
+
+Quickstart, Interactions, Profiles, Playbooks, and Simulation demonstrate
+`grade_on_demand` followed by `get_retrieved_learning_evaluation_results`, including
+status, relevance/impact reasons, and coverage counts. Configuration explains
+`retrieved_learning_sampling_rate` for automatic monitoring. Null verdicts are
+ungraded, not negative; empty results require checking status and attribution.
+The dashboard groups learning verdicts by response, so its percentages differ
+from per-learning counts.
+
+Generation and on-demand grading call LLMs and may incur cost. Use a disposable
+demo organization/database: some cleanup cells delete all connected data.
+See [evaluation guidance](https://www.reflexio.ai/docs/build/agent-evaluation#read-learning-verdicts)
+and [dashboard metrics](https://www.reflexio.ai/docs/portal/measuring-reflexio-impact#retrieved-learning-effects).
 
 ## Shared Utilities
 
