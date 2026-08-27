@@ -120,7 +120,8 @@ def slice_content_by_tokens(content: str, max_tokens: int | None) -> str:
     // 2`` tokens and the last ``max_tokens - max_tokens // 2`` tokens, joined by
     a truncation marker so the elision is visible to the LLM. Content within
     budget (or when ``max_tokens`` is None / content is empty) is returned
-    unchanged.
+    unchanged. Literal tokenizer markers in user content are encoded as ordinary
+    text rather than interpreted as special tokens.
 
     Args:
         content (str): The interaction content to slice.
@@ -132,7 +133,7 @@ def slice_content_by_tokens(content: str, max_tokens: int | None) -> str:
     if max_tokens is None or not content:
         return content
     encoding = _get_content_token_encoding()
-    tokens = encoding.encode(content)
+    tokens = encoding.encode(content, disallowed_special=())
     if len(tokens) <= max_tokens:
         return content
     head = max_tokens // 2

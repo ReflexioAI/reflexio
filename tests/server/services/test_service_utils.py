@@ -442,9 +442,16 @@ def test_format_sessions_to_history_string_preserves_order_within_group():
     assert result == expected
 
 
-def test_slice_content_by_tokens_within_budget_unchanged():
+@pytest.mark.parametrize(
+    "content",
+    [
+        "short content well under budget",
+        "Literal <|endoftext|> <|fim_prefix|> <|fim_middle|> "
+        "<|fim_suffix|> <|endofprompt|> in user text",
+    ],
+)
+def test_slice_content_by_tokens_within_budget_unchanged(content):
     """Content at or below the budget is returned verbatim."""
-    content = "short content well under budget"
     assert slice_content_by_tokens(content, 512) == content
 
 
@@ -459,11 +466,12 @@ def test_slice_content_by_tokens_empty_content():
     assert slice_content_by_tokens("", 512) == ""
 
 
-def test_slice_content_by_tokens_keeps_head_and_tail():
+@pytest.mark.parametrize("prefix", ["", "Literal <|endoftext|> <|fim_prefix|> "])
+def test_slice_content_by_tokens_keeps_head_and_tail(prefix):
     """Over-budget content keeps the first half + last half with a marker."""
     encoding = _get_content_token_encoding()
-    content = " ".join(str(i) for i in range(2000))
-    tokens = encoding.encode(content)
+    content = prefix + " ".join(str(i) for i in range(2000))
+    tokens = encoding.encode_ordinary(content)
     assert len(tokens) > 512  # precondition: actually over budget
 
     result = slice_content_by_tokens(content, 512)
@@ -474,7 +482,28 @@ def test_slice_content_by_tokens_keeps_head_and_tail():
     assert result == expected
     assert _CONTENT_TRUNCATION_MARKER in result
     # The sliced result is materially shorter than the original.
-    assert len(encoding.encode(result)) < len(tokens)
+    assert len(encoding.encode_ordinary(result)) < len(tokens)
+
+
+@pytest.mark.parametrize("max_tokens", [16, 512])
+def test_literal_token_markers_in_prompt_and_evidence(monkeypatch, max_tokens):
+    """Prompt text and grounded evidence share literal-safe content slicing."""
+    monkeypatch.setenv(_ENV_MAX_TOKENS, str(max_tokens))
+    content = "<|endoftext|> " + "ordinary text " * 30 + "<|fim_prefix|>"
+    interaction = _create_interaction(1, content, "user", 1_700_000_000)
+    encoding = _get_content_token_encoding()
+    tokens = encoding.encode_ordinary(content)
+    expected_parts = (
+        (encoding.decode(tokens[:8]), encoding.decode(tokens[-8:]))
+        if max_tokens == 16
+        else (content,)
+    )
+
+    history = format_interactions_to_history_string([interaction])
+    evidence = visible_interaction_evidence_texts(interaction)
+
+    assert history == f"user: ```{_CONTENT_TRUNCATION_MARKER.join(expected_parts)}```"
+    assert evidence == expected_parts
 
 
 def test_resolve_max_tokens_unset_uses_default(monkeypatch):

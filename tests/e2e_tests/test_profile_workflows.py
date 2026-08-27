@@ -42,14 +42,23 @@ _DEDUP_CAPABLE = frozenset({"openai", "anthropic", "minimax"})
 
 
 @skip_in_precommit
+@pytest.mark.parametrize("literal_token", ["", "<|endoftext|>"])
 def test_publish_interaction_profile_only(
     reflexio_instance_profile_only: Reflexio,
     sample_interaction_requests: list[InteractionData],
     cleanup_profile_only: Callable[[], None],
+    literal_token: str,
+    monkeypatch: pytest.MonkeyPatch,
 ):
     """Test interaction publishing with only profile extraction enabled."""
+    # Exercise real prompt construction; the E2E fixture still mocks LiteLLM.
+    monkeypatch.setenv("MOCK_LLM_RESPONSE", "false")
     user_id = "test_user_profile_only"
     agent_version = "test_agent_profile"
+    if literal_token:
+        sample_interaction_requests[0] = sample_interaction_requests[0].model_copy(
+            update={"content": sample_interaction_requests[0].content + literal_token}
+        )
 
     # Publish interactions (request_id will be auto-generated)
     response = reflexio_instance_profile_only.publish_interaction(
