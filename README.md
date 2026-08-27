@@ -411,10 +411,6 @@ Join the Reflexio community on Discord: [discord.gg/7fnCxahase](https://discord.
 
 We welcome contributions! Please see [developer.md](developer.md) for guidelines.
 
-## Star History
-
-[![Star History Chart](https://api.star-history.com/svg?repos=ReflexioAI/reflexio&type=Date)](https://star-history.com/#ReflexioAI/reflexio&Date)
-
 ## License
 
 This project is currently licensed under [Apache License 2.0](LICENSE).
