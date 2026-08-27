@@ -33,25 +33,6 @@ Prefer a hosted experience? **[Start at Reflexio.ai](https://www.reflexio.ai) fo
 
 ---
 
-### Migration from the removed claude_code integration
-
-The `reflexio setup claude-code` command and its hook files have been removed.
-The replacement is **[claude-smart](https://github.com/ReflexioAI/claude-smart)**,
-a standalone Claude Code plugin distributed via npm.
-
-*This migration only removes the **hook/plugin installation** path. The local
-`claude-code` LLM provider routing (used to call Anthropic via the Claude Code
-CLI binary as a model backend) remains available — only remove obsolete hook
-entries, not your provider configuration.*
-
-**If you had the old integration installed**, your `.claude/settings.json` (per-project)
-or `~/.claude/settings.json` (global) likely has hook entries referencing files that no longer exist.
-Open the file and remove any `hooks` entries that reference paths under `reflexio/integrations/claude_code/`
-or `integrations/claude_code/`. Then run `npx claude-smart install` (or use the Claude Code plugin marketplace)
-for the modern equivalent.
-
----
-
 ## What is Reflexio?
 Reflexio is an **AI agent self-improvement harness** that enables your AI agents to continuously learn from real user interactions. It turns user corrections into persisted behavioral improvements for agents and captures successful execution paths for reuse.
 
