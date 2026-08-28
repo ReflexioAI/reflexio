@@ -361,6 +361,7 @@ def test_provisional_publication_store_keeps_legacy_and_provisional_contracts_se
     None
 ):
     provisional_operations = (
+        "cleanup_user_playbook_provisional_stale_attempt",
         "claim_user_playbook_provisional_publication",
         "stage_user_playbook_provisional_publication",
         "commit_user_playbook_provisional_publication",
@@ -392,6 +393,14 @@ def test_provisional_publication_store_keeps_legacy_and_provisional_contracts_se
         "incumbent_full_version_fingerprint",
         "incumbent_snapshot_json",
     )
+    assert callable(
+        UserPlaybookProvisionalPublicationStore.cleanup_user_playbook_provisional_stale_attempt
+    )
+    assert tuple(
+        signature(
+            UserPlaybookProvisionalPublicationStore.cleanup_user_playbook_provisional_stale_attempt
+        ).parameters
+    ) == ("self", "job_id", "owner", "worker_fence")
     assert callable(
         UserPlaybookProvisionalPublicationStore.claim_user_playbook_provisional_publication
     )

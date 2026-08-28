@@ -554,6 +554,12 @@ class UserPlaybookPublicationStore(Protocol):
 class UserPlaybookProvisionalPublicationStore(UserPlaybookPublicationStore, Protocol):
     """Durable Phase 4 provisional publication operations."""
 
+    def cleanup_user_playbook_provisional_stale_attempt(
+        self, *, job_id: int, owner: str, worker_fence: int
+    ) -> bool:
+        """Clean only matching uncommitted residue; false means ownership changed."""
+        ...
+
     def claim_user_playbook_provisional_publication(
         self,
         *,

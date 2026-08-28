@@ -75,6 +75,14 @@ class UserPlaybookStoreMixin:
             "Storage backend does not support provisional user-playbook publication"
         )
 
+    def cleanup_user_playbook_provisional_stale_attempt(
+        self, *, job_id: int, owner: str, worker_fence: int
+    ) -> bool:
+        """Clean only this worker's uncommitted provisional publication residue."""
+        raise NotImplementedError(
+            "Storage backend does not support provisional user-playbook publication"
+        )
+
     def stage_user_playbook_provisional_publication(
         self, request: "ProvisionalPublicationRequest"
     ) -> bool:
