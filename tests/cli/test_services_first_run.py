@@ -164,7 +164,7 @@ class TestEnsureLlmConfigured:
             ),
             patch(
                 "reflexio.server.llm.providers.local_embedding_provider"
-                ".is_chromadb_importable",
+                ".are_local_embedding_dependencies_available",
                 return_value=False,
             ),
             patch("sys.stdin.isatty", return_value=True),
@@ -185,7 +185,7 @@ class TestEnsureLlmConfigured:
         """``providers == ["local"]`` (embedder-only) must NOT skip the LLM wizard.
 
         ``detect_available_providers()`` can legally surface only the local
-        ONNX embedder when chromadb is importable but no LLM key is set.
+        ONNX embedder when ONNX dependencies are importable but no LLM key is set.
         That state has ``has_embedding=True`` but no generation provider,
         so the request still has nothing to drive extraction with — we
         must prompt for an LLM provider rather than falling through.
@@ -199,7 +199,7 @@ class TestEnsureLlmConfigured:
             ),
             patch(
                 "reflexio.server.llm.providers.local_embedding_provider"
-                ".is_chromadb_importable",
+                ".are_local_embedding_dependencies_available",
                 return_value=True,
             ),
             patch("sys.stdin.isatty", return_value=True),
@@ -231,7 +231,7 @@ class TestEnsureLlmConfigured:
             ),
             patch(
                 "reflexio.server.llm.providers.local_embedding_provider"
-                ".is_chromadb_importable",
+                ".are_local_embedding_dependencies_available",
                 return_value=True,
             ),
             patch("sys.stdin.isatty", return_value=False),

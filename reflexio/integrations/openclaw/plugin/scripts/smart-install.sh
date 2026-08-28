@@ -249,7 +249,7 @@ if ! grep -q '^OPENCLAW_SMART_USE_LOCAL_CLI=' "$REFLEXIO_ENV"; then
   echo "[openclaw-smart] appended OPENCLAW_SMART_USE_LOCAL_CLI=1 to $REFLEXIO_ENV" >&2
 fi
 if ! grep -q '^OPENCLAW_SMART_USE_LOCAL_EMBEDDING=' "$REFLEXIO_ENV"; then
-  printf '# Use the in-process ONNX embedder (chromadb) — no API key for semantic search\nOPENCLAW_SMART_USE_LOCAL_EMBEDDING=1\n' >> "$REFLEXIO_ENV"
+  printf '# Use the in-process ONNX embedder (ONNX Runtime) — no API key for semantic search\nOPENCLAW_SMART_USE_LOCAL_EMBEDDING=1\n' >> "$REFLEXIO_ENV"
   echo "[openclaw-smart] appended OPENCLAW_SMART_USE_LOCAL_EMBEDDING=1 to $REFLEXIO_ENV" >&2
 fi
 

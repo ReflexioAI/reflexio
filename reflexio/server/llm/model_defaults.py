@@ -29,7 +29,7 @@ _CLAUDE_CODE_PROVIDER = "claude-code"
 # reflexio.server.llm.providers.local_embedding_provider). Surfaces in
 # ``providers`` only when ``CLAUDE_SMART_USE_LOCAL_EMBEDDING=1`` is set
 # (claude-smart's explicit opt-in); otherwise the embedding role still
-# silently falls back to "local" when chromadb is importable but no
+# silently falls back to "local" when ONNX dependencies are importable but no
 # cloud embedder is configured — see Path 3 in ``_auto_detect_model``.
 _LOCAL_EMBEDDING_PROVIDER = "local"
 
@@ -129,7 +129,7 @@ def detect_available_providers(
 
     # Claude Code CLI and the local ONNX embedder are opt-in via their
     # own env vars + runtime requirements (`claude` on PATH for the CLI,
-    # `chromadb` installed for the embedder). Their availability helpers
+    # ONNX dependencies installed for the embedder). Their availability helpers
     # own the detection logic so there's one source of truth.
     from reflexio.server.llm.providers.claude_code_provider import (
         is_claude_code_available,
@@ -192,7 +192,7 @@ _PROVIDER_DEFAULTS: dict[str, ProviderDefaults] = {
         extraction_agent="claude-code/default",
     ),
     # local is an embedding-only provider that routes through an
-    # in-process ONNX model (chromadb's all-MiniLM-L6-v2). Generation
+    # in-process ONNX model (all-MiniLM-L6-v2). Generation
     # roles stay None — use claude-code for those.
     _LOCAL_EMBEDDING_PROVIDER: ProviderDefaults(
         generation=None,
@@ -381,20 +381,20 @@ def _auto_detect_model(
             defaults = _PROVIDER_DEFAULTS[provider]
             if defaults.embedding:
                 return defaults.embedding
-        # Path 3: no embedding-capable provider in `providers`, but chromadb
-        # is importable — silently fall back to the local ONNX embedder so
+        # Path 3: no embedding-capable provider in `providers`, but ONNX dependencies
+        # are importable — silently fall back to the local ONNX embedder so
         # users with only a non-embedding LLM key (Anthropic, MiniMax, etc.)
         # are not blocked at startup.
         from reflexio.server.llm.providers.local_embedding_provider import (
-            is_chromadb_importable,
+            are_local_embedding_dependencies_available,
         )
 
-        if is_chromadb_importable():
+        if are_local_embedding_dependencies_available():
             return _PROVIDER_DEFAULTS[_LOCAL_EMBEDDING_PROVIDER].embedding  # type: ignore[return-value]
         raise RuntimeError(
-            "No embedding-capable provider configured and chromadb is not "
+            "No embedding-capable provider configured and ONNX dependencies are not "
             "importable. Set OPENAI_API_KEY or GEMINI_API_KEY, or "
-            "`pip install chromadb`."
+            "`pip install onnxruntime tokenizers numpy`."
         )
 
     # Non-embedding roles: fall through to the first provider whose slot
@@ -474,7 +474,7 @@ def validate_llm_availability(
     )
     if generation_provider is None:
         # Configurations that surface only embedding-capable providers
-        # (e.g. ``providers == ["local"]`` from chromadb being importable
+        # (e.g. ``providers == ["local"]`` from ONNX dependencies being available
         # but no LLM key set) leave every generation-role lookup
         # unresolvable. Failing here means the next reflexio call would
         # raise "No provider supports role=generation" deep inside the

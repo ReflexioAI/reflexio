@@ -75,7 +75,7 @@ ensure_provider_credential()
 
 
 # ``addopts`` passes ``-n auto``, which xdist resolves to the machine's full CPU count.
-# Every worker imports torch/chromadb/sentence-transformers and runs real embeddings, so on
+# Every worker imports torch/onnxruntime/sentence-transformers and runs real embeddings, so on
 # a developer laptop that saturates each core and freezes the desktop. CI runners have the
 # box to themselves and want the full count, so the cap is local-only.
 _LOCAL_MAX_XDIST_WORKERS = 4

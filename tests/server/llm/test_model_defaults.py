@@ -196,7 +196,7 @@ class TestResolveModelName:
         # Generation should use anthropic
         result = resolve_model_name(ModelRole.GENERATION)
         assert result == _PROVIDER_DEFAULTS["anthropic"].generation
-        # Embedding falls back to local when chromadb is importable.
+        # Embedding falls back to local when ONNX dependencies are importable.
         from reflexio.server.llm.providers import local_embedding_provider as lep
 
         monkeypatch.setattr(lep.importlib.util, "find_spec", lambda _name: object())
@@ -241,7 +241,7 @@ class TestResolveModelName:
     def test_embedding_fallback_to_local_when_no_cloud(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Anthropic key + chromadb available → fall back to local embedder."""
+        """Anthropic key + ONNX dependencies available → fall back to local embedder."""
         from reflexio.server.llm.providers import local_embedding_provider as lep
 
         monkeypatch.setenv("ANTHROPIC_API_KEY", "ant-test")
@@ -273,7 +273,7 @@ class TestResolveModelName:
         result = resolve_model_name(ModelRole.EMBEDDING)
         assert result == _PROVIDER_DEFAULTS["local"].embedding
 
-    def test_embedding_default_does_not_probe_chromadb(
+    def test_embedding_default_does_not_probe_local_dependencies(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Saved config owns overrides; default model selection does not inspect imports."""
@@ -300,14 +300,14 @@ class TestValidateLlmAvailability:
     def test_no_embedding_provider_falls_back_to_local(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Anthropic key + chromadb importable → local fallback, no raise."""
+        """Anthropic key + ONNX dependencies importable → local fallback, no raise."""
         from reflexio.server.llm.providers import local_embedding_provider as lep
 
         monkeypatch.setenv("ANTHROPIC_API_KEY", "ant-test")
         monkeypatch.setattr(lep.importlib.util, "find_spec", lambda _name: object())
         validate_llm_availability()  # should not raise
 
-    def test_no_embedding_provider_uses_colocated_service_without_chromadb(
+    def test_no_embedding_provider_uses_colocated_service_without_local_dependencies(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Model packages live in the child service, not the API worker."""
@@ -603,10 +603,10 @@ class TestMinimaxOnlyEnvRegression:
         )
         assert resolve_model_name(ModelRole.GENERATION) == "minimax/MiniMax-M3"
 
-    def test_minimax_with_chromadb_resolves_embedding_to_local(
+    def test_minimax_with_local_dependencies_resolves_embedding_to_local(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Mirror of the e2e Mode A path: MiniMax + chromadb → local embedder.
+        """Mirror of the e2e Mode A path: MiniMax + ONNX dependencies → local embedder.
 
         MiniMax has no embedding endpoint, so the embedding role must
         fall through to the local ONNX embedder via Path 3 of

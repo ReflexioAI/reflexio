@@ -232,7 +232,7 @@ case "$CMD" in
     echo "$svc_pid" > "$PID_FILE"
 
     # Give uvicorn up to ~10s to answer /health. The very first boot
-    # after a fresh checkout may be slower (LiteLLM import, chromadb
+    # after a fresh checkout may be slower (LiteLLM import, ONNX Runtime
     # warmup). We always return ok; the backend catches up in background
     # if it needs to.
     for _ in 1 2 3 4 5 6 7 8 9 10; do

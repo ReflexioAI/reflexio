@@ -149,7 +149,7 @@ _VALID_EMBEDDING_FLAGS: frozenset[str] = frozenset(
 def _build_embedding_choices() -> list[tuple[str, str | None, str]]:
     """Build the interactive embedding-provider menu at call time.
 
-    The local option is included only when ``chromadb`` is importable; built
+    The local option is included only when the ONNX dependencies are importable; built
     dynamically so the menu always reflects the current Python environment
     rather than a snapshot frozen at module load.
 
@@ -159,11 +159,11 @@ def _build_embedding_choices() -> list[tuple[str, str | None, str]]:
         provider (no API key needed).
     """
     from reflexio.server.llm.providers.local_embedding_provider import (
-        is_chromadb_importable,
+        are_local_embedding_dependencies_available,
     )
 
     choices: list[tuple[str, str | None, str]] = []
-    if is_chromadb_importable():
+    if are_local_embedding_dependencies_available():
         choices.append(
             (
                 "local",
@@ -217,7 +217,7 @@ def _prompt_embedding_provider(env_path: Path, llm_provider_key: str) -> str | N
         return None
 
     # Non-interactive: pick the first available option without prompting. When
-    # chromadb is importable that's local (no key required); otherwise it's
+    # ONNX dependencies are importable that's local (no key required); otherwise it's
     # OpenAI or Gemini, which still won't have an API key but at least the
     # caller knows the wizard didn't block.
     if _is_non_interactive():
@@ -307,7 +307,7 @@ def _choose_embedding_provider(env_path: Path, *, embedding_flag: str) -> str | 
     |                 |                | picks the embedder.                 |
     +-----------------+----------------+-------------------------------------+
     | ``"auto"``      | interactive    | Show the menu (default = local      |
-    |                 |                | when chromadb is importable). Write |
+    |                 |                | when ONNX deps are installed). Write |
     |                 |                | the choice to org config; for       |
     |                 |                | OpenAI / Gemini also collect the    |
     |                 |                | API key inline.                     |
@@ -328,18 +328,18 @@ def _choose_embedding_provider(env_path: Path, *, embedding_flag: str) -> str | 
     """
     if embedding_flag in _EMBEDDING_MODEL_NAMES:
         # Explicit non-default flag wins over interactive / auto-detection.
-        # ``--embedding=local`` requires chromadb at runtime, so refuse to
+        # ``--embedding=local`` requires ONNX dependencies at runtime, so refuse to
         # persist a broken override the same way the interactive flow
         # hides the option in that situation.
         if embedding_flag == "local":
             from reflexio.server.llm.providers.local_embedding_provider import (
-                is_chromadb_importable,
+                are_local_embedding_dependencies_available,
             )
 
-            if not is_chromadb_importable():
+            if not are_local_embedding_dependencies_available():
                 typer.echo(
-                    "Error: --embedding=local requires chromadb. "
-                    "Install it with `pip install chromadb` or pick "
+                    "Error: --embedding=local requires ONNX dependencies. "
+                    "Install them with `pip install onnxruntime tokenizers numpy` or pick "
                     "openai/gemini/auto."
                 )
                 raise typer.Exit(1)
@@ -353,7 +353,7 @@ def _choose_embedding_provider(env_path: Path, *, embedding_flag: str) -> str | 
 
     choices = _build_embedding_choices()
     if not choices:
-        # No providers available (chromadb not importable AND no cloud
+        # No providers available (ONNX dependencies not importable AND no cloud
         # embedders in scope). Defer to runtime auto-detection, which will
         # raise a clear error if nothing matches.
         return None
@@ -862,7 +862,7 @@ def openclaw(
     storage_label = _prompt_storage(env_path)
 
     # Step 2.5: Upfront embedding-provider step. Local is the default when
-    # chromadb is importable; the choice persists to org config so it
+    # ONNX dependencies are importable; the choice persists to org config so it
     # survives later cloud-key changes. Skipped for remote storage modes
     # for the reason above.
     is_remote = storage_label in {"Managed Reflexio", "Self-hosted Reflexio"}
@@ -985,7 +985,7 @@ def init(
         display_name, model, _ = _prompt_llm_provider(env_path)
 
     # Step 2.5: Upfront embedding-provider step. Local is the default when
-    # chromadb is importable; the choice is persisted to org config so it
+    # ONNX dependencies are importable; the choice is persisted to org config so it
     # survives later cloud-key changes. Skipped for both Managed and
     # Self-hosted modes — the remote server owns its own model config and
     # a local override would just shadow whatever the operator set there.

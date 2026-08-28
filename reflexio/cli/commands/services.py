@@ -37,7 +37,7 @@ def _ensure_llm_configured(env_path: Path) -> None:
           (conditionally) prompt for an embedding key, re-load the .env so
           the new values land in ``os.environ``, and return.
         - Missing only an embedding key (e.g. user set ANTHROPIC_API_KEY
-          manually) AND chromadb is unavailable → prompt only for an
+          manually) AND ONNX dependencies are unavailable → prompt only for an
           embedding provider.
         - No LLM key, non-interactive stdin (CI, nohup, container) → print a
           clean pointer to the .env file and raise ``typer.Exit(1)`` so the

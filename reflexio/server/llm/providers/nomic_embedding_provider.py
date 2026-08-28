@@ -1,6 +1,6 @@
 """Local in-process embedder using ``nomic-ai/nomic-embed-text-v1.5``.
 
-A higher-quality alternative to the chromadb-bundled MiniLM-L6-v2: 137M
+A higher-quality alternative to the ONNX MiniLM-L6-v2: 137M
 parameters, 768-dim native, supports Matryoshka representation (64–768
 dimensions without retraining), 8192-token context, Apache-2.0 licensed.
 Performs comparably to OpenAI's ``text-embedding-3-small`` on MTEB
@@ -67,7 +67,7 @@ _ENV_BATCH_SIZE = "REFLEXIO_EMBED_BATCH_SIZE"
 # does not oversubscribe CPU under bounded concurrency. Unset (the default) =
 # leave torch untouched, i.e. zero behaviour change. Applies at Nomic model load
 # (both the in-process fallback and the shared daemon run NomicEmbedder). Note the
-# chromadb/minilm LocalEmbedder path uses onnxruntime, not torch, so this knob does
+# ONNX/MiniLM LocalEmbedder path uses onnxruntime, not torch, so this knob does
 # not affect it.
 _ENV_TORCH_THREADS = "REFLEXIO_EMBED_TORCH_THREADS"
 _torch_threads_pinned = False

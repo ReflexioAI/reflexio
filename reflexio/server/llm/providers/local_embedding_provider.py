@@ -1,9 +1,9 @@
-"""Local in-process embedder using Chroma's ONNX all-MiniLM-L6-v2.
+"""Local in-process all-MiniLM-L6-v2 embeddings using ONNX Runtime.
 
 Lets reflexio run without any external embedding API key. Activation is
-opt-in via ``CLAUDE_SMART_USE_LOCAL_EMBEDDING=1`` and requires the
-``chromadb`` pip package to be installed (we re-use its packaged ONNX
-model + tokenizer rather than re-bundling them).
+opt-in via ``CLAUDE_SMART_USE_LOCAL_EMBEDDING=1`` (or automatic fallback
+when no cloud embedder is configured). Requires ONNX Runtime, tokenizers,
+and NumPy; no vector database package or server is involved.
 
 The model natively produces 384-dim vectors; reflexio's storage schema
 expects 512 dims (``EMBEDDING_DIMENSIONS`` in the vec0 virtual tables).
@@ -15,15 +15,18 @@ this provider (mixing providers has always required a DB wipe).
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import logging
 import os
 import shutil
+import tarfile
+import tempfile
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO, cast
 
 try:
     import fcntl
@@ -46,12 +49,10 @@ _NATIVE_DIM = 384
 _TARGET_DIM = 512
 
 # Conservative character budget to stay under MiniLM's 256-token hard cap.
-# ~4 chars/token in English prose; leave headroom so we never raise the
-# ValueError that ONNXMiniLM_L6_V2 throws on over-length input.
+# The tokenizer also truncates to 256 tokens, including special tokens.
 _MAX_CHARS = 800
 
-# Chroma keeps this file list private inside ONNXMiniLM_L6_V2's download helper.
-# Keep this in sync with chromadb's all-MiniLM-L6-v2 extracted archive layout.
+# Files in the checksum-pinned ONNX archive.
 _MINILM_EXPECTED_FILES = (
     "config.json",
     "model.onnx",
@@ -63,11 +64,137 @@ _MINILM_EXPECTED_FILES = (
 
 
 class LocalEmbedderError(RuntimeError):
-    """Raised when the local embedder is called without chromadb installed."""
+    """Raised when the local embedder cannot load its dependencies or model."""
+
+
+class ONNXMiniLM:
+    """Minimal CPU inference adapter for the existing MiniLM model artifact.
+
+    Retains the previous tokenizer, pooling, and normalization contract.
+    Model provenance: https://github.com/chroma-core/onnx-embedding (Apache-2.0).
+    The legacy cache location avoids downloading or reindexing on upgrade.
+    """
+
+    MODEL_NAME = "all-MiniLM-L6-v2"
+    DOWNLOAD_PATH = Path.home() / ".cache" / "chroma" / "onnx_models" / MODEL_NAME
+    EXTRACTED_FOLDER_NAME = "onnx"
+    ARCHIVE_FILENAME = "onnx.tar.gz"
+    MODEL_DOWNLOAD_URL = (
+        "https://chroma-onnx-models.s3.amazonaws.com/all-MiniLM-L6-v2/onnx.tar.gz"
+    )
+    MODEL_SHA256 = "913d7300ceae3b2dbc2c50d1de4baacab4be7b9380491c27fab7418616a16ec3"
+
+    def __init__(self) -> None:
+        import numpy as np
+        import onnxruntime as ort
+        from tokenizers import Tokenizer
+
+        self._np = np
+        self._ort = ort
+        self._tokenizer_cls = Tokenizer
+        self._tokenizer: Any = None
+        self._session: Any = None
+
+    def _download_model(self, cache: Path) -> None:
+        """Verify before extracting; publish a complete directory under the lock."""
+        import httpx
+
+        with tempfile.TemporaryDirectory(prefix=".minilm-", dir=cache.parent) as tmp:
+            staging = Path(tmp)
+            archive = staging / self.ARCHIVE_FILENAME
+            digest = hashlib.sha256()
+            size = 0
+            with httpx.stream("GET", self.MODEL_DOWNLOAD_URL, timeout=60) as response:
+                response.raise_for_status()
+                with archive.open("wb") as output:
+                    for chunk in response.iter_bytes(1024 * 1024):
+                        size += len(chunk)
+                        if size > 128 * 1024 * 1024:
+                            raise ValueError(
+                                "MiniLM archive exceeds the download limit"
+                            )
+                        digest.update(chunk)
+                        output.write(chunk)
+            if digest.hexdigest() != self.MODEL_SHA256:
+                raise ValueError("MiniLM archive does not match expected SHA256")
+
+            extracted = staging / self.EXTRACTED_FOLDER_NAME
+            extracted.mkdir()
+            with tarfile.open(archive) as bundle:
+                for name in _MINILM_EXPECTED_FILES:
+                    member = bundle.getmember(f"{self.EXTRACTED_FOLDER_NAME}/{name}")
+                    if not member.isfile():
+                        raise ValueError(f"MiniLM archive member is not a file: {name}")
+                    source = cast(BinaryIO, bundle.extractfile(member))
+                    # Never extract archive paths or links onto the filesystem.
+                    with source, (extracted / name).open("wb") as output:
+                        shutil.copyfileobj(source, output)
+            cache.mkdir(parents=True, exist_ok=True)
+            target = cache / self.EXTRACTED_FOLDER_NAME
+            if target.exists():
+                shutil.rmtree(target)
+            extracted.replace(target)
+
+    def _load_model(self) -> None:
+        cache = Path(self.DOWNLOAD_PATH)
+        with _exclusive_file_lock(_minilm_cache_lock_path(cache)):
+            if not _minilm_cache_complete(type(self), cache):
+                self._download_model(cache)
+            model_dir = cache / self.EXTRACTED_FOLDER_NAME
+            tokenizer_path = model_dir / "tokenizer.json"
+            try:
+                tokenizer = self._tokenizer_cls.from_file(str(tokenizer_path))
+            except Exception as exc:  # noqa: BLE001 - tokenizers uses generic Exception.
+                raise LocalEmbedderError(f"Failed to load {tokenizer_path}") from exc
+            tokenizer.enable_truncation(max_length=256)
+            tokenizer.enable_padding(pad_id=0, pad_token="[PAD]", length=256)  # noqa: S106 - tokenizer marker
+            options = self._ort.SessionOptions()
+            options.intra_op_num_threads = 2
+            options.inter_op_num_threads = 1
+            options.log_severity_level = 3
+            options.graph_optimization_level = (
+                self._ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+            )
+            self._session = self._ort.InferenceSession(
+                str(model_dir / "model.onnx"),
+                sess_options=options,
+                providers=["CPUExecutionProvider"],
+            )
+            self._tokenizer = tokenizer
+
+    def __call__(self, documents: list[str]) -> list[list[float]]:
+        if not documents:
+            return []
+        if self._session is None:
+            self._load_model()
+        np = self._np
+        vectors: list[list[float]] = []
+        for start in range(0, len(documents), 32):
+            encoded = [
+                self._tokenizer.encode(text) for text in documents[start : start + 32]
+            ]
+            ids = np.array([item.ids for item in encoded], dtype=np.int64)
+            attention = np.array(
+                [item.attention_mask for item in encoded], dtype=np.int64
+            )
+            hidden = self._session.run(
+                None,
+                {
+                    "input_ids": ids,
+                    "attention_mask": attention,
+                    "token_type_ids": np.zeros_like(ids),
+                },
+            )[0]
+            mask = np.broadcast_to(np.expand_dims(attention, -1), hidden.shape)
+            pooled = np.sum(hidden * mask, 1) / np.clip(mask.sum(1), 1e-9, None)
+            norms = np.linalg.norm(pooled, axis=1)
+            norms[norms == 0] = 1e-12
+            vectors.extend((pooled / norms[:, None]).astype(np.float32).tolist())
+        return vectors
 
 
 class LocalEmbedder:
-    """Lazily-loaded singleton wrapping Chroma's ONNXMiniLM_L6_V2."""
+    """Lazily-loaded singleton wrapping direct ONNX MiniLM inference."""
 
     _instance: LocalEmbedder | None = None
     _lock = threading.Lock()
@@ -103,19 +230,16 @@ class LocalEmbedder:
             if self._ef is not None:
                 return self._ef
             try:
-                from chromadb.utils.embedding_functions import (  # type: ignore[import-not-found]
-                    ONNXMiniLM_L6_V2,
-                )
+                self._ef = ONNXMiniLM()
             except ImportError as exc:
                 raise LocalEmbedderError(
-                    f"{_ENV_ENABLE}=1 but `chromadb` is not installed. "
-                    "Install with `uv add chromadb` or `pip install chromadb`."
+                    "Local MiniLM dependencies are missing. Install with "
+                    "`pip install onnxruntime tokenizers numpy`."
                 ) from exc
-            self._ef = ONNXMiniLM_L6_V2()
             _LOGGER.info(
                 "Initialized local ONNX embedder (model=%s, cache=%s)",
-                ONNXMiniLM_L6_V2.MODEL_NAME,
-                ONNXMiniLM_L6_V2.DOWNLOAD_PATH,
+                ONNXMiniLM.MODEL_NAME,
+                ONNXMiniLM.DOWNLOAD_PATH,
             )
             return self._ef
 
@@ -140,7 +264,7 @@ class LocalEmbedder:
             ef = self._load()
             try:
                 raw = ef(safe_inputs)
-            except Exception as exc:  # noqa: BLE001 - Chroma raises varied cache errors.
+            except Exception as exc:  # noqa: BLE001 - Runtime/tokenizer cache errors vary.
                 raw = self._retry_embed_after_cache_clear(ef, exc, safe_inputs)
         return [_pad(vec) for vec in raw]
 
@@ -175,16 +299,18 @@ class LocalEmbedder:
                         "MiniLM cache %s was refreshed by another process; retrying",
                         cache_path,
                     )
-                try:
-                    fresh_ef = embedding_cls()
-                    self._ef = fresh_ef
-                    return fresh_ef(safe_inputs)
-                except Exception as retry_exc:
-                    raise LocalEmbedderError(
-                        "Local MiniLM cache recovery failed after "
-                        f"{recovery_action} {cache_path}. Delete this cache "
-                        "directory, restart Reflexio, and retry local embedding."
-                    ) from retry_exc
+            # The adapter takes the same file lock when loading/downloading.
+            # Release it first to avoid a nested flock deadlock.
+            try:
+                fresh_ef = embedding_cls()
+                self._ef = fresh_ef
+                return fresh_ef(safe_inputs)
+            except Exception as retry_exc:
+                raise LocalEmbedderError(
+                    "Local MiniLM cache recovery failed after "
+                    f"{recovery_action} {cache_path}. Delete this cache "
+                    "directory, restart Reflexio, and retry local embedding."
+                ) from retry_exc
 
 
 def _pad(vec: Any) -> list[float]:
@@ -313,42 +439,27 @@ def _exception_chain(exc: Exception) -> list[BaseException]:
 _REGISTERED = False
 
 
-def is_chromadb_importable() -> bool:
-    """Return True when the ``chromadb`` package is importable.
-
-    Independent of :data:`_ENV_ENABLE` (``CLAUDE_SMART_USE_LOCAL_EMBEDDING``).
-    Used by callers that want to know whether the local fallback is
-    *possible* regardless of whether claude-smart has explicitly opted in.
-
-    Returns:
-        bool: True if ``importlib.util.find_spec("chromadb")`` finds the
-            package, False otherwise.
-    """
-    return importlib.util.find_spec("chromadb") is not None
+def are_local_embedding_dependencies_available() -> bool:
+    """Check all ONNX dependencies without importing heavyweight modules."""
+    return all(
+        importlib.util.find_spec(package) is not None
+        for package in ("onnxruntime", "tokenizers", "numpy")
+    )
 
 
-def register_if_chromadb_available() -> bool:
-    """Make the local embedder available whenever ``chromadb`` imports.
+def register_if_available() -> bool:
+    """Set the legacy registration flag when ONNX dependencies are discoverable.
 
-    This is the env-var-independent companion to
-    :func:`register_if_enabled`. Called once from ``litellm_client`` at
-    module import so the local-embedder dispatch is wired up regardless
-    of whether claude-smart's opt-in env var is set. Idempotent — safe
-    to call more than once per process.
-
-    The actual routing is done by a prefix check in
-    ``LiteLLMClient.get_embedding(s)``; this function's job is to
-    eagerly probe for ``chromadb`` and log a clear message.
-
-    Returns:
-        bool: True if the embedder is usable after this call, False
-            when ``chromadb`` is not importable.
+    Idempotent and independent of the opt-in environment flag. The inference
+    service loads ``LocalEmbedder`` directly and does not require registration.
     """
     global _REGISTERED
     if _REGISTERED:
         return True
-    if not is_chromadb_importable():
-        _LOGGER.debug("Local embedder not registered: `chromadb` is not installed.")
+    if not are_local_embedding_dependencies_available():
+        _LOGGER.debug(
+            "Local embedder not registered: ONNX dependencies are not installed."
+        )
         return False
     _REGISTERED = True
     _LOGGER.debug("Registered local MiniLM embedding handler (model=%s)", _MODEL_KEY)
@@ -356,10 +467,10 @@ def register_if_chromadb_available() -> bool:
 
 
 def register_if_enabled() -> bool:
-    """Backwards-compatible alias for :func:`register_if_chromadb_available`.
+    """Backwards-compatible alias for :func:`register_if_available`.
 
     Historically gated on ``CLAUDE_SMART_USE_LOCAL_EMBEDDING=1``; now
-    delegates to the chromadb-only check so the local embedder is also
+    delegates to the dependency-only check so the local embedder is also
     available as a silent fallback when no cloud embedder is configured.
     The claude-smart opt-in env var continues to drive
     :func:`is_local_embedder_available` (provider-priority ordering),
@@ -369,7 +480,7 @@ def register_if_enabled() -> bool:
         bool: True if the embedder is usable after this call, False
             otherwise.
     """
-    return register_if_chromadb_available()
+    return register_if_available()
 
 
 def is_enabled() -> bool:
@@ -383,7 +494,7 @@ def is_enabled() -> bool:
 
 
 def is_local_embedder_available() -> bool:
-    """Return True iff both the env flag is set and ``chromadb`` imports.
+    """Return True iff both the env flag is set and the ONNX dependencies are installed.
 
     Unlike :func:`is_enabled`, this does not require
     :func:`register_if_enabled` to have run. It is the predicate
@@ -392,19 +503,19 @@ def is_local_embedder_available() -> bool:
 
     Returns:
         bool: True when ``CLAUDE_SMART_USE_LOCAL_EMBEDDING=1``
-            AND ``chromadb`` is importable.
+            AND the ONNX dependencies are importable.
     """
     if os.environ.get(_ENV_ENABLE) != "1":
         return False
-    return is_chromadb_importable()
+    return are_local_embedding_dependencies_available()
 
 
 __all__ = [
     "LocalEmbedder",
     "LocalEmbedderError",
-    "is_chromadb_importable",
+    "are_local_embedding_dependencies_available",
     "is_enabled",
     "is_local_embedder_available",
-    "register_if_chromadb_available",
+    "register_if_available",
     "register_if_enabled",
 ]
