@@ -555,12 +555,21 @@ class UserPlaybookProvisionalPublicationStore(UserPlaybookPublicationStore, Prot
     """Durable Phase 4 provisional publication operations."""
 
     def claim_user_playbook_provisional_publication(
-        self, *, job_id: int, owner: str, worker_fence: int
+        self,
+        *,
+        job_id: int,
+        owner: str,
+        worker_fence: int,
+        incumbent_user_playbook_id: int,
+        incumbent_full_version_fingerprint: str,
+        incumbent_snapshot_json: str,
     ) -> PublicationClaim: ...
 
     def stage_user_playbook_provisional_publication(
         self, request: ProvisionalPublicationRequest
-    ) -> None: ...
+    ) -> bool:
+        """Stage the request, or return false after cleaning stale-CAS residue."""
+        ...
 
     def commit_user_playbook_provisional_publication(
         self, request: ProvisionalPublicationRequest

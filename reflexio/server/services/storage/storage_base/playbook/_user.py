@@ -61,17 +61,24 @@ class UserPlaybookStoreMixin:
         )
 
     def claim_user_playbook_provisional_publication(
-        self, *, job_id: int, owner: str, worker_fence: int
+        self,
+        *,
+        job_id: int,
+        owner: str,
+        worker_fence: int,
+        incumbent_user_playbook_id: int,
+        incumbent_full_version_fingerprint: str,
+        incumbent_snapshot_json: str,
     ) -> "PublicationClaim":
-        """Claim one open-world provisional publication attempt."""
+        """Claim only while the frozen incumbent is still current."""
         raise NotImplementedError(
             "Storage backend does not support provisional user-playbook publication"
         )
 
     def stage_user_playbook_provisional_publication(
         self, request: "ProvisionalPublicationRequest"
-    ) -> None:
-        """Persist one open-world provisional payload outside visible tables."""
+    ) -> bool:
+        """Stage a payload, or clean a stale claim and return false."""
         raise NotImplementedError(
             "Storage backend does not support provisional user-playbook publication"
         )

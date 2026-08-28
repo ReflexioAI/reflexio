@@ -383,7 +383,15 @@ def test_provisional_publication_store_keeps_legacy_and_provisional_contracts_se
         signature(
             UserPlaybookProvisionalPublicationStore.claim_user_playbook_provisional_publication
         ).parameters
-    ) == ("self", "job_id", "owner", "worker_fence")
+    ) == (
+        "self",
+        "job_id",
+        "owner",
+        "worker_fence",
+        "incumbent_user_playbook_id",
+        "incumbent_full_version_fingerprint",
+        "incumbent_snapshot_json",
+    )
     assert callable(
         UserPlaybookProvisionalPublicationStore.claim_user_playbook_provisional_publication
     )
