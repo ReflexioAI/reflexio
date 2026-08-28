@@ -23,6 +23,7 @@ from ..common import (
     ToolUsed,
     sanitise_for_log,
 )
+from ..playbook_diagnosis import PlaybookDiagnosis
 from ..validators import (
     EmbeddingVector,
     NonEmptyStr,
@@ -680,6 +681,9 @@ class RetrievedLearningEvaluationResult(BaseModel):
     relevance_reason: str = ""
     impact: LearningImpact | None = None
     impact_reason: str = ""
+    diagnosis: PlaybookDiagnosis | None = None
+    evaluated_playbook_digest: str | None = None
+    diagnosis_evidence_complete: bool = False
     created_at: int = Field(default_factory=lambda: int(datetime.now(UTC).timestamp()))
 
 

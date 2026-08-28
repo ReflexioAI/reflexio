@@ -519,3 +519,75 @@ def test_verdict_coverage_error_names_all_problems() -> None:
     assert "duplicate refs ['a']" in error
     assert "unknown refs ['z']" in error
     assert _verdict_coverage_error(["a", "b"], expected={"a", "b"}) is None
+
+
+@pytest.mark.parametrize(
+    "evidence",
+    [
+        "complete",
+        "application_failure",
+        "body_truncated",
+        "transcript_truncated",
+        "invalid_citation",
+        "profile",
+    ],
+)
+def test_diagnosis_is_bounded_and_bound_to_the_evaluated_playbook(storage, evidence):
+    import hashlib
+
+    from reflexio.models.api_schema.playbook_diagnosis import PlaybookDiagnosis
+    from reflexio.server.services.playbook.publication import (
+        incumbent_user_playbook_semantic_digest,
+    )
+
+    profile_id, target_id, _ = _seed_all_kinds(storage)
+    if evidence == "body_truncated":
+        storage.update_user_playbook(target_id, content="Validate deployments. " * 400)
+    kind, learning_id = (
+        ("profile", profile_id)
+        if evidence == "profile"
+        else ("user_playbook", str(target_id))
+    )
+    snapshot = _snapshot({1: [(kind, learning_id)]})
+    snapshot.transcript_truncated = evidence == "transcript_truncated"
+    expected_category = (
+        "application_failure" if evidence == "application_failure" else "content_defect"
+    )
+    llm = _echoing_llm()
+    respond = llm.generate_chat_response.side_effect
+
+    def diagnose(**kwargs):
+        output = respond(**kwargs)
+        if isinstance(output, RetrievedLearningImpactOutput):
+            for verdict in output.verdicts:
+                verdict.diagnosis = PlaybookDiagnosis(
+                    category=expected_category,
+                    reason="Appropriate guidance was not applied"
+                    if evidence == "application_failure"
+                    else "Incorrect instruction",
+                    evidence_interaction_ids=[
+                        999 if evidence == "invalid_citation" else 1
+                    ],
+                )
+        return output
+
+    llm.generate_chat_response.side_effect = diagnose
+    result = _make_evaluator(storage, llm).evaluate(USER, SESSION, "v1", snapshot)
+    [row] = result.rows
+    if evidence == "profile":
+        assert row.diagnosis is None
+        assert row.evaluated_playbook_digest is None
+    elif evidence == "invalid_citation":
+        assert row.diagnosis is not None
+        assert row.diagnosis.category == "unknown"
+    elif evidence in {"body_truncated", "transcript_truncated"}:
+        assert not row.diagnosis_evidence_complete
+    else:
+        assert row.diagnosis_evidence_complete
+        assert row.diagnosis is not None
+        assert row.diagnosis.category == expected_category
+        [target] = storage.get_user_playbooks_by_ids(USER, [target_id])
+        assert row.evaluated_playbook_digest == incumbent_user_playbook_semantic_digest(
+            content_digest=hashlib.sha256(target.content.encode()).hexdigest(),
+            trigger=target.trigger,
+        )

@@ -16,6 +16,7 @@ snapshot; never loads full ``Interaction`` objects.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
@@ -23,9 +24,13 @@ from typing import TYPE_CHECKING, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from reflexio.models.api_schema.domain import RetrievedLearningEvaluationResult
+from reflexio.models.api_schema.playbook_diagnosis import PlaybookDiagnosis
 from reflexio.models.structured_output import StrictStructuredOutput
 from reflexio.server.llm.litellm_client import LiteLLMClientError
 from reflexio.server.llm.model_defaults import ModelRole, resolve_model_name
+from reflexio.server.services.playbook.publication import (
+    incumbent_user_playbook_semantic_digest,
+)
 from reflexio.server.services.service_utils import (
     log_llm_messages,
     log_model_response,
@@ -99,6 +104,7 @@ class RetrievedLearningImpactVerdict(StrictStructuredOutput):
     impact_reason: str = Field(
         description="Counterfactual reasoning for the impact judgment"
     )
+    diagnosis: PlaybookDiagnosis | None = None
     model_config = ConfigDict(
         extra="allow",
         json_schema_extra={"additionalProperties": False},
@@ -132,6 +138,7 @@ class LearningCandidate:
     title: str
     content: str
     trigger: str
+    evaluated_digest: str | None = None
 
     @property
     def learning_ref(self) -> str:
@@ -249,6 +256,11 @@ class RetrievedLearningEvaluator:
             )
 
         transcript = self._format_transcript(snapshot)
+        complete_transcript = (
+            not snapshot.transcript_truncated
+            and transcript == self._raw_transcript(snapshot)
+        )
+        interaction_ids = {item.interaction_id for item in snapshot.interactions}
         relevance: dict[str, RetrievedLearningRelevanceVerdict] = {}
         impact: dict[str, RetrievedLearningImpactVerdict] = {}
         chunks = [
@@ -296,6 +308,30 @@ class RetrievedLearningEvaluator:
         for candidate in candidates:
             relevance_verdict = relevance.get(candidate.learning_ref)
             impact_verdict = impact.get(candidate.learning_ref)
+            diagnosis = (
+                impact_verdict.diagnosis
+                if impact_verdict and candidate.kind != "profile"
+                else None
+            )
+            if (
+                diagnosis
+                and not set(diagnosis.evidence_interaction_ids) <= interaction_ids
+            ):
+                diagnosis = PlaybookDiagnosis(
+                    category="unknown",
+                    reason="Diagnosis cited interactions outside the evaluated session.",
+                )
+            complete_evidence = (
+                complete_transcript
+                and slice_content_by_tokens(
+                    candidate.content, LEARNING_BODY_TOKEN_LIMIT
+                )
+                == candidate.content
+                and slice_content_by_tokens(
+                    candidate.trigger, LEARNING_BODY_TOKEN_LIMIT
+                )
+                == candidate.trigger
+            )
             rows.append(
                 RetrievedLearningEvaluationResult(
                     user_id=user_id,
@@ -315,6 +351,9 @@ class RetrievedLearningEvaluator:
                     impact_reason=(
                         impact_verdict.impact_reason if impact_verdict else ""
                     ),
+                    diagnosis=diagnosis,
+                    evaluated_playbook_digest=candidate.evaluated_digest,
+                    diagnosis_evidence_complete=complete_evidence,
                     created_at=created_at,
                 )
             )
@@ -397,6 +436,7 @@ class RetrievedLearningEvaluator:
                 agent_playbook_ids.append(parsed)
 
         resolved: dict[tuple[str, str], tuple[str, str, str]] = {}
+        digests: dict[tuple[str, str], str] = {}
         if profile_ids:
             for profile in storage.get_profiles_by_ids(
                 user_id, profile_ids, include_inactive=True
@@ -411,6 +451,12 @@ class RetrievedLearningEvaluator:
                 user_id, user_playbook_ids, include_inactive=True
             ):
                 key = ("user_playbook", str(playbook.user_playbook_id))
+                digests[key] = incumbent_user_playbook_semantic_digest(
+                    content_digest=hashlib.sha256(
+                        playbook.content.encode()
+                    ).hexdigest(),
+                    trigger=playbook.trigger,
+                )
                 resolved[key] = (
                     playbook.playbook_name,
                     playbook.content,
@@ -441,6 +487,7 @@ class RetrievedLearningEvaluator:
                     title=title,
                     content=content,
                     trigger=trigger,
+                    evaluated_digest=digests.get((kind, learning_id)),
                 )
             )
         return candidates
@@ -451,13 +498,19 @@ class RetrievedLearningEvaluator:
 
     @staticmethod
     def _format_transcript(snapshot: BoundedRetrievedLearningSnapshot) -> str:
+        return slice_content_by_tokens(
+            RetrievedLearningEvaluator._raw_transcript(snapshot), TRANSCRIPT_TOKEN_LIMIT
+        )
+
+    @staticmethod
+    def _raw_transcript(snapshot: BoundedRetrievedLearningSnapshot) -> str:
         lines = [
             f"[interaction_id={interaction.interaction_id}] "
             f"{interaction.role}: {interaction.content}"
             for interaction in snapshot.interactions
             if interaction.role or interaction.content
         ]
-        return slice_content_by_tokens("\n".join(lines), TRANSCRIPT_TOKEN_LIMIT)
+        return "\n".join(lines)
 
     def _learnings_payload(self, chunk: list[LearningCandidate]) -> str:
         import json
