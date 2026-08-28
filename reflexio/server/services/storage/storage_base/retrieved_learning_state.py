@@ -152,6 +152,7 @@ class BoundedRetrievedLearningSnapshot:
     raw_attachment_count: int = 0
     attachment_limit_exceeded: bool = False
     precomputed_fingerprint: str | None = None
+    transcript_truncated: bool = False
 
 
 def append_bounded_snapshot_interaction(
@@ -174,6 +175,8 @@ def append_bounded_snapshot_interaction(
             retained_role = role
             retained_content = content[:content_budget]
             transcript_chars_remaining -= prefix_size + len(retained_content)
+    if retained_content != content or retained_role != role:
+        snapshot.transcript_truncated = True
     if refs or retained_content:
         snapshot.interactions.append(
             SnapshotInteraction(

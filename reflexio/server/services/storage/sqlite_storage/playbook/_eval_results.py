@@ -587,8 +587,9 @@ class AgentEvaluationResultStoreMixin:
                            (user_id, session_id, agent_version, interaction_id,
                             interaction_created_at, kind,
                             learning_id, is_relevant, relevance_reason, impact,
-                            impact_reason, created_at, governance_subject_ref)
-                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                            impact_reason, created_at, governance_subject_ref,
+                            diagnosis, evaluated_playbook_digest, diagnosis_evidence_complete)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                         (
                             user_id,
                             session_id,
@@ -603,6 +604,9 @@ class AgentEvaluationResultStoreMixin:
                             r.impact_reason,
                             r.created_at,
                             subject_ref,
+                            r.diagnosis.model_dump_json() if r.diagnosis else None,
+                            r.evaluated_playbook_digest,
+                            int(r.diagnosis_evidence_complete),
                         ),
                     )
                 state.update(diagnostics)
@@ -749,6 +753,9 @@ def _row_to_retrieved_learning_result(
         relevance_reason=d.get("relevance_reason") or "",
         impact=d.get("impact"),
         impact_reason=d.get("impact_reason") or "",
+        diagnosis=_json_loads(d.get("diagnosis")),
+        evaluated_playbook_digest=d.get("evaluated_playbook_digest"),
+        diagnosis_evidence_complete=bool(d.get("diagnosis_evidence_complete", False)),
         created_at=int(d["created_at"]),
     )
 

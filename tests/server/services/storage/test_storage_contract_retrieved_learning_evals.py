@@ -809,3 +809,68 @@ def test_window_read_orders_ascending_and_filters_agent_version(storage) -> None
         )
         == []
     )
+
+
+def test_diagnosis_round_trips_and_legacy_rows_remain_readable(storage):
+    from reflexio.models.api_schema.playbook_diagnosis import PlaybookDiagnosis
+
+    target_id = _seed_eligible_learnings(storage)
+    _seed_session(
+        storage,
+        refs=[RetrievedLearning(kind="user_playbook", learning_id=str(target_id))],
+    )
+    snapshot = storage.load_bounded_retrieved_learning_snapshot(USER, SESSION)
+    interaction = next(
+        item for item in snapshot.interactions if item.role == "Assistant"
+    )
+    row = _result_for(interaction, "user_playbook", str(target_id))
+    row.diagnosis = PlaybookDiagnosis(
+        category="content_defect",
+        reason="Instruction contradicts the explicit constraint",
+        evidence_interaction_ids=[interaction.interaction_id],
+    )
+    row.diagnosis_evidence_complete = True
+    row.evaluated_playbook_digest = "d" * 64
+    generation = storage.begin_retrieved_learning_evaluation_run(USER, SESSION)
+    storage.replace_retrieved_learning_evaluation_results(
+        USER, SESSION, generation, session_fingerprint(snapshot), "complete", {}, [row]
+    )
+    [saved] = storage.get_retrieved_learning_evaluation_results(
+        user_id=USER, session_id=SESSION
+    )
+    assert saved.diagnosis == row.diagnosis
+    assert saved.evaluated_playbook_digest == "d" * 64
+    assert saved.diagnosis_evidence_complete
+    legacy = row.model_copy(
+        update={
+            "diagnosis": None,
+            "evaluated_playbook_digest": None,
+            "diagnosis_evidence_complete": False,
+        }
+    )
+    generation = storage.begin_retrieved_learning_evaluation_run(USER, SESSION)
+    storage.replace_retrieved_learning_evaluation_results(
+        USER,
+        SESSION,
+        generation,
+        session_fingerprint(snapshot),
+        "complete",
+        {},
+        [legacy],
+    )
+    [saved] = storage.get_retrieved_learning_evaluation_results(
+        user_id=USER, session_id=SESSION
+    )
+    assert saved.diagnosis is None
+    assert not saved.diagnosis_evidence_complete
+    # A pre-diagnosis v2 terminal result remains reusable without re-evaluation.
+    state_key = build_retrieved_learning_state_key(USER, SESSION)
+    state = storage.get_operation_state(state_key)["operation_state"]
+    state["evaluation_version"] = 2
+    storage.update_operation_state(state_key, state)
+    assert (
+        storage.get_matching_retrieved_learning_terminal_state(
+            USER, SESSION, session_fingerprint(snapshot)
+        )
+        is not None
+    )

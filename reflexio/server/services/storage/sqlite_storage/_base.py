@@ -1129,6 +1129,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         self._migrate_lineage()
         self._migrate_retired_at()
         self._migrate_lineage_event_table()
+        self._migrate_playbook_diagnosis()
         self._migrate_playbook_optimization_candidate_metadata()
         self._migrate_user_playbook_publication_staging_columns()
         self._classify_legacy_playbook_optimization_jobs()
@@ -1139,6 +1140,33 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         init_stall_state_table(self.conn)
         self._migrate_learning_jobs()
         return True
+
+    def _migrate_playbook_diagnosis(self) -> None:
+        """Add diagnostic evidence without changing optimizer jobs or old results."""
+        with self._lock:
+            # The initialization locks are process-local. Lock the database
+            # before inspecting columns so concurrent workers cannot both ALTER.
+            self.conn.execute("BEGIN IMMEDIATE")
+            try:
+                columns = {
+                    row["name"]
+                    for row in self.conn.execute(
+                        "PRAGMA table_info(retrieved_learning_evaluation)"
+                    )
+                }
+                for name, definition in (
+                    ("diagnosis", "TEXT"),
+                    ("evaluated_playbook_digest", "TEXT"),
+                    ("diagnosis_evidence_complete", "INTEGER NOT NULL DEFAULT 0"),
+                ):
+                    if name not in columns:
+                        self.conn.execute(
+                            f"ALTER TABLE retrieved_learning_evaluation ADD COLUMN {name} {definition}"
+                        )
+                self.conn.commit()
+            except Exception:
+                self.conn.rollback()
+                raise
 
     def _migrate_unicode_lexical_indexes(self) -> None:
         """Backfill the trigger-maintained Unicode FTS sidecars exactly once."""
