@@ -26,7 +26,7 @@ Two tests:
   this test is its regression anchor.
 
 The MiniLM (``local/minilm-l6-v2``) model is used deliberately: it is the OSS
-default and runs on chromadb's bundled ONNX runtime (no torch /
+default and runs on the direct ONNX runtime (no torch /
 sentence-transformers), so it is the lightest real model that still returns
 rankable vectors — faithful, but the cheapest faithful. No paid API key is
 needed (local model), so ``@skip_low_priority`` is not applied; only
@@ -47,7 +47,8 @@ import pytest
 import uvicorn
 
 from reflexio.lib.reflexio_lib import Reflexio
-from reflexio.models.api_schema.domain.entities import ProfileTimeToLive, UserProfile
+from reflexio.models.api_schema.domain.entities import UserProfile
+from reflexio.models.api_schema.domain.enums import ProfileTimeToLive
 from reflexio.models.api_schema.retriever_schema import UnifiedSearchRequest
 from reflexio.models.config_schema import (
     Config,

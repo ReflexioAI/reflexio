@@ -1,9 +1,9 @@
 """Offline tests for the LiteLLM client.
 
-Every test here builds a client from a literal config and asserts how that
-config resolved -- model selection, API-key routing across providers, Azure
-endpoint fields, image encoding. No network, no credential, so they run in the
-default unit tier.
+Tests build a client from a literal config and check model selection,
+API-key routing, Azure endpoint fields, and image encoding. A loopback
+integration check also exercises the installed LiteLLM HTTP transport without
+external credentials or paid API calls.
 
 The tests that actually call OpenAI or Anthropic live in
 ``tests/e2e_tests/test_litellm_client_real_llm.py``: that path is the only one
@@ -12,20 +12,24 @@ The tests that actually call OpenAI or Anthropic live in
 against the mock.
 """
 
+import json
 import os
 import struct
 import tempfile
+import threading
 import zlib
 from collections.abc import Generator
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, HttpUrl
 
 from reflexio.models.config_schema import (
     AnthropicConfig,
     APIKeyConfig,
     AzureOpenAIConfig,
+    CustomEndpointConfig,
     OpenAIConfig,
     OpenRouterConfig,
 )
@@ -33,9 +37,124 @@ from reflexio.server.llm.litellm_client import (
     LiteLLMClient,
     LiteLLMClientError,
     LiteLLMConfig,
+    ToolCallingChatResponse,
     _sanitize_json_string,
     create_litellm_client,
 )
+from reflexio.test_support.llm_mock import unpatched_litellm
+
+
+@pytest.mark.integration
+def test_installed_litellm_transport_round_trip(monkeypatch):
+    """Exercise Reflexio -> real LiteLLM SDK -> local HTTP -> parsed responses."""
+    import litellm
+
+    requests = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            requests.append((self.path, body))
+            message = {"role": "assistant", "content": "offline-response"}
+            finish = "stop"
+            if body.get("tools"):
+                message = {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "call_test",
+                            "type": "function",
+                            "function": {
+                                "name": "finish",
+                                "arguments": '{"answer":42}',
+                            },
+                        }
+                    ],
+                }
+                finish = "tool_calls"
+            elif body.get("response_format"):
+                message["content"] = '{"answer":42,"explanation":"loopback"}'
+            payload = json.dumps(
+                {
+                    "id": "chatcmpl-test",
+                    "object": "chat.completion",
+                    "created": 1,
+                    "model": "gpt-4o-mini",
+                    "choices": [
+                        {"index": 0, "message": message, "finish_reason": finish}
+                    ],
+                    "usage": {
+                        "prompt_tokens": 1,
+                        "completion_tokens": 1,
+                        "total_tokens": 2,
+                    },
+                }
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, *_args):
+            pass
+
+    monkeypatch.delenv("BRAINTRUST_API_KEY", raising=False)
+    monkeypatch.setenv("REFLEXIO_BLOCK_PRIVATE_URLS", "false")
+    monkeypatch.setattr(litellm, "callbacks", [])
+    with HTTPServer(("127.0.0.1", 0), Handler) as server:
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            client = LiteLLMClient(
+                LiteLLMConfig(
+                    model="openai/gpt-4o-mini",
+                    timeout=10,
+                    max_retries=0,
+                    fallback_models=[],
+                    api_key_config=APIKeyConfig(
+                        custom_endpoint=CustomEndpointConfig(
+                            model="openai/gpt-4o-mini",
+                            api_key="loopback-test-key",
+                            api_base=HttpUrl(
+                                f"http://127.0.0.1:{server.server_port}/v1"
+                            ),
+                        )
+                    ),
+                )
+            )
+            with unpatched_litellm():
+                assert client.generate_response("hello") == "offline-response"
+                structured = client.generate_response(
+                    "answer", response_format=MathResult
+                )
+                assert isinstance(structured, MathResult)
+                assert structured.answer == 42
+                tool = {
+                    "type": "function",
+                    "function": {
+                        "name": "finish",
+                        "parameters": MathResult.model_json_schema(),
+                    },
+                }
+                result = client.generate_chat_response(
+                    [{"role": "user", "content": "finish"}],
+                    tools=[tool],
+                    tool_choice="required",
+                )
+                assert isinstance(result, ToolCallingChatResponse)
+                assert result.tool_calls is not None
+                assert result.tool_calls[0].function.name == "finish"
+                assert json.loads(result.tool_calls[0].function.arguments) == {
+                    "answer": 42
+                }
+            assert len(requests) == 3
+            assert all(path == "/v1/chat/completions" for path, _ in requests)
+            assert requests[1][1]["response_format"]["type"] == "json_schema"
+        finally:
+            server.shutdown()
+            thread.join(timeout=5)
 
 
 def create_minimal_png(

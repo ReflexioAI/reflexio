@@ -6,8 +6,6 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "reflexio-ai",
-    # Used by reflexio's local embedding provider (ONNXMiniLM_L6_V2).
-    "chromadb>=0.5",
     "einops>=0.8.0",
 ]
 

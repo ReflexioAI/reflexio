@@ -154,6 +154,13 @@ service is unavailable, automatic reranking is silently skipped and retrieval
 order is preserved. An unavailable remote/internal service is reported while
 search still fails open.
 
+The default local model, `local/minilm-l6-v2`, uses ONNX Runtime, tokenizers,
+and NumPy directly; ChromaDB is not required. It retains the existing
+384-dimensional MiniLM vectors padded to 512 dimensions and the cache at
+`~/.cache/chroma/onnx_models/all-MiniLM-L6-v2/onnx`. A cold cache downloads the
+~80 MB model archive and verifies its SHA-256 before extraction. Prepopulate
+this cache for offline use; existing MiniLM databases do not need reindexing.
+
 For a source checkout, open **[http://localhost:8062](http://localhost:8062)**
 to interactively browse and try out the API.
 <p align="center">

@@ -262,7 +262,7 @@ class TestPromptEmbeddingProviderNonInteractive:
             patch("sys.stdin.isatty", return_value=False),
             patch(
                 "reflexio.server.llm.providers.local_embedding_provider"
-                ".is_chromadb_importable",
+                ".are_local_embedding_dependencies_available",
                 return_value=True,
             ),
             patch("typer.prompt") as mock_prompt,
@@ -270,17 +270,17 @@ class TestPromptEmbeddingProviderNonInteractive:
             # 'anthropic' has no embedding support, so the prompt path runs.
             result = _prompt_embedding_provider(env, "anthropic")
         mock_prompt.assert_not_called()
-        # Local was the first choice when chromadb is importable.
+        # Local was the first choice when ONNX dependencies are importable.
         assert result == "Local (MiniLM-L6-v2)"
 
 
 class TestSetupInitEmbeddingStep:
     """``setup init`` includes the new embedding step and writes org config."""
 
-    def _patch_home_and_chromadb(
+    def _patch_home_and_local_dependencies(
         self, monkeypatch: pytest.MonkeyPatch, fake_home: Path
     ) -> None:
-        """Redirect ``~`` to a tmp dir and force chromadb to look importable.
+        """Redirect ``~`` to a tmp dir and force ONNX dependencies to be available.
 
         ``LocalFileConfigStorage`` resolves its config path through
         ``Path.home() / ".reflexio" / "configs"`` when ``base_dir`` is None,
@@ -292,11 +292,11 @@ class TestSetupInitEmbeddingStep:
         # to fall through to the patched `Path.home()`.
         monkeypatch.delenv("REFLEXIO_LOG_DIR", raising=False)
         monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
-        # ``setup init`` queries chromadb importability via the module-level
+        # ``setup init`` queries ONNX dependencies importability via the module-level
         # helper. Force True so the local option appears as choice [1].
         monkeypatch.setattr(
             "reflexio.server.llm.providers.local_embedding_provider"
-            ".is_chromadb_importable",
+            ".are_local_embedding_dependencies_available",
             lambda: True,
         )
 
@@ -307,7 +307,7 @@ class TestSetupInitEmbeddingStep:
         from reflexio.cli.commands.setup_cmd import init
 
         fake_home = tmp_path / "home"
-        self._patch_home_and_chromadb(monkeypatch, fake_home)
+        self._patch_home_and_local_dependencies(monkeypatch, fake_home)
         env_path = fake_home / ".reflexio" / ".env"
         env_path.parent.mkdir(parents=True, exist_ok=True)
         env_path.write_text("")
@@ -338,11 +338,11 @@ class TestSetupInitEmbeddingStep:
     def test_setup_init_local_is_default(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Pressing Enter at the embedding prompt picks local (chromadb available)."""
+        """Pressing Enter at the embedding prompt picks local (ONNX dependencies available)."""
         from reflexio.cli.commands.setup_cmd import init
 
         fake_home = tmp_path / "home"
-        self._patch_home_and_chromadb(monkeypatch, fake_home)
+        self._patch_home_and_local_dependencies(monkeypatch, fake_home)
         env_path = fake_home / ".reflexio" / ".env"
         env_path.parent.mkdir(parents=True, exist_ok=True)
         env_path.write_text("")
@@ -372,7 +372,7 @@ class TestSetupInitEmbeddingStep:
         from reflexio.cli.commands.setup_cmd import init
 
         fake_home = tmp_path / "home"
-        self._patch_home_and_chromadb(monkeypatch, fake_home)
+        self._patch_home_and_local_dependencies(monkeypatch, fake_home)
         env_path = fake_home / ".reflexio" / ".env"
         env_path.parent.mkdir(parents=True, exist_ok=True)
         env_path.write_text("")
@@ -400,7 +400,7 @@ class TestSetupInitEmbeddingStep:
         from reflexio.cli.commands.setup_cmd import init
 
         fake_home = tmp_path / "home"
-        self._patch_home_and_chromadb(monkeypatch, fake_home)
+        self._patch_home_and_local_dependencies(monkeypatch, fake_home)
         env_path = fake_home / ".reflexio" / ".env"
         env_path.parent.mkdir(parents=True, exist_ok=True)
         env_path.write_text("")
@@ -437,7 +437,7 @@ class TestSetupInitEmbeddingStep:
         from reflexio.cli.commands.setup_cmd import init
 
         fake_home = tmp_path / "home"
-        self._patch_home_and_chromadb(monkeypatch, fake_home)
+        self._patch_home_and_local_dependencies(monkeypatch, fake_home)
         env_path = fake_home / ".reflexio" / ".env"
         env_path.parent.mkdir(parents=True, exist_ok=True)
         env_path.write_text("")
@@ -465,14 +465,14 @@ class TestSetupInitEmbeddingStep:
 
 
 class TestChooseEmbeddingProviderEdgeCases:
-    """Hardening cases for ``_choose_embedding_provider``: chromadb gating,
+    """Hardening cases for ``_choose_embedding_provider``: ONNX dependencies gating,
     config-write ordering, and integration-command embedding-flag validation.
     """
 
-    def test_local_flag_without_chromadb_exits(
+    def test_local_flag_without_local_dependencies_exits(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """``--embedding=local`` without chromadb fails fast and writes nothing."""
+        """``--embedding=local`` without ONNX dependencies fails fast and writes nothing."""
         from reflexio.cli.commands.setup_cmd import _choose_embedding_provider
 
         fake_home = tmp_path / "home"
@@ -480,7 +480,7 @@ class TestChooseEmbeddingProviderEdgeCases:
         monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
         monkeypatch.setattr(
             "reflexio.server.llm.providers.local_embedding_provider"
-            ".is_chromadb_importable",
+            ".are_local_embedding_dependencies_available",
             lambda: False,
         )
         env_path = tmp_path / ".env"
@@ -503,7 +503,7 @@ class TestChooseEmbeddingProviderEdgeCases:
         monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
         monkeypatch.setattr(
             "reflexio.server.llm.providers.local_embedding_provider"
-            ".is_chromadb_importable",
+            ".are_local_embedding_dependencies_available",
             lambda: True,
         )
         # Strip any existing OPENAI_API_KEY so the prompt path runs.
@@ -512,7 +512,7 @@ class TestChooseEmbeddingProviderEdgeCases:
         env_path = tmp_path / ".env"
         env_path.write_text("")
 
-        # Choices when chromadb is importable: [local, openai, gemini].
+        # Choices when ONNX dependencies are importable: [local, openai, gemini].
         # Pick choice 2 (openai), then submit an empty key.
         with (
             patch("sys.stdin.isatty", return_value=True),
@@ -540,7 +540,7 @@ class TestChooseEmbeddingProviderEdgeCases:
         monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
         monkeypatch.setattr(
             "reflexio.server.llm.providers.local_embedding_provider"
-            ".is_chromadb_importable",
+            ".are_local_embedding_dependencies_available",
             lambda: True,
         )
         env_path = fake_home / ".reflexio" / ".env"
