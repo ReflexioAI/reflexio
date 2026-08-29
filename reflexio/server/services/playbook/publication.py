@@ -7,11 +7,37 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from hashlib import sha256
-from typing import Literal, Protocol
+from typing import Literal, Protocol, get_args
 
-from reflexio.models.api_schema.domain.entities import OptimizerKind, UserPlaybook
+from reflexio.models.api_schema.domain.entities import (
+    OpenWorldDeploymentLifecycleState,
+    OptimizerKind,
+    UserPlaybook,
+)
 
 PublicationOutcome = Literal["applied", "incumbent_changed"]
+# Derived from the exported Literal rather than restated, so the SQL state
+# CHECK, the Literal, and this set cannot drift into three different answers.
+LIFECYCLE_TERMINAL_STATES: frozenset[str] = frozenset(
+    get_args(OpenWorldDeploymentLifecycleState)
+) - {"provisional"}
+# Mirrors user_playbook_deployment_lifecycles_terminal_reason_check
+# (20260827040000). 'observed_regression' is Phase 6's and 'governed_erasure'
+# is the live governance erase path's; both are accepted here because a
+# terminal tuple READ BACK from an idempotent replay may legitimately carry
+# either. The restoration RPC itself accepts a strictly narrower set.
+LIFECYCLE_TERMINAL_REASONS: frozenset[str] = frozenset(
+    {
+        "insufficient_online_support",
+        "analyst_unqualified",
+        "confirmation_capability_invalidated",
+        "governance_invalidated",
+        "tuner_disabled",
+        "stale_incumbent",
+        "observed_regression",
+        "governed_erasure",
+    }
+)
 PublishableOptimizerKind = Literal[
     "gepa", "offline_tuner_replay", "offline_tuner_open_world"
 ]
@@ -507,6 +533,38 @@ class ProvisionalPublicationResult:
 
 
 @dataclass(frozen=True)
+class LifecycleTerminalResult:
+    """The durable terminal tuple of one provisional deployment lifecycle.
+
+    There is no separate results table: the lifecycle row itself is the result.
+    ``state``/``terminal_reason``/``terminal_at`` are already CHECK-coupled in
+    the tenant schema, so repeat delivery of a restoration or displacement
+    reads the same row back and returns the identical tuple.
+
+    Args:
+        lifecycle_id (int): ``deployment_lifecycle_id`` of the terminalized row.
+        state (str): One of the four non-provisional lifecycle states.
+        terminal_reason (str): The enumerated reason the successor was pulled.
+        terminal_at (int): Epoch second the transition committed.
+    """
+
+    lifecycle_id: int
+    state: str
+    terminal_reason: str
+    terminal_at: int
+
+    def __post_init__(self) -> None:
+        if type(self.lifecycle_id) is not int or self.lifecycle_id <= 0:
+            raise ValueError("lifecycle terminal result id must be positive")
+        if self.state not in LIFECYCLE_TERMINAL_STATES:
+            raise ValueError("lifecycle terminal result state is not terminal")
+        if self.terminal_reason not in LIFECYCLE_TERMINAL_REASONS:
+            raise ValueError("lifecycle terminal result reason is not enumerated")
+        if type(self.terminal_at) is not int or self.terminal_at <= 0:
+            raise ValueError("lifecycle terminal result timestamp must be positive")
+
+
+@dataclass(frozen=True)
 class PublicationResult:
     job_id: int
     outcome: PublicationOutcome
@@ -584,6 +642,27 @@ class UserPlaybookProvisionalPublicationStore(UserPlaybookPublicationStore, Prot
     def load_user_playbook_provisional_publication_result(
         self, job_id: int
     ) -> ProvisionalPublicationResult | None: ...
+
+
+class UserPlaybookLifecycleTerminationStore(Protocol):
+    """Durable Phase 5 termination of a provisional deployment lifecycle."""
+
+    def restore_user_playbook_provisional_publication(
+        self,
+        *,
+        lifecycle_id: int,
+        reason: str,
+        expected_fence: int,
+        expected_successor_fingerprint: str,
+    ) -> LifecycleTerminalResult:
+        """Reselect the retained predecessor and terminalize, under a fence."""
+        ...
+
+    def displace_user_playbook_provisional_publication(
+        self, *, lifecycle_id: int
+    ) -> LifecycleTerminalResult:
+        """Terminalize as displaced/stale_incumbent; the manual version wins."""
+        ...
 
 
 class UserPlaybookPublicationService:

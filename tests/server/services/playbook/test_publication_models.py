@@ -11,7 +11,9 @@ from reflexio.models.api_schema.domain import (
     UserPlaybook,
 )
 from reflexio.server.services.playbook.publication import (
+    LIFECYCLE_TERMINAL_STATES,
     DecisionProofEnvelope,
+    LifecycleTerminalResult,
     PublicationClaim,
     PublicationRequest,
     PublicationSearchProjection,
@@ -20,6 +22,41 @@ from reflexio.server.services.playbook.publication import (
     canonical_json_bytes,
     incumbent_user_playbook_semantic_digest,
 )
+
+
+def test_lifecycle_terminal_result_is_derived_from_the_state_literal() -> None:
+    """The terminal set must be DERIVED, not restated.
+
+    ``OpenWorldDeploymentLifecycleState``, the SQL state CHECK and this set are
+    three statements of one fact; restating it here would let them drift into
+    three different answers. ``provisional`` is the only non-terminal state, so
+    a terminal result carrying it is rejected.
+    """
+    assert (
+        set(get_args(OpenWorldDeploymentLifecycleState)) - {"provisional"}
+        == LIFECYCLE_TERMINAL_STATES
+    )
+    restored = LifecycleTerminalResult(
+        lifecycle_id=7,
+        state="restored",
+        terminal_reason="insufficient_online_support",
+        terminal_at=1_700_000_000,
+    )
+    assert restored.state in LIFECYCLE_TERMINAL_STATES
+    with pytest.raises(ValueError, match="state is not terminal"):
+        LifecycleTerminalResult(
+            lifecycle_id=7,
+            state="provisional",
+            terminal_reason="insufficient_online_support",
+            terminal_at=1_700_000_000,
+        )
+    with pytest.raises(ValueError, match="reason is not enumerated"):
+        LifecycleTerminalResult(
+            lifecycle_id=7,
+            state="restored",
+            terminal_reason="not_a_reason",
+            terminal_at=1_700_000_000,
+        )
 
 
 def test_open_world_publication_literals_and_user_playbook_field_partition() -> None:
