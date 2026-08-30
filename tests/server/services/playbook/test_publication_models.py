@@ -2,18 +2,72 @@ from __future__ import annotations
 
 import json
 from hashlib import sha256
+from typing import get_args
 
 import pytest
 
+from reflexio.models.api_schema.domain import (
+    OpenWorldDeploymentLifecycleState,
+    UserPlaybook,
+)
 from reflexio.server.services.playbook.publication import (
     DecisionProofEnvelope,
     PublicationClaim,
     PublicationRequest,
     PublicationSearchProjection,
+    PublishableOptimizerKind,
     UserPlaybookPublicationService,
     canonical_json_bytes,
     incumbent_user_playbook_semantic_digest,
 )
+
+
+def test_open_world_publication_literals_and_user_playbook_field_partition() -> None:
+    assert get_args(PublishableOptimizerKind) == (
+        "gepa",
+        "offline_tuner_replay",
+        "offline_tuner_open_world",
+    )
+    assert get_args(OpenWorldDeploymentLifecycleState) == (
+        "provisional",
+        "confirmed",
+        "restored",
+        "displaced",
+        "erased",
+    )
+
+    tunable = {"content"}
+    preserved = {
+        "user_id",
+        "agent_version",
+        "request_id",
+        "playbook_name",
+        "trigger",
+        "rationale",
+        "blocking_issue",
+        "source",
+        "source_interaction_ids",
+        "source_span",
+        "notes",
+        "reader_angle",
+        "tags",
+        "governance_subject_ref",
+    }
+    version_mechanics = {
+        "user_playbook_id",
+        "created_at",
+        "status",
+        "merged_into",
+        "superseded_by",
+        "retired_at",
+    }
+    search_derived = {"embedding", "expanded_terms"}
+    partitions = (tunable, preserved, version_mechanics, search_derived)
+
+    assert len(set().union(*partitions)) == sum(
+        len(partition) for partition in partitions
+    )
+    assert set().union(*partitions) == set(UserPlaybook.model_fields)
 
 
 def _canonical(payload: dict[str, object]) -> str:
@@ -212,6 +266,30 @@ def test_publication_request_binds_content_optimizer_and_canonical_epochs() -> N
             canonical_json=canonical,
             digest="0" * 64,
             decision="apply",
+        )
+
+
+def test_legacy_publication_request_rejects_open_world_optimizer() -> None:
+    with pytest.raises(ValueError, match="optimizer_kind is not publishable"):
+        PublicationRequest(
+            optimizer_kind="offline_tuner_open_world",
+            job_id=7,
+            attempt_key="attempt-7",
+            publication_claim=PublicationClaim(job_id=7, owner="worker-a", fence=3),
+            worker_fence=11,
+            incumbent_user_playbook_id=101,
+            incumbent_content_digest=_digest("old content"),
+            incumbent_trigger="refund",
+            incumbent_semantic_digest=incumbent_user_playbook_semantic_digest(
+                content_digest=_digest("old content"), trigger="refund"
+            ),
+            revised_content="new content",
+            projection=_projection(),
+            decision_proof=_proof(),
+            subject_epochs_json=_canonical(
+                {"subjects": [{"epoch": 0, "ref": "subject:1"}]}
+            ),
+            request_id="request-7",
         )
 
 

@@ -11,6 +11,8 @@ from reflexio.models.config_schema import SearchOptions
 
 if TYPE_CHECKING:
     from reflexio.server.services.playbook.publication import (
+        ProvisionalPublicationRequest,
+        ProvisionalPublicationResult,
         PublicationClaim,
         PublicationRequest,
         PublicationResult,
@@ -56,6 +58,53 @@ class UserPlaybookStoreMixin:
         """Load the immutable terminal publication result for a job."""
         raise NotImplementedError(
             "Storage backend does not support atomic user-playbook publication"
+        )
+
+    def claim_user_playbook_provisional_publication(
+        self,
+        *,
+        job_id: int,
+        owner: str,
+        worker_fence: int,
+        incumbent_user_playbook_id: int,
+        incumbent_full_version_fingerprint: str,
+        incumbent_snapshot_json: str,
+    ) -> "PublicationClaim":
+        """Claim only while the frozen incumbent is still current."""
+        raise NotImplementedError(
+            "Storage backend does not support provisional user-playbook publication"
+        )
+
+    def cleanup_user_playbook_provisional_stale_attempt(
+        self, *, job_id: int, owner: str, worker_fence: int
+    ) -> bool:
+        """Clean only this worker's uncommitted provisional publication residue."""
+        raise NotImplementedError(
+            "Storage backend does not support provisional user-playbook publication"
+        )
+
+    def stage_user_playbook_provisional_publication(
+        self, request: "ProvisionalPublicationRequest"
+    ) -> bool:
+        """Stage a payload, or clean a stale claim and return false."""
+        raise NotImplementedError(
+            "Storage backend does not support provisional user-playbook publication"
+        )
+
+    def commit_user_playbook_provisional_publication(
+        self, request: "ProvisionalPublicationRequest"
+    ) -> "ProvisionalPublicationResult":
+        """Atomically commit one provisional successor or changed incumbent."""
+        raise NotImplementedError(
+            "Storage backend does not support provisional user-playbook publication"
+        )
+
+    def load_user_playbook_provisional_publication_result(
+        self, job_id: int
+    ) -> "ProvisionalPublicationResult | None":
+        """Load the immutable terminal provisional publication result."""
+        raise NotImplementedError(
+            "Storage backend does not support provisional user-playbook publication"
         )
 
     @abstractmethod

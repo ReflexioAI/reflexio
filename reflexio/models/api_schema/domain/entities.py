@@ -114,6 +114,7 @@ __all__ = [
     "PlaybookAggregationChangeLog",
     "PlaybookAggregationChangeLogResponse",
     "OptimizerKind",
+    "OpenWorldDeploymentLifecycleState",
     "OptimizationJobStage",
     "OptimizationTerminalOutcome",
     "OptimizationArtifactKind",
@@ -414,6 +415,10 @@ OptimizerKind = Literal[
     "offline_tuner_open_world",
     "offline_tuner_legacy",
     "optimizer_legacy_unknown",
+]
+
+OpenWorldDeploymentLifecycleState = Literal[
+    "provisional", "confirmed", "restored", "displaced", "erased"
 ]
 
 OptimizationJobStage = Literal[
