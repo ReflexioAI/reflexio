@@ -10,6 +10,8 @@ from pydantic import ValidationError
 
 from reflexio.models.api_schema.domain.entities import canonicalize_artifact_json
 from reflexio.models.api_schema.service_schemas import (
+    OpenWorldQualificationClassCount,
+    OpenWorldQualificationRecord,
     OptimizationArtifactKind,
     OptimizationJobClaim,
     OptimizationJobStage,
@@ -27,32 +29,79 @@ from reflexio.server.services.playbook.publication import (
     canonical_json_bytes,
 )
 from reflexio.server.services.storage.error import (
+    OpenWorldQualificationConflictError,
     OptimizationArtifactIntegrityError,
     OptimizationJobIdentityConflictError,
     OptimizationJobLeaseLiveError,
     StorageError,
 )
 
-_FAILURE_OUTCOMES = {"generation_failed", "replay_failed", "publication_failed"}
-_ABSTENTION_OUTCOMES = {
-    "insufficient_negative_evidence",
-    "insufficient_positive_evidence",
-    "insufficient_coverage",
-    "replay_unsupported",
-    "deployment_unsupported",
-    "incomplete_replay_scope",
-    "insufficient_replay_cases",
-    "replay_inconclusive",
-    "candidate_regressed",
-    "candidate_did_not_improve",
-    "incumbent_changed",
+_STAGE_PREDECESSORS_BY_OPTIMIZER: dict[str, dict[str, tuple[str, str]]] = {
+    "offline_tuner_replay": {
+        "candidate_generated": ("evidence_frozen", "evidence_frozen"),
+        "replay_running": ("candidate_generated", "candidate_generated"),
+        "replay_evaluated": ("replay_running", "replay_running"),
+        "publishing": ("replay_evaluated", "replay_evaluated"),
+        "applied": ("publishing", "publishing"),
+    },
+    "offline_tuner_open_world": {
+        "discovery_analyzed": ("evidence_frozen", "evidence_frozen"),
+        "candidate_generated": ("discovery_analyzed", "discovery_analyzed"),
+        "held_out_analyzed": ("candidate_generated", "candidate_generated"),
+    },
 }
-_STAGE_PREDECESSORS: dict[str, str] = {
-    "candidate_generated": "evidence_frozen",
-    "replay_running": "candidate_generated",
-    "replay_evaluated": "replay_running",
-    "publishing": "replay_evaluated",
-    "applied": "publishing",
+_ACTIVE_STAGES_BY_OPTIMIZER = {
+    "offline_tuner_replay": (
+        "evidence_frozen",
+        "candidate_generated",
+        "replay_running",
+        "replay_evaluated",
+        "publishing",
+    ),
+    "offline_tuner_open_world": (
+        "evidence_frozen",
+        "discovery_analyzed",
+        "candidate_generated",
+        "held_out_analyzed",
+    ),
+}
+_TERMINAL_OUTCOMES_BY_OPTIMIZER = {
+    "offline_tuner_replay": {
+        "failed": {
+            "generation_failed",
+            "replay_failed",
+            "publication_failed",
+            "infrastructure_failure",
+        },
+        "abstained": {
+            "insufficient_negative_evidence",
+            "insufficient_positive_evidence",
+            "insufficient_coverage",
+            "replay_unsupported",
+            "deployment_unsupported",
+            "incomplete_replay_scope",
+            "insufficient_replay_cases",
+            "replay_inconclusive",
+            "candidate_regressed",
+            "candidate_did_not_improve",
+            "incumbent_changed",
+        },
+    },
+    "offline_tuner_open_world": {
+        "failed": {
+            "infrastructure_failure",
+            "analyst_unqualified",
+            "stale_incumbent",
+            "governance_invalidated",
+        },
+        "abstained": {
+            "no_grounded_hypothesis",
+            "analyst_unqualified",
+            "heldout_evidence_failed",
+            "stale_incumbent",
+            "governance_invalidated",
+        },
+    },
 }
 
 
@@ -211,6 +260,47 @@ from .._base import (
     _json_dumps,
     _json_loads,
 )
+
+_QUALIFICATION_SELECT_SQL = """SELECT * FROM offline_tuner_open_world_qualifications
+   WHERE component_identity_digest = ? AND suite_digest = ?"""
+
+_QUALIFICATION_INSERT_SQL = """INSERT INTO offline_tuner_open_world_qualifications
+   (component_identity_digest, suite_digest, schema_version, result_digest,
+    passed, class_counts_json, observation_digests_json, created_at)
+   VALUES (?, ?, ?, ?, ?, ?, ?, ?)"""
+
+
+def _qualification_insert_values(
+    record: OpenWorldQualificationRecord,
+) -> tuple[Any, ...]:
+    return (
+        record.component_identity_digest,
+        record.suite_digest,
+        record.schema_version,
+        record.result_digest,
+        int(record.passed),
+        json.dumps([count.model_dump() for count in record.class_counts]),
+        json.dumps(list(record.observation_digests)),
+        record.created_at,
+    )
+
+
+def _row_to_open_world_qualification_record(
+    row: sqlite3.Row,
+) -> OpenWorldQualificationRecord:
+    return OpenWorldQualificationRecord(
+        schema_version=row["schema_version"],
+        component_identity_digest=row["component_identity_digest"],
+        suite_digest=row["suite_digest"],
+        result_digest=row["result_digest"],
+        class_counts=tuple(
+            OpenWorldQualificationClassCount(**count)
+            for count in json.loads(row["class_counts_json"])
+        ),
+        passed=bool(row["passed"]),
+        observation_digests=tuple(json.loads(row["observation_digests_json"])),
+        created_at=row["created_at"],
+    )
 
 
 def _row_to_playbook_optimization_candidate(
@@ -714,34 +804,55 @@ class OptimizationJobStoreMixin:
         now: int | None = None,
     ) -> bool:
         advanced_at = self._lease_now(now)
-        predecessor = _STAGE_PREDECESSORS.get(stage)
-        terminal_status: str | None = None
-        if stage == "applied":
-            if terminal_outcome not in (None, "applied"):
-                return False
-            terminal_outcome = "applied"
-            terminal_status = "completed"
-        elif stage == "failed":
-            if terminal_outcome not in _FAILURE_OUTCOMES:
-                return False
-            terminal_status = "failed"
-        elif stage == "abstained":
-            if terminal_outcome not in _ABSTENTION_OUTCOMES:
-                return False
-            terminal_status = "skipped"
-        elif predecessor is None or terminal_outcome is not None:
-            return False
         with self._lock:
+            row = self.conn.execute(
+                "SELECT optimizer_kind FROM playbook_optimization_jobs WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()
+            if row is None:
+                return False
+            optimizer_kind = row["optimizer_kind"]
+            predecessors = _STAGE_PREDECESSORS_BY_OPTIMIZER.get(optimizer_kind, {}).get(
+                stage
+            )
+            terminal_status: str | None = None
+            if stage == "applied":
+                if optimizer_kind != "offline_tuner_replay" or terminal_outcome not in (
+                    None,
+                    "applied",
+                ):
+                    return False
+                terminal_outcome = "applied"
+                terminal_status = "completed"
+            elif stage in ("failed", "abstained"):
+                if terminal_outcome not in _TERMINAL_OUTCOMES_BY_OPTIMIZER.get(
+                    optimizer_kind, {}
+                ).get(stage, set()):
+                    return False
+                terminal_status = "failed" if stage == "failed" else "skipped"
+            elif predecessors is None or terminal_outcome is not None:
+                return False
             if terminal_status is None:
+                if predecessors is None:
+                    return False
                 cur = self.conn.execute(
                     """UPDATE playbook_optimization_jobs
                        SET stage = ?, updated_at = ?
                        WHERE job_id = ?
                          AND status IN ('pending', 'running')
+                         AND optimizer_kind = ?
                          AND lease_fence = ?
                          AND lease_expires_at > ?
-                         AND stage = ?""",
-                    (stage, advanced_at, job_id, fence, advanced_at, predecessor),
+                         AND stage IN (?, ?)""",
+                    (
+                        stage,
+                        advanced_at,
+                        job_id,
+                        optimizer_kind,
+                        fence,
+                        advanced_at,
+                        *predecessors,
+                    ),
                 )
             elif stage == "applied":
                 cur = self.conn.execute(
@@ -754,6 +865,7 @@ class OptimizationJobStoreMixin:
                            updated_at = ?
                        WHERE job_id = ?
                          AND status IN ('pending', 'running')
+                         AND optimizer_kind = 'offline_tuner_replay'
                          AND lease_fence = ?
                          AND lease_expires_at > ?
                          AND stage = 'publishing'""",
@@ -768,8 +880,10 @@ class OptimizationJobStoreMixin:
                     ),
                 )
             else:
+                active_stages = _ACTIVE_STAGES_BY_OPTIMIZER.get(optimizer_kind, ())
+                placeholders = ", ".join("?" for _ in active_stages)
                 cur = self.conn.execute(
-                    """UPDATE playbook_optimization_jobs
+                    f"""UPDATE playbook_optimization_jobs
                        SET stage = ?,
                            terminal_outcome = ?,
                            status = ?,
@@ -778,23 +892,20 @@ class OptimizationJobStoreMixin:
                            updated_at = ?
                        WHERE job_id = ?
                          AND status IN ('pending', 'running')
+                         AND optimizer_kind = ?
                          AND lease_fence = ?
                          AND lease_expires_at > ?
-                         AND stage IN (
-                             'evidence_frozen',
-                             'candidate_generated',
-                             'replay_running',
-                             'replay_evaluated',
-                             'publishing'
-                         )""",
+                         AND stage IN ({placeholders})""",
                     (
                         stage,
                         terminal_outcome,
                         terminal_status,
                         advanced_at,
                         job_id,
+                        optimizer_kind,
                         fence,
                         advanced_at,
+                        *active_stages,
                     ),
                 )
             if self._own_transaction():
@@ -878,6 +989,53 @@ class OptimizationJobStoreMixin:
                 if owns_transaction:
                     self.conn.rollback()
                 raise
+
+    @SQLiteStorageBase.handle_exceptions
+    def persist_open_world_qualification_record(
+        self, record: OpenWorldQualificationRecord
+    ) -> OpenWorldQualificationRecord:
+        with self._lock:
+            owns_transaction = self._own_transaction()
+            if owns_transaction:
+                self.conn.execute("BEGIN IMMEDIATE")
+            try:
+                existing = self.conn.execute(
+                    _QUALIFICATION_SELECT_SQL,
+                    (record.component_identity_digest, record.suite_digest),
+                ).fetchone()
+                if existing is not None:
+                    stored = _row_to_open_world_qualification_record(existing)
+                    if stored.semantic_key() != record.semantic_key():
+                        raise OpenWorldQualificationConflictError(
+                            "open-world qualification record conflicts with the "
+                            "record already cached for this identity and suite"
+                        )
+                else:
+                    self.conn.execute(
+                        _QUALIFICATION_INSERT_SQL,
+                        _qualification_insert_values(record),
+                    )
+                    stored = record
+                if owns_transaction:
+                    self.conn.commit()
+                return stored
+            except Exception:
+                if owns_transaction:
+                    self.conn.rollback()
+                raise
+
+    @SQLiteStorageBase.handle_exceptions
+    def load_open_world_qualification_record(
+        self,
+        *,
+        component_identity_digest: str,
+        suite_digest: str,
+    ) -> OpenWorldQualificationRecord | None:
+        row = self._fetchone(
+            _QUALIFICATION_SELECT_SQL,
+            (component_identity_digest, suite_digest),
+        )
+        return None if row is None else _row_to_open_world_qualification_record(row)
 
     @SQLiteStorageBase.handle_exceptions
     def get_playbook_optimization_artifact(

@@ -31,6 +31,7 @@ PUBLIC_SYMBOLS = [
     "LiteLLMClient",
     "LiteLLMConfig",
     "LiteLLMClientError",
+    "ProviderRequestGuardError",
     "StructuredOutputRepairError",
     "StructuredOutputValidator",
     "ToolCallingChatResponse",
@@ -115,9 +116,20 @@ def test_boot_import_paths():
         LiteLLMClient,
         LiteLLMClientError,
         LiteLLMConfig,
+        ProviderRequestGuardError,
         ToolCallingChatResponse,
         create_litellm_client,
     )
+
+
+def test_provider_request_guard_error_is_re_exported_from_llm_package():
+    """Callers can catch provider-boundary guards without importing internals."""
+    from reflexio.server.llm import ProviderRequestGuardError
+    from reflexio.server.llm._litellm_text_generation import (
+        ProviderRequestGuardError as ImplementationProviderRequestGuardError,
+    )
+
+    assert ProviderRequestGuardError is ImplementationProviderRequestGuardError
 
 
 # ---------------------------------------------------------------------------

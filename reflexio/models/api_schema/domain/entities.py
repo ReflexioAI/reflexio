@@ -7,6 +7,7 @@ from typing import Any, Final, Literal, Self
 
 from pydantic import (
     BaseModel,
+    ConfigDict,
     Field,
     PrivateAttr,
     field_validator,
@@ -122,6 +123,11 @@ __all__ = [
     "PlaybookOptimizationCandidate",
     "PlaybookOptimizationEvaluation",
     "PlaybookOptimizationEvent",
+    "OpenWorldQualificationClass",
+    "OPEN_WORLD_QUALIFICATION_CLASSES",
+    "OPEN_WORLD_QUALIFICATION_RECORD_SCHEMA_VERSION",
+    "OpenWorldQualificationClassCount",
+    "OpenWorldQualificationRecord",
     "AgentPlaybookSourceWindow",
     "agent_playbook_to_snapshot",
     "RunPlaybookAggregationRequest",
@@ -412,9 +418,11 @@ OptimizerKind = Literal[
 
 OptimizationJobStage = Literal[
     "evidence_frozen",
+    "discovery_analyzed",
     "candidate_generated",
     "replay_running",
     "replay_evaluated",
+    "held_out_analyzed",
     "publishing",
     "applied",
     "abstained",
@@ -438,6 +446,12 @@ OptimizationTerminalOutcome = Literal[
     "replay_failed",
     "publication_failed",
     "governance_erased",
+    "no_grounded_hypothesis",
+    "analyst_unqualified",
+    "heldout_evidence_failed",
+    "stale_incumbent",
+    "governance_invalidated",
+    "infrastructure_failure",
 ]
 
 OptimizationArtifactKind = Literal[
@@ -447,6 +461,9 @@ OptimizationArtifactKind = Literal[
     "candidate",
     "candidate_search_projection",
     "open_world_evidence_bundle",
+    "open_world_discovery_memo",
+    "open_world_candidate",
+    "open_world_attempt_decision",
 ]
 
 Sha256Digest = str
@@ -601,6 +618,149 @@ class PlaybookOptimizationEvent(BaseModel):
     event_type: str
     payload_json: str = "{}"
     created_at: int = Field(default_factory=lambda: int(datetime.now(UTC).timestamp()))
+
+
+OpenWorldQualificationClass = Literal[
+    "citation_fidelity",
+    "abstention",
+    "support",
+    "refutation",
+    "insufficiency",
+    "unsupported_causal_claim_rejection",
+    "prompt_injection_resistance",
+]
+
+OPEN_WORLD_QUALIFICATION_CLASSES: Final[tuple[OpenWorldQualificationClass, ...]] = (
+    "citation_fidelity",
+    "abstention",
+    "support",
+    "refutation",
+    "insufficiency",
+    "unsupported_causal_claim_rejection",
+    "prompt_injection_resistance",
+)
+
+OPEN_WORLD_QUALIFICATION_RECORD_SCHEMA_VERSION: Final[str] = (
+    "offline-tuner-open-world-qualification-result-v1"
+)
+
+
+def _validate_lowercase_sha256(label: str, value: str) -> str:
+    """Return ``value`` when it is a lowercase SHA-256 hex digest.
+
+    Args:
+        label (str): Field name used in the raised error message.
+        value (str): Candidate digest.
+
+    Returns:
+        str: The validated digest.
+
+    Raises:
+        ValueError: If ``value`` is not 64 lowercase hex characters.
+    """
+    if len(value) != 64 or any(char not in "0123456789abcdef" for char in value):
+        raise ValueError(f"{label} must be lowercase SHA-256 hex")
+    return value
+
+
+class OpenWorldQualificationClassCount(BaseModel):
+    """Diagnostic required/passed counts for one safety-critical class.
+
+    Counts are never combined into a score: pass-all qualification is decided
+    by the reducer, and these values exist only to explain one result.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    qualification_class: OpenWorldQualificationClass
+    required: int = Field(ge=0)
+    passed_required: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def validate_passed_within_required(self) -> Self:
+        if self.passed_required > self.required:
+            raise ValueError("qualification passed_required may not exceed required")
+        return self
+
+
+class OpenWorldQualificationRecord(BaseModel):
+    """One immutable pass-all qualification result for an analyst identity.
+
+    The record carries no customer data or model output: only the pinned
+    component identity, the suite it was measured against, the canonical
+    result digest, per-class diagnostic counts for every one of the seven
+    safety-critical classes in canonical order, and the sorted, unique
+    digests of the observations that produced it.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    schema_version: Literal["offline-tuner-open-world-qualification-result-v1"] = (
+        "offline-tuner-open-world-qualification-result-v1"
+    )
+    component_identity_digest: Sha256Digest
+    suite_digest: Sha256Digest
+    result_digest: Sha256Digest
+    class_counts: tuple[OpenWorldQualificationClassCount, ...]
+    passed: bool
+    observation_digests: tuple[Sha256Digest, ...] = ()
+    created_at: int = Field(
+        default_factory=lambda: int(datetime.now(UTC).timestamp()), ge=0
+    )
+
+    @field_validator("component_identity_digest", "suite_digest", "result_digest")
+    @classmethod
+    def validate_identity_digests(cls, value: str) -> str:
+        return _validate_lowercase_sha256("qualification digest", value)
+
+    @field_validator("class_counts")
+    @classmethod
+    def validate_class_counts(
+        cls, value: tuple[OpenWorldQualificationClassCount, ...]
+    ) -> tuple[OpenWorldQualificationClassCount, ...]:
+        observed = tuple(count.qualification_class for count in value)
+        if observed != OPEN_WORLD_QUALIFICATION_CLASSES:
+            raise ValueError(
+                "qualification class_counts must list every safety-critical "
+                "class exactly once in canonical order"
+            )
+        return value
+
+    @field_validator("observation_digests")
+    @classmethod
+    def validate_observation_digests(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        for digest in value:
+            _validate_lowercase_sha256("qualification observation digest", digest)
+        if list(value) != sorted(set(value)):
+            raise ValueError(
+                "qualification observation digests must be sorted and unique"
+            )
+        return value
+
+    @model_validator(mode="after")
+    def validate_passed_requires_all_class_counts(self) -> Self:
+        if self.passed and any(
+            count.passed_required != count.required for count in self.class_counts
+        ):
+            raise ValueError(
+                "qualification passed=true requires every class to pass required"
+            )
+        return self
+
+    def semantic_key(self) -> tuple[Any, ...]:
+        """Return the conflict-detection identity, excluding ``created_at``."""
+        return (
+            self.schema_version,
+            self.component_identity_digest,
+            self.suite_digest,
+            self.result_digest,
+            tuple(
+                (count.qualification_class, count.required, count.passed_required)
+                for count in self.class_counts
+            ),
+            self.passed,
+            self.observation_digests,
+        )
 
 
 class AgentPlaybookSourceWindow(BaseModel):

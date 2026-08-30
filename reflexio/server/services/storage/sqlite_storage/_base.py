@@ -2202,9 +2202,17 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             "CHECK (stage IS NULL OR stage IN",
             "CHECK (terminal_outcome IS NULL OR terminal_outcome IN",
             "'governance_erased'",
+            "'discovery_analyzed'",
+            "'held_out_analyzed'",
+            "'no_grounded_hypothesis'",
+            "'analyst_unqualified'",
+            "'heldout_evidence_failed'",
+            "'stale_incumbent'",
+            "'governance_invalidated'",
+            "'infrastructure_failure'",
         )
         if all(check in table_sql for check in required_checks) and (
-            "'offline_tuner_open_world'" not in table_sql
+            "'offline_tuner_open_world'" in table_sql
         ):
             return
         foreign_keys_enabled = bool(
@@ -2228,6 +2236,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                     CHECK (optimizer_kind IN (
                         'gepa',
                         'offline_tuner_replay',
+                        'offline_tuner_open_world',
                         'offline_tuner_legacy',
                         'optimizer_legacy_unknown'
                     )),
@@ -2245,9 +2254,11 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                 lease_expires_at INTEGER,
                 stage TEXT CHECK (stage IS NULL OR stage IN (
                     'evidence_frozen',
+                    'discovery_analyzed',
                     'candidate_generated',
                     'replay_running',
                     'replay_evaluated',
+                    'held_out_analyzed',
                     'publishing',
                     'applied',
                     'abstained',
@@ -2269,7 +2280,13 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                     'generation_failed',
                     'replay_failed',
                     'publication_failed',
-                    'governance_erased'
+                    'governance_erased',
+                    'no_grounded_hypothesis',
+                    'analyst_unqualified',
+                    'heldout_evidence_failed',
+                    'stale_incumbent',
+                    'governance_invalidated',
+                    'infrastructure_failure'
                 )),
                 expected_population_manifest_digest TEXT,
                 generation_selection_manifest_digest TEXT,
@@ -2366,6 +2383,9 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             "'candidate'",
             "'candidate_search_projection'",
             "'open_world_evidence_bundle'",
+            "'open_world_discovery_memo'",
+            "'open_world_candidate'",
+            "'open_world_attempt_decision'",
         )
         if all(artifact_kind in table_sql for artifact_kind in artifact_kinds):
             return
@@ -2396,7 +2416,10 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                         'replay_manifest',
                         'candidate',
                         'candidate_search_projection',
-                        'open_world_evidence_bundle'
+                        'open_world_evidence_bundle',
+                        'open_world_discovery_memo',
+                        'open_world_candidate',
+                        'open_world_attempt_decision'
                     )),
                     content_json TEXT NOT NULL,
                     content_digest TEXT NOT NULL,
@@ -3394,6 +3417,7 @@ CREATE TABLE IF NOT EXISTS playbook_optimization_jobs (
         CHECK (optimizer_kind IN (
             'gepa',
             'offline_tuner_replay',
+            'offline_tuner_open_world',
             'offline_tuner_legacy',
             'optimizer_legacy_unknown'
         )),
@@ -3411,9 +3435,11 @@ CREATE TABLE IF NOT EXISTS playbook_optimization_jobs (
     lease_expires_at INTEGER,
     stage TEXT CHECK (stage IS NULL OR stage IN (
         'evidence_frozen',
+        'discovery_analyzed',
         'candidate_generated',
         'replay_running',
         'replay_evaluated',
+        'held_out_analyzed',
         'publishing',
         'applied',
         'abstained',
@@ -3435,7 +3461,13 @@ CREATE TABLE IF NOT EXISTS playbook_optimization_jobs (
         'generation_failed',
         'replay_failed',
         'publication_failed',
-        'governance_erased'
+        'governance_erased',
+        'no_grounded_hypothesis',
+        'analyst_unqualified',
+        'heldout_evidence_failed',
+        'stale_incumbent',
+        'governance_invalidated',
+        'infrastructure_failure'
     )),
     expected_population_manifest_digest TEXT,
     generation_selection_manifest_digest TEXT,
@@ -3495,7 +3527,10 @@ CREATE TABLE IF NOT EXISTS playbook_optimization_artifacts (
         'replay_manifest',
         'candidate',
         'candidate_search_projection',
-        'open_world_evidence_bundle'
+        'open_world_evidence_bundle',
+        'open_world_discovery_memo',
+        'open_world_candidate',
+        'open_world_attempt_decision'
     )),
     content_json TEXT NOT NULL,
     content_digest TEXT NOT NULL,
@@ -3507,6 +3542,28 @@ CREATE TABLE IF NOT EXISTS playbook_optimization_artifacts (
 );
 CREATE INDEX IF NOT EXISTS idx_poa_job
     ON playbook_optimization_artifacts(job_id);
+
+CREATE TABLE IF NOT EXISTS offline_tuner_open_world_qualifications (
+    component_identity_digest TEXT NOT NULL,
+    suite_digest TEXT NOT NULL,
+    schema_version TEXT NOT NULL,
+    result_digest TEXT NOT NULL,
+    passed INTEGER NOT NULL CHECK (passed IN (0, 1)),
+    class_counts_json TEXT NOT NULL,
+    observation_digests_json TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (component_identity_digest, suite_digest)
+);
+CREATE TRIGGER IF NOT EXISTS offline_tuner_open_world_qualifications_no_update
+BEFORE UPDATE ON offline_tuner_open_world_qualifications
+BEGIN
+    SELECT RAISE(ABORT, 'open-world qualification records are immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS offline_tuner_open_world_qualifications_no_delete
+BEFORE DELETE ON offline_tuner_open_world_qualifications
+BEGIN
+    SELECT RAISE(ABORT, 'open-world qualification records are immutable');
+END;
 
 CREATE TABLE IF NOT EXISTS playbook_optimization_candidates (
     candidate_id INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -7,6 +7,7 @@ import sqlite3
 from collections.abc import Generator
 from hashlib import sha256
 from pathlib import Path
+from typing import cast
 
 import pytest
 from pydantic import ValidationError
@@ -23,6 +24,114 @@ from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 from reflexio.server.services.storage.storage_base import BaseStorage
 
 pytestmark = pytest.mark.integration
+
+
+_STAGE_PATHS_BY_OPTIMIZER: dict[str, tuple[str, ...]] = {
+    "offline_tuner_replay": (
+        "evidence_frozen",
+        "candidate_generated",
+        "replay_running",
+        "replay_evaluated",
+        "publishing",
+    ),
+    "offline_tuner_open_world": (
+        "evidence_frozen",
+        "discovery_analyzed",
+        "candidate_generated",
+        "held_out_analyzed",
+    ),
+}
+_ORDINARY_STAGES = (
+    "discovery_analyzed",
+    "candidate_generated",
+    "replay_running",
+    "replay_evaluated",
+    "held_out_analyzed",
+    "publishing",
+)
+_INVALID_STAGE_REQUESTS = (
+    ("evidence_frozen", None),
+    ("failed", None),
+    ("abstained", None),
+    ("unknown_stage", None),
+    ("unknown_stage", "unknown_terminal_outcome"),
+    ("failed", "unknown_terminal_outcome"),
+    ("abstained", "unknown_terminal_outcome"),
+    *(
+        (stage, "infrastructure_failure")
+        for stage in ("evidence_frozen", *_ORDINARY_STAGES)
+    ),
+)
+_ALL_TERMINAL_OUTCOMES = (
+    "applied",
+    "insufficient_negative_evidence",
+    "insufficient_positive_evidence",
+    "insufficient_coverage",
+    "replay_unsupported",
+    "deployment_unsupported",
+    "incomplete_replay_scope",
+    "insufficient_replay_cases",
+    "replay_inconclusive",
+    "candidate_regressed",
+    "candidate_did_not_improve",
+    "incumbent_changed",
+    "generation_failed",
+    "replay_failed",
+    "publication_failed",
+    "governance_erased",
+    "no_grounded_hypothesis",
+    "analyst_unqualified",
+    "heldout_evidence_failed",
+    "stale_incumbent",
+    "governance_invalidated",
+    "infrastructure_failure",
+)
+_TERMINAL_OUTCOMES_BY_OPTIMIZER: dict[str, dict[str, frozenset[str]]] = {
+    "offline_tuner_replay": {
+        "failed": frozenset(
+            {
+                "generation_failed",
+                "replay_failed",
+                "publication_failed",
+                "infrastructure_failure",
+            }
+        ),
+        "abstained": frozenset(
+            {
+                "insufficient_negative_evidence",
+                "insufficient_positive_evidence",
+                "insufficient_coverage",
+                "replay_unsupported",
+                "deployment_unsupported",
+                "incomplete_replay_scope",
+                "insufficient_replay_cases",
+                "replay_inconclusive",
+                "candidate_regressed",
+                "candidate_did_not_improve",
+                "incumbent_changed",
+            }
+        ),
+    },
+    "offline_tuner_open_world": {
+        "failed": frozenset(
+            {
+                "infrastructure_failure",
+                "analyst_unqualified",
+                "stale_incumbent",
+                "governance_invalidated",
+            }
+        ),
+        "abstained": frozenset(
+            {
+                "no_grounded_hypothesis",
+                "analyst_unqualified",
+                "heldout_evidence_failed",
+                "stale_incumbent",
+                "governance_invalidated",
+            }
+        ),
+    },
+}
 
 
 @pytest.fixture
@@ -122,12 +231,13 @@ def test_conflicting_active_identity_is_rejected(storage: BaseStorage) -> None:
         storage.create_or_get_playbook_optimization_job(_replay_job("d1", "a2"))
 
 
-def test_sqlite_rejects_open_world_optimizer_jobs(storage: BaseStorage) -> None:
+def test_sqlite_persists_open_world_optimizer_jobs(storage: BaseStorage) -> None:
     open_world_job = _replay_job("open-world-discovery", "open-world-attempt")
     open_world_job.optimizer_kind = "offline_tuner_open_world"
 
-    with pytest.raises(StorageError, match="CHECK constraint failed"):
-        storage.create_or_get_playbook_optimization_job(open_world_job)
+    saved = storage.create_or_get_playbook_optimization_job(open_world_job)
+
+    assert saved.optimizer_kind == "offline_tuner_open_world"
 
 
 def test_gepa_publication_reclaim_contract_has_none_live_and_reclaimed_outcomes(
@@ -253,6 +363,9 @@ def test_stage_advancement_is_linear(storage: BaseStorage) -> None:
     [
         ("abstained", "candidate_did_not_improve", "skipped"),
         ("failed", "generation_failed", "failed"),
+        ("failed", "replay_failed", "failed"),
+        ("failed", "publication_failed", "failed"),
+        ("failed", "infrastructure_failure", "failed"),
     ],
 )
 def test_terminal_stage_records_outcome_and_releases_lease(
@@ -587,20 +700,27 @@ def test_previous_artifact_schema_is_upgraded_without_losing_constraints(
             )
         store.conn.rollback()
 
-        evidence_json = '{"cases":[1]}'
-        evidence = schemas.PlaybookOptimizationArtifact(
-            job_id=41,
-            artifact_kind="open_world_evidence_bundle",
-            content_json=evidence_json,
-            content_digest=sha256(evidence_json.encode()).hexdigest(),
-            created_at=107,
-            updated_at=108,
-        )
-        saved = store.upsert_playbook_optimization_artifact(evidence, fence=3, now=500)
-        assert (
-            store.get_playbook_optimization_artifact(41, "open_world_evidence_bundle")
-            == saved
-        )
+        for artifact_kind in (
+            "open_world_evidence_bundle",
+            "open_world_discovery_memo",
+            "open_world_candidate",
+            "open_world_attempt_decision",
+        ):
+            content_json = f'{{"artifact_kind":"{artifact_kind}"}}'
+            artifact = schemas.PlaybookOptimizationArtifact(
+                job_id=41,
+                artifact_kind=artifact_kind,
+                content_json=content_json,
+                content_digest=sha256(content_json.encode()).hexdigest(),
+                created_at=107,
+                updated_at=108,
+            )
+            saved = store.upsert_playbook_optimization_artifact(
+                artifact,
+                fence=3,
+                now=500,
+            )
+            assert store.get_playbook_optimization_artifact(41, artifact_kind) == saved
 
         assert store.migrate() is True
         store.conn.execute("DELETE FROM playbook_optimization_jobs WHERE job_id = 41")
@@ -844,6 +964,278 @@ def test_ordinary_stage_advance_rejects_governance_erased(
     assert persisted.status == "running"
     assert persisted.stage == "evidence_frozen"
     assert persisted.terminal_outcome is None
+
+
+def _claimed_job_at_stage(
+    storage: BaseStorage,
+    stage: schemas.OptimizationJobStage,
+    *,
+    now: int,
+    optimizer_kind: schemas.OptimizerKind = "offline_tuner_replay",
+    target_id: int = 41,
+) -> tuple[int, int]:
+    job = _replay_job(f"d-{target_id}", f"a-{target_id}")
+    job.optimizer_kind = optimizer_kind
+    job.target_id = target_id
+    job = storage.create_or_get_playbook_optimization_job(job)
+    claim = storage.claim_playbook_optimization_job(
+        job_id=job.job_id,
+        owner="worker-a",
+        lease_seconds=60,
+        now=now,
+    )
+    assert isinstance(storage, SQLiteStorage)
+    storage.conn.execute(
+        "UPDATE playbook_optimization_jobs SET stage = ? WHERE job_id = ?",
+        (stage, job.job_id),
+    )
+    storage.conn.commit()
+    return job.job_id, claim.fence
+
+
+def _optimization_job_row(storage: BaseStorage, job_id: int) -> dict[str, object]:
+    assert isinstance(storage, SQLiteStorage)
+    row = storage.conn.execute(
+        "SELECT * FROM playbook_optimization_jobs WHERE job_id = ?", (job_id,)
+    ).fetchone()
+    assert row is not None
+    return dict(row)
+
+
+def test_invalid_stage_inputs_leave_sqlite_job_unchanged(
+    storage: BaseStorage,
+) -> None:
+    case = 0
+    for optimizer_kind in _STAGE_PATHS_BY_OPTIMIZER:
+        for stage, terminal_outcome in _INVALID_STAGE_REQUESTS:
+            case += 1
+            job_id, fence = _claimed_job_at_stage(
+                storage,
+                "evidence_frozen",
+                now=7_000,
+                optimizer_kind=cast(schemas.OptimizerKind, optimizer_kind),
+                target_id=50_000 + case,
+            )
+            before = _optimization_job_row(storage, job_id)
+
+            assert (
+                storage.advance_playbook_optimization_stage(
+                    job_id=job_id,
+                    fence=fence,
+                    stage=cast(schemas.OptimizationJobStage, stage),
+                    terminal_outcome=cast(
+                        schemas.OptimizationTerminalOutcome | None, terminal_outcome
+                    ),
+                    now=7_001,
+                )
+                is False
+            )
+            assert _optimization_job_row(storage, job_id) == before
+
+    for optimizer_kind in (
+        "gepa",
+        "offline_tuner_legacy",
+        "optimizer_legacy_unknown",
+    ):
+        for stage, terminal_outcome in (
+            ("candidate_generated", None),
+            ("failed", "infrastructure_failure"),
+            ("abstained", "candidate_did_not_improve"),
+        ):
+            case += 1
+            job_id, fence = _claimed_job_at_stage(
+                storage,
+                "evidence_frozen",
+                now=7_000,
+                optimizer_kind=cast(schemas.OptimizerKind, optimizer_kind),
+                target_id=60_000 + case,
+            )
+            before = _optimization_job_row(storage, job_id)
+
+            assert (
+                storage.advance_playbook_optimization_stage(
+                    job_id=job_id,
+                    fence=fence,
+                    stage=cast(schemas.OptimizationJobStage, stage),
+                    terminal_outcome=cast(
+                        schemas.OptimizationTerminalOutcome | None, terminal_outcome
+                    ),
+                    now=7_001,
+                )
+                is False
+            )
+            assert _optimization_job_row(storage, job_id) == before
+
+
+def test_optimizer_kind_stage_matrix_is_exact(storage: BaseStorage) -> None:
+    """Reject every non-edge, including every cross-family stage."""
+    case = 0
+    for optimizer_kind, stages in _STAGE_PATHS_BY_OPTIMIZER.items():
+        for current_stage in stages:
+            for target_stage in _ORDINARY_STAGES:
+                case += 1
+                job_id, fence = _claimed_job_at_stage(
+                    storage,
+                    cast(schemas.OptimizationJobStage, current_stage),
+                    now=7_000,
+                    optimizer_kind=cast(schemas.OptimizerKind, optimizer_kind),
+                    target_id=10_000 + case,
+                )
+                expected = (
+                    stages.index(target_stage) == stages.index(current_stage) + 1
+                    if target_stage in stages
+                    else False
+                )
+                before = (
+                    _optimization_job_row(storage, job_id) if not expected else None
+                )
+
+                assert (
+                    storage.advance_playbook_optimization_stage(
+                        job_id=job_id,
+                        fence=fence,
+                        stage=cast(schemas.OptimizationJobStage, target_stage),
+                        now=7_001,
+                    )
+                    is expected
+                )
+                if before is not None:
+                    assert _optimization_job_row(storage, job_id) == before
+                persisted = storage.get_playbook_optimization_job(job_id)
+                assert persisted is not None
+                assert persisted.stage == (target_stage if expected else current_stage)
+                assert persisted.status == "running"
+
+
+def test_optimizer_kind_terminal_outcome_matrix_is_exact(
+    storage: BaseStorage,
+) -> None:
+    """Reject every terminal outcome assigned to the other family."""
+    case = 0
+    for optimizer_kind, stages in _STAGE_PATHS_BY_OPTIMIZER.items():
+        for current_stage in stages:
+            for terminal_stage in ("failed", "abstained"):
+                for outcome in _ALL_TERMINAL_OUTCOMES:
+                    case += 1
+                    job_id, fence = _claimed_job_at_stage(
+                        storage,
+                        cast(schemas.OptimizationJobStage, current_stage),
+                        now=7_000,
+                        optimizer_kind=cast(schemas.OptimizerKind, optimizer_kind),
+                        target_id=20_000 + case,
+                    )
+                    expected = (
+                        outcome
+                        in _TERMINAL_OUTCOMES_BY_OPTIMIZER[optimizer_kind][
+                            terminal_stage
+                        ]
+                    )
+                    before = (
+                        _optimization_job_row(storage, job_id) if not expected else None
+                    )
+
+                    assert (
+                        storage.advance_playbook_optimization_stage(
+                            job_id=job_id,
+                            fence=fence,
+                            stage=cast(schemas.OptimizationJobStage, terminal_stage),
+                            terminal_outcome=cast(
+                                schemas.OptimizationTerminalOutcome, outcome
+                            ),
+                            now=7_001,
+                        )
+                        is expected
+                    )
+                    if before is not None:
+                        assert _optimization_job_row(storage, job_id) == before
+                    persisted = storage.get_playbook_optimization_job(job_id)
+                    assert persisted is not None
+                    assert persisted.stage == (
+                        terminal_stage if expected else current_stage
+                    )
+                    assert persisted.terminal_outcome == (outcome if expected else None)
+                    assert persisted.status == (
+                        ("failed" if terminal_stage == "failed" else "skipped")
+                        if expected
+                        else "running"
+                    )
+
+            for outcome in (None, *_ALL_TERMINAL_OUTCOMES):
+                case += 1
+                job_id, fence = _claimed_job_at_stage(
+                    storage,
+                    cast(schemas.OptimizationJobStage, current_stage),
+                    now=7_000,
+                    optimizer_kind=cast(schemas.OptimizerKind, optimizer_kind),
+                    target_id=30_000 + case,
+                )
+                expected = (
+                    optimizer_kind == "offline_tuner_replay"
+                    and current_stage == "publishing"
+                    and outcome in (None, "applied")
+                )
+                before = (
+                    _optimization_job_row(storage, job_id) if not expected else None
+                )
+
+                assert (
+                    storage.advance_playbook_optimization_stage(
+                        job_id=job_id,
+                        fence=fence,
+                        stage="applied",
+                        terminal_outcome=cast(
+                            schemas.OptimizationTerminalOutcome | None, outcome
+                        ),
+                        now=7_001,
+                    )
+                    is expected
+                )
+                if before is not None:
+                    assert _optimization_job_row(storage, job_id) == before
+                persisted = storage.get_playbook_optimization_job(job_id)
+                assert persisted is not None
+                assert persisted.stage == ("applied" if expected else current_stage)
+                assert persisted.terminal_outcome == ("applied" if expected else None)
+                assert persisted.status == ("completed" if expected else "running")
+
+
+def test_widened_terminal_outcome_rejects_stale_lease_and_settled_job(
+    storage: BaseStorage,
+) -> None:
+    job_id, fence = _claimed_job_at_stage(
+        storage,
+        "held_out_analyzed",
+        now=7_000,
+        optimizer_kind="offline_tuner_open_world",
+    )
+    assert isinstance(storage, SQLiteStorage)
+
+    def _abstain(*, at_fence: int, now: int) -> bool:
+        return storage.advance_playbook_optimization_stage(
+            job_id=job_id,
+            fence=at_fence,
+            stage="abstained",
+            terminal_outcome="stale_incumbent",
+            now=now,
+        )
+
+    assert _abstain(at_fence=fence + 1, now=7_001) is False
+    assert _abstain(at_fence=fence, now=7_060) is False
+
+    storage.conn.execute(
+        "UPDATE playbook_optimization_jobs SET stage = 'failed' WHERE job_id = ?",
+        (job_id,),
+    )
+    storage.conn.commit()
+    assert _abstain(at_fence=fence, now=7_001) is False
+
+    storage.conn.execute(
+        "UPDATE playbook_optimization_jobs "
+        "SET stage = 'held_out_analyzed', status = 'completed' WHERE job_id = ?",
+        (job_id,),
+    )
+    storage.conn.commit()
+    assert _abstain(at_fence=fence, now=7_001) is False
 
 
 def _create_legacy_optimizer_schema(db_path: Path) -> None:
