@@ -661,6 +661,29 @@ class UserPlaybookLifecycleTerminationStore(Protocol):
         """Reselect the retained predecessor and terminalize, under a fence."""
         ...
 
+    def confirm_user_playbook_provisional_publication(
+        self,
+        *,
+        lifecycle_id: int,
+        expected_fence: int,
+        expected_successor_fingerprint: str,
+        support_session_count: int,
+        refute_session_count: int,
+        global_coverage_numerator: int,
+        global_coverage_denominator: int,
+        target_coverage_numerator: int,
+        target_coverage_denominator: int,
+    ) -> LifecycleTerminalResult:
+        """Keep the successor and terminalize as confirmed, under a fence.
+
+        No ``reason`` parameter: ``confirmed_online_support`` is the only reason
+        this transition can record, so passing it would create a second place
+        the pairing could drift. The six counts are the evidence the boundary
+        decided on; the RPC re-checks the arithmetic itself and refuses an
+        inadmissible set rather than obeying it.
+        """
+        ...
+
     def displace_user_playbook_provisional_publication(
         self, *, lifecycle_id: int
     ) -> LifecycleTerminalResult:
