@@ -11,6 +11,7 @@ from reflexio.models.api_schema.domain import (
     UserPlaybook,
 )
 from reflexio.server.services.playbook.publication import (
+    LIFECYCLE_TERMINAL_REASONS,
     LIFECYCLE_TERMINAL_STATES,
     DecisionProofEnvelope,
     LifecycleTerminalResult,
@@ -56,6 +57,23 @@ def test_lifecycle_terminal_result_is_derived_from_the_state_literal() -> None:
             state="restored",
             terminal_reason="not_a_reason",
             terminal_at=1_700_000_000,
+        )
+    # Phase 6 made 'confirmed' representable: the SQL CHECK
+    # (20260827070000) admits 'confirmed_online_support', so a terminal tuple
+    # read back from an idempotent replay may carry it and this set must too.
+    confirmed = LifecycleTerminalResult(
+        lifecycle_id=1,
+        state="confirmed",
+        terminal_reason="confirmed_online_support",
+        terminal_at=1,
+    )
+    assert confirmed.terminal_reason in LIFECYCLE_TERMINAL_REASONS
+    with pytest.raises(ValueError, match="reason is not enumerated"):
+        LifecycleTerminalResult(
+            lifecycle_id=1,
+            state="confirmed",
+            terminal_reason="confirmed_because_i_said_so",
+            terminal_at=1,
         )
 
 

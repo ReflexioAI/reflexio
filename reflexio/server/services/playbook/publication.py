@@ -21,11 +21,13 @@ PublicationOutcome = Literal["applied", "incumbent_changed"]
 LIFECYCLE_TERMINAL_STATES: frozenset[str] = frozenset(
     get_args(OpenWorldDeploymentLifecycleState)
 ) - {"provisional"}
-# Mirrors user_playbook_deployment_lifecycles_terminal_reason_check
-# (20260827040000). 'observed_regression' is Phase 6's and 'governed_erasure'
-# is the live governance erase path's; both are accepted here because a
-# terminal tuple READ BACK from an idempotent replay may legitimately carry
-# either. The restoration RPC itself accepts a strictly narrower set.
+# Mirrors user_playbook_deployment_lifecycles_terminal_reason_check, which is
+# now NINE values wide (20260827070000). 'governed_erasure' is the live
+# governance erase path's, and 'observed_regression' and
+# 'confirmed_online_support' are Phase 6's two opposite outcomes; all are
+# accepted here because a terminal tuple READ BACK from an idempotent replay may
+# legitimately carry any of them. The restoration RPC accepts a strictly
+# narrower set, and the confirm RPC accepts exactly one.
 LIFECYCLE_TERMINAL_REASONS: frozenset[str] = frozenset(
     {
         "insufficient_online_support",
@@ -36,6 +38,7 @@ LIFECYCLE_TERMINAL_REASONS: frozenset[str] = frozenset(
         "stale_incumbent",
         "observed_regression",
         "governed_erasure",
+        "confirmed_online_support",
     }
 )
 PublishableOptimizerKind = Literal[
