@@ -41,15 +41,17 @@ LIFECYCLE_TERMINAL_REASONS: frozenset[str] = frozenset(
         "confirmed_online_support",
     }
 )
-PublishableOptimizerKind = Literal[
-    "gepa", "offline_tuner_replay", "offline_tuner_open_world"
-]
+PublishableOptimizerKind = Literal["gepa", "offline_tuner_open_world"]
+# 'offline_optimizer' remains in the union because it is a value already
+# PERSISTED on user_playbooks.source rows. Phase 7 removes the only optimizer
+# kind that produced it; the tenant RPC's matching CASE arm goes in Task 10.
 PublicationSource = Literal["gepa", "offline_optimizer"]
 
-_LEGACY_PUBLICATION_OPTIMIZERS = frozenset({"gepa", "offline_tuner_replay"})
-_DECISION_PROOF_OPTIMIZERS = frozenset(
-    {"gepa", "offline_tuner_replay", "offline_tuner_open_world"}
-)
+# Phase 7 retired 'offline_tuner_replay'. The legacy publication path is now
+# GEPA-only: the open-world path publishes through its own provisional
+# publisher, not through publication_source_for_optimizer.
+_LEGACY_PUBLICATION_OPTIMIZERS = frozenset({"gepa"})
+_DECISION_PROOF_OPTIMIZERS = frozenset({"gepa", "offline_tuner_open_world"})
 _PROJECTION_SCHEMA_VERSION = "offline-tuner-candidate-search-projection-v1"
 _USER_PLAYBOOK_FULL_VERSION_SCHEMA = "user-playbook-full-version-v1"
 _CANONICAL_DECIMAL = re.compile(r"-?(?:0|[1-9][0-9]*)(?:\.[0-9]*[1-9])?\Z")
@@ -183,8 +185,11 @@ def _validate_decision_proof_optimizer(value: object) -> None:
 def publication_source_for_optimizer(
     optimizer_kind: OptimizerKind,
 ) -> PublicationSource:
+    # The 'offline_optimizer' arm was reachable only for 'offline_tuner_replay',
+    # which Phase 7 retired. _validate_legacy_publication_optimizer now admits
+    # 'gepa' alone, so the branch is gone rather than left dead.
     _validate_legacy_publication_optimizer(optimizer_kind)
-    return "offline_optimizer" if optimizer_kind != "gepa" else "gepa"
+    return "gepa"
 
 
 def incumbent_user_playbook_semantic_digest(

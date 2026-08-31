@@ -10,7 +10,15 @@ from reflexio.models.api_schema.domain import (
     OpenWorldDeploymentLifecycleState,
     UserPlaybook,
 )
+from reflexio.models.api_schema.domain.entities import (
+    OptimizationArtifactKind,
+    OptimizationJobStage,
+    OptimizationTerminalOutcome,
+    OptimizerKind,
+)
 from reflexio.server.services.playbook.publication import (
+    _DECISION_PROOF_OPTIMIZERS,
+    _LEGACY_PUBLICATION_OPTIMIZERS,
     LIFECYCLE_TERMINAL_REASONS,
     LIFECYCLE_TERMINAL_STATES,
     DecisionProofEnvelope,
@@ -80,7 +88,6 @@ def test_lifecycle_terminal_result_is_derived_from_the_state_literal() -> None:
 def test_open_world_publication_literals_and_user_playbook_field_partition() -> None:
     assert get_args(PublishableOptimizerKind) == (
         "gepa",
-        "offline_tuner_replay",
         "offline_tuner_open_world",
     )
     assert get_args(OpenWorldDeploymentLifecycleState) == (
@@ -248,9 +255,11 @@ def test_publication_canonical_json_must_match_digest_and_bytes() -> None:
 
 def test_publication_envelopes_bind_their_declared_fields() -> None:
     proof = _proof()
+    # A publishable-but-different kind, so the envelope/payload binding is what
+    # raises. A retired kind would raise earlier, at the publishability check.
     with pytest.raises(ValueError, match="optimizer_kind"):
         DecisionProofEnvelope(
-            optimizer_kind="offline_tuner_replay",
+            optimizer_kind="offline_tuner_open_world",
             schema_version=proof.schema_version,
             canonical_json=proof.canonical_json,
             digest=proof.digest,
@@ -306,9 +315,34 @@ def test_publication_request_binds_content_optimizer_and_canonical_epochs() -> N
             revised_content="new content",
             subject_epochs_json=json.dumps({"subjects": []}),
         )
-    with pytest.raises(ValueError, match="optimizer_kind"):
+    # The legacy publication path admits 'gepa' alone after Phase 7.
+    with pytest.raises(ValueError, match="not publishable"):
         PublicationRequest(
-            **{**common, "optimizer_kind": "offline_tuner_replay"},
+            **{**common, "optimizer_kind": "offline_tuner_open_world"},
+            revised_content="new content",
+            subject_epochs_json=_canonical({"subjects": []}),
+        )
+    # The request/proof binding still has to hold for the kind that IS admitted.
+    open_world_proof_json = _canonical(
+        {
+            "decision": "apply",
+            "optimizer_kind": "offline_tuner_open_world",
+            "schema_version": "gepa-publication-proof-v1",
+            "source": "playbook_optimizer",
+        }
+    )
+    with pytest.raises(ValueError, match="decision proof optimizer_kind"):
+        PublicationRequest(
+            **{
+                **common,
+                "decision_proof": DecisionProofEnvelope(
+                    optimizer_kind="offline_tuner_open_world",
+                    schema_version="gepa-publication-proof-v1",
+                    canonical_json=open_world_proof_json,
+                    digest=_digest(open_world_proof_json),
+                    decision="apply",
+                ),
+            },
             revised_content="new content",
             subject_epochs_json=_canonical({"subjects": []}),
         )
@@ -495,3 +529,42 @@ def test_publication_service_requires_explicit_verifier() -> None:
             object(),  # type: ignore[arg-type]
             verifier=object(),  # type: ignore[arg-type]
         )
+
+
+def test_the_optimizer_vocabularies_carry_no_replay_literal() -> None:
+    """Phase 7 removed the replay path; its literals leave the public surface.
+
+    Asserted as EQUALITIES, so a re-added replay literal fails here as loudly as
+    a missing survivor. A subset assertion would pass against a surface that
+    quietly grew the literal back.
+    """
+    assert set(get_args(OptimizerKind)) == {
+        "gepa",
+        "offline_tuner_open_world",
+        "offline_tuner_legacy",
+        "optimizer_legacy_unknown",
+    }
+    assert set(get_args(PublishableOptimizerKind)) == {
+        "gepa",
+        "offline_tuner_open_world",
+    }
+    assert frozenset({"gepa"}) == _LEGACY_PUBLICATION_OPTIMIZERS
+    assert frozenset({"gepa", "offline_tuner_open_world"}) == _DECISION_PROOF_OPTIMIZERS
+
+    for union in (
+        OptimizationJobStage,
+        OptimizationTerminalOutcome,
+        OptimizationArtifactKind,
+    ):
+        assert not [member for member in get_args(union) if "replay" in member], union
+
+
+def test_the_two_backfilled_legacy_kinds_are_retained() -> None:
+    """OQ-1 option A retains the two heuristic backfill labels.
+
+    They were assigned to pre-existing rows by a one-time backfill
+    (``supabase/data/tenant/20260723000000:54-61``); dropping them would make
+    those rows violate the tenant CHECK and abort the contract migration.
+    """
+    assert "offline_tuner_legacy" in get_args(OptimizerKind)
+    assert "optimizer_legacy_unknown" in get_args(OptimizerKind)

@@ -409,9 +409,13 @@ class AgentPlaybook(BaseModel):
     superseded_by: int | None = None
 
 
+# 'offline_tuner_legacy' and 'optimizer_legacy_unknown' were never written by
+# running code. They were assigned to pre-existing rows by a one-time heuristic
+# backfill (supabase/data/tenant/20260723000000:54-61) and are retained
+# permanently as HISTORICAL labels: dropping them would make those rows violate
+# the tenant CHECK and abort the contract migration.
 OptimizerKind = Literal[
     "gepa",
-    "offline_tuner_replay",
     "offline_tuner_open_world",
     "offline_tuner_legacy",
     "optimizer_legacy_unknown",
@@ -425,8 +429,6 @@ OptimizationJobStage = Literal[
     "evidence_frozen",
     "discovery_analyzed",
     "candidate_generated",
-    "replay_running",
-    "replay_evaluated",
     "held_out_analyzed",
     "publishing",
     "applied",
@@ -439,16 +441,11 @@ OptimizationTerminalOutcome = Literal[
     "insufficient_negative_evidence",
     "insufficient_positive_evidence",
     "insufficient_coverage",
-    "replay_unsupported",
     "deployment_unsupported",
-    "incomplete_replay_scope",
-    "insufficient_replay_cases",
-    "replay_inconclusive",
     "candidate_regressed",
     "candidate_did_not_improve",
     "incumbent_changed",
     "generation_failed",
-    "replay_failed",
     "publication_failed",
     "governance_erased",
     "no_grounded_hypothesis",
@@ -462,7 +459,6 @@ OptimizationTerminalOutcome = Literal[
 OptimizationArtifactKind = Literal[
     "expected_population_manifest",
     "generation_selection",
-    "replay_manifest",
     "candidate",
     "candidate_search_projection",
     "open_world_evidence_bundle",

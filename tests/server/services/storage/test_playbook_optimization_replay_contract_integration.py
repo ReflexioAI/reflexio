@@ -27,13 +27,6 @@ pytestmark = pytest.mark.integration
 
 
 _STAGE_PATHS_BY_OPTIMIZER: dict[str, tuple[str, ...]] = {
-    "offline_tuner_replay": (
-        "evidence_frozen",
-        "candidate_generated",
-        "replay_running",
-        "replay_evaluated",
-        "publishing",
-    ),
     "offline_tuner_open_world": (
         "evidence_frozen",
         "discovery_analyzed",
@@ -44,8 +37,6 @@ _STAGE_PATHS_BY_OPTIMIZER: dict[str, tuple[str, ...]] = {
 _ORDINARY_STAGES = (
     "discovery_analyzed",
     "candidate_generated",
-    "replay_running",
-    "replay_evaluated",
     "held_out_analyzed",
     "publishing",
 )
@@ -67,16 +58,11 @@ _ALL_TERMINAL_OUTCOMES = (
     "insufficient_negative_evidence",
     "insufficient_positive_evidence",
     "insufficient_coverage",
-    "replay_unsupported",
     "deployment_unsupported",
-    "incomplete_replay_scope",
-    "insufficient_replay_cases",
-    "replay_inconclusive",
     "candidate_regressed",
     "candidate_did_not_improve",
     "incumbent_changed",
     "generation_failed",
-    "replay_failed",
     "publication_failed",
     "governance_erased",
     "no_grounded_hypothesis",
@@ -87,31 +73,6 @@ _ALL_TERMINAL_OUTCOMES = (
     "infrastructure_failure",
 )
 _TERMINAL_OUTCOMES_BY_OPTIMIZER: dict[str, dict[str, frozenset[str]]] = {
-    "offline_tuner_replay": {
-        "failed": frozenset(
-            {
-                "generation_failed",
-                "replay_failed",
-                "publication_failed",
-                "infrastructure_failure",
-            }
-        ),
-        "abstained": frozenset(
-            {
-                "insufficient_negative_evidence",
-                "insufficient_positive_evidence",
-                "insufficient_coverage",
-                "replay_unsupported",
-                "deployment_unsupported",
-                "incomplete_replay_scope",
-                "insufficient_replay_cases",
-                "replay_inconclusive",
-                "candidate_regressed",
-                "candidate_did_not_improve",
-                "incumbent_changed",
-            }
-        ),
-    },
     "offline_tuner_open_world": {
         "failed": frozenset(
             {
@@ -146,12 +107,17 @@ def storage(tmp_path: Path) -> Generator[BaseStorage]:
         store.conn.close()
 
 
-def _replay_job(
+def _durable_job(
     discovery_key: str,
     attempt_key: str,
 ) -> schemas.PlaybookOptimizationJob:
+    """A generic durable optimizer job for the identity/lease/artifact contracts.
+
+    Phase 7 retired 'offline_tuner_replay'; 'offline_tuner_open_world' is the
+    surviving non-GEPA kind, and none of the contracts below are replay-specific.
+    """
     return schemas.PlaybookOptimizationJob(
-        optimizer_kind="offline_tuner_replay",
+        optimizer_kind="offline_tuner_open_world",
         target_kind="user_playbook",
         target_id=41,
         discovery_key=discovery_key,
@@ -197,10 +163,10 @@ def _artifact(
     )
 
 
-def test_replay_job_model_exposes_typed_durable_fields() -> None:
-    job = _replay_job("d1", "a1")
+def test_durable_job_model_exposes_typed_durable_fields() -> None:
+    job = _durable_job("d1", "a1")
 
-    assert job.optimizer_kind == "offline_tuner_replay"
+    assert job.optimizer_kind == "offline_tuner_open_world"
     assert job.stage == "evidence_frozen"
     assert job.lease_fence == 0
     assert job.terminal_outcome is None
@@ -208,31 +174,31 @@ def test_replay_job_model_exposes_typed_durable_fields() -> None:
 
 
 def test_same_discovery_key_returns_one_active_job(storage: BaseStorage) -> None:
-    first = storage.create_or_get_playbook_optimization_job(_replay_job("d1", "a1"))
-    second = storage.create_or_get_playbook_optimization_job(_replay_job("d1", "a1"))
+    first = storage.create_or_get_playbook_optimization_job(_durable_job("d1", "a1"))
+    second = storage.create_or_get_playbook_optimization_job(_durable_job("d1", "a1"))
 
     assert second.job_id == first.job_id
 
 
 def test_same_attempt_key_returns_one_active_job(storage: BaseStorage) -> None:
-    first = storage.create_or_get_playbook_optimization_job(_replay_job("d1", "a1"))
-    second = storage.create_or_get_playbook_optimization_job(_replay_job("d2", "a1"))
+    first = storage.create_or_get_playbook_optimization_job(_durable_job("d1", "a1"))
+    second = storage.create_or_get_playbook_optimization_job(_durable_job("d2", "a1"))
 
     assert second.job_id == first.job_id
 
 
 def test_conflicting_active_identity_is_rejected(storage: BaseStorage) -> None:
-    storage.create_or_get_playbook_optimization_job(_replay_job("d1", "a1"))
+    storage.create_or_get_playbook_optimization_job(_durable_job("d1", "a1"))
 
     with pytest.raises(
         OptimizationJobIdentityConflictError,
         match="immutable optimizer job identity",
     ):
-        storage.create_or_get_playbook_optimization_job(_replay_job("d1", "a2"))
+        storage.create_or_get_playbook_optimization_job(_durable_job("d1", "a2"))
 
 
 def test_sqlite_persists_open_world_optimizer_jobs(storage: BaseStorage) -> None:
-    open_world_job = _replay_job("open-world-discovery", "open-world-attempt")
+    open_world_job = _durable_job("open-world-discovery", "open-world-attempt")
     open_world_job.optimizer_kind = "offline_tuner_open_world"
 
     saved = storage.create_or_get_playbook_optimization_job(open_world_job)
@@ -267,7 +233,7 @@ def test_gepa_publication_reclaim_contract_has_none_live_and_reclaimed_outcomes(
 
 
 def test_stale_lease_fence_cannot_advance_stage(storage: BaseStorage) -> None:
-    job = storage.create_or_get_playbook_optimization_job(_replay_job("d1", "a1"))
+    job = storage.create_or_get_playbook_optimization_job(_durable_job("d1", "a1"))
     claim = storage.claim_playbook_optimization_job(
         job_id=job.job_id,
         owner="worker-a",
@@ -286,7 +252,7 @@ def test_stale_lease_fence_cannot_advance_stage(storage: BaseStorage) -> None:
         storage.advance_playbook_optimization_stage(
             job_id=job.job_id,
             fence=claim.fence,
-            stage="candidate_generated",
+            stage="discovery_analyzed",
             now=claim.expires_at + 1,
         )
         is False
@@ -295,7 +261,7 @@ def test_stale_lease_fence_cannot_advance_stage(storage: BaseStorage) -> None:
         storage.advance_playbook_optimization_stage(
             job_id=job.job_id,
             fence=reclaimed.fence,
-            stage="candidate_generated",
+            stage="discovery_analyzed",
             now=claim.expires_at + 1,
         )
         is True
@@ -303,7 +269,7 @@ def test_stale_lease_fence_cannot_advance_stage(storage: BaseStorage) -> None:
 
 
 def test_current_owner_can_renew_but_stale_owner_cannot(storage: BaseStorage) -> None:
-    job = storage.create_or_get_playbook_optimization_job(_replay_job("d1", "a1"))
+    job = storage.create_or_get_playbook_optimization_job(_durable_job("d1", "a1"))
     claim = storage.claim_playbook_optimization_job(
         job_id=job.job_id,
         owner="worker-a",
@@ -330,7 +296,7 @@ def test_current_owner_can_renew_but_stale_owner_cannot(storage: BaseStorage) ->
 
 
 def test_stage_advancement_is_linear(storage: BaseStorage) -> None:
-    job = storage.create_or_get_playbook_optimization_job(_replay_job("d1", "a1"))
+    job = storage.create_or_get_playbook_optimization_job(_durable_job("d1", "a1"))
     claim = storage.claim_playbook_optimization_job(
         job_id=job.job_id,
         owner="worker-a",
@@ -342,7 +308,7 @@ def test_stage_advancement_is_linear(storage: BaseStorage) -> None:
         storage.advance_playbook_optimization_stage(
             job_id=job.job_id,
             fence=claim.fence,
-            stage="replay_running",
+            stage="held_out_analyzed",
             now=3_001,
         )
         is False
@@ -351,7 +317,7 @@ def test_stage_advancement_is_linear(storage: BaseStorage) -> None:
         storage.advance_playbook_optimization_stage(
             job_id=job.job_id,
             fence=claim.fence,
-            stage="candidate_generated",
+            stage="discovery_analyzed",
             now=3_001,
         )
         is True
@@ -361,10 +327,10 @@ def test_stage_advancement_is_linear(storage: BaseStorage) -> None:
 @pytest.mark.parametrize(
     ("stage", "outcome", "expected_status"),
     [
-        ("abstained", "candidate_did_not_improve", "skipped"),
-        ("failed", "generation_failed", "failed"),
-        ("failed", "replay_failed", "failed"),
-        ("failed", "publication_failed", "failed"),
+        ("abstained", "no_grounded_hypothesis", "skipped"),
+        ("abstained", "heldout_evidence_failed", "skipped"),
+        ("failed", "analyst_unqualified", "failed"),
+        ("failed", "governance_invalidated", "failed"),
         ("failed", "infrastructure_failure", "failed"),
     ],
 )
@@ -374,7 +340,7 @@ def test_terminal_stage_records_outcome_and_releases_lease(
     outcome: schemas.OptimizationTerminalOutcome,
     expected_status: str,
 ) -> None:
-    job = storage.create_or_get_playbook_optimization_job(_replay_job("d1", "a1"))
+    job = storage.create_or_get_playbook_optimization_job(_durable_job("d1", "a1"))
     claim = storage.claim_playbook_optimization_job(
         job_id=job.job_id,
         owner="worker-a",
@@ -403,7 +369,7 @@ def test_terminal_stage_records_outcome_and_releases_lease(
 def test_stale_lease_fence_cannot_write_singleton_artifact(
     storage: BaseStorage,
 ) -> None:
-    job = storage.create_or_get_playbook_optimization_job(_replay_job("d1", "a1"))
+    job = storage.create_or_get_playbook_optimization_job(_durable_job("d1", "a1"))
     claim = storage.claim_playbook_optimization_job(
         job_id=job.job_id,
         owner="worker-a",
@@ -435,7 +401,7 @@ def test_stale_lease_fence_cannot_write_singleton_artifact(
 def test_artifact_upsert_canonicalizes_equivalent_json_and_requires_digest_and_content(
     storage: BaseStorage,
 ) -> None:
-    job = storage.create_or_get_playbook_optimization_job(_replay_job("d1", "a1"))
+    job = storage.create_or_get_playbook_optimization_job(_durable_job("d1", "a1"))
     claim = storage.claim_playbook_optimization_job(
         job_id=job.job_id,
         owner="worker-a",
@@ -491,7 +457,7 @@ def test_artifact_upsert_canonicalizes_equivalent_json_and_requires_digest_and_c
 def test_malformed_persisted_artifact_raises_typed_integrity_error(
     storage: BaseStorage,
 ) -> None:
-    job = storage.create_or_get_playbook_optimization_job(_replay_job("d1", "a1"))
+    job = storage.create_or_get_playbook_optimization_job(_durable_job("d1", "a1"))
     claim = storage.claim_playbook_optimization_job(
         job_id=job.job_id,
         owner="worker-a",
@@ -647,7 +613,7 @@ def test_previous_artifact_schema_is_upgraded_without_losing_constraints(
                job_id, optimizer_kind, target_kind, target_id, status,
                lease_owner, lease_fence, lease_expires_at, created_at, updated_at
            ) VALUES (
-               41, 'offline_tuner_replay', 'user_playbook', 9, 'running',
+               41, 'offline_tuner_open_world', 'user_playbook', 9, 'running',
                'worker-a', 3, 1000, 101, 102
            )"""
     )
@@ -749,11 +715,11 @@ def test_optimizer_job_rebuild_preserves_deleted_id_high_water_and_repeats(
     conn.close()
 
     first_store = SQLiteStorage(org_id="job-sequence-first", db_path=str(db_path))
-    first = first_store.create_playbook_optimization_job(_replay_job("d1", "a1"))
+    first = first_store.create_playbook_optimization_job(_durable_job("d1", "a1"))
     first_store.conn.close()
     second_store = SQLiteStorage(org_id="job-sequence-second", db_path=str(db_path))
     second = second_store.create_playbook_optimization_job(
-        _replay_job("d2", "a2").model_copy(update={"target_id": 42})
+        _durable_job("d2", "a2").model_copy(update={"target_id": 42})
     )
     second_store.conn.close()
 
@@ -772,7 +738,7 @@ def test_empty_optimizer_job_rebuild_preserves_deleted_id_high_water(
     conn.close()
 
     store = SQLiteStorage(org_id="empty-job-sequence", db_path=str(db_path))
-    job = store.create_playbook_optimization_job(_replay_job("d1", "a1"))
+    job = store.create_playbook_optimization_job(_durable_job("d1", "a1"))
     store.conn.close()
 
     assert job.job_id == 7
@@ -783,7 +749,7 @@ def test_artifact_rebuild_preserves_deleted_id_high_water_and_repeats(
 ) -> None:
     db_path = tmp_path / "legacy-artifact-sequence.db"
     store = SQLiteStorage(org_id="artifact-sequence-setup", db_path=str(db_path))
-    parent = store.create_playbook_optimization_job(_replay_job("d1", "a1"))
+    parent = store.create_playbook_optimization_job(_durable_job("d1", "a1"))
     store.conn.execute("DROP INDEX idx_poa_job")
     store.conn.execute("DROP TABLE playbook_optimization_artifacts")
     store.conn.executescript(
@@ -849,16 +815,16 @@ def test_artifact_rebuild_preserves_deleted_id_high_water_and_repeats(
     "current_stage",
     [
         "evidence_frozen",
+        "discovery_analyzed",
         "candidate_generated",
-        "replay_running",
-        "replay_evaluated",
+        "held_out_analyzed",
     ],
 )
 def test_applied_terminal_stage_requires_publishing(
     storage: BaseStorage,
     current_stage: schemas.OptimizationJobStage,
 ) -> None:
-    job = storage.create_or_get_playbook_optimization_job(_replay_job("d1", "a1"))
+    job = storage.create_or_get_playbook_optimization_job(_durable_job("d1", "a1"))
     claim = storage.claim_playbook_optimization_job(
         job_id=job.job_id,
         owner="worker-a",
@@ -889,8 +855,17 @@ def test_applied_terminal_stage_requires_publishing(
     assert persisted.terminal_outcome is None
 
 
-def test_applied_terminal_stage_advances_from_publishing(storage: BaseStorage) -> None:
-    job = storage.create_or_get_playbook_optimization_job(_replay_job("d1", "a1"))
+def test_applied_terminal_stage_is_unreachable_after_the_replay_retirement(
+    storage: BaseStorage,
+) -> None:
+    """The 'publishing' -> 'applied' transition was replay-only.
+
+    Phase 7 removed the only optimizer that declared an 'applied' predecessor,
+    so this transition is now refused from every stage, 'publishing' included,
+    and the job is left exactly as it was. Replaces the success-path test that
+    covered the retired path.
+    """
+    job = storage.create_or_get_playbook_optimization_job(_durable_job("d1", "a1"))
     claim = storage.claim_playbook_optimization_job(
         job_id=job.job_id,
         owner="worker-a",
@@ -904,24 +879,27 @@ def test_applied_terminal_stage_advances_from_publishing(storage: BaseStorage) -
     )
     storage.conn.commit()
 
-    assert storage.advance_playbook_optimization_stage(
-        job_id=job.job_id,
-        fence=claim.fence,
-        stage="applied",
-        terminal_outcome="applied",
-        now=6_001,
+    assert (
+        storage.advance_playbook_optimization_stage(
+            job_id=job.job_id,
+            fence=claim.fence,
+            stage="applied",
+            terminal_outcome="applied",
+            now=6_001,
+        )
+        is False
     )
     persisted = storage.get_playbook_optimization_job(job.job_id)
     assert persisted is not None
-    assert persisted.stage == "applied"
-    assert persisted.status == "completed"
-    assert persisted.terminal_outcome == "applied"
+    assert persisted.stage == "publishing"
+    assert persisted.status == "running"
+    assert persisted.terminal_outcome is None
 
 
 def test_governance_erased_terminal_outcome_round_trips(
     storage: BaseStorage,
 ) -> None:
-    job = storage.create_or_get_playbook_optimization_job(_replay_job("d1", "a1"))
+    job = storage.create_or_get_playbook_optimization_job(_durable_job("d1", "a1"))
     assert isinstance(storage, SQLiteStorage)
     storage.conn.execute(
         """UPDATE playbook_optimization_jobs
@@ -941,7 +919,7 @@ def test_governance_erased_terminal_outcome_round_trips(
 def test_ordinary_stage_advance_rejects_governance_erased(
     storage: BaseStorage,
 ) -> None:
-    job = storage.create_or_get_playbook_optimization_job(_replay_job("d1", "a1"))
+    job = storage.create_or_get_playbook_optimization_job(_durable_job("d1", "a1"))
     claim = storage.claim_playbook_optimization_job(
         job_id=job.job_id,
         owner="worker-a",
@@ -971,10 +949,10 @@ def _claimed_job_at_stage(
     stage: schemas.OptimizationJobStage,
     *,
     now: int,
-    optimizer_kind: schemas.OptimizerKind = "offline_tuner_replay",
+    optimizer_kind: schemas.OptimizerKind = "offline_tuner_open_world",
     target_id: int = 41,
 ) -> tuple[int, int]:
-    job = _replay_job(f"d-{target_id}", f"a-{target_id}")
+    job = _durable_job(f"d-{target_id}", f"a-{target_id}")
     job.optimizer_kind = optimizer_kind
     job.target_id = target_id
     job = storage.create_or_get_playbook_optimization_job(job)
@@ -1169,11 +1147,9 @@ def test_optimizer_kind_terminal_outcome_matrix_is_exact(
                     optimizer_kind=cast(schemas.OptimizerKind, optimizer_kind),
                     target_id=30_000 + case,
                 )
-                expected = (
-                    optimizer_kind == "offline_tuner_replay"
-                    and current_stage == "publishing"
-                    and outcome in (None, "applied")
-                )
+                # Phase 7 retired the only optimizer that declared an 'applied'
+                # predecessor, so no (kind, stage, outcome) triple reaches it.
+                expected = False
                 before = (
                     _optimization_job_row(storage, job_id) if not expected else None
                 )

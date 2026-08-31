@@ -312,7 +312,7 @@ class UserPlaybookStoreMixin:
                 ).fetchone()
                 if job is None:
                     raise StorageError("publication optimizer job does not exist")
-                if job["optimizer_kind"] not in {"gepa", "offline_tuner_replay"}:
+                if job["optimizer_kind"] != "gepa":
                     raise StorageError("publication optimizer kind is not publishable")
                 if job["target_kind"] != "user_playbook":
                     raise StorageError("publication target is not a user playbook")
