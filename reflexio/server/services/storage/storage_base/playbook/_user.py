@@ -11,6 +11,7 @@ from reflexio.models.config_schema import SearchOptions
 
 if TYPE_CHECKING:
     from reflexio.server.services.playbook.publication import (
+        LifecycleTerminalResult,
         ProvisionalPublicationRequest,
         ProvisionalPublicationResult,
         PublicationClaim,
@@ -105,6 +106,27 @@ class UserPlaybookStoreMixin:
         """Load the immutable terminal provisional publication result."""
         raise NotImplementedError(
             "Storage backend does not support provisional user-playbook publication"
+        )
+
+    def restore_user_playbook_provisional_publication(
+        self,
+        *,
+        lifecycle_id: int,
+        reason: str,
+        expected_fence: int,
+        expected_successor_fingerprint: str,
+    ) -> "LifecycleTerminalResult":
+        """Atomically restore the retained predecessor and terminalize."""
+        raise NotImplementedError(
+            "Storage backend does not support provisional user-playbook restoration"
+        )
+
+    def displace_user_playbook_provisional_publication(
+        self, *, lifecycle_id: int
+    ) -> "LifecycleTerminalResult":
+        """Terminalize as displaced so a manual edit may proceed."""
+        raise NotImplementedError(
+            "Storage backend does not support provisional user-playbook displacement"
         )
 
     @abstractmethod
