@@ -126,7 +126,7 @@ class UserPlaybookStoreMixin:
     ) -> "LifecycleTerminalResult":
         """Terminalize as displaced so a manual edit may proceed."""
         raise NotImplementedError(
-            "Storage backend does not support provisional user-playbook restoration"
+            "Storage backend does not support provisional user-playbook displacement"
         )
 
     @abstractmethod
