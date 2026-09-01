@@ -9,7 +9,8 @@ was never added to this union -- so reading such a row back through
 That failure did not surface as a validation error either. ``handle_exceptions``
 converts it to ``StorageError``, and the open-world runner's ``except
 StorageError`` arm reports ``infrastructure_failure`` -- so a refusal the fence
-made on purpose was recorded, and captured to Sentry, under a reason that names
+made on purpose was recorded, and reported to the enterprise error monitor,
+under a reason that names
 a fault that never happened.
 
 The union-versus-CHECK set equality is asserted in the enterprise tree, where
