@@ -436,6 +436,38 @@ OptimizationJobStage = Literal[
     "failed",
 ]
 
+# Phase 7 removed the four members whose NAMES contain 'replay'. Seven more were
+# reachable only through that same replay arm and are now equally dead: no
+# writer, no reader, no tenant routine that can set them. They are RETAINED
+# rather than removed, the way 'offline_tuner_legacy' is retained above -- and
+# for the same two reasons. Removing them narrows the tenant CHECK a second
+# time, and a CHECK narrowing is a one-way door this branch has already spent
+# once; and historical rows written before the replay retirement still carry
+# them, so a narrowed CHECK would abort the validating migration on the first
+# organization holding one.
+#
+# Read a member of this set as "an outcome an earlier era could record", never
+# as a state the current tuner can reach. Pinned by
+# tests/models/test_terminal_outcome_reachability.py so it cannot silently grow:
+# a new member added here is a new outcome somebody must show is WRITABLE.
+#
+# 'deployment_unsupported' is the trap. The same spelling is also
+# OfflineTunerUnavailableReason -- a config-enablement rejection code in
+# reflexio_ext capability_status.py, with ~40 live references. Those are a
+# different vocabulary on a different type, so "grep says it is used" does not
+# make this member reachable.
+RETAINED_UNREACHABLE_TERMINAL_OUTCOMES: frozenset[str] = frozenset(
+    {
+        "insufficient_negative_evidence",
+        "insufficient_positive_evidence",
+        "insufficient_coverage",
+        "deployment_unsupported",
+        "candidate_regressed",
+        "candidate_did_not_improve",
+        "publication_failed",
+    }
+)
+
 OptimizationTerminalOutcome = Literal[
     "applied",
     "insufficient_negative_evidence",

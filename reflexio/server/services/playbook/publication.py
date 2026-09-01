@@ -43,8 +43,11 @@ LIFECYCLE_TERMINAL_REASONS: frozenset[str] = frozenset(
 )
 PublishableOptimizerKind = Literal["gepa", "offline_tuner_open_world"]
 # 'offline_optimizer' remains in the union because it is a value already
-# PERSISTED on user_playbooks.source rows. Phase 7 removes the only optimizer
-# kind that produced it; the tenant RPC's matching CASE arm goes in Task 10.
+# PERSISTED on user_playbooks.source rows. Phase 7 removed the only optimizer
+# kind that produced it, and Task 10 took the tenant RPC's matching CASE arm
+# with it: commit_user_playbook_publication now writes the staged optimizer kind
+# straight through to user_playbooks.source (20260830020000). No path can write
+# 'offline_optimizer' any more -- it is read-only history.
 PublicationSource = Literal["gepa", "offline_optimizer"]
 
 # Phase 7 retired 'offline_tuner_replay'. The legacy publication path is now

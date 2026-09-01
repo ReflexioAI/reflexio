@@ -2312,6 +2312,28 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             )
             """
             )
+            # Phase 7 review finding P4-2. The pre-existing legacy sweep in
+            # _classify_legacy_playbook_optimization_jobs retires every ACTIVE
+            # 'offline_tuner_legacy' / 'optimizer_legacy_unknown' job, but it
+            # runs BEFORE this relabel. Without this statement the relabel below
+            # turns a running replay job into a running 'offline_tuner_legacy'
+            # job -- a kind with no producer or consumer -- which then holds a
+            # uq_poj_active_target / uq_poj_active_discovery / uq_poj_active_attempt
+            # slot until the next storage open lets the sweep see it. Retire it
+            # here with exactly the status, reason and lease clearing that sweep
+            # uses, so one open is enough.
+            self.conn.execute(
+                """
+                UPDATE playbook_optimization_jobs
+                SET status = 'skipped',
+                    decision_reason = 'retired_by_replay_redesign',
+                    lease_owner = NULL,
+                    lease_expires_at = NULL,
+                    updated_at = CAST(strftime('%s', 'now') AS INTEGER)
+                WHERE optimizer_kind = 'offline_tuner_replay'
+                  AND status IN ('pending', 'running')
+                """
+            )
             self.conn.execute(
                 """
             INSERT INTO playbook_optimization_jobs_new (
@@ -2468,10 +2490,33 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             # artifact_kind), so there is no surviving value to map
             # 'replay_manifest' onto. Local development SQLite only -- no tenant
             # Postgres row is touched by this path.
-            self.conn.execute(
+            #
+            # Phase 7 review finding P4-3: this is the OPPOSITE strategy from the
+            # sibling optimizer_kind vocabulary in
+            # _enforce_playbook_optimization_job_constraints, where OQ-1 option A
+            # RETAINS 'offline_tuner_legacy' / 'optimizer_legacy_unknown'
+            # permanently as historical labels precisely so historical rows
+            # survive. Retention was available here too and was rejected: the
+            # tenant contract (supabase/data/tenant/20260830020000, constraint
+            # playbook_optimization_artifacts_artifact_kind_check) drops
+            # 'replay_manifest' outright, so retaining it on SQLite alone would
+            # leave the two backends disagreeing about the artifact
+            # vocabulary -- the dual-expression divergence the rest of
+            # Phase 7 exists to remove. The rows are destroyed rather than
+            # migrated, so the deletion is logged with its count instead of being
+            # silent.
+            deleted_replay_manifests = self.conn.execute(
                 "DELETE FROM playbook_optimization_artifacts "
                 "WHERE artifact_kind = 'replay_manifest'"
-            )
+            ).rowcount
+            if deleted_replay_manifests > 0:
+                logger.warning(
+                    "Phase 7 artifact contraction destroyed %d "
+                    "'replay_manifest' artifact row(s) with their content_json: "
+                    "the retired kind has no surviving artifact_kind to map onto "
+                    "and the tenant contract drops it as well",
+                    deleted_replay_manifests,
+                )
             self.conn.execute(
                 """
                 INSERT INTO playbook_optimization_artifacts_new (

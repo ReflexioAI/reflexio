@@ -14,6 +14,7 @@ Reopening the storage is what runs the rebuild.
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 from pathlib import Path
 
@@ -253,6 +254,122 @@ def test_the_rebuild_remediates_the_rows_it_would_otherwise_reject(
         assert kinds == ["candidate"]
     finally:
         storage.conn.close()
+
+
+@pytest.mark.parametrize("status", ["pending", "running"])
+def test_the_rebuild_leaves_no_relabelled_job_active(
+    tmp_path: Path,
+    status: str,
+) -> None:
+    """A relabelled replay job must not survive as an ACTIVE legacy job.
+
+    ``_classify_legacy_playbook_optimization_jobs`` retires every active
+    ``offline_tuner_legacy`` / ``optimizer_legacy_unknown`` job, and it runs
+    BEFORE this rebuild. Without the rebuild's own remediation, a running replay
+    job is reopened as a running ``offline_tuner_legacy`` job -- a kind with no
+    producer or consumer -- holding ``uq_poj_active_target`` /
+    ``uq_poj_active_discovery`` / ``uq_poj_active_attempt`` until the NEXT open
+    lets that sweep see it. One open must be enough.
+    """
+    db_path = tmp_path / f"legacy-active-{status}.db"
+    _write_legacy_optimizer_tables(db_path, f"legacy-active-{status}")
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """INSERT INTO playbook_optimization_jobs (
+               job_id, optimizer_kind, target_kind, target_id, status,
+               discovery_key, attempt_key, lease_owner, lease_expires_at,
+               created_at, updated_at
+           ) VALUES (2, 'offline_tuner_replay', 'user_playbook', 2, ?,
+                     'discovery-2', 'attempt-2', 'worker-a', 9999, 1, 1)""",
+        (status,),
+    )
+    conn.commit()
+    conn.close()
+
+    storage = SQLiteStorage(org_id=f"legacy-active-{status}", db_path=str(db_path))
+    try:
+        row = storage.conn.execute(
+            "SELECT optimizer_kind, status, decision_reason, lease_owner, "
+            "lease_expires_at FROM playbook_optimization_jobs WHERE job_id = 2"
+        ).fetchone()
+        assert row is not None
+        assert row["optimizer_kind"] == "offline_tuner_legacy"
+        assert row["status"] == "skipped"
+        assert row["decision_reason"] == "retired_by_replay_redesign"
+        assert row["lease_owner"] is None
+        assert row["lease_expires_at"] is None
+        assert (
+            storage.conn.execute(
+                "SELECT COUNT(*) FROM playbook_optimization_jobs "
+                "WHERE status IN ('pending', 'running')"
+            ).fetchone()[0]
+            == 0
+        )
+    finally:
+        storage.conn.close()
+
+
+def test_a_settled_relabelled_job_keeps_its_own_status_and_reason(
+    tmp_path: Path,
+) -> None:
+    """The remediation must scope to ACTIVE rows, not rewrite settled history."""
+    db_path = tmp_path / "legacy-settled.db"
+    _write_legacy_optimizer_tables(db_path, "legacy-settled")
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """INSERT INTO playbook_optimization_jobs (
+               job_id, optimizer_kind, target_kind, target_id, status,
+               decision_reason, created_at, updated_at
+           ) VALUES (3, 'offline_tuner_replay', 'user_playbook', 3, 'completed',
+                     'published_successor', 1, 1)"""
+    )
+    conn.commit()
+    conn.close()
+
+    storage = SQLiteStorage(org_id="legacy-settled", db_path=str(db_path))
+    try:
+        row = storage.conn.execute(
+            "SELECT optimizer_kind, status, decision_reason "
+            "FROM playbook_optimization_jobs WHERE job_id = 3"
+        ).fetchone()
+        assert row is not None
+        assert row["optimizer_kind"] == "offline_tuner_legacy"
+        assert row["status"] == "completed"
+        assert row["decision_reason"] == "published_successor"
+    finally:
+        storage.conn.close()
+
+
+def test_the_destroyed_replay_artifacts_are_logged_with_their_count(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Deleting ``replay_manifest`` rows destroys their ``content_json``.
+
+    The sibling ``optimizer_kind`` vocabulary retains its retired labels so
+    historical rows survive; this vocabulary cannot, because ``artifact_kind`` is
+    NOT NULL and part of ``UNIQUE (job_id, artifact_kind)`` and the tenant
+    contract drops the literal too. Destruction is therefore correct -- but it
+    must not be silent.
+    """
+    db_path = tmp_path / "legacy-artifact-log.db"
+    _write_legacy_optimizer_tables(db_path, "legacy-artifact-log")
+
+    with caplog.at_level(
+        logging.WARNING,
+        logger="reflexio.server.services.storage.sqlite_storage._base",
+    ):
+        storage = SQLiteStorage(org_id="legacy-artifact-log", db_path=str(db_path))
+        storage.conn.close()
+
+    warnings = [
+        record.getMessage()
+        for record in caplog.records
+        if record.levelno >= logging.WARNING
+        and "replay_manifest" in record.getMessage()
+    ]
+    assert len(warnings) == 1, caplog.text
+    assert "destroyed 1 " in warnings[0]
 
 
 def test_the_rebuild_is_idempotent(tmp_path: Path) -> None:
