@@ -486,6 +486,14 @@ OptimizationTerminalOutcome = Literal[
     "stale_incumbent",
     "governance_invalidated",
     "infrastructure_failure",
+    # Written by reflexio_ext offline_tuner/open_world/runner.py:251
+    # (_converge_terminal_failure, behind the regeneration fence) and assigned
+    # by the tenant stage-advance RPC's 'failed' arm
+    # (supabase/data/tenant/20260830020000:325-327). Admitted by
+    # playbook_optimization_jobs_terminal_outcome_check since 20260827040000.
+    # An attempt REFUSED before spending, not a fault -- see
+    # reflexio_ext open_world/models.py:210-227.
+    "regeneration_fenced",
 ]
 
 OptimizationArtifactKind = Literal[

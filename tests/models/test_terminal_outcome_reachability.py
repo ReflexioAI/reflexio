@@ -25,8 +25,8 @@ from reflexio.server.services.storage.sqlite_storage.playbook._optimization impo
     _TERMINAL_OUTCOMES_BY_OPTIMIZER,
 )
 
-# The ten outcomes that survive Phase 7 with a path that can reach them. Six are
-# written by the stage-advance allowlist below; the other four are written
+# The eleven outcomes that survive Phase 7 with a path that can reach them. Six
+# are written by the stage-advance allowlist below; the other five are written
 # elsewhere and are named here with their writer so the split is auditable.
 _REACHABLE_TERMINAL_OUTCOMES = frozenset(
     {
@@ -38,6 +38,13 @@ _REACHABLE_TERMINAL_OUTCOMES = frozenset(
         "generation_failed",
         # the governance erasure path
         "governance_erased",
+        # the regeneration fence: reflexio_ext open_world/runner.py:251 calls
+        # _converge_terminal_failure with it, and the TENANT stage-advance RPC's
+        # 'failed' arm assigns it (tenant 20260830020000:325-327). It is
+        # deliberately absent from the SQLite allowlist below -- SQLite carries
+        # no open-world fence -- which is why it is named here rather than left
+        # to the `writable <=` assertion to cover.
+        "regeneration_fenced",
         # stage-advance: 'failed'
         "infrastructure_failure",
         "analyst_unqualified",
@@ -88,8 +95,8 @@ def test_the_union_is_exactly_the_reachable_set_plus_the_retained_set() -> None:
     assert (
         members - RETAINED_UNREACHABLE_TERMINAL_OUTCOMES == _REACHABLE_TERMINAL_OUTCOMES
     )
-    assert len(members) == 17
-    assert len(_REACHABLE_TERMINAL_OUTCOMES) == 10
+    assert len(members) == 18
+    assert len(_REACHABLE_TERMINAL_OUTCOMES) == 11
 
 
 def test_no_retained_outcome_is_writable_through_the_stage_advance_allowlist() -> None:
