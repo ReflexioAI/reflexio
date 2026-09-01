@@ -79,6 +79,23 @@ logger = logging.getLogger(__name__)
 _TRAJECTORY_FETCH_SIZE = 256
 _SESSION_OUTCOME_MIGRATION_BATCH_SIZE = 256
 _MINIMUM_SQLITE_VERSION = (3, 35, 0)
+# Literals Phase 7 retired. The rebuild's trigger asks TWO questions, not one:
+# "is every required literal present?" (the expand direction, which was all it
+# ever asked) AND "is any retired literal still present?" (the contract
+# direction). Without the second, an existing database whose table_sql still
+# holds every SURVIVING literal satisfies the first and returns early -- the
+# rebuild never runs and the permissive CHECK survives forever.
+_RETIRED_OPTIMIZER_JOB_LITERALS: tuple[str, ...] = (
+    "'offline_tuner_replay'",
+    "'replay_running'",
+    "'replay_evaluated'",
+    "'replay_unsupported'",
+    "'incomplete_replay_scope'",
+    "'insufficient_replay_cases'",
+    "'replay_inconclusive'",
+    "'replay_failed'",
+)
+_RETIRED_ARTIFACT_KIND_LITERALS: tuple[str, ...] = ("'replay_manifest'",)
 _SQLITE_INITIALIZATION_LOCK_STRIPES = 64
 _sqlite_initialization_locks = tuple(
     threading.Lock() for _ in range(_SQLITE_INITIALIZATION_LOCK_STRIPES)
@@ -2197,10 +2214,21 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         if table_sql_row is None:
             return
         table_sql = table_sql_row["sql"]
+        # Every literal the FINAL constraints admit must appear, not just a
+        # representative few. A predicate that names some of them cannot tell
+        # "current" from "missing a kind": a schema whose optimizer_kind CHECK
+        # omits 'gepa' carries no retired literal, satisfies a partial list,
+        # and is retained forever with a constraint that rejects legitimate
+        # rows. The artifact rebuild below already enumerates its full set;
+        # this is that same rule.
         required_checks = (
             "CHECK (optimizer_kind IN",
             "CHECK (stage IS NULL OR stage IN",
             "CHECK (terminal_outcome IS NULL OR terminal_outcome IN",
+            "'gepa'",
+            "'offline_tuner_open_world'",
+            "'offline_tuner_legacy'",
+            "'optimizer_legacy_unknown'",
             "'governance_erased'",
             "'discovery_analyzed'",
             "'held_out_analyzed'",
@@ -2211,8 +2239,8 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             "'governance_invalidated'",
             "'infrastructure_failure'",
         )
-        if all(check in table_sql for check in required_checks) and (
-            "'offline_tuner_open_world'" in table_sql
+        if all(check in table_sql for check in required_checks) and not any(
+            retired in table_sql for retired in _RETIRED_OPTIMIZER_JOB_LITERALS
         ):
             return
         foreign_keys_enabled = bool(
@@ -2235,7 +2263,6 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                 optimizer_kind TEXT NOT NULL DEFAULT 'optimizer_legacy_unknown'
                     CHECK (optimizer_kind IN (
                         'gepa',
-                        'offline_tuner_replay',
                         'offline_tuner_open_world',
                         'offline_tuner_legacy',
                         'optimizer_legacy_unknown'
@@ -2256,8 +2283,6 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                     'evidence_frozen',
                     'discovery_analyzed',
                     'candidate_generated',
-                    'replay_running',
-                    'replay_evaluated',
                     'held_out_analyzed',
                     'publishing',
                     'applied',
@@ -2269,16 +2294,11 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                     'insufficient_negative_evidence',
                     'insufficient_positive_evidence',
                     'insufficient_coverage',
-                    'replay_unsupported',
                     'deployment_unsupported',
-                    'incomplete_replay_scope',
-                    'insufficient_replay_cases',
-                    'replay_inconclusive',
                     'candidate_regressed',
                     'candidate_did_not_improve',
                     'incumbent_changed',
                     'generation_failed',
-                    'replay_failed',
                     'publication_failed',
                     'governance_erased',
                     'no_grounded_hypothesis',
@@ -2299,6 +2319,28 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             )
             """
             )
+            # Phase 7 review finding P4-2. The pre-existing legacy sweep in
+            # _classify_legacy_playbook_optimization_jobs retires every ACTIVE
+            # 'offline_tuner_legacy' / 'optimizer_legacy_unknown' job, but it
+            # runs BEFORE this relabel. Without this statement the relabel below
+            # turns a running replay job into a running 'offline_tuner_legacy'
+            # job -- a kind with no producer or consumer -- which then holds a
+            # uq_poj_active_target / uq_poj_active_discovery / uq_poj_active_attempt
+            # slot until the next storage open lets the sweep see it. Retire it
+            # here with exactly the status, reason and lease clearing that sweep
+            # uses, so one open is enough.
+            self.conn.execute(
+                """
+                UPDATE playbook_optimization_jobs
+                SET status = 'skipped',
+                    decision_reason = 'retired_by_replay_redesign',
+                    lease_owner = NULL,
+                    lease_expires_at = NULL,
+                    updated_at = CAST(strftime('%s', 'now') AS INTEGER)
+                WHERE optimizer_kind = 'offline_tuner_replay'
+                  AND status IN ('pending', 'running')
+                """
+            )
             self.conn.execute(
                 """
             INSERT INTO playbook_optimization_jobs_new (
@@ -2311,10 +2353,27 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                 candidate_content_digest, search_projection_digest,
                 publication_scope_digest, created_at, updated_at
             ) SELECT
-                job_id, optimizer_kind, target_kind, target_id, status,
+                job_id,
+                -- Phase 7 remediation. The copy would otherwise fail the new
+                -- CHECK on any row still carrying a retired literal.
+                -- 'offline_tuner_legacy' is the accurate surviving label: these
+                -- jobs WERE offline-tuner jobs, and OQ-1 option A keeps that
+                -- literal admissible. stage and terminal_outcome are nullable,
+                -- so their retired values become NULL rather than a wrong one.
+                CASE WHEN optimizer_kind = 'offline_tuner_replay'
+                     THEN 'offline_tuner_legacy'
+                     ELSE optimizer_kind END,
+                target_kind, target_id, status,
                 best_candidate_id, successor_target_id, decision_reason,
                 metadata_json, discovery_key, attempt_key, lease_owner,
-                lease_fence, lease_expires_at, stage, terminal_outcome,
+                lease_fence, lease_expires_at,
+                CASE WHEN stage IN ('replay_running', 'replay_evaluated')
+                     THEN NULL ELSE stage END,
+                CASE WHEN terminal_outcome IN (
+                         'replay_unsupported', 'incomplete_replay_scope',
+                         'insufficient_replay_cases', 'replay_inconclusive',
+                         'replay_failed'
+                     ) THEN NULL ELSE terminal_outcome END,
                 expected_population_manifest_digest,
                 generation_selection_manifest_digest, replay_manifest_digest,
                 candidate_content_digest, search_projection_digest,
@@ -2379,7 +2438,6 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         artifact_kinds = (
             "'expected_population_manifest'",
             "'generation_selection'",
-            "'replay_manifest'",
             "'candidate'",
             "'candidate_search_projection'",
             "'open_world_evidence_bundle'",
@@ -2387,7 +2445,11 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             "'open_world_candidate'",
             "'open_world_attempt_decision'",
         )
-        if all(artifact_kind in table_sql for artifact_kind in artifact_kinds):
+        if all(
+            artifact_kind in table_sql for artifact_kind in artifact_kinds
+        ) and not any(
+            retired in table_sql for retired in _RETIRED_ARTIFACT_KIND_LITERALS
+        ):
             return
 
         foreign_keys_enabled = bool(
@@ -2413,7 +2475,6 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                     artifact_kind TEXT NOT NULL CHECK (artifact_kind IN (
                         'expected_population_manifest',
                         'generation_selection',
-                        'replay_manifest',
                         'candidate',
                         'candidate_search_projection',
                         'open_world_evidence_bundle',
@@ -2432,6 +2493,37 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                 )
                 """
             )
+            # artifact_kind is NOT NULL and part of UNIQUE (job_id,
+            # artifact_kind), so there is no surviving value to map
+            # 'replay_manifest' onto. Local development SQLite only -- no tenant
+            # Postgres row is touched by this path.
+            #
+            # Phase 7 review finding P4-3: this is the OPPOSITE strategy from the
+            # sibling optimizer_kind vocabulary in
+            # _enforce_playbook_optimization_job_constraints, where OQ-1 option A
+            # RETAINS 'offline_tuner_legacy' / 'optimizer_legacy_unknown'
+            # permanently as historical labels precisely so historical rows
+            # survive. Retention was available here too and was rejected: the
+            # tenant contract (supabase/data/tenant/20260830020000, constraint
+            # playbook_optimization_artifacts_artifact_kind_check) drops
+            # 'replay_manifest' outright, so retaining it on SQLite alone would
+            # leave the two backends disagreeing about the artifact
+            # vocabulary -- the dual-expression divergence the rest of
+            # Phase 7 exists to remove. The rows are destroyed rather than
+            # migrated, so the deletion is logged with its count instead of being
+            # silent.
+            deleted_replay_manifests = self.conn.execute(
+                "DELETE FROM playbook_optimization_artifacts "
+                "WHERE artifact_kind = 'replay_manifest'"
+            ).rowcount
+            if deleted_replay_manifests > 0:
+                logger.warning(
+                    "Phase 7 artifact contraction destroyed %d "
+                    "'replay_manifest' artifact row(s) with their content_json: "
+                    "the retired kind has no surviving artifact_kind to map onto "
+                    "and the tenant contract drops it as well",
+                    deleted_replay_manifests,
+                )
             self.conn.execute(
                 """
                 INSERT INTO playbook_optimization_artifacts_new (
@@ -3416,7 +3508,6 @@ CREATE TABLE IF NOT EXISTS playbook_optimization_jobs (
     optimizer_kind TEXT NOT NULL DEFAULT 'optimizer_legacy_unknown'
         CHECK (optimizer_kind IN (
             'gepa',
-            'offline_tuner_replay',
             'offline_tuner_open_world',
             'offline_tuner_legacy',
             'optimizer_legacy_unknown'
@@ -3437,8 +3528,6 @@ CREATE TABLE IF NOT EXISTS playbook_optimization_jobs (
         'evidence_frozen',
         'discovery_analyzed',
         'candidate_generated',
-        'replay_running',
-        'replay_evaluated',
         'held_out_analyzed',
         'publishing',
         'applied',
@@ -3450,16 +3539,11 @@ CREATE TABLE IF NOT EXISTS playbook_optimization_jobs (
         'insufficient_negative_evidence',
         'insufficient_positive_evidence',
         'insufficient_coverage',
-        'replay_unsupported',
         'deployment_unsupported',
-        'incomplete_replay_scope',
-        'insufficient_replay_cases',
-        'replay_inconclusive',
         'candidate_regressed',
         'candidate_did_not_improve',
         'incumbent_changed',
         'generation_failed',
-        'replay_failed',
         'publication_failed',
         'governance_erased',
         'no_grounded_hypothesis',
@@ -3524,7 +3608,6 @@ CREATE TABLE IF NOT EXISTS playbook_optimization_artifacts (
     artifact_kind TEXT NOT NULL CHECK (artifact_kind IN (
         'expected_population_manifest',
         'generation_selection',
-        'replay_manifest',
         'candidate',
         'candidate_search_projection',
         'open_world_evidence_bundle',

@@ -238,7 +238,9 @@ def test_qualification_authority_requires_exact_digest_references(field: str) ->
         replace(_authority(), **{field: "invalid"})
 
 
-@pytest.mark.parametrize("optimizer_kind", ["gepa", "offline_tuner_replay"])
+@pytest.mark.parametrize(
+    "optimizer_kind", ["gepa", "offline_tuner_legacy", "optimizer_legacy_unknown"]
+)
 def test_provisional_publication_rejects_non_open_world_optimizers(
     optimizer_kind: str,
 ) -> None:

@@ -37,13 +37,6 @@ from reflexio.server.services.storage.error import (
 )
 
 _STAGE_PREDECESSORS_BY_OPTIMIZER: dict[str, dict[str, tuple[str, str]]] = {
-    "offline_tuner_replay": {
-        "candidate_generated": ("evidence_frozen", "evidence_frozen"),
-        "replay_running": ("candidate_generated", "candidate_generated"),
-        "replay_evaluated": ("replay_running", "replay_running"),
-        "publishing": ("replay_evaluated", "replay_evaluated"),
-        "applied": ("publishing", "publishing"),
-    },
     "offline_tuner_open_world": {
         "discovery_analyzed": ("evidence_frozen", "evidence_frozen"),
         "candidate_generated": ("discovery_analyzed", "discovery_analyzed"),
@@ -51,13 +44,6 @@ _STAGE_PREDECESSORS_BY_OPTIMIZER: dict[str, dict[str, tuple[str, str]]] = {
     },
 }
 _ACTIVE_STAGES_BY_OPTIMIZER = {
-    "offline_tuner_replay": (
-        "evidence_frozen",
-        "candidate_generated",
-        "replay_running",
-        "replay_evaluated",
-        "publishing",
-    ),
     "offline_tuner_open_world": (
         "evidence_frozen",
         "discovery_analyzed",
@@ -66,27 +52,6 @@ _ACTIVE_STAGES_BY_OPTIMIZER = {
     ),
 }
 _TERMINAL_OUTCOMES_BY_OPTIMIZER = {
-    "offline_tuner_replay": {
-        "failed": {
-            "generation_failed",
-            "replay_failed",
-            "publication_failed",
-            "infrastructure_failure",
-        },
-        "abstained": {
-            "insufficient_negative_evidence",
-            "insufficient_positive_evidence",
-            "insufficient_coverage",
-            "replay_unsupported",
-            "deployment_unsupported",
-            "incomplete_replay_scope",
-            "insufficient_replay_cases",
-            "replay_inconclusive",
-            "candidate_regressed",
-            "candidate_did_not_improve",
-            "incumbent_changed",
-        },
-    },
     "offline_tuner_open_world": {
         "failed": {
             "infrastructure_failure",
@@ -816,15 +781,12 @@ class OptimizationJobStoreMixin:
                 stage
             )
             terminal_status: str | None = None
-            if stage == "applied":
-                if optimizer_kind != "offline_tuner_replay" or terminal_outcome not in (
-                    None,
-                    "applied",
-                ):
-                    return False
-                terminal_outcome = "applied"
-                terminal_status = "completed"
-            elif stage in ("failed", "abstained"):
+            # The 'applied' stage was reachable only for 'offline_tuner_replay',
+            # whose 'publishing' -> 'applied' predecessor Phase 7 removed. With
+            # no optimizer declaring an 'applied' predecessor the request now
+            # falls through to the "unknown transition" arm below and is
+            # refused -- exactly what the replay-only guard returned.
+            if stage in ("failed", "abstained"):
                 if terminal_outcome not in _TERMINAL_OUTCOMES_BY_OPTIMIZER.get(
                     optimizer_kind, {}
                 ).get(stage, set()):
@@ -852,31 +814,6 @@ class OptimizationJobStoreMixin:
                         fence,
                         advanced_at,
                         *predecessors,
-                    ),
-                )
-            elif stage == "applied":
-                cur = self.conn.execute(
-                    """UPDATE playbook_optimization_jobs
-                       SET stage = ?,
-                           terminal_outcome = ?,
-                           status = ?,
-                           lease_owner = NULL,
-                           lease_expires_at = NULL,
-                           updated_at = ?
-                       WHERE job_id = ?
-                         AND status IN ('pending', 'running')
-                         AND optimizer_kind = 'offline_tuner_replay'
-                         AND lease_fence = ?
-                         AND lease_expires_at > ?
-                         AND stage = 'publishing'""",
-                    (
-                        stage,
-                        terminal_outcome,
-                        terminal_status,
-                        advanced_at,
-                        job_id,
-                        fence,
-                        advanced_at,
                     ),
                 )
             else:

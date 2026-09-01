@@ -46,14 +46,21 @@ _EPOCH_NOW_PATCH = (
 )
 
 
-@pytest.mark.parametrize(
-    ("optimizer_kind", "expected_source"),
-    [("gepa", "gepa"), ("offline_tuner_replay", "offline_optimizer")],
-)
-def test_publication_source_is_explicitly_mapped(
-    optimizer_kind: str, expected_source: str
-) -> None:
-    assert publication_source_for_optimizer(optimizer_kind) == expected_source  # type: ignore[arg-type]
+def test_publication_source_is_explicitly_mapped() -> None:
+    """Phase 7 left 'gepa' as the only kind the legacy path publishes.
+
+    The 'offline_optimizer' source was produced solely for
+    'offline_tuner_replay'; with that kind retired the mapping is total and
+    every other kind is refused rather than silently mapped.
+    """
+    assert publication_source_for_optimizer("gepa") == "gepa"
+    for retired_or_unpublishable in (
+        "offline_tuner_open_world",
+        "offline_tuner_legacy",
+        "optimizer_legacy_unknown",
+    ):
+        with pytest.raises(ValueError, match="not publishable"):
+            publication_source_for_optimizer(retired_or_unpublishable)  # type: ignore[arg-type]
 
 
 def _canonical(payload: dict[str, object]) -> str:
@@ -314,7 +321,7 @@ def _subject_epochs_json(*, epoch: int = 0, subject_ref: str | None = None) -> s
 
 class _AcceptingVerifier:
     def verify(self, request: PublicationRequest) -> None:
-        assert request.optimizer_kind in {"gepa", "offline_tuner_replay"}
+        assert request.optimizer_kind == "gepa"
 
 
 def _service(storage: SQLiteStorage) -> UserPlaybookPublicationService:
@@ -396,29 +403,22 @@ def test_publish_commits_exact_staged_projection_and_terminal_result(
     assert terminal == result
 
 
-def test_offline_tuner_publication_persists_public_source(tmp_path: Path) -> None:
+def test_non_gepa_optimizer_cannot_claim_the_legacy_publication_path(
+    tmp_path: Path,
+) -> None:
+    """Replaces the retired 'offline_optimizer' source round-trip.
+
+    'offline_tuner_replay' was the only kind that produced
+    ``user_playbooks.source = 'offline_optimizer'`` through this path. Phase 7
+    retired it, so what this path must now do with a non-GEPA job is refuse it
+    at the claim, before any successor row exists.
+    """
     storage = _store(tmp_path)
-    incumbent, job = _seed(storage, optimizer_kind="offline_tuner_replay")
+    _, job = _seed(storage, optimizer_kind="offline_tuner_open_world")
     service = _service(storage)
-    claim = service.claim(job_id=job.job_id, owner="worker-a", worker_fence=5)
-    request = _request(
-        job_id=job.job_id,
-        incumbent_id=incumbent.user_playbook_id,
-        claim=claim,
-        optimizer_kind="offline_tuner_replay",
-    )
 
-    result = service.publish(request)
-
-    assert result.successor_user_playbook_id is not None
-    successor = storage.get_user_playbook_by_id(result.successor_user_playbook_id)
-    assert successor is not None
-    assert successor.source == "offline_optimizer"
-    staging = storage.conn.execute(
-        "SELECT optimizer_kind FROM user_playbook_publication_staging WHERE job_id = ?",
-        (job.job_id,),
-    ).fetchone()
-    assert staging["optimizer_kind"] == "offline_tuner_replay"
+    with pytest.raises(StorageError, match="not publishable"):
+        service.claim(job_id=job.job_id, owner="worker-a", worker_fence=5)
 
 
 def test_publish_lost_incumbent_cas_returns_incumbent_changed_without_orphan(
@@ -876,9 +876,9 @@ def test_erasure_barrier_added_after_staging_rejects_publication(
 @pytest.mark.parametrize(
     ("job_change", "message"),
     [
-        ({"stage": "replay_evaluated"}, "publishing"),
+        ({"stage": "candidate_generated"}, "publishing"),
         ({"attempt_key": "changed-attempt"}, "attempt"),
-        ({"optimizer_kind": "offline_tuner_replay"}, "optimizer"),
+        ({"optimizer_kind": "offline_tuner_open_world"}, "optimizer"),
         ({"target_id": 999}, "incumbent"),
     ],
 )
