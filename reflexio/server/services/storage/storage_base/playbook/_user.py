@@ -121,6 +121,32 @@ class UserPlaybookStoreMixin:
             "Storage backend does not support provisional user-playbook restoration"
         )
 
+    def confirm_user_playbook_provisional_publication(
+        self,
+        *,
+        lifecycle_id: int,
+        expected_fence: int,
+        expected_successor_fingerprint: str,
+        support_session_count: int,
+        refute_session_count: int,
+        global_coverage_numerator: int,
+        global_coverage_denominator: int,
+        target_coverage_numerator: int,
+        target_coverage_denominator: int,
+    ) -> "LifecycleTerminalResult":
+        """Atomically keep the successor and terminalize as confirmed.
+
+        Declared here, alongside restore and displace, rather than as an
+        enterprise-only extra: the three are one termination triple over the
+        same lifecycle row, and their shared Protocol
+        (``UserPlaybookLifecycleTerminationStore``) lives in the OSS package. A
+        backend that satisfied two thirds of it would be a surface every reader
+        has to special-case.
+        """
+        raise NotImplementedError(
+            "Storage backend does not support provisional user-playbook confirmation"
+        )
+
     def displace_user_playbook_provisional_publication(
         self, *, lifecycle_id: int
     ) -> "LifecycleTerminalResult":

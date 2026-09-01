@@ -21,11 +21,13 @@ PublicationOutcome = Literal["applied", "incumbent_changed"]
 LIFECYCLE_TERMINAL_STATES: frozenset[str] = frozenset(
     get_args(OpenWorldDeploymentLifecycleState)
 ) - {"provisional"}
-# Mirrors user_playbook_deployment_lifecycles_terminal_reason_check
-# (20260827040000). 'observed_regression' is Phase 6's and 'governed_erasure'
-# is the live governance erase path's; both are accepted here because a
-# terminal tuple READ BACK from an idempotent replay may legitimately carry
-# either. The restoration RPC itself accepts a strictly narrower set.
+# Mirrors user_playbook_deployment_lifecycles_terminal_reason_check, which is
+# now NINE values wide (20260827070000). 'governed_erasure' is the live
+# governance erase path's, and 'observed_regression' and
+# 'confirmed_online_support' are Phase 6's two opposite outcomes; all are
+# accepted here because a terminal tuple READ BACK from an idempotent replay may
+# legitimately carry any of them. The restoration RPC accepts a strictly
+# narrower set, and the confirm RPC accepts exactly one.
 LIFECYCLE_TERMINAL_REASONS: frozenset[str] = frozenset(
     {
         "insufficient_online_support",
@@ -36,6 +38,7 @@ LIFECYCLE_TERMINAL_REASONS: frozenset[str] = frozenset(
         "stale_incumbent",
         "observed_regression",
         "governed_erasure",
+        "confirmed_online_support",
     }
 )
 PublishableOptimizerKind = Literal[
@@ -656,6 +659,29 @@ class UserPlaybookLifecycleTerminationStore(Protocol):
         expected_successor_fingerprint: str,
     ) -> LifecycleTerminalResult:
         """Reselect the retained predecessor and terminalize, under a fence."""
+        ...
+
+    def confirm_user_playbook_provisional_publication(
+        self,
+        *,
+        lifecycle_id: int,
+        expected_fence: int,
+        expected_successor_fingerprint: str,
+        support_session_count: int,
+        refute_session_count: int,
+        global_coverage_numerator: int,
+        global_coverage_denominator: int,
+        target_coverage_numerator: int,
+        target_coverage_denominator: int,
+    ) -> LifecycleTerminalResult:
+        """Keep the successor and terminalize as confirmed, under a fence.
+
+        No ``reason`` parameter: ``confirmed_online_support`` is the only reason
+        this transition can record, so passing it would create a second place
+        the pairing could drift. The six counts are the evidence the boundary
+        decided on; the RPC re-checks the arithmetic itself and refuses an
+        inadmissible set rather than obeying it.
+        """
         ...
 
     def displace_user_playbook_provisional_publication(
