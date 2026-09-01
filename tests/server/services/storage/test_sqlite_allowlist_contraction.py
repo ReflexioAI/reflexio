@@ -405,3 +405,145 @@ def test_the_rebuild_is_idempotent(tmp_path: Path) -> None:
         )
     finally:
         second_storage.conn.close()
+
+
+# A schema that is current in every way EXCEPT that its optimizer_kind CHECK
+# omits 'gepa'. It carries no retired literal, so the negative half of the
+# predicate is satisfied; the question is whether the positive half notices a
+# MISSING admissible kind. Before the fix it did not, because the predicate
+# named only 'offline_tuner_open_world' among the four kinds.
+_GEPA_LESS_JOBS_DDL = """
+CREATE TABLE playbook_optimization_jobs (
+    job_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    optimizer_kind TEXT NOT NULL DEFAULT 'optimizer_legacy_unknown'
+        CHECK (optimizer_kind IN (
+            'offline_tuner_open_world',
+            'offline_tuner_legacy',
+            'optimizer_legacy_unknown'
+        )),
+    target_kind TEXT NOT NULL,
+    target_id INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    best_candidate_id INTEGER,
+    successor_target_id INTEGER,
+    decision_reason TEXT NOT NULL DEFAULT '',
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    discovery_key TEXT,
+    attempt_key TEXT,
+    lease_owner TEXT,
+    lease_fence INTEGER NOT NULL DEFAULT 0 CHECK (lease_fence >= 0),
+    lease_expires_at INTEGER,
+    stage TEXT CHECK (stage IS NULL OR stage IN (
+        'evidence_frozen',
+        'discovery_analyzed',
+        'candidate_generated',
+        'held_out_analyzed',
+        'publishing',
+        'applied',
+        'abstained',
+        'failed'
+    )),
+    terminal_outcome TEXT CHECK (terminal_outcome IS NULL OR terminal_outcome IN (
+        'applied',
+        'insufficient_negative_evidence',
+        'insufficient_positive_evidence',
+        'insufficient_coverage',
+        'deployment_unsupported',
+        'candidate_regressed',
+        'candidate_did_not_improve',
+        'incumbent_changed',
+        'generation_failed',
+        'publication_failed',
+        'governance_erased',
+        'no_grounded_hypothesis',
+        'analyst_unqualified',
+        'heldout_evidence_failed',
+        'stale_incumbent',
+        'governance_invalidated',
+        'infrastructure_failure'
+    )),
+    expected_population_manifest_digest TEXT,
+    generation_selection_manifest_digest TEXT,
+    replay_manifest_digest TEXT,
+    candidate_content_digest TEXT,
+    search_projection_digest TEXT,
+    publication_scope_digest TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+"""
+
+
+def _write_gepa_less_optimizer_table(db_path: Path, org_id: str) -> None:
+    """Leave ``db_path`` holding a jobs table whose CHECK omits ``'gepa'``."""
+    initial = SQLiteStorage(org_id=org_id, db_path=str(db_path))
+    initial.conn.close()
+
+    conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA foreign_keys=OFF")
+    conn.execute("DROP INDEX IF EXISTS idx_poj_target")
+    conn.execute("DROP INDEX IF EXISTS idx_poj_status")
+    conn.execute("DROP INDEX IF EXISTS uq_poj_active_discovery")
+    conn.execute("DROP INDEX IF EXISTS uq_poj_active_attempt")
+    conn.execute("DROP INDEX IF EXISTS uq_poj_active_target")
+    conn.execute("DROP TABLE playbook_optimization_jobs")
+    conn.execute(_GEPA_LESS_JOBS_DDL)
+    conn.commit()
+    conn.close()
+
+
+def test_a_schema_missing_an_admissible_optimizer_kind_is_rebuilt(
+    tmp_path: Path,
+) -> None:
+    """A missing kind must trigger the rebuild, not only a retired one.
+
+    The negative half of the predicate catches a RETIRED literal that is still
+    present. This is the other direction: an ADMISSIBLE literal that is absent.
+    Such a schema rejects legitimate ``gepa`` rows forever, and reports itself
+    as current, because no retired literal remains to give it away.
+    """
+    db_path = tmp_path / "gepa_less.db"
+    _write_gepa_less_optimizer_table(db_path, "org_gepa_less")
+
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    before = _table_sql(conn, "playbook_optimization_jobs")
+    conn.close()
+    assert "'gepa'" not in before
+    assert "'offline_tuner_replay'" not in before, (
+        "the fixture must carry NO retired literal, so only the missing kind "
+        "can be what triggers the rebuild"
+    )
+
+    storage = SQLiteStorage(org_id="org_gepa_less", db_path=str(db_path))
+    try:
+        after = _table_sql(storage.conn, "playbook_optimization_jobs")
+    finally:
+        storage.conn.close()
+
+    assert "'gepa'" in after, (
+        "the rebuild did not run: a schema whose optimizer_kind CHECK omits an "
+        "admissible kind was retained as current"
+    )
+
+
+def test_a_gepa_row_is_accepted_after_the_rebuild(tmp_path: Path) -> None:
+    """The rebuild's point: the repaired constraint admits what it must."""
+    db_path = tmp_path / "gepa_row.db"
+    _write_gepa_less_optimizer_table(db_path, "org_gepa_row")
+
+    storage = SQLiteStorage(org_id="org_gepa_row", db_path=str(db_path))
+    try:
+        storage.conn.execute(
+            """INSERT INTO playbook_optimization_jobs (
+                   job_id, optimizer_kind, target_kind, target_id, status,
+                   metadata_json, created_at, updated_at
+               ) VALUES (1, 'gepa', 'user_playbook', 1, 'pending', '{}', 1, 1)"""
+        )
+        storage.conn.commit()
+        row = storage.conn.execute(
+            "SELECT optimizer_kind FROM playbook_optimization_jobs WHERE job_id = 1"
+        ).fetchone()
+        assert row["optimizer_kind"] == "gepa"
+    finally:
+        storage.conn.close()

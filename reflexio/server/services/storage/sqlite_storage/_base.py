@@ -2214,10 +2214,21 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         if table_sql_row is None:
             return
         table_sql = table_sql_row["sql"]
+        # Every literal the FINAL constraints admit must appear, not just a
+        # representative few. A predicate that names some of them cannot tell
+        # "current" from "missing a kind": a schema whose optimizer_kind CHECK
+        # omits 'gepa' carries no retired literal, satisfies a partial list,
+        # and is retained forever with a constraint that rejects legitimate
+        # rows. The artifact rebuild below already enumerates its full set;
+        # this is that same rule.
         required_checks = (
             "CHECK (optimizer_kind IN",
             "CHECK (stage IS NULL OR stage IN",
             "CHECK (terminal_outcome IS NULL OR terminal_outcome IN",
+            "'gepa'",
+            "'offline_tuner_open_world'",
+            "'offline_tuner_legacy'",
+            "'optimizer_legacy_unknown'",
             "'governance_erased'",
             "'discovery_analyzed'",
             "'held_out_analyzed'",
@@ -2228,12 +2239,8 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             "'governance_invalidated'",
             "'infrastructure_failure'",
         )
-        if (
-            all(check in table_sql for check in required_checks)
-            and "'offline_tuner_open_world'" in table_sql
-            and not any(
-                retired in table_sql for retired in _RETIRED_OPTIMIZER_JOB_LITERALS
-            )
+        if all(check in table_sql for check in required_checks) and not any(
+            retired in table_sql for retired in _RETIRED_OPTIMIZER_JOB_LITERALS
         ):
             return
         foreign_keys_enabled = bool(
