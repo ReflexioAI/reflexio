@@ -348,7 +348,7 @@ class TestPromptManager:
         normalized_main = " ".join(main.split())
 
         assert manager.get_active_version("playbook_extraction_context") == "4.6.0"
-        assert manager.get_active_version("playbook_extraction_main") == "1.5.0"
+        assert manager.get_active_version("playbook_extraction_main") == "1.6.0"
         for required in (
             "Category 1 — Correction SOPs",
             "Category 2 — Success Path Recipes",
