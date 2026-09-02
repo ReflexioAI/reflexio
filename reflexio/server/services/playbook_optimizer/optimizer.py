@@ -249,8 +249,17 @@ class PlaybookOptimizer:
                 error_type=type(exc).__name__,
             ):
                 logger.exception("Playbook optimization failed")
+            # The exception message is deliberately not persisted here. It can
+            # carry customer content -- a pydantic ValidationError raised on a
+            # provider response renders the model's own output into its message
+            # -- and ``decision_reason`` is a durable column read back into the
+            # domain model and shown to operators. The class name, the traceback
+            # and the tags are already captured by the ``error_tags`` block
+            # above, which is where an unbounded diagnostic belongs.
             self.storage.update_playbook_optimization_job(
-                job.job_id, status="failed", decision_reason=str(exc)
+                job.job_id,
+                status="failed",
+                decision_reason="optimization run raised an unexpected error",
             )
             return "failed"
 
