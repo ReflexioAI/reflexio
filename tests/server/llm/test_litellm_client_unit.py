@@ -1595,6 +1595,42 @@ class TestStrictStructuredOutputRequest:
         assert parser_schema is SampleResponse
         assert parse_structured is True
 
+    def test_minimax_carries_the_schema_in_the_prompt_not_response_format(self):
+        """MiniMax ignores ``response_format``, so the schema must be in the prompt.
+
+        Measured against the live API: two identical calls differing only in
+        ``drop_params`` both returned free prose rather than JSON, so a
+        ``json_schema`` response_format is discarded however it is sent. The
+        symptom was an analyst inventing a different set of field names on
+        every run -- answering from the prompt alone, never having been given
+        a schema. Asserting the field NAMES appear in the instruction is the
+        point: a bare ``{"type": "json_object"}`` would leave the model to
+        guess them, which is the defect this guards.
+        """
+        client = _build_client(
+            LiteLLMConfig(
+                model="minimax/MiniMax-M3",
+                api_key_config=APIKeyConfig(minimax=MiniMaxConfig(api_key="mm-key")),
+            )
+        )
+        messages = [{"role": "user", "content": "test"}]
+
+        params, parser_schema, parse_structured, _, _ = client._build_completion_params(
+            messages,
+            response_format=SampleResponse,
+        )
+
+        assert params["response_format"] == {"type": "json_object"}
+        instruction = params["messages"][0]["content"]
+        assert params["messages"][0]["role"] == "system"
+        assert "Return ONLY a JSON object" in instruction
+        assert '"answer"' in instruction
+        assert '"score"' in instruction
+        # The caller's messages are not mutated, and local parsing stays typed.
+        assert messages == [{"role": "user", "content": "test"}]
+        assert parser_schema is SampleResponse
+        assert parse_structured is True
+
     def test_zai_tool_turn_leaves_tools_free_and_constrains_only_terminus(self):
         client = _build_client(LiteLLMConfig(model="zai/glm-5.2"))
         messages = [
@@ -1676,16 +1712,34 @@ class TestStrictStructuredOutputRequest:
         assert params["messages"] == messages
 
     def test_openai_compatible_underreported_provider_uses_strict_schema(self):
-        # Regression: minimax reports
-        # supports_response_schema=False, but it is an OpenAI-compatible endpoint
-        # LiteLLM would still hand a self-built json_schema. We must send our own
-        # normalized strict schema instead of the raw Pydantic model.
+        # Covers the _JSON_SCHEMA_PROVIDER_ALLOWLIST mechanism: a provider that
+        # genuinely accepts a json_schema response_format but that LiteLLM
+        # reports as unsupported must receive our own normalized strict schema,
+        # not the raw Pydantic model.
+        #
+        # The allowlist is EMPTY in production -- minimax was its only member
+        # and moved to the prompt path, having turned out to ignore
+        # response_format outright. So this patches a member in to exercise the
+        # mechanism itself. Without that, the code path would have no coverage
+        # at all and the next provider added to it would be unguarded.
         client = _build_client(LiteLLMConfig(model="minimax/MiniMax-M3"))
 
-        with patch.object(
-            LiteLLMClient,
-            "_supports_response_schema",
-            return_value=False,
+        with (
+            patch.object(
+                LiteLLMClient,
+                "_supports_response_schema",
+                return_value=False,
+            ),
+            patch.object(
+                LiteLLMClient,
+                "_JSON_SCHEMA_PROVIDER_ALLOWLIST",
+                frozenset({"minimax"}),
+            ),
+            patch.object(
+                LiteLLMClient,
+                "_PROMPT_SCHEMA_PROVIDER_ALLOWLIST",
+                frozenset({"zai"}),
+            ),
         ):
             params, parser_schema, parse_structured, _, _ = (
                 client._build_completion_params(
@@ -1718,9 +1772,19 @@ class TestStrictStructuredOutputRequest:
         # to exercise make_strict's prod backstop. The by-construction boundary
         # guard would (correctly) raise on it under pytest, so patch it to a no-op
         # here — this test asserts the make_strict fallback, not the guard.
+        # The json-schema allowlist is EMPTY in production (minimax moved to the
+        # prompt path), so a member is patched in to exercise the mechanism.
         with (
             patch.object(
                 LiteLLMClient, "_supports_response_schema", return_value=False
+            ),
+            patch.object(
+                LiteLLMClient,
+                "_JSON_SCHEMA_PROVIDER_ALLOWLIST",
+                frozenset({"minimax"}),
+            ),
+            patch.object(
+                LiteLLMClient, "_PROMPT_SCHEMA_PROVIDER_ALLOWLIST", frozenset({"zai"})
             ),
             patch(
                 "reflexio.server.llm._litellm_structured_output.assert_provider_safe_schema"
@@ -1756,12 +1820,20 @@ class TestStrictStructuredOutputRequest:
                 [{"role": "user", "content": "test"}],
                 response_format=_DiscriminatedOutput,
             )
-        provider_format = params["response_format"]
-        assert isinstance(provider_format, dict), (
-            "minimax must receive a normalized strict schema, not the raw Pydantic "
-            "model"
-        )
-        schema = provider_format["json_schema"]["schema"]
+        # minimax now carries its schema in the PROMPT -- it ignores
+        # response_format outright -- so the normalization invariant moved
+        # transport with it. It did not stop mattering: an unfolded `oneOf`
+        # trips assert_provider_safe_schema and raises before the request is
+        # even built, so a prompt-only provider could otherwise never carry a
+        # discriminated union at all.
+        assert params["response_format"] == {"type": "json_object"}
+        instruction = params["messages"][0]["content"]
+        # `prompt_schema_instruction` renders "<prose>\n\n<json.dumps(schema)>",
+        # and json.dumps(indent=2) emits no blank lines, so the first blank
+        # line is an unambiguous separator.
+        prose, _, schema_text = instruction.partition("\n\n")
+        assert "JSON Schema" in prose
+        schema = json.loads(schema_text)
         assert not find_schema_keyword(schema, "oneOf")
         assert not find_schema_keyword(schema, "discriminator")
 
