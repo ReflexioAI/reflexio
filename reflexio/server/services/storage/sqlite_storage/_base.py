@@ -71,6 +71,7 @@ from reflexio.server.services.storage.session_outcome_identity import (
 from reflexio.server.services.storage.storage_base import BaseStorage
 from reflexio.server.site_var.site_var_manager import SiteVarManager
 
+from ._dataset_path import resolve_sqlite_db_path
 from ._governance import init_governance_tables
 from ._stall_state import init_stall_state_table
 
@@ -963,11 +964,27 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         self.api_key_config = api_key_config
         self._enable_document_expansion = enable_document_expansion
 
-        # Resolve db_path: explicit arg > LOCAL_STORAGE_PATH env var > ~/.reflexio/data/
+        # Checked before any filesystem work: resolving a derived path claims the
+        # dataset, and an unsupported SQLite should fail without leaving a directory
+        # or a claim behind.
+        if sqlite3.sqlite_version_info < _MINIMUM_SQLITE_VERSION:
+            detected_version = ".".join(map(str, sqlite3.sqlite_version_info))
+            raise RuntimeError(
+                f"SQLite 3.35.0 or newer is required; detected {detected_version}"
+            )
+
+        # Resolve db_path: explicit arg > a file derived from org_id under
+        # LOCAL_STORAGE_PATH. An explicit path is used verbatim -- callers that point
+        # several identities at one file (multi-tenant tests, benchmarks) depend on
+        # that, and it is what keeps the residual commingling case observable.
+        #
+        # The import stays function-local: the test session patches
+        # ``reflexio.server.LOCAL_STORAGE_PATH`` on the already-imported module, which
+        # a module-level import would read past.
         if db_path is None:
             from reflexio.server import LOCAL_STORAGE_PATH
 
-            db_path = str(Path(LOCAL_STORAGE_PATH) / "reflexio.db")
+            db_path = resolve_sqlite_db_path(LOCAL_STORAGE_PATH, org_id)
 
         self.db_path = db_path
         self._lock = threading.RLock()
@@ -977,12 +994,6 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         ] = []  # (kind, args) flushed post-commit
 
         logger.info("SQLite Storage for org %s using db_path: %s", org_id, db_path)
-
-        if sqlite3.sqlite_version_info < _MINIMUM_SQLITE_VERSION:
-            detected_version = ".".join(map(str, sqlite3.sqlite_version_info))
-            raise RuntimeError(
-                f"SQLite 3.35.0 or newer is required; detected {detected_version}"
-            )
 
         # Ensure parent directory exists
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
