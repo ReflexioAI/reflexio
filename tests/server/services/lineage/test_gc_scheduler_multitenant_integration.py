@@ -5,7 +5,8 @@ In managed multi-tenant mode ``storage.list_org_ids()`` raises
 bootstrap org only and tenant orgs' expired rows leak. Task 3.4 makes org
 discovery injectable: when an ``org_id_provider`` is supplied (the enterprise
 supplies a tenant-enumerating one), the profile expiry sweep (Class A) and the
-plain-row sweeps (Class B: share links + pending tool calls) reach EVERY tenant.
+plain-row sweeps (Class B: pending tool calls, and — in enterprise — share
+links) reach EVERY tenant.
 
 These tests prove:
 1. Multi-tenant reclamation: with a provider returning two tenant orgs and a
@@ -54,7 +55,7 @@ def _both_enabled_config() -> SimpleNamespace:
 
 
 def _seed_org(storage: SQLiteStorage, org_id: str) -> str:
-    """Seed one org with a TTL-expired profile, expired share link, expired call.
+    """Seed one org with a TTL-expired profile and an expired pending tool call.
 
     Returns:
         str: The profile_id seeded (for tombstone assertions).
@@ -72,13 +73,6 @@ def _seed_org(storage: SQLiteStorage, org_id: str) -> str:
                 expiration_timestamp=100,  # far in the past → eligible for expiry sweep
             )
         ],
-    )
-    storage.create_share_link(
-        token=f"shr_{org_id}",
-        resource_type="profile",
-        resource_id=f"res_{org_id}",
-        expires_at=1,  # long expired
-        created_by_email=None,
     )
     now = datetime.now(UTC)
     scope = {"org_id": org_id, "scope_kind": "org"}
@@ -107,9 +101,6 @@ def _assert_reclaimed(storage: SQLiteStorage, org_id: str, profile_id: str) -> N
     assert row is not None, f"{org_id}: profile row should still exist (tombstoned)"
     assert row.status is not None, (
         f"{org_id}: Class A must tombstone the TTL-expired active profile"
-    )
-    assert storage.get_share_links() == [], (
-        f"{org_id}: Class B must delete the expired share link"
     )
     assert storage.get_pending_tool_call(f"call_{org_id}") is None, (
         f"{org_id}: Class B must delete the expired pending tool call"

@@ -1,18 +1,27 @@
 """Integration tests: Class B direct-delete sweep in _gc_tick (Task 2.1).
 
-Key invariant: Class B (share-link + pending-tool-call reclamation) runs even
-when ``lineage_gc.enabled=False``.  Class A (profile expiry sweep + tombstone GC)
-must NOT run when ``lineage_gc.enabled=False``.
+Key invariant: Class B (pending-tool-call reclamation — and, in enterprise,
+share-link reclamation) runs even when ``lineage_gc.enabled=False``. Class A
+(profile expiry sweep + tombstone GC) must NOT run when
+``lineage_gc.enabled=False``.
 
 Both are gated independently:
   - Class A runs under ``if cfg.lineage_gc.enabled``
   - Class B runs under ``if cfg.expiry_reclamation.enabled``
   - The scheduler STARTS when EITHER flag is True.
+
+Exercised here via ``delete_expired_pending_tool_calls`` — the only Class B
+target OSS itself implements. ``delete_expired_share_links`` is an
+enterprise-only Class B target (§9.1 of the project-scoped-tenancy design);
+the scheduler's ``getattr``-guarded dispatch (see
+``reflexio.server.services.lineage.gc_scheduler._CLASS_B_SWEEPS``) skips it
+cleanly when a backend does not implement it, so it needs no OSS coverage.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -26,6 +35,12 @@ from reflexio.server.services.lineage.gc_scheduler import (
     maybe_start_lineage_gc,
 )
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
+from reflexio.server.services.storage.storage_base import (
+    PendingToolCallRecord,
+    PendingToolCallStatus,
+    build_pending_tool_call_dedup_key,
+    build_scope_hash,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -70,20 +85,34 @@ def _make_ctx_factory(
     return storage, factory
 
 
-def _seed_expired_share_link(storage: SQLiteStorage, expires_at: int) -> None:
-    """Create a share link with the given expiration epoch."""
-    storage.create_share_link(
-        token="shr_class_b_test",
-        resource_type="profile",
-        resource_id="r_class_b",
-        expires_at=expires_at,
-        created_by_email=None,
+_CLASS_B_CALL_ID = "call_class_b_test"
+
+
+def _seed_expired_pending_tool_call(storage: SQLiteStorage) -> None:
+    """Create a terminal 'expired' pending tool call, past the 1-day Class B grace."""
+    now = datetime.now(UTC)
+    scope = {"org_id": storage.org_id, "scope_kind": "org"}
+    storage.create_pending_tool_call(
+        PendingToolCallRecord(
+            id=_CLASS_B_CALL_ID,
+            org_id=storage.org_id,
+            scope=scope,
+            scope_hash=build_scope_hash(scope),
+            tool_name="ask_human",
+            dedup_key=build_pending_tool_call_dedup_key(
+                tool_name="ask_human", question_text="q_class_b"
+            ),
+            status=PendingToolCallStatus("expired"),
+            question_text="q_class_b",
+            expires_at=now - timedelta(days=2),
+            cache_until=now - timedelta(days=2),
+        )
     )
 
 
-def _share_link_count(storage: SQLiteStorage) -> int:
-    """Return the number of share links in storage."""
-    return len(storage.get_share_links())
+def _pending_tool_call_exists(storage: SQLiteStorage) -> bool:
+    """Return whether the seeded pending tool call still exists in storage."""
+    return storage.get_pending_tool_call(_CLASS_B_CALL_ID) is not None
 
 
 def _seed_active_profile(storage: SQLiteStorage) -> UserProfile:
@@ -106,7 +135,7 @@ def _seed_active_profile(storage: SQLiteStorage) -> UserProfile:
 
 
 def test_class_b_runs_when_lineage_gc_disabled(tmp_path, org_id):
-    """Class B sweep deletes expired share links when lineage_gc.enabled=False.
+    """Class B sweep deletes expired pending tool calls when lineage_gc.enabled=False.
 
     Also asserts that Class A (profile expiry sweep) does NOT run, confirming
     that the two guards are independent.
@@ -117,9 +146,9 @@ def test_class_b_runs_when_lineage_gc_disabled(tmp_path, org_id):
         expiry_reclamation_enabled=True,
     )
 
-    # Seed a long-expired share link.
-    _seed_expired_share_link(storage, expires_at=1)
-    assert _share_link_count(storage) == 1
+    # Seed a long-expired (terminal 'expired' status) pending tool call.
+    _seed_expired_pending_tool_call(storage)
+    assert _pending_tool_call_exists(storage)
 
     # Seed an active profile with a past expiration — if Class A ran it would
     # be tombstoned.
@@ -128,9 +157,10 @@ def test_class_b_runs_when_lineage_gc_disabled(tmp_path, org_id):
     sched = LineageGCScheduler(request_context_factory=factory, bootstrap_org_id=org_id)
     sched._gc_tick([org_id])
 
-    # Class B: share link must be reclaimed.
-    assert _share_link_count(storage) == 0, (
-        "Class B must delete the expired share link even when lineage_gc is disabled"
+    # Class B: pending tool call must be reclaimed.
+    assert not _pending_tool_call_exists(storage), (
+        "Class B must delete the expired pending tool call even when "
+        "lineage_gc is disabled"
     )
 
     # Class A must NOT have run: the active profile must still be active (not tombstoned).
@@ -188,18 +218,18 @@ def test_scheduler_starts_when_only_expiry_reclamation_enabled(tmp_path, org_id)
 
 
 def test_class_b_does_not_run_when_disabled(tmp_path, org_id):
-    """When expiry_reclamation.enabled=False the share link is NOT deleted."""
+    """When expiry_reclamation.enabled=False the pending tool call is NOT deleted."""
     storage, factory = _make_ctx_factory(
         tmp_path,
         lineage_gc_enabled=False,
         expiry_reclamation_enabled=False,
     )
-    _seed_expired_share_link(storage, expires_at=1)
-    assert _share_link_count(storage) == 1
+    _seed_expired_pending_tool_call(storage)
+    assert _pending_tool_call_exists(storage)
 
     sched = LineageGCScheduler(request_context_factory=factory, bootstrap_org_id=org_id)
     sched._gc_tick([org_id])
 
-    assert _share_link_count(storage) == 1, (
+    assert _pending_tool_call_exists(storage), (
         "Class B must not run when expiry_reclamation.enabled=False"
     )
