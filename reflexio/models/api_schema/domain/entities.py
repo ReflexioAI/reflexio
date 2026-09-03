@@ -494,6 +494,15 @@ OptimizationTerminalOutcome = Literal[
     # An attempt REFUSED before spending, not a fault -- see
     # reflexio_ext open_world/models.py:210-227.
     "regeneration_fenced",
+    # Written by reflexio_ext offline_tuner/open_world/runner.py
+    # (_converge_terminal_failure, from the slot-exhausted handler) when EVERY
+    # durable row identity the discovery question could occupy is already owned
+    # by a different optimization job -- so the attempt made NO provider call at
+    # all. Split out of 'infrastructure_failure', which it was previously
+    # indistinguishable from, hiding the fact that a failed attempt was burning
+    # its playbook's identity for the rest of the UTC day. See
+    # reflexio_ext open_world/models.py and identity.attempt_invocation_identity.
+    "invocation_slot_pinned",
 ]
 
 OptimizationArtifactKind = Literal[
