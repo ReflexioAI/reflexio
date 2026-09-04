@@ -4510,3 +4510,93 @@ class TestSafeValidationErrors:
 
         assert errors == ("count: int_parsing",)
         assert all("customer data" not in error for error in errors)
+
+
+# ===================================================================
+# Function tools on models that reject reasoning
+# ===================================================================
+
+
+_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "finish",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    }
+]
+
+
+class TestToolsRequireReasoningDisabled:
+    """Tests for _tools_require_reasoning_disabled and its param injection."""
+
+    @pytest.fixture()
+    def client(self):
+        return _build_client()
+
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "gpt-5.6",
+            "gpt-5.6-luna",
+            "gpt-5.6-terra",
+            "gpt-5.6-sol",
+            "GPT-5.6-Luna",
+        ],
+    )
+    def test_affected_models(self, client, model):
+        assert client._tools_require_reasoning_disabled(model) is True
+
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "gpt-5.5",
+            "gpt-5.4-mini",
+            "gpt-5-nano",
+            "gpt-4o",
+            "claude-3-5-sonnet",
+            "gemini-3-flash-preview",
+        ],
+    )
+    def test_unaffected_models(self, client, model):
+        assert client._tools_require_reasoning_disabled(model) is False
+
+    def test_provider_prefix_stripped(self, client):
+        assert (
+            client._tools_require_reasoning_disabled("openrouter/openai/gpt-5.6-luna")
+            is True
+        )
+
+    def _capture(self, model, **call_kwargs):
+        calls: list[dict[str, Any]] = []
+
+        def fake_completion(**kwargs):
+            calls.append(kwargs)
+            return _make_completion_response("ok")
+
+        client = _build_client(LiteLLMConfig(model=model))
+        with patch("litellm.completion", side_effect=fake_completion):
+            client.generate_chat_response(
+                messages=[{"role": "user", "content": "test"}], **call_kwargs
+            )
+        assert len(calls) == 1
+        return calls[0]
+
+    def test_tools_on_affected_model_disable_reasoning(self):
+        kwargs = self._capture("gpt-5.6-luna", tools=_TOOLS)
+        assert kwargs["reasoning_effort"] == "none"
+
+    def test_no_tools_leaves_reasoning_alone(self):
+        """Only the tools path is affected — plain calls keep reasoning enabled."""
+        kwargs = self._capture("gpt-5.6-luna")
+        assert "reasoning_effort" not in kwargs
+
+    def test_unaffected_model_with_tools_is_untouched(self):
+        kwargs = self._capture("gpt-5.5", tools=_TOOLS)
+        assert "reasoning_effort" not in kwargs
+
+    def test_explicit_reasoning_effort_wins(self):
+        """setdefault, not assignment: a caller-supplied value must survive."""
+        kwargs = self._capture("gpt-5.6-luna", tools=_TOOLS, reasoning_effort="low")
+        assert kwargs["reasoning_effort"] == "low"

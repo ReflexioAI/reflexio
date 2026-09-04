@@ -225,6 +225,17 @@ class TextGenerationMixin:
         "gemini-3-pro-preview",
     }
 
+    # Models that reject function tools on /v1/chat/completions while reasoning is
+    # on. The API answers 400 with:
+    #   "Function tools with reasoning_effort are not supported for gpt-5.6-luna
+    #    in /v1/chat/completions. To use function tools, use /v1/responses or set
+    #    reasoning_effort to 'none'."
+    # Sending reasoning_effort="none" alongside the tools keeps these models usable
+    # on the completions path.
+    TOOLS_REQUIRE_REASONING_DISABLED_MODELS = {
+        "gpt-5.6",
+    }
+
     # Base-owned attributes these methods read (init'd in the facade ``__init__``).
     config: "LiteLLMConfig"
     logger: logging.Logger
@@ -569,6 +580,10 @@ class TextGenerationMixin:
             params["allowed_openai_params"] = allowed_openai_params
         if tools is not None:
             params["tools"] = tools
+            if self._tools_require_reasoning_disabled(actual_model):
+                # setdefault, and placed before params.update(kwargs), so an
+                # explicit caller-supplied reasoning_effort still wins.
+                params.setdefault("reasoning_effort", "none")
         if tool_choice is not None:
             params["tool_choice"] = tool_choice
 
@@ -1736,6 +1751,24 @@ class TextGenerationMixin:
             return _encode_image_to_base64(image_path)
         except ImageEncodingError as exc:
             raise LiteLLMClientError(str(exc)) from exc
+
+    def _tools_require_reasoning_disabled(self, model: str) -> bool:
+        """Check whether a model needs reasoning off to accept function tools.
+
+        Args:
+            model: Model name to check.
+
+        Returns:
+            True if the model rejects function tools unless reasoning_effort is
+            "none" on the chat/completions path.
+        """
+        model_lower = model.lower()
+        # Strip provider routing prefixes (e.g., "openrouter/openai/gpt-5.6-luna").
+        model_name = model_lower.rsplit("/", 1)[-1]
+        return any(
+            model_name.startswith(restricted) or model_name == restricted
+            for restricted in self.TOOLS_REQUIRE_REASONING_DISABLED_MODELS
+        )
 
     def _is_temperature_restricted_model(self, model: str) -> bool:
         """
