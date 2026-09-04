@@ -123,7 +123,7 @@ def set_config(
     reflexio = reflexio_cache.get_reflexio(org_id=org_id)
     configurator = reflexio.request_context.configurator
     config = _reject_direct_experiment_mutation(
-        config, configurator.get_config(), preserve_missing=True
+        config, configurator.get_org_config(), preserve_missing=True
     )
     try:
         normalized_config = configurator.normalize_config_payload(config)
@@ -199,7 +199,7 @@ def update_config(
 
     reflexio = reflexio_cache.get_reflexio(org_id=org_id)
     configurator = reflexio.request_context.configurator
-    existing_config = configurator.get_config()
+    existing_config = configurator.get_org_config()
     partial = _reject_direct_experiment_mutation(
         partial, existing_config, preserve_missing=False
     )
