@@ -34,6 +34,7 @@ from reflexio.server.rate_limit import limiter
 from reflexio.server.services.configurator.config_storage import (
     ConfigWriteConflictError,
 )
+from reflexio.server.validation_errors import safe_validation_errors
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -131,7 +132,7 @@ def set_config(
     except ValidationError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail=exc.errors(),
+            detail=safe_validation_errors(exc.errors()),
         ) from exc
 
     # Set the config using Reflexio's set_config method
@@ -222,7 +223,7 @@ def update_config(
                     "/api/get_config, edit, and POST it back via "
                     "/api/set_config."
                 ),
-                "validation_errors": exc.errors(),
+                "validation_errors": safe_validation_errors(exc.errors()),
             },
         ) from exc
     partial_uses_only_shared_fields = (

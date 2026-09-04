@@ -65,6 +65,7 @@ from reflexio.server.routes import (
     search,
     system,
 )
+from reflexio.server.validation_errors import safe_validation_errors
 
 logger = logging.getLogger(__name__)
 
@@ -156,11 +157,9 @@ async def _safe_request_validation_exception_handler(
     errors = exc.errors()
     if not any(_contains_non_finite_number(error.get("input")) for error in errors):
         return await request_validation_exception_handler(request, exc)
-    safe_errors = [
-        {key: value for key, value in error.items() if key not in {"input", "ctx"}}
-        for error in errors
-    ]
-    return JSONResponse(status_code=422, content={"detail": safe_errors})
+    return JSONResponse(
+        status_code=422, content={"detail": safe_validation_errors(errors)}
+    )
 
 
 def _add_openapi_security(app: FastAPI) -> None:
