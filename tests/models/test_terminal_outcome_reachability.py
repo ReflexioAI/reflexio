@@ -25,8 +25,8 @@ from reflexio.server.services.storage.sqlite_storage.playbook._optimization impo
     _TERMINAL_OUTCOMES_BY_OPTIMIZER,
 )
 
-# The eleven outcomes that survive Phase 7 with a path that can reach them. Six
-# are written by the stage-advance allowlist below; the other five are written
+# The twelve outcomes that survive Phase 7 with a path that can reach them. Six
+# are written by the stage-advance allowlist below; the other six are written
 # elsewhere and are named here with their writer so the split is auditable.
 _REACHABLE_TERMINAL_OUTCOMES = frozenset(
     {
@@ -45,6 +45,17 @@ _REACHABLE_TERMINAL_OUTCOMES = frozenset(
         # no open-world fence -- which is why it is named here rather than left
         # to the `writable <=` assertion to cover.
         "regeneration_fenced",
+        # the invocation-slot pin: reflexio_ext open_world/runner.py:262-264
+        # calls _converge_terminal_failure with it on
+        # OpenWorldInvocationSlotExhaustedError -- the attempt made NO provider
+        # call because every row identity its question could occupy is owned by
+        # another job. The TENANT stage-advance RPC's 'failed' arm assigns it
+        # (tenant 20260903010000:129-131); the 'abstained' arm deliberately does
+        # not, since nothing was judged. Absent from the SQLite allowlist below
+        # for the same reason as 'regeneration_fenced' -- SQLite carries no
+        # open-world invocation table, so no slot can be pinned -- which is why
+        # it is named here rather than left to the `writable <=` assertion.
+        "invocation_slot_pinned",
         # stage-advance: 'failed'
         "infrastructure_failure",
         "analyst_unqualified",
@@ -95,8 +106,8 @@ def test_the_union_is_exactly_the_reachable_set_plus_the_retained_set() -> None:
     assert (
         members - RETAINED_UNREACHABLE_TERMINAL_OUTCOMES == _REACHABLE_TERMINAL_OUTCOMES
     )
-    assert len(members) == 18
-    assert len(_REACHABLE_TERMINAL_OUTCOMES) == 11
+    assert len(members) == 19
+    assert len(_REACHABLE_TERMINAL_OUTCOMES) == 12
 
 
 def test_no_retained_outcome_is_writable_through_the_stage_advance_allowlist() -> None:
