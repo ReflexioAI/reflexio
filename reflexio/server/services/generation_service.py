@@ -216,8 +216,38 @@ def _retention_cleanup_interval_seconds() -> float:
 
 
 _RETENTION_CLEANUP_INTERVAL_SECONDS = _retention_cleanup_interval_seconds()
-_retention_cleanup_last_run: dict[tuple[str, str], float] = {}
+# Keyed ``(org_id, project_id, target_name)``. The project component is what
+# keeps per-project retention alive: the throttle is consulted BEFORE the
+# ``storage_table_cleanup`` lease is taken, so an org-wide key would let the
+# first project to sweep silence every sibling project for a full interval --
+# no error, no log, just a retention pass that never happens. ``project_id`` is
+# ``None`` wherever projects do not exist (OSS) or the caller is unbound, which
+# makes the key a 1:1 relabel of the old org-wide one for those installs.
+_retention_cleanup_last_run: dict[tuple[str, str | None, str], float] = {}
 _retention_cleanup_lock = threading.Lock()
+# Soft cap on tracked keys. The key space now grows with project count as well
+# as org count, so bound it -- but only by evicting entries whose interval has
+# already elapsed. Such an entry would admit its next check anyway, so dropping
+# it is semantics-preserving; the surviving working set is whatever actually
+# published inside one interval, which real traffic already bounds.
+_RETENTION_CLEANUP_TRACKED_KEYS_SOFT_CAP = 4096
+
+
+def _prune_expired_retention_keys(now: float) -> None:
+    """Drop throttle entries whose interval has elapsed.
+
+    Callers must hold ``_retention_cleanup_lock``.
+
+    Args:
+        now (float): ``time.monotonic()`` reading of the current check.
+    """
+    expired = [
+        key
+        for key, last_run in _retention_cleanup_last_run.items()
+        if now - last_run >= _RETENTION_CLEANUP_INTERVAL_SECONDS
+    ]
+    for key in expired:
+        del _retention_cleanup_last_run[key]
 
 
 def _org_in_durable_allowlist(org_id: str | None) -> bool:
@@ -1292,10 +1322,15 @@ class GenerationService:
     def _cleanup_storage_tables_if_needed(self) -> None:
         """Best-effort publish-boundary cleanup for capped storage tables."""
         now = time.monotonic()
+        # Resolved once, here on the request thread that is publishing. Under
+        # per-project retention each project must be throttled independently;
+        # see the note on ``_retention_cleanup_last_run``.
+        project_id = current_project_id()
         limits = {
             target_name: limit
             for target_name, limit in get_row_retention_limits().items()
-            if limit > 0 and self._should_check_retention_target(target_name, now)
+            if limit > 0
+            and self._should_check_retention_target(target_name, project_id, now)
         }
         if not limits:
             return
@@ -1340,10 +1375,24 @@ class GenerationService:
                 logger.exception("Failed to cleanup storage tables")
             # Don't raise - cleanup failure shouldn't block normal operation
 
-    def _should_check_retention_target(self, target_name: str, now: float) -> bool:
+    def _should_check_retention_target(
+        self, target_name: str, project_id: str | None, now: float
+    ) -> bool:
+        """Whether this org/project/target is due for a retention sweep.
+
+        Args:
+            target_name (str): Capped storage table being considered.
+            project_id (str | None): Project the publishing request is bound to,
+                or ``None`` in OSS and for an unbound caller.
+            now (float): ``time.monotonic()`` reading of the current check.
+
+        Returns:
+            bool: True when the target is due, stamping the throttle as a side
+            effect; False while the interval is still open.
+        """
         if _RETENTION_CLEANUP_INTERVAL_SECONDS <= 0:
             return True
-        key = (self.org_id, target_name)
+        key = (self.org_id, project_id, target_name)
         with _retention_cleanup_lock:
             last_run = _retention_cleanup_last_run.get(key)
             if (
@@ -1351,6 +1400,11 @@ class GenerationService:
                 and now - last_run < _RETENTION_CLEANUP_INTERVAL_SECONDS
             ):
                 return False
+            if (
+                len(_retention_cleanup_last_run)
+                >= _RETENTION_CLEANUP_TRACKED_KEYS_SOFT_CAP
+            ):
+                _prune_expired_retention_keys(now)
             _retention_cleanup_last_run[key] = now
             return True
 

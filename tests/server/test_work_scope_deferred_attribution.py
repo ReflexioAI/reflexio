@@ -383,3 +383,167 @@ def test_provider_returning_empty_string_is_normalised() -> None:
 
     register_service(WORK_SCOPE_PROVIDER, _RawProvider(), override=True)
     assert current_project_id() is None
+
+
+# ---------------------------------------------------------------------------
+# 4. The retention throttle must not silence sibling projects
+# ---------------------------------------------------------------------------
+#
+# ``_should_check_retention_target`` is an in-process throttle consulted BEFORE
+# the ``storage_table_cleanup`` lease is acquired. That ordering is what makes
+# its key shape load-bearing: with an org-wide key the first project to publish
+# stamps the throttle for the whole org, and every sibling project's retention
+# sweep is skipped for a full interval -- silently, with no error and no log.
+# The org-wide lease is a separate and much weaker effect: a loser simply
+# retries on the next publish.
+
+
+class _AlwaysGrantsLock:
+    """Stands in for OperationStateManager: the lease is never the variable."""
+
+    def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+        pass
+
+    def acquire_simple_lock(self, stale_seconds: int = 300) -> bool:
+        return True
+
+    def release_simple_lock(self) -> None:
+        pass
+
+
+class _RetentionProbe:
+    """Drives the REAL ``GenerationService`` methods, not a hand-built key.
+
+    A test that assembled the throttle key itself would keep passing after the
+    project component was dropped from the production call site.
+    """
+
+    org_id = "org-retention"
+    storage = None
+
+    _cleanup_storage_tables_if_needed = (
+        GenerationService._cleanup_storage_tables_if_needed
+    )
+    _should_check_retention_target = GenerationService._should_check_retention_target
+
+    def __init__(self) -> None:
+        self.swept: list[tuple[str | None, str]] = []
+
+    def _cleanup_retention_target(self, target_name: str, limit: int) -> None:
+        # Read from the ambient scope so the assertion names the project whose
+        # rows this sweep would actually have touched.
+        self.swept.append((current_project_id(), target_name))
+
+
+@pytest.fixture
+def retention_throttle(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Throttle live, one capped target, lease always granted, state cleared."""
+    monkeypatch.setattr(
+        generation_service_module, "_RETENTION_CLEANUP_INTERVAL_SECONDS", 300.0
+    )
+    monkeypatch.setattr(
+        generation_service_module,
+        "get_row_retention_limits",
+        lambda: {"user_interactions": 10},
+    )
+    monkeypatch.setattr(
+        generation_service_module, "OperationStateManager", _AlwaysGrantsLock
+    )
+    generation_service_module._retention_cleanup_last_run.clear()
+    try:
+        yield
+    finally:
+        generation_service_module._retention_cleanup_last_run.clear()
+
+
+def test_retention_throttle_does_not_silence_sibling_projects(
+    provider: _FakeProvider, retention_throttle: None
+) -> None:
+    """THE central assertion: one org, three projects, one throttle window.
+
+    Against the old ``(org_id, target_name)`` key only the FIRST project sweeps;
+    the other two are skipped with no error and no log.
+    """
+    probe = _RetentionProbe()
+
+    for project in ("proj-a", "proj-b", "proj-c"):
+        with bind_work_scope(WorkScope(org_id="org-retention", project_id=project)):
+            probe._cleanup_storage_tables_if_needed()
+
+    assert sorted(project for project, _ in probe.swept if project is not None) == [
+        "proj-a",
+        "proj-b",
+        "proj-c",
+    ], (
+        f"expected one retention sweep per project, got {probe.swept} -- the "
+        "throttle key collapsed three projects into one org-wide window, so "
+        "per-project retention silently stopped after the first project"
+    )
+
+
+def test_retention_throttle_still_throttles_within_one_project(
+    provider: _FakeProvider, retention_throttle: None
+) -> None:
+    """Adding the project must not turn the throttle off for repeat publishes."""
+    probe = _RetentionProbe()
+
+    with bind_work_scope(WorkScope(org_id="org-retention", project_id="proj-a")):
+        for _ in range(3):
+            probe._cleanup_storage_tables_if_needed()
+
+    assert probe.swept == [("proj-a", "user_interactions")], (
+        f"expected exactly one sweep inside one interval, got {probe.swept}"
+    )
+
+
+def test_retention_throttle_unbound_caller_is_unchanged(
+    retention_throttle: None,
+) -> None:
+    """No project bound: OSS, and any enterprise caller outside a project.
+
+    ``current_project_id()`` is ``None`` for every call, so the key is a 1:1
+    relabel of the old org-wide one and behaviour is exactly as before -- one
+    sweep, then throttled. Registering ``None`` is how this suite models "no
+    provider registered": ``get_service`` returns it verbatim.
+    """
+    register_service(WORK_SCOPE_PROVIDER, None, override=True)  # type: ignore[arg-type]
+    probe = _RetentionProbe()
+
+    for _ in range(3):
+        probe._cleanup_storage_tables_if_needed()
+
+    assert probe.swept == [(None, "user_interactions")], (
+        f"unbound retention behaviour changed: {probe.swept}"
+    )
+
+
+def test_expired_retention_keys_are_pruned_when_the_dict_grows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The key space grows with project count, so it must not grow forever.
+
+    Only entries past their interval are evicted -- those would admit their
+    next check anyway, so the prune cannot change any decision.
+    """
+    monkeypatch.setattr(
+        generation_service_module, "_RETENTION_CLEANUP_INTERVAL_SECONDS", 300.0
+    )
+    monkeypatch.setattr(
+        generation_service_module, "_RETENTION_CLEANUP_TRACKED_KEYS_SOFT_CAP", 3
+    )
+    state = generation_service_module._retention_cleanup_last_run
+    state.clear()
+    try:
+        state[("org", "old-a", "t")] = 0.0
+        state[("org", "old-b", "t")] = 0.0
+        state[("org", "fresh", "t")] = 1_000.0
+
+        probe = _RetentionProbe()
+        assert probe._should_check_retention_target("t", "new", 1_000.0) is True
+
+        assert set(state) == {
+            ("org", "fresh", "t"),
+            (_RetentionProbe.org_id, "new", "t"),
+        }, f"prune kept expired keys or dropped live ones: {sorted(state)}"
+    finally:
+        state.clear()
