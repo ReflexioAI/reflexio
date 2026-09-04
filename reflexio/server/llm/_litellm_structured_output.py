@@ -36,6 +36,7 @@ from reflexio.server.llm._litellm_types import StructuredOutputParseError
 from reflexio.server.llm.llm_utils import (
     assert_provider_safe_schema,
     is_pydantic_model,
+    make_strict_json_schema,
     prompt_schema_instruction,
     strict_response_format_for_model,
 )
@@ -270,8 +271,27 @@ class StructuredOutputMixin:
     # for discriminated unions, which strict structured-output endpoints reject.
     # Listing the provider here forces our own
     # normalized strict schema (``oneOf`` folded into ``anyOf``) to be sent.
-    _JSON_SCHEMA_PROVIDER_ALLOWLIST: frozenset[str] = frozenset({"minimax"})
-    _PROMPT_SCHEMA_PROVIDER_ALLOWLIST: frozenset[str] = frozenset({"zai"})
+    #
+    # Empty by design, not by neglect: ``minimax`` was its only member and has
+    # moved to the prompt-schema allowlist below, because it turned out to
+    # ignore ``response_format`` rather than merely be under-reported. The
+    # mechanism stays for the next provider that genuinely fits the shape
+    # described above -- accepts json_schema, reported as unsupported.
+    _JSON_SCHEMA_PROVIDER_ALLOWLIST: frozenset[str] = frozenset()
+
+    # Providers that ignore ``response_format`` outright, so the schema has to
+    # travel in the prompt or the model never sees it at all.
+    #
+    # ``minimax`` was previously in the json-schema allowlist above, on the
+    # belief that it accepts a ``json_schema`` response_format that LiteLLM
+    # merely under-reports. Measured against the live API, it does not: two
+    # identical calls differing only in ``drop_params`` both returned free
+    # prose rather than JSON, so the response_format is discarded whatever we
+    # send. The visible symptom was an analyst inventing a DIFFERENT set of
+    # field names on every run -- it was answering from the prompt alone,
+    # having never been given a schema. With the schema in the prompt the same
+    # model returns exact conforming JSON.
+    _PROMPT_SCHEMA_PROVIDER_ALLOWLIST: frozenset[str] = frozenset({"zai", "minimax"})
 
     # Base-owned attribute read for the parse-failure error message (init'd in
     # the facade ``__init__``). Annotation-only; NEVER assign here.
@@ -323,8 +343,16 @@ class StructuredOutputMixin:
     def _prompt_schema_directive(
         self, *, response_format: type[BaseModel], tools_available: bool
     ) -> str:
-        """Build and guard the schema instruction used by prompt-only providers."""
-        schema = response_format.model_json_schema()
+        """Build and guard the schema instruction used by prompt-only providers.
+
+        The schema is normalized (``oneOf`` folded into ``anyOf``) BEFORE the
+        provider-safety assertion, exactly as the native json_schema path does.
+        Without that fold a discriminated-union output would trip
+        ``assert_provider_safe_schema`` and raise, so a model whose only
+        transport is the prompt could never carry such a schema at all -- it
+        would fail before the request was built rather than degrade.
+        """
+        schema = make_strict_json_schema(response_format.model_json_schema())
         assert_provider_safe_schema(schema, name=response_format.__name__)
         return prompt_schema_instruction(schema, tools_available=tools_available)
 

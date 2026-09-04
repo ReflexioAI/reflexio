@@ -74,6 +74,7 @@ def _sqlite_storage(tmp_path):
 def _optimizer_for_test(storage, config) -> PlaybookOptimizer:
     context = SimpleNamespace(
         storage=storage,
+        org_id="opt-test",
         configurator=SimpleNamespace(get_config=lambda: config),
     )
     llm_client = SimpleNamespace(config=SimpleNamespace(model="fake-model"))
@@ -1481,3 +1482,65 @@ def test_scheduler_fires_callback_through_executor() -> None:
     )
 
     assert fired.wait(timeout=5), "scheduled callback never fired"
+
+
+def test_optimizer_failure_does_not_persist_exception_message(tmp_path):
+    """A failed run records a controlled reason, never the exception message.
+
+    ``decision_reason`` is a durable column read back into the domain model and
+    shown to operators. An arbitrary exception message can carry customer
+    content (a pydantic ``ValidationError`` on a provider response renders the
+    model's own output into its message), so the failure path must not write it.
+    """
+    storage = _sqlite_storage(tmp_path)
+    config = Config(
+        storage_config=StorageConfigSQLite(db_path=str(tmp_path / "reflexio.db")),
+        playbook_optimizer_config=PlaybookOptimizerConfig(
+            enabled=True,
+            optimize_agent_playbooks=True,
+            webhook_url="https://assistant.example.test/rollout",
+            auto_update_pending_agent_playbooks=True,
+            min_commit_windows=1,
+            min_commit_score=0.1,
+            min_commit_likert=1,
+        ),
+    )
+    optimizer = _optimizer_for_test(storage, config)
+    incumbent = AgentPlaybook(
+        agent_playbook_id=1,
+        playbook_name="support",
+        agent_version="v1",
+        content="incumbent",
+        playbook_status=PlaybookStatus.PENDING,
+    )
+    optimizer._load_incumbent = Mock(return_value=incumbent)  # type: ignore[method-assign]
+    optimizer._resolve_windows = Mock(  # type: ignore[method-assign]
+        return_value=[_scenario_window(idx) for idx in range(1, 6)]
+    )
+
+    # Stands in for customer content that a real exception message would carry.
+    sentinel = "SENTINEL-c7e41f-my-bank-account-is-frozen"
+    message = f"1 validation error for Output\n  input_value='{sentinel}'"
+    assert sentinel in message, "test is vacuous unless the message carries it"
+
+    def raising_run_gepa(*args, **kwargs):  # noqa: ARG001
+        raise ValueError(message)
+
+    optimizer._run_gepa = raising_run_gepa  # type: ignore[method-assign]
+
+    status = optimizer.optimize(
+        PlaybookOptimizationTarget(kind="agent_playbook", target_id=1)
+    )
+
+    assert status == "failed"
+    rows = storage.conn.execute(
+        "SELECT status, decision_reason, metadata_json FROM playbook_optimization_jobs"
+    ).fetchall()
+    assert len(rows) == 1
+    assert rows[0]["status"] == "failed"
+    persisted_reason = rows[0]["decision_reason"]
+    assert sentinel not in persisted_reason
+    assert sentinel not in rows[0]["metadata_json"]
+    # Pinned literally, not against the source constant: an assertion that
+    # imported the constant would follow it if someone changed it back.
+    assert persisted_reason == "optimization run raised an unexpected error"
