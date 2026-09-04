@@ -2884,6 +2884,28 @@ class TestBuildCompletionParams:
         assert mock_completion.call_args.kwargs["max_tokens"] == 100
 
     @patch("reflexio.server.llm.litellm_client.litellm.completion")
+    def test_zai_gets_default_max_tokens_cap(self, mock_completion):
+        """Unset max_tokens on a ZAI model applies the provider floor.
+
+        ZAI sits on ``_PROMPT_SCHEMA_PROVIDER_ALLOWLIST`` alongside MiniMax, so
+        the whole JSON schema rides in the prompt and the model must emit a
+        complete structured body with no provider-side grammar to hold it
+        together. Left with no cap, a live ``zai/glm-5.2`` structured call
+        truncated mid-document and raised JSONDecodeError with zero extractable
+        content on both the first attempt and its corrective re-issue.
+
+        The floor is asserted by value, not merely as "not None": a cap that
+        silently regressed to the 4096 that produced that failure would satisfy
+        a None-check and reproduce the bug.
+        """
+        mock_completion.return_value = _make_completion_response("ok")
+        client = LiteLLMClient(LiteLLMConfig(model="zai/glm-5.2"))
+
+        client.generate_response("hi")
+
+        assert mock_completion.call_args.kwargs["max_tokens"] == 8192
+
+    @patch("reflexio.server.llm.litellm_client.litellm.completion")
     def test_unmapped_provider_stays_unbounded(self, mock_completion):
         """Providers without a default cap keep omitting max_tokens."""
         mock_completion.return_value = _make_completion_response("ok")
