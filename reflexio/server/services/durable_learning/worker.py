@@ -24,10 +24,12 @@ from collections.abc import Callable
 
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.cache.reflexio_cache import get_reflexio
+from reflexio.server.error_reporting import capture_anomaly
 from reflexio.server.services.deferred_learning_plan import DeferredLearningPlan
 from reflexio.server.services.generation_service import GenerationService
 from reflexio.server.services.storage.storage_base import AgentRunStatus, BaseStorage
 from reflexio.server.services.storage.storage_base._learning_jobs import LearningJob
+from reflexio.server.work_scope import WorkScope, WorkScopeError, bind_work_scope
 
 logger = logging.getLogger(__name__)
 
@@ -155,73 +157,93 @@ class DurableLearningWorker:
         gen: GenerationService | None = None
         plan: DeferredLearningPlan | None = None
         try:
-            reflexio = get_reflexio(
-                org_id=ctx.org_id, storage_base_dir=ctx.storage_base_dir
-            )
-            gen = GenerationService(llm_client=reflexio.llm_client, request_context=ctx)
-
-            # COMPUTE — LLM extraction + dedup + embeddings, NO writer transaction
-            # held. Acquires the per-user F4 lock; issues no learning DB write.
-            plan = gen.compute_deferred_learning(
-                user_id=job.user_id,
-                request_id=job.latest_request_id,
-                session_id=request.session_id,
-                source=request.source,
-                agent_version=request.agent_version,
-                force_extraction=job.force_extraction,
-                skip_aggregation=job.skip_aggregation,
-            )
-
-            # Same-user contention (F4): another same-user durable job holds the
-            # per-user lock. Leave THIS job reclaimable (dead=False) — do NOT
-            # complete it — so the queue re-claims it once the holder finishes.
-            # REFUND the attempt (refund_attempt=True): claim_learning_jobs did
-            # attempts += 1 on this claim, but no real work ran, and the ~2s poll
-            # would otherwise re-claim (and re-increment) every couple of seconds
-            # while the holder is in its ~60s compute — inflating attempts past
-            # max_attempts in seconds so the eventual winner dead-letters on its
-            # first transient error with zero real retries. The refund nets each
-            # contention cycle (claim +1, release -1) to zero. No lock to release
-            # (compute never acquired it).
-            if not plan.lock_acquired:
-                storage.fail_learning_job(
-                    job_id=job.job_id,
-                    claim_token=claim_token,
-                    dead=False,
-                    refund_attempt=True,
+            # The claim happens on a worker thread, long after the enqueueing
+            # request returned, so the job's project cannot be inherited from
+            # ambient context — it rides the payload and is re-established here
+            # for the whole extract/persist cycle. Every row this block writes
+            # (profiles, playbooks, bookmark advances, the completion fence and
+            # the post-commit side effects) is attributed to it. Inert in OSS,
+            # which registers no provider and has no projects.
+            with bind_work_scope(
+                WorkScope(org_id=job.org_id, project_id=job.project_id)
+            ):
+                reflexio = get_reflexio(
+                    org_id=ctx.org_id, storage_base_dir=ctx.storage_base_dir
                 )
-                return False
-
-            # PERSIST — short fenced scope: fence-critical writes + bookmark
-            # advances only, then the claim-token fence. rows == 0 -> lease
-            # stolen -> _SupersededError -> the scope rolls persist back.
-            with storage.commit_scope():
-                gen.persist_deferred_learning(plan)
-                rows = storage.complete_learning_job(
-                    job_id=job.job_id, claim_token=claim_token
+                gen = GenerationService(
+                    llm_client=reflexio.llm_client, request_context=ctx
                 )
-                if rows == 0:
-                    raise _SupersededError(job.job_id)
 
-            # POST-COMMIT — billing / telemetry / tagging / off-thread schedulers
-            # + the per-user lock release, only for the winning worker.
-            try:
-                gen.emit_deferred_learning_side_effects(plan)
-            except Exception:
-                logger.exception(
-                    "event=learning_job_side_effects_failed "
-                    "job_id=%s org_id=%s user_id=%s",
+                # COMPUTE — LLM extraction + dedup + embeddings, NO writer
+                # transaction held. Acquires the per-user F4 lock; issues no
+                # learning DB write.
+                plan = gen.compute_deferred_learning(
+                    user_id=job.user_id,
+                    request_id=job.latest_request_id,
+                    session_id=request.session_id,
+                    source=request.source,
+                    agent_version=request.agent_version,
+                    force_extraction=job.force_extraction,
+                    skip_aggregation=job.skip_aggregation,
+                )
+
+                # Same-user contention (F4): another same-user durable job holds
+                # the per-user lock. Leave THIS job reclaimable (dead=False) — do
+                # NOT complete it — so the queue re-claims it once the holder
+                # finishes. REFUND the attempt (refund_attempt=True):
+                # claim_learning_jobs did attempts += 1 on this claim, but no real
+                # work ran, and the ~2s poll would otherwise re-claim (and
+                # re-increment) every couple of seconds while the holder is in its
+                # ~60s compute — inflating attempts past max_attempts in seconds
+                # so the eventual winner dead-letters on its first transient error
+                # with zero real retries. The refund nets each contention cycle
+                # (claim +1, release -1) to zero. No lock to release (compute
+                # never acquired it).
+                if not plan.lock_acquired:
+                    storage.fail_learning_job(
+                        job_id=job.job_id,
+                        claim_token=claim_token,
+                        dead=False,
+                        refund_attempt=True,
+                    )
+                    return False
+
+                # PERSIST — short fenced scope: fence-critical writes + bookmark
+                # advances only, then the claim-token fence. rows == 0 -> lease
+                # stolen -> _SupersededError -> the scope rolls persist back.
+                with storage.commit_scope():
+                    gen.persist_deferred_learning(plan)
+                    rows = storage.complete_learning_job(
+                        job_id=job.job_id, claim_token=claim_token
+                    )
+                    if rows == 0:
+                        raise _SupersededError(job.job_id)
+
+                # POST-COMMIT — billing / telemetry / tagging / off-thread
+                # schedulers + the per-user lock release, only for the winner.
+                # This handler stays blanket on purpose, and must NOT re-raise a
+                # WorkScopeError to the branch below: persist has already
+                # committed and complete_learning_job has already fenced, so the
+                # escalation path's cleanup would abandon committed agent runs
+                # and fail an already-completed job. Side effects run inside the
+                # bound scope, which is what the binding is for.
+                try:
+                    gen.emit_deferred_learning_side_effects(plan)
+                except Exception:
+                    logger.exception(
+                        "event=learning_job_side_effects_failed "
+                        "job_id=%s org_id=%s user_id=%s",
+                        job.job_id,
+                        job.org_id,
+                        job.user_id,
+                    )
+                logger.info(
+                    "event=learning_job_done job_id=%s org_id=%s user_id=%s",
                     job.job_id,
                     job.org_id,
                     job.user_id,
                 )
-            logger.info(
-                "event=learning_job_done job_id=%s org_id=%s user_id=%s",
-                job.job_id,
-                job.org_id,
-                job.user_id,
-            )
-            return True
+                return True
         except _SupersededError as exc:
             logger.info(
                 "event=learning_job_superseded job_id=%s org_id=%s",
@@ -232,6 +254,42 @@ class DurableLearningWorker:
             # The persist rolled back and emit never ran, so the per-user lock is
             # still held by this compute — release it so the reclaim isn't blocked.
             self._release_user_lock(gen, job)
+            return False
+        except WorkScopeError as exc:
+            # NOT an operational failure. The blanket handler below logs this as
+            # a routine `learning_job_failed`, indistinguishable from an LLM or
+            # storage hiccup — so a whole extract/persist cycle attributed to the
+            # wrong project (or to none) looked exactly like a retryable blip.
+            # Escalate it under its own event instead.
+            #
+            # Escalated, not propagated: this is the top frame of a daemon worker
+            # loop (drain_org iterates claimed jobs), and letting it out would
+            # kill the thread and silently shrink the pool until durable learning
+            # stopped running altogether — strictly less observable than
+            # reporting it. See WorkScopeError.
+            logger.exception(
+                "event=learning_job_scope_failed job_id=%s org_id=%s user_id=%s",
+                job.job_id,
+                job.org_id,
+                job.user_id,
+            )
+            capture_anomaly(
+                "durable_learning.work_scope_failed",
+                level="error",
+                org_id=job.org_id,
+                project_id=job.project_id,
+                user_id=job.user_id,
+                job_id=job.job_id,
+            )
+            # Same cleanup as the operational path: an unbound scope is
+            # deterministic, so bounding the retries via the normal
+            # attempts/max_attempts ladder is what stops an unfixable job being
+            # re-claimed forever, and the per-user F4 lock must not be stranded.
+            self._abandon_computed_agent_runs(storage, plan, exc)
+            self._release_user_lock(gen, job)
+            storage.fail_learning_job(
+                job_id=job.job_id, claim_token=claim_token, dead=dead
+            )
             return False
         except Exception as exc:
             logger.exception(
