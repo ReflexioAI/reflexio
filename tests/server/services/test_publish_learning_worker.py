@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -37,7 +38,7 @@ def _job(
     request_id: str = "req_1",
     enqueued_at: float | None = None,
 ) -> PublishLearningJob:
-    return PublishLearningJob(
+    job = PublishLearningJob(
         org_id=org_id,
         user_id="user_1",
         request_id=request_id,
@@ -46,8 +47,14 @@ def _job(
         agent_version="v1",
         force_extraction=False,
         skip_aggregation=False,
-        **({} if enqueued_at is None else {"enqueued_at": enqueued_at}),
     )
+    # `**{...}` here defeated the type checker: an untyped dict unpack is
+    # matched against the first unfilled parameter, which since project_id was
+    # added ahead of enqueued_at is `project_id: str | None` — so a float read
+    # as a project. Set the field explicitly instead.
+    if enqueued_at is not None:
+        job = replace(job, enqueued_at=enqueued_at)
+    return job
 
 
 def test_enqueue_over_warning_threshold_keeps_job_and_records_pressure():

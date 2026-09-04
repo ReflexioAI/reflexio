@@ -82,7 +82,7 @@ class TestSchedule:
         """schedule() stores the callback with a fire time in the future."""
         scheduler = GroupEvaluationScheduler.get_instance()
         callback = MagicMock()
-        key: GroupKey = ("org_1", "user_1", "session_1")
+        key: GroupKey = ("org_1", None, "user_1", "session_1")
 
         before = time.monotonic()
         scheduler.schedule(key, callback)
@@ -101,7 +101,7 @@ class TestSchedule:
         monkeypatch.setattr(scheduler, "_EFFECTIVE_DELAY_SECONDS", 5)
         scheduler_instance = GroupEvaluationScheduler.get_instance()
         callback = MagicMock()
-        key: GroupKey = ("org_1", "user_1", "session_1")
+        key: GroupKey = ("org_1", None, "user_1", "session_1")
 
         before = time.monotonic()
         scheduler_instance.schedule(key, callback)
@@ -117,7 +117,7 @@ class TestSchedule:
         scheduler = GroupEvaluationScheduler.get_instance()
         callback1 = MagicMock()
         callback2 = MagicMock()
-        key: GroupKey = ("org_1", "user_1", "session_1")
+        key: GroupKey = ("org_1", None, "user_1", "session_1")
 
         scheduler.schedule(key, callback1)
         first_fire_time, _ = scheduler._scheduled[key]
@@ -136,8 +136,8 @@ class TestSchedule:
     def test_schedule_multiple_keys(self):
         """Multiple different keys can be scheduled independently."""
         scheduler = GroupEvaluationScheduler.get_instance()
-        key1: GroupKey = ("org_1", "user_1", "session_1")
-        key2: GroupKey = ("org_1", "user_1", "session_2")
+        key1: GroupKey = ("org_1", None, "user_1", "session_1")
+        key2: GroupKey = ("org_1", None, "user_1", "session_2")
         cb1 = MagicMock()
         cb2 = MagicMock()
 
@@ -152,7 +152,7 @@ class TestSchedule:
     def test_schedule_pushes_to_heap(self):
         """schedule() adds an entry to the min-heap."""
         scheduler = GroupEvaluationScheduler.get_instance()
-        key: GroupKey = ("org_1", "user_1", "session_1")
+        key: GroupKey = ("org_1", None, "user_1", "session_1")
         callback = MagicMock()
 
         initial_heap_len = len(scheduler._heap)
@@ -172,7 +172,7 @@ class TestRunCallback:
     def test_success_path(self):
         """_run_callback invokes the callback on success."""
         callback = MagicMock()
-        key: GroupKey = ("org_1", "user_1", "session_1")
+        key: GroupKey = ("org_1", None, "user_1", "session_1")
 
         GroupEvaluationScheduler._run_callback(key, callback)
 
@@ -181,7 +181,7 @@ class TestRunCallback:
     def test_exception_path_does_not_raise(self):
         """_run_callback catches exceptions without propagating."""
         callback = MagicMock(side_effect=RuntimeError("evaluation failed"))
-        key: GroupKey = ("org_1", "user_1", "session_1")
+        key: GroupKey = ("org_1", None, "user_1", "session_1")
 
         # Should not raise
         GroupEvaluationScheduler._run_callback(key, callback)
@@ -191,7 +191,7 @@ class TestRunCallback:
     def test_exception_is_logged(self):
         """_run_callback logs the exception when callback fails."""
         callback = MagicMock(side_effect=ValueError("bad value"))
-        key: GroupKey = ("org_1", "user_1", "session_1")
+        key: GroupKey = ("org_1", None, "user_1", "session_1")
 
         with patch(
             "reflexio.server.services.agent_success_evaluation.scheduler.logger"
