@@ -3,8 +3,9 @@
 Tagging runs an LLM call per newly generated profile, playbook, or evaluation,
 so it must not block the publish or evaluation request. This scheduler mirrors
 :class:`GroupEvaluationScheduler`: a single daemon thread with a min-heap, where
-each enqueue upserts the fire time for its ``(org_id, user_id, agent_version)``
-key. Rapid successive enqueues for the same key debounce into a single tagging
+each enqueue upserts the fire time for its
+``(org_id, project_id, user_id, agent_version)`` key. Rapid successive enqueues
+for the same key debounce into a single tagging
 pass; when the timer fires, the tagging callback runs on its own daemon thread.
 
 Tagging is idempotent (already-tagged entities are skipped), so a deferred pass

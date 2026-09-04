@@ -545,6 +545,7 @@ class TestUpdateConfigRoute:
     def _wire_mock(self, mock_reflexio: MagicMock, existing: Config) -> None:
         configurator = MagicMock()
         configurator.get_config.return_value = existing
+        configurator.get_org_config.return_value = existing
         configurator.normalize_config_payload.side_effect = lambda payload: payload
         configurator.prepare_config_patch.side_effect = lambda partial: (
             Config.model_validate(
