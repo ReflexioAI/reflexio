@@ -72,8 +72,8 @@ from reflexio.server.services.storage.storage_base import BaseStorage
 from reflexio.server.site_var.site_var_manager import SiteVarManager
 
 from ._dataset_path import resolve_sqlite_db_path
-from ._governance import init_governance_tables
 from ._stall_state import init_stall_state_table
+from ._subject_write_gate import init_subject_write_barrier_table
 
 logger = logging.getLogger(__name__)
 
@@ -1131,7 +1131,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                 )
             cur = self.conn.cursor()
             cur.executescript(_DDL)
-            init_governance_tables(self.conn)
+            init_subject_write_barrier_table(self.conn)
             init_playbook_aggregation_tables(self.conn)
             self.conn.commit()
         self._migrate_session_outcomes_schema()
@@ -4003,18 +4003,6 @@ CREATE TRIGGER IF NOT EXISTS agent_playbooks_unicode_fts_ad
 AFTER DELETE ON agent_playbooks BEGIN
     DELETE FROM agent_playbooks_unicode_fts WHERE rowid = old.rowid;
 END;
-
-CREATE TABLE IF NOT EXISTS share_links (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    org_id TEXT NOT NULL,
-    token TEXT NOT NULL UNIQUE,
-    resource_type TEXT NOT NULL,
-    resource_id TEXT NOT NULL,
-    created_at INTEGER NOT NULL,
-    expires_at INTEGER,
-    created_by_email TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_share_links_resource ON share_links(resource_type, resource_id);
 
 -- ============================================================================
 -- Braintrust connector (Plan C-backend)

@@ -8,14 +8,12 @@ from ._base import (
     parse_status,
 )
 from ._extras import ExtrasMixin
-from ._governance import SQLiteGovernanceMixin
 from ._learning_jobs import SQLiteLearningJobStoreMixin
 from ._lineage import SQLiteLineageMixin
 from ._operations import OperationMixin
 from ._requests import RequestMixin
 from ._session_outcomes import SessionOutcomeStoreMixin
 from ._shadow_verdicts import ShadowVerdictsMixin as SQLiteShadowVerdictsMixin
-from ._share_links import SQLiteShareLinkMixin
 from ._stall_state import (
     SQLiteStallStateMixin,
     StallReason,
@@ -26,19 +24,13 @@ from ._stall_state import (
     mark_stall_notified,
     upsert_stall_state,
 )
+from ._subject_write_gate import SubjectWriteGateMixin
 from .agent_run import (
     SQLiteAgentRunStoreMixin,
     SQLitePendingToolCallStoreMixin,
     SQLiteRunToolDependencyStoreMixin,
 )
 from .base import SQLiteDeletionMixin, SQLiteFtsVecMixin
-from .governance import (
-    AuditEventStoreMixin,
-    GovernanceEraseExecutionMixin,
-    PurgeOperationStoreMixin,
-    RebuildHideMixin,
-    SubjectBarrierMixin,
-)
 from .playbook import (
     AgentEvaluationResultStoreMixin,
     AgentPlaybookStoreMixin,
@@ -66,16 +58,10 @@ class SQLiteStorage(
     PlaybookSourceLinkageMixin,
     OptimizationJobStoreMixin,
     AgentEvaluationResultStoreMixin,
-    AuditEventStoreMixin,
-    PurgeOperationStoreMixin,
-    SubjectBarrierMixin,
-    GovernanceEraseExecutionMixin,
-    RebuildHideMixin,
-    SQLiteGovernanceMixin,
+    SubjectWriteGateMixin,
     SQLiteLineageMixin,
     OperationMixin,
     ExtrasMixin,
-    SQLiteShareLinkMixin,
     SQLiteStallStateMixin,
     SQLiteShadowVerdictsMixin,
     SQLiteDeletionMixin,

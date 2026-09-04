@@ -89,7 +89,7 @@ def test_sqlite_storage_accepts_sqlite_with_returning_support(
         )
     try:
         assert storage.conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'purge_operations'"
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'subject_write_barriers'"
         ).fetchone()
     finally:
         storage.conn.close()
