@@ -74,7 +74,7 @@ def test_schedules_when_session_id_is_required(
 def test_schedules_with_correct_key_when_session_id_present(
     service: GenerationService, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The helper schedules with key=(org_id, user_id, session_id)."""
+    """The helper schedules with key=(org_id, project_id, user_id, session_id)."""
     scheduler = MagicMock()
     monkeypatch.setattr(
         "reflexio.server.services.generation_service.GroupEvaluationScheduler.get_instance",
@@ -95,7 +95,7 @@ def test_schedules_with_correct_key_when_session_id_present(
     callback = (
         call_args[0][1] if len(call_args[0]) > 1 else call_args.kwargs.get("callback")
     )
-    assert key == ("org_test", "user_test", "sess_42")
+    assert key == ("org_test", None, "user_test", "sess_42")
     assert callable(callback)
 
 

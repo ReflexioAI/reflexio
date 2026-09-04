@@ -2696,6 +2696,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                     covers_through TEXT,
                     force_extraction INTEGER NOT NULL DEFAULT 0,
                     skip_aggregation INTEGER NOT NULL DEFAULT 0,
+                    project_id TEXT,
                     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
                     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
                 );
@@ -2723,6 +2724,12 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             if "skip_aggregation" not in existing_cols:
                 self.conn.execute(
                     "ALTER TABLE learning_jobs ADD COLUMN skip_aggregation INTEGER NOT NULL DEFAULT 0"
+                )
+            # Nullable with no default: OSS has no projects, so NULL is the
+            # correct value for every existing and new row here.
+            if "project_id" not in existing_cols:
+                self.conn.execute(
+                    "ALTER TABLE learning_jobs ADD COLUMN project_id TEXT"
                 )
             self.conn.commit()
 
@@ -4096,6 +4103,7 @@ CREATE TABLE IF NOT EXISTS learning_jobs (
     covers_through TEXT,
     force_extraction INTEGER NOT NULL DEFAULT 0,
     skip_aggregation INTEGER NOT NULL DEFAULT 0,
+    project_id TEXT,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );

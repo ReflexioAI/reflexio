@@ -32,6 +32,7 @@ def _row_to_learning_job(row: sqlite3.Row) -> LearningJob:
         force_extraction=bool(d.get("force_extraction", 0)),
         skip_aggregation=bool(d.get("skip_aggregation", 0)),
         max_attempts=int(d.get("max_attempts", 3)),
+        project_id=d.get("project_id"),
     )
 
 
@@ -60,6 +61,7 @@ class SQLiteLearningJobStoreMixin(LearningJobStoreABC):
         job_type: str = "learning",
         force_extraction: bool = False,
         skip_aggregation: bool = False,
+        project_id: str | None = None,
     ) -> str:
         """Coalescing upsert — safe to call inside a commit_scope."""
         job_id = str(uuid.uuid4())
@@ -77,10 +79,11 @@ class SQLiteLearningJobStoreMixin(LearningJobStoreABC):
                     INSERT INTO learning_jobs
                         (job_id, org_id, user_id, job_type, latest_request_id,
                          covers_through, status, force_extraction, skip_aggregation,
-                         created_at, updated_at)
+                         project_id, created_at, updated_at)
                     VALUES
                         (?, ?, ?, ?, ?,
                          ?, 'pending', ?, ?,
+                         ?,
                          strftime('%Y-%m-%dT%H:%M:%fZ','now'),
                          strftime('%Y-%m-%dT%H:%M:%fZ','now'))
                     ON CONFLICT (org_id, user_id, job_type) WHERE status = 'pending'
@@ -93,6 +96,7 @@ class SQLiteLearningJobStoreMixin(LearningJobStoreABC):
                         END,
                         force_extraction = excluded.force_extraction,
                         skip_aggregation = excluded.skip_aggregation,
+                        project_id = excluded.project_id,
                         updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
                     RETURNING job_id
                     """,
@@ -105,6 +109,7 @@ class SQLiteLearningJobStoreMixin(LearningJobStoreABC):
                         iso_covers,
                         fe_int,
                         sa_int,
+                        project_id,
                     ),
                 ).fetchone()
                 if own_txn:

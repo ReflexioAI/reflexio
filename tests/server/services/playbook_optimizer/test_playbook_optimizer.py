@@ -1435,7 +1435,7 @@ def test_scheduler_applies_abort_cooldown():
     scheduler._mutex = threading.Lock()  # noqa: SLF001
     scheduler._wake_event = threading.Event()  # noqa: SLF001
     scheduler._abort_counts = {}  # noqa: SLF001
-    key = ("org", "agent_playbook", 1)
+    key = ("org", None, "agent_playbook", 1)
 
     scheduler._record_abort(key, abort_threshold=2, cooldown_seconds=60)  # noqa: SLF001
     with scheduler._mutex:  # noqa: SLF001

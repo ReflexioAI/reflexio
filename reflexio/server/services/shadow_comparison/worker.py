@@ -8,10 +8,12 @@ import threading
 from dataclasses import dataclass
 
 from reflexio.models.api_schema.domain.entities import Interaction
+from reflexio.server.error_reporting import capture_anomaly
 from reflexio.server.services.shadow_comparison.dispatcher import (
     dispatch_shadow_comparison_judge,
 )
 from reflexio.server.usage_metrics import record_usage_event
+from reflexio.server.work_scope import WorkScope, WorkScopeError, bind_work_scope
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +36,10 @@ class ShadowComparisonJob:
     interactions: list[Interaction]
     session_id: str
     agent_version: str
+    # Owning project, carried on the payload because the worker runs long after
+    # the enqueueing request returned. ``None`` in OSS, where projects do not
+    # exist — an absent project is normal here, never an error.
+    project_id: str | None = None
 
 
 class ShadowComparisonWorker:
@@ -109,15 +115,36 @@ class ShadowComparisonWorker:
         while True:
             job = self._queue.get()
             try:
-                reflexio = get_reflexio(org_id=job.org_id)
-                request_context = reflexio.request_context
-                dispatch_shadow_comparison_judge(
-                    storage=request_context.storage,
-                    interactions=job.interactions,
+                with bind_work_scope(
+                    WorkScope(org_id=job.org_id, project_id=job.project_id)
+                ):
+                    reflexio = get_reflexio(org_id=job.org_id)
+                    request_context = reflexio.request_context
+                    dispatch_shadow_comparison_judge(
+                        storage=request_context.storage,
+                        interactions=job.interactions,
+                        session_id=job.session_id,
+                        agent_version=job.agent_version,
+                        request_context=request_context,
+                        llm_client=reflexio.llm_client,
+                    )
+            except WorkScopeError:
+                # NOT an operational failure: the judge could not be attributed
+                # to a project, so tolerating it would write the comparison
+                # under the wrong one. Escalated rather than propagated —
+                # letting it out of this loop would kill a worker thread and
+                # silently shrink the pool (see WorkScopeError).
+                logger.exception(
+                    "event=shadow_comparison_scope_failed org_id=%s session_id=%s",
+                    job.org_id,
+                    job.session_id,
+                )
+                capture_anomaly(
+                    "shadow_comparison.work_scope_failed",
+                    level="error",
+                    org_id=job.org_id,
+                    project_id=job.project_id,
                     session_id=job.session_id,
-                    agent_version=job.agent_version,
-                    request_context=request_context,
-                    llm_client=reflexio.llm_client,
                 )
             except Exception:
                 logger.exception(

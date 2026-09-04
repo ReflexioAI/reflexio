@@ -8,11 +8,14 @@ import threading
 import time
 from dataclasses import dataclass, field
 
+from reflexio.models.api_schema.common import sanitise_for_log
 from reflexio.server.cache.reflexio_cache import get_reflexio
 from reflexio.server.env_utils import env_str
+from reflexio.server.error_reporting import capture_anomaly
 from reflexio.server.operation_limiter import operation_limit, operation_limit_value
 from reflexio.server.services.generation_service import GenerationService
 from reflexio.server.usage_metrics import record_usage_event
+from reflexio.server.work_scope import WorkScope, WorkScopeError, bind_work_scope
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +43,10 @@ class PublishLearningJob:
     agent_version: str
     force_extraction: bool
     skip_aggregation: bool
+    # Owning project, carried on the payload because the worker runs long after
+    # the enqueueing request returned. ``None`` in OSS, where projects do not
+    # exist — an absent project is normal here, never an error.
+    project_id: str | None = None
     enqueued_at: float = field(default_factory=time.monotonic)
 
 
@@ -160,11 +167,16 @@ class PublishLearningWorker:
 
     def _process_job(self, job: PublishLearningJob) -> None:
         try:
-            with operation_limit(
-                job.org_id,
-                "publish",
-                wait_forever=False,
-                log_timeout=False,
+            with (
+                operation_limit(
+                    job.org_id,
+                    "publish",
+                    wait_forever=False,
+                    log_timeout=False,
+                ),
+                bind_work_scope(
+                    WorkScope(org_id=job.org_id, project_id=job.project_id)
+                ),
             ):
                 reflexio = get_reflexio(org_id=job.org_id)
                 GenerationService(
@@ -181,6 +193,41 @@ class PublishLearningWorker:
                 )
         except TimeoutError:
             self._requeue_after_limiter_timeout(job)
+            return
+        except WorkScopeError as exc:
+            # NOT an operational failure. The old blanket handler recorded this
+            # as a routine `learning_failed` usage event and dropped the job,
+            # which is indistinguishable from an LLM/storage hiccup — exactly
+            # the "silent no-op reported as success if nothing checks" the
+            # design warns about. Escalate it under its own event so the drop
+            # is visible. Escalated rather than propagated: letting it out of
+            # _process_job kills the worker thread (see WorkScopeError).
+            record_usage_event(
+                org_id=job.org_id,
+                user_id=job.user_id,
+                request_id=job.request_id,
+                session_id=job.session_id,
+                source=job.source,
+                agent_version=job.agent_version,
+                event_name="learning_scope_failed",
+                event_category="publish_learning",
+                outcome="failed",
+                error_kind=type(exc).__name__,
+            )
+            capture_anomaly(
+                "publish_learning.work_scope_failed",
+                level="error",
+                org_id=job.org_id,
+                project_id=job.project_id,
+                user_id=job.user_id,
+                request_id=job.request_id,
+            )
+            logger.exception(
+                "event=publish_learning_scope_failed org_id=%s user_id=%s request_id=%s",
+                job.org_id,
+                job.user_id,
+                sanitise_for_log(job.request_id),
+            )
             return
         except Exception as exc:
             record_usage_event(

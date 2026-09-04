@@ -16,7 +16,9 @@ from collections.abc import Callable
 from functools import partial
 
 from reflexio.server.callback_executor import submit_callback
+from reflexio.server.error_reporting import capture_anomaly
 from reflexio.server.services.agent_success_evaluation import _eval_health
+from reflexio.server.work_scope import WorkScope, WorkScopeError, bind_work_scope
 
 logger = logging.getLogger(__name__)
 
@@ -34,8 +36,14 @@ GROUP_EVALUATION_DELAY_SECONDS = int(
 IS_TEST_ENV = os.environ.get("IS_TEST_ENV", "false").strip() == "true"
 _EFFECTIVE_DELAY_SECONDS = 30 if IS_TEST_ENV else GROUP_EVALUATION_DELAY_SECONDS
 
-# Type alias for the scheduling key
-GroupKey = tuple[str, str, str]  # (org_id, user_id, session_id)
+# Type alias for the scheduling key.
+# (org_id, project_id, user_id, session_id)
+#
+# ``project_id`` is part of the DEBOUNCE IDENTITY, not decoration. Two projects
+# in one org evaluating the same user/session inside one inactivity window would
+# otherwise collapse into a single evaluation attributed to whichever request
+# won the race. ``None`` in OSS, where projects do not exist.
+GroupKey = tuple[str, str | None, str, str]
 
 
 class GroupEvaluationScheduler:
@@ -138,7 +146,8 @@ class GroupEvaluationScheduler:
                         del self._scheduled[key]
 
                         submit_callback(
-                            f"group-eval-{key[2][:20]}",
+                            # key[3] is session_id — key[1] is the nullable project.
+                            f"group-eval-{key[3][:20]}",
                             partial(self._run_callback, key, callback),
                         )
 
@@ -157,6 +166,19 @@ class GroupEvaluationScheduler:
         """
         try:
             logger.info("Firing group evaluation for key=%s", key)
-            callback()
+            with bind_work_scope(WorkScope(org_id=key[0], project_id=key[1])):
+                callback()
+        except WorkScopeError:
+            # NOT an operational failure: the evaluation could not be attributed
+            # to a project, so tolerating it would write it under the wrong one.
+            # Escalated rather than propagated — see WorkScopeError.
+            logger.exception("Group evaluation scope binding failed for key=%s", key)
+            capture_anomaly(
+                "agent_success_evaluation.work_scope_failed",
+                level="error",
+                org_id=key[0],
+                project_id=key[1],
+                user_id=key[2],
+            )
         except Exception:
             logger.exception("Group evaluation callback failed for key=%s", key)

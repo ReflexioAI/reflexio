@@ -25,8 +25,15 @@ from functools import partial
 
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.callback_executor import drain_callbacks, submit_callback
+from reflexio.server.error_reporting import capture_anomaly
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.services.tagging.service import TaggingService
+from reflexio.server.work_scope import (
+    WorkScope,
+    WorkScopeError,
+    bind_work_scope,
+    current_project_id,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -37,8 +44,13 @@ TAGGING_DELAY_SECONDS = 15
 IS_TEST_ENV = os.environ.get("IS_TEST_ENV", "false").strip().lower() == "true"
 _EFFECTIVE_DELAY_SECONDS = 1 if IS_TEST_ENV else TAGGING_DELAY_SECONDS
 
-# (org_id, user_id, agent_version)
-TaggingKey = tuple[str, str, str]
+# (org_id, project_id, user_id, agent_version)
+#
+# ``project_id`` is part of the DEBOUNCE IDENTITY, not decoration. Two projects
+# in one org publishing for the same user inside the 15s window would otherwise
+# collapse into a single tagging pass attributed to whichever request won the
+# race. ``None`` in OSS, where projects do not exist.
+TaggingKey = tuple[str, str | None, str, str]
 
 
 class TaggingScheduler:
@@ -121,7 +133,8 @@ class TaggingScheduler:
 
                         del self._scheduled[key]
                         submit_callback(
-                            f"tagging-{key[1][:20]}",
+                            # key[2] is user_id — key[1] is the nullable project.
+                            f"tagging-{key[2][:20]}",
                             partial(self._run_callback, key, callback),
                         )
             except Exception:
@@ -132,8 +145,21 @@ class TaggingScheduler:
     def _run_callback(key: TaggingKey, callback: Callable) -> None:
         try:
             logger.info("Firing tagging for key=%s", key)
-            callback()
+            with bind_work_scope(WorkScope(org_id=key[0], project_id=key[1])):
+                callback()
             logger.info("Completed tagging for key=%s", key)
+        except WorkScopeError:
+            # NOT an operational failure: the pass could not be attributed to a
+            # project, so tolerating it would tag entities under the wrong one.
+            # Escalated rather than propagated — see WorkScopeError.
+            logger.exception("Tagging scope binding failed for key=%s", key)
+            capture_anomaly(
+                "tagging.work_scope_failed",
+                level="error",
+                org_id=key[0],
+                project_id=key[1],
+                user_id=key[2],
+            )
         except Exception:
             logger.exception("Tagging callback failed for key=%s", key)
 
@@ -150,7 +176,9 @@ def schedule_tagging(
     if not user_id:
         return
 
-    key: TaggingKey = (org_id, user_id, agent_version)
+    # Resolved on the publishing thread: by fire time the scope is gone, and
+    # reading it there would pick whichever request won the debounce race.
+    key: TaggingKey = (org_id, current_project_id(), user_id, agent_version)
     storage_base_dir = getattr(request_context, "storage_base_dir", None)
 
     def callback() -> None:

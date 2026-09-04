@@ -20,6 +20,7 @@ from collections.abc import Callable
 from typing import NamedTuple
 
 from reflexio.server.error_reporting import capture_anomaly
+from reflexio.server.work_scope import WorkScopeError
 
 logger = logging.getLogger(__name__)
 
@@ -152,6 +153,24 @@ class BoundedCallbackExecutor:
                 self._active += 1
             try:
                 fn()
+            except WorkScopeError:
+                # A scope/attribution failure is NOT an operational error, so it
+                # does not belong in the blanket branch below where it would be
+                # one more indistinguishable log line. It gets its own event and
+                # is escalated through the error-reporting seam.
+                #
+                # Escalated, NOT propagated: this is the top frame of a daemon
+                # worker: an exception let out here kills the thread, and after
+                # 16 of them the pool is gone and ALL deferred work stops
+                # silently. Reporting is strictly more observable than dying.
+                logger.exception(
+                    "event=callback_executor_work_scope_failed name=%s", name
+                )
+                capture_anomaly(
+                    "callback_executor.work_scope_failed",
+                    level="error",
+                    callback=name,
+                )
             except BaseException:  # noqa: BLE001 — daemon worker threads must
                 # survive anything a callback raises (including a callback
                 # that itself raises SystemExit); KeyboardInterrupt is only

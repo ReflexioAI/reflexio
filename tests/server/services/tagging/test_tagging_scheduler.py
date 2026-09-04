@@ -85,4 +85,4 @@ def test_schedule_tagging_skips_when_no_user(monkeypatch: Any) -> None:
         llm_client=None,  # type: ignore[arg-type]
     )
     assert len(scheduled) == 1
-    assert scheduled[0][0] == ("o", "u", "v")
+    assert scheduled[0][0] == ("o", None, "u", "v")

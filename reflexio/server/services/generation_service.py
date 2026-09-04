@@ -63,6 +63,7 @@ from reflexio.server.services.storage.retention import (
 )
 from reflexio.server.services.tagging.tagging_scheduler import schedule_tagging
 from reflexio.server.usage_metrics import record_usage_event
+from reflexio.server.work_scope import current_project_id
 
 if TYPE_CHECKING:
     from reflexio.server.services.unified_search_service import UnifiedSearchService
@@ -516,6 +517,9 @@ class GenerationService:
                             covers_through=covers_through,
                             force_extraction=publish_user_interaction_request.force_extraction,
                             skip_aggregation=publish_user_interaction_request.skip_aggregation,
+                            # Resolved HERE, on the request thread, not in the
+                            # worker: the job runs long after this returns.
+                            project_id=current_project_id(),
                         )
                     self._schedule_post_publish_evaluations(
                         new_request=new_request,
@@ -563,6 +567,7 @@ class GenerationService:
                         agent_version=agent_version,
                         force_extraction=publish_user_interaction_request.force_extraction,
                         skip_aggregation=publish_user_interaction_request.skip_aggregation,
+                        project_id=current_project_id(),
                     )
                 )
                 self._emit_publish_success_events(
@@ -1103,6 +1108,7 @@ class GenerationService:
                         interactions=interactions,
                         session_id=new_request.session_id,
                         agent_version=agent_version,
+                        project_id=current_project_id(),
                     )
                 )
             except Exception:
@@ -1171,7 +1177,9 @@ class GenerationService:
             return
 
         scheduler = GroupEvaluationScheduler.get_instance()
-        key = (self.org_id, user_id, session_id)
+        # Project resolved HERE, on the request thread — the callback fires
+        # after an inactivity window that may span several requests.
+        key = (self.org_id, current_project_id(), user_id, session_id)
 
         def make_callback(
             _org_id: str,
