@@ -28,6 +28,7 @@ Bodies moved VERBATIM from the former monolithic ``litellm_client.py``.
 """
 
 import base64
+import hashlib
 import logging
 import multiprocessing
 import os
@@ -110,9 +111,35 @@ _TRANSIENT_LLM_ERROR_NAMES: frozenset[str] = frozenset(
     }
 )
 
-_MAX_REPAIR_ERRORS = 8
+# A response of the wrong SHAPE spends one error slot per required field before
+# it names a single unexpected key. Live evidence: an open-world discovery call
+# echoed its own input payload back, and the nine required ``DiscoveryMemo``
+# fields reported ``missing`` before one ``manifest_role: extra_forbidden``. At
+# eight the corrective turn dropped exactly the line that says "you returned a
+# different object" -- the one error that explains the other nine. The character
+# budget below, not this count, is what actually bounds the volume.
+_MAX_REPAIR_ERRORS = 12
 _MAX_REPAIR_ERROR_CHARS = 4000
 _MAX_REPAIR_ECHO_CHARS = 4000
+
+# The corrective turn a validator-less ("plain") rung appends before its one
+# same-model retry.
+#
+# Why it carries no model output
+# ------------------------------
+# The validated rung's repair turn echoes the malformed response back
+# (``_echo_content``). The plain rung deliberately does NOT: its callers include
+# the open-world analyst, whose prompt frames evidence as untrusted input, and
+# re-injecting the model's own unframed output into a qualified prompt is a
+# content-safety and attestation hazard both. Field paths and pydantic error
+# tags are enough to steer a re-emit, and they are content-free by construction
+# (``_safe_validation_errors``).
+#
+# The assistant placeholder exists only to keep the turn alternating for
+# providers that require it; it is a fixed string, never the response.
+STRUCTURED_OUTPUT_CORRECTION_PLACEHOLDER = "(previous response withheld)"
+STRUCTURED_OUTPUT_CORRECTION_PREFIX = "Your previous response did not satisfy schema "
+_MAX_CORRECTION_CHARS = 8000
 
 # Worst-case cumulative wall-clock budget for a full ladder walk. Each rung now
 # owns a per-single-attempt hard timeout, so the walk's worst case is the SUM of
@@ -123,6 +150,126 @@ _MAX_REPAIR_ECHO_CHARS = 4000
 _LADDER_WALL_CLOCK_BUDGET_SECONDS = 600.0
 
 StructuredOutputValidator = Callable[[BaseModel], Sequence[str]]
+
+
+def _bounded_repair_errors(errors: Sequence[str]) -> tuple[str, ...]:
+    """Clamp a validation-error list to the repair-prompt budget.
+
+    Args:
+        errors (Sequence[str]): Content-free error summaries, longest-lived
+            shape being ``"field.path: error_type"``
+
+    Returns:
+        tuple[str, ...]: The bounded list, with a trailing count line when
+            anything was dropped
+    """
+    bounded: list[str] = []
+    remaining = _MAX_REPAIR_ERROR_CHARS
+    for error in errors[:_MAX_REPAIR_ERRORS]:
+        text = str(error)
+        if len(text) > remaining:
+            text = text[: max(0, remaining)] + "...(truncated)"
+        bounded.append(text)
+        remaining -= len(text)
+        if remaining <= 0:
+            break
+    if len(errors) > len(bounded):
+        bounded.append(f"...({len(errors) - len(bounded)} more errors)")
+    return tuple(bounded)
+
+
+def structured_output_correction_turn(
+    *, schema_name: str, errors: Sequence[str]
+) -> list[dict[str, str]]:
+    """Build the corrective turn a plain rung appends before its one retry.
+
+    The turn carries the failing field paths and pydantic error tags and
+    NOTHING else -- no fragment of the model's own response. See
+    ``STRUCTURED_OUTPUT_CORRECTION_PLACEHOLDER`` for why.
+
+    Args:
+        schema_name (str): Name of the response schema that was violated
+        errors (Sequence[str]): Content-free validation-error summaries
+
+    Returns:
+        list[dict[str, str]]: An assistant placeholder followed by the
+            correction instruction, ready to append to the rung's messages
+    """
+    error_lines = "\n".join(f"- {error}" for error in _bounded_repair_errors(errors))
+    correction = (
+        f"{STRUCTURED_OUTPUT_CORRECTION_PREFIX}{schema_name}. Each line below is a "
+        f"field path in that schema and the validation error it produced:\n"
+        f"{error_lines}\n\n"
+        "Reply again with only a JSON object that satisfies the schema. A "
+        "'missing' line means that field was absent; an 'extra_forbidden' line "
+        "means you returned a key the schema does not define, which usually "
+        "means the object you returned was not the requested one."
+    )
+    return [
+        {"role": "assistant", "content": STRUCTURED_OUTPUT_CORRECTION_PLACEHOLDER},
+        {"role": "user", "content": correction[:_MAX_CORRECTION_CHARS]},
+    ]
+
+
+def is_structured_output_correction_turn(
+    base_messages: Sequence[Any], messages: Sequence[Any]
+) -> bool:
+    """Return whether ``messages`` is ``base_messages`` plus one corrective turn.
+
+    Exists so a caller-supplied ``provider_request_guard`` can tell this
+    client's own bounded correction from a genuinely different second question
+    without re-implementing (and drifting from) the construction above.
+
+    Args:
+        base_messages (Sequence[Any]): The messages sent on the first attempt
+        messages (Sequence[Any]): The messages about to be sent
+
+    Returns:
+        bool: True only for an exact prefix match followed by the fixed
+            assistant placeholder and a bounded correction instruction
+    """
+    if len(messages) != len(base_messages) + 2:
+        return False
+    if list(messages[: len(base_messages)]) != list(base_messages):
+        return False
+    placeholder, correction = messages[-2], messages[-1]
+    if placeholder != {
+        "role": "assistant",
+        "content": STRUCTURED_OUTPUT_CORRECTION_PLACEHOLDER,
+    }:
+        return False
+    if not isinstance(correction, dict) or set(correction) != {"role", "content"}:
+        return False
+    content = correction["content"]
+    return (
+        correction["role"] == "user"
+        and isinstance(content, str)
+        and content.startswith(STRUCTURED_OUTPUT_CORRECTION_PREFIX)
+        and len(content) <= _MAX_CORRECTION_CHARS
+    )
+
+
+def structured_output_repair_idempotency_key(base_key: str) -> str:
+    """Derive a distinct provider idempotency key for a corrective retry.
+
+    A corrective retry is a DIFFERENT request, so it must not reuse the key of
+    the attempt it is correcting: a provider honouring ``Idempotency-Key`` is
+    entitled to replay the first answer for a repeated key, which would turn
+    the correction into a silent no-op -- the whole defect this path exists to
+    fix. This repository has been bitten by exactly that shape before, on a
+    payment retry that reused its key and replayed a cached decline.
+
+    Args:
+        base_key (str): The idempotency key the first attempt sent
+
+    Returns:
+        str: A 64-character hex key, matching the width provider clients
+            require, derived deterministically so a replayed request stays
+            idempotent with itself
+    """
+    return hashlib.sha256(
+        b"reflexio/llm/structured-output-correction-key/v1\x00" + base_key.encode()
+    ).hexdigest()
 
 
 def _nonempty_string(value: Any) -> str | None:
@@ -1257,21 +1404,6 @@ class TextGenerationMixin:
                 )
                 raise LiteLLMClientError(f"API call failed: {e}") from e
 
-        def _bounded_errors(errors: Sequence[str]) -> tuple[str, ...]:
-            bounded: list[str] = []
-            remaining = _MAX_REPAIR_ERROR_CHARS
-            for error in errors[:_MAX_REPAIR_ERRORS]:
-                text = str(error)
-                if len(text) > remaining:
-                    text = text[: max(0, remaining)] + "...(truncated)"
-                bounded.append(text)
-                remaining -= len(text)
-                if remaining <= 0:
-                    break
-            if len(errors) > len(bounded):
-                bounded.append(f"...({len(errors) - len(bounded)} more errors)")
-            return tuple(bounded)
-
         def _echo_content(
             raw_content: str | None,
             finish_reason: str | None,
@@ -1303,7 +1435,9 @@ class TextGenerationMixin:
             schema_name: str,
             errors: Sequence[str],
         ) -> list[dict[str, Any]]:
-            error_lines = "\n".join(f"- {error}" for error in _bounded_errors(errors))
+            error_lines = "\n".join(
+                f"- {error}" for error in _bounded_repair_errors(errors)
+            )
             return [
                 *base_messages,
                 {
@@ -1359,10 +1493,44 @@ class TextGenerationMixin:
                 first_parsed_provenance=first_parsed_provenance,
             )
 
+        def _corrective_kwargs(rung_kwargs: dict[str, Any]) -> dict[str, Any]:
+            """Re-key a corrective retry so a provider cannot replay attempt 1.
+
+            Only the idempotency header moves. Everything else -- model,
+            sampling, timeout, response format -- is left exactly as the first
+            attempt sent it, because the request being corrected is still the
+            same question.
+            """
+            headers = rung_kwargs.get("extra_headers")
+            if not isinstance(headers, dict):
+                return rung_kwargs
+            base_key = headers.get("Idempotency-Key")
+            if not isinstance(base_key, str) or not base_key:
+                return rung_kwargs
+            return {
+                **rung_kwargs,
+                "extra_headers": {
+                    **headers,
+                    "Idempotency-Key": structured_output_repair_idempotency_key(
+                        base_key
+                    ),
+                },
+            }
+
         def _run_rung_plain(
             rung_messages: list[dict[str, Any]], rung_kwargs: dict[str, Any]
         ) -> CompletionResult[str | BaseModel | ToolCallingChatResponse]:
-            """Serve one rung with no validator: initial call + one same-model parse-retry.
+            """Serve one rung with no validator: initial call + one same-model retry.
+
+            The retry is CORRECTIVE whenever the parse failure produced
+            content-free validation errors: the rung's original messages plus a
+            bounded turn naming the field paths and pydantic error tags that
+            failed. It was previously byte-identical, which at ``temperature=0``
+            is two identical attempts at a schema the model has already misread
+            -- the second could only fail the same way. When the failure names
+            nothing (the deliberate "appears truncated" diagnostic, whose
+            ``validation_errors`` is empty), the retry stays the byte-identical
+            re-issue it always was.
 
             Raises ``StructuredOutputParseError`` when both attempts return a
             malformed body (the walk catches it and advances), or
@@ -1378,15 +1546,54 @@ class TextGenerationMixin:
                         params, rf, parse_so, hard_timeout, detect_refusal=False
                     )
                 )
-            except StructuredOutputParseError:
+            except StructuredOutputParseError as exc:
+                if not exc.validation_errors:
+                    self.logger.warning(
+                        "event=llm_parse_retry model=%s — malformed structured output, "
+                        "retrying once on the same model",
+                        params.get("model"),
+                    )
+                    return _finish(
+                        _call_and_parse(
+                            params, rf, parse_so, hard_timeout, detect_refusal=False
+                        )
+                    )
+                schema_name = getattr(rf, "__name__", "structured output")
+                # The COUNT, not the errors. An ``extra_forbidden`` entry puts a
+                # MODEL-CHOSEN key in the pydantic ``loc``, and this line reaches
+                # external telemetry via the logging bridge. The errors
+                # themselves go only into the retry prompt, back to the provider
+                # that produced them -- not to a log sink.
                 self.logger.warning(
-                    "event=llm_parse_retry model=%s — malformed structured output, "
-                    "retrying once on the same model",
+                    "event=llm_parse_retry_corrective model=%s schema=%s "
+                    "validation_error_count=%d — malformed structured output, "
+                    "retrying once on the same model with the validation errors "
+                    "fed back",
                     params.get("model"),
+                    schema_name,
+                    len(exc.validation_errors),
+                )
+                (
+                    retry_params,
+                    retry_rf,
+                    retry_parse_so,
+                    retry_timeout,
+                ) = _prepare_turn(
+                    [
+                        *rung_messages,
+                        *structured_output_correction_turn(
+                            schema_name=schema_name, errors=exc.validation_errors
+                        ),
+                    ],
+                    _corrective_kwargs(rung_kwargs),
                 )
                 return _finish(
                     _call_and_parse(
-                        params, rf, parse_so, hard_timeout, detect_refusal=False
+                        retry_params,
+                        retry_rf,
+                        retry_parse_so,
+                        retry_timeout,
+                        detect_refusal=False,
                     )
                 )
 

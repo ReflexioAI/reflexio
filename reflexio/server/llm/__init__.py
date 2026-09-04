@@ -14,6 +14,8 @@ from .litellm_client import (
     StructuredOutputValidator,
     ToolCallingChatResponse,
     create_litellm_client,
+    is_structured_output_correction_turn,
+    structured_output_repair_idempotency_key,
 )
 from .model_defaults import (
     ModelRole,
@@ -31,6 +33,8 @@ __all__ = [
     "ModelRole",
     "ToolCallingChatResponse",
     "create_litellm_client",
+    "is_structured_output_correction_turn",
     "resolve_model_name",
+    "structured_output_repair_idempotency_key",
     "validate_llm_availability",
 ]
