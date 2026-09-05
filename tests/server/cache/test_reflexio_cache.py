@@ -616,10 +616,33 @@ class TestGetCachedRequestContext:
         assert all(result is constructed.request_context for result in results)
         mock_reflexio_cls.assert_called_once_with(org_id="org-1", storage_base_dir=None)
 
-    def test_different_orgs_serialize_shared_sqlite_initialization(
+    def test_different_orgs_get_their_own_sqlite_file_and_do_not_serialize(
         self, tmp_path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Cold cache misses sharing one SQLite file cannot migrate concurrently."""
+        """Different orgs under one root resolve to different files.
+
+        This test used to assert the opposite -- ``max_active == 1``, cold
+        misses sharing ONE SQLite file and therefore serializing their
+        migrations. Dataset isolation made that premise false on purpose:
+        ``_create_sqlite_storage`` now resolves the path from the org identity,
+        so four orgs under one ``storage_base_dir`` get four files
+        (``reflexio_org-0.db`` ...), four locks, and no contention.
+
+        Rewritten rather than deleted, because the property worth pinning
+        survived the change and got MORE important: one org's rows must never
+        live in another org's file. The 28 tenant tables here carry no
+        ``org_id`` column, so the file boundary IS the tenancy boundary.
+
+        The concurrency assertion is kept as the negative half -- if these ever
+        collapse back onto one file they will serialize again, and
+        ``max_active`` is what notices. It is asserted as ``>= 2`` rather than
+        ``== len(org_ids)``: any overlap disproves serialization, and demanding
+        that all four overlap would make the test a timing bet.
+
+        Same-org serialization -- the property the original test was really
+        protecting -- is still covered, by the sibling
+        ``assert_called_once_with(org_id="org-1", ...)`` case above.
+        """
         import reflexio.server.cache.reflexio_cache as cache_mod
 
         storage_base_dir = str(tmp_path)
@@ -660,8 +683,16 @@ class TestGetCachedRequestContext:
             contexts = list(executor.map(construct, org_ids))
 
         try:
-            assert max_active == 1
+            # The tenancy property: one file per org, never a shared one.
+            db_paths = [str(context.storage.db_path) for context in contexts]
+            assert len(set(db_paths)) == len(org_ids), (
+                f"orgs share a SQLite file, so their rows commingle: {db_paths}"
+            )
             assert len({id(context.storage) for context in contexts}) == len(org_ids)
+            # The negative half: distinct files must not contend on one lock.
+            assert max_active >= 2, (
+                "migrations serialized, so these orgs are back on one file"
+            )
         finally:
             for context in contexts:
                 storage = context.storage

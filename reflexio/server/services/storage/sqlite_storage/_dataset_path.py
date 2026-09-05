@@ -49,6 +49,12 @@ _ATTRIBUTED_TABLES = (
     "subject_write_barriers",
 )
 
+#: The erasure write-barrier table, read on its own by
+#: :func:`barrier_identity_labels`. Named separately because a foreign label
+#: HERE refuses adoption outright, while a foreign label in any other attributed
+#: table only warns.
+_WRITE_BARRIER_TABLE = "subject_write_barriers"
+
 # A dataset identity becomes a path component, so it is constrained to characters
 # that cannot traverse or escape. Rejected, never rewritten: slugifying would map
 # two distinct identities onto one file, which is the defect this module exists to
@@ -149,6 +155,55 @@ def stored_identity_labels(path: Path) -> set[str] | None:
     return labels if saw_column else None
 
 
+def barrier_identity_labels(path: Path) -> set[str]:
+    """Identities appearing in *path*'s erasure write-barrier table.
+
+    A sibling of :func:`stored_identity_labels` rather than a change to it,
+    because the two answer different questions and the difference decides
+    whether a commingled file may be adopted at all. ``stored_identity_labels``
+    unions eleven tables into one flat set, which is the right answer for "does
+    this file plausibly belong to us" and the wrong one for "whose erasure state
+    would we be taking custody of".
+
+    ``subject_write_barriers`` is the sharp case: a barrier is a standing refusal
+    to write for an erased subject. Adopting a file holding another identity's
+    barriers means this process becomes the one enforcing them -- or, far worse,
+    silently not enforcing them for rows it does not know are barred.
+
+    Returns:
+        set[str]: Labels found, empty when the table is absent or unreadable.
+        Deliberately not ``None``: absence of evidence here must not read as a
+        foreign label, or an old file would become unopenable.
+    """
+    if not path.exists():
+        return set()
+    try:
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return set()
+    labels: set[str] = set()
+    try:
+        if not _table_exists(conn, _WRITE_BARRIER_TABLE):
+            return set()
+        columns = {
+            str(row[1])
+            for row in conn.execute(f"PRAGMA table_info({_WRITE_BARRIER_TABLE})")
+        }
+        if "org_id" not in columns:
+            return set()
+        for (value,) in conn.execute(
+            f"SELECT DISTINCT org_id FROM {_WRITE_BARRIER_TABLE} "  # noqa: S608
+            f"WHERE org_id IS NOT NULL"
+        ):
+            if value:
+                labels.add(str(value))
+    except sqlite3.Error:
+        return set()
+    finally:
+        conn.close()
+    return labels
+
+
 def claim_or_read_identity(path: Path, org_id: str) -> str:
     """Claim *path* for *org_id*, or return the identity that already holds it.
 
@@ -239,6 +294,38 @@ def resolve_sqlite_db_path(root: str | Path, org_id: str) -> str:
         )
         claim_or_read_identity(derived, org_id)
         return str(derived)
+
+    # COMMINGLED: our label AND someone else's. The check above only refuses when
+    # we are ABSENT, so this file -- the self-host multi-org install this module
+    # calls the sharpest case -- used to be adopted wholesale. The adopter then
+    # read the other identity's rows across every attributed table, and the 28
+    # tenant tables carry no `org_id` column at all, so there was nothing
+    # downstream to scope them. The other identity's history was simultaneously
+    # orphaned in a file it would never open again, and the only log line emitted
+    # named the loser, not the adopter.
+    foreign = (labels or set()) - {org_id}
+    if foreign:
+        barrier_foreign = barrier_identity_labels(legacy) - {org_id}
+        if barrier_foreign:
+            # Erasure state is not adoptable. Taking custody of another
+            # identity's write barriers means either enforcing refusals we
+            # cannot attribute, or silently not enforcing them -- and an erasure
+            # that stops being enforced is not recoverable by noticing later.
+            raise DatasetIdentityError(
+                f"{legacy} holds erasure write barriers for dataset(s) "
+                f"{sorted(barrier_foreign)} as well as {org_id!r}. Refusing to "
+                f"adopt a file carrying another identity's erasure state. Split "
+                f"the file per identity before opening it."
+            )
+        logger.warning(
+            "Adopting %s for dataset %r, but it also holds rows labelled %s. "
+            "Those rows are readable by %r and will not be visible to their own "
+            "dataset. Split the file per identity to separate them.",
+            legacy,
+            org_id,
+            sorted(foreign),
+            org_id,
+        )
 
     owner = claim_or_read_identity(legacy, org_id)
     if owner == org_id:

@@ -5,6 +5,7 @@ Design: ``docs/superpowers/specs/2026-09-02-oss-dataset-isolation-fix-design.md`
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 from pathlib import Path
 
@@ -83,6 +84,87 @@ def test_legacy_file_with_foreign_labels_is_not_adopted(tmp_path: Path) -> None:
 
     resolved = resolve_sqlite_db_path(tmp_path, "acme")
     assert resolved == str(tmp_path / "reflexio_acme.db")
+
+
+def _legacy_with(tmp_path: Path, rows: dict[str, list[str]]) -> Path:
+    """A legacy file whose named tables carry the given ``org_id`` labels."""
+    legacy = tmp_path / "reflexio.db"
+    conn = sqlite3.connect(legacy)
+    try:
+        for table, orgs in rows.items():
+            conn.execute(
+                f"CREATE TABLE {table} (org_id TEXT NOT NULL, token TEXT NOT NULL)"  # noqa: S608
+            )
+            for org in orgs:
+                conn.execute(
+                    f"INSERT INTO {table} VALUES (?, 'x')",  # noqa: S608
+                    (org,),
+                )
+        conn.commit()
+    finally:
+        conn.close()
+    return legacy
+
+
+def test_a_commingled_legacy_file_is_not_adopted_silently(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """MIXED labels outside the barrier table: adopt, but say so.
+
+    The guard above only refuses when the opening identity is ABSENT. A file
+    holding OUR label and someone else's was adopted wholesale and in silence,
+    so the adopter read the other identity's rows across every attributed table
+    -- and the 28 tenant tables carry no ``org_id`` at all, so nothing
+    downstream could scope them.
+
+    Adoption is still the right outcome here (the rows are ours too, and
+    refusing would strand a real install), but it must name the other identity
+    so an operator can act. The warning is the deliverable, so it is asserted.
+    """
+    _legacy_with(tmp_path, {"share_links": ["acme", "someone-else"]})
+
+    with caplog.at_level(logging.WARNING):
+        resolved = resolve_sqlite_db_path(tmp_path, "acme")
+
+    assert resolved == str(tmp_path / "reflexio.db")
+    assert "someone-else" in caplog.text
+    assert "acme" in caplog.text
+
+
+def test_a_legacy_file_holding_another_identitys_erasure_state_is_refused(
+    tmp_path: Path,
+) -> None:
+    """MIXED labels IN the barrier table: refuse outright.
+
+    A write barrier is a standing refusal to write for an erased subject.
+    Adopting a file that carries another identity's barriers means either
+    enforcing refusals we cannot attribute, or silently not enforcing them --
+    and an erasure that quietly stops being enforced cannot be repaired by
+    noticing later. This is the one mixed case that must not open.
+    """
+    _legacy_with(
+        tmp_path,
+        {
+            "share_links": ["acme"],
+            "subject_write_barriers": ["acme", "someone-else"],
+        },
+    )
+
+    with pytest.raises(DatasetIdentityError, match="erasure write barriers"):
+        resolve_sqlite_db_path(tmp_path, "acme")
+
+
+def test_a_legacy_file_holding_only_our_own_label_is_adopted_silently(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The control. Without it the two tests above pass on a guard that refuses everything."""
+    _legacy_with(tmp_path, {"share_links": ["acme"]})
+
+    with caplog.at_level(logging.WARNING):
+        resolved = resolve_sqlite_db_path(tmp_path, "acme")
+
+    assert resolved == str(tmp_path / "reflexio.db")
+    assert caplog.text == ""
 
 
 def test_label_scan_tolerates_a_table_without_the_column(tmp_path: Path) -> None:
