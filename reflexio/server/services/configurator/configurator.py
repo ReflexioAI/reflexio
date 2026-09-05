@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from pathlib import Path
 from typing import Any
 
 from reflexio.models.config_schema import (
@@ -15,6 +14,9 @@ from reflexio.server.services.configurator.local_file_config_storage import (
     LocalFileConfigStorage,
 )
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
+from reflexio.server.services.storage.sqlite_storage._dataset_path import (
+    resolve_sqlite_db_path,
+)
 from reflexio.server.services.storage.storage_base import BaseStorage
 
 logger = logging.getLogger(__name__)
@@ -36,11 +38,16 @@ def _create_sqlite_storage(
         full_config.enable_document_expansion if full_config else False
     )
     # When base_dir is explicitly provided (e.g. tests with temp dirs)
-    # and no db_path is configured, use base_dir for the SQLite DB
-    # so the storage is isolated from the shared default database.
+    # and no db_path is configured, resolve the SQLite DB under base_dir so the
+    # storage is isolated from the shared default database.
+    #
+    # Resolved by identity, not by base_dir alone: two orgs sharing one base_dir
+    # would otherwise land on one file and read each other's rows -- the same defect
+    # the default path had. Mirrors the config layer beside it, which already writes
+    # ``config_<org_id>.json``.
     db_path = config.db_path
     if db_path is None and configurator.base_dir:
-        db_path = str(Path(configurator.base_dir) / "reflexio.db")
+        db_path = resolve_sqlite_db_path(configurator.base_dir, configurator.org_id)
     return SQLiteStorage(
         org_id=configurator.org_id,
         db_path=db_path,
