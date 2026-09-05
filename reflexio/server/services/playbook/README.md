@@ -112,6 +112,13 @@ scheduled cycle; new durable signals preserve that due time so changes coalesce,
 while a remaining backlog continues in bounded follow-up units. The manual
 `/api/run_playbook_aggregation` route remains a fenced administrative full rerun.
 
+The scheduler processes organizations sequentially. An exception escaping an
+organization's execution defers that organization for five minutes using
+monotonic time; later organizations continue after the failing call returns.
+Failed repair attempts also respect the five-minute repair interval. Logs
+identify the organization and failing stage, and provider enumeration failures
+remain separate tick-level errors. Durable retries and lease fencing are unchanged.
+
 Incremental work is isolated by `agent_version`:
 
 1. Admit only the newest configured window of CURRENT, nonempty rows that have

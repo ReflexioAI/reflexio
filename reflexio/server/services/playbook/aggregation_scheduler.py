@@ -112,8 +112,12 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
         self._poll_interval_seconds = poll_interval_seconds
         self._worker_id = worker_id or uuid.uuid4().hex
         self._last_repair_at: dict[str, float] = {}
+        self._retry_after: dict[str, float] = {}
+        # Organization execution is sequential on the scheduler thread.
+        self._active_stage = "configuration"
 
     def _run_context(self, context: RequestContext) -> None:
+        self._active_stage = "configuration"
         storage = context.storage
         playbook_config = getattr(
             context.configurator.get_config(), "user_playbook_extractor_config", None
@@ -140,8 +144,9 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
             last_repair_at is None
             or repair_now - last_repair_at >= _REPAIR_INTERVAL_SECONDS
         ):
-            repaired = storage.repair_playbook_aggregation_pending_state()
             self._last_repair_at[context.org_id] = repair_now
+            self._active_stage = "repair"
+            repaired = storage.repair_playbook_aggregation_pending_state()
             for agent_version in repaired:
                 logger.info(
                     "event=playbook_aggregation_progress state=scheduled org_id=%s "
@@ -149,6 +154,7 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
                     context.org_id,
                     agent_version,
                 )
+        self._active_stage = "claim"
         claim = storage.claim_due_playbook_aggregation(
             owner=f"aggregation:{self._worker_id}:{context.org_id}",
             lease_seconds=AGGREGATION_LEASE_SECONDS,
@@ -163,6 +169,7 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
             claim.agent_version,
             claim.fence,
         )
+        self._active_stage = "aggregation"
         heartbeat = AggregationLeaseHeartbeat(storage, claim)
         heartbeat.start()
         success = False
@@ -239,6 +246,7 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
                 claim.fence,
             )
         finally:
+            self._active_stage = "finalization"
             heartbeat.stop()
             active_claim = heartbeat.claim
             finished = storage.finish_playbook_aggregation_claim(
@@ -285,9 +293,28 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
             for context in self._context_provider():
                 if self._stop_event.is_set():
                     break
-                self._run_context(context)
+                org_id = context.org_id
+                if time.monotonic() < self._retry_after.get(org_id, 0):
+                    continue
+                try:
+                    self._run_context(context)
+                except Exception:
+                    self._retry_after[org_id] = (
+                        time.monotonic() + _REPAIR_INTERVAL_SECONDS
+                    )
+                    logger.exception(
+                        "event=playbook_aggregation_scheduler_org_failed org_id=%s "
+                        "stage=%s retry_after_seconds=%s",
+                        org_id,
+                        self._active_stage,
+                        _REPAIR_INTERVAL_SECONDS,
+                    )
+                else:
+                    self._retry_after.pop(org_id, None)
         except Exception:
-            logger.exception("event=playbook_aggregation_scheduler_tick_failed")
+            logger.exception(
+                "event=playbook_aggregation_scheduler_tick_failed stage=context_provider"
+            )
         return self._poll_interval_seconds
 
     def _on_started(self) -> None:
