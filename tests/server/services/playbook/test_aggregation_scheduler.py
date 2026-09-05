@@ -190,6 +190,104 @@ def test_lease_heartbeat_marks_renewal_exception_as_lost() -> None:
         heartbeat.require_live()
 
 
+@pytest.mark.parametrize(
+    "failing_operation",
+    [
+        "repair_playbook_aggregation_pending_state",
+        "claim_due_playbook_aggregation",
+        "finish_playbook_aggregation_claim",
+    ],
+)
+def test_org_failure_defers_only_that_org_and_recovers(
+    failing_operation, monkeypatch, caplog
+) -> None:
+    clock = [1000.0]
+    monkeypatch.setattr(aggregation_scheduler.time, "monotonic", lambda: clock[0])
+    broken = MagicMock(supports_incremental_playbook_aggregation=True)
+    healthy = MagicMock(supports_incremental_playbook_aggregation=True)
+    for storage in (broken, healthy):
+        storage.repair_playbook_aggregation_pending_state.return_value = []
+        storage.claim_due_playbook_aggregation.return_value = None
+    healthy.claim_due_playbook_aggregation.return_value = PlaybookAggregationClaim(
+        "v1", "healthy-owner", 1, 0, 2000
+    )
+    healthy.get_playbook_aggregation_invalidations.return_value = [
+        SimpleNamespace(invalidation_id=i)
+        for i in range(aggregation_scheduler.AGGREGATION_INVALIDATION_BATCH_SIZE + 1)
+    ]
+    monkeypatch.setattr(
+        aggregation_scheduler.AggregationLeaseHeartbeat, "start", lambda _: None
+    )
+    if failing_operation == "finish_playbook_aggregation_claim":
+        broken.claim_due_playbook_aggregation.return_value = PlaybookAggregationClaim(
+            "v1", "owner", 1, 0, 2000
+        )
+        broken.get_playbook_aggregation_invalidations.return_value = [
+            SimpleNamespace(invalidation_id=i)
+            for i in range(
+                aggregation_scheduler.AGGREGATION_INVALIDATION_BATCH_SIZE + 1
+            )
+        ]
+    failure = getattr(broken, failing_operation)
+    failure.side_effect = RuntimeError("database unavailable")
+    contexts = [_context(broken), _context(healthy)]
+    contexts[1].org_id = "org-2"
+    scheduler = aggregation_scheduler.PlaybookAggregationScheduler(
+        context_provider=lambda: contexts
+    )
+
+    scheduler._run_once()
+    assert failure.call_count == 1
+    assert healthy.claim_due_playbook_aggregation.call_count == 1
+    assert healthy.finish_playbook_aggregation_claim.call_count == 1
+    assert healthy.finish_playbook_aggregation_claim.call_args.kwargs["success"] is True
+    assert "org_id=org-1" in caplog.text
+    expected_stage = {
+        "repair_playbook_aggregation_pending_state": "repair",
+        "claim_due_playbook_aggregation": "claim",
+        "finish_playbook_aggregation_claim": "finalization",
+    }[failing_operation]
+    assert f"stage={expected_stage}" in caplog.text
+    clock[0] += 299
+    scheduler._run_once()
+    assert failure.call_count == 1
+    assert healthy.claim_due_playbook_aggregation.call_count == 2
+    assert healthy.finish_playbook_aggregation_claim.call_count == 2
+
+    failure.side_effect = None
+    broken.claim_due_playbook_aggregation.return_value = None
+    clock[0] += 1
+    scheduler._run_once()
+    assert "org-1" not in scheduler._retry_after
+    assert healthy.claim_due_playbook_aggregation.call_count == 3
+    assert healthy.finish_playbook_aggregation_claim.call_count == 3
+
+
+def test_failed_repair_attempt_is_throttled(monkeypatch) -> None:
+    storage = MagicMock(supports_incremental_playbook_aggregation=True)
+    storage.repair_playbook_aggregation_pending_state.side_effect = RuntimeError("down")
+    storage.claim_due_playbook_aggregation.return_value = None
+    monkeypatch.setattr(aggregation_scheduler.time, "monotonic", lambda: 1000.0)
+    scheduler = aggregation_scheduler.PlaybookAggregationScheduler(
+        context_provider=lambda: []
+    )
+    with pytest.raises(RuntimeError, match="down"):
+        scheduler._run_context(_context(storage))
+    scheduler._run_context(_context(storage))
+    storage.repair_playbook_aggregation_pending_state.assert_called_once()
+
+
+def test_context_provider_failure_remains_recoverable(caplog) -> None:
+    provider = MagicMock(side_effect=[RuntimeError("repository unavailable"), []])
+    scheduler = aggregation_scheduler.PlaybookAggregationScheduler(
+        context_provider=provider
+    )
+    scheduler._run_once()
+    scheduler._run_once()
+    assert provider.call_count == 2
+    assert "stage=context_provider" in caplog.text
+
+
 def test_stopped_local_scheduler_drops_captured_context(monkeypatch) -> None:
     monkeypatch.delenv("DEPLOYMENT_MODE", raising=False)
     aggregation_scheduler._LOCAL_SCHEDULERS.clear()
