@@ -178,6 +178,56 @@ def _bounded_repair_errors(errors: Sequence[str]) -> tuple[str, ...]:
     return tuple(bounded)
 
 
+def _detach_request_state(value: Any) -> Any:
+    """Return ``value`` with every mutable container copied, recursively.
+
+    litellm's provider transports mutate the request state they are handed IN
+    PLACE and hand the same object onward. The reproduced instance is
+    ``OpenAIGPTConfig.validate_environment``, which does::
+
+        headers["Authorization"] = f"Bearer {api_key}"
+        headers["Content-Type"] = "application/json"
+
+    on whatever ``extra_headers`` dict it received. Every route dispatched
+    through litellm's own HTTP handler inherits that method -- ``minimax/*``
+    among them. (The plain ``openai`` SDK routes do not, which is why the
+    exposure looks provider-specific from any single call site. It is not.)
+
+    That matters because ``_make_request`` treats the caller's kwargs as the
+    STANDING description of the request: it rebuilds params for every rung of
+    the ladder, and ``_corrective_kwargs`` re-reads ``extra_headers`` to derive
+    the corrective retry's idempotency key. Handing the transport a reference
+    to those objects means attempt 1's provider writes the provider's own
+    headers into the caller's dict, and attempt 2 then carries them as though
+    the caller had asked for them. A caller-supplied
+    ``provider_request_guard`` that pins the exact request -- correctly --
+    refuses that second crossing, which silently kills the one corrective
+    retry the client exists to make.
+
+    Copying is done at the point the params are BUILT rather than at the one
+    call site that was observed to break, because the exposure belongs to any
+    mutable value forwarded into ``params``, not to ``extra_headers``
+    specifically. Only containers are copied: classes (``response_format``),
+    callables, and pydantic models pass through by identity, both because the
+    transport does not mutate them and because ``response_format`` must stay
+    the caller's exact type for ``type(result.value) is response_format``
+    checks downstream.
+
+    Args:
+        value (Any): Any request value about to be handed to the transport
+
+    Returns:
+        Any: An equal value sharing no mutable container with ``value``
+    """
+    if isinstance(value, dict):
+        return {key: _detach_request_state(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_detach_request_state(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_detach_request_state(item) for item in value)
+    return value
+
+
 def structured_output_correction_turn(
     *, schema_name: str, errors: Sequence[str]
 ) -> list[dict[str, str]]:
@@ -1243,6 +1293,13 @@ class TextGenerationMixin:
             ``num_retries`` is forced to 0 and the hard (wall-clock) timeout is
             sized to a SINGLE attempt on this rung plus one grace buffer — the
             walk, not litellm, owns advancing to the next rung.
+
+            Every mutable value is DETACHED from the caller's objects before
+            it is built into ``params``: litellm's transports mutate request
+            state in place (see ``_detach_request_state``), and this walk
+            re-reads the caller's kwargs on the next rung and on the
+            corrective retry. ``dict(turn_kwargs)`` alone was not enough — it
+            copies the top level and leaves ``extra_headers`` shared.
             """
             (
                 params,
@@ -1250,7 +1307,10 @@ class TextGenerationMixin:
                 parse_structured_output,
                 _max_retries,
                 _fallbacks,
-            ) = self._build_completion_params(turn_messages, **dict(turn_kwargs))
+            ) = self._build_completion_params(
+                _detach_request_state(turn_messages),
+                **_detach_request_state(dict(turn_kwargs)),
+            )
             params["num_retries"] = 0
             params.pop("fallbacks", None)  # owned walk: never delegate to litellm
             per_attempt = self._coerce_timeout_seconds(params)
@@ -1500,6 +1560,13 @@ class TextGenerationMixin:
             sampling, timeout, response format -- is left exactly as the first
             attempt sent it, because the request being corrected is still the
             same question.
+
+            ``headers`` is the CALLER's dict and is spread verbatim, so it must
+            hold only what the caller asked for. That is guaranteed by
+            ``_prepare_turn`` detaching request state before the transport ever
+            sees it (``_detach_request_state``); without that, attempt 1's
+            provider-injected ``Authorization``/``Content-Type`` would be
+            spread into the corrective retry as caller intent.
             """
             headers = rung_kwargs.get("extra_headers")
             if not isinstance(headers, dict):
