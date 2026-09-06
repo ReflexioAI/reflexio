@@ -8,12 +8,25 @@ from collections.abc import Callable
 from functools import partial
 
 from reflexio.server.callback_executor import submit_callback
+from reflexio.server.error_reporting import capture_anomaly
+from reflexio.server.work_scope import (
+    WorkScope,
+    WorkScopeError,
+    bind_work_scope,
+    current_project_id,
+)
 
 from .optimizer import PlaybookOptimizationRunStatus, PlaybookOptimizationTarget
 
 logger = logging.getLogger(__name__)
 
-ScheduleKey = tuple[str, str, int]
+# (org_id, project_id, target.kind, target.target_id)
+#
+# ``project_id`` is part of the DEBOUNCE IDENTITY, not decoration. Without it,
+# two projects in one org optimizing the same target inside one debounce window
+# collapse into a single fire, and that fire is attributed to whichever request
+# won the race. ``None`` in OSS, where projects do not exist.
+ScheduleKey = tuple[str, str | None, str, int]
 ScheduledCallback = Callable[[], PlaybookOptimizationRunStatus | None]
 
 
@@ -72,7 +85,13 @@ class PlaybookOptimizationScheduler:
         abort_cooldown_threshold: int = 2,
         cooldown_after_aborts_seconds: int = 3600,
     ) -> None:
-        key: ScheduleKey = (org_id, target.kind, target.target_id)
+        # Resolved on the enqueueing thread: by fire time the scope is gone.
+        key: ScheduleKey = (
+            org_id,
+            current_project_id(),
+            target.kind,
+            target.target_id,
+        )
         now = time.monotonic()
         jitter = (time.monotonic() % 1.0) * jitter_seconds
         fire_time = now + jitter
@@ -114,7 +133,7 @@ class PlaybookOptimizationScheduler:
                         _, callback, abort_threshold, cooldown_seconds = current
                         del self._scheduled[key]
                         submit_callback(
-                            f"playbook-opt-{key[1]}-{key[2]}",
+                            f"playbook-opt-{key[2]}-{key[3]}",
                             partial(
                                 self._run_callback,
                                 key,
@@ -135,11 +154,27 @@ class PlaybookOptimizationScheduler:
         cooldown_seconds: int,
     ) -> None:
         try:
-            status = callback()
+            with bind_work_scope(WorkScope(org_id=key[0], project_id=key[1])):
+                status = callback()
             if status == "aborted":
                 self._record_abort(key, abort_threshold, cooldown_seconds)
             elif status in {"completed", "skipped"}:
                 self._clear_abort_state(key)
+        except WorkScopeError:
+            # NOT an operational failure: the run could not be attributed to a
+            # project, so tolerating it would misattribute or silently skip a
+            # tenant write. Escalated rather than propagated — see WorkScopeError.
+            logger.exception(
+                "Playbook optimization scope binding failed for key=%s", key
+            )
+            capture_anomaly(
+                "playbook_optimizer.work_scope_failed",
+                level="error",
+                org_id=key[0],
+                project_id=key[1],
+                target_kind=key[2],
+            )
+            self._record_abort(key, abort_threshold, cooldown_seconds)
         except Exception:
             logger.exception("Playbook optimization callback failed for key=%s", key)
             self._record_abort(key, abort_threshold, cooldown_seconds)

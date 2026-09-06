@@ -28,8 +28,25 @@ def client(test_app):
 
 @pytest.fixture
 def mock_reflexio():
-    """A MagicMock Reflexio instance for patching get_reflexio."""
-    return MagicMock()
+    """A MagicMock Reflexio instance for patching get_reflexio.
+
+    ``get_org_config`` mirrors whatever a test wired onto ``get_config``.
+    Config *write* paths read through ``get_org_config`` so they never persist
+    a narrower scope's overlay back onto the org document, while read paths use
+    ``get_config``; in OSS the two return the same object. Without this mirror
+    a route calling ``get_org_config`` gets a bare ``MagicMock`` instead of a
+    ``Config`` and 500s, so every test wiring only ``get_config`` would have to
+    remember to set both.
+
+    ``return_value`` is read directly rather than calling ``get_config()`` so
+    the mirror does not register a spurious call on it.
+    """
+    mock = MagicMock()
+    configurator = mock.request_context.configurator
+    configurator.get_org_config.side_effect = lambda: (
+        configurator.get_config.return_value
+    )
+    return mock
 
 
 @pytest.fixture

@@ -42,6 +42,57 @@ def _enqueue(
         )
 
 
+class TestProjectAttribution:
+    """The project rides the job PAYLOAD, so every backend must persist it.
+
+    The worker runs long after the enqueueing request returned and cannot
+    inherit its context, so a project that does not survive the round-trip is a
+    project the deferred write will be misattributed without.
+    """
+
+    def test_project_id_survives_the_round_trip(self, storage) -> None:
+        with storage.commit_scope():
+            storage.enqueue_learning_job(
+                org_id=storage.org_id,
+                user_id="u-proj",
+                request_id="r-proj",
+                covers_through=1000.0,
+                project_id="proj-alpha",
+            )
+        claimed = [
+            j
+            for j in storage.claim_learning_jobs(
+                claimed_by="w1", limit=10, lease_seconds=300
+            )
+            if j.user_id == "u-proj"
+        ]
+        assert len(claimed) == 1
+        assert claimed[0].project_id == "proj-alpha"
+
+    def test_absent_project_is_none_not_empty_string(self, storage) -> None:
+        """OSS has no projects: absent must read back as None.
+
+        None and "" must not become two spellings of "no project" — a provider
+        reading an unset transaction-local Postgres GUC gets "" back, not NULL.
+        """
+        with storage.commit_scope():
+            storage.enqueue_learning_job(
+                org_id=storage.org_id,
+                user_id="u-noproj",
+                request_id="r-noproj",
+                covers_through=1000.0,
+            )
+        claimed = [
+            j
+            for j in storage.claim_learning_jobs(
+                claimed_by="w1", limit=10, lease_seconds=300
+            )
+            if j.user_id == "u-noproj"
+        ]
+        assert len(claimed) == 1
+        assert claimed[0].project_id is None
+
+
 class TestCoalescing:
     def test_two_pending_publishes_collapse_to_one_job(self, storage) -> None:
         j1 = _enqueue(storage, "u-c", "r-1", 1000.0)

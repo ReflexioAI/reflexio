@@ -71,8 +71,9 @@ from reflexio.server.services.storage.session_outcome_identity import (
 from reflexio.server.services.storage.storage_base import BaseStorage
 from reflexio.server.site_var.site_var_manager import SiteVarManager
 
-from ._governance import init_governance_tables
+from ._dataset_path import resolve_sqlite_db_path
 from ._stall_state import init_stall_state_table
+from ._subject_write_gate import init_subject_write_barrier_table
 
 logger = logging.getLogger(__name__)
 
@@ -963,11 +964,27 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         self.api_key_config = api_key_config
         self._enable_document_expansion = enable_document_expansion
 
-        # Resolve db_path: explicit arg > LOCAL_STORAGE_PATH env var > ~/.reflexio/data/
+        # Checked before any filesystem work: resolving a derived path claims the
+        # dataset, and an unsupported SQLite should fail without leaving a directory
+        # or a claim behind.
+        if sqlite3.sqlite_version_info < _MINIMUM_SQLITE_VERSION:
+            detected_version = ".".join(map(str, sqlite3.sqlite_version_info))
+            raise RuntimeError(
+                f"SQLite 3.35.0 or newer is required; detected {detected_version}"
+            )
+
+        # Resolve db_path: explicit arg > a file derived from org_id under
+        # LOCAL_STORAGE_PATH. An explicit path is used verbatim -- callers that point
+        # several identities at one file (multi-tenant tests, benchmarks) depend on
+        # that, and it is what keeps the residual commingling case observable.
+        #
+        # The import stays function-local: the test session patches
+        # ``reflexio.server.LOCAL_STORAGE_PATH`` on the already-imported module, which
+        # a module-level import would read past.
         if db_path is None:
             from reflexio.server import LOCAL_STORAGE_PATH
 
-            db_path = str(Path(LOCAL_STORAGE_PATH) / "reflexio.db")
+            db_path = resolve_sqlite_db_path(LOCAL_STORAGE_PATH, org_id)
 
         self.db_path = db_path
         self._lock = threading.RLock()
@@ -977,12 +994,6 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         ] = []  # (kind, args) flushed post-commit
 
         logger.info("SQLite Storage for org %s using db_path: %s", org_id, db_path)
-
-        if sqlite3.sqlite_version_info < _MINIMUM_SQLITE_VERSION:
-            detected_version = ".".join(map(str, sqlite3.sqlite_version_info))
-            raise RuntimeError(
-                f"SQLite 3.35.0 or newer is required; detected {detected_version}"
-            )
 
         # Ensure parent directory exists
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
@@ -1120,7 +1131,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                 )
             cur = self.conn.cursor()
             cur.executescript(_DDL)
-            init_governance_tables(self.conn)
+            init_subject_write_barrier_table(self.conn)
             init_playbook_aggregation_tables(self.conn)
             self.conn.commit()
         self._migrate_session_outcomes_schema()
@@ -2696,6 +2707,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                     covers_through TEXT,
                     force_extraction INTEGER NOT NULL DEFAULT 0,
                     skip_aggregation INTEGER NOT NULL DEFAULT 0,
+                    project_id TEXT,
                     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
                     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
                 );
@@ -2723,6 +2735,12 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             if "skip_aggregation" not in existing_cols:
                 self.conn.execute(
                     "ALTER TABLE learning_jobs ADD COLUMN skip_aggregation INTEGER NOT NULL DEFAULT 0"
+                )
+            # Nullable with no default: OSS has no projects, so NULL is the
+            # correct value for every existing and new row here.
+            if "project_id" not in existing_cols:
+                self.conn.execute(
+                    "ALTER TABLE learning_jobs ADD COLUMN project_id TEXT"
                 )
             self.conn.commit()
 
@@ -3986,18 +4004,6 @@ AFTER DELETE ON agent_playbooks BEGIN
     DELETE FROM agent_playbooks_unicode_fts WHERE rowid = old.rowid;
 END;
 
-CREATE TABLE IF NOT EXISTS share_links (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    org_id TEXT NOT NULL,
-    token TEXT NOT NULL UNIQUE,
-    resource_type TEXT NOT NULL,
-    resource_id TEXT NOT NULL,
-    created_at INTEGER NOT NULL,
-    expires_at INTEGER,
-    created_by_email TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_share_links_resource ON share_links(resource_type, resource_id);
-
 -- ============================================================================
 -- Braintrust connector (Plan C-backend)
 -- ============================================================================
@@ -4096,6 +4102,7 @@ CREATE TABLE IF NOT EXISTS learning_jobs (
     covers_through TEXT,
     force_extraction INTEGER NOT NULL DEFAULT 0,
     skip_aggregation INTEGER NOT NULL DEFAULT 0,
+    project_id TEXT,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );

@@ -40,6 +40,10 @@ class LearningJob:
     force_extraction: bool = False
     skip_aggregation: bool = False
     max_attempts: int = 3
+    # Owning project, carried on the payload because the worker runs long after
+    # the enqueueing request returned and cannot inherit its context. ``None``
+    # in OSS, where projects do not exist — an absent project is normal here.
+    project_id: str | None = None
 
 
 class LearningJobStoreABC(ABC):
@@ -62,6 +66,7 @@ class LearningJobStoreABC(ABC):
         job_type: str = "learning",
         force_extraction: bool = False,
         skip_aggregation: bool = False,
+        project_id: str | None = None,
     ) -> str:
         """Coalescing upsert into the learning_jobs queue.
 
@@ -71,6 +76,24 @@ class LearningJobStoreABC(ABC):
         pending row (existing or newly inserted).
 
         Safe to call inside a ``commit_scope`` — no own BEGIN/COMMIT issued.
+
+        Args:
+            project_id: Owning project, stamped onto the row so the worker can
+                re-establish the scope at run time (it executes long after this
+                request returned).  ``None`` in OSS, where projects do not
+                exist; an absent project is normal and never an error here.
+
+        Warning:
+            The coalescing key is ``(org_id, user_id, job_type)`` and does
+            **not** include ``project_id``.  That is correct while every row's
+            ``project_id`` is ``None`` (OSS).  An implementation that stores
+            real projects MUST widen the coalescing key to include the project,
+            or two projects publishing for the same user will collapse into one
+            pending row whose ``project_id`` is whichever request won the race
+            — the same cross-project misattribution the scheduler keys avoid.
+            Note that a plain ``UNIQUE`` over a nullable column will not do it:
+            SQL treats NULLs as distinct, so coalescing would stop working
+            wherever the project is absent.
         """
         raise NotImplementedError
 

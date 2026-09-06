@@ -72,6 +72,24 @@ class BaseConfigurator(ABC):
     # ==========================
 
     def get_config(self) -> Config:
+        """Return the config callers should read.
+
+        In OSS this is simply the org's persisted config. Enterprise overrides
+        it to layer the bound project's overrides on top, which is why every
+        caller that is about to write config back must use
+        :meth:`get_org_config` instead -- see that method.
+        """
+        return self.config
+
+    def get_org_config(self) -> Config:
+        """Return the org's persisted config, with no per-caller overlay.
+
+        Identical to :meth:`get_config` here, and deliberately a separate
+        method anyway: a subclass may make ``get_config`` context-dependent, and
+        a read whose result is about to be persisted back to the org document
+        must not pick up a narrower scope's overrides. Reading through this
+        method is what states which of the two a call site meant.
+        """
         return self.config
 
     def get_config_for_response(self) -> dict[str, Any]:
@@ -90,7 +108,7 @@ class BaseConfigurator(ABC):
         The shared behavior is intentionally shallow: nested config objects are
         replaced wholesale by the caller's partial.
         """
-        existing = self.get_config().model_dump(mode="python")
+        existing = self.get_org_config().model_dump(mode="python")
         normalized = self.normalize_config_payload({**existing, **partial})
         return (
             normalized
