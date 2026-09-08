@@ -66,6 +66,8 @@ from reflexio.server.llm._litellm_text_generation import (
     ProviderRequestGuardError,
     StructuredOutputValidator,
     TextGenerationMixin,
+    is_structured_output_correction_turn,
+    structured_output_repair_idempotency_key,
 )
 from reflexio.server.llm._litellm_types import (
     LiteLLMClientError,
@@ -106,6 +108,8 @@ __all__ = [
     "StructuredOutputValidator",
     "ToolCallingChatResponse",
     "create_litellm_client",
+    "is_structured_output_correction_turn",
+    "structured_output_repair_idempotency_key",
 ]
 
 

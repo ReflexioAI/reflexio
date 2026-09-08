@@ -36,6 +36,12 @@ PUBLIC_SYMBOLS = [
     "StructuredOutputValidator",
     "ToolCallingChatResponse",
     "create_litellm_client",
+    # The guard-author contract for the plain rung's corrective retry: a
+    # ``provider_request_guard`` that must admit the correction needs to
+    # recognise its shape and its re-derived idempotency key without
+    # re-implementing either.
+    "is_structured_output_correction_turn",
+    "structured_output_repair_idempotency_key",
 ]
 
 # Test-imported internals that ImportError at collection if dropped. AST-scanned

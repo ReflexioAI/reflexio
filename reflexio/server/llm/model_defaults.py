@@ -294,7 +294,29 @@ _PROVIDER_DEFAULTS: dict[str, ProviderDefaults] = {
 # breaking extraction). 8192 was the healthiest measured setting. The 120s
 # provider stalls occur at every cap value (provider-side; mitigate with
 # fallback models, not here). Providers absent from this map stay unbounded.
-_PROVIDER_DEFAULT_MAX_TOKENS: dict[str, int] = {"minimax": 8192}
+#
+# `zai` shares the property that forced MiniMax's entry, and only that one:
+# both sit on ``_PROMPT_SCHEMA_PROVIDER_ALLOWLIST``
+# (_litellm_structured_output.py), so the whole JSON schema travels inside the
+# prompt and the model has to emit a COMPLETE structured body from scratch --
+# there is no provider-side grammar to stop it short of one. A cap that fits
+# the reasoning but not the body yields a truncated document that fails to
+# parse as JSON at all, rather than a document that parses and then fails
+# field validation.
+#
+# The 8192 here is NOT a measured ZAI value, and should not be read as one.
+# MiniMax's 8192 came from a prod A/B on MiniMax-M3 (2026-07-14, the note
+# above): 4096 ran structured-output parse failures ~10-20x the 8192-era rate.
+# No equivalent A/B has been run against glm-5.2, and M3's reasoning-token
+# accounting is not evidence about a different vendor's model. What IS
+# measured for ZAI is a single direction: a live `zai/glm-5.2` structured call
+# capped at 4096 truncated at exactly the cap on both the first attempt and its
+# corrective re-issue, producing a body that raised JSONDecodeError with zero
+# extractable content (`validation_errors: []` throughout -- it never reached
+# field validation). That establishes only that 4096 is too small. 8192 is
+# therefore the nearest reasonable floor -- the one other value in this map --
+# and is expected to be revised once ZAI has its own measurement.
+_PROVIDER_DEFAULT_MAX_TOKENS: dict[str, int] = {"minimax": 8192, "zai": 8192}
 
 
 def default_max_tokens_for_model(model: str) -> int | None:
