@@ -33,6 +33,7 @@ import logging
 import multiprocessing
 import os
 import queue
+import re
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -320,6 +321,57 @@ def structured_output_repair_idempotency_key(base_key: str) -> str:
     return hashlib.sha256(
         b"reflexio/llm/structured-output-correction-key/v1\x00" + base_key.encode()
     ).hexdigest()
+
+
+# Bounds for the log rendering of pydantic validation errors. ``loc`` is built
+# from ``str(part)`` in ``_safe_validation_errors`` with no clamp of its own, so
+# an ``extra_forbidden`` entry carries a MODEL-CHOSEN key straight into the
+# string. Whatever a log line renders bridges to external telemetry, so both the
+# COUNT and the SHAPE of each entry are bounded here.
+MAX_LOGGED_VALIDATION_ERRORS = 5
+MAX_LOGGED_ERROR_LENGTH = 128
+
+# ``_safe_validation_errors`` emits ``"<dotted.loc>: <error_type>"`` and, for a
+# JSON syntax error, ``"<root>: json_invalid at line L column C"``. This admits
+# exactly that alphabet -- identifiers, list indices, the ``<root>`` marker, the
+# separator and spaces. Anything else (a newline, a quote, a control character,
+# a non-ASCII key) fails the match and the whole entry is redacted. Commas are
+# deliberately excluded so the joined line stays unambiguous.
+_LOG_SAFE_VALIDATION_ERROR = re.compile(
+    rf"[A-Za-z0-9_.:<>\[\] ]{{1,{MAX_LOGGED_ERROR_LENGTH}}}"
+)
+_REDACTED_VALIDATION_ERROR = "<redacted>"
+
+
+def _log_safe_validation_errors(errors: Sequence[str]) -> str:
+    """Render validation errors for a log sink, bounded in count and shape.
+
+    The enterprise open-world diagnostics recorder clamps exactly this shape
+    (``_safe_loc_component`` / ``MAX_LOC_COMPONENTS``) before persisting it;
+    this is the same bound applied at the OSS logging boundary, which the
+    telemetry bridge reads. The RETRY PROMPT still receives the unclamped
+    errors: they go back to the provider that produced them, which is a
+    different trust boundary from a log sink, and clamping there would blunt
+    the correction the plain rung's corrective retry depends on.
+
+    Args:
+        errors (Sequence[str]): Entries from ``_safe_validation_errors``
+
+    Returns:
+        str: A comma-joined, bounded rendering; entries outside the schema
+            alphabet are replaced by a fixed marker, and a trailing count
+            stands in for anything past the cap
+    """
+    entries = list(errors)
+    rendered = [
+        entry
+        if _LOG_SAFE_VALIDATION_ERROR.fullmatch(entry)
+        else _REDACTED_VALIDATION_ERROR
+        for entry in entries[:MAX_LOGGED_VALIDATION_ERRORS]
+    ]
+    if len(entries) > len(rendered):
+        rendered.append(f"...({len(entries) - len(rendered)} more)")
+    return ",".join(rendered)
 
 
 def _nonempty_string(value: Any) -> str | None:
@@ -1620,17 +1672,54 @@ class TextGenerationMixin:
                         "retrying once on the same model",
                         params.get("model"),
                     )
+                    # REBUILD, never reuse ``params``. ``_prepare_turn`` detaches
+                    # request state from the CALLER's objects, which protects the
+                    # caller and every later rung -- but within this rung the one
+                    # ``params`` dict has already crossed to the transport, and
+                    # litellm's in-process route (``litellm.completion(**params)``)
+                    # lets ``validate_environment`` write ``Authorization`` /
+                    # ``Content-Type`` into ``params["extra_headers"]``. Passing
+                    # the same object again sends those provider-injected headers
+                    # as CALLER intent, which a ``provider_request_guard`` pinning
+                    # the exact request correctly refuses -- killing the re-issue
+                    # on the one branch (empty ``validation_errors``: the
+                    # "appears truncated" diagnostic) that still needs it.
+                    #
+                    # The rebuilt turn is deliberately BYTE-IDENTICAL to attempt
+                    # 1, idempotency key included. It is not re-keyed: nothing
+                    # about the request has changed, and the qualified caller
+                    # this path exists for pins ``extra_headers`` to the exact
+                    # key it issued while budgeting a bounded number of
+                    # IDENTICAL re-issues. Deriving a fresh key here would make
+                    # the re-issue fail that pin -- trading a replay risk this
+                    # branch does not carry (a truncated body is a transport
+                    # /decoding outcome, not a decision the provider caches)
+                    # for a guaranteed refusal.
+                    (
+                        reissue_params,
+                        reissue_rf,
+                        reissue_parse_so,
+                        reissue_timeout,
+                    ) = _prepare_turn(rung_messages, rung_kwargs)
                     return _finish(
                         _call_and_parse(
-                            params, rf, parse_so, hard_timeout, detect_refusal=False
+                            reissue_params,
+                            reissue_rf,
+                            reissue_parse_so,
+                            reissue_timeout,
+                            detect_refusal=False,
                         )
                     )
                 schema_name = getattr(rf, "__name__", "structured output")
                 # The COUNT, not the errors. An ``extra_forbidden`` entry puts a
                 # MODEL-CHOSEN key in the pydantic ``loc``, and this line reaches
                 # external telemetry via the logging bridge. The errors
-                # themselves go only into the retry prompt, back to the provider
-                # that produced them -- not to a log sink.
+                # themselves go into the retry prompt verbatim, back to the
+                # provider that produced them. Where a log line does need them
+                # (``_run_rung_validated``), they go through
+                # ``_log_safe_validation_errors`` first -- ``loc`` is built from
+                # ``str(part)`` with no charset, length or count clamp of its
+                # own, so nothing else bounds what reaches the sink.
                 self.logger.warning(
                     "event=llm_parse_retry_corrective model=%s schema=%s "
                     "validation_error_count=%d — malformed structured output, "
@@ -1692,7 +1781,7 @@ class TextGenerationMixin:
                         "event=llm_structured_schema_validation_failed model=%s schema=%s errors=%s",
                         params.get("model"),
                         schema_name,
-                        ",".join(exc.validation_errors),
+                        _log_safe_validation_errors(exc.validation_errors),
                     )
                 raw_content = exc.raw_content
                 finish_reason = exc.finish_reason
@@ -1715,8 +1804,16 @@ class TextGenerationMixin:
                 schema_name=schema_name,
                 errors=errors,
             )
+            # Re-keyed through ``_corrective_kwargs``, exactly as the plain
+            # rung's corrective retry is. The repair is a STRICTLY LARGER
+            # change to the request than that one -- ``_repair_messages`` echoes the model's own raw
+            # output back alongside the correction -- so reusing attempt 1's
+            # ``Idempotency-Key`` would entitle a provider honouring the header
+            # to replay the very answer being repaired, turning the repair into
+            # the silent no-op ``structured_output_repair_idempotency_key``
+            # exists to prevent.
             repair_params, repair_rf, repair_parse, repair_timeout = _prepare_turn(
-                repair_base, rung_kwargs
+                repair_base, _corrective_kwargs(rung_kwargs)
             )
             self.logger.warning(
                 "event=llm_structured_repair_attempted model=%s repair_target_model=%s schema=%s failure_kind=%s",
@@ -1748,7 +1845,7 @@ class TextGenerationMixin:
                         "event=llm_structured_schema_validation_failed model=%s schema=%s errors=%s",
                         repair_params.get("model"),
                         schema_name,
-                        ",".join(exc.validation_errors),
+                        _log_safe_validation_errors(exc.validation_errors),
                     )
                 failure_kind = "parse"
             except (LiteLLMClientError, ProviderCapSaturatedError) as exc:

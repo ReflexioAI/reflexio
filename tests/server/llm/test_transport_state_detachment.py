@@ -105,13 +105,21 @@ def test_a_mutating_transport_cannot_reach_the_callers_request_objects(
         metadata=metadata,
     )
 
-    # The transport really did scribble -- otherwise this asserts nothing.
+    # The transport really did scribble -- otherwise this asserts nothing. All
+    # THREE mutations are confirmed to have landed, not just the header one.
+    # The ``messages`` and ``metadata`` writes sit behind ``isinstance`` guards
+    # in the fake, so if either value ever stops being the shape the fake
+    # expects (``messages`` is rewritten wholesale by the Anthropic prompt-cache
+    # path, for one), that write silently no-ops and the matching "untouched"
+    # assertion below would pass while measuring nothing at all.
     assert len(seen) == 1
     assert sorted(seen[0]["extra_headers"]) == [
         "Authorization",
         "Content-Type",
         "Idempotency-Key",
     ]
+    assert seen[0]["messages"][0]["_transport_scribble"] is True
+    assert seen[0]["metadata"]["_transport_scribble"] is True
 
     # ...and it scribbled on copies. The caller's objects are untouched.
     assert headers == {"Idempotency-Key": "k" * 64}
