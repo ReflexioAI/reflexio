@@ -8,9 +8,13 @@ import pytest
 
 from reflexio.models.api_schema.domain import BlockingIssue, UserPlaybook
 from reflexio.models.api_schema.domain.enums import BlockingIssueKind, Status
+from reflexio.server.extensions import register_service
 from reflexio.server.services.search_exposure import (
+    SEARCH_EXPOSURE_RECORDER,
     SearchExposureBatch,
+    SearchExposureOutcome,
     build_user_playbook_exposure_event,
+    record_search_exposures,
     user_playbook_full_version_fingerprint,
 )
 
@@ -301,3 +305,52 @@ def test_semantic_digest_and_fallback_identity_are_deterministic_and_domain_sepa
         == ("d321988fa077b43deb4df4c89753b98c757c7c3167a12ea26af9247e665cc942")
     )
     assert first.exposure_event_id != first.served_semantic_digest
+
+
+class _CollectingRecorder:
+    """Minimal recorder that keeps whatever it was handed."""
+
+    def __init__(self) -> None:
+        self.batches: list[SearchExposureBatch] = []
+
+    def record(self, batch: SearchExposureBatch) -> None:
+        self.batches.append(batch)
+
+
+class _FailingRecorder:
+    """Recorder that refuses the write, to pin the fail-closed contract."""
+
+    def record(self, batch: SearchExposureBatch) -> None:
+        raise RuntimeError("ledger unavailable")
+
+
+def test_absent_recorder_reports_that_nothing_was_recorded() -> None:
+    """No recorder registered is legal, but the caller must be able to see it.
+
+    Exposure is append-only, so a caller reconstructing a corpus cannot learn
+    later that its batches went nowhere. Returning ``None`` regardless made a
+    silent no-op indistinguishable from a durable write.
+    """
+    outcome = record_search_exposures(_batch(_playbook()))
+
+    assert outcome is SearchExposureOutcome.NO_RECORDER
+
+
+def test_registered_recorder_reports_that_the_batch_was_recorded() -> None:
+    """The positive direction: a real write must not report absence."""
+    recorder = _CollectingRecorder()
+    register_service(SEARCH_EXPOSURE_RECORDER, recorder)
+    batch = _batch(_playbook())
+
+    outcome = record_search_exposures(batch)
+
+    assert outcome is SearchExposureOutcome.RECORDED
+    assert recorder.batches == [batch]
+
+
+def test_recorder_failure_still_propagates_rather_than_reporting_absence() -> None:
+    """Reporting the outcome must not soften recorder failures into a value."""
+    register_service(SEARCH_EXPOSURE_RECORDER, _FailingRecorder())
+
+    with pytest.raises(RuntimeError, match="ledger unavailable"):
+        record_search_exposures(_batch(_playbook()))
