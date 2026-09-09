@@ -27,12 +27,15 @@ import logging
 import time
 from collections.abc import Callable
 
+from reflexio.models.config_schema import Config
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.auth import DEFAULT_ORG_ID
 from reflexio.server.env_utils import env_str
 from reflexio.server.error_reporting import capture_anomaly
 from reflexio.server.org_fanout import iterate_orgs_bounded
 from reflexio.server.scheduling import LeaderGate, ThreadedScheduler
+from reflexio.server.services.storage.storage_base import BaseStorage
+from reflexio.server.work_scope import WorkScope, WorkScopeError, bind_work_scope
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +80,34 @@ def set_org_id_provider(provider: Callable[[], list[str]] | None) -> None:
     """
     global _org_id_provider_hook  # noqa: PLW0603
     _org_id_provider_hook = provider
+
+
+# Injection seam: a deployment with projects registers a per-org project
+# enumerator here, so each org's sweeps run once per project with that project
+# bound. Without it (OSS default) `_project_ids_for` yields a single `None`,
+# `bind_work_scope(None)` is a no-op, and the tick is byte-for-byte what it was.
+#
+# This exists because the sweeps below write project-scoped tables. An org-only
+# context passes no project, and under the enterprise row-level policies the
+# reads then return ZERO ROWS rather than failing -- so lineage GC ran every
+# tick and deleted nothing, silently, which is how it went unnoticed.
+_project_id_provider_hook: Callable[[str], list[str]] | None = None
+
+
+def set_project_id_provider(provider: Callable[[str], list[str]] | None) -> None:
+    """Register the per-org project enumerator consulted by ``_sweep_org``.
+
+    Deployments that have projects call this at app-composition time so each
+    org's sweeps run once per project, with that project bound. ``None`` (OSS
+    default) keeps the single unscoped pass. Pass ``None`` to clear the hook
+    (used by tests to restore OSS defaults).
+
+    Args:
+        provider (Callable[[str], list[str]] | None): Callable taking an org id
+            and returning that org's project ids, or ``None`` to clear.
+    """
+    global _project_id_provider_hook  # noqa: PLW0603
+    _project_id_provider_hook = provider
 
 
 # Injection seam: enterprise sets the fleet leader gate here at composition
@@ -292,11 +323,98 @@ class LineageGCScheduler(ThreadedScheduler):
             logger.exception("event=lineage_gc_org_failed org_id=%s", org_id)
             return
 
+        # One pass per project, not one per org. Everything below writes
+        # project-scoped tables; with no project bound the enterprise row-level
+        # policies match nothing, so the sweep deleted nothing and said so only
+        # through an `unbound_app_credential` probe warning.
+        #
+        # `cfg` is read once, outside the loop, on purpose: `lineage_gc` and
+        # `expiry_reclamation` are deliberately NOT project-overridable, so
+        # there is one window per org and re-reading it per project would imply
+        # a per-project value that cannot exist.
+        for project_id in self._project_ids_for(org_id):
+            scope = (
+                None
+                if project_id is None
+                else WorkScope(org_id=org_id, project_id=project_id)
+            )
+            try:
+                with bind_work_scope(scope):
+                    self._sweep_project_data(org_id, ctx.storage, cfg)
+            except WorkScopeError:
+                # A project that vanished between enumeration and binding.
+                # Escalate and keep going: letting this out of the loop would
+                # skip every remaining project's cleanup for one stale id.
+                capture_anomaly(
+                    "lineage.gc.scope_failed", org_id=org_id, project_id=project_id
+                )
+                logger.exception(
+                    "event=lineage_gc_scope_failed org_id=%s project_id=%s",
+                    org_id,
+                    project_id,
+                )
+
+        # Per-org sweeps: invoked unconditionally once per org (the real gate
+        # lives in each enterprise closure). Extracted to keep _gc_tick's
+        # cyclomatic complexity in check and to mirror _run_global_sweeps.
+        self._run_per_org_sweeps(org_id)
+
+    def _project_ids_for(self, org_id: str) -> list[str | None]:
+        """Return the project ids to sweep for ``org_id``.
+
+        Without a registered provider (OSS) this is a single ``None``, which
+        makes ``bind_work_scope`` a no-op and preserves the original single
+        unscoped pass exactly.
+
+        Args:
+            org_id (str): The org being swept this tick.
+
+        Returns:
+            list[str | None]: Project ids, or ``[None]`` when unscoped.
+        """
+        if _project_id_provider_hook is None:
+            return [None]
+        try:
+            project_ids: list[str | None] = list(_project_id_provider_hook(org_id))
+        except Exception:
+            # Enumeration is the whole tick for this org; a failure here must
+            # not silently degrade to an unscoped pass that deletes nothing.
+            capture_anomaly("lineage.gc.project_enumeration_failed", org_id=org_id)
+            logger.exception(
+                "event=lineage_gc_project_enumeration_failed org_id=%s", org_id
+            )
+            return []
+        if not project_ids:
+            # NOT a fallback to one unscoped pass. Under project row-level
+            # policies an unscoped sweep matches nothing anyway, so the fallback
+            # would do no work while re-emitting the very unbound-credential
+            # warning this change exists to clear. Skipping says the same thing
+            # honestly. Mirrors the aggregation capability, which skips an org
+            # with no project to attribute its work to.
+            logger.warning(
+                "event=lineage_gc_no_projects org_id=%s -- skipping; the sweeps "
+                "are project-scoped and this org has no project to bind",
+                org_id,
+            )
+        return project_ids
+
+    def _sweep_project_data(
+        self, org_id: str, storage: BaseStorage, cfg: Config
+    ) -> None:
+        """Run the Class A and Class B sweeps for the bound project.
+
+        Called once per project with that project bound; see ``_sweep_org``.
+
+        Args:
+            org_id (str): Org being swept, for log/anomaly attribution.
+            storage (BaseStorage): The org's storage, already known non-None.
+            cfg (Config): The org config resolved once by ``_sweep_org``.
+        """
         # Class A: profile expiry sweep (requires PII/grace sign-off; gated on
         # lineage_gc.enabled independently of Class B).
         if cfg.lineage_gc.enabled:
             try:
-                expired_tombstoned = ctx.storage.expire_active_profiles(
+                expired_tombstoned = storage.expire_active_profiles(
                     now=int(time.time())
                 )
                 if expired_tombstoned:
@@ -323,7 +441,7 @@ class LineageGCScheduler(ThreadedScheduler):
                 )
                 tombstone_deleted = 0
                 for entity_type in _ENTITY_TYPES:
-                    tombstone_deleted += ctx.storage.gc_expired_tombstones(
+                    tombstone_deleted += storage.gc_expired_tombstones(
                         entity_type=entity_type,
                         older_than_epoch=older_than_epoch,
                     )
@@ -354,7 +472,7 @@ class LineageGCScheduler(ThreadedScheduler):
         ):
             now = int(time.time())
             for method_name, grace, limit in _CLASS_B_SWEEPS:
-                method = getattr(ctx.storage, method_name, None)
+                method = getattr(storage, method_name, None)
                 if method is None:
                     continue
                 try:
@@ -377,11 +495,6 @@ class LineageGCScheduler(ThreadedScheduler):
                         org_id,
                         method_name,
                     )
-
-        # Per-org sweeps: invoked unconditionally once per org (the real gate
-        # lives in each enterprise closure). Extracted to keep _gc_tick's
-        # cyclomatic complexity in check and to mirror _run_global_sweeps.
-        self._run_per_org_sweeps(org_id)
 
     def _gc_tick(self, org_ids: list[str], *, max_workers: int = 1) -> None:
         """Run one GC pass across the given org IDs.
