@@ -165,7 +165,11 @@ def test_no_user_playbook_results_record_one_empty_synchronous_batch() -> None:
     with _search_results([]):
         response = _client().post(
             "/api/search",
-            json={"query": "answer", "user_id": "user-1"},
+            json={
+                "query": "answer",
+                "user_id": "user-1",
+                "request_id": "request-empty-1",
+            },
         )
 
     assert response.status_code == 200, response.text
@@ -283,7 +287,12 @@ def test_direct_user_playbook_search_returns_and_records_exactly_100() -> None:
     with _search_results(playbooks) as reflexio:
         response = _client().post(
             "/api/search_user_playbooks",
-            json={"query": "direct answer", "user_id": "user-1", "top_k": 100},
+            json={
+                "query": "direct answer",
+                "user_id": "user-1",
+                "request_id": "request-cap-1",
+                "top_k": 100,
+            },
         )
 
     assert response.status_code == 200, response.text
@@ -390,3 +399,81 @@ def test_unified_search_accepts_exact_workload_and_identifier_limits() -> None:
 
     assert response.status_code == 200, response.text
     reflexio.unified_search.assert_called_once()
+
+
+@pytest.mark.parametrize("path", ["/api/search", "/api/search_user_playbooks"])
+def test_uncorrelated_retrieval_records_nothing_but_correlated_retrieval_still_does(
+    path: str,
+) -> None:
+    """Both directions, deliberately in one test.
+
+    Exposure is append-only, so an uncorrelated row is unremovable and drags the
+    org's reconstructability ratio down forever. Refusing to write it is the
+    fix -- but a change that stopped writing *everything* would satisfy a
+    one-sided "nothing was recorded" assertion while destroying the ledger, so
+    the correlated direction is pinned in the same test.
+    """
+    recorder = _Recorder()
+    register_service(SEARCH_EXPOSURE_RECORDER, recorder)
+
+    with _search_results([_playbook(11, "First")]):
+        uncorrelated = _client().post(
+            path,
+            json={"query": "diagnose", "user_id": "user-1"},
+        )
+        correlated = _client().post(
+            path,
+            json={
+                "query": "answer",
+                "user_id": "user-1",
+                "request_id": "request-1",
+            },
+        )
+
+    assert uncorrelated.status_code == 200, uncorrelated.text
+    assert correlated.status_code == 200, correlated.text
+    assert [batch.request_id for batch in recorder.batches] == ["request-1"]
+
+
+@pytest.mark.parametrize("correlation", [{"session_id": "session-only-1"}, {}])
+def test_session_only_and_bare_retrieval_agree_with_the_stored_correlation_columns(
+    correlation: dict[str, str],
+) -> None:
+    """``session_id`` alone is still correlation; nothing at all is not.
+
+    ``request_id`` and ``session_id`` are the only correlation columns the
+    ledger persists, and the schema's own ``missing_correlation`` reason fires
+    only when *both* are blank. The guard is that same predicate, so a
+    session-only retrieval must still be recorded.
+    """
+    recorder = _Recorder()
+    register_service(SEARCH_EXPOSURE_RECORDER, recorder)
+
+    with _search_results([_playbook(11, "First")]):
+        response = _client().post(
+            "/api/search_user_playbooks",
+            json={"query": "answer", "user_id": "user-1"} | correlation,
+        )
+
+    assert response.status_code == 200, response.text
+    assert len(recorder.batches) == (1 if correlation else 0)
+
+
+def test_interaction_id_alone_is_not_correlation_and_records_nothing() -> None:
+    """``interaction_id`` is not a ledger column -- it only seasons the event id.
+
+    A batch carrying nothing but an ``interaction_id`` still lands on disk with
+    both correlation columns NULL, so it is exactly the unremovable row this
+    guard exists to prevent.
+    """
+    recorder = _Recorder()
+    register_service(SEARCH_EXPOSURE_RECORDER, recorder)
+
+    with _search_results([_playbook(11, "First")]):
+        response = _client().post(
+            "/api/search",
+            json={"query": "answer", "user_id": "user-1", "interaction_id": 41},
+        )
+
+    assert response.status_code == 200, response.text
+    assert recorder.batches == []

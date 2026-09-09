@@ -86,6 +86,7 @@ class SearchExposureOutcome(StrEnum):
 
     RECORDED = "recorded"
     NO_RECORDER = "no_recorder"
+    UNCORRELATED = "uncorrelated"
 
 
 def _normalize_correlation_id(value: str | None) -> str | None:
@@ -93,15 +94,40 @@ def _normalize_correlation_id(value: str | None) -> str | None:
     return normalized or None
 
 
+def batch_is_uncorrelated(batch: SearchExposureBatch) -> bool:
+    """Return whether the batch carries no persisted correlation handle.
+
+    The two correlation columns the ledger actually stores are ``request_id``
+    and ``session_id``; ``interaction_id`` is *not* a column -- it only seasons
+    the deterministic event id -- so a batch carrying nothing but an
+    ``interaction_id`` still lands on disk with both correlation columns NULL.
+    This predicate is therefore deliberately the schema's own definition of
+    ``missing_correlation`` (see the ``integrity_reasons`` generated column on
+    ``tenant.user_playbook_exposure_events``), not a second, subtly different
+    notion of "correlated" invented here.
+    """
+    return batch.request_id is None and batch.session_id is None
+
+
 def record_search_exposures(batch: SearchExposureBatch) -> SearchExposureOutcome:
     """Synchronously invoke the optional enterprise exposure recorder.
 
-    An absent recorder is a supported configuration -- shared ``create_app()``
-    installs no default, so local/no-auth OSS deployments legitimately persist
-    nothing. It is therefore reported, not raised. Callers that *depend* on the
-    batch reaching the ledger (corpus reconstruction, replay tooling) must
-    inspect the outcome; exposure is append-only, so a batch dropped here can
-    never be backfilled.
+    A batch with neither ``request_id`` nor ``session_id`` is refused before any
+    recorder is consulted. Such a row can never bind a served playbook to a
+    session -- ``request_id`` is the only key the evidence loader can resolve a
+    session and user from, and there is no reverse lookup from a session -- so
+    no reader can ever draw value from it. It is not inert, though: every
+    reconstructability gate counts it in the denominator and never in the
+    numerator, so a single uncorrelated retrieval permanently lowers the org's
+    ratio, and exposure is append-only (``reject_exposure_event_mutation``
+    blocks DELETE), so it can never be taken back.
+
+    An absent recorder is likewise a supported configuration -- shared
+    ``create_app()`` installs no default, so local/no-auth OSS deployments
+    legitimately persist nothing. It is therefore reported, not raised. Callers
+    that *depend* on the batch reaching the ledger (corpus reconstruction,
+    replay tooling) must inspect the outcome; exposure is append-only, so a
+    batch dropped here can never be backfilled.
 
     A registered recorder that raises still propagates unchanged: enterprise
     search routes fail closed on recorder failure.
@@ -111,9 +137,12 @@ def record_search_exposures(batch: SearchExposureBatch) -> SearchExposureOutcome
 
     Returns:
         SearchExposureOutcome: ``RECORDED`` when a registered recorder accepted
-        the batch, ``NO_RECORDER`` when none was registered and nothing was
-        persisted.
+        the batch, ``UNCORRELATED`` when the batch carried no correlation and
+        was refused, and ``NO_RECORDER`` when none was registered and nothing
+        was persisted.
     """
+    if batch_is_uncorrelated(batch):
+        return SearchExposureOutcome.UNCORRELATED
     recorder = get_service(SEARCH_EXPOSURE_RECORDER)
     if recorder is None:
         return SearchExposureOutcome.NO_RECORDER
@@ -206,6 +235,7 @@ __all__ = [
     "SearchExposureOutcome",
     "SearchExposureRecorder",
     "UserPlaybookExposureEvent",
+    "batch_is_uncorrelated",
     "build_user_playbook_exposure_event",
     "record_search_exposures",
     "user_playbook_full_version_fingerprint",

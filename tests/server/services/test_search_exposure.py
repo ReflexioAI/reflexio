@@ -354,3 +354,60 @@ def test_recorder_failure_still_propagates_rather_than_reporting_absence() -> No
 
     with pytest.raises(RuntimeError, match="ledger unavailable"):
         record_search_exposures(_batch(_playbook()))
+
+
+def test_uncorrelated_batch_is_refused_before_any_recorder_is_consulted() -> None:
+    """The unremovable row is never handed to the ledger in the first place.
+
+    ``request_id`` is the only key the evidence loader can resolve a session and
+    a user from, and there is no reverse lookup from a session, so a batch with
+    neither can never bind a served playbook to anything. It is not harmless:
+    every reconstructability gate counts it in the denominator and never in the
+    numerator, and exposure is append-only, so the damage cannot be undone.
+    """
+    recorder = _CollectingRecorder()
+    register_service(SEARCH_EXPOSURE_RECORDER, recorder)
+
+    outcome = record_search_exposures(
+        _batch(_playbook(), request_id=None, session_id=None, interaction_id=41)
+    )
+
+    assert outcome is SearchExposureOutcome.UNCORRELATED
+    assert recorder.batches == []
+
+
+def test_blank_correlation_strings_are_refused_like_absent_ones() -> None:
+    """Normalization already collapses blanks to ``None``; the guard follows it."""
+    recorder = _CollectingRecorder()
+    register_service(SEARCH_EXPOSURE_RECORDER, recorder)
+
+    outcome = record_search_exposures(
+        _batch(_playbook(), request_id="   ", session_id="")
+    )
+
+    assert outcome is SearchExposureOutcome.UNCORRELATED
+    assert recorder.batches == []
+
+
+@pytest.mark.parametrize(
+    ("request_id", "session_id"),
+    [("request-1", "session-1"), ("request-1", None), (None, "session-1")],
+)
+def test_any_single_correlation_handle_is_still_recorded(
+    request_id: str | None, session_id: str | None
+) -> None:
+    """The other direction: the guard must not swallow real evidence.
+
+    A guard that refused everything would pass a one-sided "nothing recorded"
+    assertion while emptying the ledger. Either stored correlation column on its
+    own keeps the batch, matching the schema's ``missing_correlation`` reason,
+    which fires only when both are blank.
+    """
+    recorder = _CollectingRecorder()
+    register_service(SEARCH_EXPOSURE_RECORDER, recorder)
+    batch = _batch(_playbook(), request_id=request_id, session_id=session_id)
+
+    outcome = record_search_exposures(batch)
+
+    assert outcome is SearchExposureOutcome.RECORDED
+    assert recorder.batches == [batch]
