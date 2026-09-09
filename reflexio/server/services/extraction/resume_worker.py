@@ -84,6 +84,7 @@ from reflexio.server.services.storage.storage_base import (
 from reflexio.server.services.tagging.tagging_scheduler import schedule_tagging
 from reflexio.server.site_var.site_var_manager import SiteVarManager
 from reflexio.server.usage_metrics import UsageEventDeliveryStatus
+from reflexio.server.work_scope import WorkScope, bind_work_scope
 
 logger = logging.getLogger(__name__)
 
@@ -301,7 +302,39 @@ class ExtractionResumeWorker:
         )
         return replace(run, binding=replace(run.binding, user_id=user_id))
 
+    def _scope_for(self, run: AgentRunRecord) -> WorkScope:
+        """The tenant scope this run's writes must be attributed to.
+
+        Taken from the RUN ROW, not from ambient context: the scheduler resumes
+        work long after the request that created it returned, so there is no
+        request-scoped project to inherit. ``_agent_runs.project_id`` is stamped
+        at insert time by the storage chokepoint, which makes the row itself the
+        carrier -- the same reasoning ``work_scope`` records for job payloads.
+
+        A run whose ``project_id`` is NULL predates the project write path. The
+        provider REFUSES that rather than defaulting to the org's default
+        project, and the run is escalated and skipped. Such rows are fixed as
+        DATA, by the existing corpus-derived backfill (enterprise's
+        ``backfill_project_id_tenant_rows``, which already covers ``_agent_runs``
+        and its children) -- not by guessing a project at run time.
+
+        Args:
+            run (AgentRunRecord): The claimed run.
+
+        Returns:
+            WorkScope: Scope to bind for the duration of this run's processing.
+        """
+        return WorkScope(org_id=self.request_context.org_id, project_id=run.project_id)
+
     def run_once(self) -> AgentRunRecord | None:
+        """Claim one run and process it under the project that owns it.
+
+        The two claims are deliberately OUTSIDE the scope. They are org-keyed
+        RPCs (``claim_ready_agent_run`` / ``claim_finalization_failed_agent_run``
+        select on ``org_id`` alone) and run as SECURITY DEFINER, so they neither
+        consult nor need a bound project. Everything downstream of a claim
+        writes project-scoped tenant tables and does.
+        """
         config = self.request_context.configurator.get_config()
         pending_config = config.pending_tool_call_config
         finalization_retry = self.storage.claim_finalization_failed_agent_run(
@@ -310,7 +343,8 @@ class ExtractionResumeWorker:
             claim_ttl_seconds=pending_config.resume_claim_ttl_seconds,
         )
         if finalization_retry is not None:
-            return self._retry_finalization(finalization_retry)
+            with bind_work_scope(self._scope_for(finalization_retry)):
+                return self._retry_finalization(finalization_retry)
 
         run = self.storage.claim_ready_agent_run(
             org_id=self.request_context.org_id,
@@ -320,6 +354,18 @@ class ExtractionResumeWorker:
         if run is None:
             return None
 
+        with bind_work_scope(self._scope_for(run)):
+            return self._process_claimed_run(run, pending_config)
+
+    def _process_claimed_run(
+        self, run: AgentRunRecord, pending_config: Any
+    ) -> AgentRunRecord | None:
+        """Resume and finalize one claimed run. Runs under the run's project.
+
+        Body moved verbatim out of ``run_once`` so a single ``with`` can cover
+        every tenant write it makes -- the resume, the finalization, and each of
+        the four ``update_agent_run_status`` exit paths.
+        """
         if run.max_steps_remaining is not None and run.max_steps_remaining <= 0:
             return self.storage.update_agent_run_status(
                 run.id,

@@ -91,6 +91,18 @@ class AgentRunRecord:
     updated_at: datetime | None = None
     expires_at: datetime | None = None
     last_error: str | None = None
+    #: Tenant project this run belongs to, read back from the row.
+    #:
+    #: READ-SIDE ONLY. Nothing writes it from here: the storage chokepoint
+    #: stamps ``project_id`` on insert, and a second writer would collide with
+    #: it. The field exists so a background worker resuming this run long after
+    #: its request returned can recover the scope from the ROW -- see
+    #: ``ExtractionResumeWorker._scope_for``.
+    #:
+    #: ``None`` in OSS (no projects) and on rows written before the project
+    #: write path shipped. Enterprise refuses to process the latter rather than
+    #: guessing a project; they are fixed by backfill, not at run time.
+    project_id: str | None = None
 
 
 @dataclass(frozen=True)
