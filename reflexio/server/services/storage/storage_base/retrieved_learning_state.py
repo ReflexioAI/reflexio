@@ -104,8 +104,27 @@ def build_retrieved_learning_state_key(user_id: str, session_id: str) -> str:
     """Build the ``_operation_state`` key for one session's evaluation state.
 
     Length-prefixed (following the grade_on_demand cache-key precedent) so a
-    crafted user/session pair cannot collide with another pair. Org scoping is
-    unnecessary: ``_operation_state`` is already org-scoped on every backend.
+    crafted user/session pair cannot collide with another pair.
+
+    The key carries neither the org nor the project, and both omissions are
+    deliberate because the isolation is STRUCTURAL rather than encoded in the
+    string:
+
+    * org -- every org has its own storage (a schema on the Postgres/Supabase
+      backends, its own file on SQLite), so two orgs' keys never meet.
+    * project -- on the enterprise backends ``_operation_state`` carries a
+      ``project_id`` column with a row-level policy over it and a
+      ``UNIQUE (project_id, service_name)`` key, so two projects hold separate
+      rows for one key by construction. SQLite is single-tenant and has no
+      such column.
+
+    This paragraph previously said only "org scoping is unnecessary:
+    ``_operation_state`` is already org-scoped on every backend", which was
+    true but incomplete once the table became project-scoped, and read as
+    though the key were the only thing keeping tenants apart. Do NOT add an org
+    or project component here to "make it safe": that would denormalise
+    ownership into a string, where it can disagree with the column the policy
+    actually filters on.
 
     Args:
         user_id (str): Session owner.
