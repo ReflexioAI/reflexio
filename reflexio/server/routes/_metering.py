@@ -12,6 +12,7 @@ import time
 from fastapi import Request
 
 from reflexio.server.cache import reflexio_cache
+from reflexio.server.error_reporting import capture_anomaly
 
 logger = logging.getLogger(__name__)
 
@@ -62,8 +63,21 @@ def _meter_applied_learnings(
         )
         return True
     except Exception:
+        # ALARM, not just a log line. This is a billable event being dropped, and
+        # the drop is otherwise invisible: the caller ignores the return value,
+        # and `_worker_loop`'s own `search.metering.job_failed` capture can never
+        # fire because this handler swallows first. Note the asymmetry that makes
+        # it dangerous -- `_meter_search_request` below performs NO config lookup,
+        # so a config-store blip drops `learning_applied` while `search_request`
+        # keeps flowing, and the two meters silently diverge.
         logger.warning(
             "applied-learnings metering failed for org %s", org_id, exc_info=True
+        )
+        capture_anomaly(
+            "search.metering.emit_failed",
+            level="error",
+            meter="applied_learnings",
+            org_id=org_id,
         )
         return False
 
@@ -96,7 +110,15 @@ def _meter_search_request(
         )
         return True
     except Exception:
+        # Same reasoning as `_meter_applied_learnings`: a swallowed emit is lost
+        # billable usage, so it must reach the error reporter and not only a log.
         logger.warning(
             "search-request metering failed for org %s", org_id, exc_info=True
+        )
+        capture_anomaly(
+            "search.metering.emit_failed",
+            level="error",
+            meter="search_requests",
+            org_id=org_id,
         )
         return False

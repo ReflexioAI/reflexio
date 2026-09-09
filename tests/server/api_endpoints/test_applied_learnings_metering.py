@@ -261,9 +261,20 @@ def test_get_billing_gate_override_seam() -> None:
 
 
 def test_metering_failure_does_not_break_search_response() -> None:
-    """A get_reflexio error inside the metering helper must not turn a 200 into a 500."""
+    """A get_reflexio error inside the metering helper must not turn a 200 into a 500.
+
+    It must ALSO raise an alarm. A dropped emit is lost billable usage, and it is
+    otherwise undetectable: the caller ignores the helper's return value, and
+    ``_worker_loop``'s own ``search.metering.job_failed`` capture can never fire
+    because this handler swallows the exception first. A ``logger.warning`` does
+    not close that gap -- the enterprise Sentry integration is wired at
+    ``event_level=logging.ERROR`` with Sentry Logs off, so a warning produces no
+    event at all, and searching for one returns a false clean whether or not the
+    drop is happening.
+    """
     events = _capture()
     profiles = [_make_profile_view("u1")]
+    anomalies: list[tuple[str, dict[str, object]]] = []
     try:
         # The unified_search mock is wired via _patch_unified_search (first get_reflexio call).
         # Inside the helper, get_reflexio is called a second time; we make *that* call's
@@ -285,9 +296,15 @@ def test_metering_failure_does_not_break_search_response() -> None:
             RuntimeError("boom"),
         ]
 
-        with patch(
-            "reflexio.server.cache.reflexio_cache.get_reflexio",
-            return_value=mock_reflexio_search,
+        with (
+            patch(
+                "reflexio.server.cache.reflexio_cache.get_reflexio",
+                return_value=mock_reflexio_search,
+            ),
+            patch(
+                "reflexio.server.routes._metering.capture_anomaly",
+                side_effect=lambda name, **kw: anomalies.append((name, kw)),
+            ),
         ):
             resp = _client("production_agent").post(
                 "/api/search", json={"query": "x", "user_id": "u1"}
@@ -297,8 +314,13 @@ def test_metering_failure_does_not_break_search_response() -> None:
     finally:
         configure_usage_event_recorder(None)
 
-    # Metering failed silently — no learning_applied event should have been emitted.
+    # The emit really was dropped...
     assert [e for e in events if e.event_name == "learning_applied"] == []
+    # ...but NOT silently. This is the half that used to be missing, and its
+    # absence is why a revenue-affecting drop could run indefinitely unnoticed.
+    assert [name for name, _ in anomalies] == ["search.metering.emit_failed"]
+    assert anomalies[0][1]["meter"] == "applied_learnings"
+    assert anomalies[0][1]["level"] == "error"
 
 
 def test_unified_search_response_does_not_wait_for_metering_database_work(
