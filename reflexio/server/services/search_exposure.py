@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sized
 from dataclasses import dataclass, field
+from enum import StrEnum
 from hashlib import sha256
 from secrets import token_hex
 from typing import Protocol
@@ -80,16 +81,44 @@ SEARCH_EXPOSURE_RECORDER = ServiceKey[SearchExposureRecorder](
 )
 
 
+class SearchExposureOutcome(StrEnum):
+    """Whether a batch actually reached a durable recorder."""
+
+    RECORDED = "recorded"
+    NO_RECORDER = "no_recorder"
+
+
 def _normalize_correlation_id(value: str | None) -> str | None:
     normalized = value.strip() if value is not None else ""
     return normalized or None
 
 
-def record_search_exposures(batch: SearchExposureBatch) -> None:
-    """Synchronously invoke the optional enterprise exposure recorder."""
+def record_search_exposures(batch: SearchExposureBatch) -> SearchExposureOutcome:
+    """Synchronously invoke the optional enterprise exposure recorder.
+
+    An absent recorder is a supported configuration -- shared ``create_app()``
+    installs no default, so local/no-auth OSS deployments legitimately persist
+    nothing. It is therefore reported, not raised. Callers that *depend* on the
+    batch reaching the ledger (corpus reconstruction, replay tooling) must
+    inspect the outcome; exposure is append-only, so a batch dropped here can
+    never be backfilled.
+
+    A registered recorder that raises still propagates unchanged: enterprise
+    search routes fail closed on recorder failure.
+
+    Args:
+        batch (SearchExposureBatch): The final served user-playbook set.
+
+    Returns:
+        SearchExposureOutcome: ``RECORDED`` when a registered recorder accepted
+        the batch, ``NO_RECORDER`` when none was registered and nothing was
+        persisted.
+    """
     recorder = get_service(SEARCH_EXPOSURE_RECORDER)
-    if recorder is not None:
-        recorder.record(batch)
+    if recorder is None:
+        return SearchExposureOutcome.NO_RECORDER
+    recorder.record(batch)
+    return SearchExposureOutcome.RECORDED
 
 
 def validate_exposure_batch_size(events: Sized) -> None:
@@ -174,6 +203,7 @@ __all__ = [
     "SEARCH_EXPOSURE_RECORDER",
     "ExposureEventWriteResult",
     "SearchExposureBatch",
+    "SearchExposureOutcome",
     "SearchExposureRecorder",
     "UserPlaybookExposureEvent",
     "build_user_playbook_exposure_event",

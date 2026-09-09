@@ -252,6 +252,10 @@ def search_user_playbooks_endpoint(
             experiment=assignment,
         )
         if caller_type == "production_agent" and response.user_playbooks:
+            # Outcome deliberately ignored: an unregistered recorder is a
+            # supported OSS/no-auth configuration, and this route cannot
+            # tell that apart from an enterprise misconfiguration. Asserting
+            # here would turn a supported deployment's search into a 500.
             record_search_exposures(
                 SearchExposureBatch(
                     org_id=org_id,
@@ -428,6 +432,10 @@ def unified_search_endpoint(
                 experiment=assignment,
             )
         if caller_type == "production_agent":
+            # Outcome deliberately ignored: an unregistered recorder is a
+            # supported OSS/no-auth configuration, and this route cannot
+            # tell that apart from an enterprise misconfiguration. Asserting
+            # here would turn a supported deployment's search into a 500.
             record_search_exposures(
                 SearchExposureBatch(
                     org_id=org_id,
