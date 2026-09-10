@@ -267,10 +267,10 @@ def test_metering_failure_does_not_break_search_response() -> None:
     otherwise undetectable: the caller ignores the helper's return value, and
     ``_worker_loop``'s own ``search.metering.job_failed`` capture can never fire
     because this handler swallows the exception first. A ``logger.warning`` does
-    not close that gap -- the enterprise Sentry integration is wired at
-    ``event_level=logging.ERROR`` with Sentry Logs off, so a warning produces no
-    event at all, and searching for one returns a false clean whether or not the
-    drop is happening.
+    not close that gap -- downstream error reporting is wired at
+    ``logging.ERROR`` with log forwarding off, so a warning produces no event at
+    all, and searching for one returns a false clean whether or not the drop is
+    happening.
     """
     events = _capture()
     profiles = [_make_profile_view("u1")]
