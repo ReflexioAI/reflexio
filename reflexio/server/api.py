@@ -504,8 +504,7 @@ def create_app(  # noqa: C901
                     lambda org_id: RequestContext(org_id=org_id),
                     bootstrap_org_id=bootstrap_org_id,
                 )
-                # Durable learning drains the learning_jobs queue per org. Gated on
-                # REFLEXIO_DURABLE_LEARNING_QUEUE; the default provider discovers
+                # Durable learning drains per-user windows. The default provider discovers
                 # orgs-with-work via the bootstrap storage (single-ref). A deployment
                 # may inject its own discovery via ``durable_org_ids_provider`` (e.g.
                 # enterprise cross-ref fan-out); when None the single-ref default runs.
@@ -586,11 +585,6 @@ def create_app(  # noqa: C901
             ):
                 if sched is not None:
                     sched.stop()
-            from reflexio.server.services.publish_learning_worker import (
-                stop_publish_learning_worker,
-            )
-
-            stop_publish_learning_worker(timeout=5.0)
 
     app = FastAPI(docs_url="/docs", lifespan=lifespan)
     app.add_exception_handler(

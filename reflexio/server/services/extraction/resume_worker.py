@@ -281,13 +281,13 @@ class ExtractionResumeWorker:
         self.worker_id = worker_id or f"resume_worker_{uuid.uuid4().hex}"
 
     def drain(self, *, max_runs: int = 10) -> int:
-        """Resume up to ``max_runs`` ready rows for this request context."""
-        resumed = 0
+        """Inspect up to ``max_runs`` claims, including users currently busy."""
+        inspected = 0
         for _ in range(max_runs):
             if self.run_once() is None:
                 break
-            resumed += 1
-        return resumed
+            inspected += 1
+        return inspected
 
     def _with_resolved_playbook_user_id(self, run: AgentRunRecord) -> AgentRunRecord:
         """Return a playbook run with a proven owner for legacy nullable rows."""
@@ -342,20 +342,101 @@ class ExtractionResumeWorker:
             worker_id=self.worker_id,
             claim_ttl_seconds=pending_config.resume_claim_ttl_seconds,
         )
-        if finalization_retry is not None:
-            with bind_work_scope(self._scope_for(finalization_retry)):
-                return self._retry_finalization(finalization_retry)
+        from reflexio.server.services.durable_learning.user_lease import (
+            UserLeaseBusyError,
+            user_extraction_lease,
+        )
 
-        run = self.storage.claim_ready_agent_run(
+        run = finalization_retry or self.storage.claim_ready_agent_run(
             org_id=self.request_context.org_id,
             worker_id=self.worker_id,
             claim_ttl_seconds=pending_config.resume_claim_ttl_seconds,
         )
         if run is None:
             return None
-
+        expected_status = (
+            AgentRunStatus.FINALIZING if finalization_retry else AgentRunStatus.RESUMING
+        )
         with bind_work_scope(self._scope_for(run)):
-            return self._process_claimed_run(run, pending_config)
+            run = self._with_resolved_playbook_user_id(run)
+            try:
+                with user_extraction_lease(
+                    self.storage,
+                    run.binding.user_id or "",
+                    max_wait_seconds=min(
+                        5.0, pending_config.resume_claim_ttl_seconds / 2
+                    ),
+                ):
+                    latest = self.storage.get_agent_run(run.id)
+                    if (
+                        latest is None
+                        or latest.status != expected_status
+                        or latest.claimed_by != run.claimed_by
+                        or latest.claimed_at != run.claimed_at
+                    ):
+                        return latest or run
+                    source_ids = set(latest.binding.source_interaction_ids)
+                    if source_ids and source_ids != {
+                        interaction.interaction_id
+                        for interaction in self.storage.get_interactions_by_ids(
+                            list(source_ids)
+                        )
+                    }:
+                        # Never revive saved output whose source was explicitly erased.
+                        return (
+                            self._update_claimed_status(
+                                latest.id,
+                                AgentRunStatus.CANCELLED,
+                                last_error="source_interactions_erased",
+                            )
+                            or latest
+                        )
+                    if finalization_retry:
+                        return self._retry_finalization(latest) or latest
+                    from reflexio.server.services.durable_learning.user_lease import (
+                        fence_explicit_extraction,
+                    )
+
+                    if latest.claimed_by is None or latest.claimed_at is None:
+                        raise ResumeWorkerError("Resume claim has no owner identity")
+                    with self.storage.commit_scope():
+                        fence_explicit_extraction(self.storage)
+                        attempts = self.storage.begin_extraction_resume(
+                            latest.id, latest.claimed_by, latest.claimed_at.isoformat()
+                        )
+                    if attempts is None:
+                        return latest
+                    return (
+                        self._process_claimed_run(
+                            replace(latest, resume_attempts=attempts), pending_config
+                        )
+                        or latest
+                    )
+            except UserLeaseBusyError:
+                # The run remains durably claimed and can be reclaimed at expiry.
+                # Never reset a claim that another worker may now own. Return
+                # the inspected row so drain can move on to another user.
+                return run
+
+    def _update_claimed_status(
+        self, run_id: str, status: AgentRunStatus, **kwargs: Any
+    ) -> AgentRunRecord | None:
+        from reflexio.server.services.durable_learning.user_lease import (
+            fence_explicit_extraction,
+        )
+
+        with self.storage.commit_scope():
+            fence_explicit_extraction(self.storage)
+            return self.storage.update_agent_run_status(
+                run_id,
+                status,
+                expected_statuses=(
+                    AgentRunStatus.RESUMING,
+                    AgentRunStatus.AGENT_COMPLETED,
+                    AgentRunStatus.FINALIZING,
+                ),
+                **kwargs,
+            )
 
     def _process_claimed_run(
         self, run: AgentRunRecord, pending_config: Any
@@ -367,7 +448,7 @@ class ExtractionResumeWorker:
         the four ``update_agent_run_status`` exit paths.
         """
         if run.max_steps_remaining is not None and run.max_steps_remaining <= 0:
-            return self.storage.update_agent_run_status(
+            return self._update_claimed_status(
                 run.id,
                 AgentRunStatus.FAILED,
                 last_error="Resumable extraction max-step budget exhausted",
@@ -400,7 +481,7 @@ class ExtractionResumeWorker:
                 if run.resume_attempts >= pending_config.max_resume_attempts
                 else AgentRunStatus.RESUME_READY
             )
-            return self.storage.update_agent_run_status(
+            return self._update_claimed_status(
                 run.id,
                 failed_status,
                 next_resume_at=_next_retry_at(run.resume_attempts),
@@ -408,7 +489,8 @@ class ExtractionResumeWorker:
             )
 
         try:
-            self.storage.update_agent_run_status(run.id, AgentRunStatus.FINALIZING)
+            if self._update_claimed_status(run.id, AgentRunStatus.FINALIZING) is None:
+                return None
             result = self._finalize_items(run, items, model_provenance=model_provenance)
             if result.won_receipt:
                 self._schedule_finalized_tagging(run)
@@ -418,7 +500,7 @@ class ExtractionResumeWorker:
                 if pending_tool_call_ids
                 else AgentRunStatus.FINALIZED
             )
-            return self.storage.update_agent_run_status(
+            return self._update_claimed_status(
                 run.id,
                 finalized_status,
                 pending_tool_call_ids=pending_tool_call_ids,
@@ -441,7 +523,7 @@ class ExtractionResumeWorker:
                 next_attempt_count=next_attempt_count,
                 max_finalization_attempts=pending_config.max_finalization_attempts,
             )
-            return self.storage.update_agent_run_status(
+            return self._update_claimed_status(
                 run.id,
                 failed_status,
                 next_resume_at=_next_retry_at(next_attempt_count),
@@ -466,7 +548,7 @@ class ExtractionResumeWorker:
                 if pending_tool_call_ids
                 else AgentRunStatus.FINALIZED
             )
-            return self.storage.update_agent_run_status(
+            return self._update_claimed_status(
                 run.id,
                 finalized_status,
                 pending_tool_call_ids=pending_tool_call_ids,
@@ -489,7 +571,7 @@ class ExtractionResumeWorker:
                 next_attempt_count=next_attempt_count,
                 max_finalization_attempts=pending_config.max_finalization_attempts,
             )
-            return self.storage.update_agent_run_status(
+            return self._update_claimed_status(
                 run.id,
                 failed_status,
                 next_resume_at=_next_retry_at(next_attempt_count),

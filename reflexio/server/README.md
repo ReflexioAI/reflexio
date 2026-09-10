@@ -38,7 +38,7 @@ Description: FastAPI backend server that processes user interactions to generate
 - **Endpoint Helpers**: `api_endpoints/` - Shared handlers/helpers plus `RequestContext` used by route modules
 - **Extension Registry**: `extensions.py` - Capability and service registry for optional OSS/enterprise integrations
 - **Core Service**: `services/generation_service.py` - Main orchestrator
-- **Durable Learning**: `services/durable_learning/` - background queue worker for deferred post-publish extraction
+- **Durable Learning**: `services/durable_learning/` - durable sliding-window admission, scheduling and extraction
 
 ## Cache
 
@@ -214,7 +214,7 @@ Access: `SiteVarManager().get_site_var(key)` for raw values, `feature_flags.is_f
 - **Profile memory**: `profile/` extracts, deduplicates, and applies user profile updates.
 - **Playbook memory**: `playbook/` extracts and consolidates user playbooks, durably schedules bounded same-version aggregation, and reconstructs aggregation change logs from lineage.
 - **Evaluation**: `agent_success_evaluation/service.py`, `agent_success_evaluation/runner.py`, `agent_success_evaluation/scheduler.py`, `agent_success_evaluation/components/evaluator.py`, `shadow_comparison/`, and `evaluation_overview/` handle session grading, per-turn shadow verdicts, regeneration jobs, and dashboard-facing rollups.
-- **Durable learning queue**: `durable_learning/scheduler.py` and `durable_learning/worker.py` drain `learning_jobs` after deferred publishes and report coverage through `GET /api/learning_status`.
+- **Durable learning queue**: `durable_learning/scheduler.py` and `durable_learning/worker.py` drain configured windows from admitted streams and report cursor coverage through `GET /api/learning_status`.
 - **Async clarification**: `extraction/` manages resumable agent runs, pending tool calls, and prior-answer search.
 - **Search preparation**: `pre_retrieval/` and `unified_search_service.py` handle query reformulation, document expansion, embeddings, and cross-entity search orchestration.
 - **Retrieval experiments**: `retrieval_experiment.py` owns deterministic organization/experiment/user assignment, publish-attribution validation, and session-outcome metrics with user-clustered confidence intervals. Search routes bypass retrieval for holdout but return assignment metadata; publish persists only the experiment ID and assigned arm.
@@ -228,17 +228,14 @@ Access: `SiteVarManager().get_site_var(key)` for raw values, `feature_flags.is_f
 
 **File**: `generation_service.py` - GenerationService
 
-Main orchestrator flow:
-1. Save interactions to storage
-2. Run ProfileGenerationService, PlaybookGenerationService in parallel (ThreadPoolExecutor, 2 workers)
-3. Schedule deferred agent success evaluation via `GroupEvaluationScheduler` when `session_id` is present (10 min delay after last request in session)
+Automatic publish flow:
+1. Prepare embeddings, then atomically admit interactions and wake `(org_id, user_id)` work through `durable_learning/admission.py`.
+2. Background workers extract configured windows and commit outputs, cursor coverage and effect receipts under a renewable user lease.
+3. Schedule deferred agent success evaluation when `session_id` is present.
 
-**Timeout Protection**: Two-layer timeout strategy:
-- **Service level**: `GENERATION_SERVICE_TIMEOUT_SECONDS = 600` (10 min) — outer timeout for each parallel service
-- **Extractor level**: `EXTRACTOR_TIMEOUT_SECONDS = 300` (5 min) — per-extractor safety net in `base_generation_service.py`
-- If one service/extractor times out, others continue unaffected
-
-**Stride Size Processing**: Each extractor independently checks if it should run based on its configured stride_size size and tracks its own operation state.
+`generation_service.py` also owns manual generation. Manual and resumed extraction
+share the automatic worker's user lease. Provider retry/fallback remains in the
+existing extractor stack; HTTP waiting does not own an extraction slot.
 
 Called by API endpoints via `Reflexio`
 
@@ -438,11 +435,20 @@ Key files:
 **Directory**: `services/durable_learning/`
 
 Key files:
-- `scheduler.py`: `DurableLearningScheduler` plus `maybe_start_durable_learning()`; starts only when `REFLEXIO_DURABLE_LEARNING_QUEUE` is truthy and polls orgs with actionable queue rows.
-- `worker.py`: `DurableLearningWorker`; claims leased jobs, reloads the persisted request, then splits each job into `compute_deferred_learning()` (LLM extraction + dedup + embeddings, **no** writer transaction held) → `persist_deferred_learning()` + fenced `complete_learning_job()` inside one short `storage.commit_scope()` → `emit_deferred_learning_side_effects()` post-commit (billing / telemetry / tagging / lock release).
-- `services/storage/storage_base/_learning_jobs.py`: `LearningJobStoreABC`, queue status types, coverage-based request status, and the direct-storage contract implemented by each backend.
+- `admission.py`: Atomic publish admission and eligibility snapshots.
+- `scheduler.py` / `worker.py`: Always-on discovery, bounded worker turns and renewable user leases.
+- `window_executor.py` / `window_codec.py`: Model execution, saved outcomes and frozen window policies.
+- `user_lease.py`: Shared ownership for automatic, manual and resumed extraction.
+- `waiting.py` / `local.py`: Bounded HTTP coverage waits and standalone-library recovery.
+- `services/storage/storage_base/_extraction_stream.py`: Shared admission/cursor/window state machine; SQLite and enterprise PostgreSQL supply backend adapters.
 
-**Pattern**: `POST /api/publish_interaction` returns immediately when `wait_for_response=false`; callers use the returned `request_id` with `GET /api/learning_status`. Queue workers run the LLM compute **outside** any writer transaction; only the persist half + the fenced `complete_learning_job()` run inside `storage.commit_scope()`, and must raise/rollback if `complete_learning_job()` returns 0 because another worker stole the lease.
+**Pattern**: Success follows durable admission. Workers consume the first W eligible
+interactions, then S new inputs per window, independently of request boundaries.
+Model calls run outside writer transactions; outputs, cursor advancement and effect
+receipts commit together under a lease fence. Incomplete tails wait for input or a
+force barrier. Billing/finalization retry durably; derived dispatch remains best
+effort. `GET /api/learning_status` reads required cursor coverage. Legacy
+`_learning_jobs.py` remains for cutover reconciliation, not automatic extraction.
 
 ### Async Extraction
 

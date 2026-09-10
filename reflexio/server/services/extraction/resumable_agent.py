@@ -226,6 +226,9 @@ def run_resumable_extraction_agent(
         agent_context=agent_context,
         output_schema_name=output_schema.__name__,
     )
+    window_id = getattr(service_config, "extraction_window_id", None)
+    if window_id is not None:
+        run = replace(run, id=f"window:{window_id}")
     extra_tools: list[Tool] = []
     extra_tool_context = None
     if pending_tools_active and pending_config is not None:
@@ -302,7 +305,36 @@ class ResumableExtractionAgent:
                 else min(run.max_steps_remaining, self.max_steps)
             ),
         )
-        self.storage.create_agent_run(run)
+        existing = (
+            self.storage.get_agent_run(run.id) if run.id.startswith("window:") else None
+        )
+        if existing is not None:
+            if existing.binding != run.binding:
+                raise RuntimeError("Extraction window agent binding changed")
+            if existing.committed_output is not None:
+                payload, provenance = decode_committed_output(existing.committed_output)
+                return AgentRunResult(
+                    run_id=existing.id,
+                    output=output_schema.model_validate(payload),
+                    pending_tool_call_ids=existing.pending_tool_call_ids,
+                    messages=[],
+                    trace=ToolLoopTrace.model_validate(
+                        existing.committed_output.get("trace", {"finished": True})
+                    ),
+                    finished_reason="structured_output",
+                    model_provenance=provenance,
+                )
+            if existing.status not in (AgentRunStatus.RUNNING, AgentRunStatus.FAILED):
+                raise RuntimeError("Extraction window agent awaits resolution")
+            # No durable output exists: a crash may require repeating a remote
+            # call. Reuse its stable run identity; the first saved output wins.
+            self.storage.update_agent_run_status(
+                run.id,
+                AgentRunStatus.RUNNING,
+                expected_statuses=(AgentRunStatus.RUNNING, AgentRunStatus.FAILED),
+            )
+        else:
+            self.storage.create_agent_run(run)
         logger.info(
             "event=extraction_agent_started org_id=%s user_id=%s extractor_kind=%s "
             "run_id=%s request_id=%s",
@@ -418,6 +450,8 @@ class ResumableExtractionAgent:
             if output is not None
             else None
         )
+        if committed_output is not None:
+            committed_output["trace"] = result.trace.model_dump(mode="json")
         active_statuses = (AgentRunStatus.RUNNING, AgentRunStatus.RESUMING)
         if (
             result.finished_reason == "structured_output"

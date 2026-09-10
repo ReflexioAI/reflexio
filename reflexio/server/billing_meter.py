@@ -50,6 +50,9 @@ def record_extraction_tokens(
     pipeline: str | None = None,
     request_id: str | None = None,
     session_id: str | None = None,
+    event_key: str | None = None,
+    strict: bool = False,
+    created_at: float | None = None,
 ) -> None:
     """Emit the Learning cost facet — call only when extraction fired.
 
@@ -71,14 +74,15 @@ def record_extraction_tokens(
     """
     if billing_input_tokens <= 0:
         return
-    record_usage_event(
+    recorder = record_usage_event_strict if strict else record_usage_event
+    recorder(
         org_id=org_id,
         event_name="extraction_tokens",
         event_category="learning",
         pipeline=pipeline,
         request_id=request_id,
         session_id=session_id,
-        event_key=f"tok:{uuid.uuid4()}",
+        event_key=event_key or f"tok:{uuid.uuid4()}",
         count_value=billing_input_tokens,
         prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens,
@@ -86,6 +90,7 @@ def record_extraction_tokens(
         platform_llm=platform_llm,
         platform_storage=platform_storage,
         caller_type=_INTERNAL,
+        created_at=created_at,
     )
 
 

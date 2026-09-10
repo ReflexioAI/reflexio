@@ -1,7 +1,7 @@
 import datetime
 import tempfile
 from datetime import UTC
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 from pydantic import ValidationError
@@ -13,8 +13,14 @@ from reflexio.models.api_schema.service_schemas import (
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 from reflexio.server.services.generation_service import GenerationService
-from reflexio.server.services.playbook.service import PlaybookGenerationService
-from reflexio.server.services.profile.service import ProfileGenerationService
+
+
+@pytest.fixture(autouse=True)
+def stop_background_scheduler(monkeypatch):
+    monkeypatch.setattr(
+        "reflexio.server.services.durable_learning.local.ensure_local_extraction",
+        lambda _: None,
+    )
 
 
 @pytest.fixture
@@ -71,7 +77,7 @@ def test_publish_request_with_session_id(mock_llm_responses):
         )
 
         # Request should succeed
-        generation_service.run(request)
+        generation_service.run(request, defer_learning=True)
 
 
 def test_publish_request_honors_caller_request_id(mock_llm_responses):
@@ -100,58 +106,13 @@ def test_publish_request_honors_caller_request_id(mock_llm_responses):
             session_id=session_id,
         )
 
-        result = generation_service.run(request)
+        result = generation_service.run(request, defer_learning=True)
 
         assert result.request_id == request_id
         assert generation_service.storage is not None
         stored_request = generation_service.storage.get_request(request_id)
         assert stored_request is not None
         assert stored_request.request_id == request_id
-
-
-def test_publish_generation_passes_source_request_id_to_legacy_dtos(
-    mock_llm_responses,
-):
-    captured_profile_requests = []
-    captured_playbook_requests = []
-    source_request_id = "req_publish_1"
-
-    def capture_profile_run(self, request):
-        captured_profile_requests.append(request)
-
-    def capture_playbook_run(self, request):
-        captured_playbook_requests.append(request)
-
-    with (
-        tempfile.TemporaryDirectory() as temp_dir,
-        patch.object(ProfileGenerationService, "run", capture_profile_run),
-        patch.object(PlaybookGenerationService, "run", capture_playbook_run),
-    ):
-        llm_config = LiteLLMConfig(model="gpt-4o-mini")
-        llm_client = LiteLLMClient(llm_config)
-        generation_service = GenerationService(
-            llm_client=llm_client,
-            request_context=RequestContext(
-                org_id="test_org", storage_base_dir=temp_dir
-            ),
-        )
-        request = PublishUserInteractionRequest(
-            request_id=source_request_id,
-            user_id="user_1",
-            interaction_data_list=[
-                InteractionData(
-                    content="test interaction",
-                    created_at=int(datetime.datetime.now(UTC).timestamp()),
-                )
-            ],
-            session_id="session_1",
-        )
-
-        result = generation_service.run(request)
-
-    assert result.request_id == source_request_id
-    assert [req.request_id for req in captured_profile_requests] == [source_request_id]
-    assert [req.request_id for req in captured_playbook_requests] == [source_request_id]
 
 
 def test_publish_request_tagging_schedule_failure_is_best_effort(mock_llm_responses):
@@ -179,10 +140,10 @@ def test_publish_request_tagging_schedule_failure_is_best_effort(mock_llm_respon
         )
 
         with patch(
-            "reflexio.server.services.generation_service.schedule_tagging",
+            "reflexio.server.services.tagging.tagging_scheduler.schedule_tagging",
             side_effect=RuntimeError("scheduler unavailable"),
         ):
-            result = generation_service.run(request)
+            result = generation_service.run(request, defer_learning=True)
 
         assert result.request_id == request_id
         assert generation_service.storage is not None
@@ -220,15 +181,15 @@ def test_defer_learning_persists_and_enqueues_without_inline_extractors(
                 generation_service, "_schedule_group_evaluation_if_needed"
             ) as schedule_eval,
             patch(
-                "reflexio.server.services.publish_learning_worker.enqueue_publish_learning",
-                return_value=True,
+                "reflexio.server.services.durable_learning.local.ensure_local_extraction",
+                return_value=None,
             ) as enqueue_learning,
             patch(
                 "reflexio.server.services.generation_service.ProfileGenerationService",
                 side_effect=AssertionError("profile extraction should be deferred"),
             ),
             patch(
-                "reflexio.server.services.generation_service.PlaybookGenerationService",
+                "reflexio.server.services.playbook.service.PlaybookGenerationService",
                 side_effect=AssertionError("playbook extraction should be deferred"),
             ),
             patch(
@@ -249,7 +210,9 @@ def test_defer_learning_persists_and_enqueues_without_inline_extractors(
             if event["event_name"] == "publish_request_succeeded"
         )
         assert success_event["metadata"]["defer_learning"] is True
-        assert success_event["metadata"]["learning_queued"] is True
+        assert generation_service.storage.extraction_status(user_id, request_id)[
+            "status"
+        ] in {"pending", "done"}
 
 
 def test_defer_learning_stall_skips_learning_enqueue(mock_llm_responses):
@@ -276,10 +239,6 @@ def test_defer_learning_stall_skips_learning_enqueue(mock_llm_responses):
                 generation_service,
                 "_active_learning_stall_warning",
                 return_value="learning paused",
-            ),
-            patch(
-                "reflexio.server.services.publish_learning_worker.enqueue_publish_learning",
-                MagicMock(side_effect=AssertionError("should not enqueue")),
             ),
         ):
             result = generation_service.run(request, defer_learning=True)
@@ -334,9 +293,9 @@ def test_publish_request_rejects_duplicate_caller_request_id(mock_llm_responses)
             interaction_data_list=[interaction],
         )
 
-        generation_service.run(first_request)
+        generation_service.run(first_request, defer_learning=True)
         with pytest.raises(ValueError, match="already exists"):
-            generation_service.run(second_request)
+            generation_service.run(second_request, defer_learning=True)
 
         assert generation_service.storage is not None
         assert (

@@ -403,6 +403,13 @@ def test_billing_drain_ordering_terminal_emitters_and_double_bill_guard(
                 user_id="user1", request_id="req_user1", source="api", auto_run=True
             )
         )
+        # Explicit learning runs now share the user lease, without the retired
+        # FIFO drain. Reuse the service to retain the token-reset regression.
+        service.run(
+            _CharRequest(
+                user_id="user2", request_id="req_user2", source="api", auto_run=True
+            )
+        )
 
     # (a) Per item, the trio fires in the exact order finalize -> learnings ->
     # tokens; record_extraction_tokens is LAST and AFTER _finalize_extraction_runs.

@@ -1167,6 +1167,9 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         self._migrate_retire_playbook_aggregation_change_logs()
         init_stall_state_table(self.conn)
         self._migrate_learning_jobs()
+        from ._extraction_stream import migrate_extraction_stream
+
+        migrate_extraction_stream(self.conn)
         return True
 
     def _migrate_playbook_diagnosis(self) -> None:
@@ -3248,6 +3251,16 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             # ------------------------------------------------------------------
             # Phase 4: hard-delete the delete-sets and all interactions/requests.
             # ------------------------------------------------------------------
+            self.conn.execute(
+                "DELETE FROM extraction_windows WHERE user_id=?", (user_id,)
+            )
+            self.conn.execute(
+                "DELETE FROM extraction_cursors WHERE user_id=?", (user_id,)
+            )
+            self.conn.execute(
+                "DELETE FROM learning_work WHERE org_id=? AND user_id=?",
+                (self.org_id, user_id),
+            )
             interactions_cur = self.conn.execute(
                 "DELETE FROM interactions WHERE user_id = ?", (user_id,)
             )

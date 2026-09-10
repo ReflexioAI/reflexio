@@ -65,6 +65,16 @@ from reflexio.server.usage_metrics import (
 )
 
 
+@pytest.fixture(autouse=True)
+def no_background_tagging(monkeypatch):
+    # Tag scheduling has its own tests. Do not let delayed callbacks outlive
+    # the isolated resume fixtures or write to a default local database.
+    monkeypatch.setattr(
+        "reflexio.server.services.extraction.resume_worker.schedule_tagging",
+        lambda **_kwargs: None,
+    )
+
+
 @pytest.fixture
 def storage():
     with (
@@ -1384,11 +1394,19 @@ def test_empty_playbook_receipt_retries_without_redispatch(storage):
         outcomes.append(outcome)
         return outcome
 
+    def claim(**_):
+        with storage._stream_sql() as db:
+            db.query(
+                "UPDATE _agent_runs SET status='resuming',claimed_by='test',claimed_at=? WHERE id=?",
+                (datetime.now(UTC).isoformat(), run.id),
+            )
+        return storage.get_agent_run(run.id)
+
     recorder = _DeduplicatingUsageRecorder()
     configure_usage_event_recorder(recorder)
     try:
         with (
-            patch.object(storage, "claim_ready_agent_run", return_value=run),
+            patch.object(storage, "claim_ready_agent_run", side_effect=claim),
             patch.object(
                 worker, "_load_resolved_tool_calls", return_value=[MagicMock()]
             ),
@@ -1851,3 +1869,173 @@ def test_resume_worker_fails_run_when_step_budget_exhausted(
     assert run.status == AgentRunStatus.FAILED
     assert run.last_error == "Resumable extraction max-step budget exhausted"
     assert storage.list_run_tool_dependencies("run_1")[0].consumed_at is None
+
+
+def test_resume_skips_claim_replaced_while_waiting_for_user_lease(
+    storage, request_context, monkeypatch
+):
+    from contextlib import contextmanager
+    from dataclasses import replace
+
+    _seed_interactions(storage)
+    _seed_ready_run(storage)
+    worker = ExtractionResumeWorker(request_context=request_context)
+    read = storage.get_agent_run
+
+    @contextmanager
+    def replaced_claim(*args, **kwargs):
+        monkeypatch.setattr(
+            storage,
+            "get_agent_run",
+            lambda run_id: replace(read(run_id), claimed_by="new-owner"),
+        )
+        yield
+
+    monkeypatch.setattr(
+        "reflexio.server.services.durable_learning.user_lease.user_extraction_lease",
+        replaced_claim,
+    )
+    monkeypatch.setattr(
+        worker, "_process_claimed_run", lambda *_: pytest.fail("stale claim executed")
+    )
+    inspected = worker.run_once()
+    assert inspected is not None
+    assert inspected.id == "run_1"
+    assert read("run_1").status == AgentRunStatus.RESUMING
+
+
+def test_lost_user_lease_cannot_rewind_finalized_resume(storage, request_context):
+    from reflexio.server.services.durable_learning.user_lease import (
+        user_extraction_lease,
+    )
+    from reflexio.server.services.storage.storage_base._extraction_stream import (
+        LeaseLostError,
+    )
+
+    _seed_interactions(storage)
+    _seed_ready_run(storage)
+    worker = ExtractionResumeWorker(request_context=request_context)
+    with user_extraction_lease(storage, "user_1"):
+        storage.update_agent_run_status("run_1", AgentRunStatus.FINALIZED)
+        with storage._stream_sql() as db:
+            db.query(
+                "UPDATE learning_work SET lease_token='replacement' WHERE user_id='user_1'"
+            )
+        with pytest.raises(LeaseLostError):
+            worker._update_claimed_status("run_1", AgentRunStatus.RESUME_READY)
+    assert storage.get_agent_run("run_1").status == AgentRunStatus.FINALIZED
+
+
+def test_bounded_user_lease_wait_does_not_claim_when_budget_busy(storage, monkeypatch):
+    from reflexio.server.services.durable_learning import user_lease as module
+
+    monkeypatch.setattr(module, "_reserve", lambda: False)
+    with (
+        pytest.raises(module.UserLeaseBusyError),
+        module.user_extraction_lease(storage, "user_1", max_wait_seconds=0.01),
+    ):
+        pytest.fail("busy budget entered")
+    assert storage.claim_extraction("automatic", 300) is None
+
+
+def test_busy_resume_claims_do_not_spend_execution_attempts(
+    storage, request_context, monkeypatch
+):
+    from contextlib import contextmanager
+
+    from reflexio.server.services.durable_learning import user_lease as module
+
+    _seed_interactions(storage)
+    _seed_ready_run(storage)
+    worker = ExtractionResumeWorker(
+        request_context=request_context, llm_client=MagicMock()
+    )
+    claim = storage.claim_ready_agent_run
+    lease = module.user_extraction_lease
+    ticks = 0
+
+    def claim_at_next_tick(**kwargs):
+        nonlocal ticks
+        ticks += 1
+        return claim(**kwargs, now=datetime.now(UTC) + timedelta(seconds=700 * ticks))
+
+    @contextmanager
+    def busy_first_three(*args, **kwargs):
+        if ticks <= 3:
+            raise module.UserLeaseBusyError("capacity occupied")
+        with lease(*args, **kwargs):
+            yield
+
+    monkeypatch.setattr(storage, "claim_ready_agent_run", claim_at_next_tick)
+    monkeypatch.setattr(module, "user_extraction_lease", busy_first_three)
+    monkeypatch.setattr(
+        worker,
+        "_resume_run",
+        MagicMock(side_effect=RuntimeError("transient provider error")),
+    )
+    for _ in range(3):
+        assert worker.run_once() is not None
+        assert storage.get_agent_run("run_1").resume_attempts == 0
+    worker.run_once()
+    result = storage.get_agent_run("run_1")
+    assert result.resume_attempts == 1
+    assert result.status == AgentRunStatus.RESUME_READY
+
+
+def test_busy_user_does_not_end_resume_batch(storage, request_context, monkeypatch):
+    from contextlib import contextmanager
+    from dataclasses import replace
+
+    from reflexio.server.services.durable_learning import user_lease as module
+
+    _seed_interactions(storage)
+    _seed_ready_run(storage)
+    first = storage.get_agent_run("run_1")
+    second = replace(
+        first, id="run_2", binding=replace(first.binding, user_id="user_2")
+    )
+    storage.create_agent_run(second)
+    storage.attach_run_tool_dependency(
+        RunToolDependencyRecord(
+            run_id="run_2", pending_tool_call_id="ptc_1", resolved_at=datetime.now(UTC)
+        )
+    )
+    worker = ExtractionResumeWorker(
+        request_context=request_context, llm_client=MagicMock()
+    )
+    lease = module.user_extraction_lease
+    executed = []
+
+    @contextmanager
+    def first_busy(store, user_id, **kwargs):
+        if user_id == "user_1":
+            raise module.UserLeaseBusyError("user busy")
+        with lease(store, user_id, **kwargs):
+            yield
+
+    def execute(run, _):
+        executed.append(run.binding.user_id)
+        return run
+
+    monkeypatch.setattr(module, "user_extraction_lease", first_busy)
+    monkeypatch.setattr(worker, "_process_claimed_run", execute)
+    assert worker.drain(max_runs=2) == 2
+    assert executed == ["user_2"]
+    assert storage.get_agent_run("run_1").resume_attempts == 0
+    assert storage.get_agent_run("run_2").resume_attempts == 1
+
+
+def test_erased_source_cancels_resume_before_execution(request_context, storage):
+    _seed_ready_run(storage)
+    worker = ExtractionResumeWorker(
+        request_context=request_context, llm_client=MagicMock()
+    )
+    with patch.object(
+        worker,
+        "_process_claimed_run",
+        side_effect=AssertionError("must not revive erased input"),
+    ):
+        run = worker.run_once()
+    assert run is not None and run.status == AgentRunStatus.CANCELLED
+    assert run.last_error == "source_interactions_erased"
+    assert worker.run_once() is None

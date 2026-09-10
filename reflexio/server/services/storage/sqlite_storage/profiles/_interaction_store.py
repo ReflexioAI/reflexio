@@ -459,19 +459,4 @@ class InteractionStoreMixin:
 
     @SQLiteStorageBase.handle_exceptions
     def delete_oldest_interactions(self, count: int) -> int:
-        if count <= 0:
-            return 0
-        with self._lock:
-            rows = self.conn.execute(
-                "SELECT interaction_id FROM interactions ORDER BY created_at ASC LIMIT ?",
-                (count,),
-            ).fetchall()
-            if not rows:
-                return 0
-            ids = [r["interaction_id"] for r in rows]
-            self._delete_in_chunks("interactions_fts", "rowid", ids)
-            if self._has_sqlite_vec:
-                self._delete_in_chunks("interactions_vec", "rowid", ids)
-            self._delete_in_chunks("interactions", "interaction_id", ids)
-            self.conn.commit()
-        return len(ids)
+        return self.delete_oldest_retention_target_rows("interactions", count)  # type: ignore[reportAttributeAccessIssue]

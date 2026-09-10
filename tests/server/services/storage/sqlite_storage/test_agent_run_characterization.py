@@ -636,9 +636,9 @@ def test_claim_ready_agent_run_resuming_status_guard_is_compare_and_set(storage)
     assert first is not None
     assert first.status == AgentRunStatus.RESUMING
     assert first.claimed_by == "worker_1"
-    assert first.resume_attempts == 1
+    assert first.resume_attempts == 0
     assert second is None
     assert third is not None
     assert third.status == AgentRunStatus.RESUMING
     assert third.claimed_by == "worker_3"
-    assert third.resume_attempts == 2
+    assert third.resume_attempts == 0

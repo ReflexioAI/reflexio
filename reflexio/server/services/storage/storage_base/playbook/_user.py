@@ -334,6 +334,8 @@ class UserPlaybookStoreMixin:
         status: Status,
         agent_version: str | None = None,
         playbook_name: str | None = None,
+        *,
+        user_id: str | None = None,
     ) -> int:
         """Delete all user playbooks with the given status atomically.
 

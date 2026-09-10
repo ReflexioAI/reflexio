@@ -515,12 +515,9 @@ class ReflexioClient:
         always synchronous.
 
         In server-async mode (``wait_for_response=False``), the server
-        returns 200 as soon as it has registered a BackgroundTask —
-        typically ~100 ms. That's fine to block on from the CLI and
-        eliminates a prior fragility where CLI fire-and-forget relied
-        on a thread pool whose atexit handler wouldn't run under
-        SIGTERM, so publishes from a Claude Code subagent could be
-        silently lost.
+        returns after interactions and their extraction admission are committed.
+        Extraction runs independently and survives process restarts. Poll the
+        request's learning status to check whether all eligible cursors cover it.
 
         Library users who need a truly non-blocking call can submit
         the request through ``_fire_and_forget`` directly.
@@ -536,8 +533,8 @@ class ReflexioClient:
             wait_for_response: If True, the **server** waits for
                 extraction to complete before returning (longer HTTP
                 call, response includes real profile/playbook counts).
-                If False, the server returns immediately after queuing
-                extraction. The client blocks on the HTTP round-trip
+                If False, the server returns immediately after durable
+                acceptance. The client blocks on the HTTP round-trip
                 in both cases.
             skip_aggregation: If True, extract profiles/playbooks but
                 skip aggregation to agent playbooks.
@@ -641,8 +638,8 @@ class ReflexioClient:
         Call this after a deferred ``publish_interaction`` (where
         ``wait_for_response=False``).  The response carries
         ``learning_status="deferred"`` to signal that extraction has been
-        queued; use this method to track progress once the durable queue
-        is active.
+        accepted durably; use this method to track cursor coverage. A partial
+        window waits for enough new interactions or an explicit force request.
 
         Args:
             request_id: The ``request_id`` of the published interaction, as
@@ -651,7 +648,8 @@ class ReflexioClient:
                 paths) or known by the caller.
 
         Returns:
-            One of: ``"pending"`` | ``"processing"`` | ``"done"`` | ``"failed"``.
+            One of: ``"pending"`` | ``"processing"`` | ``"done"`` | ``"not_tracked"``.
+            Older servers may also return ``"failed"``.
 
         Raises:
             requests.HTTPError: 404 when the request_id is not known to the

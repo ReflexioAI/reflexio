@@ -398,6 +398,16 @@ def format_sessions_to_history_string(
     if not sessions:
         return ""
 
+    if any(group.arrival_order for group in sessions):
+        # Keep contiguous sessions in arrival order. This also keeps one large
+        # request and many small requests in the same session text-equivalent.
+        blocks: list[list[RequestInteractionDataModel]] = []
+        for group in sessions:
+            if not blocks or blocks[-1][-1].session_id != group.session_id:
+                blocks.append([])
+            blocks[-1].append(group.model_copy(update={"arrival_order": False}))
+        return "\n\n".join(format_sessions_to_history_string(block) for block in blocks)
+
     # Group all RequestInteractionDataModel objects by their session_id
     grouped_by_name: dict[str, list[RequestInteractionDataModel]] = {}
     for request_interaction in sessions:

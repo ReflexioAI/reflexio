@@ -475,6 +475,26 @@ class BaseGenerationService(
         return original_request
 
     def run(self, request: TRequest) -> None:
+        user_id = getattr(request, "user_id", None)
+        if self.EMITS_LEARNING_BILLING and self.storage is not None and user_id:
+            from reflexio.server.services.durable_learning.user_lease import (
+                user_extraction_lease,
+            )
+
+            with user_extraction_lease(self.storage, user_id):
+                rerun_request = getattr(self, "_rerun_preprocess_request", None)
+                if rerun_request is not None:
+                    from reflexio.server.services.durable_learning.user_lease import (
+                        fence_explicit_extraction,
+                    )
+
+                    with self.storage.commit_scope():
+                        fence_explicit_extraction(self.storage)
+                        self._pre_process_rerun(rerun_request, user_id=user_id)
+                return self._run_generation(request)
+        return self._run_serialized(request)
+
+    def _run_serialized(self, request: TRequest) -> None:
         """
         Run the generation service for the given request.
 
@@ -610,6 +630,21 @@ class BaseGenerationService(
             if isinstance(e, ExtractorExecutionError):
                 raise
 
+    def set_extraction_window(
+        self,
+        interactions: list[RequestInteractionDataModel],
+        extractor_config: TExtractorConfig,
+        window_id: str,
+    ) -> None:
+        """Pin one immutable input window for gate, extraction and billing.
+
+        Automatic scheduling owns eligibility; legacy timestamp bookmarks and
+        source narrowing must not select a different slice after admission.
+        """
+        self._window_interactions = interactions
+        self._window_extractor_config = extractor_config
+        self._window_id = window_id
+
     def compute_generation(self, request: TRequest) -> GenerationComputePlan | None:
         """Compute half of one generation run — NO learning DB write, NO fence.
 
@@ -667,13 +702,28 @@ class BaseGenerationService(
             generated_count=generated_count,
             billable_count=billable_count,
             write_plan=write_plan,
-            bookmark_advance=self._last_bookmark_advance,
+            bookmark_advance=(
+                None
+                if getattr(self, "_window_id", None)
+                else self._last_bookmark_advance
+            ),
             generation_start=generation_start,
             extraction_run_ids=list(self._last_extraction_run_ids),
             token_totals=self._last_token_totals,
         )
 
     def persist_generation(self, plan: GenerationComputePlan) -> None:
+        from reflexio.server.services.durable_learning.user_lease import (
+            fence_explicit_extraction,
+        )
+
+        if self.storage is None:
+            raise RuntimeError("Generation requires storage")
+        with self.storage.commit_scope():
+            fence_explicit_extraction(self.storage)
+            self._persist_generation(plan)
+
+    def _persist_generation(self, plan: GenerationComputePlan) -> None:
         """Persist half — apply the write-plan + the extractor bookmark advance.
 
         This is the ONLY part that runs inside the durable worker's fenced
@@ -892,39 +942,49 @@ class BaseGenerationService(
         # here for the billing path to reuse. On bypass paths (auto_run=False,
         # force_extraction, skip_should_run_check, mock mode) the gate never runs,
         # so this stays None and billing falls back to its own fetch.
-        self._last_precheck_sessions = None
+        explicit_window = getattr(self, "_window_interactions", None)
+        self._last_precheck_sessions = explicit_window
 
         self.service_config = self._load_generation_service_config(request)
+        if explicit_window is not None:
+            self.service_config.window_interactions = explicit_window  # type: ignore[reportAttributeAccessIssue]
+            self.service_config.extraction_window_id = self._window_id  # type: ignore[reportAttributeAccessIssue]
 
-        extractor_config = self._load_extractor_config()
+        extractor_config = (
+            getattr(self, "_window_extractor_config", None)
+            or self._load_extractor_config()
+        )
         if extractor_config is None:
             logger.warning("No %s extractor config found", self._get_service_name())
             self._record_skip("no_extractor_config")
             return None
 
-        extractor_config = self._filter_extractor_config_by_service_config(
-            extractor_config, self.service_config
-        )
-
-        if extractor_config is None:
-            source = getattr(self.service_config, "source", "N/A")
-            source_display = source or "N/A"
-            logger.info(
-                "No %s extractor config enabled for source: %s",
-                self._get_service_name(),
-                source_display,
+        if explicit_window is None:
+            extractor_config = self._filter_extractor_config_by_service_config(
+                extractor_config, self.service_config
             )
-            self._record_skip("source_not_enabled", metadata={"source": source_display})
-            return None
 
-        extractor_config = self._filter_config_by_stride(extractor_config)
-        if extractor_config is None:
-            logger.info(
-                "Extractor config did not pass stride_size check for %s",
-                self._get_service_name(),
-            )
-            self._record_skip("stride_not_met")
-            return None
+            if extractor_config is None:
+                source = getattr(self.service_config, "source", "N/A")
+                source_display = source or "N/A"
+                logger.info(
+                    "No %s extractor config enabled for source: %s",
+                    self._get_service_name(),
+                    source_display,
+                )
+                self._record_skip(
+                    "source_not_enabled", metadata={"source": source_display}
+                )
+                return None
+
+            extractor_config = self._filter_config_by_stride(extractor_config)
+            if extractor_config is None:
+                logger.info(
+                    "Extractor config did not pass stride_size check for %s",
+                    self._get_service_name(),
+                )
+                self._record_skip("stride_not_met")
+                return None
 
         identifier = getattr(self.service_config, "user_id", None) or getattr(
             self.service_config, "request_id", "unknown"

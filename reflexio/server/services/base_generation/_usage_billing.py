@@ -63,6 +63,7 @@ class UsageBillingMixin(Generic[TExtractorConfig, TGenerationServiceConfig]):  #
     # Read-only in this bucket: written by the extraction lifecycle / precheck mixins.
     _last_token_totals: RunTokenTotals | None
     _last_precheck_sessions: list[Any] | None
+    _window_id: str | None
     # Class-level opt-in flag defined on the base; annotation-only here so pyright can
     # resolve ``self.EMITS_LEARNING_BILLING`` without shadowing the base default.
     EMITS_LEARNING_BILLING: bool
@@ -110,6 +111,11 @@ class UsageBillingMixin(Generic[TExtractorConfig, TGenerationServiceConfig]):  #
         record_usage_event(
             **self._usage_context(),
             event_name=event_name,
+            event_key=(
+                f"gen:{self._window_id}:{event_name}:{outcome}"
+                if getattr(self, "_window_id", None)
+                else None
+            ),
             event_category="generation",
             outcome=outcome,
             count_value=count_value,
@@ -197,6 +203,8 @@ class UsageBillingMixin(Generic[TExtractorConfig, TGenerationServiceConfig]):  #
             prepared: The prepared generation run (used for input-text computation).
             generated_count: Number of retained write-plan learnings eligible for billing.
         """
+        if getattr(self, "_window_id", None):
+            return  # The durable window outbox owns retry-safe billing.
         if not self.EMITS_LEARNING_BILLING:
             return
 

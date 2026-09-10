@@ -1,15 +1,11 @@
 from __future__ import annotations
 
-import contextvars
 import logging
 import os
 import threading
 import time
 import uuid
-from collections.abc import Callable, Iterator, Mapping, Sequence
-from concurrent.futures import Future, ThreadPoolExecutor
-from concurrent.futures import TimeoutError as FuturesTimeoutError
-from contextlib import nullcontext
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -22,10 +18,8 @@ from reflexio.models.api_schema.service_schemas import (
 )
 from reflexio.models.config_schema import Config
 from reflexio.server.api_endpoints.request_context import RequestContext
-from reflexio.server.env_utils import env_str, env_truthy
 from reflexio.server.error_reporting import error_tags
 from reflexio.server.llm.litellm_client import LiteLLMClient
-from reflexio.server.operation_limiter import operation_limit
 from reflexio.server.services.agent_success_evaluation.runner import (
     run_group_evaluation,
 )
@@ -36,17 +30,7 @@ from reflexio.server.services.agent_success_evaluation.sampling import (
 from reflexio.server.services.agent_success_evaluation.scheduler import (
     GroupEvaluationScheduler,
 )
-from reflexio.server.services.deferred_learning_plan import DeferredLearningPlan
 from reflexio.server.services.operation_state_utils import OperationStateManager
-from reflexio.server.services.playbook.playbook_service_utils import (
-    PlaybookGenerationRequest,
-)
-from reflexio.server.services.playbook.service import (
-    PlaybookGenerationService,
-)
-from reflexio.server.services.profile.profile_generation_service_utils import (
-    ProfileGenerationRequest,
-)
 from reflexio.server.services.profile.service import (
     ProfileGenerationService,
 )
@@ -61,7 +45,6 @@ from reflexio.server.services.storage.retention import (
     delete_count_for_retention,
     get_row_retention_limits,
 )
-from reflexio.server.services.tagging.tagging_scheduler import schedule_tagging
 from reflexio.server.usage_metrics import record_usage_event
 from reflexio.server.work_scope import current_project_id
 
@@ -71,103 +54,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 # Stale lock timeout - if cleanup started > 10 min ago and still "in_progress", assume it crashed
 CLEANUP_STALE_LOCK_SECONDS = 600
-# Timeout for the outer generation service parallel execution
-GENERATION_SERVICE_TIMEOUT_SECONDS = 600
 _STALL_WARNING_PREFIX = "Reflexio learning is paused"
-
-
-class _SharedDeadline:
-    """One wall-clock budget shared by several sequentially awaited futures.
-
-    Profile and playbook generation run concurrently but are awaited one after
-    the other. Passing each ``future.result()`` the same constant timeout hands
-    the second service a FRESH full budget on top of whatever the first already
-    consumed — so a 600s setting really allowed up to 1200s, and the
-    "timed out after 600s" log line misreported the budget it had enforced.
-
-    Attributes:
-        _deadline (float): Monotonic timestamp after which nothing may wait.
-    """
-
-    def __init__(self, timeout_seconds: float) -> None:
-        self._deadline = time.monotonic() + timeout_seconds
-
-    def remaining(self) -> float:
-        """Return seconds left in the shared budget.
-
-        Returns:
-            float: Time until the deadline, clamped at ``0.0`` once spent so an
-                exhausted budget fails the wait immediately instead of wrapping
-                into a negative (which ``Future.result`` treats as "no wait" but
-                which reads as a bug at the call site).
-        """
-        return max(0.0, self._deadline - time.monotonic())
-
-
-def _completed_within_shared_budget(
-    awaited: Sequence[tuple[Future[Any], str]],
-    *,
-    request_id: str,
-    warnings: list[str],
-    timeout_seconds: float = GENERATION_SERVICE_TIMEOUT_SECONDS,
-) -> Iterator[tuple[str, Any]]:
-    """Await futures in order under ONE shared budget, yielding what completed.
-
-    Both generation call sites awaited their futures with a copy of this loop.
-    Sharing it keeps the budget arithmetic and the timeout/failure reporting in
-    a single place, so neither site can silently drift back to handing every
-    future a fresh full timeout.
-
-    Args:
-        awaited (Sequence[tuple[Future[Any], str]]): Futures paired with the
-            service name used in logs and warnings, awaited in this order.
-        request_id (str): Correlation id for the log line.
-        warnings (list[str]): Mutated in place with one entry per failed or
-            timed-out service, mirroring the previous per-site behaviour.
-        timeout_seconds (float): Total wall-clock budget for ALL of *awaited*.
-
-    Yields:
-        tuple[str, Any]: ``(service_name, value)`` for each future that
-            completed inside the shared budget. Timed-out and failed services
-            are reported and skipped, never yielded.
-    """
-    budget = _SharedDeadline(timeout_seconds)
-    for future, service_name in awaited:
-        remaining = budget.remaining()
-        try:
-            value = future.result(timeout=remaining)
-        except FuturesTimeoutError:  # noqa: PERF203
-            # Report the budget actually enforced. The second service inherits
-            # only the leftover, so naming the full total here would misreport
-            # the wait that just expired.
-            msg = (
-                f"{service_name} timed out after {remaining:.1f}s "
-                f"of the shared {timeout_seconds:.0f}s budget"
-            )
-            with error_tags(
-                subsystem="generation",
-                service=service_name,
-                request_id=request_id,
-                error_type="timeout",
-            ):
-                logger.error("%s for request %s", msg, sanitise_for_log(request_id))
-            warnings.append(msg)
-            continue
-        except Exception as e:
-            msg = f"{service_name} failed: {e}"
-            with error_tags(
-                subsystem="generation",
-                service=service_name,
-                request_id=request_id,
-                error_type=type(e).__name__,
-            ):
-                logger.exception(
-                    "Generation service failed for request %s",
-                    sanitise_for_log(request_id),
-                )
-            warnings.append(msg)
-            continue
-        yield service_name, value
 
 
 # Retrieved-learning statuses that committed NOTHING and have no other retry
@@ -250,22 +137,6 @@ def _prune_expired_retention_keys(now: float) -> None:
         del _retention_cleanup_last_run[key]
 
 
-def _org_in_durable_allowlist(org_id: str | None) -> bool:
-    """Whether ``org_id`` may use the durable learning queue.
-
-    Reads ``REFLEXIO_DURABLE_LEARNING_QUEUE_ORG_ALLOWLIST`` (comma-separated org
-    IDs). An empty/whitespace-only value means the allowlist is unset — the
-    default global behavior, so every org is eligible. The allowlist can only
-    *narrow* the durable path; it never enables it on its own (the
-    ``REFLEXIO_DURABLE_LEARNING_QUEUE`` flag still gates activation).
-    """
-    raw = env_str("REFLEXIO_DURABLE_LEARNING_QUEUE_ORG_ALLOWLIST", "")
-    allowed = {s.strip() for s in raw.split(",") if s.strip()}
-    if not allowed:
-        return True
-    return str(org_id) in allowed
-
-
 @dataclass
 class GenerationServiceResult:
     """Result of a GenerationService.run call.
@@ -319,36 +190,18 @@ class GenerationService:
         self,
         publish_user_interaction_request: PublishUserInteractionRequest,
         *,
-        use_publish_limiter: bool = True,
-        publish_limiter_wait_forever: bool = True,
+        use_publish_limiter: bool = True,  # noqa: ARG002 -- retained library compatibility
+        publish_limiter_wait_forever: bool = True,  # noqa: ARG002 -- retained library compatibility
         defer_learning: bool = False,
     ) -> GenerationServiceResult:
-        """
-        Process a user interaction request by storing interactions and triggering generation services.
+        """Atomically admit interactions to the durable extraction stream.
 
-        Profile and playbook generation services run inline in parallel. Agent success
-        evaluation is deferred via GroupEvaluationScheduler when a session_id is present,
-        so the full session can be evaluated after a period of inactivity.
-
-        Each generation service (profile, playbook) handles its own:
-        - Data collection based on extractor-specific configs
-        - Stride checking based on extractor-specific settings
-        - Operation state tracking per extractor
-
-        Args:
-            publish_user_interaction_request: The incoming user interaction request
-            use_publish_limiter: Whether this service should throttle the post-write
-                learning pipeline. Server sync calls acquire the bounded API
-                limiter before invoking this service, so they disable the inner
-                limiter to avoid waiting after storage side effects.
-            publish_limiter_wait_forever: Whether to queue indefinitely for the
-                post-write learning limiter when ``use_publish_limiter`` is true.
-            defer_learning: Whether to persist the publish and enqueue learning
-                for a process-local worker instead of running it inline.
-
-        Returns:
-            GenerationServiceResult: The request_id assigned to this publish call
-                and any non-fatal warnings raised by individual generation services.
+        Automatic extraction runs in bounded background workers. With
+        ``defer_learning=False``, wait up to 240 seconds for this request's
+        eligible profile/playbook coverage, outside ingestion capacity.
+        The legacy limiter arguments remain accepted for call compatibility;
+        HTTP ingestion and the shared extraction worker own their own budgets.
+        Session evaluations retain their separate inactivity scheduler.
         """
         result = GenerationServiceResult()
 
@@ -409,14 +262,6 @@ class GenerationService:
                 )
             )
 
-            if not new_interactions:
-                logger.info(
-                    "No interactions from the publish user interaction request: %s, get all interactions for the user: %s",
-                    sanitise_for_log(request_id),
-                    user_id,
-                )
-                return result
-
             record_usage_event(
                 org_id=self.org_id,
                 user_id=user_id,
@@ -443,204 +288,57 @@ class GenerationService:
                 retrieval_experiment_arm=retrieval_experiment_arm,
             )
 
-            # When the durable queue is enabled and this is a deferred publish, the
-            # request + interactions + job row are written together inside a single
-            # commit_scope (below).  Every other path persists here unconditionally.
-            use_durable_queue = env_truthy(
-                env_str("REFLEXIO_DURABLE_LEARNING_QUEUE", "false")
+            from reflexio.server.services.durable_learning.admission import (
+                extraction_admission,
             )
-            _durable_defer = (
-                defer_learning
-                and use_durable_queue
-                and _org_in_durable_allowlist(self.org_id)
+            from reflexio.server.services.durable_learning.local import (
+                ensure_local_extraction,
             )
 
-            if not _durable_defer:
-                self.storage.add_request(new_request)  # type: ignore[reportOptionalMemberAccess]
-                # Add interactions to storage (bulk insert with batched embedding generation)
-                self.storage.add_user_interactions_bulk(  # type: ignore[reportOptionalMemberAccess]
-                    user_id=user_id, interactions=new_interactions
-                )
-
-            # Extract source (empty string treated as None)
             source = publish_user_interaction_request.source or None
-
-            if publish_user_interaction_request.evaluation_only:
-                if _durable_defer:
-                    # evaluation_only returns early; ensure data lands even on durable path.
-                    self.storage.add_request(new_request)  # type: ignore[reportOptionalMemberAccess]
-                    self.storage.add_user_interactions_bulk(  # type: ignore[reportOptionalMemberAccess]
-                        user_id=user_id, interactions=new_interactions
-                    )
-                self._schedule_post_publish_evaluations(
-                    new_request=new_request,
-                    interactions=new_interactions,
-                    user_id=user_id,
-                    agent_version=agent_version,
-                    source=source,
-                )
-                self._emit_publish_success_events(
-                    interactions=new_interactions,
-                    user_id=user_id,
-                    request_id=request_id,
-                    session_id=new_request.session_id,
-                    source=source,
-                    agent_version=agent_version,
-                    backend="evaluation_only",
-                    duration_ms=int((time.perf_counter() - publish_start) * 1000),
-                    metadata={
-                        "evaluation_only": True,
-                        "warning_count": len(result.warnings),
-                    },
-                )
-                return result
-
-            if (
-                not publish_user_interaction_request.override_learning_stall
-                and (stall_warning := self._active_learning_stall_warning()) is not None
-            ):
-                if _durable_defer:
-                    # Stall skips learning but data must still land.
-                    self.storage.add_request(new_request)  # type: ignore[reportOptionalMemberAccess]
-                    self.storage.add_user_interactions_bulk(  # type: ignore[reportOptionalMemberAccess]
-                        user_id=user_id, interactions=new_interactions
-                    )
-                result.warnings.append(stall_warning)
-                logger.warning("%s; skipping automatic extraction", stall_warning)
-                self._schedule_post_publish_evaluations(
-                    new_request=new_request,
-                    interactions=new_interactions,
-                    user_id=user_id,
-                    agent_version=agent_version,
-                    source=source,
-                )
-                self._emit_publish_success_events(
-                    interactions=new_interactions,
-                    user_id=user_id,
-                    request_id=request_id,
-                    session_id=new_request.session_id,
-                    source=source,
-                    agent_version=agent_version,
-                    duration_ms=int((time.perf_counter() - publish_start) * 1000),
-                    metadata={"warning_count": len(result.warnings)},
-                )
-                return result
-
-            if defer_learning:
-                if _durable_defer:
-                    # Durable atomic path: pre-generate embeddings OUTSIDE the
-                    # transaction (network call), then persist request + interactions
-                    # + job in one commit_scope.
-                    self.storage.prepare_interaction_embeddings(new_interactions)  # type: ignore[reportOptionalMemberAccess]
-                    covers_through = max(i.created_at for i in new_interactions)
-                    with self.storage.commit_scope():  # type: ignore[reportOptionalMemberAccess]
-                        self.storage.add_request(new_request)  # type: ignore[reportOptionalMemberAccess]
-                        self.storage.add_user_interactions_bulk(  # type: ignore[reportOptionalMemberAccess]
-                            user_id=user_id,
-                            interactions=new_interactions,
-                            embeddings_prepared=True,
-                        )
-                        self.storage.enqueue_learning_job(  # type: ignore[reportOptionalMemberAccess]
-                            org_id=self.org_id,
-                            user_id=user_id,
-                            request_id=request_id,
-                            covers_through=covers_through,
-                            force_extraction=publish_user_interaction_request.force_extraction,
-                            skip_aggregation=publish_user_interaction_request.skip_aggregation,
-                            # Resolved HERE, on the request thread, not in the
-                            # worker: the job runs long after this returns.
-                            project_id=current_project_id(),
-                        )
-                    self._schedule_post_publish_evaluations(
-                        new_request=new_request,
-                        interactions=new_interactions,
-                        user_id=user_id,
-                        agent_version=agent_version,
-                        source=source,
-                    )
-                    self._emit_publish_success_events(
-                        interactions=new_interactions,
-                        user_id=user_id,
-                        request_id=request_id,
-                        session_id=new_request.session_id,
-                        source=source,
-                        agent_version=agent_version,
-                        backend="durable",
-                        duration_ms=int((time.perf_counter() - publish_start) * 1000),
-                        metadata={
-                            "defer_learning": True,
-                            "durable_queue": True,
-                            "warning_count": len(result.warnings),
-                        },
-                    )
-                    return result
-
-                from reflexio.server.services.publish_learning_worker import (
-                    PublishLearningJob,
-                    enqueue_publish_learning,
-                )
-
-                self._schedule_post_publish_evaluations(
-                    new_request=new_request,
-                    interactions=new_interactions,
-                    user_id=user_id,
-                    agent_version=agent_version,
-                    source=source,
-                )
-                learning_queued = enqueue_publish_learning(
-                    PublishLearningJob(
-                        org_id=self.org_id,
-                        user_id=user_id,
-                        request_id=request_id,
-                        session_id=new_request.session_id,
-                        source=source,
-                        agent_version=agent_version,
-                        force_extraction=publish_user_interaction_request.force_extraction,
-                        skip_aggregation=publish_user_interaction_request.skip_aggregation,
-                        project_id=current_project_id(),
-                    )
-                )
-                self._emit_publish_success_events(
-                    interactions=new_interactions,
-                    user_id=user_id,
-                    request_id=request_id,
-                    session_id=new_request.session_id,
-                    source=source,
-                    agent_version=agent_version,
-                    backend="classic",
-                    duration_ms=int((time.perf_counter() - publish_start) * 1000),
-                    metadata={
-                        "defer_learning": True,
-                        "learning_queued": learning_queued,
-                        "warning_count": len(result.warnings),
-                    },
-                )
-                return result
-
-            # The durable write above must not sit behind the publish limiter:
-            # async API callers have already received success=True. Throttle only
-            # the post-write learning pipeline so a hung LLM cannot silently drop
-            # later acknowledged publishes before they reach storage.
-            learning_limit = (
-                operation_limit(
-                    self.org_id,
-                    "publish",
-                    wait_forever=publish_limiter_wait_forever,
-                )
-                if use_publish_limiter
-                else nullcontext()
+            stall_warning = (
+                self._active_learning_stall_warning()
+                if not publish_user_interaction_request.override_learning_stall
+                else None
             )
-            with learning_limit:
-                self._run_learning_steps(
-                    user_id=user_id,
-                    request_id=request_id,
-                    agent_version=agent_version,
-                    force_extraction=publish_user_interaction_request.force_extraction,
-                    skip_aggregation=publish_user_interaction_request.skip_aggregation,
-                    source=source,
-                    result=result,
-                )
+            if stall_warning:
+                result.warnings.append(stall_warning)
+            admission = extraction_admission(
+                self.configurator.get_config(),
+                publish_user_interaction_request,
+                stalled=stall_warning is not None,
+            )
+            if not new_interactions:
+                for kind in ("profile", "playbook"):
+                    admission[kind]["eligible"] = False
+            storage = self.storage
+            if storage is None:
+                raise RuntimeError("Publishing requires storage")
+            # Network preparation is outside the writer scope. The work row is
+            # locked FIRST and its sequence allocation commits with every input.
+            from reflexio.server.services.durable_learning.waiting import (
+                check_admission_deadline,
+            )
 
+            check_admission_deadline()
+            storage.prepare_interaction_embeddings(new_interactions)
+            check_admission_deadline()
+            with storage.commit_scope():
+                storage.lock_extraction_stream(user_id)
+                check_admission_deadline()
+                if storage.get_request(request_id) is not None:
+                    raise ValueError(f"request_id {request_id!r} already exists")
+                storage.add_request(new_request)
+                storage.add_user_interactions_bulk(
+                    user_id, new_interactions, embeddings_prepared=True
+                )
+                storage.admit_extraction(
+                    user_id,
+                    request_id,
+                    [i.interaction_id for i in new_interactions],
+                    admission,
+                )
+            ensure_local_extraction(self.request_context)
             self._schedule_post_publish_evaluations(
                 new_request=new_request,
                 interactions=new_interactions,
@@ -648,7 +346,6 @@ class GenerationService:
                 agent_version=agent_version,
                 source=source,
             )
-
             self._emit_publish_success_events(
                 interactions=new_interactions,
                 user_id=user_id,
@@ -656,10 +353,33 @@ class GenerationService:
                 session_id=new_request.session_id,
                 source=source,
                 agent_version=agent_version,
-                backend="classic",
+                backend="durable",
                 duration_ms=int((time.perf_counter() - publish_start) * 1000),
-                metadata={"warning_count": len(result.warnings)},
+                metadata={
+                    "defer_learning": True,
+                    "warning_count": len(result.warnings),
+                },
             )
+            if not defer_learning:
+                from reflexio.server.services.durable_learning.waiting import (
+                    acquire_waiter,
+                    release_waiter,
+                )
+
+                if acquire_waiter(self.org_id):
+                    try:
+                        deadline = publish_start + 240
+                        while time.perf_counter() < deadline:
+                            if (
+                                storage.extraction_status(user_id, request_id)["status"]
+                                == "done"
+                            ):
+                                break
+                            time.sleep(
+                                min(0.25, max(0, deadline - time.perf_counter()))
+                            )
+                    finally:
+                        release_waiter(self.org_id)
             return result
 
         except Exception as e:
@@ -729,395 +449,6 @@ class GenerationService:
                 entity_id=str(interaction.interaction_id),
                 duration_ms=duration_ms,
                 metadata=metadata,
-            )
-
-    # ===============================
-    # deferred learning
-    # ===============================
-
-    def run_deferred_learning(
-        self,
-        *,
-        user_id: str,
-        request_id: str,
-        session_id: str | None,  # noqa: ARG002 - kept for worker telemetry symmetry
-        source: str | None,
-        agent_version: str,
-        force_extraction: bool,
-        skip_aggregation: bool,
-    ) -> GenerationServiceResult:
-        """Run the learning steps for a deferred job (synchronous / non-durable
-        callers: ``PublishLearningWorker`` and manual reruns).
-
-        Runs compute + persist + side-effects together, with profile and playbook
-        generation in parallel — no external ``commit_scope`` is held on this
-        path (the durable worker uses the compute/persist/emit split instead).
-        """
-        result = GenerationServiceResult(request_id=request_id)
-        self._run_learning_steps(
-            user_id=user_id,
-            request_id=request_id,
-            agent_version=agent_version,
-            force_extraction=force_extraction,
-            skip_aggregation=skip_aggregation,
-            source=source,
-            result=result,
-            parallel=True,
-        )
-        return result
-
-    # ===============================
-    # deferred learning — compute / persist / emit split (gate b)
-    # ===============================
-
-    def compute_deferred_learning(
-        self,
-        *,
-        user_id: str,
-        request_id: str,
-        session_id: str | None,  # noqa: ARG002 - kept for worker call symmetry
-        source: str | None,
-        agent_version: str,
-        force_extraction: bool,
-        skip_aggregation: bool,
-    ) -> DeferredLearningPlan:
-        """Compute half of one durable-learning job — NO ``commit_scope`` held.
-
-        Runs the same-user guard (F4) first, then profile + playbook
-        compute (LLM extraction, dedup, embeddings) entirely OUTSIDE any writer
-        transaction, and assembles a :class:`DeferredLearningPlan` of the held
-        ``(service, plan)`` pairs. Issues NO learning DB write (F3): the only
-        writes are the extractor's own ``agent_run`` rows + the per-user
-        coordination lock (``try_acquire_in_progress_lock``, not a learning
-        terminal).
-
-        F4 GUARD FIRST: acquires a DB-backed per-user in-progress lock BEFORE any
-        LLM work. On contention returns ``DeferredLearningPlan(lock_acquired=
-        False, profile/playbook=None)`` immediately (no compute) — the
-        worker must then leave the job reclaimable (Task 9), NOT complete it.
-
-        Profile + playbook ``compute_generation`` run in parallel (no
-        ``commit_scope`` is held, so the old ``sequential=True`` RLock avoidance
-        is unnecessary). Per-half failures are best-effort — captured into
-        ``warnings`` and the half dropped — mirroring ``_run_learning_steps``.
-        """
-        warnings: list[str] = []
-
-        # F4 GUARD — before any LLM. On contention, no compute runs.
-        if not self._acquire_durable_learning_lock(
-            user_id=user_id, request_id=request_id
-        ):
-            logger.info(
-                "durable-learning same-user lock held; leaving job reclaimable "
-                "(user_id=%s request_id=%s)",
-                user_id,
-                sanitise_for_log(request_id),
-            )
-            return DeferredLearningPlan(
-                request_id=request_id,
-                user_id=user_id,
-                agent_version=agent_version,
-                lock_acquired=False,
-                profile=None,
-                playbook=None,
-                warnings=warnings,
-            )
-
-        # Profile + playbook compute in parallel — no scope held, so no RLock
-        # contention (the pre-split sequential mode only existed to avoid the
-        # SQLite commit_scope RLock, which compute never takes).
-        profile_service = ProfileGenerationService(
-            llm_client=self.client, request_context=self.request_context
-        )
-        profile_request = ProfileGenerationRequest(
-            user_id=user_id,
-            request_id=request_id,
-            source=source,
-            force_extraction=force_extraction,
-        )
-        playbook_service = PlaybookGenerationService(
-            llm_client=self.client,
-            request_context=self.request_context,
-            skip_aggregation=skip_aggregation,
-        )
-        playbook_request = PlaybookGenerationRequest(
-            request_id=request_id,
-            agent_version=agent_version,
-            user_id=user_id,
-            source=source,
-            force_extraction=force_extraction,
-        )
-
-        profile_pair: tuple = None  # type: ignore[assignment]
-        playbook_pair: tuple = None  # type: ignore[assignment]
-        executor = ThreadPoolExecutor(max_workers=2)
-        try:
-            profile_future = executor.submit(
-                contextvars.copy_context().run,
-                profile_service.compute_generation,
-                profile_request,
-            )
-            playbook_future = executor.submit(
-                contextvars.copy_context().run,
-                playbook_service.compute_generation,
-                playbook_request,
-            )
-            for service_name, plan in _completed_within_shared_budget(
-                (
-                    (profile_future, "profile_generation"),
-                    (playbook_future, "playbook_generation"),
-                ),
-                request_id=request_id,
-                warnings=warnings,
-            ):
-                if plan is None:
-                    continue
-                if service_name == "profile_generation":
-                    profile_pair = (profile_service, plan)
-                else:
-                    playbook_pair = (playbook_service, plan)
-        finally:
-            executor.shutdown(wait=False, cancel_futures=True)
-
-        return DeferredLearningPlan(
-            request_id=request_id,
-            user_id=user_id,
-            agent_version=agent_version,
-            lock_acquired=True,
-            profile=profile_pair,
-            playbook=playbook_pair,
-            warnings=warnings,
-        )
-
-    def persist_deferred_learning(self, plan: DeferredLearningPlan) -> None:
-        """Persist half — apply the fence-critical writes for a computed job.
-
-        This is the ONLY part the durable worker runs inside its fenced
-        ``commit_scope``. For each present half it calls the held instance's
-        persist (profile/playbook row writes + extractor bookmark advance).
-        Issues NO side-effects (telemetry, billing, tagging, off-thread
-        schedulers, lock release) — those are post-commit
-        (``emit_deferred_learning_side_effects``) so a fence-lost job never
-        fires them.
-        """
-        if plan.profile is not None:
-            profile_service, profile_plan = plan.profile
-            profile_service.persist_generation(profile_plan)
-        if plan.playbook is not None:
-            playbook_service, playbook_plan = plan.playbook
-            playbook_service.persist_generation(playbook_plan)
-
-    def emit_deferred_learning_side_effects(self, plan: DeferredLearningPlan) -> None:
-        """Post-commit side-effects — telemetry, billing, tagging, lock release.
-
-        Runs only for a fence-winning job (the durable worker calls it after the
-        scope commits). Fires each held half's post-commit emit + schedules the
-        deferred tagging pass, then ALWAYS releases the per-user F4 lock (even if
-        an emit raised) so a completed job never strands the lock.
-
-        A ``lock_acquired=False`` plan never reaches here (the worker skips emit
-        on contention), so releasing here is safe — this instance owns the lock.
-
-        Each emit half is isolated in its own try/except (mirroring how
-        ``schedule_tagging`` already self-guards): the halves are independent
-        post-commit side effects (billing / telemetry / off-thread schedulers),
-        so a failure in an early half must NOT starve the later halves. The
-        per-user lock release always runs in ``finally`` so a completed job never
-        strands the lock.
-        """
-        try:
-            if plan.profile is not None:
-                profile_service, profile_plan = plan.profile
-                try:
-                    profile_service.emit_generation_side_effects(profile_plan)
-                except Exception:
-                    logger.exception(
-                        "Failed to emit profile side effects for deferred "
-                        "learning request %s",
-                        sanitise_for_log(plan.request_id),
-                    )
-            if plan.playbook is not None:
-                playbook_service, playbook_plan = plan.playbook
-                try:
-                    playbook_service.emit_generation_side_effects(playbook_plan)
-                except Exception:
-                    logger.exception(
-                        "Failed to emit playbook side effects for deferred "
-                        "learning request %s",
-                        sanitise_for_log(plan.request_id),
-                    )
-            try:
-                schedule_tagging(
-                    org_id=self.org_id,
-                    user_id=plan.user_id,
-                    agent_version=plan.agent_version,
-                    request_context=self.request_context,
-                    llm_client=self.client,
-                )
-            except Exception:
-                logger.exception(
-                    "Failed to schedule tagging for deferred learning request %s",
-                    sanitise_for_log(plan.request_id),
-                )
-        finally:
-            self._release_durable_learning_lock(
-                user_id=plan.user_id, request_id=plan.request_id
-            )
-
-    # ===============================
-    # private methods
-    # ===============================
-
-    def _durable_learning_lock_key(self, user_id: str) -> str:
-        """Per-user durable-learning in-progress lock key.
-
-        Mirrors ``OperationStateManager._lock_key`` shape
-        (``{service}::{org}::{scope}::lock``) but on a DEDICATED
-        ``durable_learning`` service prefix, distinct from the
-        profile/playbook generation locks and from any extractor bookmark row.
-        """
-        return f"{_DURABLE_LEARNING_LOCK_SERVICE}::{self.org_id}::{user_id}::lock"
-
-    def _acquire_durable_learning_lock(self, *, user_id: str, request_id: str) -> bool:
-        """Try to acquire the per-user durable-learning lock (F4).
-
-        Uses the atomic DB-backed ``try_acquire_in_progress_lock`` (a distinct
-        storage method, NOT one of the learning-write terminals the compute
-        purity contract forbids), so the guard does not trip the compute
-        write-tripwire. Returns ``True`` when acquired (proceed with compute),
-        ``False`` on contention (another same-user durable job holds it).
-        """
-        if self.storage is None:
-            return True
-        result = self.storage.try_acquire_in_progress_lock(
-            self._durable_learning_lock_key(user_id),
-            request_id,
-            stale_lock_seconds=_DURABLE_LOCK_STALE_SECONDS,
-        )
-        return bool(result.get("acquired", False))
-
-    def _release_durable_learning_lock(self, *, user_id: str, request_id: str) -> None:
-        """Release the per-user durable-learning lock iff we still own it.
-
-        Uses ``clear_in_progress_lock_if_owner`` (CAS on the holder) so a job
-        whose lock was already stolen after a stale-timeout does not clobber the
-        new holder's lock.
-        """
-        if self.storage is None:
-            return
-        self.storage.clear_in_progress_lock_if_owner(
-            self._durable_learning_lock_key(user_id),
-            request_id,
-            dict(_DURABLE_LOCK_CLEARED_STATE),
-        )
-
-    def _run_learning_steps(
-        self,
-        *,
-        user_id: str,
-        request_id: str,
-        agent_version: str,
-        force_extraction: bool,
-        skip_aggregation: bool,
-        source: str | None,
-        result: GenerationServiceResult,
-        parallel: bool = True,
-    ) -> None:
-        profile_generation_service = ProfileGenerationService(
-            llm_client=self.client, request_context=self.request_context
-        )
-        source_request_id = request_id
-        profile_generation_request = ProfileGenerationRequest(
-            user_id=user_id,
-            request_id=source_request_id,
-            source=source,
-            force_extraction=force_extraction,
-        )
-
-        playbook_generation_service = PlaybookGenerationService(
-            llm_client=self.client,
-            request_context=self.request_context,
-            skip_aggregation=skip_aggregation,
-        )
-        playbook_generation_request = PlaybookGenerationRequest(
-            request_id=source_request_id,
-            agent_version=agent_version,
-            user_id=user_id,
-            source=source,
-            force_extraction=force_extraction,
-        )
-
-        if not parallel:
-            # Sequential mode: run both services on the calling thread.
-            # Required when the caller holds a commit_scope lock — spawning
-            # child threads inside that scope would deadlock the SQLite RLock.
-            for svc_name, _run in (
-                (
-                    "profile_generation",
-                    lambda: profile_generation_service.run(profile_generation_request),
-                ),
-                (
-                    "playbook_generation",
-                    lambda: playbook_generation_service.run(
-                        playbook_generation_request
-                    ),
-                ),
-            ):
-                try:
-                    _run()
-                except Exception as e:
-                    msg = f"{svc_name} failed: {e}"
-                    with error_tags(
-                        subsystem="generation",
-                        service=svc_name,
-                        request_id=request_id,
-                        error_type=type(e).__name__,
-                    ):
-                        logger.exception(
-                            "Generation service failed for request %s",
-                            sanitise_for_log(request_id),
-                        )
-                    result.warnings.append(msg)
-        else:
-            executor = ThreadPoolExecutor(max_workers=2)
-            try:
-                futures = [
-                    executor.submit(
-                        contextvars.copy_context().run,
-                        profile_generation_service.run,
-                        profile_generation_request,
-                    ),
-                    executor.submit(
-                        contextvars.copy_context().run,
-                        playbook_generation_service.run,
-                        playbook_generation_request,
-                    ),
-                ]
-
-                service_names = ["profile_generation", "playbook_generation"]
-                # Drained for its warnings side-effect; this path keeps no
-                # per-service value (each service already persisted its own).
-                for _ in _completed_within_shared_budget(
-                    list(zip(futures, service_names, strict=True)),
-                    request_id=request_id,
-                    warnings=result.warnings,
-                ):
-                    pass
-            finally:
-                executor.shutdown(wait=False, cancel_futures=True)
-
-        try:
-            schedule_tagging(
-                org_id=self.org_id,
-                user_id=user_id,
-                agent_version=agent_version,
-                request_context=self.request_context,
-                llm_client=self.client,
-            )
-        except Exception:
-            logger.exception(
-                "Failed to schedule tagging for publish request %s",
-                sanitise_for_log(request_id),
             )
 
     def _schedule_post_publish_evaluations(

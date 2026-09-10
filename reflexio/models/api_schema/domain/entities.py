@@ -1617,22 +1617,22 @@ class PublishUserInteractionResponse(BaseModel):
     playbooks_added: int | None = None
     playbooks_updated: int | None = None
     # Set to "deferred" when the server queued extraction asynchronously.
-    # None on the sync (wait_for_response=True) path. Poll GET
-    # /api/learning_status?request_id=... to track progress once the
-    # durable queue is active.
+    # Accepted publication reports done when all required cursors cover it,
+    # otherwise deferred. learning_reason explains coverage/waiting.
     learning_status: str | None = None
+    learning_reason: str | None = None
 
 
 class LearningStatusResponse(BaseModel):
-    """Response for GET /api/learning_status.
+    """Arrival-range coverage across the request's eligible extractor kinds.
 
-    Attributes:
-        status: One of ``pending | processing | done | failed``.
-            Coverage-based: reflects whether a durable learning job has
-            processed through the request's creation timestamp.
+    Transient errors stay pending and retry. Historical requests without
+    admission metadata return not_tracked. The failed value remains accepted
+    for client compatibility with older servers.
     """
 
-    status: Literal["pending", "processing", "done", "failed"]
+    status: Literal["pending", "processing", "done", "failed", "not_tracked"]
+    reason: str | None = None
 
 
 # whoami response — caller identity + resolved storage routing (masked)

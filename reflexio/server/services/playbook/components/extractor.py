@@ -149,6 +149,9 @@ class PlaybookExtractor:
         Returns:
             List of request interaction data models, or None if source filter skips this extractor
         """
+        if self.service_config.window_interactions is not None:
+            return self.service_config.window_interactions
+
         # Get global config values
         config = self.request_context.configurator.get_config()
         global_window_size = getattr(config, "window_size", None) if config else None
@@ -364,7 +367,10 @@ class PlaybookExtractor:
                 "Playbook extraction did not finish: %s",
                 result.finished_reason,
             )
-            if result.finished_reason in {"error", "no_tool_call"}:
+            if (
+                self.service_config.extraction_window_id is not None
+                or result.finished_reason in {"error", "no_tool_call"}
+            ):
                 raise RuntimeError(
                     "Playbook extraction failed without structured output: "
                     f"{result.finished_reason}"

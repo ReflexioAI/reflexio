@@ -54,7 +54,7 @@ _EPOCH_NOW_PATH = (
 def reflexio_instance(tmp_path: pathlib.Path, worker_id: str) -> Reflexio:
     """Create a Reflexio instance with real SQLite storage and a profile-only config.
 
-    ``stride_size=1`` ensures the extractor runs after a single published interaction
+    ``window_size=stride_size=1`` ensures the extractor runs after a single published interaction
     without requiring the default stride of 8.
 
     Args:
@@ -68,6 +68,7 @@ def reflexio_instance(tmp_path: pathlib.Path, worker_id: str) -> Reflexio:
     config = Config(
         storage_config=StorageConfigSQLite(db_path=str(tmp_path / "expiry_test.db")),
         agent_context_prompt="test agent for expiry regression",
+        window_size=1,
         stride_size=1,
         profile_extractor_config=ProfileExtractorConfig(
             extractor_name="expiry_test_extractor",

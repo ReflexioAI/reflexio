@@ -21,7 +21,6 @@ if TYPE_CHECKING:
     from reflexio.server.llm._litellm_types import ModelProvenance
     from reflexio.server.llm.token_accounting import RunTokenTotals
     from reflexio.server.services.base_generation_service import (
-        BaseGenerationService,
         PreparedGenerationRun,
     )
 
@@ -192,46 +191,3 @@ class GenerationComputePlan:
     extraction_run_ids: list[str]
     token_totals: RunTokenTotals | None
     finalization_result: FinalizationResult | None = None
-
-
-@dataclass
-class DeferredLearningPlan:
-    """One durable-learning job's resolved compute output (gate b, Task 8).
-
-    ``GenerationService.compute_deferred_learning`` acquires the same-user guard
-    (F4), then runs profile + playbook compute holding **no**
-    ``commit_scope``, and assembles this plan. It carries each present half as a
-    ``(held_service_instance, its_compute_plan)`` pair so
-    ``persist_deferred_learning`` can apply the fence-critical writes and
-    ``emit_deferred_learning_side_effects`` can fire the post-commit telemetry on
-    the very instances that produced the plans (the single-use-instance invariant
-    that keeps the money helpers' ``self._last_*`` reads valid — see
-    ``BaseGenerationService.emit_generation_side_effects``).
-
-    Attributes:
-        request_id: The job's generation request id (lineage key).
-        user_id: The user the job learns for; also the per-user F4 lock scope.
-        agent_version: Resolved agent version — carried so the post-commit
-            ``schedule_tagging`` dispatch in emit has it (the plan is all emit
-            receives).
-        lock_acquired: ``False`` when the F4 same-user guard denied this job
-            (another durable job for the same user is mid-flight). On ``False``
-            both plan halves are ``None`` and NO LLM/compute ran — the
-            worker (Task 9) must leave the job reclaimable and must NOT
-            ``complete_learning_job`` it.
-        profile: ``(ProfileGenerationService, GenerationComputePlan)`` when the
-            profile extractor produced a plan, else ``None``.
-        playbook: ``(PlaybookGenerationService, GenerationComputePlan)`` when the
-            playbook extractor produced a plan, else ``None``.
-        warnings: Best-effort per-half compute failures (mirrors
-            ``GenerationServiceResult.warnings``) — a failed half is dropped from
-            the plan, the others still persist.
-    """
-
-    request_id: str
-    user_id: str
-    agent_version: str
-    lock_acquired: bool
-    profile: tuple[BaseGenerationService, GenerationComputePlan] | None
-    playbook: tuple[BaseGenerationService, GenerationComputePlan] | None
-    warnings: list[str] = field(default_factory=list)

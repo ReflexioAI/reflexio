@@ -113,7 +113,12 @@ class ShouldRunPrecheckMixin(Generic[TExtractorConfig, TGenerationServiceConfig]
 
         # Skip if org config disables the pre-extraction check
         root_config = self.request_context.configurator.get_config()
-        if root_config and root_config.skip_should_run_check:
+        skip_check = getattr(self, "_window_skip_should_run", None)
+        if (
+            skip_check
+            if skip_check is not None
+            else (root_config and root_config.skip_should_run_check)
+        ):
             logger.info(
                 "skip_should_run_check is enabled for %s, bypassing pre-extraction check",
                 self._get_service_name(),
@@ -194,7 +199,12 @@ class ShouldRunPrecheckMixin(Generic[TExtractorConfig, TGenerationServiceConfig]
                 f"Consolidated {self._get_service_name()} should_run response",
                 content,
             )
-            decision = bool(content and "true" in content.lower())  # type: ignore[reportAttributeAccessIssue]
+            if not isinstance(content, str) or content.strip().lower() not in {
+                "true",
+                "false",
+            }:
+                raise ValueError("Extraction gate returned no valid boolean decision")
+            decision = content.strip().lower() == "true"
             logger.info(
                 "event=consolidated_should_run_end service=%s identifier=%s elapsed_seconds=%.3f decision=%s",
                 self._get_service_name(),
@@ -204,6 +214,8 @@ class ShouldRunPrecheckMixin(Generic[TExtractorConfig, TGenerationServiceConfig]
             )
             return decision
         except Exception as exc:
+            if getattr(self.service_config, "window_interactions", None) is not None:
+                raise
             logger.error(
                 "Consolidated should_generate check failed for %s: %s, defaulting to run",
                 self._get_service_name(),
@@ -246,6 +258,11 @@ class ShouldRunPrecheckMixin(Generic[TExtractorConfig, TGenerationServiceConfig]
         Returns:
             tuple: (session data models, extractor config)
         """
+        explicit = getattr(self.service_config, "window_interactions", None)
+        if explicit is not None:
+            self._last_precheck_sessions = explicit
+            return explicit, extractor_config
+
         root_config = self.request_context.configurator.get_config()
         global_window_size = (
             getattr(root_config, "window_size", None) if root_config else None
