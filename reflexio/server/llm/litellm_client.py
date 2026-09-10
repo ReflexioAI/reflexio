@@ -63,10 +63,20 @@ from reflexio.server.llm._litellm_subprocess import (
     _PromptTokenDetailsSnapshot as _PromptTokenDetailsSnapshot,
 )
 from reflexio.server.llm._litellm_text_generation import (
+    # Re-exported for the enterprise repair-ladder tests, which assert their own
+    # budget against this one. It stays underscore-named because it is internal
+    # to `_litellm_text_generation`; the `as` form is how this file already
+    # surfaces `_litellm_completion_worker`, and it keeps the name out of
+    # `__all__`.
+    _LADDER_WALL_CLOCK_BUDGET_SECONDS as _LADDER_WALL_CLOCK_BUDGET_SECONDS,
+)
+from reflexio.server.llm._litellm_text_generation import (
+    STRUCTURED_OUTPUT_CORRECTION_PREFIX,
     ProviderRequestGuardError,
     StructuredOutputValidator,
     TextGenerationMixin,
     is_structured_output_correction_turn,
+    structured_output_correction_turn,
     structured_output_repair_idempotency_key,
 )
 from reflexio.server.llm._litellm_types import (
@@ -97,8 +107,16 @@ _register_claude_code()
 _register_openclaw()
 
 # Public importer surface (the #1 invariant of the Tier-2.5 decomposition). These
-# five names — plus the test-imported internals re-exported below the split — must
-# stay importable from ``reflexio.server.llm.litellm_client`` for all ~102 importers.
+# names — plus the test-imported internals re-exported below the split — must
+# stay importable from ``reflexio.server.llm.litellm_client`` for all ~102
+# importers.
+#
+# `structured_output_correction_turn` and `STRUCTURED_OUTPUT_CORRECTION_PREFIX`
+# joined them because the enterprise open-world analyst reaches for the repair
+# turn directly, and its boundary guard forbids importing
+# `_litellm_text_generation` (a private module) from enterprise code. Surfacing
+# them here is the sanctioned route: the allowlist in that guard is documented
+# as only ever SHRINKING.
 __all__ = [
     "LiteLLMClient",
     "LiteLLMConfig",
@@ -108,7 +126,9 @@ __all__ = [
     "StructuredOutputValidator",
     "ToolCallingChatResponse",
     "create_litellm_client",
+    "STRUCTURED_OUTPUT_CORRECTION_PREFIX",
     "is_structured_output_correction_turn",
+    "structured_output_correction_turn",
     "structured_output_repair_idempotency_key",
 ]
 
