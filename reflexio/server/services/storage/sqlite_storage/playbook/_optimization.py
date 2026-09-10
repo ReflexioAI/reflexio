@@ -61,6 +61,11 @@ _TERMINAL_OUTCOMES_BY_OPTIMIZER = {
         },
         "abstained": {
             "no_grounded_hypothesis",
+            # The sibling of 'no_grounded_hypothesis': the analyst reached no
+            # hypothesis AND the bundle's skipped-session receipt says the view
+            # it was shown was incomplete. Same arm, same status, opposite
+            # operator instruction -- "show more" rather than "stop tuning".
+            "evidence_view_incomplete",
             "analyst_unqualified",
             "heldout_evidence_failed",
             "stale_incumbent",

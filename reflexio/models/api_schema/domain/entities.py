@@ -117,6 +117,7 @@ __all__ = [
     "OpenWorldDeploymentLifecycleState",
     "OptimizationJobStage",
     "OptimizationTerminalOutcome",
+    "PENDING_WRITER_TERMINAL_OUTCOMES",
     "OptimizationArtifactKind",
     "OptimizationJobClaim",
     "PlaybookOptimizationJob",
@@ -455,6 +456,29 @@ OptimizationJobStage = Literal[
 # reflexio_ext capability_status.py, with ~40 live references. Those are a
 # different vocabulary on a different type, so "grep says it is used" does not
 # make this member reachable.
+#: Members admitted before the code that writes them exists.
+#:
+#: A THIRD classification, and it is not the same thing as
+#: ``RETAINED_UNREACHABLE_TERMINAL_OUTCOMES``. That set is historical -- outcomes
+#: an earlier era could record and no path can reach again. This set is the
+#: opposite direction in time: outcomes a project is about to start writing,
+#: admitted early because the tenant CHECK that admits them is shared between
+#: two projects and lands as ONE migration (two ``CREATE OR REPLACE FUNCTION``
+#: migrations do not merge -- the later silently drops the earlier's outcomes).
+#:
+#: A member here is a TODO with a name, not a permanent state. When the writer
+#: lands it moves into the reachable set in
+#: ``tests/models/test_terminal_outcome_reachability.py`` and out of here.
+PENDING_WRITER_TERMINAL_OUTCOMES: frozenset[str] = frozenset(
+    {
+        # reflexio_ext offline_tuner/open_world scheduled-execution project:
+        # reclaim-or-terminalize before identity validation.
+        "abandoned",
+        # the same project's recorded manifest-conflict skip.
+        "evidence_manifest_conflict",
+    }
+)
+
 RETAINED_UNREACHABLE_TERMINAL_OUTCOMES: frozenset[str] = frozenset(
     {
         "insufficient_negative_evidence",
@@ -502,6 +526,41 @@ OptimizationTerminalOutcome = Literal[
     # its playbook's identity for the rest of the UTC day. See
     # reflexio_ext open_world/models.py and identity.attempt_invocation_identity.
     "invocation_slot_pinned",
+    # Written by reflexio_ext offline_tuner/open_world/runner.py (`_abstain`,
+    # from the discovery-abstention branch) when the analyst reached no
+    # grounded hypothesis AND the frozen bundle's skipped-session receipt is
+    # non-empty -- i.e. the evidence view the analyst was shown was not the
+    # whole corpus. Assigned by the tenant stage-advance RPC's 'abstained' arm
+    # and admitted by playbook_optimization_jobs_terminal_outcome_check since
+    # 20260910010000.
+    #
+    # Split out of 'no_grounded_hypothesis', which carried two OPPOSITE
+    # operational signals: "the evidence carries no agent-side contrast" (stop
+    # tuning this playbook) and "the deciding session was not shown" (show
+    # more). A reader could not tell them apart, so the second read as the
+    # first and the corpus was never widened.
+    "evidence_view_incomplete",
+    # The two below are admitted AHEAD OF THEIR WRITERS. Both belong to the
+    # scheduled-execution project, whose Python lands separately, and both are
+    # here now because their tenant CHECK is here now: one shared migration
+    # carries the vocabulary for two projects (see the header of
+    # supabase/data/tenant/20260910010000), and
+    # test_the_enterprise_tree_agrees_with_the_contracted_oss_vocabulary
+    # asserts this union is SET-EQUAL to that CHECK. Leaving them out of the
+    # Literal would make reading back a job row that carries one raise
+    # ValidationError -- surfacing, through handle_exceptions, as the
+    # 'infrastructure_failure' that gap has already produced once.
+    #
+    # 'abandoned': a freeze that was abandoned rather than attempted. It
+    # replaces the FALSE 'generation_failed' the retention sweep used to stamp
+    # on such a row -- nothing was generated. Assigned by the tenant
+    # stage-advance RPC's 'failed' arm.
+    "abandoned",
+    # 'evidence_manifest_conflict': two sweep ticks collided on one playbook and
+    # the loser was refused at job creation, with no provider call. Recorded
+    # rather than skipped silently, because the conflict IS the concurrency
+    # signal. Also the 'failed' arm.
+    "evidence_manifest_conflict",
 ]
 
 OptimizationArtifactKind = Literal[
