@@ -147,7 +147,8 @@ def test_evaluation_only_publish_waits_and_batches_followup_session_requests(
                 "source": "integration",
                 "agent_version": agent_version,
                 "session_id": ordinary_session_id,
-            }
+            },
+            defer_learning=True,
         )
         assert ordinary.success is True
 

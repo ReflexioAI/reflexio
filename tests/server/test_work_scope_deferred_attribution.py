@@ -35,7 +35,6 @@ from reflexio.server import callback_executor
 from reflexio.server.callback_executor import BoundedCallbackExecutor
 from reflexio.server.extensions import register_service
 from reflexio.server.services import generation_service as generation_service_module
-from reflexio.server.services import publish_learning_worker as plw
 from reflexio.server.services.generation_service import GenerationService
 from reflexio.server.services.playbook_optimizer import scheduler as pb_sched
 from reflexio.server.services.shadow_comparison import worker as shadow_worker
@@ -300,47 +299,6 @@ def test_shadow_comparison_worker_escalates_a_scope_failure(
         f"scope failure did not surface; anomalies={anomalies}"
     )
     assert anomalies[0][1]["project_id"] == "proj-a"
-
-
-def test_publish_learning_worker_escalates_a_scope_failure(
-    failing_provider: _FakeProvider, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    anomalies: list[tuple[str, dict[str, Any]]] = []
-    events: list[str] = []
-    monkeypatch.setattr(
-        plw,
-        "capture_anomaly",
-        lambda message, **tags: anomalies.append((message, tags)),
-    )
-    monkeypatch.setattr(
-        plw,
-        "record_usage_event",
-        lambda **kwargs: events.append(kwargs["event_name"]),
-    )
-
-    worker = plw.PublishLearningWorker(worker_count=1)
-    worker._process_job(
-        plw.PublishLearningJob(
-            org_id="org-1",
-            user_id="user-1",
-            request_id="req-1",
-            session_id="sess-1",
-            source=None,
-            agent_version="v1",
-            force_extraction=False,
-            skip_aggregation=False,
-            project_id="proj-a",
-        )
-    )
-
-    assert [m for m, _ in anomalies] == ["publish_learning.work_scope_failed"], (
-        f"scope failure did not surface; anomalies={anomalies}"
-    )
-    # It must NOT be filed as a routine learning failure — that is the bucket
-    # ordinary LLM/storage hiccups land in, where a dropped job is invisible.
-    assert events == ["learning_scope_failed"], (
-        f"scope failure was misfiled as a routine outcome: {events}"
-    )
 
 
 # ---------------------------------------------------------------------------

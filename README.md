@@ -421,3 +421,13 @@ We welcome contributions! Please see [developer.md](developer.md) for guidelines
 ## License
 
 This project is currently licensed under [Apache License 2.0](LICENSE).
+
+### Durable extraction catch-up
+
+Publishing commits interactions before returning success. Background workers process
+configured sliding windows in admission order, regardless of request boundaries.
+Different users can extract concurrently within `REFLEXIO_PUBLISH_LEARNING_WORKERS`
+(default 4 per process); each user's profile/playbook cursors retry independently.
+A partial window waits for more input or an eligible `force_extraction` request.
+Provider fallback remains enabled. Existing extracted data is preserved, and
+interactions stored before stream admission are not automatically replayed.

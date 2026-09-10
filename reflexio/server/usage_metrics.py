@@ -82,6 +82,13 @@ def configure_usage_event_recorder(recorder: UsageEventRecorder | None) -> None:
     _recorder = recorder
 
 
+def configure_usage_event_exemption_if_unset() -> None:
+    """Explicitly exempt standalone OSS deployments without replacing a recorder."""
+    global _recorder
+    if _recorder is None:
+        _recorder = exempt_usage_event_recorder
+
+
 def exempt_usage_event_recorder(_event: UsageEvent) -> UsageEventDeliveryStatus:
     """Explicitly exempt a deployment from durable usage-event delivery."""
     return UsageEventDeliveryStatus.EXEMPT

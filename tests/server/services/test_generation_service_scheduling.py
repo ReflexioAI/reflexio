@@ -258,6 +258,17 @@ def test_learning_stall_path_calls_post_publish_helper(
         org_id="org_test",
         configurator=MagicMock(name="configurator"),
     )
+    request_context.configurator.get_config.return_value = Config(
+        storage_config=StorageConfigSQLite()
+    )
+    storage.extraction_status.return_value = {
+        "status": "done",
+        "reason": "not_applicable",
+    }
+    monkeypatch.setattr(
+        "reflexio.server.services.durable_learning.local.ensure_local_extraction",
+        lambda _: None,
+    )
     service = GenerationService(
         llm_client=MagicMock(name="llm_client"),
         request_context=cast(Any, request_context),

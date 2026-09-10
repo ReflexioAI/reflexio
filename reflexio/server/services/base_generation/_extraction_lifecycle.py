@@ -224,6 +224,11 @@ class ExtractionRunLifecycleMixin(Generic[TExtractorConfig, TGenerationServiceCo
             run = self.storage.get_agent_run(run_id)
             if run is None:
                 continue
+            if getattr(self, "_window_id", None) and run.status not in (
+                AgentRunStatus.AGENT_COMPLETED,
+                AgentRunStatus.FINALIZING,
+            ):
+                continue  # A replay must not rewind human-resume progress.
             status = (
                 AgentRunStatus.FINALIZED_PENDING_TOOL
                 if run.pending_tool_call_ids
@@ -236,6 +241,10 @@ class ExtractionRunLifecycleMixin(Generic[TExtractorConfig, TGenerationServiceCo
             )
 
     def _mark_extraction_runs_finalization_failed(self, exc: Exception) -> None:
+        # Automatic windows own their retry state; do not also enqueue a resume
+        # finalization that could bill or write outside the window transaction.
+        if getattr(self, "_window_id", None):
+            return
         if self.storage is None:
             return
         root_config = self.request_context.configurator.get_config()

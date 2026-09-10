@@ -1,5 +1,3 @@
-from collections.abc import Callable
-
 from reflexio.lib._base import (
     STORAGE_NOT_CONFIGURED_MSG,
     ReflexioBase,
@@ -29,26 +27,6 @@ from reflexio.models.api_schema.service_schemas import (
 from reflexio.server.services.generation_service import GenerationService
 
 
-def _safe_count(counter: Callable[[], int]) -> int:
-    """Return a storage count, or 0 on failure.
-
-    Used to snapshot profile/playbook counts around a publish so the CLI
-    can report deltas. Never raises — a storage hiccup during counting
-    shouldn't block the publish itself from returning a useful response.
-
-    Args:
-        counter (Callable[[], int]): Zero-arg thunk returning an integer
-            count (e.g. ``storage.count_all_profiles``).
-
-    Returns:
-        int: The count, or 0 if the thunk raised.
-    """
-    try:
-        return counter()
-    except Exception:  # noqa: BLE001
-        return 0
-
-
 class InteractionsMixin(ReflexioBase):
     def publish_interaction(
         self,
@@ -62,12 +40,12 @@ class InteractionsMixin(ReflexioBase):
 
         Args:
             request (Union[PublishUserInteractionRequest, dict]): The publish user interaction request
-            use_publish_limiter: Whether GenerationService should throttle the
-                post-write learning pipeline.
-            publish_limiter_wait_forever: Whether GenerationService should queue
-                indefinitely for that post-write learning limiter.
-            defer_learning: Whether to enqueue post-persist learning instead of
-                running it inline.
+            use_publish_limiter: Retained for compatibility. Automatic extraction
+                always uses the shared durable worker budget.
+            publish_limiter_wait_forever: Retained for compatibility; waiting for
+                coverage is bounded by the publish deadline.
+            defer_learning: Return after durable admission instead of waiting
+                for this request's extraction coverage.
 
         Returns:
             PublishUserInteractionResponse: Response containing success status and message
@@ -76,13 +54,7 @@ class InteractionsMixin(ReflexioBase):
             return PublishUserInteractionResponse(
                 success=False, message=STORAGE_NOT_CONFIGURED_MSG
             )
-        # Snapshot profile + playbook totals before the run so we can report
-        # how many rows the extraction actually produced. These are best-effort
-        # counts — we don't distinguish added vs. updated, only net deltas.
         storage = self._get_storage()
-        before_profiles = _safe_count(storage.count_all_profiles)
-        before_playbooks = _safe_count(storage.count_user_playbooks)
-
         generation_service = GenerationService(
             llm_client=self.llm_client,
             request_context=self.request_context,
@@ -103,8 +75,6 @@ class InteractionsMixin(ReflexioBase):
                 publish_limiter_wait_forever=publish_limiter_wait_forever,
                 defer_learning=defer_learning,
             )
-            after_profiles = _safe_count(storage.count_all_profiles)
-            after_playbooks = _safe_count(storage.count_user_playbooks)
             # Don't concatenate warnings into the message field — they
             # already travel through ``result.warnings`` and the CLI
             # renders them separately. Embedding multi-line error
@@ -118,6 +88,8 @@ class InteractionsMixin(ReflexioBase):
                 )
             else:
                 message = "Interaction published successfully"
+            status = storage.extraction_status(request.user_id, result.request_id or "")
+            counts = storage.extraction_counts(request.user_id, result.request_id or "")
             return PublishUserInteractionResponse(
                 success=True,
                 message=message,
@@ -125,8 +97,10 @@ class InteractionsMixin(ReflexioBase):
                 request_id=result.request_id,
                 storage_type=storage_type,
                 storage_label=storage_label,
-                profiles_added=max(0, after_profiles - before_profiles),
-                playbooks_added=max(0, after_playbooks - before_playbooks),
+                profiles_added=counts["profile"],
+                playbooks_added=counts["playbook"],
+                learning_status="done" if status["status"] == "done" else "deferred",
+                learning_reason=status["reason"],
             )
         except Exception as e:
             return PublishUserInteractionResponse(success=False, message=str(e))

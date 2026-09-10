@@ -1,6 +1,8 @@
 """Interaction route handlers (extracted from api.py, Tier3 A2)."""
 
+import asyncio
 import logging
+import time
 import uuid
 from typing import TYPE_CHECKING
 
@@ -9,13 +11,11 @@ if TYPE_CHECKING:
 
 from fastapi import (
     APIRouter,
-    BackgroundTasks,
     Depends,
     HTTPException,
     Request,
 )
 
-from reflexio.models.api_schema.common import sanitise_for_log
 from reflexio.models.api_schema.retriever_schema import (
     GetInteractionsRequest,
     GetInteractionsViewResponse,
@@ -53,13 +53,10 @@ from reflexio.server.auth import (
 )
 from reflexio.server.cache import reflexio_cache
 from reflexio.server.rate_limit import limiter
-from reflexio.server.routes._common import _run_limited_api
-from reflexio.server.services.retrieval_experiment import (
-    validate_retrieval_experiment_attribution,
-)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+PUBLISH_REQUEST_TIMEOUT_SECONDS = 240.0
 
 
 @router.post(
@@ -96,143 +93,94 @@ def get_session_outcomes(
     response_model_exclude_none=True,
 )
 @limiter.limit("60/minute")  # Rate limit for write operations
-def publish_user_interaction(
+async def publish_user_interaction(
     request: Request,
     payload: PublishUserInteractionRequest,
-    background_tasks: BackgroundTasks,
     org_id: str = Depends(default_get_org_id),
     wait_for_response: bool = False,
     _gate: None = Depends(default_billing_gate("learnings_generated")),  # noqa: B008
 ) -> PublishUserInteractionResponse:
-    # Anything the request validation quietly altered: unrecognised keys that
-    # were stripped, and empty interactions that were dropped. Returned to the
-    # caller AND recorded server-side, because a mis-keyed field is otherwise
-    # silent data loss. Names only, bounded, control characters stripped -- the
-    # values are caller payload and the names are equally caller-controlled.
-    #
-    # INFO, not WARNING: an empty placeholder turn is normal plugin behaviour,
-    # and warning on the routine case trains operators to ignore the channel.
-    payload_warnings = payload.payload_warnings()
-    if payload_warnings:
-        logger.info(
-            "Publish for org %s altered the payload: %s",
-            org_id,
-            "; ".join(payload_warnings),
-        )
+    from reflexio.server.services.durable_learning.waiting import (
+        acquire_ingestion,
+        acquire_waiter,
+        admission_deadline,
+        release_ingestion,
+        release_waiter,
+    )
 
-    try:
-        config = reflexio_cache.get_reflexio(
-            org_id=org_id
-        ).request_context.configurator.get_config()
-        validate_retrieval_experiment_attribution(
-            config=config,
-            org_id=org_id,
-            user_id=payload.user_id,
-            experiment_id=payload.retrieval_experiment_id,
-            arm=payload.retrieval_experiment_arm,
-        )
-    except ValueError as exc:
+    deadline = time.monotonic() + PUBLISH_REQUEST_TIMEOUT_SECONDS
+    payload.request_id = payload.request_id or str(uuid.uuid4())
+    if not await acquire_ingestion(org_id, deadline):
         raise HTTPException(
-            status_code=422,
-            detail=str(exc),
-        ) from exc
-
-    if wait_for_response:
-        # Sync callers wait for the real result, so preserve bounded backpressure
-        # before any storage side effects. The inner service limiter is disabled
-        # because this route already owns the publish slot.
-        sync_response = _run_limited_api(
-            org_id,
-            "publish",
-            lambda: publisher_api.add_user_interaction(
+            status_code=503, detail="Publish capacity deadline exceeded"
+        )
+    token = admission_deadline.set(deadline)
+    try:
+        # Success is returned only after the atomic admission transaction.
+        # Cancellation must not release the slot while ingestion still runs.
+        operation = asyncio.create_task(
+            asyncio.to_thread(
+                publisher_api.add_user_interaction,
                 org_id=org_id,
                 request=payload,
                 use_publish_limiter=False,
-            ),
-        )
-        # Appended, not assigned: `warnings` already carries extraction-stall
-        # warnings from the generation service, which the CLI renders.
-        sync_response.warnings = [*sync_response.warnings, *payload_warnings]
-        return sync_response
-
-    # Resolve the request_id BEFORE backgrounding so we can return it to the
-    # caller for polling. GenerationService uses a caller-supplied request_id
-    # verbatim (and generates one only when absent), so pinning it on the
-    # payload guarantees the background task stores its status under the same
-    # id we hand back here.
-    request_id = payload.request_id or str(uuid.uuid4())
-    payload.request_id = request_id
-    # request_id is caller-supplied (NonEmptyStr: no length cap, no character
-    # restrictions) and is logged below at ERROR, which external reporters ingest as an
-    # event body. A newline in it would forge a line in a shared multi-tenant
-    # log stream -- the same hazard as the unknown field names.
-    safe_request_id = sanitise_for_log(request_id)
-
-    def _publish_task() -> None:
-        try:
-            response = publisher_api.add_user_interaction(
-                org_id=org_id,
-                request=payload,
                 defer_learning=True,
             )
-            # The caller was already handed 200 "queued" below, so a
-            # ``success=False`` return here is otherwise invisible -- it is not
-            # an exception, so the handler underneath never sees it. Log it, or
-            # a rejected publish looks identical to an accepted one from both
-            # ends. Per-interaction shape problems are already caught as a 422
-            # by PublishUserInteractionRequest's validators; this covers
-            # whatever else add_user_interaction can refuse.
-            #
-            # Deliberately NOT logging ``response.message``: on the storage
-            # path it is ``str(e)`` from a catch-all (lib/_interactions.py), an
-            # unbounded exception string with no content-freeness guarantee,
-            # and error reporters may ingest ERROR records as event bodies without
-            # scrubbing them. #377 established that such messages must be
-            # content-free by construction, so log a bounded shape instead.
-            if not response.success:
-                logger.error(
-                    "Background publish rejected for org %s (request_id=%s):"
-                    " %d-char reason withheld (may contain Customer Content)",
-                    org_id,
-                    safe_request_id,
-                    len(response.message or ""),
+        )
+        try:
+            response = await asyncio.wait_for(
+                asyncio.shield(operation), timeout=max(0, deadline - time.monotonic())
+            )
+        except TimeoutError:
+            operation.add_done_callback(lambda _: release_ingestion(org_id))
+            raise HTTPException(
+                status_code=504,
+                detail={
+                    "reason": "admission_timeout",
+                    "request_id": payload.request_id,
+                    "message": "Admission was not confirmed before the deadline; check this request ID before retrying.",
+                },
+            ) from None
+        except asyncio.CancelledError:
+            operation.add_done_callback(lambda _: release_ingestion(org_id))
+            raise
+        except Exception:
+            release_ingestion(org_id)
+            raise
+        else:
+            release_ingestion(org_id)
+    finally:
+        admission_deadline.reset(token)
+    response.warnings = [*response.warnings, *payload.payload_warnings()]
+    if not response.success or not wait_for_response:
+        return response
+    if not acquire_waiter(org_id):
+        response.learning_status = "deferred"
+        response.learning_reason = "waiter_capacity"
+        return response
+    try:
+        storage = reflexio_cache.get_reflexio(org_id=org_id).get_storage()
+        while time.monotonic() < deadline:
+            status = await asyncio.to_thread(
+                storage.extraction_status, payload.user_id, payload.request_id
+            )
+            if status["status"] == "done":
+                counts = await asyncio.to_thread(
+                    storage.extraction_counts, payload.user_id, payload.request_id
                 )
-        except Exception as exc:  # noqa: BLE001 - a background task must never raise past add_task
-            # Same content-freeness problem as response.message above: an
-            # exception string (and its traceback locals) has no guarantee of
-            # being free of Customer Content, and reporters may ingest this as an
-            # event body. Log the type and the raising location -- file:line is
-            # content-free and is the only way to find a background failure --
-            # but never the message.
-            tb = exc.__traceback__
-            while tb is not None and tb.tb_next is not None:
-                tb = tb.tb_next
-            origin = (
-                f"{tb.tb_frame.f_code.co_filename}:{tb.tb_lineno}"
-                if tb is not None
-                else "unknown"
-            )
-            logger.error(
-                "Background publish failed for org %s (request_id=%s): %s at %s"
-                " (message withheld, may contain Customer Content)",
-                org_id,
-                safe_request_id,
-                type(exc).__name__,
-                origin,
-            )
-
-    # Run in background — caller gets immediate acknowledgement.
-    # learning_status="deferred" tells the caller that extraction has not yet
-    # run; they can poll GET /api/learning_status?request_id=... (using the
-    # request_id returned here) to track it.
-    background_tasks.add_task(_publish_task)
-    return PublishUserInteractionResponse(
-        success=True,
-        message="Interaction queued for processing",
-        request_id=request_id,
-        learning_status="deferred",
-        warnings=payload_warnings,
-    )
+                response.learning_status = "done"
+                response.learning_reason = status["reason"]
+                response.profiles_added = counts["profile"]
+                response.playbooks_added = counts["playbook"]
+                return response
+            if await request.is_disconnected():
+                break
+            await asyncio.sleep(min(0.25, max(0, deadline - time.monotonic())))
+        response.learning_status = "deferred"
+        response.learning_reason = "wait_timeout"
+        return response
+    finally:
+        release_waiter(org_id)
 
 
 @router.delete(
@@ -409,24 +357,10 @@ def get_learning_status(
     request_id: str,
     org_id: str = Depends(default_get_org_id),
 ) -> LearningStatusResponse:
-    """Return the coverage-based learning status for a published request.
+    """Report each required cursor's coverage of this request's arrival range.
 
-    The status reflects whether a durable learning job has processed through
-    the request's creation timestamp:
-
-    - ``pending``: not yet picked up.
-    - ``processing``: a worker currently holds the job.
-    - ``done``: at least one completed job covers this request.
-    - ``failed``: a dead job covers this request and no done job does.
-
-    Note: this endpoint reads ``learning_jobs`` rows written by the durable
-    queue. When the durable queue is OFF (in-memory deferred path) it returns
-    absence-based status (``pending`` for recent requests, ``done`` for old
-    ones) — acceptable for v1; the poll contract is tied to the durable queue.
-
-    Raises:
-        HTTPException: 404 when ``request_id`` is not found for this org.
-            Never reports ``done`` for a request that never existed.
+    Pending work may await a full window, capacity, or a retry. Historical
+    requests without admission metadata are not_tracked. Unknown IDs are 404.
     """
     reflexio = reflexio_cache.get_reflexio(org_id=org_id)
     storage = reflexio.request_context.storage
@@ -435,8 +369,5 @@ def get_learning_status(
     req = storage.get_request(request_id)
     if req is None:
         raise HTTPException(status_code=404, detail="request not found")
-    status = storage.get_learning_status_for_request(
-        user_id=req.user_id,
-        request_created_at=float(req.created_at),
-    )
-    return LearningStatusResponse(status=status)
+    status = storage.extraction_status(req.user_id, request_id)
+    return LearningStatusResponse(**status)

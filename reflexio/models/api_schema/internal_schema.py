@@ -11,6 +11,7 @@ from .service_schemas import Interaction, Request
 
 
 class RequestInteractionDataModel(BaseModel):
+    arrival_order: bool = False
     session_id: str
     request: Request
     interactions: list[Interaction]

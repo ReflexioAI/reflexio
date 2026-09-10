@@ -1,25 +1,8 @@
-"""Concurrent playbook extraction (R2 — fixed).
+"""Concurrent users must retain every admitted extraction batch.
 
-Three publishes for distinct user_ids land within ~2s of each other on the
-shared per-org ``playbook_generation`` lock. Pre-fix:
-
-  - The first acquires the lock.
-  - The second and third lose the race; each writes its request_id into
-    ``pending_request_id`` (single slot), with the third overwriting the
-    second.
-  - When the first finishes, ``release_lock`` returns the third request_id,
-    but the rerun loop re-uses the FIRST user's request payload — so the
-    bookmark advances past users 2/3's interactions and they never get
-    extracted.
-
-Post-fix (option (b) from #59): ``pending_request_id`` is replaced by a
-FIFO ``pending_request_queue`` whose entries carry the original request
-payload. The drain loop pops one at a time and re-runs ``_run_generation``
-against THAT request (not the holder's). All three users now see at least
-one raw playbook generated for their distinct corrective signal.
-
-The lock remains per-org so cross-user feedback dedup invariants
-(see playbook_consolidator) are unchanged.
+Each user owns a durable stream and an independent org/user lease. Shared worker
+capacity may delay a user, but cannot overwrite or discard that user's backlog.
+Force barriers make these deliberately small batches eligible immediately.
 """
 
 from __future__ import annotations
@@ -103,10 +86,11 @@ def _publish_for_user(
         {
             "user_id": user_id,
             # Per-user session so concurrent users don't share session state —
-            # this test isolates cross-user lock-queue behavior.
+            # this test isolates concurrent user streams.
             "session_id": f"e2e_test_session_{user_id}",
             "interaction_data_list": interactions,
             "source": "concurrent_test",
+            "force_extraction": True,
             "agent_version": agent_version,
         }
     )
@@ -123,10 +107,7 @@ def test_concurrent_publishes_distinct_users_all_produce_playbooks(
     """Three concurrent publishes for distinct users should each produce
     at least one raw playbook.
 
-    Post-fix: the pending-request queue preserves each blocked publish's
-    payload, so the drain loop reruns extraction against the queued
-    user's interactions instead of the holder's. All three users get at
-    least one raw playbook.
+    Each user's durable admission survives any wait for shared worker capacity.
     """
     agent_version = "v_concurrent_test"
     user_ids = ["concurrent_user_a", "concurrent_user_b", "concurrent_user_c"]

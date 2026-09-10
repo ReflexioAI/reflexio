@@ -109,6 +109,9 @@ class RetentionMixin(ABC):
             count,
             older_than_epoch=older_than_epoch,
         )
+        protect = getattr(self, "filter_extraction_retention", None)
+        if protect is not None:
+            keys = protect(target_name, keys)
         if not keys:
             return 0
         self._retention_perform_delete(target, keys)

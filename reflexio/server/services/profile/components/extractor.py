@@ -138,6 +138,9 @@ class ProfileExtractor:
         Returns:
             List of request interaction data models, or None if source filter skips this extractor
         """
+        if self.service_config.window_interactions is not None:
+            return self.service_config.window_interactions
+
         # Get global config values
         config = self.request_context.configurator.get_config()
         global_window_size = getattr(config, "window_size", None) if config else None
@@ -400,6 +403,10 @@ class ProfileExtractor:
         self._last_resumable_token_totals = sum_trace_tokens(result.trace)
         self._last_model_provenance = result.model_provenance
         if not isinstance(result.output, StructuredProfilesOutput):
+            if self.service_config.extraction_window_id is not None:
+                raise RuntimeError(
+                    f"Profile extraction did not finish: {result.finished_reason}"
+                )
             logger.warning(
                 "Profile extraction did not finish: %s", result.finished_reason
             )

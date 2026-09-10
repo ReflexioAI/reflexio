@@ -461,6 +461,11 @@ class SQLiteAgentRunStoreMixin:
                       AND p.status = ?
                       AND COALESCE(json_extract(p.result, '$.not_applicable'), 0) != 1
                   )
+                  AND (r.id NOT LIKE 'window:%' OR EXISTS (
+                    SELECT 1 FROM extraction_windows w
+                    WHERE w.window_id = substr(r.id, 8)
+                      AND w.completed = 1 AND w.invalidated = 0
+                  ))
                 ORDER BY
                     r.org_id ASC,
                     r.extractor_kind ASC,
@@ -486,7 +491,6 @@ class SQLiteAgentRunStoreMixin:
                 SET status = ?,
                     claimed_by = ?,
                     claimed_at = ?,
-                    resume_attempts = resume_attempts + 1,
                     updated_at = ?
                 WHERE id = ?
                 """,
@@ -523,7 +527,7 @@ class SQLiteAgentRunStoreMixin:
             row = self.conn.execute(
                 """
                 SELECT *
-                FROM _agent_runs
+                FROM _agent_runs r
                 WHERE org_id = ?
                   AND (
                     status = ?
@@ -532,6 +536,11 @@ class SQLiteAgentRunStoreMixin:
                 )
                   AND committed_output IS NOT NULL
                   AND (next_resume_at IS NULL OR next_resume_at <= ?)
+                  AND (r.id NOT LIKE 'window:%' OR EXISTS (
+                    SELECT 1 FROM extraction_windows w
+                    WHERE w.window_id = substr(r.id, 8)
+                      AND w.completed = 1 AND w.invalidated = 0
+                  ))
                 ORDER BY
                     org_id ASC,
                     extractor_kind ASC,

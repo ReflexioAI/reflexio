@@ -28,19 +28,37 @@ def _request_context(
     )
 
 
-def test_maybe_start_resume_scheduler_skips_when_feature_disabled(monkeypatch):
+def test_resume_scheduler_observes_feature_enabled_after_startup(monkeypatch):
+    context = _request_context(
+        storage=SimpleNamespace(
+            list_resumable_work_org_ids=MagicMock(return_value=[]),
+            expire_pending_tool_calls=MagicMock(return_value=0),
+        )
+    )
+    context.configurator.get_config().pending_tool_call_config.enabled = False
     monkeypatch.setattr(
         resume_scheduler,
         "pending_tool_calls_enabled",
-        lambda _ctx: False,
+        lambda ctx: ctx.configurator.get_config().pending_tool_call_config.enabled,
     )
-
+    monkeypatch.setattr(
+        resume_scheduler.ExtractionResumeScheduler, "start", lambda _self: None
+    )
+    drain = MagicMock(return_value=0)
+    monkeypatch.setattr(
+        resume_scheduler,
+        "ExtractionResumeWorker",
+        lambda **_kwargs: SimpleNamespace(drain=drain),
+    )
     scheduler = resume_scheduler.maybe_start_resume_scheduler(
-        cast(Callable[[str], RequestContext], lambda org_id: _request_context(org_id)),
+        cast(Callable[[str], RequestContext], lambda _org_id: context),
         bootstrap_org_id="org_1",
     )
-
-    assert scheduler is None
+    scheduler._run_once()
+    drain.assert_not_called()
+    context.configurator.get_config().pending_tool_call_config.enabled = True
+    scheduler._run_once()
+    drain.assert_called_once_with(max_runs=10)
 
 
 def test_resume_scheduler_recovers_when_first_org_appears(monkeypatch):

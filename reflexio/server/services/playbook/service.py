@@ -119,6 +119,8 @@ class PlaybookGenerationServiceConfig:
     rerun_end_time: int | None = None
     auto_run: bool = True
     force_extraction: bool = False
+    window_interactions: list[RequestInteractionDataModel] | None = None
+    extraction_window_id: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.user_id, str):
@@ -215,6 +217,11 @@ class PlaybookGenerationService(
         self, _candidates: list[UserPlaybook]
     ) -> list[RequestInteractionDataModel]:
         """Reconstruct the exact persisted extraction window once per run."""
+        if (
+            self.service_config is not None
+            and self.service_config.window_interactions is not None
+        ):
+            return self.service_config.window_interactions
         if self._review_window_cache is None:
             if self.service_config is None:
                 raise PlaybookReviewWindowError(
@@ -732,6 +739,11 @@ class PlaybookGenerationService(
         if finalization_run_id is None:
             if plan is not None:
                 with self.storage.commit_scope():  # type: ignore[reportOptionalMemberAccess]
+                    from reflexio.server.services.durable_learning.user_lease import (
+                        fence_explicit_extraction,
+                    )
+
+                    fence_explicit_extraction(self.storage)  # type: ignore[reportArgumentType]
                     self._persist_write_plan(plan)
                 self._dispatch_playbook_schedulers(plan)
             return FinalizationResult(
@@ -775,6 +787,11 @@ class PlaybookGenerationService(
 
         try:
             with self.storage.commit_scope():  # type: ignore[reportOptionalMemberAccess]
+                from reflexio.server.services.durable_learning.user_lease import (
+                    fence_explicit_extraction,
+                )
+
+                fence_explicit_extraction(self.storage)  # type: ignore[reportArgumentType]
                 receipt = self.storage.get_agent_run_finalization_receipt(  # type: ignore[reportOptionalMemberAccess]
                     run_id=finalization_run_id,
                     entity_type=entity_type,
@@ -985,7 +1002,9 @@ class PlaybookGenerationService(
     # Rerun hook implementations (override base class methods)
     # ===============================
 
-    def _pre_process_rerun(self, request: RerunPlaybookGenerationRequest) -> None:
+    def _pre_process_rerun(
+        self, request: RerunPlaybookGenerationRequest, *, user_id: str | None = None
+    ) -> None:
         """Delete existing pending raw entries before generating new ones.
 
         This ensures that each rerun starts fresh without accumulating pending entries
@@ -997,6 +1016,7 @@ class PlaybookGenerationService(
         deleted_count = self.storage.delete_all_user_playbooks_by_status(  # type: ignore[reportOptionalMemberAccess]
             status=Status.PENDING,
             agent_version=request.agent_version,
+            user_id=user_id,
         )
         logger.info(
             "Deleted %d existing pending raw entries before rerun (agent_version=%s)",

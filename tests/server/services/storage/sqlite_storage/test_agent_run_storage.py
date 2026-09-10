@@ -721,7 +721,7 @@ def test_sqlite_claim_requires_resolved_unconsumed_dependency(storage):
     assert claimed.id == "run_1"
     assert claimed.status == AgentRunStatus.RESUMING
     assert claimed.claimed_by == "worker_1"
-    assert claimed.resume_attempts == 1
+    assert claimed.resume_attempts == 0
 
     assert storage.consume_run_tool_dependencies("run_1") == 1
     assert (
@@ -976,3 +976,51 @@ def test_sqlite_search_prior_tool_calls_scores_before_limit(storage):
 
     assert [match.pending_tool_call_id for match in matches] == [old_relevant.id]
     assert matches[0].similarity == 1.0
+
+
+@pytest.mark.parametrize("finalization", [False, True])
+def test_window_followups_wait_for_cursor_commit(storage, finalization):
+    now = datetime.now(UTC)
+    status = (
+        AgentRunStatus.FINALIZATION_FAILED
+        if finalization
+        else AgentRunStatus.RESUME_READY
+    )
+    storage.create_agent_run(
+        replace(
+            _agent_run("window:w", status),
+            committed_output={"profiles": []},
+        )
+    )
+    storage.create_pending_tool_call(
+        replace(
+            _pending_call("window-tool", now=now),
+            status=PendingToolCallStatus.RESOLVED,
+            result={"answer": "yes"},
+            resolved_at=now,
+        )
+    )
+    storage.attach_run_tool_dependency(
+        RunToolDependencyRecord(
+            run_id="window:w",
+            pending_tool_call_id="window-tool",
+            resolved_at=now,
+        )
+    )
+    with storage._stream_sql() as db:
+        db.query(
+            "INSERT INTO extraction_windows(window_id,user_id,kind,predecessor,end_seq,manifest,policy) VALUES ('w','user_1','profile',0,10,'[]','{}')"
+        )
+    claim = (
+        storage.claim_finalization_failed_agent_run
+        if finalization
+        else storage.claim_ready_agent_run
+    )
+    assert claim(org_id="org_1", worker_id="worker", now=now) is None
+    with storage._stream_sql() as db:
+        db.query("UPDATE extraction_windows SET completed=1 WHERE window_id='w'")
+    assert claim(org_id="org_1", worker_id="worker", now=now).id == "window:w"
+    storage.update_agent_run_status("window:w", status)
+    with storage._stream_sql() as db:
+        db.query("UPDATE extraction_windows SET invalidated=1 WHERE window_id='w'")
+    assert claim(org_id="org_1", worker_id="worker", now=now) is None

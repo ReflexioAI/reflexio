@@ -74,6 +74,8 @@ class ProfileGenerationServiceConfig:
     rerun_end_time: int | None = None
     auto_run: bool = True
     force_extraction: bool = False
+    window_interactions: list[RequestInteractionDataModel] | None = None
+    extraction_window_id: str | None = None
 
 
 class ProfileGenerationService(
@@ -389,6 +391,11 @@ class ProfileGenerationService(
         if finalization_run_id is None:
             if plan is not None:
                 with self.storage.commit_scope():  # type: ignore[reportOptionalMemberAccess]
+                    from reflexio.server.services.durable_learning.user_lease import (
+                        fence_explicit_extraction,
+                    )
+
+                    fence_explicit_extraction(self.storage)  # type: ignore[reportArgumentType]
                     self._persist_write_plan(plan)
             return FinalizationResult(learning_ids, won_receipt=False)
 
@@ -425,6 +432,11 @@ class ProfileGenerationService(
 
         try:
             with self.storage.commit_scope():  # type: ignore[reportOptionalMemberAccess]
+                from reflexio.server.services.durable_learning.user_lease import (
+                    fence_explicit_extraction,
+                )
+
+                fence_explicit_extraction(self.storage)  # type: ignore[reportArgumentType]
                 receipt = self.storage.get_agent_run_finalization_receipt(  # type: ignore[reportOptionalMemberAccess]
                     run_id=finalization_run_id,
                     entity_type=entity_type,

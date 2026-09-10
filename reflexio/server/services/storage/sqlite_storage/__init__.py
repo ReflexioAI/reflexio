@@ -7,6 +7,7 @@ from ._base import (
     _vector_rank_rows,
     parse_status,
 )
+from ._extraction_stream import SQLiteExtractionStreamMixin
 from ._extras import ExtrasMixin
 from ._learning_jobs import SQLiteLearningJobStoreMixin
 from ._lineage import SQLiteLineageMixin
@@ -43,6 +44,7 @@ from .profiles import InteractionStoreMixin, ProfileSearchMixin, ProfileStoreMix
 
 
 class SQLiteStorage(
+    SQLiteExtractionStreamMixin,
     SQLiteLearningJobStoreMixin,
     SQLiteAgentRunStoreMixin,
     SQLitePendingToolCallStoreMixin,

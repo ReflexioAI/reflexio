@@ -22,8 +22,8 @@ strings before deleting old import paths in the same PR.
 
 | File | Purpose |
 |------|---------|
-| `generation_service.py` | `GenerationService` — saves interactions, runs/defer-runs profile + playbook generation, schedules deferred evaluation when `session_id` is present, exposes `run_deferred_learning()` for the non-durable publish worker, and the durable `compute_deferred_learning()` → `persist_deferred_learning()` → `emit_deferred_learning_side_effects()` split (compute outside any scope; only persist + fence inside `commit_scope()`). |
-| `publish_learning_worker.py` | Deferred post-persist publish learning worker — queues async publish learning after durable interaction writes and requeues under publish limiter pressure. |
+| `generation_service.py` | `GenerationService` — admits interactions through the durable stream engine, schedules deferred evaluation, and coordinates manual generation under the shared user lease. |
+
 | `search_metering_worker.py` | Bounded process-local search-metering queue. Four daemon workers emit `search_request` and `learning_applied` after the response path, with fail-open drops, a five-second shutdown drain, and trace-linked `search.metering` transactions; persistence requires a registered usage recorder. |
 | `base_generation_service.py` + `base_generation/` | `BaseGenerationService` stable import surface plus mixins for batch progress, config filtering, extraction lifecycle, should-run prechecks, status transitions, and usage billing. Per-extractor timeout `EXTRACTOR_TIMEOUT_SECONDS = 300`. |
 | `operation_state_utils.py` | `OperationStateManager` — all `_operation_state` access (progress, concurrency locks, extractor/aggregator bookmarks, cluster fingerprints, cancellation). |
@@ -42,7 +42,7 @@ strings before deleting old import paths in the same PR.
 
 | Directory | Purpose |
 |-----------|---------|
-| `durable_learning/` | Durable `learning_jobs` scheduler + worker. Gated by `REFLEXIO_DURABLE_LEARNING_QUEUE`; discovers orgs with pending work, claims jobs with leases, then per job runs `compute_deferred_learning()` **outside** any writer transaction, applies `persist_deferred_learning()` + fenced `complete_learning_job()` inside a short `storage.commit_scope()`, and fires `emit_deferred_learning_side_effects()` post-commit — fenced completion guarantees exactly-once side effects. |
+| `durable_learning/` | `admission.py` commits incoming streams; `scheduler.py` / `worker.py` run bounded user turns; `window_executor.py` / `window_codec.py` compute frozen windows; `user_lease.py` shares ownership with manual/resumed generation; `waiting.py` bounds HTTP waits; `local.py` recovers standalone-library work. |
 | `extraction/` | Shared async extraction runtime: `resumable_agent.py`, `resume_scheduler.py`, `resume_worker.py`, `pending_tool_call_dispatch.py` (`ask_human`), `prior_answer_search.py`, `agent_run_records.py`, and `outcome.py`. Long-horizon / tool-mediated extraction continues outside the request path. See [README](extraction/README.md). |
 
 ## Evaluation, Search & Integrations
@@ -65,7 +65,7 @@ strings before deleting old import paths in the same PR.
 
 | Path | Purpose |
 |------|---------|
-| `storage/` | `storage_base/` and `sqlite_storage/` keep legacy domain facades while focused subpackages own `profiles/`, `playbook/`, `agent_run/`, `governance`, durable `learning_jobs`, and SQLite `base/` helpers. SQLite hybrid search preserves Porter FTS for ASCII and adds bounded Unicode substring candidates only when a query contains at least one non-ASCII alphanumeric character, including mixed-script queries; emoji-only and punctuation-only queries are ineligible. `storage_base/playbook/_aggregation.py` defines fenced aggregation state; SQLite implements it in the matching playbook package. Access via `request_context.storage` only. |
+| `storage/` | `storage_base/` and `sqlite_storage/` keep legacy domain facades while focused subpackages own `profiles/`, `playbook/`, `agent_run/`, `governance`, durable extraction streams, and SQLite `base/` helpers. SQLite hybrid search preserves Porter FTS for ASCII and adds bounded Unicode substring candidates only when a query contains at least one non-ASCII alphanumeric character, including mixed-script queries; emoji-only and punctuation-only queries are ineligible. `storage_base/playbook/_aggregation.py` defines fenced aggregation state; SQLite implements it in the matching playbook package. Access via `request_context.storage` only. |
 | `configurator/` | `DefaultConfigurator` — loads YAML config and creates the storage backend. |
 
 ## Key Rules
@@ -74,7 +74,7 @@ strings before deleting old import paths in the same PR.
 - **NEVER import storage implementations directly** — use `request_context.storage` (`BaseStorage`).
 - **ALWAYS use `LiteLLMClient`** for completions/embeddings and `request_context.prompt_manager.render_prompt(...)` for prompts — no hardcoded prompts, no direct OpenAI/Claude clients.
 - **All `_operation_state` writes go through `OperationStateManager`** — don't touch the table directly (it backs locks, bookmarks, progress, and cancellation).
-- **All durable queue claims go through `LearningJobStoreABC`** — do not update `learning_jobs` directly; completion is fenced by `claim_token` and must roll back the surrounding `commit_scope` when superseded.
+- **Automatic extraction uses `storage_base/_extraction_stream.py`** — admission locks the user work row first; window output writes, cursor advancement and receipts share one fenced transaction. Legacy `learning_jobs` is retained only for reconciliation.
 - **Aggregation state is per agent version** — scheduled intake, centroid matching, cluster membership, invalidation, and agent-playbook generation must never cross versions; keep LLM and clustering work outside `commit_scope()`.
 - **`tool_can_use` lives at root `Config`** — shared by playbook extraction and success evaluation, not per-service.
 - **Preserve governance subject refs/barriers** — route validation through `services/governance/` and `storage/governance_validation.py`; do not bypass retention or subject-write checks in storage implementations.

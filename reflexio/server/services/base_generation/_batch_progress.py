@@ -228,7 +228,9 @@ class BatchProgressMixin(Generic[TRequest]):  # noqa: UP046
         """
         raise NotImplementedError("Rerun not supported by this service")
 
-    def _pre_process_rerun(self, request: TRequest) -> None:  # noqa: B027
+    def _pre_process_rerun(
+        self, request: TRequest, *, user_id: str | None = None
+    ) -> None:  # noqa: B027
         """Hook called before processing rerun items.
 
         Override in subclasses to perform cleanup or preparation before rerun.
@@ -276,7 +278,12 @@ class BatchProgressMixin(Generic[TRequest]):  # noqa: UP046
                 )
 
             # 3. Pre-process hook (e.g., delete existing pending items)
-            self._pre_process_rerun(request)
+            if getattr(self, "EMITS_LEARNING_BILLING", False):
+                # Each user's destructive preparation executes inside its lease
+                # immediately before generation, rather than sweeping all users.
+                self._rerun_preprocess_request = request
+            else:
+                self._pre_process_rerun(request)
 
             # 4. Run batch with progress tracking
             users_processed, total_generated = self._run_batch_with_progress(
@@ -296,3 +303,5 @@ class BatchProgressMixin(Generic[TRequest]):  # noqa: UP046
                 f"Failed to run {self._get_base_service_name()}: {str(e)}",
                 0,
             )
+        finally:
+            self._rerun_preprocess_request = None

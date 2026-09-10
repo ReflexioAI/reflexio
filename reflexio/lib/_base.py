@@ -111,6 +111,19 @@ class ReflexioBase:
         )
 
         self.llm_client = create_generation_litellm_client(self.request_context)
+        from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
+        from reflexio.server.usage_metrics import (
+            configure_usage_event_exemption_if_unset,
+        )
+
+        if isinstance(self.request_context.storage, SQLiteStorage):
+            configure_usage_event_exemption_if_unset()
+        # Restart recovery is attached to engine initialization, not publication.
+        from reflexio.server.services.durable_learning.local import (
+            ensure_local_extraction,
+        )
+
+        ensure_local_extraction(self.request_context)
 
     def _is_storage_configured(self) -> bool:
         """Check if storage is configured and available.

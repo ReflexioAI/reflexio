@@ -1214,6 +1214,8 @@ class UserPlaybookStoreMixin:
         status: Status,
         agent_version: str | None = None,
         playbook_name: str | None = None,
+        *,
+        user_id: str | None = None,
     ) -> int:
         # Bulk delete-by-status emits no hard_delete lineage events (parity with
         # the Supabase backend's emit_hard_delete=False path). SQLite's aggregation
@@ -1222,6 +1224,9 @@ class UserPlaybookStoreMixin:
         # _delete_items_by_status(Status.ARCHIVED).
         where = "status = ?"
         params: list[Any] = [status.value]
+        if user_id is not None:
+            where += " AND user_id = ?"
+            params.append(user_id)
         if agent_version is not None:
             where += " AND agent_version = ?"
             params.append(agent_version)

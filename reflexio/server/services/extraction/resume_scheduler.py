@@ -104,14 +104,14 @@ class ExtractionResumeScheduler(ThreadedScheduler):
             if not pending_tool_calls_enabled(ctx):
                 return
             self._expire_pending_tool_calls(ctx)
-            resumed = ExtractionResumeWorker(request_context=ctx).drain(
+            inspected = ExtractionResumeWorker(request_context=ctx).drain(
                 max_runs=self.max_runs_per_tick
             )
-            if resumed:
+            if inspected:
                 logger.info(
-                    "event=extraction_resume_scheduler_tick org_id=%s resumed=%d",
+                    "event=extraction_resume_scheduler_tick org_id=%s claims_inspected=%d",
                     org_id,
-                    resumed,
+                    inspected,
                 )
         except Exception as exc:
             with error_tags(
@@ -166,31 +166,13 @@ def maybe_start_resume_scheduler(
     *,
     bootstrap_org_id: str,
     org_id_provider: Callable[[], list[str]] | None = None,
-) -> ExtractionResumeScheduler | None:
-    """Start the scheduler only when the bootstrap-org config enables the feature.
+) -> ExtractionResumeScheduler:
+    """Start discovery; gate each organization's execution on its current config.
 
-    Args:
-        request_context_factory: Builds an org-scoped :class:`RequestContext`.
-        bootstrap_org_id: Org used to read config and to seed cross-org discovery.
+    A disabled bootstrap org must not disable recovery for other organizations
+    or for a feature enabled after startup. Provider discovery runs before the
+    bootstrap lookup, so an empty platform can safely wait for its first org.
     """
-    try:
-        ctx = request_context_factory(bootstrap_org_id)
-        if not pending_tool_calls_enabled(ctx):
-            return None
-    except Exception as exc:
-        if bootstrap_org_id == DEFAULT_ORG_ID and org_id_provider is not None:
-            logger.info(
-                "event=extraction_resume_scheduler_start_deferred "
-                "reason=no_organizations"
-            )
-        else:
-            logger.warning(
-                "event=extraction_resume_scheduler_start_skipped error_type=%s error=%s",
-                type(exc).__name__,
-                exc,
-            )
-            return None
-
     scheduler = ExtractionResumeScheduler(
         request_context_factory=request_context_factory,
         bootstrap_org_id=bootstrap_org_id,

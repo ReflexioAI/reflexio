@@ -23,6 +23,7 @@ from ._agent_run import (
 )
 from ._base import BaseStorageCore, matches_status_filter
 from ._commit_scope import CommitScopeMixin
+from ._extraction_stream import ExtractionStreamStore
 from ._extras import ExtrasMixin
 from ._learning_jobs import LearningJob, LearningJobStatus, LearningJobStoreABC
 from ._lineage import EntityType, LineageEventMixin
@@ -48,6 +49,7 @@ from .profiles import InteractionStoreMixin, ProfileSearchMixin, ProfileStoreMix
 
 
 class BaseStorage(
+    ExtractionStreamStore,
     LearningJobStoreABC,
     CommitScopeMixin,
     AgentRunMixin,

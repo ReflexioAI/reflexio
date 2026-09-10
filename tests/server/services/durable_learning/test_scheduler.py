@@ -1,239 +1,104 @@
-"""Tests for DurableLearningScheduler — Task 6.
+"""Fair bounded discovery and library restart recovery use the same engine."""
 
-Headline: one tick discovers orgs-with-work and drains each via the worker,
-proving multi-ref capability (two org_ids backed by two storages, both drained
-in a single _run_once).
-
-SQLite storage; LLM mocked globally by conftest; embeddings disabled
-(REFLEXIO_EMBEDDING_PROVIDER=off) so extraction writes land with empty vectors
-without loading the local ONNX model.
-"""
-
-from __future__ import annotations
-
-import tempfile
 import time
 
-import pytest
-
-from reflexio.models.api_schema.domain.entities import Interaction, Request
 from reflexio.server.api_endpoints.request_context import RequestContext
-from reflexio.server.services.durable_learning.scheduler import (
-    DurableLearningScheduler,
-)
+from reflexio.server.services.durable_learning.scheduler import DurableLearningScheduler
 
 
-@pytest.fixture(autouse=True)
-def _disable_embeddings(monkeypatch):
-    """Disable the local ONNX embedder so extraction runs without model load."""
-    monkeypatch.setenv("REFLEXIO_EMBEDDING_PROVIDER", "off")
+def _unused_context(_: str) -> RequestContext:
+    raise AssertionError("This test must not construct a request context")
 
 
-def _factory(base_dir: str):
-    """Return a request-context factory pointing every org at ``base_dir``."""
-
-    def _make(org_id: str) -> RequestContext:
-        return RequestContext(org_id=org_id, storage_base_dir=base_dir)
-
-    return _make
-
-
-def _routing_factory(dir_by_org: dict[str, str]):
-    """Return a factory that routes each org to its own storage base dir.
-
-    Models the enterprise cross-ref case in miniature: each org resolves to a
-    distinct storage (a distinct SQLite DB file == a distinct data ref).
-    """
-
-    def _make(org_id: str) -> RequestContext:
-        return RequestContext(org_id=org_id, storage_base_dir=dir_by_org[org_id])
-
-    return _make
-
-
-def _seed_pending_job(
-    storage,
-    *,
-    org_id: str,
-    user_id: str,
-    request_id: str,
-) -> None:
-    """Persist a request + interaction + a pending learning job (no embeddings)."""
-    assert storage is not None
-    req = Request(
-        request_id=request_id,
-        user_id=user_id,
-        session_id="sess1",
-        agent_version="v1",
-        source="test_src",
+def test_scheduler_always_starts_and_stops():
+    scheduler = DurableLearningScheduler(
+        request_context_factory=_unused_context, org_ids_provider=lambda: []
     )
-    interaction = Interaction(
-        user_id=user_id,
-        request_id=request_id,
-        content="test interaction content",
-        embedding=[],
+    scheduler.start()
+    try:
+        assert scheduler.is_running()
+    finally:
+        scheduler.stop()
+    assert not scheduler.is_running()
+
+
+def test_round_robin_orgs_and_no_claim_when_budget_busy(monkeypatch):
+    monkeypatch.setattr(
+        "reflexio.server.services.durable_learning.scheduler.worker_count", lambda: 1
     )
-    with storage.commit_scope():
-        storage.add_request(req)
-        storage.add_user_interactions_bulk(
-            user_id, [interaction], embeddings_prepared=True
+    scheduler = DurableLearningScheduler(
+        request_context_factory=_unused_context,
+        org_ids_provider=lambda: ["b", "a", "c"],
+    )
+    seen = []
+    monkeypatch.setattr(
+        scheduler._worker, "start_org", lambda org, _lease: seen.append(org) or True
+    )
+    for _ in range(5):
+        scheduler._run_once()
+    assert seen == ["a", "b", "c", "a", "b"]
+    monkeypatch.setattr(scheduler._worker, "start_org", lambda *_: False)
+    scheduler._run_once()
+    assert scheduler._last_org == "b"
+
+
+def test_library_recovers_persisted_backlog_without_new_publish(tmp_path, monkeypatch):
+    from reflexio.lib.reflexio_lib import Reflexio
+    from reflexio.models.config_schema import (
+        Config,
+        ProfileExtractorConfig,
+        StorageConfigSQLite,
+    )
+    from reflexio.server.services.configurator.configurator import DefaultConfigurator
+    from reflexio.server.services.durable_learning import local
+    from reflexio.server.services.profile.service import ProfileGenerationService
+
+    org = "restart"
+    config = DefaultConfigurator(org_id=org, base_dir=str(tmp_path))
+    config.set_config(
+        Config(
+            storage_config=StorageConfigSQLite(db_path=str(tmp_path / "restart.db")),
+            window_size=1,
+            stride_size=1,
+            profile_extractor_config=ProfileExtractorConfig(
+                extraction_definition_prompt="Preferences"
+            ),
+            user_playbook_extractor_config=None,
         )
-        storage.enqueue_learning_job(
-            org_id=org_id,
-            user_id=user_id,
-            request_id=request_id,
-            covers_through=float(int(time.time())),
+    )
+    with monkeypatch.context() as paused:
+        paused.setattr(local, "ensure_local_extraction", lambda _: None)
+        first = Reflexio(
+            org_id=org, storage_base_dir=str(tmp_path), configurator=config
         )
-
-
-def _still_pending(storage, user_id: str) -> bool:
-    """Whether ``user_id`` still has a claimable (pending/failed) job."""
-    claimed = [
-        j
-        for j in storage.claim_learning_jobs(
-            claimed_by="probe", limit=10, lease_seconds=300
+        response = first.publish_interaction(
+            {
+                "request_id": "r",
+                "user_id": "u",
+                "session_id": "s",
+                "interaction_data_list": [{"content": "I prefer concise answers"}],
+            },
+            defer_learning=True,
         )
-        if j.user_id == user_id
-    ]
-    return bool(claimed)
-
-
-# ---------------------------------------------------------------------------
-# Test 1: gated off by default (flag unset → start() spawns no thread)
-# ---------------------------------------------------------------------------
-
-
-def test_scheduler_gated_off_by_default(monkeypatch):
-    """With REFLEXIO_DURABLE_LEARNING_QUEUE unset/false, start() must not spawn
-    the daemon thread (``_should_start`` vetoes)."""
-    monkeypatch.delenv("REFLEXIO_DURABLE_LEARNING_QUEUE", raising=False)
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        scheduler = DurableLearningScheduler(
-            request_context_factory=_factory(tmp_dir),
-            org_ids_provider=lambda: [],
-        )
-        scheduler.start()
-        try:
-            assert not scheduler.is_running(), (
-                "scheduler must not start when the queue flag is off"
-            )
-        finally:
+        assert response.success
+        assert first.get_storage().extraction_status("u", "r")["status"] == "pending"
+    monkeypatch.setattr(
+        ProfileGenerationService, "_should_run_before_extraction", lambda *_: False
+    )
+    monkeypatch.setenv("REFLEXIO_DURABLE_LEARNING_POLL_SECONDS", ".05")
+    # A new facade opens the existing DB and discovers its work at construction.
+    second = Reflexio(org_id=org, storage_base_dir=str(tmp_path), configurator=config)
+    try:
+        deadline = time.monotonic() + 5
+        while (
+            second.get_storage().extraction_status("u", "r")["status"] != "done"
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.02)
+        assert second.get_storage().extraction_status("u", "r")["status"] == "done"
+    finally:
+        with local._lock:
+            scheduler = local._schedulers.pop(str(tmp_path), None)
+            local._contexts.pop((org, str(tmp_path)), None)
+        if scheduler:
             scheduler.stop()
-
-
-# ---------------------------------------------------------------------------
-# Test 2: one tick drains the discovered orgs
-# ---------------------------------------------------------------------------
-
-
-def test_run_once_drains_discovered_orgs():
-    """_run_once drives the worker over each org the provider yields; a seeded
-    pending job is drained to status='done' and the poll interval returned."""
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        factory = _factory(tmp_dir)
-        ctx = factory("org_a")
-        assert ctx.storage is not None
-        _seed_pending_job(
-            ctx.storage, org_id="org_a", user_id="u_a", request_id="req_a"
-        )
-
-        scheduler = DurableLearningScheduler(
-            request_context_factory=factory,
-            org_ids_provider=lambda: ["org_a"],
-        )
-        interval = scheduler._run_once()
-
-        assert interval == 2.0, "default poll interval is 2.0s"
-        assert (
-            ctx.storage.get_learning_status_for_request(
-                user_id="u_a", request_created_at=1.0
-            )
-            == "done"
-        ), "the discovered org's pending job must reach status='done' after the tick"
-
-
-# ---------------------------------------------------------------------------
-# Test 3: one tick drains MULTIPLE sources (multi-ref capability)
-# ---------------------------------------------------------------------------
-
-
-def test_scheduler_drains_multiple_sources_in_one_tick():
-    """A provider yielding two org_ids backed by two distinct storages (two DB
-    files == two data refs) must have BOTH drained in a single _run_once.
-
-    Proves the mechanism supports per-ref fan-out without wiring the enterprise
-    cross-ref enumerator (that provider is a deferred follow-up).
-    """
-    with (
-        tempfile.TemporaryDirectory() as dir_a,
-        tempfile.TemporaryDirectory() as dir_b,
-    ):
-        factory = _routing_factory({"org_a": dir_a, "org_b": dir_b})
-
-        ctx_a = factory("org_a")
-        ctx_b = factory("org_b")
-        assert ctx_a.storage is not None and ctx_b.storage is not None
-        _seed_pending_job(
-            ctx_a.storage, org_id="org_a", user_id="u_a", request_id="req_a"
-        )
-        _seed_pending_job(
-            ctx_b.storage, org_id="org_b", user_id="u_b", request_id="req_b"
-        )
-
-        scheduler = DurableLearningScheduler(
-            request_context_factory=factory,
-            org_ids_provider=lambda: ["org_a", "org_b"],
-        )
-        scheduler._run_once()
-
-        assert (
-            ctx_a.storage.get_learning_status_for_request(
-                user_id="u_a", request_created_at=1.0
-            )
-            == "done"
-        ), "org_a's job must reach status='done'"
-        assert (
-            ctx_b.storage.get_learning_status_for_request(
-                user_id="u_b", request_created_at=1.0
-            )
-            == "done"
-        ), "org_b's job (a second ref) must also reach status='done' in the same tick"
-
-
-# ---------------------------------------------------------------------------
-# Test 4: one org failing does not abort the tick (per-org isolation)
-# ---------------------------------------------------------------------------
-
-
-def test_run_once_isolates_per_org_failures():
-    """A provider whose first org raises inside the worker must not prevent the
-    second, healthy org from being drained."""
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        factory = _factory(tmp_dir)
-        ctx = factory("org_ok")
-        assert ctx.storage is not None
-        _seed_pending_job(
-            ctx.storage, org_id="org_ok", user_id="u_ok", request_id="req_ok"
-        )
-
-        def _provider():
-            yield "org_boom"  # no storage seeded for this org, but drain is safe
-            yield "org_ok"
-
-        # Make the boom org explode in the factory to exercise isolation.
-        real_factory = factory
-
-        def _explode_factory(org_id: str):
-            if org_id == "org_boom":
-                raise RuntimeError("simulated per-org failure")
-            return real_factory(org_id)
-
-        scheduler = DurableLearningScheduler(
-            request_context_factory=_explode_factory,
-            org_ids_provider=_provider,
-        )
-        scheduler._run_once()
-
-        assert not _still_pending(factory("org_ok").storage, "u_ok"), (
-            "healthy org must still be drained after a prior org raised"
-        )
