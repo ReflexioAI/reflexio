@@ -26,9 +26,10 @@ from reflexio.server.services.storage.sqlite_storage.playbook._optimization impo
     _TERMINAL_OUTCOMES_BY_OPTIMIZER,
 )
 
-# The thirteen outcomes that survive Phase 7 with a path that can reach them. Six
-# are written by the stage-advance allowlist below; the other six are written
-# elsewhere and are named here with their writer so the split is auditable.
+# The fourteen outcomes that survive Phase 7 with a path that can reach them.
+# Six are written by the stage-advance allowlist below; the other eight are
+# written elsewhere and are named here with their writer so the split is
+# auditable.
 _REACHABLE_TERMINAL_OUTCOMES = frozenset(
     {
         # commit_user_playbook_publication (tenant 20260830020000:1293)
@@ -74,6 +75,19 @@ _REACHABLE_TERMINAL_OUTCOMES = frozenset(
         # abstain path exists on both engines, so the `writable <=` assertion
         # covers it rather than this comment.
         "evidence_view_incomplete",
+        # the stale-bundle refusal: reflexio_ext open_world/runner.py calls
+        # _converge_terminal_failure with it on
+        # OpenWorldEvidenceSchemaUnsupportedError -- the frozen bundle declares
+        # an evidence-bundle schema version this image cannot derive, so it is
+        # unloadable and no retry can help. The TENANT stage-advance RPC's
+        # 'failed' arm assigns it (tenant 20260910010000); the 'abstained' arm
+        # deliberately does not, since the refusal is before derivation and
+        # nothing was judged. Absent from the SQLite allowlist below for the
+        # same reason as 'regeneration_fenced' / 'invocation_slot_pinned' --
+        # SQLite carries no open-world bundle store, so nothing can be frozen
+        # there to go stale -- which is why it is named here rather than left
+        # to the `writable <=` assertion.
+        "bundle_schema_unsupported",
     }
 )
 
@@ -135,8 +149,8 @@ def test_the_union_is_exactly_the_reachable_set_plus_the_retained_set() -> None:
         - PENDING_WRITER_TERMINAL_OUTCOMES
         == _REACHABLE_TERMINAL_OUTCOMES
     )
-    assert len(members) == 22
-    assert len(_REACHABLE_TERMINAL_OUTCOMES) == 13
+    assert len(members) == 23
+    assert len(_REACHABLE_TERMINAL_OUTCOMES) == 14
     assert len(PENDING_WRITER_TERMINAL_OUTCOMES) == 2
 
 

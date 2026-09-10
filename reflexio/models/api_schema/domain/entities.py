@@ -540,6 +540,22 @@ OptimizationTerminalOutcome = Literal[
     # more). A reader could not tell them apart, so the second read as the
     # first and the corpus was never widened.
     "evidence_view_incomplete",
+    # Written by reflexio_ext offline_tuner/open_world/runner.py
+    # (_converge_terminal_failure, from the schema-unsupported handler) when the
+    # frozen evidence bundle declares an evidence-bundle schema version older
+    # than the image reading it. The bundle is validated as the EXACT derivation
+    # of its manifest, so an older bundle is UNLOADABLE rather than degraded and
+    # no retry on any host can change that. Assigned by the tenant stage-advance
+    # RPC's 'failed' arm; the 'abstained' arm deliberately does not, since the
+    # refusal happens before derivation and nothing was judged.
+    #
+    # Split out of 'infrastructure_failure', which promises "transient, we will
+    # try again" -- the opposite of the true instruction, which is to drain the
+    # row (the deploy precondition inherited from tenant 20260903010000) or
+    # terminalize it deliberately. Absent from the SQLite allowlist: SQLite
+    # carries no open-world evidence bundle store, so no bundle can be frozen
+    # there to go stale.
+    "bundle_schema_unsupported",
     # The two below are admitted AHEAD OF THEIR WRITERS. Both belong to the
     # scheduled-execution project, whose Python lands separately, and both are
     # here now because their tenant CHECK is here now: one shared migration
