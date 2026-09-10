@@ -42,6 +42,11 @@ PUBLIC_SYMBOLS = [
     # re-implementing either.
     "is_structured_output_correction_turn",
     "structured_output_repair_idempotency_key",
+    # The repair turn itself, plus the prefix that identifies one. Promoted for
+    # the enterprise open-world analyst, whose boundary guard forbids importing
+    # `_litellm_text_generation` directly and whose allowlist only ever shrinks.
+    "STRUCTURED_OUTPUT_CORRECTION_PREFIX",
+    "structured_output_correction_turn",
 ]
 
 # Test-imported internals that ImportError at collection if dropped. AST-scanned
@@ -55,6 +60,11 @@ INTERNAL_SYMBOLS = [
     "_litellm_completion_worker",
     "_truncate_for_embedding",
     "_TRUNCATION_WARNED_MODELS",
+    # Surfaced (underscore intact, out of `__all__`) so the enterprise
+    # repair-ladder tests can assert their own budget against it. Listed here so
+    # a future move that drops the re-export fails loudly, which is what this
+    # list exists for.
+    "_LADDER_WALL_CLOCK_BUDGET_SECONDS",
 ]
 
 # Sibling leaf/mixin modules the split introduces. Each must cold-import cleanly

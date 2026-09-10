@@ -6,6 +6,7 @@ for OpenAI, Claude, Azure OpenAI, and other LLM providers.
 """
 
 from .litellm_client import (
+    STRUCTURED_OUTPUT_CORRECTION_PREFIX,
     LiteLLMClient,
     LiteLLMClientError,
     LiteLLMConfig,
@@ -15,6 +16,7 @@ from .litellm_client import (
     ToolCallingChatResponse,
     create_litellm_client,
     is_structured_output_correction_turn,
+    structured_output_correction_turn,
     structured_output_repair_idempotency_key,
 )
 from .model_defaults import (
@@ -33,8 +35,10 @@ __all__ = [
     "ModelRole",
     "ToolCallingChatResponse",
     "create_litellm_client",
+    "STRUCTURED_OUTPUT_CORRECTION_PREFIX",
     "is_structured_output_correction_turn",
     "resolve_model_name",
+    "structured_output_correction_turn",
     "structured_output_repair_idempotency_key",
     "validate_llm_availability",
 ]
