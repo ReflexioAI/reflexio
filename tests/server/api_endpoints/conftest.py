@@ -40,12 +40,24 @@ def mock_reflexio():
 
     ``return_value`` is read directly rather than calling ``get_config()`` so
     the mirror does not register a spurious call on it.
+
+    ``extraction_status`` / ``extraction_counts`` are wired to real dicts on the
+    shared storage mock. The publish and learning-status routes subscript their
+    results (``status["status"]``), and a bare ``MagicMock`` is not
+    subscriptable — the route raises ``TypeError`` and the test sees an opaque
+    500 rather than the behaviour it meant to assert. Both the ``get_storage()``
+    and ``request_context.storage`` handles resolve to the same mock, because
+    the two routes reach storage by different paths.
     """
     mock = MagicMock()
     configurator = mock.request_context.configurator
     configurator.get_org_config.side_effect = lambda: (
         configurator.get_config.return_value
     )
+    storage = mock.request_context.storage
+    storage.extraction_status.return_value = {"status": "done", "reason": "covered"}
+    storage.extraction_counts.return_value = {"profile": 0, "playbook": 0}
+    mock.get_storage.return_value = storage
     return mock
 
 

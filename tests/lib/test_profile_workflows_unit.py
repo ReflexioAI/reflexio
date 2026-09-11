@@ -59,13 +59,22 @@ def reflexio_with_config(temp_storage, ensure_mock_env):
         org_id=org_id, storage_base_dir=temp_storage, configurator=configurator
     )
 
-    # Configure profile extractor
+    # Configure profile extractor.
+    #
+    # ``window_size_override=1`` is what makes ``stride_size_override=1`` mean
+    # what it says here: "extract on every interaction". Automatic extraction is
+    # window-driven, and a cursor that has never started requires a FULL window
+    # before it selects anything (``_select``: ``needed = width`` while
+    # ``started`` is false). Against the default width of 10, a single-
+    # interaction publish would sit at ``waiting_for_window`` and these tests
+    # would assert on profiles that were never going to be extracted.
     profile_extractor_config = ProfileExtractorConfig(
         extractor_name="test_profile",
         context_prompt="Extract user preferences",
         extraction_definition_prompt="User likes and dislikes",
         tagging_definition_prompt="Metadata about preferences",
         stride_size_override=1,
+        window_size_override=1,
     )
     reflexio.request_context.configurator.set_config_by_name(
         "profile_extractor_config", profile_extractor_config

@@ -4,6 +4,7 @@ import asyncio
 import threading
 import time
 from contextvars import ContextVar
+from typing import Any
 
 from reflexio.server.operation_limiter import operation_limit_value
 
@@ -14,6 +15,30 @@ _lock = threading.Lock()
 _ingesting: dict[str, int] = {}
 _waiting: dict[str, int] = {}
 _total_waiting = 0
+
+
+def coverage_stalled(status: dict[str, Any]) -> bool:
+    """Report whether coverage can no longer advance without further input.
+
+    ``extraction_status`` emits ``waiting_for_window`` only when *every* still
+    pending cursor both lacks a window and cannot select one -- a full window's
+    worth of eligible interactions has not arrived yet. A caller that is holding
+    no new input can never see that resolve, so waiting on it burns the whole
+    publish deadline and then reports ``wait_timeout``, which misdescribes a
+    perfectly healthy stream.
+
+    Returning promptly is the documented contract: "A partial window waits for
+    more input or an eligible ``force_extraction`` request" (README). Callers
+    should surface ``waiting_for_window`` as the reason so the distinction from
+    a real timeout survives into the response.
+
+    Args:
+        status (dict[str, Any]): A ``BaseStorage.extraction_status`` result.
+
+    Returns:
+        bool: True when no eligible cursor can progress without more input.
+    """
+    return status["status"] == "pending" and status["reason"] == "waiting_for_window"
 
 
 def check_admission_deadline() -> None:

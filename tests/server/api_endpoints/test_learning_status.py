@@ -20,7 +20,11 @@ from reflexio.models.api_schema.service_schemas import PublishUserInteractionRes
 from reflexio.server.api import create_app
 from reflexio.server.cache.reflexio_cache import get_reflexio, invalidate_reflexio_cache
 
-_VALID_STATUS_VALUES = {"pending", "processing", "done", "failed"}
+# Mirrors the ``LearningStatusResponse.status`` Literal. ``not_tracked`` is the
+# honest answer for a request admitted before the durable stream existed: it
+# carries no admission metadata, so no cursor coverage can be computed for it.
+# Collapsing it into "done" would claim extraction that never ran.
+_VALID_STATUS_VALUES = {"pending", "processing", "done", "failed", "not_tracked"}
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -61,8 +65,20 @@ def client(test_app):
 
 @pytest.fixture
 def patched_reflexio():
-    """Patch reflexio_cache.get_reflexio with a MagicMock instance."""
+    """Patch reflexio_cache.get_reflexio with a MagicMock instance.
+
+    ``extraction_status`` / ``extraction_counts`` return real dicts: the publish
+    route subscripts them, and a bare ``MagicMock`` is not subscriptable, so the
+    route would raise ``TypeError`` and the test would see an opaque 500. Both
+    the ``get_storage()`` and ``request_context.storage`` handles resolve to the
+    same mock — the publish and learning-status routes reach storage by
+    different paths.
+    """
     mock = MagicMock()
+    storage = mock.request_context.storage
+    storage.extraction_status.return_value = {"status": "done", "reason": "covered"}
+    storage.extraction_counts.return_value = {"profile": 0, "playbook": 0}
+    mock.get_storage.return_value = storage
     with patch(
         "reflexio.server.cache.reflexio_cache.get_reflexio",
         return_value=mock,
@@ -155,8 +171,17 @@ class TestDeferredPublishField:
         # GET /api/learning_status — otherwise the poll contract is broken.
         assert data.get("request_id")
 
-    def test_sync_publish_leaves_learning_status_none(self, client, patched_reflexio):
-        """Sync path returns real extraction counts — learning_status excluded."""
+    def test_sync_publish_reports_coverage(self, client, patched_reflexio):
+        """Sync path reports the coverage it actually waited for.
+
+        Replaces ``test_sync_publish_leaves_learning_status_none``. That test
+        pinned the older contract in which only the deferred path had a
+        learning status and the sync path implied "done" by returning at all.
+        The sync path now waits on the durable stream and can legitimately come
+        back uncovered, so it must state which it got — an omitted field would
+        be read as "extraction completed" and, after a partial-window return,
+        that would be false.
+        """
         mock_response = PublishUserInteractionResponse(
             success=True,
             message="Interaction processed",
@@ -164,18 +189,9 @@ class TestDeferredPublishField:
             playbooks_added=0,
         )
 
-        def run_immediately(**kwargs):
-            return kwargs["fn"]()
-
-        with (
-            patch(
-                "reflexio.server.routes._common.run_with_operation_limit",
-                side_effect=run_immediately,
-            ),
-            patch(
-                "reflexio.server.api_endpoints.publisher_api.add_user_interaction",
-                return_value=mock_response,
-            ),
+        with patch(
+            "reflexio.server.api_endpoints.publisher_api.add_user_interaction",
+            return_value=mock_response,
         ):
             response = client.post(
                 "/api/publish_interaction",
@@ -185,8 +201,8 @@ class TestDeferredPublishField:
 
         assert response.status_code == 200
         data = response.json()
-        # response_model_exclude_none=True — field must be absent, not null
-        assert "learning_status" not in data
+        assert data["learning_status"] == "done"
+        assert data["learning_reason"] == "covered"
 
 
 # ---------------------------------------------------------------------------
@@ -258,9 +274,13 @@ class TestLearningStatusEndpoint:
             user_id="user-b",
             session_id="sess-b",
         )
-        # Seed the request into Org B's storage only.
+        # Seed the request into Org B's storage only. Coverage now comes from
+        # ``extraction_status``, not the removed ``get_learning_status_for_request``.
         storage_b.get_request.return_value = req
-        storage_b.get_learning_status_for_request.return_value = "pending"
+        storage_b.extraction_status.return_value = {
+            "status": "pending",
+            "reason": "queued",
+        }
 
         # Sanity: Org B (the owner) can read its own status.
         owner_response = client_b.get(

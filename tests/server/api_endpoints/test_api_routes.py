@@ -6,6 +6,7 @@ fixture from conftest to isolate tests from real storage/LLM calls.
 """
 
 import tempfile
+import time
 from inspect import iscoroutinefunction
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -79,23 +80,21 @@ class TestPublishInteraction:
         }
 
     def test_sync_publish_returns_200(self, client, patched_reflexio):
+        """``wait_for_response=true`` waits for coverage, then reports it.
+
+        The publish limiter no longer wraps this call: the route owns admission
+        capacity itself (``acquire_ingestion``) and the ingest always runs with
+        ``use_publish_limiter=False``. What ``wait_for_response`` now buys the
+        caller is the coverage wait, so that is what this asserts.
+        """
         mock_response = PublishUserInteractionResponse(
             success=True, message="Interaction processed"
         )
 
-        def run_immediately(**kwargs):
-            return kwargs["fn"]()
-
-        with (
-            patch(
-                "reflexio.server.routes._common.run_with_operation_limit",
-                side_effect=run_immediately,
-            ) as run_with_operation_limit,
-            patch(
-                "reflexio.server.api_endpoints.publisher_api.add_user_interaction",
-                return_value=mock_response,
-            ) as add_user_interaction,
-        ):
+        with patch(
+            "reflexio.server.api_endpoints.publisher_api.add_user_interaction",
+            return_value=mock_response,
+        ) as add_user_interaction:
             response = client.post(
                 "/api/publish_interaction",
                 params={"wait_for_response": "true"},
@@ -104,12 +103,52 @@ class TestPublishInteraction:
         assert response.status_code == 200
         data = response.json()
         assert data["success"] is True
-        assert run_with_operation_limit.call_args.kwargs["operation"] == "publish"
+        assert data["learning_status"] == "done"
         add_user_interaction.assert_called_once()
         assert add_user_interaction.call_args.kwargs["use_publish_limiter"] is False
 
-    def test_async_publish_returns_queued(self, client, patched_reflexio):
-        """Async mode returns immediate acknowledgement without calling publisher."""
+    def test_sync_publish_stops_waiting_on_incomplete_window(
+        self, client, patched_reflexio
+    ):
+        """A partial window ends the wait immediately, and says so.
+
+        ``waiting_for_window`` means no eligible cursor can advance without new
+        input, which this request does not have. Holding the connection to the
+        240s deadline would change nothing and then report ``wait_timeout`` —
+        a real timeout — for a perfectly healthy stream.
+        """
+        patched_reflexio.return_value.get_storage.return_value.extraction_status.return_value = {
+            "status": "pending",
+            "reason": "waiting_for_window",
+        }
+
+        with patch(
+            "reflexio.server.api_endpoints.publisher_api.add_user_interaction",
+            return_value=PublishUserInteractionResponse(
+                success=True, message="Interaction processed"
+            ),
+        ):
+            started = time.monotonic()
+            response = client.post(
+                "/api/publish_interaction",
+                params={"wait_for_response": "true"},
+                json=self._publish_payload(),
+            )
+            elapsed = time.monotonic() - started
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["learning_status"] == "deferred"
+        assert data["learning_reason"] == "waiting_for_window"
+        assert elapsed < 30, f"route still waited {elapsed:.1f}s"
+
+    def test_async_publish_returns_after_admission(self, client, patched_reflexio):
+        """Default mode returns once the interactions are durably admitted.
+
+        Replaces an assertion that the message said "queued". There is no queue
+        hand-off any more: success *is* durable admission, and the caller polls
+        ``GET /api/learning_status`` with the returned ``request_id``.
+        """
         response = client.post(
             "/api/publish_interaction",
             json=self._publish_payload(),
@@ -117,7 +156,10 @@ class TestPublishInteraction:
         assert response.status_code == 200
         data = response.json()
         assert data["success"] is True
-        assert "queued" in data["message"].lower()
+        assert data["request_id"]
+        # The publisher reports the coverage it observed at admission time. The
+        # route did not wait for more, so this must not claim "done".
+        assert data["learning_status"] == "deferred"
 
     def test_async_publish_rejects_contentless_interactions(
         self, client, patched_reflexio
@@ -151,35 +193,33 @@ class TestPublishInteraction:
         assert response.status_code == 200
         assert response.json()["success"] is True
 
-    def test_background_publish_rejection_is_logged(
-        self, client, patched_reflexio, caplog
-    ):
-        """A discarded background ``success=False`` must leave a trace.
+    def test_publish_rejection_reaches_the_caller(self, client, patched_reflexio):
+        """A rejected publish is reported to the caller, not just logged.
 
-        The async path hands the caller 200 "queued" and throws the publisher's
-        return value away, so this log line is the only evidence a rejected
-        publish ever produces. The reason string is deliberately withheld -- it
-        can be an unbounded ``str(e)`` and reporters may ingest ERROR bodies unscrubbed.
+        Replaces ``test_background_publish_rejection_is_logged``. That test
+        guarded a real hazard in the old design: the async path answered 200
+        "queued" *before* the publisher ran and discarded its return value, so a
+        server-side ERROR log was the only evidence a rejection ever produced,
+        and the log deliberately withheld the unbounded ``str(e)`` reason.
+
+        There is no background hand-off left to lose the result in — the route
+        awaits admission and returns the publisher's own response — so the
+        stronger property now holds and is asserted directly: the caller sees
+        the rejection. The reason is the publisher's own ``message``, which
+        travels in the response body to the caller who submitted it rather than
+        into a shared multi-tenant log stream.
         """
-        import logging
-
-        with (
-            patch(
-                "reflexio.server.api_endpoints.publisher_api.add_user_interaction",
-                return_value=PublishUserInteractionResponse(
-                    success=False, message="CUSTOMER-SECRET-XYZ"
-                ),
-            ),
-            caplog.at_level(
-                logging.ERROR, logger="reflexio.server.routes.interactions"
+        with patch(
+            "reflexio.server.api_endpoints.publisher_api.add_user_interaction",
+            return_value=PublishUserInteractionResponse(
+                success=False, message="publish rejected"
             ),
         ):
             response = client.post(
                 "/api/publish_interaction", json=self._publish_payload()
             )
         assert response.status_code == 200
-        assert "Background publish rejected" in caplog.text
-        assert "CUSTOMER-SECRET-XYZ" not in caplog.text
+        assert response.json()["success"] is False
 
     def test_async_publish_does_not_gate_durable_write_on_limiter(
         self, client, patched_reflexio

@@ -1786,7 +1786,16 @@ def test_knowledge_gap_playbook_extraction(
     try:
         os.environ["MOCK_LLM_RESPONSE"] = "true"
 
-        # Publish the interaction
+        # Publish the interaction.
+        #
+        # `force_extraction` is load-bearing, not boilerplate: this scenario is
+        # a deliberately short 8-turn exchange, below the fixture's window of
+        # 10, so automatic extraction would correctly wait for more input and
+        # the assertions below would read zero playbooks. Forcing is the
+        # documented way to say "extract this conversation on its own", which
+        # is exactly what a test about the CONTENT of the extracted playbook
+        # means. Padding the conversation to fill a window instead would
+        # dilute the knowledge-gap signal it is checking for.
         response = reflexio_instance_playbook_only.publish_interaction(
             {
                 "user_id": user_id,
@@ -1794,6 +1803,7 @@ def test_knowledge_gap_playbook_extraction(
                 "interaction_data_list": knowledge_gap_interactions,
                 "source": "test_knowledge_gap",
                 "agent_version": agent_version,
+                "force_extraction": True,
             }
         )
         assert response.success is True

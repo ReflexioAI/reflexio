@@ -363,6 +363,7 @@ class GenerationService:
             if not defer_learning:
                 from reflexio.server.services.durable_learning.waiting import (
                     acquire_waiter,
+                    coverage_stalled,
                     release_waiter,
                 )
 
@@ -370,10 +371,14 @@ class GenerationService:
                     try:
                         deadline = publish_start + 240
                         while time.perf_counter() < deadline:
-                            if (
-                                storage.extraction_status(user_id, request_id)["status"]
-                                == "done"
-                            ):
+                            status = storage.extraction_status(user_id, request_id)
+                            if status["status"] == "done":
+                                break
+                            # A partial window needs input this caller does not
+                            # have, so the remaining deadline cannot change the
+                            # answer. Without this the default library publish
+                            # blocks the full 240s for any user below one window.
+                            if coverage_stalled(status):
                                 break
                             time.sleep(
                                 min(0.25, max(0, deadline - time.perf_counter()))

@@ -35,7 +35,20 @@ from reflexio.test_support.llm_mock import (
 
 _TEST_DATA_DIR = Path(__file__).resolve().parent.parent / "test_data"
 _SCENARIO_DIR = _TEST_DATA_DIR / "scenarios" / "e2e"
-_CUSTOMER_SUPPORT_WINDOW_SIZE = 20
+# 10, not 20, and it must stay <= the shortest scenario conversation.
+#
+# Window size stopped being only the LLM context width when automatic
+# extraction moved onto durable sliding windows: a cursor that has never
+# started now needs a FULL window before it selects anything. At 20 against the
+# 16-turn `priya` conversation the first window could never close, so every
+# profile/playbook assertion in these tests read zero -- for a reason that has
+# nothing to do with what they cover. This is the same trap the stride note
+# below describes, one gate over.
+#
+# 10 is the product default (`DEFAULT_WINDOW_SIZE`), so the e2e path exercises
+# what a real install runs. `sample_interaction_requests` asserts the
+# relationship holds, rather than trusting this comment to be read.
+_CUSTOMER_SUPPORT_WINDOW_SIZE = 10
 # Pin the extraction cadence for e2e fixtures instead of inheriting
 # ``DEFAULT_STRIDE_SIZE``. That default is a production cost knob (raised 5 -> 8
 # in "update stride size to 8 to save cost"), and every raise silently stops
@@ -370,7 +383,17 @@ def sample_interaction_requests() -> list[InteractionData]:
     scenario = load_scenario(_SCENARIO_DIR / "customer_support.yaml")
     participants = scenario["participants"]
     priya_conv = scenario["conversations"]["priya"]
-    return build_interactions(priya_conv, participants)
+    interactions = build_interactions(priya_conv, participants)
+    # Automatic extraction will not start until one full window of eligible
+    # interactions exists, so a scenario shorter than the window silently
+    # extracts nothing and every downstream assertion reads zero. Fail here,
+    # where the cause is named, instead of in each test as "0 profiles".
+    assert len(interactions) >= _CUSTOMER_SUPPORT_WINDOW_SIZE, (
+        f"scenario supplies {len(interactions)} interactions but the fixture "
+        f"configures window_size={_CUSTOMER_SUPPORT_WINDOW_SIZE}; the first "
+        "window can never close, so no extraction will run"
+    )
+    return interactions
 
 
 def save_user_playbooks(reflexio_instance: Reflexio):

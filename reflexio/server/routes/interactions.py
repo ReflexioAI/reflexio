@@ -104,6 +104,7 @@ async def publish_user_interaction(
         acquire_ingestion,
         acquire_waiter,
         admission_deadline,
+        coverage_stalled,
         release_ingestion,
         release_waiter,
     )
@@ -160,6 +161,7 @@ async def publish_user_interaction(
         return response
     try:
         storage = reflexio_cache.get_reflexio(org_id=org_id).get_storage()
+        stalled_reason: str | None = None
         while time.monotonic() < deadline:
             status = await asyncio.to_thread(
                 storage.extraction_status, payload.user_id, payload.request_id
@@ -173,11 +175,18 @@ async def publish_user_interaction(
                 response.profiles_added = counts["profile"]
                 response.playbooks_added = counts["playbook"]
                 return response
+            # Holding the connection open for a window that only new input can
+            # close wastes the caller's deadline and a waiter slot, and reports
+            # `wait_timeout` for a healthy stream. Same break as the library
+            # waiter in generation_service.run -- one condition, both paths.
+            if coverage_stalled(status):
+                stalled_reason = status["reason"]
+                break
             if await request.is_disconnected():
                 break
             await asyncio.sleep(min(0.25, max(0, deadline - time.monotonic())))
         response.learning_status = "deferred"
-        response.learning_reason = "wait_timeout"
+        response.learning_reason = stalled_reason or "wait_timeout"
         return response
     finally:
         release_waiter(org_id)

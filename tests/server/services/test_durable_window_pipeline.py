@@ -493,18 +493,53 @@ def test_http_budget_includes_ingestion_and_never_acknowledges_uncommitted_work(
 
 
 def test_sync_tail_timeout_keeps_durable_pending_work(pipeline, monkeypatch):
+    """A sync tail that runs out of clock must not discard the durable work.
+
+    Publishes a FULL window (10, matching the fixture's ``window_size``) so the
+    cursor can select one and the status is ``queued`` -- work the wait could
+    legitimately sit through. Nothing drains it here, so the deadline is what
+    ends the wait, which is the path this test exists to cover. An earlier
+    version published 1 interaction, which now returns early on
+    ``waiting_for_window`` and so no longer reaches the timeout branch at all.
+    """
     engine, _, client = pipeline
     monkeypatch.setattr(
         "reflexio.server.routes.interactions.PUBLISH_REQUEST_TIMEOUT_SECONDS", 0.1
     )
     response = client.post(
-        "/api/publish_interaction?wait_for_response=true", json=payload("tailwait", 1)
+        "/api/publish_interaction?wait_for_response=true", json=payload("tailwait")
     )
     assert response.status_code == 200 and response.json()["success"]
     assert response.json()["learning_reason"] == "wait_timeout"
     assert (
         engine.get_storage().extraction_status("u", "tailwait")["status"] == "pending"
     )
+
+
+def test_sync_tail_returns_early_on_incomplete_window(pipeline):
+    """A partial window ends the wait at once, and keeps the work pending.
+
+    The fixture's ``window_size`` is 10, so a single interaction cannot close a
+    window and no amount of waiting will change that. The full
+    ``PUBLISH_REQUEST_TIMEOUT_SECONDS`` (240s) is left in place deliberately:
+    the point is that the route does not consume it. The reason must stay
+    distinguishable from a real timeout -- ``wait_timeout`` on a healthy stream
+    would send an operator looking for a stall that is not there.
+    """
+    engine, _, client = pipeline
+    started = time.monotonic()
+    response = client.post(
+        "/api/publish_interaction?wait_for_response=true", json=payload("partial", 1)
+    )
+    elapsed = time.monotonic() - started
+
+    assert response.status_code == 200 and response.json()["success"]
+    assert response.json()["learning_status"] == "deferred"
+    assert response.json()["learning_reason"] == "waiting_for_window"
+    assert elapsed < 30, f"route consumed {elapsed:.1f}s of the publish deadline"
+    # The input is admitted and still owed extraction -- returning early is not
+    # the same as dropping the work.
+    assert engine.get_storage().extraction_status("u", "partial")["status"] == "pending"
 
 
 def test_waiter_capacity_does_not_block_admission(pipeline):

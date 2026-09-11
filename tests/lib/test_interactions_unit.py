@@ -33,16 +33,24 @@ from reflexio.test_support.typing_helpers import as_mock
 def _make_mixin(*, storage_configured: bool = True) -> InteractionsMixin:
     """Create an InteractionsMixin instance with mocked internals.
 
-    ``publish_interaction`` snapshots profile + playbook totals via
-    ``count_all_profiles`` / ``count_user_playbooks`` to compute
-    extraction deltas, so we wire those to return 0 by default. Tests
-    that want to exercise the delta path can override on the returned
-    mock.
+    ``publish_interaction`` reports what the durable stream recorded for the
+    request via ``extraction_counts``, and its coverage via
+    ``extraction_status``. Both are wired to a quiet default here: covered, with
+    nothing extracted. They must return real dicts, not bare ``MagicMock``s —
+    ``status["status"]`` on a ``MagicMock`` yields another ``MagicMock``, which
+    then fails ``PublishUserInteractionResponse`` validation and turns a
+    successful publish into ``success=False``.
+
+    Tests that want to exercise the count or coverage paths override on the
+    returned mock.
     """
     mixin = object.__new__(InteractionsMixin)
     mock_storage = MagicMock()
-    mock_storage.count_all_profiles.return_value = 0
-    mock_storage.count_user_playbooks.return_value = 0
+    mock_storage.extraction_counts.return_value = {"profile": 0, "playbook": 0}
+    mock_storage.extraction_status.return_value = {
+        "status": "done",
+        "reason": "covered",
+    }
 
     mock_request_context = MagicMock()
     mock_request_context.org_id = "test_org"
@@ -435,9 +443,10 @@ class TestPublishInteraction:
         assert response.success is True
         # request_id is propagated from the generation service
         assert response.request_id == "req-abc-123"
-        # Snapshot counts default to 0 deltas since mocked storage returns []
+        # Counts come from the stream's per-request tally, 0 by fixture default
         assert response.profiles_added == 0
         assert response.playbooks_added == 0
+        assert response.learning_status == "done"
         mock_gen_instance.run.assert_called_once()
 
     @patch("reflexio.lib._interactions.GenerationService")
@@ -462,13 +471,20 @@ class TestPublishInteraction:
         assert response.success is True
 
     @patch("reflexio.lib._interactions.GenerationService")
-    def test_reports_extraction_deltas(self, mock_gen_cls):
-        """profiles_added / playbooks_added reflect the before→after delta."""
+    def test_reports_extraction_counts(self, mock_gen_cls):
+        """profiles_added / playbooks_added come from the stream's tally.
+
+        Replaces an earlier before→after delta over ``count_all_profiles`` /
+        ``count_user_playbooks``. Those snapshots were a whole-store diff, so
+        concurrent extraction for another user could be attributed to this
+        request; ``extraction_counts`` is scoped to the request itself.
+        """
         mixin = _make_mixin()
         storage = _get_storage(mixin)
-        # Storage snapshot: 2 profiles before → 5 after; 0 playbooks → 3 after
-        as_mock(storage.count_all_profiles).side_effect = [2, 5]
-        as_mock(storage.count_user_playbooks).side_effect = [0, 3]
+        as_mock(storage.extraction_counts).return_value = {
+            "profile": 3,
+            "playbook": 3,
+        }
         mock_gen_instance = MagicMock()
         mock_gen_instance.run.return_value = GenerationServiceResult(
             request_id="req-1",
@@ -489,18 +505,18 @@ class TestPublishInteraction:
         assert response.playbooks_added == 3
 
     @patch("reflexio.lib._interactions.GenerationService")
-    def test_publish_succeeds_when_count_fails(self, mock_gen_cls):
-        """When the count thunk raises, _safe_count swallows it and deltas fall back to 0.
+    def test_publish_succeeds_when_coverage_read_fails(self, mock_gen_cls):
+        """A failed coverage read must not report a committed publish as failed.
 
-        A storage hiccup during the before/after snapshot must not block
-        the publish from returning a successful response — the publish
-        itself has nothing to do with the counters.
+        ``extraction_status`` / ``extraction_counts`` run AFTER the interactions
+        are durably committed and only describe that write. They share the
+        publish's ``try``, so an unguarded raise would return ``success=False``
+        for work already on disk and invite the caller to retry it. The counts
+        and coverage fields drop out instead.
         """
         mixin = _make_mixin()
         storage = _get_storage(mixin)
-        as_mock(storage.count_all_profiles).side_effect = RuntimeError("db down")
-        # count_user_playbooks still works — exercised independently
-        as_mock(storage.count_user_playbooks).return_value = 0
+        as_mock(storage.extraction_status).side_effect = RuntimeError("db down")
         mock_gen_instance = MagicMock()
         mock_gen_instance.run.return_value = GenerationServiceResult(
             request_id="req-ok",
@@ -517,9 +533,11 @@ class TestPublishInteraction:
         )
 
         assert response.success is True
-        # _safe_count falls back to 0 on failure, so delta is max(0, 0 - 0) = 0
-        assert response.profiles_added == 0
-        assert response.playbooks_added == 0
+        assert response.request_id == "req-ok"
+        # Omitted rather than guessed — an absent count is honest, a 0 is not.
+        assert response.profiles_added is None
+        assert response.playbooks_added is None
+        assert response.learning_status is None
         assert response.request_id == "req-ok"
 
     @patch("reflexio.lib._interactions.GenerationService")
