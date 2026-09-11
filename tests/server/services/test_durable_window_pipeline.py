@@ -495,25 +495,43 @@ def test_http_budget_includes_ingestion_and_never_acknowledges_uncommitted_work(
 def test_sync_tail_timeout_keeps_durable_pending_work(pipeline, monkeypatch):
     """A sync tail that runs out of clock must not discard the durable work.
 
-    Publishes a FULL window (10, matching the fixture's ``window_size``) so the
-    cursor can select one and the status is ``queued`` -- work the wait could
-    legitimately sit through. Nothing drains it here, so the deadline is what
-    ends the wait, which is the path this test exists to cover. An earlier
-    version published 1 interaction, which now returns early on
-    ``waiting_for_window`` and so no longer reaches the timeout branch at all.
+    Isolates the timeout branch rather than racing for it. Two earlier shapes
+    both failed to reach it reliably: publishing 1 interaction now returns
+    early on ``waiting_for_window``, and publishing a full window made the
+    0.1s deadline expire during ADMISSION instead (a flaky 504 under parallel
+    load, since admitting 10 interactions with embeddings is not instant).
+
+    So: admit a single interaction against a deadline generous enough to
+    commit, then hold coverage at ``queued`` -- extraction genuinely in
+    progress, which is the state the wait is meant to sit through -- and let
+    the clock run out. The stub is undone before the final assertion so the
+    durable state is read from real storage.
     """
     engine, _, client = pipeline
+    storage = engine.get_storage()
     monkeypatch.setattr(
-        "reflexio.server.routes.interactions.PUBLISH_REQUEST_TIMEOUT_SECONDS", 0.1
+        "reflexio.server.routes.interactions.PUBLISH_REQUEST_TIMEOUT_SECONDS", 2.0
     )
+    monkeypatch.setattr(
+        storage,
+        "extraction_status",
+        lambda *_args, **_kwargs: {"status": "pending", "reason": "queued"},
+    )
+
+    started = time.monotonic()
     response = client.post(
-        "/api/publish_interaction?wait_for_response=true", json=payload("tailwait")
+        "/api/publish_interaction?wait_for_response=true", json=payload("tailwait", 1)
     )
+    elapsed = time.monotonic() - started
+
     assert response.status_code == 200 and response.json()["success"]
     assert response.json()["learning_reason"] == "wait_timeout"
-    assert (
-        engine.get_storage().extraction_status("u", "tailwait")["status"] == "pending"
-    )
+    # It waited rather than bailing out immediately -- otherwise this would
+    # pass without the timeout branch ever running.
+    assert elapsed >= 1.0, f"returned after {elapsed:.2f}s; the wait did not run"
+
+    monkeypatch.undo()
+    assert storage.extraction_status("u", "tailwait")["status"] == "pending"
 
 
 def test_sync_tail_returns_early_on_incomplete_window(pipeline):
