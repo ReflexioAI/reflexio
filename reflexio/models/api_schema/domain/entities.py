@@ -469,15 +469,15 @@ OptimizationJobStage = Literal[
 #: A member here is a TODO with a name, not a permanent state. When the writer
 #: lands it moves into the reachable set in
 #: ``tests/models/test_terminal_outcome_reachability.py`` and out of here.
-PENDING_WRITER_TERMINAL_OUTCOMES: frozenset[str] = frozenset(
-    {
-        # reflexio_ext offline_tuner/open_world scheduled-execution project:
-        # reclaim-or-terminalize before identity validation.
-        "abandoned",
-        # the same project's recorded manifest-conflict skip.
-        "evidence_manifest_conflict",
-    }
-)
+#:
+#: EMPTY, and that is the healthy state rather than a deleted set. Both former
+#: members -- ``abandoned`` and ``evidence_manifest_conflict`` -- now have
+#: writers in reflexio_ext and were moved into the reachable set, which is the
+#: exit this set was designed to have. It stays declared because the next
+#: shared-migration handoff will need it again, and because the reachability
+#: test asserts all three classifications are disjoint and cover the union: an
+#: empty third bucket keeps that assertion honest instead of removing it.
+PENDING_WRITER_TERMINAL_OUTCOMES: frozenset[str] = frozenset()
 
 RETAINED_UNREACHABLE_TERMINAL_OUTCOMES: frozenset[str] = frozenset(
     {
@@ -566,16 +566,26 @@ OptimizationTerminalOutcome = Literal[
     # Literal would make reading back a job row that carries one raise
     # ValidationError -- surfacing, through handle_exceptions, as the
     # 'infrastructure_failure' that gap has already produced once.
+    # The two below were admitted AHEAD OF THEIR WRITERS, from the shared
+    # migration that carries the vocabulary for two projects (see the header of
+    # supabase/data/tenant/20260910010000); both writers have since landed in
+    # reflexio_ext, and both moved out of PENDING_WRITER_TERMINAL_OUTCOMES when
+    # they did.
     #
-    # 'abandoned': a freeze that was abandoned rather than attempted. It
-    # replaces the FALSE 'generation_failed' the retention sweep used to stamp
-    # on such a row -- nothing was generated. Assigned by the tenant
+    # 'abandoned': a freeze that was abandoned rather than attempted. Written by
+    # reflexio_ext supabase_storage/playbook/_open_world_evidence_freeze.py
+    # (`_retake_stranded_job`), which terminalizes a prior day's stranded row
+    # BEFORE identity validation compares the rolled discovery/attempt keys.
+    # It replaces the FALSE 'generation_failed' the retention sweep used to
+    # stamp on such a row -- nothing was generated. Assigned by the tenant
     # stage-advance RPC's 'failed' arm.
     "abandoned",
-    # 'evidence_manifest_conflict': two sweep ticks collided on one playbook and
-    # the loser was refused at job creation, with no provider call. Recorded
-    # rather than skipped silently, because the conflict IS the concurrency
-    # signal. Also the 'failed' arm.
+    # 'evidence_manifest_conflict': two sweep ticks collided on one playbook's
+    # frozen evidence and the loser was refused at the manifest-membership
+    # check, with no provider call. Written by reflexio_ext
+    # open_world/runner.py (`run`'s OpenWorldInvocationManifestError handler,
+    # via _converge_terminal_failure). Recorded rather than skipped silently,
+    # because the conflict IS the concurrency signal. Also the 'failed' arm.
     "evidence_manifest_conflict",
 ]
 

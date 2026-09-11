@@ -88,6 +88,25 @@ _REACHABLE_TERMINAL_OUTCOMES = frozenset(
         # there to go stale -- which is why it is named here rather than left
         # to the `writable <=` assertion.
         "bundle_schema_unsupported",
+        # the abandoned freeze: reflexio_ext
+        # supabase_storage/playbook/_open_world_evidence_freeze.py
+        # `_retake_stranded_job` terminalizes a prior day's stranded row with
+        # it, BEFORE `_validate_job_request` compares the rolled
+        # discovery/attempt keys -- the ordering fix that made the row
+        # reachable at all. The TENANT stage-advance RPC's 'failed' arm assigns
+        # it (tenant 20260910010000). Absent from the SQLite allowlist below
+        # for the same reason as 'regeneration_fenced' -- SQLite carries no
+        # open-world freeze -- which is why it is named here.
+        "abandoned",
+        # the recorded manifest conflict: reflexio_ext open_world/runner.py's
+        # OpenWorldInvocationManifestError handler calls
+        # _converge_terminal_failure with it when a second tick's attempt is
+        # refused at the manifest-membership check, having made no provider
+        # call. The TENANT stage-advance RPC's 'failed' arm assigns it (tenant
+        # 20260910010000); the 'abstained' arm deliberately does not, since
+        # nothing was judged. Absent from the SQLite allowlist for the same
+        # reason -- SQLite carries no open-world invocation table.
+        "evidence_manifest_conflict",
     }
 )
 
@@ -150,8 +169,13 @@ def test_the_union_is_exactly_the_reachable_set_plus_the_retained_set() -> None:
         == _REACHABLE_TERMINAL_OUTCOMES
     )
     assert len(members) == 23
-    assert len(_REACHABLE_TERMINAL_OUTCOMES) == 14
-    assert len(PENDING_WRITER_TERMINAL_OUTCOMES) == 2
+    assert len(_REACHABLE_TERMINAL_OUTCOMES) == 16
+    # EMPTY now, and that is the designed exit rather than a dead assertion:
+    # both former members gained writers in reflexio_ext (the retake's
+    # 'abandoned' and the runner's 'evidence_manifest_conflict') and moved into
+    # the reachable set above. Asserting zero is what forces the NEXT
+    # shared-migration handoff to clean up after itself too.
+    assert len(PENDING_WRITER_TERMINAL_OUTCOMES) == 0
 
 
 def test_no_retained_outcome_is_writable_through_the_stage_advance_allowlist() -> None:
