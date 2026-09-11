@@ -2252,6 +2252,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             "'stale_incumbent'",
             "'governance_invalidated'",
             "'infrastructure_failure'",
+            "'evidence_view_incomplete'",
         )
         if all(check in table_sql for check in required_checks) and not any(
             retired in table_sql for retired in _RETIRED_OPTIMIZER_JOB_LITERALS
@@ -2320,7 +2321,8 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                     'heldout_evidence_failed',
                     'stale_incumbent',
                     'governance_invalidated',
-                    'infrastructure_failure'
+                    'infrastructure_failure',
+                    'evidence_view_incomplete'
                 )),
                 expected_population_manifest_digest TEXT,
                 generation_selection_manifest_digest TEXT,
@@ -3582,7 +3584,8 @@ CREATE TABLE IF NOT EXISTS playbook_optimization_jobs (
         'heldout_evidence_failed',
         'stale_incumbent',
         'governance_invalidated',
-        'infrastructure_failure'
+        'infrastructure_failure',
+        'evidence_view_incomplete'
     )),
     expected_population_manifest_digest TEXT,
     generation_selection_manifest_digest TEXT,
