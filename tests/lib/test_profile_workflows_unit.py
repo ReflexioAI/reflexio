@@ -59,13 +59,22 @@ def reflexio_with_config(temp_storage, ensure_mock_env):
         org_id=org_id, storage_base_dir=temp_storage, configurator=configurator
     )
 
-    # Configure profile extractor
+    # Configure profile extractor.
+    #
+    # ``window_size_override=1`` is what makes ``stride_size_override=1`` mean
+    # what it says here: "extract on every interaction". Automatic extraction is
+    # window-driven, and a cursor that has never started requires a FULL window
+    # before it selects anything (``_select``: ``needed = width`` while
+    # ``started`` is false). Against the default width of 10, a single-
+    # interaction publish would sit at ``waiting_for_window`` and these tests
+    # would assert on profiles that were never going to be extracted.
     profile_extractor_config = ProfileExtractorConfig(
         extractor_name="test_profile",
         context_prompt="Extract user preferences",
         extraction_definition_prompt="User likes and dislikes",
         tagging_definition_prompt="Metadata about preferences",
         stride_size_override=1,
+        window_size_override=1,
     )
     reflexio.request_context.configurator.set_config_by_name(
         "profile_extractor_config", profile_extractor_config
@@ -1050,3 +1059,53 @@ def test_get_requests_with_filters(reflexio_with_config):
     response = reflexio.get_requests(get_requests_request)
 
     assert response.success is True
+
+
+def test_publish_succeeds_when_coverage_wait_fails(reflexio_with_config, monkeypatch):
+    """A failing coverage read must not report a committed publish as failed.
+
+    The publish path reads `extraction_status` twice after the interactions
+    commit: once in `GenerationService.run`'s waiter, once in
+    `publish_interaction` to fill the response. Both are observational -- they
+    describe the write, they do not perform it -- and both sit inside a `try`
+    whose handler turns an exception into `success=False`.
+
+    This exercises the REAL service, unlike its sibling in
+    `test_interactions_unit.py`, which mocks `GenerationService` out and so
+    cannot reach the waiter at all. The waiter was the half that was missed:
+    it raised through `run()`, and the caller got `success=False` with
+    `request_id=None` -- told their publish failed, and left with no id to poll
+    for the work that had in fact landed.
+    """
+    reflexio = reflexio_with_config
+    storage = reflexio.request_context.storage
+
+    def unavailable(*_args, **_kwargs):
+        raise RuntimeError("stream read unavailable")
+
+    monkeypatch.setattr(storage, "extraction_status", unavailable)
+
+    response = reflexio.publish_interaction(
+        PublishUserInteractionRequest(
+            user_id="test_user_coverage_fail",
+            session_id="test_session",
+            source="test_source",
+            agent_version="v1.0",
+            interaction_data_list=[
+                InteractionData(
+                    content="I really like sushi",
+                    created_at=int(datetime.datetime.now(UTC).timestamp()),
+                )
+            ],
+        )
+    )
+
+    # The write landed, so the caller must be told it landed.
+    stored = storage.get_user_interaction("test_user_coverage_fail")
+    assert len(stored) == 1
+    assert response.success is True, response.message
+    # And must be given the id needed to poll for coverage later.
+    assert response.request_id
+    # Coverage is unknown, so it is omitted rather than guessed.
+    assert response.learning_status is None
+    assert response.profiles_added is None

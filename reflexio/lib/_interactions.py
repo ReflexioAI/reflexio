@@ -1,9 +1,13 @@
+import logging
+from typing import Any
+
 from reflexio.lib._base import (
     STORAGE_NOT_CONFIGURED_MSG,
     ReflexioBase,
     _require_storage,
 )
 from reflexio.lib._storage_labels import describe_storage
+from reflexio.models.api_schema.common import sanitise_for_log
 from reflexio.models.api_schema.retriever_schema import (
     GetInteractionsRequest,
     GetInteractionsResponse,
@@ -25,6 +29,49 @@ from reflexio.models.api_schema.service_schemas import (
     PublishUserInteractionResponse,
 )
 from reflexio.server.services.generation_service import GenerationService
+from reflexio.server.services.storage.storage_base import BaseStorage
+
+logger = logging.getLogger(__name__)
+
+
+def _safe_coverage(
+    storage: BaseStorage, user_id: str, request_id: str
+) -> tuple[dict[str, Any] | None, dict[str, int] | None]:
+    """Read extraction coverage and counts, or ``(None, None)`` on failure.
+
+    Both reads happen after the publish has committed, so they describe the
+    write rather than performing it. Never raises — surfacing a reporting
+    failure as a failed publish would tell the caller to retry work that is
+    already durable.
+
+    Args:
+        storage (BaseStorage): Storage the interactions were committed to.
+        user_id (str): Owner of the extraction stream.
+        request_id (str): Request whose coverage is being reported.
+
+    Returns:
+        tuple[dict[str, Any] | None, dict[str, int] | None]: The
+            ``extraction_status`` and ``extraction_counts`` results, or
+            ``(None, None)`` if either read failed.
+    """
+    try:
+        return (
+            storage.extraction_status(user_id, request_id),
+            storage.extraction_counts(user_id, request_id),
+        )
+    except Exception:  # noqa: BLE001
+        # `request_id` is caller-supplied (NonEmptyStr: no length cap, no
+        # character restrictions), so a newline in it would forge a line in a
+        # shared multi-tenant log stream. `user_id` is caller-supplied for the
+        # same reason.
+        logger.warning(
+            "Publish for user %s committed, but reading extraction coverage for "
+            "request %s failed; reporting the publish without coverage fields.",
+            sanitise_for_log(user_id),
+            sanitise_for_log(request_id),
+            exc_info=True,
+        )
+        return None, None
 
 
 class InteractionsMixin(ReflexioBase):
@@ -88,8 +135,17 @@ class InteractionsMixin(ReflexioBase):
                 )
             else:
                 message = "Interaction published successfully"
-            status = storage.extraction_status(request.user_id, result.request_id or "")
-            counts = storage.extraction_counts(request.user_id, result.request_id or "")
+            # Reporting reads, made AFTER the interactions are durably
+            # committed. They are inside the same ``try`` as the publish, so an
+            # unguarded raise here would report ``success=False`` for work that
+            # is already on disk -- the caller would retry a publish that
+            # happened. Degrade to omitted coverage/count fields instead; this
+            # is the invariant the pre-durable ``_safe_count`` helper carried
+            # ("a storage hiccup during counting shouldn't block the publish
+            # itself from returning a useful response").
+            status, counts = _safe_coverage(
+                storage, request.user_id, result.request_id or ""
+            )
             return PublishUserInteractionResponse(
                 success=True,
                 message=message,
@@ -97,10 +153,14 @@ class InteractionsMixin(ReflexioBase):
                 request_id=result.request_id,
                 storage_type=storage_type,
                 storage_label=storage_label,
-                profiles_added=counts["profile"],
-                playbooks_added=counts["playbook"],
-                learning_status="done" if status["status"] == "done" else "deferred",
-                learning_reason=status["reason"],
+                profiles_added=counts["profile"] if counts else None,
+                playbooks_added=counts["playbook"] if counts else None,
+                learning_status=(
+                    None
+                    if status is None
+                    else ("done" if status["status"] == "done" else "deferred")
+                ),
+                learning_reason=None if status is None else status["reason"],
             )
         except Exception as e:
             return PublishUserInteractionResponse(success=False, message=str(e))

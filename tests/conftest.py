@@ -55,6 +55,16 @@ for _var in _OSS_TEST_POLLUTING_ENV_VARS:
 _REFLEXIO_TEST_HOME = Path(tempfile.mkdtemp(prefix="reflexio-test-home-"))
 os.environ["REFLEXIO_LOG_DIR"] = str(_REFLEXIO_TEST_HOME)
 os.environ["LOCAL_STORAGE_PATH"] = str(_REFLEXIO_TEST_HOME / ".reflexio" / "data")
+
+# The durable extraction scheduler discovers work on a 2s poll, tuned for a
+# long-lived server. A test that publishes and then asserts on the extracted
+# result pays that latency once per publish and does nothing with the time:
+# `tests/lib/test_profile_workflows_unit.py` spent 58.9s of which 50s was this
+# sleep (8.6s with the poll at 0.05). This shortens discovery only -- the
+# extraction still has to run, and its correctness is what the tests assert.
+# `setdefault`, so an explicit value still wins for anyone testing the real
+# interval.
+os.environ.setdefault("REFLEXIO_DURABLE_LEARNING_POLL_SECONDS", "0.05")
 import reflexio.server as _test_server  # noqa: E402
 from reflexio.server.extensions import reset_services  # noqa: E402
 

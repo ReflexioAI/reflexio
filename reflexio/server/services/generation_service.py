@@ -363,6 +363,7 @@ class GenerationService:
             if not defer_learning:
                 from reflexio.server.services.durable_learning.waiting import (
                     acquire_waiter,
+                    coverage_stalled,
                     release_waiter,
                 )
 
@@ -370,14 +371,36 @@ class GenerationService:
                     try:
                         deadline = publish_start + 240
                         while time.perf_counter() < deadline:
-                            if (
-                                storage.extraction_status(user_id, request_id)["status"]
-                                == "done"
-                            ):
+                            status = storage.extraction_status(user_id, request_id)
+                            if status["status"] == "done":
+                                break
+                            # A partial window needs input this caller does not
+                            # have, so the remaining deadline cannot change the
+                            # answer. Without this the default library publish
+                            # blocks the full 240s for any user below one window.
+                            if coverage_stalled(status):
                                 break
                             time.sleep(
                                 min(0.25, max(0, deadline - time.perf_counter()))
                             )
+                    except Exception:  # noqa: BLE001
+                        # Everything above this point has COMMITTED. The waiter
+                        # only observes how far extraction has got; it performs
+                        # no writes. Letting it raise would fall into the outer
+                        # handler, which records `publish_request_failed` and
+                        # re-raises -- the caller is then told their durable
+                        # publish failed, and the response carries no
+                        # `request_id`, so they cannot even poll for the work
+                        # that actually landed. Stop waiting instead: coverage
+                        # is reported separately and is allowed to be unknown.
+                        logger.warning(
+                            "Publish for user %s committed, but waiting for "
+                            "extraction coverage of request %s failed; "
+                            "returning the admitted publish.",
+                            sanitise_for_log(user_id),
+                            sanitise_for_log(request_id),
+                            exc_info=True,
+                        )
                     finally:
                         release_waiter(self.org_id)
             return result

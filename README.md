@@ -431,3 +431,14 @@ Different users can extract concurrently within `REFLEXIO_PUBLISH_LEARNING_WORKE
 A partial window waits for more input or an eligible `force_extraction` request.
 Provider fallback remains enabled. Existing extracted data is preserved, and
 interactions stored before stream admission are not automatically replayed.
+
+A caller waiting for coverage — `publish_interaction()`, or `POST
+/api/publish_interaction?wait_for_response=true` — is never held for a window only
+new input can close. It returns as soon as every eligible cursor is either covered
+or waiting for input, reporting `learning_status="deferred"` with
+`learning_reason="waiting_for_window"`. Poll `GET /api/learning_status` with the
+returned `request_id` to see coverage complete later. Note the practical
+consequence of the default `window_size` of 10: a brand-new user's first window
+needs ten eligible interactions before anything is extracted, so a single publish
+legitimately returns uncovered. Pass `force_extraction` when you need that publish
+extracted on its own.
