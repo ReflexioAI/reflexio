@@ -1,8 +1,24 @@
-# Consolidator decision-eval harness (AI-judged)
+# /tests/eval/consolidation
+Description: Decision-quality harness for playbook consolidation.
 
-Scaffolding to measure whether the **consolidator** makes the right decision
-for a new playbook fragment against the existing rows, and to catch
-regressions when the `playbook_consolidation` prompt changes.
+## Main Entry Points
+
+
+- **`case.py`** — case schema and discriminator
+- **`runner.py`** — provider execution and metrics
+- **`judge.py`** — panel verdicts
+- **`providers.py`** — live consolidator adapter
+- **`fixtures/`** — illustrative cases
+
+## Purpose
+
+
+Detect consolidation prompt regressions without confusing illustrative fixtures with curated evidence.
+
+## Architecture Pattern
+
+
+Cases feed precomputed decisions or a provider; deterministic kind scores and independent judge verdicts are aggregated separately.
 
 It is **AI-judged**: no human gold labels are required at scoring time — an
 LLM-judge labels each case and the headline metric is *agreement with the
@@ -13,16 +29,8 @@ judge*. A cheap deterministic *kind accuracy* is tracked alongside.
 > `fixtures/illustrative_cases.json` exists only to exercise the harness
 > end-to-end.
 
-## Layout
-
-| File | Purpose |
-| --- | --- |
-| `case.py` | `ConsolidationEvalCase` schema (`existing` rows + one `candidate`) + `kind_for_decision` |
-| `judge.py` | `judge_consolidation_decision` AI-judge (panel of N, default 1, majority vote) returning `ConsolidationVerdict{correct, self_contradiction, reason}` |
-| `runner.py` | `run_eval` runner + `EvalResults` metrics (kind accuracy, judge agreement, over/under-merge, self-contradiction) |
-| `fixtures/` | `illustrative_cases.json` + loader (`load_illustrative_cases`) |
-
 ## Kind mapping (explicit, not heuristic)
+
 
  A consolidation decision carries an explicit discriminator `kind`
 (`unify` / `reject_new` / `differentiate` /
@@ -30,6 +38,7 @@ judge*. A cheap deterministic *kind accuracy* is tracked alongside.
 `decision.kind`; there is no heuristic to get wrong.
 
 ## What the judge adds: the self-contradiction dimension
+
 
 The verdict carries a second flag beyond `correct`:
 
@@ -47,7 +56,9 @@ For non-`unify` decisions `self_contradiction` is not applicable (recorded as
 
 ## Metrics
 
+
 Deterministic (no LLM):
+
 - `kind_accuracy` — fraction of cases whose produced `kind` equals `gold_kind`.
 - `over_merge_rate` — of cases that should stay separate (`gold_kind` ∈
   {`differentiate`, `independent`}), the fraction that produced a merge/drop
@@ -56,6 +67,7 @@ Deterministic (no LLM):
   `reject_new`}), the fraction kept separate (`differentiate` / `independent`).
 
 AI-judged:
+
 - `judge_accuracy` — fraction the judge marked `correct` (None if none judged).
 - `self_contradiction_rate` — among produced-`unify` judged cases, the fraction
   the judge flagged as self-contradicting (None when there is no judged
@@ -66,6 +78,7 @@ Panel ties break **conservatively, in opposite directions**: `correct` ties →
 
 ## Fixture coverage
 
+
 | Case id | gold_kind |
 | --- | --- |
 | `unify_same_trigger_duplicate` | `unify` (classic dedup) |
@@ -74,7 +87,11 @@ Panel ties break **conservatively, in opposite directions**: `correct` ties →
 | `reject_new_redundant` | `reject_new` |
 | `independent_unrelated` | `independent` |
 
-## Running
+## Key Endpoints / Commands / Contracts
+
+
+### Running
+
 
 Tests mock the LLM judge and the produced decision — no real API calls:
 
@@ -86,6 +103,7 @@ Anything that would hit a real API is decorated `@skip_low_priority` (the
 real-*judge* smoke test, `test_real_judge_smoke`).
 
 ## Running against the live consolidator
+
 
 `run_eval` accepts either a parallel `decisions` list (precomputed, as the
 default tests use) or a `decision_provider` callable that maps a case to a
@@ -109,6 +127,7 @@ covers the provider's construction in default CI.
 
 ## Comparing two prompt versions (deviation guard)
 
+
 To gate a candidate `playbook_consolidation` version against a baseline (catch
 regressions when iterating the prompt across versions), use the shared CLI which
 runs this harness under both pinned versions and fails on regression:
@@ -120,3 +139,9 @@ uv run python -m tests.eval.prompt_deviation_guard \
 
 See `tests/eval/prompt_deviation_guard.py` (gate logic unit-tested in
 `tests/eval/test_prompt_deviation_guard.py`).
+
+## Requirements / Problems to Avoid
+
+
+- **Keep default tests keyless**; real providers and judges require the documented opt-in.
+- **Illustrative fixtures prove harness behavior**, not production extraction quality.

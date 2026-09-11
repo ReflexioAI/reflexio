@@ -1,9 +1,10 @@
-# server/api_endpoints
+# /reflexio/server/api_endpoints
 Description: Shared helpers between FastAPI domain routes and business logic — builds `RequestContext`, validates requests, and delegates into `Reflexio`. Public route declarations live in `../routes/` and are aggregated by `core_router` in `../api.py`; the files here are reusable handlers/helpers those routes call.
 
 > For the complete endpoint list (publish, retrieval, search, profile/playbook lifecycle, evaluation, Braintrust, operations), see the parent [server README](../README.md#api-endpoints).
 
-## Files
+## Main Entry Points
+
 
 | File | Purpose |
 |------|---------|
@@ -15,13 +16,19 @@ Description: Shared helpers between FastAPI domain routes and business logic —
 | `stall_state_api.py` | `GET /api/stall_state`, `POST /api/stall_state/notified` — extraction-agent waiting state. |
 | `precondition_checks.py` | `precondition_checks()` — shared request validation. |
 
+## Purpose
+
+
+Build per-request dependencies, validate input, and share handler logic across the domain routers without duplicating business services.
+
 ## Architecture Pattern
+
 
 ```
 api.py (create_app + core_router)
   -> routes/<domain>.py (FastAPI routers)
     -> Depends(get_request_context) -> RequestContext(org_id, storage, configurator, prompt_manager)
-    -> get_reflexio(org_id) -> Reflexio (reflexio_lib) -> services/
+    -> get_reflexio(org_id) -> Reflexio (lib/reflexio_lib.py) -> services/
 ```
 
 - **`RequestContext` is the context-passing contract** — handlers receive it via `Depends` and never reach for storage/config/prompts globally.
@@ -29,6 +36,7 @@ api.py (create_app + core_router)
 - **Auth is injected, not implemented here** — the OS app uses `default_get_org_id` / `DEFAULT_ORG_ID`; the enterprise extension swaps in authenticated org resolution (see `reflexio_ext/server/api_endpoints/`).
 
 ## Requirements / Problems to Avoid
+
 
 - **NEVER instantiate `Reflexio()` in a handler** — use `get_reflexio(org_id)` from `server/cache/`.
 - **Keep business logic in `services/`** — endpoints validate, build context, and delegate; they don't embed extraction/evaluation logic.

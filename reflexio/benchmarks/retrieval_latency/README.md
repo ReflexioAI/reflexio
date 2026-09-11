@@ -1,4 +1,25 @@
-# Retrieval Latency Benchmark
+# /reflexio/benchmarks/retrieval_latency
+Description: Retrieval timing across corpus sizes, storage backends, and in-process service/ASGI layers.
+
+## Main Entry Points
+
+
+- **`bench.py`** — CLI and timing loop
+- **`backends.py`** — storage setup
+- **`seed.py`** — corpus generation
+- **`scenarios.py`** — query scenarios
+- **`embed_cache.py`** — query-vector cache
+- **`report.py`** — statistics and baseline comparison
+
+## Purpose
+
+
+Measure retrieval cost while separating storage/library work from framework overhead.
+
+## Architecture Pattern
+
+
+Seed deterministic document vectors, cache real query embeddings, warm each cell, and record repeated timings for matched backend/layer/entity combinations.
 
 > Part of the [Reflexio Code Map](../../README.md). Related to the server's [Unified Search Service](../../server/README.md#unified-search-service) and [Storage](../../server/README.md#storage) components.
 
@@ -6,6 +27,7 @@ Measures end-to-end latency for profile search, user/agent playbook search,
 and unified cross-entity search across storage backends and corpus sizes.
 
 ## What it measures
+
 
 Four retrieval types × two layers × N storage backends × K corpus sizes.
 
@@ -29,6 +51,7 @@ gracefully otherwise).
 
 ## Controlling embedder cost
 
+
 Query embeddings are pre-cached on disk at
 `~/.cache/reflexio-benchmarks/embeddings-<model>.json`. First run populates
 the cache via the real embedding API (requires `OPENAI_API_KEY` or the
@@ -44,6 +67,7 @@ it doesn't contaminate the timing — it's a known LLM cost, orthogonal to
 retrieval.
 
 ## Usage
+
 
 ```bash
 # Default sweep: sizes 100/1000/10000, sqlite + supabase if available,
@@ -62,6 +86,7 @@ uv run python -m reflexio.benchmarks.retrieval_latency.bench \
 
 ## Output
 
+
 Each run writes `results.json` and `report.md` to
 `reflexio/benchmarks/retrieval_latency/results/<timestamp>/` — next to the
 script itself, so reports travel with the code that produced them (override
@@ -74,7 +99,11 @@ one per retrieval type, rows grouped by `(backend, layer)`. Cell format:
 `p50 / p95 (mean)` in milliseconds. When `--baseline` is passed, a ΔP95
 column flags cells where p95 has grown by 20% or more (`⚠`).
 
-## Interpreting the numbers
+## Requirements / Problems to Avoid
+
+
+### Interpreting the numbers
+
 
 Sanity checks to run on any report:
 
@@ -86,6 +115,7 @@ Sanity checks to run on any report:
   cold cache — re-run with more warmup.
 
 ## Pytest smoke test
+
 
 `tests/benchmarks/test_retrieval_latency_smoke.py` runs a tiny version of
 this benchmark at `N=50, trials=10, sqlite + service only` and asserts that
@@ -104,6 +134,7 @@ cp tests/benchmarks/tmp/results.json tests/benchmarks/baseline.json
 Then commit the new `baseline.json`.
 
 ## See Also
+
 
 - [Code Map (root README)](../../README.md) -- high-level overview of all Reflexio components
 - [Server README](../../server/README.md) -- backend architecture including search and storage

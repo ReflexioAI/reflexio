@@ -1,13 +1,16 @@
-# services/extraction
+# /reflexio/server/services/extraction
+Description: Shared async extraction runtime for profile and playbook pipelines.
 
-Shared async extraction runtime for profile and playbook pipelines.
+## Purpose
+
 
 This package is intentionally domain-neutral. Profile and playbook modules own
 their prompts, schemas, extractor semantics, and storage decisions; this package
 owns the reusable runtime needed when extraction pauses, waits for more
 information, and resumes outside the request path.
 
-## Files
+## Main Entry Points
+
 
 | File | Responsibility |
 |------|----------------|
@@ -19,7 +22,13 @@ information, and resumes outside the request path.
 | `resume_worker.py` | Resumes paused runs, rebuilds request context, and records retry state. Finalization uses an immutable run-keyed receipt so learning writes and retry billing reuse the same persisted IDs. |
 | `outcome.py` | Provides the generic extraction outcome wrapper used by callers. |
 
-## Boundary Rules
+## Architecture Pattern
+
+
+Extraction records durable agent state and pending human calls; the scheduler discovers resumable work and the worker reconstructs context, resumes the agent, and commits finalization with an immutable receipt. Domain services retain prompts and learning semantics.
+
+## Requirements / Problems to Avoid
+
 
 - Keep profile-specific and playbook-specific extraction behavior in their own
   modules; call this package only for shared async runtime concerns.
@@ -36,7 +45,11 @@ information, and resumes outside the request path.
   bindings remain readable for backward compatibility; playbook resume derives
   an in-memory owner only from complete, unanimous persisted source evidence.
 
-## Resume discovery
+## Key Endpoints / Commands / Contracts
+
+
+### Resume discovery
+
 
 When an `org_id_provider` is installed, the scheduler calls it on every tick and
 treats its actionable org list as authoritative for cross-ref discovery. Without

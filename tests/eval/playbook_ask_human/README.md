@@ -1,4 +1,24 @@
-# Playbook ask_human invocation eval
+# /tests/eval/playbook_ask_human
+Description: Binary evaluation of playbook human-clarification decisions.
+
+## Main Entry Points
+
+
+- **`case.py`** — label schema
+- **`providers.py`** — extractor invocation
+- **`runner.py`** — precision/recall scoring
+- **`run_benchmark.py`** — benchmark CLI
+- **`../golden_set/playbook_ask_human/cases.yaml`** — golden trajectories
+
+## Purpose
+
+
+Distinguish missing organizational context from extractable learning and trajectories requiring no playbook.
+
+## Architecture Pattern
+
+
+The provider runs the resumable extractor; the runner compares whether it invoked ask_human against the case label.
 
 This eval scores the resumable playbook extractor's decision to call
 `ask_human`. It is a binary precision/recall eval over natural agent-user
@@ -24,4 +44,3 @@ uv run pytest tests/eval/playbook_ask_human -o 'addopts=' -q
 uv run ruff check tests/eval/playbook_ask_human
 uv run pyright tests/eval/playbook_ask_human
 ```
-

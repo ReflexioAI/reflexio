@@ -1,7 +1,24 @@
-# Extraction golden-set eval runner (AI-judged)
+# /tests/eval/extraction
+Description: Float-scored profile/playbook extraction evaluation.
 
-Scaffolding to score the **extractor** (profiles + playbooks) against curated
-gold cases, and to catch regressions when the extraction prompts change.
+## Main Entry Points
+
+
+- **`runner.py`** — case scoring and aggregation
+- **`providers.py`** — real extractor adapter
+- **`../judge.py`** — shared LLM judge
+- **`../golden_set/extraction/`** — gold cases
+- **`../conftest.py`** — case and judge fixtures
+
+## Purpose
+
+
+Measure signal coverage and grounded evidence for extraction prompt changes.
+
+## Architecture Pattern
+
+
+Load cases, obtain supplied/provider extractions, score with the shared judge, and aggregate continuous metrics.
 
 It is **AI-judged** and **float-scored** — unlike consolidation decision evals
 (which classify a decision into a discrete
@@ -16,6 +33,7 @@ judge → aggregate).
 
 ## What it reuses (not re-implemented here)
 
+
 | Piece | Lives in | Role |
 | --- | --- | --- |
 | `LLMJudge.score(*, expected, actual)` | `tests/eval/judge.py` | the shared judge — returns `JudgeScore{signal_f1, answer_correctness, grounded_rate, rationale}` |
@@ -28,6 +46,7 @@ This package adds only `runner.py` (`run_eval` / `score_case` / `EvalResults` /
 
 ## Metrics
 
+
 The judge scores each case on two dimensions in `[0, 1]`:
 
 - **`signal_f1`** — did the extraction capture the expected *signals*, including
@@ -38,6 +57,7 @@ The judge scores each case on two dimensions in `[0, 1]`:
 (`answer_correctness` is a search-only dimension, pinned to 0 here and ignored.)
 
 `EvalResults` aggregates per-case scores into:
+
 - `signal_f1_mean`, `grounded_rate_mean` (arithmetic means; 0.0 when empty),
 - `pass_rate(threshold=0.7)` — fraction of cases with `signal_f1 >= threshold`
   **and** `grounded_rate >= threshold`,
@@ -46,7 +66,11 @@ The judge scores each case on two dimensions in `[0, 1]`:
 There is **no kind label or confusion matrix** — extraction is graded, not
 classified.
 
-## Running
+## Key Endpoints / Commands / Contracts
+
+
+### Running
+
 
 The default `extraction_judge` is stubbed, so the harness runs without
 credentials:
@@ -60,6 +84,7 @@ judge. The `@skip_low_priority` `test_real_judge_smoke` (gated by
 `RUN_LOW_PRIORITY=1`) exercises the live-judge path.
 
 ## Supplying extractions
+
 
 `run_eval` takes either a parallel `extractions` list (precomputed
 `(profiles, playbooks)` per case — the default tests use the case's own gold
@@ -82,3 +107,9 @@ the `@skip_low_priority` smoke `test_live_extraction_provider_real` (run with
 `litellm.completion`) covers the provider's construction in default CI. Produced
 items may be `UserProfile` / `UserPlaybook` entities or plain dicts (a `_to_dict`
 shim normalizes both for the judge).
+
+## Requirements / Problems to Avoid
+
+
+- **Keep default tests keyless**; real providers and judges require the documented opt-in.
+- **Illustrative fixtures prove harness behavior**, not production extraction quality.

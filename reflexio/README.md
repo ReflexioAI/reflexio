@@ -1,215 +1,76 @@
-# Reflexio Code Map
-Describe the code structure and component dependencies for source code of reflexio
+# /reflexio
+Description: Shared Python package for learning user profiles and agent playbooks from interactions, with SDK, CLI, local-library, and HTTP entry points.
 
-## Table of Contents
+Paths below are relative to this package. The repository's [public README](../README.md) covers installation and examples.
 
-- [Overview](#overview)
-- [models and client](#models-and-client)
-- [cli](#cli)
-- [reflexio_lib](#reflexio_lib)
-- [mem0](#mem0)
-- [server](#server)
-- [data](#data)
-- [See Also](#see-also)
+## Main Entry Points
 
-## Overview
-Reflexio is a user profiling and agent playbook system with three main access patterns:
 
-1. **Remote API Access** (`client`) - Applications use Python SDK to call REST API
-2. **Local Library Access** (`reflexio_lib`) - Direct synchronous access without HTTP layer
-3. **CLI Access** (`cli`) - Local command-line workflows for services, publishing, search, auth, config, and diagnostics
+| Path | When to modify it | Component map |
+|------|-------------------|---------------|
+| `__init__.py` | Public Python exports | |
+| `client/client.py` | Typed HTTP SDK, Bearer authentication, sync calls and explicit async methods | [SDK reference](../client_dist/README.md) |
+| `models/api_schema/` | Shared API and storage-facing contracts; domain entities live in `models/api_schema/domain/` | |
+| `models/config_schema.py` | Shared `Config` and extractor/storage configuration | |
+| `models/profile_id.py` | Canonical UUIDv4 profile identities | |
+| `lib/reflexio_lib.py` | `Reflexio` local-library facade; focused `_*.py` mixins own domain operations | |
+| `lib/generation_client.py` | Generation client protocol used by callers | |
+| `cli/app.py`, `cli/commands/` | Typer command registration and handlers | [CLI](cli/README.md) |
+| `server/api.py`, `server/routes/` | FastAPI composition and domain routes | [Server](server/README.md) |
+| `server/api_endpoints/` | Request context, shared handlers, and clarification routes | [Endpoint helpers](server/api_endpoints/README.md) |
+| `server/services/` | Extraction, aggregation, evaluation, retrieval, and storage | [Services](server/services/README.md) |
+| `server/extensions.py` | Optional capability, hook, and typed runtime-service registration | |
+| `server/prompt/prompt_bank/` | Versioned LLM prompts | [Prompts](server/prompt/prompt_bank/README.md) |
+| `server/site_var/` | Model settings, retrieval defaults, and feature flags | [Site variables](server/site_var/README.md) |
+| `mem0/` | Optional hosted mem0 wrappers and scoped cleanup | [mem0](mem0/README.md) |
+| `integrations/` | External agent integrations | [OpenClaw](integrations/openclaw/README.md), [embedded OpenClaw](integrations/openclaw-embedded/README.md) |
+| `benchmarks/retrieval_latency/` | Storage/library retrieval timing | [Benchmark](benchmarks/retrieval_latency/README.md) |
+| `test_support/` | Shared test fixtures and helpers | |
 
-**Core Flow**: User Interactions → Server Processing → Profile/Playbook/Evaluation → Storage
+## Purpose
 
-**Shared Components**:
-- `models` - API and internal schemas shared by client, CLI, and server
-- `server` - FastAPI backend with LLM-based processing services
-- `data` - Bundled configs and local fixtures
-- `docs` - Next.js API documentation site
-- `mem0` - Optional mem0 hosted-client compatibility wrapper that mirrors learning into Reflexio
 
-## models and client
-Description: Shared data contracts and the Python SDK used by external applications, the CLI, and server endpoint helpers
+1. **Remote access** — `ReflexioClient` sends typed API requests; the CLI reuses it for publishing, search, and configuration.
+2. **Local access** — `Reflexio` runs services directly without HTTP; LLM/provider calls can still use the network.
+3. **Learning and retrieval** — Shared services produce profiles and playbooks, evaluate sessions, and retrieve relevant learning.
+4. **Deployment reuse** — Optional capabilities extend the same server without importing enterprise implementation code.
 
-### models
-**Path**: `models/`
+## Architecture Pattern
 
-#### Main Entry Points
-- **API Schemas**: `models/api_schema/` - Pydantic request/response models for public API surfaces
-- **Internal Schemas**: `models/api_schema/internal_schema.py` - Storage-facing profile, playbook, request, evaluation, and agent-run models
-- **Profile IDs**: `models/profile_id.py` - Canonical UUIDv4 generation for Reflexio-created profiles
-- **Validators**: `models/api_schema/validators.py` - Cross-schema validation helpers
 
-#### Purpose
-Provides type-safe data contracts between client and server:
-1. **Service Schemas** - Interactions, requests, profiles, user playbooks, agent playbooks, evaluations, and stall-state records
-2. **Retriever Schemas** - Search/get/set requests and responses
-3. **Login/Auth Schemas** - Credentials, API tokens, feature flags, and organization/account responses
-4. **Config Schema** - YAML/API configuration structure (`tool_can_use` at root `Config` level, shared across services)
-
-### client
-**Path**: `client/`
-
-Description: Python SDK for interacting with Reflexio API remotely
-
-#### Main Entry Point
-- **Client**: `client.py` - `ReflexioClient` class
-
-#### Purpose
-Remote API client for applications to:
-1. **Publish interactions** - Send user interactions to server for processing
-2. **Search/retrieve data** - Query profiles, interactions, playbooks, evaluations, and context
-3. **Track deferred learning** - Poll `get_learning_status(request_id)` after `publish_interaction(..., wait_for_response=False)` queues extraction
-4. **Manage profiles/playbooks** - Delete, regenerate, and update status where supported by API endpoints
-5. **Configure** - Set/get organization configuration
-
-#### Architecture Pattern
-Async HTTP client wrapping typed models from `models/api_schema/`. Automatically handles authentication via Bearer tokens.
-
-## cli
-Description: Command-line entry point for operating Reflexio locally and against a running server
-
-### Main Entry Points
-- **CLI app**: `cli/` - Typer command groups for services, publish/search/context, auth, config, status, and diagnostics
-- **Reference**: `cli/README.md` - Command map and common workflows
-
-### Purpose
-Local operator interface to:
-1. **Run services** - Start/stop backend, docs, and optional embedding service
-2. **Publish interactions** - Send JSON, JSONL, stdin, or quick single-turn payloads
-3. **Search context** - Query profiles, user playbooks, and agent playbooks
-4. **Inspect/manage data** - List/delete/regenerate profiles and playbooks
-5. **Configure/authenticate** - Manage API keys, server URL, and configuration
-
-### Architecture Pattern
-Thin Typer layer over the Python client and local service manager. Use `uv run reflexio --help` to inspect command groups.
-
-## reflexio_lib
-Description: Local Python library interface for direct (non-API) access to Reflexio functionality
-
-### Main Entry Point
-- **Library**: `reflexio_lib.py` - `Reflexio` class
-
-### Purpose
-Direct programmatic access without HTTP/API layer:
-1. **Same interface as client** - Mirror of `ReflexioClient` but synchronous
-2. **Local execution** - Runs services directly (no network calls)
-3. **Testing/debugging** - Useful for local development and testing
-
-### Architecture Pattern
-Creates `RequestContext` and directly calls `GenerationService` - bypasses FastAPI layer. Methods are **synchronous** unlike `ReflexioClient`.
-
-## mem0
-Description: Optional compatibility layer for hosted mem0 clients that preserves mem0 behavior while adding Reflexio learning.
-
-**Detailed Documentation**: See [`reflexio/mem0/README.md`](mem0/README.md) for wrapper internals, identity scoping, and failure-mode contracts.
-
-### Main Entry Points
-- **Public exports**: `mem0/__init__.py` - `MemoryClient`, `AsyncMemoryClient`, local `Memory`/`AsyncMemory` re-exports, and Reflexio helper classes.
-- **Hosted wrappers**: `mem0/_wrapper.py` - Sync/async mem0 client subclasses that mirror `add()` calls and optionally enrich `search()`.
-- **Lifecycle facade**: `mem0/_facade.py` - Explicit `client.reflexio` cleanup/delete operations scoped to mem0 identities.
-
-### Purpose
-1. **One-import migration** - mem0 users can install `reflexio-ai[mem0]` and switch imports to `reflexio.mem0`.
-2. **Best-effort learning mirror** - mem0 writes remain primary; Reflexio publish/search side effects are optional and fail-open.
-3. **Scoped operations** - `user_id`, `app_id`, `agent_id`, and `run_id` are mapped into deterministic Reflexio user/session scopes.
-
-### Architecture Pattern
-Pass-through wrapper around mem0-hosted clients. Reflexio is configured via environment, inline kwargs, or injected `ReflexioClient`; absent Reflexio configuration leaves mem0 behavior unchanged. `search()` is mem0-only unless `include_reflexio=True`, which reserves a `reflexio` namespace on returned results.
-
-## server
-Description: FastAPI backend server that processes user interactions to generate profiles, extract playbooks, and evaluate agent success
-
-**Detailed Documentation**: See [`reflexio/server/README.md`](server/README.md) for component details, including the [Prompt Bank](server/prompt/prompt_bank/README.md), [Playbook Service](server/services/playbook/README.md), and [Site Variables](server/site_var/README.md)
-
-### Main Entry Points
-- **API composer**: `api.py` - `create_app()` factory, middleware/capability wiring, and `core_router` aggregation
-- **Domain routes**: `server/routes/` - FastAPI route modules grouped by system, interactions, profiles, playbooks, search, provenance, evaluation, Braintrust, and config
-- **Extension Registry**: `extensions.py` - optional capability/service registration for OSS and enterprise integrations
-- **Endpoint Helpers**: `api_endpoints/` - Shared handler/helper functions and `RequestContext` used by route modules
-- **Core Service**: `services/generation_service.py` - Main orchestrator
-
-### Purpose
-Receives user interactions from clients and processes them to:
-1. **Generate user profiles** - Extract and maintain user preferences/traits from behavior
-2. **Extract playbooks** - Identify issues and improvement opportunities for developers
-3. **Evaluate agent success** - Determine if agent successfully fulfilled user's needs
-
-### Component Relationships
-```
-client (Python SDK)
-  -> api.py (create_app + core_router)
-    -> routes/ (domain FastAPI routers)
-    -> api_endpoints/ (shared handlers + RequestContext)
-      -> reflexio_lib.Reflexio (main entry)
-        -> services/generation_service.py (orchestrator)
-          ├─> services/profile/ -> storage (BaseStorage)
-          ├─> services/playbook/ (playbook extraction) -> storage (BaseStorage)
-          ├─> services/durable_learning/ -> learning_jobs queue -> deferred extraction
-          └─> services/agent_success_evaluation/ -> storage (BaseStorage)
+```text
+CLI / external application -> client/client.py -> server/routes/
+Local application ----------------------------> lib/reflexio_lib.py
+server/routes/ -> RequestContext + get_reflexio() -> lib/reflexio_lib.py
+  -> services/generation_service.py
+     -> durable_learning/ (admission -> user lease -> frozen windows -> fenced commit)
+        -> profile/ and playbook/ -> BaseStorage
+     -> agent_success_evaluation/ (deferred session evaluation)
+  -> unified_search_service.py -> pre_retrieval/ + storage/ + retrieval/
 ```
 
-### Key Components
-- **`api_endpoints/`**: Request handling, `RequestContext` (bundles storage/config/prompts), auth
-- **`routes/`**: Domain route modules (`system.py`, `interactions.py`, `profiles.py`, `playbooks.py`, `search.py`, `provenance.py`, `evaluation.py`, `braintrust.py`, `config.py`) included into `api.py`'s `core_router`
-- **`db/`**: Auth & config storage only (SQLite) - NOT for profiles/interactions
-- **`llm/`**: Unified LiteLLM client, provider adapters, local rerank helpers, structured-output repair, and fail-open per-provider concurrency caps
-- **`prompt/`**: Versioned prompt templates in `prompt_bank/`
-- **`services/`**: Core business logic
-  - `generation_service.py` - Orchestrator (runs profile/playbook/success services)
-  - `base_generation_service.py` + `base_generation/` - Abstract base plus mixins for parallel actor execution, batch progress, should-run prechecks, status transitions, and usage billing
-  - `profile/` - Profile extraction & updates
-  - `playbook/` - Playbook extraction, consolidation, and aggregation
-  - `agent_success_evaluation/` - Success evaluation
-  - `durable_learning/` - Claim/drain durable `learning_jobs` for deferred extraction when `REFLEXIO_DURABLE_LEARNING_QUEUE` is enabled
-  - `extraction/` - Resumable async extraction agent infrastructure
-  - `shadow_comparison/` - Per-turn regular vs shadow verdict judge
-  - `evaluation_overview/` - Evaluation-page aggregates and hero metrics
-  - `playbook_optimizer/` - Scenario-based playbook optimization experiments
-  - `braintrust/` - Braintrust eval export/sync support
-  - `lineage/` - Resolve current records and schedule tombstone garbage collection for superseded profile/playbook rows
-  - `governance/` - Subject-reference contracts and retention/barrier helpers used by storage and lineage
-  - `storage/` - Abstract layer (SQLite prod, LocalJSON test) with governance-aware write validation and durable `learning_jobs` contracts
-  - `pre_retrieval/` - Query rewriting and document expansion helpers
-  - `configurator/` - YAML config loader
-- **`billing_meter.py`**: OSS usage-event facade for learning/search metering; keep imports function-local at call sites so enterprise emitters remain optional
-- **`site_var/`**: Global settings singleton
+- **Generation actors** load configuration, run extractors/evaluators, and persist results through `BaseStorage`.
+- **Automatic extraction** uses durable streams with independent project/kind cursors under one user lease. Legacy `learning_jobs` remains only for reconciliation.
+- **Paused extraction** uses `services/extraction/` to persist human clarification and resume/finalize idempotently.
+- **Aggregation** is fenced per agent version; agent-playbook successors retain the approval workflow.
+- **Storage selection** belongs to the configurator. OSS defaults to SQLite; deployment extensions supply other factories.
+- **Runtime data** is outside this package (normally under `~/.reflexio`, resolved through `defaults.py` and `cli/paths.py`); there is no checked-in `reflexio/data/` directory.
 
-### Architecture Patterns
-
-**Service Pattern** (BaseGenerationService):
-1. Load configs from YAML -> 2. Create actors from configs -> 3. Run actors in parallel (ThreadPoolExecutor) -> 4. Save results to storage
-
-**Actor Pattern**: Multiple actors (extractors/evaluators) run in parallel, each processing interactions independently, results aggregated
-
-**Storage Abstraction**: All access via `BaseStorage` interface, implementation selected by configurator, supports vector similarity search
-
-**Data Flow**: `User Interaction -> Storage (save) -> Services (parallel: LLM + Prompts) -> Results -> Storage (save)`
+## Key Endpoints / Commands / Contracts
 
 
-## data
-Description: Local storage directory for configuration files and SQLite databases
+- **HTTP routes**: the [server route map](server/README.md#api-endpoints) groups the complete publish, search, lifecycle, evaluation, experiment, and clarification surface.
+- **CLI commands**: the [CLI command map](cli/README.md) covers services, publish, search/context, data management, config, auth, and diagnostics.
+- **Deferred learning**: `publish_interaction(..., wait_for_response=False)` returns after durable admission; `get_learning_status(request_id)` reports progress.
+- **Shared schemas**: client, CLI, and server use `models/api_schema/`; enterprise-only schemas belong in the consuming extension.
+- **Documentation and tests**: [interactive docs](../docs/README.md), [notebooks](../notebooks/README.md), and `../tests/` sit at repository level.
 
-### Main Entry Points
-- **Configs**: `configs/` - YAML configuration files for extractors and evaluators
-- **Database**: `sql_app.db` - SQLite database for auth and config storage
-- **JSON Storage**: `user_profiles_*.json` - Local JSON files for testing
+## Requirements / Problems to Avoid
 
-### Purpose
-Local data storage for:
-1. **Configuration files** - YAML configs defining extraction/evaluation behavior
-2. **Authentication database** - User credentials and API tokens (SQLite/Postgres)
-3. **Test data** - LocalJsonStorage files for development/testing
 
-### Architecture Pattern
-Referenced by `SimpleConfigurator` for loading configs and by database operations for auth/config persistence. Not directly accessed by application code.
-
-## See Also
-
-- [Server README](server/README.md) -- detailed component documentation for the FastAPI backend
-- [Prompt Bank README](server/prompt/prompt_bank/README.md) -- versioned prompt template system
-- [Playbook Service README](server/services/playbook/README.md) -- playbook extraction, aggregation, and deduplication pipeline
-- [Site Variables README](server/site_var/README.md) -- global configuration and feature flags
-- [Retrieval Latency Benchmarks](benchmarks/retrieval_latency/README.md) -- search performance benchmarking
-- [OpenClaw Integration](integrations/openclaw/README.md) -- federated OpenClaw plugin setup and behavior
-- [mem0 Wrapper](mem0/README.md) -- hosted mem0 compatibility wrapper and Reflexio mirroring contracts
+- **API handlers use `get_reflexio()`**, never fresh `Reflexio()` instances.
+- **Use `request_context.storage`**, not concrete storage imports in business logic.
+- **Use `LiteLLMClient` and `prompt_manager.render_prompt()`** for model calls and prompts.
+- **Keep `tool_can_use` at root `Config` level**; extraction and success evaluation share it.
+- **Preserve governance, lineage, and fencing contracts** when changing persistence; see the [service requirements](server/services/README.md#requirements--problems-to-avoid).
+- **Keep OSS independent**; register optional providers through `server/extensions.py`.

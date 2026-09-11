@@ -1,5 +1,6 @@
 # openclaw-smart
 
+
 openclaw-smart is the openClaw plugin counterpart of
 [claude-smart](https://github.com/reflexio-ai/claude-smart): a thin TS shim
 plus a Python (`openclaw_smart`) package that wires openClaw's plugin hooks
@@ -13,6 +14,7 @@ back into every subsequent turn as `prependContext`. The plugin degrades
 silently when the backend is unreachable.
 
 ## Quick install
+
 
 Guided Reflexio setup:
 
@@ -56,6 +58,7 @@ and `openclaw-smart repair`.
 
 ## How it works
 
+
 * **session_start** — pushes openclaw-smart's preferred extraction window /
   stride and the shared-skill optimizer defaults to the reflexio backend.
   Emits a stall banner (`prependContext`) if learning has been idle.
@@ -74,10 +77,10 @@ and `openclaw-smart repair`.
   `force_extraction=True` so the session's learnings are available before
   the next openClaw run.
 
-The full design lives in
-[`docs/superpowers/specs/2026-05-19-openclaw-smart-design.md`](../../../../docs/superpowers/specs/2026-05-19-openclaw-smart-design.md).
+See the [plugin README](plugin/README.md) for the shipped installation and command surface.
 
 ## Skills
+
 
 Six skill folders ship under `plugin/skills/` (`reflexio` is the always-on contract, the other five are user-invocable):
 
@@ -91,6 +94,7 @@ Six skill folders ship under `plugin/skills/` (`reflexio` is the always-on contr
 | `clear-all` | Delete all locally-stored skills + preferences (destructive, prompts)      |
 
 ## Configuration
+
 
 Plugin-side config lives in `plugin/openclaw.plugin.json` (no env vars
 required for normal use). The shell scripts honour these env knobs:
@@ -116,6 +120,7 @@ required for normal use). The shell scripts honour these env knobs:
 
 ## Recursion guard
 
+
 The reflexio backend uses `openclaw_provider` (a LiteLLM CustomLLM) to
 invoke the openclaw CLI for extraction. That CLI can in turn fire openClaw
 hooks back into openclaw-smart, which would re-publish the extractor's
@@ -131,12 +136,14 @@ immediately — no buffer writes, no search, no publish.
 
 ## Multi-session limitation
 
+
 The TS shim tracks one `activeSessionKey` per plugin instance to route
 the `reflexio_publish` tool to the right session. In concurrent
 multi-session use the last session-key seen wins. This matches
 claude-smart's behaviour and is intentional — see spec §10.
 
 ## Troubleshooting
+
 
 * **Hook timing out / no inject** — check
   `~/.openclaw-smart/backend.log` for reflexio startup errors. The
