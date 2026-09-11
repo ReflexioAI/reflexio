@@ -1,7 +1,8 @@
-# Reflexio Server
+# /reflexio/server
 Description: FastAPI backend server that processes user interactions to generate profiles, extract playbooks, and evaluate agent success
 
 ## Table of Contents
+
 
 - [Main Entry Points](#main-entry-points)
 - [Cache](#cache)
@@ -25,13 +26,14 @@ Description: FastAPI backend server that processes user interactions to generate
   - [Unified Search Service](#unified-search-service)
   - [Storage](#storage)
   - [Configurator](#configurator)
-- [Architecture Patterns](#architecture-patterns)
+- [Architecture Pattern](#architecture-pattern)
   - [Request Flow](#request-flow)
   - [Service Pattern](#service-pattern)
-  - [Key Rules](#key-rules)
+  - [Requirements / Problems to Avoid](#requirements--problems-to-avoid)
 - [See Also](#see-also)
 
 ## Main Entry Points
+
 
 - **API composer**: `api.py` - `create_app()` factory, middleware/capability wiring, OpenAPI auth decoration, and `core_router` aggregation
 - **Domain routes**: `routes/` - FastAPI route modules; add new public API surfaces here and include their routers in `api.py`
@@ -40,7 +42,13 @@ Description: FastAPI backend server that processes user interactions to generate
 - **Core Service**: `services/generation_service.py` - Main orchestrator
 - **Durable Learning**: `services/durable_learning/` - durable sliding-window admission, scheduling and extraction
 
+## Purpose
+
+
+Compose the shared HTTP API, resolve request dependencies, and coordinate durable learning, session evaluation, retrieval, and optional deployment capabilities.
+
 ## Cache
+
 
 **Directory**: `cache/`
 
@@ -49,6 +57,7 @@ Description: FastAPI backend server that processes user interactions to generate
 | `reflexio_cache.py` | TTL-cached Reflexio instances (1 hour TTL, max 100 orgs) |
 
 **Key Functions**:
+
 - `get_reflexio(org_id)` - Get or create cached instance
 - `invalidate_reflexio_cache(org_id)` - Invalidate after config changes
 - `clear_reflexio_cache()` - Clear entire cache (testing/admin)
@@ -56,6 +65,7 @@ Description: FastAPI backend server that processes user interactions to generate
 **Pattern**: **ALWAYS use `get_reflexio()`** instead of `Reflexio()` directly in API endpoints
 
 ## API Endpoints
+
 
 **Directory**: `api_endpoints/`
 
@@ -85,8 +95,10 @@ Description: FastAPI backend server that processes user interactions to generate
 | `precondition_checks.py` | Request validation |
 
 **Key Endpoints**:
+
 - **Health/version**: `GET /`, `GET /health`, `GET /healthz`, `GET /healthz/eval`, `GET /meta/version`
 - **Identity/config**: `GET /api/whoami`, `GET /api/my_config`, `GET /api/get_config`, `POST /api/set_config`, `POST /api/update_config`
+- **Provenance**: `POST /api/get_learning_provenance`
 - **Publish/direct writes**: `POST /api/publish_interaction`, `POST /api/add_user_profile`, `POST /api/add_user_playbook`, `POST /api/add_agent_playbook`
 - **Retrieval**: `POST /api/get_requests`, `POST /api/get_interactions`, `GET /api/get_all_interactions`, `GET /api/learning_status`, `POST /api/get_profiles`, `GET /api/get_all_profiles`, `POST /api/get_user_playbooks`, `POST /api/get_agent_playbooks`, `POST /api/get_agent_success_evaluation_results`, `POST /api/get_retrieved_learning_evaluation_results`
 - **Search/stats**: `POST /api/search`, `POST /api/search_profiles`, `POST /api/rerank_user_profiles`, `POST /api/search_interactions`, `POST /api/search_user_playbooks`, `POST /api/search_agent_playbooks`, `GET /api/storage_stats`, `GET /api/get_profile_statistics`, `POST /api/get_dashboard_stats`, `POST /api/get_playbook_application_stats`
@@ -108,6 +120,7 @@ A batch carrying neither `request_id` nor `session_id` is refused before any rec
 
 ## Extension Registry
 
+
 **File**: `extensions.py`
 
 `CapabilityRegistry` lets deployments register optional routers, startup/shutdown hooks, and cross-cutting services without hardcoding enterprise-only imports into the OSS app. `create_app()` builds the active registry, stores it on `app.state.capability_registry`, installs capability routers/startup/shutdown hooks, and exposes typed service lookup through `ServiceKey`.
@@ -115,6 +128,7 @@ A batch carrying neither `request_id` nor `session_id` is refused before any rec
 **Pattern**: Optional integrations should register capabilities/services at app construction time and consume them through the registry; avoid importing enterprise implementations directly in OSS modules.
 
 ### Error reporting hook
+
 
 `error_reporting.py` defines the vendor-neutral `ErrorReporter` protocol and the
 `configure_error_reporter`, `error_tags`, `set_error_tags`, and `capture_anomaly`
@@ -125,19 +139,20 @@ diagnostics never change product control flow; exceptions raised by code inside 
 
 ## LLM Client
 
+
 **Directory**: `llm/`
 **Entry Point**: `litellm_client.py` - `LiteLLMClient` facade composed from focused mixins
 
 Key files:
+
 - `litellm_client.py`: Stable import surface, client config/credential resolution, and `LiteLLMClient` facade
 - `_litellm_text_generation.py`, `_litellm_embedding.py`, `_litellm_structured_output.py`: Completion/tool-call, embedding, and structured-output mixins
 - `_litellm_json_extraction.py`, `_litellm_subprocess.py`, `_provider_concurrency.py`, `_litellm_types.py`: JSON parsing, hard-timeout subprocess snapshots/workers, per-provider concurrency caps (fail-open by default, fail-closed for configured providers), and shared public types/errors
 - `providers/`: Optional local/provider adapters (`claude-code/`, OpenClaw, local embedding, Nomic embedding, and GPU-only multilingual E5); registration is opt-in via environment/config
-- `openai_client.py`: OpenAI implementation (legacy, do not use directly)
-- `claude_client.py`: Claude implementation (legacy, do not use directly)
 - `llm_utils.py`: Helper functions for Pydantic model conversion
 
 **Features**:
+
 - Uses LiteLLM for multi-provider support (OpenAI, Claude, Azure, OpenRouter, Gemini, custom endpoints, etc.)
 - **Custom endpoint support**: `CustomEndpointConfig` (model, api_key, api_base) takes priority over all other providers for LLM completion calls when configured with non-empty fields (but not embeddings)
 - **Gemini support**: Model names with `gemini/` prefix route through Google Gemini; API key from `api_key_config.gemini`
@@ -171,22 +186,26 @@ response = client.generate_response("What is 2+2?", response_format=Answer)  # R
 ```
 
 **Rules**:
+
 - **ALWAYS use `LiteLLMClient`**, never import `OpenAIClient` or `ClaudeClient` directly
 - **ALWAYS use Pydantic models** for structured outputs (dict-based schemas are not supported)
 
 ## Prompts
+
 
 **Directory**: `prompt/`
 
 **Detailed Documentation**: See [`prompt/prompt_bank/README.md`](prompt/prompt_bank/README.md) for the versioned template system.
 
 Key components:
+
 - `prompt_manager.py`: PromptManager for loading and rendering
-- `prompt_bank/`: Templates by prompt_id (metadata.json + version.prompt files)
+- `prompt_bank/`: Templates by prompt ID with versioned `.prompt.md` files and YAML frontmatter
 
 **Pattern**: Access via `request_context.prompt_manager.render_prompt(prompt_id, variables)`
 
 ## Site Variables
+
 
 **Directory**: `site_var/`
 
@@ -203,6 +222,7 @@ Access: `SiteVarManager().get_site_var(key)` for raw values, `feature_flags.is_f
 
 ## Services
 
+
 **Directory**: `services/`
 
 **Detailed Documentation**: See [`services/README.md`](services/README.md) for the per-directory file index across generation, evaluation, async extraction, search, and persistence.
@@ -210,6 +230,7 @@ Access: `SiteVarManager().get_site_var(key)` for raw values, `feature_flags.is_f
 **Service Boundary**: The service layer owns LLM orchestration, extraction, evaluation, optimization, search preparation, storage access, and long-running operation state. API endpoints should validate/authenticate requests, build `RequestContext`, and delegate into `Reflexio` or focused service helpers rather than embedding business logic.
 
 **Encapsulated Components**:
+
 - **Publish pipeline**: `generation_service.py` coordinates interaction persistence, profile generation, playbook generation, and deferred evaluation scheduling.
 - **Profile memory**: `profile/` extracts, deduplicates, and applies user profile updates.
 - **Playbook memory**: `playbook/` extracts and consolidates user playbooks, durably schedules bounded same-version aggregation, and reconstructs aggregation change logs from lineage.
@@ -226,6 +247,7 @@ Access: `SiteVarManager().get_site_var(key)` for raw values, `feature_flags.is_f
 
 ### Orchestrator
 
+
 **File**: `generation_service.py` - GenerationService
 
 Automatic publish flow:
@@ -240,8 +262,8 @@ existing extractor stack; HTTP waiting does not own an extraction slot.
 Called by API endpoints via `Reflexio`
 
 **Profile Timeout Troubleshooting**:
-- Use `python -m reflexio.scripts.reproduce_profile_timeout --mode storage --org-id <org> --user-id <user>` to reproduce with real interactions.
-- Use `--mode log --log-path server_log.txt` to replay extraction prompts captured in logs.
+
+- Inspect `services/profile/components/extractor.py` and `llm/litellm_client.py` for generation and provider timeout handling.
 - Look for structured events in logs:
   - `event=profile_extract_llm_start` / `event=profile_extract_llm_end`
   - `event=llm_request_start` / `event=llm_request_end`
@@ -249,6 +271,7 @@ Called by API endpoints via `Reflexio`
 - If all extractors fail for a user during rerun/manual operations, the user is now marked in `failed_user_ids` instead of silently completing with zero generated items.
 
 ### Base Infrastructure
+
 
 - `base_generation_service.py`: Stable `BaseGenerationService` import surface plus service-specific orchestration hooks (parallel extractor execution via ThreadPoolExecutor, `EXTRACTOR_TIMEOUT_SECONDS = 300` per-extractor safety timeout)
 - `base_generation/`: Mixins for batch progress, config filtering, extraction lifecycle, should-run prechecks, status transitions, and usage billing that keep `base_generation_service.py` navigable without changing caller imports
@@ -259,23 +282,25 @@ Called by API endpoints via `Reflexio`
 - `service_utils.py`: Utilities (`construct_messages_from_interactions()`, `format_interactions_to_history_string()` (prepends tool usage info when `tools_used` is present), `extract_json_from_string()`, `log_model_response()` for colored LLM response logging)
 
 **Operation State Management** (via `OperationStateManager` in `operation_state_utils.py`):
+
 - Centralized manager for all `_operation_state` table interactions with 6 use cases:
   1. **Progress tracking**: Rerun + manual batch operations (key: `{service}::{org_id}::progress`)
   2. **Concurrency lock**: Atomic lock with request queuing (key: `{service}::{org_id}[::scope_id]::lock`)
   3. **Extractor bookmark**: Track last-processed interactions per extractor (key: `{service}::{org_id}[::scope_id]::{name}`)
-  4. **Aggregator bookmark**: Track last-processed raw_feedback_id per aggregator
+  4. **Aggregator bookmark**: Legacy aggregator bookmarks; active incremental aggregation uses `storage_base/playbook/_aggregation.py`
   4b. **Cluster fingerprints**: Track cluster membership fingerprints for change detection (key: `{service}::{org_id}::{name}[::version]::clusters`)
   5. **Simple lock**: Non-queuing lock for cleanup operations
   6. **Cancellation**: Cooperative cancellation for batch operations (`request_cancellation()`, `is_cancellation_requested()`, `mark_cancelled()`). Uses separate DB row (key: `{service}::{org_id}::cancellation`) to avoid lost-update race conditions with progress updates.
 - Stale lock timeout: 5 minutes (assumes crashed if lock held longer)
-- Lock scoping: Profile generation = per-user, Playbook generation = per-org
-- Re-run mechanism: If new request arrives during generation, `pending_request_id` is set and generation re-runs after completion
+- Automatic, manual, and resumed extraction share `durable_learning/user_lease.py` ownership. Operation-state locks/bookmarks remain for their scoped legacy and batch workflows; they are not the automatic stream scheduler.
 
 ### Profile Generation
+
 
 **Directory**: `services/profile/`
 
 Key files:
+
 - `service.py`: Service orchestrator and profile persistence/finalization
 - `components/extractor.py`: Extractor that generates profile updates
 - `components/consolidator.py`: Consolidates newly extracted profiles against existing DB profiles using LLM
@@ -299,6 +324,7 @@ Key files:
 **Note**: All modes use `window_size` (per-extractor override or global). The key difference is that Regular checks stride_size before running, while Rerun/Manual always run. When no window is configured, rerun/manual falls back to `k=1000`.
 
 **Constructor Flags** (`ProfileGenerationService`):
+
 - `allow_manual_trigger`: Include `manual_trigger=True` extractors (default: False)
 - `output_pending_status`: Set output profiles to PENDING status (default: False)
 
@@ -330,17 +356,20 @@ Users can regenerate and manage profile versions using a four-state system:
 3. Complete archiving: ARCHIVE_IN_PROGRESS → ARCHIVED
 
 **Use Cases**:
+
 - Test prompt changes without affecting production profiles
 - Review AI-generated updates before deployment
 - Rollback to previous profile version if needed
 
 ### Playbook Extraction
 
+
 **Directory**: `services/playbook/`
 
 **Detailed Documentation**: See [`services/playbook/README.md`](services/playbook/README.md) for detailed component documentation.
 
 Key files:
+
 - `service.py`: Service orchestrator
 - `components/extractor.py`: Extractor that extracts user playbooks
 - `aggregation_trigger.py` / `aggregation_scheduler.py`: Durably signal, claim, lease, and retry bounded per-version aggregation work
@@ -349,6 +378,7 @@ Key files:
 - `review_service.py`: Re-reviews current user playbooks selected by created-at bounds and commits each completed decision newest-first
 
 **Flow**:
+
 - Interactions → PlaybookExtractor (extraction-only) → PlaybookConsolidator (consolidates new vs existing DB playbooks) → UserPlaybook (with optional `blocking_issue`) → Storage
 - UserPlaybook write → durable hourly-coalesced signal → PlaybookAggregationScheduler → fixed-page invalidation drain → same-version centroid match → one current-agent-plus-bounded-delta refresh per changed cluster → bounded residual clustering → AgentPlaybook → Storage
 - `POST /api/run_playbook_aggregation` → fenced, capped administrative full rerun
@@ -389,6 +419,7 @@ for storage contracts and failure dispositions.
 **Note**: All modes use `window_size` (per-extractor override or global). The key difference is that Regular checks stride_size before running, while Rerun/Manual always run. When no window is configured, rerun/manual falls back to `k=1000`.
 
 **Constructor Flags** (`PlaybookGenerationService`):
+
 - `allow_manual_trigger`: Include `manual_trigger=True` extractors (default: False)
 - `output_pending_status`: Set output user playbooks to PENDING status (default: False)
 
@@ -410,9 +441,11 @@ Similar to profiles, user playbooks support versioning:
 
 ### Agent Success Evaluation
 
+
 **Directory**: `services/agent_success_evaluation/`
 
 Key files:
+
 - `service.py`: `AgentSuccessEvaluationService`, the request-path service orchestrator (tracks run outcome flags: `last_run_result_count`, `has_run_failures()`)
 - `components/evaluator.py`: `AgentSuccessEvaluator`, evaluates success at session level (all interactions as one group)
 - `agent_success_evaluation_constants.py`: Output schema (`AgentSuccessEvaluationOutput`)
@@ -432,9 +465,11 @@ Key files:
 
 ### Durable Learning Queue
 
+
 **Directory**: `services/durable_learning/`
 
 Key files:
+
 - `admission.py`: Atomic publish admission and eligibility snapshots.
 - `scheduler.py` / `worker.py`: Always-on discovery, bounded worker turns and renewable user leases.
 - `window_executor.py` / `window_codec.py`: Model execution, saved outcomes and frozen window policies.
@@ -452,9 +487,11 @@ effort. `GET /api/learning_status` reads required cursor coverage. Legacy
 
 ### Async Extraction
 
+
 **Directory**: `services/extraction/`
 
 Key files:
+
 - `extraction/resumable_agent.py`: Resumable extraction agent runtime
 - `extraction/resume_scheduler.py` and `extraction/resume_worker.py`: Background scheduling/worker loop for paused extraction runs
 - `extraction/pending_tool_call_dispatch.py` and `extraction/prior_answer_search.py`: Tool surface and prior-answer context for async extraction agents
@@ -464,9 +501,11 @@ Key files:
 
 ### Shadow Comparison and Evaluation Overview
 
+
 **Directories**: `services/shadow_comparison/`, `services/evaluation_overview/`
 
 Key files:
+
 - `shadow_comparison/judge.py`: Per-turn regular-vs-shadow judge
 - `shadow_comparison/dispatcher.py` and `shadow_comparison/worker.py`: Publish-time dispatch and bounded background execution for shadow verdict writes
 - `shadow_comparison/outcome.py`: Verdict outcome model helpers
@@ -478,9 +517,11 @@ Key files:
 
 ### Playbook Optimizer and Braintrust
 
+
 **Directories**: `services/playbook_optimizer/`, `services/braintrust/`
 
 Key files:
+
 - `playbook_optimizer/optimizer.py`: Scenario-based playbook optimization loop
 - `playbook_optimizer/scheduler.py` and `rollout.py`: Scheduling and rollout helpers
 - `playbook_optimizer/judge.py`, `models.py`, `scenario_resolver.py`: Evaluation and scenario resolution models
@@ -490,6 +531,7 @@ Key files:
 **Pattern**: These are evaluation/optimization integrations around the core playbook pipeline. Keep production extraction changes in `services/playbook/`; use optimizer/Braintrust modules for experiments, rollouts, and external eval sync.
 
 ### Lineage
+
 
 **Directory**: `services/lineage/`
 
@@ -501,6 +543,7 @@ Key files:
 **Pattern**: profile/playbook update paths preserve lineage metadata in storage; service code asks lineage helpers to find current records rather than walking superseded chains ad hoc.
 
 ### Query Reformulator
+
 
 **File**: `services/pre_retrieval/_query_reformulator.py` - `QueryReformulator`
 
@@ -514,6 +557,7 @@ Reformulates user search queries into clean, normalized natural language for imp
 
 ### Unified Search Service
 
+
 **File**: `services/unified_search_service.py` - `run_unified_search()`
 
 Searches across all entity types (profiles, agent_playbooks, user_playbooks) in parallel via a two-phase approach:
@@ -524,6 +568,7 @@ Searches across all entity types (profiles, agent_playbooks, user_playbooks) in 
 Pre-computed embeddings passed to storage methods via `query_embedding` parameter to avoid redundant embedding calls.
 
 ### Storage
+
 
 **Directory**: `services/storage/`
 
@@ -538,16 +583,17 @@ Pre-computed embeddings passed to storage methods via `query_embedding` paramete
 **Pattern**: **NEVER import storage implementations directly** - Always use `request_context.storage`
 
 **Key Methods**:
+
 - CRUD: profiles, interactions, playbooks, results, requests, playbook aggregation change logs
 - `get_sessions(offset, top_k, session_id)` → `dict[str, list[RequestInteractionDataModel]]` (groups by session_id; paginates per-session — `top_k`/`offset` count sessions, and each returned session includes all of its requests)
 - `get_rerun_user_ids(user_id, start_time, end_time, source, agent_version)` → `list[str]` - Get distinct user IDs matching filters for rerun workflows (pushes filtering to storage layer)
-- `get_feedbacks(status_filter, feedback_status_filter)` - Filter by playbook status and approval status
-- `save_feedbacks()` → returns `list[Feedback]` with `feedback_id` populated (callers can ignore return)
+- `get_agent_playbooks(status_filter=..., playbook_status_filter=...)` - Filter by playbook status and approval status
+- `save_agent_playbooks()` → returns `list[AgentPlaybook]` with `agent_playbook_id` populated (callers can ignore return)
 - Selective playbook operations (used by cluster change detection):
-  - `archive_feedbacks_by_ids(feedback_ids)` - Archive specific agent playbooks by ID (skips APPROVED)
-  - `restore_archived_feedbacks_by_ids(feedback_ids)` - Restore archived agent playbooks by ID
-  - `delete_feedbacks_by_ids(feedback_ids)` - Delete agent playbooks by ID
-  - `delete_raw_feedbacks_by_ids(raw_feedback_ids)` - Delete user playbooks by ID
+  - `archive_agent_playbooks_by_ids(agent_playbook_ids)` - Archive specific agent playbooks by ID (skips APPROVED)
+  - `restore_archived_agent_playbooks_by_ids(agent_playbook_ids)` - Restore archived agent playbooks by ID
+  - `delete_agent_playbooks_by_ids(agent_playbook_ids)` - Delete agent playbooks by ID
+  - `delete_user_playbooks_by_ids(user_playbook_ids)` - Delete user playbooks by ID
 - Vector search via LiteLLMClient embeddings
 - Operation state: `get_operation_state()`, `upsert_operation_state()`, `get_operation_state_with_new_request_interaction()`, `try_acquire_in_progress_lock()`
 - All operation state interactions are managed through `OperationStateManager` (in `operation_state_utils.py`)
@@ -555,9 +601,11 @@ Pre-computed embeddings passed to storage methods via `query_embedding` paramete
 
 ### Configurator
 
+
 **Directory**: `services/configurator/`
 
 Key files:
+
 - `configurator.py`: DefaultConfigurator - loads YAML config, creates storage
 - `local_file_config_storage.py`: Local file-based config storage
 **Config Storage Priority** (in `DefaultConfigurator`):
@@ -568,75 +616,29 @@ Key files:
 
 Access: `request_context.configurator`
 
-## Architecture Patterns
+## Architecture Pattern
+
 
 ### Request Flow
+
+
+```text
+routes/ -> RequestContext + get_reflexio() -> ../lib/reflexio_lib.py
+  -> generation_service.py -> durable_learning/admission.py
+     -> scheduler/worker -> frozen extraction window
+        -> profile/ or playbook/ -> fenced outputs + cursor + effect receipt
+     -> agent_success_evaluation/scheduler.py -> runner.py -> evaluation storage
+  -> unified_search_service.py -> pre_retrieval/ + storage/ + retrieval/
 ```
-API Request (api.py)
-  -> API Endpoint (api_endpoints/)
-    -> get_reflexio() (cache/)
-      -> Reflexio (reflexio_lib.py)
-        -> GenerationService
-          ├─> ProfileGenerationService → Storage
-          ├─> PlaybookGenerationService → Storage
-          └─> agent_success_evaluation/scheduler.py:GroupEvaluationScheduler (deferred 10 min) → agent_success_evaluation/runner.py:run_group_evaluation → agent_success_evaluation/service.py → Storage
-```
 
-```mermaid
-flowchart TB
-    subgraph API["API Layer"]
-        A[api.py] --> B[api_endpoints/]
-    end
-
-    B --> C[get_reflexio]
-    C --> D[Reflexio]
-    D --> E[GenerationService]
-
-    subgraph ProfileService["ProfileGenerationService"]
-        E --> F1[ProfileExtractor 1]
-        E --> F2[ProfileExtractor N]
-        F1 --> PC[ProfileConsolidator]
-        F2 --> PC
-        PC --> PU[ProfileUpdater]
-    end
-
-    subgraph PlaybookService["PlaybookGenerationService"]
-        E --> G1[PlaybookExtractor 1]
-        E --> G2[PlaybookExtractor N]
-        G1 --> FD[PlaybookConsolidator]
-        G2 --> FD
-    end
-
-    subgraph EvalService["AgentSuccessEvaluationService"]
-        E -.->|deferred 10 min| SCH[agent_success_evaluation/scheduler.py<br/>GroupEvaluationScheduler]
-        SCH --> H1[AgentSuccessEvaluator 1]
-        SCH --> H2[AgentSuccessEvaluator N]
-    end
-
-    PU --> I[(Storage)]
-    FD --> I
-    H1 --> I
-    H2 --> I
-
-    subgraph Support["Supporting Components"]
-        J[LiteLLMClient]
-        K[PromptManager]
-        L[Configurator]
-    end
-
-    J -.-> F1
-    J -.-> G1
-    J -.-> H1
-    J -.-> PC
-    J -.-> FD
-    K -.-> F1
-    K -.-> G1
-    K -.-> H1
-```
+Provider calls occur outside storage transactions. Durable workers, manual
+operations, and resumed extraction share the same user lease; HTTP response
+waiting only observes committed cursor coverage.
 
 ### Service Pattern
 
-All services follow BaseGenerationService:
+
+Generation services follow `BaseGenerationService`; focused search and read-side services have their own entry points:
 1. Load extractor configs from YAML
 2. Load generation service config from request (runtime parameters)
 3. Filter extractors by source, `allow_manual_trigger`, and extractor names (via `extractor_config_utils`)
@@ -645,6 +647,7 @@ All services follow BaseGenerationService:
 6. Process and save results to storage
 
 **Extractor Pattern**: Multiple extractors run in parallel, each handling its own data collection. Each extractor:
+
 - Receives **ExtractorConfig** (from YAML): Static configuration like prompts and settings
 - Receives **GenerationServiceConfig** (from request): Runtime parameters like user_id, source
 - **Collects its own interactions** using `extractor_interaction_utils.py`:
@@ -654,31 +657,38 @@ All services follow BaseGenerationService:
   - Updates per-extractor bookmark state after processing (via `OperationStateManager`)
 
 **Per-Extractor Window Overrides**: Each extractor config can override global window settings:
+
 - `window_size_override`: Override global `window_size` for this extractor
 - `stride_size_override`: Override global `stride_size` for this extractor
 - Each extractor applies its own override or falls back to global values
 
-### Key Rules
+## Requirements / Problems to Avoid
+
 
 **Reflexio Instances**:
+
 - **NEVER instantiate `Reflexio()` directly** in API endpoints
 - **ALWAYS use**: `get_reflexio(org_id)` from `cache/reflexio_cache.py`
 - Cache invalidated automatically on config changes
 
 **Storage**:
+
 - **NEVER import storage implementations directly**
 - **ALWAYS use**: `request_context.storage` (type: BaseStorage)
 
 **LLM**:
+
 - **NEVER import OpenAIClient/ClaudeClient directly**
 - **ALWAYS use**: `LiteLLMClient` (uses LiteLLM for multi-provider support)
 
 **Prompts**:
+
 - **NEVER hardcode prompts**
 - **ALWAYS use**: `request_context.prompt_manager.render_prompt(prompt_id, variables)`
-- Prompts versioned in `prompt_bank/`
+- Prompts versioned in `prompt/prompt_bank/`
 
 ## See Also
+
 
 - [Code Map (root README)](../README.md) -- high-level overview of all Reflexio components
 - [API Endpoints README](api_endpoints/README.md) -- RequestContext contract and handler/helper map

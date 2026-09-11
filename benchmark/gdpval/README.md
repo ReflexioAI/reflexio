@@ -1,4 +1,26 @@
-# GDPVal Comparison Benchmark
+# /benchmark/gdpval
+Description: GDPVal cold/warm/Reflexio comparison across host-agent adapters.
+
+## Main Entry Points
+
+
+- **`run_benchmark.py`** — phase orchestration CLI
+- **`config.py`** — paths and run settings
+- **`adapters/`** — OpenSpace and Hermes execution
+- **`memory/reflexio_bridge.py`** — publish/retrieve bridge
+- **`memory/injection.py`** — learning injection
+- **`evaluation.py`** — shared artifact evaluator
+- **`report.py`** — per-task and aggregate comparison
+
+## Purpose
+
+
+Separate a host's native learning from Reflexio's marginal effect using matching warm-state snapshots.
+
+## Architecture Pattern
+
+
+P1 produces the shared host snapshot; P2 and P3 fork it, and P3 additionally retrieves Reflexio learning. Both arms use the same evaluator and task set.
 
 Run the GDPVal dataset through two host agents (OpenSpace, Hermes) in a
 three-phase cold → warm → warm+reflexio protocol to measure:
@@ -10,6 +32,7 @@ Same tasks, same model, same `LLMEvaluator`, same 0.6 payment cliff. Six cells
 total (2 hosts × 3 phases). The headline we care about is `mean(P2 − P3)`.
 
 ## Prerequisites
+
 
 1. Clone the dependency repos. By default `config.py` looks under `~/repos/`:
    ```bash
@@ -46,6 +69,7 @@ total (2 hosts × 3 phases). The headline we care about is `mean(P2 − P3)`.
 
 ## Running
 
+
 ```bash
 uv run python -m benchmark.gdpval.run_benchmark \
     --hosts openspace,hermes \
@@ -65,6 +89,7 @@ Verification ladder:
 | `--task-list <tasks_50.json> --hosts openspace,hermes` | Headline run. |
 
 ## Output
+
 
 ```
 output/<run_name>/
@@ -87,7 +112,8 @@ output/<run_name>/
   comparison.md                 # headline deltas
 ```
 
-## Design notes
+## Requirements / Problems to Avoid
+
 
 - **Host isolation.** OpenSpace writes SkillStore state to `$OPENSPACE_ROOT/.openspace/`;
   Hermes writes MEMORY.md/skills to `$HERMES_HOME` (default `~/.hermes`). The

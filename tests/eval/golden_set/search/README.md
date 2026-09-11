@@ -1,9 +1,28 @@
-# Search golden set
+# /tests/eval/golden_set/search
+Description: YAML search cases with explicit gold candidates and relative-time fixtures.
+
+## Main Entry Points
+
+
+- **`../../conftest.py`** — case loading
+- **`../../search/runner.py`** — case execution and scoring
+- **`../../search/providers.py`** — search and seeding adapter
+
+## Purpose
+
+
+Encode retrieval edge cases without aging out fixed calendar timestamps.
+
+## Architecture Pattern
+
+
+The provider maps case-local keys to stored identities, resolves relative ages at seed time, and drives unified search; the runner compares returned candidates against gold labels.
 
 Each YAML file is one search eval case, loaded by `tests/eval/conftest.py`
 (`_load("search")`) and driven by `tests/eval/search/runner.py`.
 
 ## Case schema
+
 
 ```yaml
 id: <str>                      # required, unique; also the pytest param id
@@ -55,6 +74,7 @@ extraction missed a supersession and retrieval must prefer the fresh fact —
 requires both the stale and fresh items to be live.
 
 ## Categories
+
 
 - `recall` — direct lexical/semantic match; a sanity floor every backend
   should pass.

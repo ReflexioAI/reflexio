@@ -1,15 +1,26 @@
-# prompt_bank
-
-File-based versioned prompt templates for LLM operations.
+# /reflexio/server/prompt/prompt_bank
+Description: File-based versioned prompt templates for LLM operations.
 
 > Part of the [Reflexio Server](../../README.md). See also the [Playbook Service](../../services/playbook/README.md) for prompt usage in playbook extraction.
 
 ## Main Entry Points
 
+
 - **Manager**: `../prompt_manager.py` — `PromptManager`
 - **Templates**: Each subdirectory is a `prompt_id`
 
-## Directory Structure
+## Purpose
+
+
+Keep model instructions versioned and shared by services, with declared variables validated during rendering.
+
+## Architecture Pattern
+
+
+`PromptManager` discovers prompt-ID directories and reads version metadata from each `.prompt.md` file. Callers render the active or explicitly selected version through request context.
+
+### Directory Structure
+
 
 ```
 prompt_bank/
@@ -24,6 +35,7 @@ prompt_bank/
 ```
 
 ## File Format
+
 
 Each `.prompt.md` file is self-contained with YAML frontmatter:
 
@@ -42,6 +54,7 @@ Your prompt content with {var1} and {var2} placeholders.
 
 ### Frontmatter Fields
 
+
 | Field | Type | Required | Purpose |
 |-------|------|----------|---------|
 | `active` | bool | No | `true` on the active version. Exactly one per prompt_id |
@@ -50,6 +63,7 @@ Your prompt content with {var1} and {var2} placeholders.
 | `variables` | list[str] | Yes | Required template variables for validation |
 
 ## Usage
+
 
 ```python
 # Access via request_context
@@ -61,11 +75,13 @@ rendered = request_context.prompt_manager.render_prompt(
 
 ## Adding a New Prompt
 
+
 1. Create directory: `mkdir prompt_bank/my_new_prompt/`
 2. Create `v1.0.0.prompt.md` with frontmatter and `{variable}` placeholders
 3. Set `active: true` in frontmatter
 
 ## Version Naming Convention
+
 
 File names: `v{MAJOR}.{MINOR}.{PATCH}.prompt.md`
 
@@ -75,7 +91,8 @@ File names: `v{MAJOR}.{MINOR}.{PATCH}.prompt.md`
 
 ## Deactivating a Prompt Version
 
-When creating a replacement version, deactivate the old version by **removing** the `active: true` line from its frontmatter. Do NOT add `active: false` — simply omit the field. Prompts without the `active` field default to `active: false` (see `prompt_manager.py` line 211: `meta.get("active", False)`). Only the new replacement version should have `active: true`.
+
+When creating a replacement version, deactivate the old version by **removing** the `active: true` line from its frontmatter. Do NOT add `active: false` — simply omit the field. Prompts without the `active` field default to `active: false` (see `../prompt_manager.py`: `meta.get("active", False)`). Only the new replacement version should have `active: true`.
 
 **Before** (old version `v1.0.0.prompt.md`):
 ```yaml
@@ -107,7 +124,8 @@ variables:
 ---
 ```
 
-## Key Rules
+## Requirements / Problems to Avoid
+
 
 - **Prompt ID** = Directory name
 - **Variables** use `{variable_name}` syntax in prompt body
@@ -116,6 +134,7 @@ variables:
 - **NEVER hardcode prompts** — always use `PromptManager`
 
 ## See Also
+
 
 - [Server README](../../README.md) -- FastAPI backend component overview
 - [Playbook Service README](../../services/playbook/README.md) -- how prompts are used in playbook extraction and aggregation

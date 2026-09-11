@@ -1,4 +1,4 @@
-# server/services
+# /reflexio/server/services
 Description: Core business-logic layer — LLM orchestration, extraction, evaluation, optimization, search preparation, storage access, and long-running operation state.
 
 > This is a directory-local index. For the full request flow, workflow tables (versioning, generation modes, cluster change detection), and the `OperationStateManager` use cases, see the parent [server README](../README.md#services).
@@ -6,6 +6,7 @@ Description: Core business-logic layer — LLM orchestration, extraction, evalua
 **Service Boundary**: services own the LLM/extraction/evaluation/storage logic; API endpoints only authenticate, build `RequestContext`, and delegate into `Reflexio` or a focused service helper.
 
 ## LLM Pipeline Module Contract
+
 
 LLM/pipeline modules use a shared vocabulary across OSS and enterprise:
 `service.py` for request-path entry points, `runner.py` for manual/background
@@ -18,19 +19,23 @@ Files are optional. Do not create empty files only to satisfy the vocabulary.
 Complete cutover migrations update consumers, tests, docs, and monkeypatch
 strings before deleting old import paths in the same PR.
 
-## Orchestration & Base Infrastructure
+## Main Entry Points
+
+
+### Orchestration & Base Infrastructure
+
 
 | File | Purpose |
 |------|---------|
 | `generation_service.py` | `GenerationService` — admits interactions through the durable stream engine, schedules deferred evaluation, and coordinates manual generation under the shared user lease. |
-
 | `search_metering_worker.py` | Bounded process-local search-metering queue. Four daemon workers emit `search_request` and `learning_applied` after the response path, with fail-open drops, a five-second shutdown drain, and trace-linked `search.metering` transactions; persistence requires a registered usage recorder. |
 | `base_generation_service.py` + `base_generation/` | `BaseGenerationService` stable import surface plus mixins for batch progress, config filtering, extraction lifecycle, should-run prechecks, status transitions, and usage billing. Per-extractor timeout `EXTRACTOR_TIMEOUT_SECONDS = 300`. |
 | `operation_state_utils.py` | `OperationStateManager` — all `_operation_state` access (progress, concurrency locks, extractor/aggregator bookmarks, cluster fingerprints, cancellation). |
 | `extractor_config_utils.py`, `extractor_interaction_utils.py` | Filter extractors by source / `allow_manual_trigger` / names; per-extractor stride + window + bookmark handling. |
 | `deduplication_utils.py`, `service_utils.py`, `embedding_text.py` | LLM dedup helpers (used by `ProfileConsolidator` + `PlaybookConsolidator`), message construction / JSON extraction / response logging, embedding text builders. |
 
-## Generation Services
+### Generation Services
+
 
 | Directory | Entry class | Key files |
 |-----------|-------------|-----------|
@@ -38,14 +43,16 @@ strings before deleting old import paths in the same PR.
 | `playbook/` | `PlaybookGenerationService` | `aggregation_trigger.py` durably signals work; `aggregation_scheduler.py` claims fenced bounded units; `components/aggregator.py` performs same-version centroid matching and residual clustering — see [README](playbook/README.md) |
 | `agent_success_evaluation/` | `AgentSuccessEvaluationService` | `service.py` (session-level service), `runner.py` (`run_group_evaluation`), `scheduler.py` (`GroupEvaluationScheduler`, 10-min defer), `regen_jobs.py`, `components/evaluator.py` |
 
-## Durable and Async Extraction
+### Durable and Async Extraction
+
 
 | Directory | Purpose |
 |-----------|---------|
 | `durable_learning/` | `admission.py` commits incoming streams; `scheduler.py` / `worker.py` run bounded user turns; `window_executor.py` / `window_codec.py` compute frozen windows; `user_lease.py` shares ownership with manual/resumed generation; `waiting.py` bounds HTTP waits; `local.py` recovers standalone-library work. |
 | `extraction/` | Shared async extraction runtime: `resumable_agent.py`, `resume_scheduler.py`, `resume_worker.py`, `pending_tool_call_dispatch.py` (`ask_human`), `prior_answer_search.py`, `agent_run_records.py`, and `outcome.py`. Long-horizon / tool-mediated extraction continues outside the request path. See [README](extraction/README.md). |
 
-## Evaluation, Search & Integrations
+### Evaluation, Search & Integrations
+
 
 | Path | Purpose |
 |------|---------|
@@ -61,16 +68,28 @@ strings before deleting old import paths in the same PR.
 | `search_exposure.py` | Optional synchronous recorder contract for final user-playbook result sets. Enterprise capability registration installs the recorder and makes authenticated unified/direct search fail closed before metering/response. Shared `create_app()` has no default recorder; other constructions persist exposures only when they register one. Direct search omits empty batches. |
 | `retrieval/` | `relevance_floor.py` — result relevance thresholding. `temporal.py` — temporal post-processing driven by reformulation signals: query time windows → per-arm SQL filters, near-duplicate freshness collapse for current-value questions, timestamp ordering for latest-value questions. `user_context_guard.py` — high-precision detection of explicit personalization opt-outs, including Simplified and Traditional Chinese, before user-context retrieval. (Superseded/expired rows are already excluded by storage search SQL.) |
 
-## Persistence & Config
+### Persistence & Config
+
 
 | Path | Purpose |
 |------|---------|
 | `storage/` | `storage_base/` and `sqlite_storage/` keep legacy domain facades while focused subpackages own `profiles/`, `playbook/`, `agent_run/`, `governance`, durable extraction streams, and SQLite `base/` helpers. SQLite hybrid search preserves Porter FTS for ASCII and adds bounded Unicode substring candidates only when a query contains at least one non-ASCII alphanumeric character, including mixed-script queries; emoji-only and punctuation-only queries are ineligible. `storage_base/playbook/_aggregation.py` defines fenced aggregation state; SQLite implements it in the matching playbook package. Access via `request_context.storage` only. |
 | `configurator/` | `DefaultConfigurator` — loads YAML config and creates the storage backend. |
 
-## Key Rules
+## Purpose
 
-- **NEVER instantiate services bypassing the Service Pattern** — extend `BaseGenerationService`; load YAML configs, create actors, run in parallel, save to storage.
+
+Translate admitted interactions into profiles/playbooks, evaluate sessions, and retrieve learning through shared storage and configuration contracts.
+
+## Architecture Pattern
+
+
+Generation uses configured actors and fenced persistence; deferred workers rebuild request context rather than retaining request objects. Search composes reformulation, parallel entity retrieval, filtering, optional exposure recording, and asynchronous metering. Keep service-owned implementations behind their public entry points.
+
+## Requirements / Problems to Avoid
+
+
+- **Generation pipelines extend `BaseGenerationService`** — load configs, create actors, run in parallel, and save through storage. Focused search/read-side services retain their own entry points.
 - **NEVER import storage implementations directly** — use `request_context.storage` (`BaseStorage`).
 - **ALWAYS use `LiteLLMClient`** for completions/embeddings and `request_context.prompt_manager.render_prompt(...)` for prompts — no hardcoded prompts, no direct OpenAI/Claude clients.
 - **All `_operation_state` writes go through `OperationStateManager`** — don't touch the table directly (it backs locks, bookmarks, progress, and cancellation).

@@ -1,9 +1,10 @@
-# Playbook Service
+# /reflexio/server/services/playbook
 Description: Evidence-grounded playbook extraction, candidate review, aggregation, and consolidation pipeline
 
 > Part of the [Reflexio Server](../../README.md). See also the [Prompt Bank](../../prompt/prompt_bank/README.md) for prompt template details.
 
 ## Main Entry Points
+
 
 - **Service Orchestrator**: `service.py` - Manages playbook extraction lifecycle (regular, rerun, manual modes)
 - **Playbook Extractor**: `components/extractor.py` - Extracts user playbooks from interactions via LLM
@@ -14,6 +15,7 @@ Description: Evidence-grounded playbook extraction, candidate review, aggregatio
 - **Playbook Consolidator**: `components/consolidator.py` - Reconciles reviewed candidates against existing storage with evidence-aware accounting and overlap guards
 
 ## Supporting Files
+
 
 | File | Purpose |
 |------|---------|
@@ -26,9 +28,16 @@ Description: Evidence-grounded playbook extraction, candidate review, aggregatio
 | `aggregation_scheduler.py` | Polling, fleet claim/lease handling, retries, and structured aggregation progress telemetry |
 | `aggregation_prompt_processing.py` | Optional aggregation-boundary interfaces and helpers for prompt preprocessing, contextual prompt guidance, and output post-processing |
 
-## Architecture
+## Purpose
+
+
+Turn evidenced corrections into user playbooks, review/consolidate them, and aggregate same-version user learning into agent playbooks while retaining provenance and lifecycle invariants.
+
+## Architecture Pattern
+
 
 ### Data Flow
+
 
 ```
 Interactions
@@ -43,6 +52,7 @@ Interactions
 ```
 
 ### Playbook Extraction (`components/extractor.py`)
+
 
 Extends `BaseGenerationService` extractor pattern. Each extractor:
 1. Checks stride_size threshold before running
@@ -60,6 +70,7 @@ continue; an unresolved malformed response fails the extraction run.
 
 ### Candidate Review (`components/reviewer.py`)
 
+
 Strict normal candidates enter a fresh same-model review call before
 consolidation. The reviewer receives the request-bounded chronology, validated
 referenced turns, artifact-availability context, and relevant existing playbooks.
@@ -73,6 +84,7 @@ when every persisted source interaction and request proves the same owner;
 missing or mixed-owner evidence fails closed before review or persistence.
 
 ### Persisted Review (`review_service.py`)
+
 
 `POST /api/review_user_playbooks` selects the newest current user playbooks in
 an inclusive creation-time window, capped by `top_k`. A row whose original
@@ -103,6 +115,7 @@ and accepts perform no write. A later failure stops the run without rolling back
 earlier decisions.
 
 ### Playbook Aggregation (`components/aggregator.py`)
+
 
 Normal generation durably schedules bounded incremental aggregation through
 `aggregation_trigger.py`; `aggregation_scheduler.py` claims due work across
@@ -157,8 +170,8 @@ a stale centroid or rejected canonical rule from becoming the base of a later
 incremental refresh.
 
 The portable state contract is
-`storage/storage_base/playbook/_aggregation.py`; SQLite implements it in
-`storage/sqlite_storage/playbook/_aggregation.py`. Claims are lease-fenced, and
+`../storage/storage_base/playbook/_aggregation.py`; SQLite implements it in
+`../storage/sqlite_storage/playbook/_aggregation.py`. Claims are lease-fenced, and
 all multi-write effects must remain inside `storage.commit_scope()`.
 
 **Optional prompt processing**: deployments can register an
@@ -168,7 +181,7 @@ aggregation prompt boundary, carries an opaque per-cluster processing context,
 injects extra prompt guidance only when preprocessing changed prompt input, and
 post-processes generated outputs before storage or model-response logging.
 
-**Change Log**: The legacy `playbook_aggregation_change_logs` table is retired (Track B, 2026-06-24) — the aggregator no longer writes it. The change-log view is reconstructed on demand from `lineage_event` via `reconstruct_playbook_aggregation_change_log` (`lib/_agent_playbook.py`): each run emits `op=aggregate` events (the "added" side) and `status_change→superseded` events from the supersede calls (the "removed" side), grouped by the run's `request_id`. Per-row `updated` pairing is not reconstructed (`updated_agent_playbooks=[]`, a tolerated parity delta).
+**Change Log**: The legacy `playbook_aggregation_change_logs` table is retired (Track B, 2026-06-24) — the aggregator no longer writes it. The change-log view is reconstructed on demand from `lineage_event` via `reconstruct_playbook_aggregation_change_log` (`../../../lib/_agent_playbook.py`): each run emits `op=aggregate` events (the "added" side) and `status_change→superseded` events from the supersede calls (the "removed" side), grouped by the run's `request_id`. Per-row `updated` pairing is not reconstructed (`updated_agent_playbooks=[]`, a tolerated parity delta).
 
 **Requirements / Problems to Avoid**:
 
@@ -184,6 +197,7 @@ post-processes generated outputs before storage or model-response logging.
   retry failed repairs on the cluster clock rather than member clocks.
 
 ### Playbook Consolidation (`components/consolidator.py`)
+
 
 Consolidates newly extracted playbooks against existing playbooks in the database via LLM semantic matching. For each NEW vs EXISTING pair the LLM returns one of four decision kinds, and the consolidator applies the chosen kind:
 
@@ -201,7 +215,15 @@ source unions and reviewer revisions and prevent overlapping duplicate survivors
 
 Inline consolidation always runs during generation (the legacy `deduplicator` feature flag is retired). The enterprise repo additionally ships a **scheduled second-pass job** (`reflexio_ext/server/services/playbook_reconsolidation/`) that re-runs consolidation daily over already-persisted rows — user playbooks per `(user_id, agent_version)` and agent playbooks per `agent_version` — by rendering each duplicate group as NEW candidates against an empty EXISTING side via `_consolidation_decisions`, then tombstoning merged sources with `merge_records` lineage.
 
-## Prompt IDs
+## Key Endpoints / Commands / Contracts
+
+
+- **Review**: `POST /api/review_user_playbooks`; report is inline, apply is background and returns a run ID.
+- **Aggregate**: `POST /api/run_playbook_aggregation`; administrative reruns retain lease fencing and the input cap.
+- **Lifecycle**: see the [complete route map](../../README.md#api-endpoints) for create/update/status/upgrade/downgrade/delete and change-log reads.
+
+### Prompt IDs
+
 
 | Constant | Prompt ID | Used By |
 |----------|-----------|---------|
@@ -211,7 +233,8 @@ Inline consolidation always runs during generation (the legacy `deduplicator` fe
 | `PLAYBOOK_CANDIDATE_REVIEW_PROMPT_ID` | `playbook_candidate_review` | PlaybookCandidateReviewer |
 | `PLAYBOOK_AGGREGATION_PROMPT_ID` | `playbook_aggregation` | PlaybookAggregator |
 
-## Key Output Schemas (in `playbook_service_utils.py`)
+### Key Output Schemas (in `playbook_service_utils.py`)
+
 
 | Class | Purpose |
 |-------|---------|
@@ -221,7 +244,15 @@ Inline consolidation always runs during generation (the legacy `deduplicator` fe
 | `PlaybookGenerationRequest` | Request dataclass for playbook extraction |
 | `PlaybookAggregatorRequest` | Request dataclass for playbook aggregation |
 
+## Requirements / Problems to Avoid
+
+
+- **Fail closed on unreconstructable or invalid evidence**; manual review skips an unreconstructable row instead of inventing chronology.
+- **Preserve per-version aggregation, bounded discovery, and transaction rules** listed in the aggregation section above.
+- **Keep normal candidate review separate from expert/legacy paths**; a revision cannot invent evidence or a missing lesson.
+
 ## See Also
+
 
 - [Server README](../../README.md) -- FastAPI backend component overview
 - [Prompt Bank README](../../prompt/prompt_bank/README.md) -- versioned prompt template system used by playbook prompts
