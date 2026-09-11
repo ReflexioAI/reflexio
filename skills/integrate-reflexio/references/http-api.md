@@ -22,6 +22,8 @@ User-Agent: <application-name>-reflexio
 
 If the developer explicitly requested a default unauthenticated Local OSS endpoint, omit only the `Authorization` header.
 
+For Hosted Enterprise, use the intended managed project's API key for both routes, following the [connection contract](../SKILL.md#connection-contract).
+
 Keep a bounded timeout. Inspect the HTTP status and raw response body before diagnosing authentication, routing, or schema failures. Never log the bearer token.
 
 ## Search before agent execution
@@ -42,7 +44,7 @@ POST /api/search
 }
 ```
 
-The successful response contains `profiles`, `user_playbooks`, and `agent_playbooks`. Render each type separately and retain these IDs:
+Check the JSON `success` field as well as the HTTP status. `success=false` is a failed search: record a safe diagnostic and continue the agent turn without Reflexio context or an experiment assignment from that failed search. A successful response contains `profiles`, `user_playbooks`, and `agent_playbooks`. Render each type separately and retain these IDs:
 
 | Result | Stable ID | Publish kind |
 | --- | --- | --- |
@@ -51,6 +53,8 @@ The successful response contains `profiles`, `user_playbooks`, and `agent_playbo
 | Agent playbook | `agent_playbook_id` | `agent_playbook` |
 
 Convert numeric playbook IDs to strings when creating `retrieved_learnings`.
+
+Include only items retrieved and injected into the current turn's model input. Start a fresh reference list each turn; exclude discarded candidates and earlier turns' references. Search may suppress previously returned items within the same `session_id`; retaining their context across turns is not required. Use a new session ID when the user starts a new conversation.
 
 If the response includes `experiment`, retain its `experiment_id` and `arm` exactly as returned. A holdout response is successful even though its learning arrays are empty.
 
@@ -93,6 +97,8 @@ When search returned `experiment`, add both values at the publish payload's top 
 ```
 
 The arm may instead be `holdout`. Omit both fields when search returned no assignment; never send only one of them.
+
+Inspect the publish response JSON even on HTTP 200: `success=false` is an application-level failure. Observe `warnings` for ignored fields or skipped interactions, and retain the returned `request_id` and `learning_status` when present. Keep these diagnostics safe and do not replace the completed agent response on failure. Successful acceptance does not imply extraction is complete. If completion tracking is required, poll `GET /api/learning_status?request_id=<returned-request-id>` using the same credentials; keep polling out of the normal agent response path.
 
 `request_id` is optional correlation metadata, not an idempotency key. Current replay detection is not atomic, so repeated or concurrent submissions can still reject or duplicate work. Do not rely on a caller-supplied value to make an ambiguous replay safe.
 
