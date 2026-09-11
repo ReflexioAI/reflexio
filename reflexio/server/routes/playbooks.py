@@ -682,5 +682,9 @@ def get_playbook_aggregation_operation(
         raise HTTPException(503, "Storage not configured")
     operation = storage.get_playbook_aggregation_operation(operation_id)
     if operation is None:
+        if not getattr(storage, "supports_incremental_playbook_aggregation", False):
+            raise HTTPException(
+                503, "Durable aggregation is unavailable on this storage"
+            )
         raise HTTPException(404, "Aggregation operation not found")
     return operation
