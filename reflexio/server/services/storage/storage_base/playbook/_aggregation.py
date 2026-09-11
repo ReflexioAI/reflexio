@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
+from reflexio.models.api_schema.aggregation_operations import (
+    PlaybookAggregationOperation,
+)
 from reflexio.models.api_schema.service_schemas import UserPlaybook
 
 AggregationDisposition = Literal["residual", "cluster_member", "terminal_noop"]
@@ -97,6 +100,41 @@ class PlaybookAggregationStoreMixin:
     Tenant backends scope these records by schema; SQLite scopes them by the
     storage database.  Callers must not use a sequence watermark for discovery.
     """
+
+    def submit_playbook_aggregation_operation(
+        self, request_id: str, agent_version: str
+    ) -> PlaybookAggregationOperation:
+        raise NotImplementedError
+
+    def get_playbook_aggregation_operation(
+        self, operation_id: str
+    ) -> PlaybookAggregationOperation | None:
+        raise NotImplementedError
+
+    def next_playbook_aggregation_operation(
+        self,
+    ) -> PlaybookAggregationOperation | None:
+        raise NotImplementedError
+
+    def begin_playbook_aggregation_operation(
+        self, operation_id: str, claim: PlaybookAggregationClaim
+    ) -> PlaybookAggregationOperation:
+        raise NotImplementedError
+
+    def complete_playbook_aggregation_operation(
+        self, operation_id: str, claim: PlaybookAggregationClaim, result: dict[str, Any]
+    ) -> None:
+        raise NotImplementedError
+
+    def fail_playbook_aggregation_operation(
+        self,
+        operation_id: str,
+        claim: PlaybookAggregationClaim,
+        *,
+        error: str,
+        retry_seconds: int | None,
+    ) -> None:
+        raise NotImplementedError
 
     def schedule_playbook_aggregation(self, agent_version: str) -> None:
         """Durably mark a version pending without postponing existing work."""

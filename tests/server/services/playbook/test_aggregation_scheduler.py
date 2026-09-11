@@ -16,6 +16,8 @@ from reflexio.server.services.storage.storage_base.playbook import (
 
 
 def _context(storage: Any) -> Any:
+    if isinstance(storage, MagicMock):
+        storage.next_playbook_aggregation_operation.return_value = None
     aggregation_config = SimpleNamespace()
     config = SimpleNamespace(
         user_playbook_extractor_config=SimpleNamespace(
@@ -34,6 +36,7 @@ def test_scheduler_keeps_invalidation_and_clustering_budgets_separate(
 ) -> None:
     claim = PlaybookAggregationClaim("v1", "owner", 7, 3, 10_000)
     storage = MagicMock(supports_incremental_playbook_aggregation=True)
+    storage.next_playbook_aggregation_operation.return_value = None
     storage.repair_playbook_aggregation_pending_state.return_value = []
     storage.claim_due_playbook_aggregation.return_value = claim
     after = PlaybookAggregationBacklog(4, 1, 0, residual_retry_after_seconds=60)
@@ -93,6 +96,7 @@ def test_scheduler_drains_invalidation_page_before_llm_work(
 ) -> None:
     claim = PlaybookAggregationClaim("v1", "owner", 7, 3, 10_000)
     storage = MagicMock(supports_incremental_playbook_aggregation=True)
+    storage.next_playbook_aggregation_operation.return_value = None
     storage.repair_playbook_aggregation_pending_state.return_value = []
     storage.claim_due_playbook_aggregation.return_value = claim
     storage.get_playbook_aggregation_invalidations.return_value = [
@@ -130,6 +134,7 @@ def test_scheduler_drains_invalidation_page_before_llm_work(
 def test_scheduler_keeps_pending_on_limiter_deferral(monkeypatch) -> None:
     claim = PlaybookAggregationClaim("v1", "owner", 7, 3, 10_000)
     storage = MagicMock(supports_incremental_playbook_aggregation=True)
+    storage.next_playbook_aggregation_operation.return_value = None
     storage.repair_playbook_aggregation_pending_state.return_value = []
     storage.claim_due_playbook_aggregation.return_value = claim
     storage.get_playbook_aggregation_backlog.return_value = PlaybookAggregationBacklog(
@@ -159,6 +164,7 @@ def test_scheduler_keeps_pending_on_limiter_deferral(monkeypatch) -> None:
 
 def test_scheduler_throttles_idle_repair_scans(monkeypatch) -> None:
     storage = MagicMock(supports_incremental_playbook_aggregation=True)
+    storage.next_playbook_aggregation_operation.return_value = None
     storage.repair_playbook_aggregation_pending_state.return_value = []
     storage.claim_due_playbook_aggregation.return_value = None
     scheduler = aggregation_scheduler.PlaybookAggregationScheduler(
@@ -265,6 +271,7 @@ def test_org_failure_defers_only_that_org_and_recovers(
 
 def test_failed_repair_attempt_is_throttled(monkeypatch) -> None:
     storage = MagicMock(supports_incremental_playbook_aggregation=True)
+    storage.next_playbook_aggregation_operation.return_value = None
     storage.repair_playbook_aggregation_pending_state.side_effect = RuntimeError("down")
     storage.claim_due_playbook_aggregation.return_value = None
     monkeypatch.setattr(aggregation_scheduler.time, "monotonic", lambda: 1000.0)
@@ -360,6 +367,7 @@ def test_succeeded_log_distinguishes_a_starved_run_from_an_idle_one(
     """
     claim = PlaybookAggregationClaim("v1", "owner", 7, 3, 10_000)
     storage = MagicMock(supports_incremental_playbook_aggregation=True)
+    storage.next_playbook_aggregation_operation.return_value = None
     storage.repair_playbook_aggregation_pending_state.return_value = []
     storage.claim_due_playbook_aggregation.return_value = claim
     storage.get_playbook_aggregation_backlog.return_value = PlaybookAggregationBacklog(
