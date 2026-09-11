@@ -225,3 +225,19 @@ Inline consolidation always runs during generation (the legacy `deduplicator` fe
 
 - [Server README](../../README.md) -- FastAPI backend component overview
 - [Prompt Bank README](../../prompt/prompt_bank/README.md) -- versioned prompt template system used by playbook prompts
+
+
+## Durable explicit aggregation
+
+`aggregation_operations.py` executes persisted full-archive requests before the
+scheduler's automatic work. The POST/GET API and SDK return
+`PlaybookAggregationOperation` receipts from the shared schema module. Requests
+are idempotent within the organization/project and serialized with automatic and
+synchronous manual aggregation through the existing organization lease.
+
+The aggregator commits generated outputs, lineage, bookkeeping and the successful
+operation receipt in the same fenced storage transaction. Zero-output success is
+valid; transient generation failure retries (up to five attempts) rather than
+being mistaken for zero output. Restart recovery discovers persisted queued,
+running and retrying operations; completed operations are never resubmitted.
+Optional optimization/tagging is outside the successful receipt contract.

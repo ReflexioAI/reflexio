@@ -14,6 +14,10 @@ import requests
 from pydantic import BaseModel, ConfigDict
 
 from reflexio.defaults import DEFAULT_AGENT_VERSION
+from reflexio.models.api_schema.aggregation_operations import (
+    PlaybookAggregationOperation,
+    SubmitPlaybookAggregationRequest,
+)
 from reflexio.models.api_schema.eval_overview_schema import (
     GradeOnDemandRequest,
     GradeOnDemandResponse,
@@ -2758,6 +2762,30 @@ class ReflexioClient:
             playbook_name=playbook_name,
         )
         self._fire_and_forget(self._manual_playbook_generation_async, req)
+
+    def submit_playbook_aggregation(
+        self, *, request_id: str, agent_version: str
+    ) -> PlaybookAggregationOperation:
+        """Durably submit an idempotent full aggregation; return after admission."""
+        payload = SubmitPlaybookAggregationRequest(
+            request_id=request_id, agent_version=agent_version
+        )
+        response = self._make_request(
+            "POST", "/api/playbook_aggregation_operations", json=payload.model_dump()
+        )
+        return PlaybookAggregationOperation.model_validate(response)
+
+    def get_playbook_aggregation_operation(
+        self, operation_id: str
+    ) -> PlaybookAggregationOperation:
+        """Read committed status for a previously submitted operation."""
+        from urllib.parse import quote
+
+        response = self._make_request(
+            "GET",
+            f"/api/playbook_aggregation_operations/{quote(operation_id, safe='')}",
+        )
+        return PlaybookAggregationOperation.model_validate(response)
 
     def _run_playbook_aggregation_sync(
         self, request: RunPlaybookAggregationRequest

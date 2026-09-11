@@ -247,6 +247,7 @@ class PlaybookAggregator:
         effect_coordinator: AggregationEffectCoordinator | None = None,
         aggregation_claim: PlaybookAggregationClaim | None = None,
         residual_batch_limit: int | None = None,
+        explicit_operation_id: str | None = None,
     ) -> None:
         self.client = llm_client
         storage = request_context.storage
@@ -260,6 +261,7 @@ class PlaybookAggregator:
         self.effect_coordinator = effect_coordinator
         self.aggregation_claim = aggregation_claim
         self.residual_batch_limit = residual_batch_limit
+        self.explicit_operation_id = explicit_operation_id
         # Cohesive pre/post-processing component (the enterprise redaction
         # Protocol seam). Constructed from the SAME injected instance stored
         # above — do NOT re-resolve the AGGREGATION_PROMPT_PROCESSOR ServiceKey.
@@ -1950,6 +1952,14 @@ class PlaybookAggregator:
                 raise RuntimeError(
                     "playbook aggregation rerun lost its invalidation fence"
                 )
+            if self.explicit_operation_id is not None:
+                if self.aggregation_claim is None or effect_scope is None:
+                    raise RuntimeError(
+                        "explicit aggregation requires a fenced output transaction"
+                    )
+                self.storage.complete_playbook_aggregation_operation(
+                    self.explicit_operation_id, self.aggregation_claim, stats
+                )
             if self.effect_coordinator is not None:
                 self.effect_coordinator.complete(stats)
                 if effect_scope is None:
@@ -2164,13 +2174,16 @@ class PlaybookAggregator:
         direction_overlap_threshold: float = 0.6,
     ) -> list[tuple[AgentPlaybook, list[UserPlaybook], ModelProvenance | None]]:
         """Compatibility view containing only generated outcomes."""
+        outcomes = self._generate_playbook_outcomes_with_source_clusters(
+            clusters, existing_approved_playbooks, direction_overlap_threshold
+        )
+        if self.explicit_operation_id is not None and any(
+            outcome.status == "retryable_failure" for outcome in outcomes
+        ):
+            raise RuntimeError("explicit aggregation generation failed")
         return [
             (outcome.playbook, outcome.source_cluster, outcome.provenance)
-            for outcome in self._generate_playbook_outcomes_with_source_clusters(
-                clusters,
-                existing_approved_playbooks,
-                direction_overlap_threshold,
-            )
+            for outcome in outcomes
             if outcome.status == "generated" and outcome.playbook is not None
         ]
 

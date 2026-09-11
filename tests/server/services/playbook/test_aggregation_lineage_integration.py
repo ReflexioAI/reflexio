@@ -655,3 +655,80 @@ def test_e2e_reconstruct_incremental_run_mode(
     assert "Run 1 content." in run1_added_contents, (
         f"Run 1's added playbook must survive supersession, got {run1_added_contents}"
     )
+
+
+@pytest.mark.parametrize("crash_before_commit", [False, True])
+def test_explicit_operation_receipt_commits_with_generated_outputs(
+    sqlite_storage, request_context, monkeypatch, crash_before_commit
+):
+    """Fault at receipt completion rolls back real outputs, lineage and bookkeeping."""
+    inputs = [
+        _seed_user_playbook(sqlite_storage, uid=i, org_id=request_context.org_id)
+        for i in (1, 2)
+    ]
+    operation = sqlite_storage.submit_playbook_aggregation_operation("explicit", "v0")
+    claim = sqlite_storage.claim_due_playbook_aggregation(
+        owner="explicit", lease_seconds=300, agent_version="v0"
+    )
+    sqlite_storage.begin_playbook_aggregation_operation(operation.operation_id, claim)
+    aggregator = PlaybookAggregator(
+        llm_client=MagicMock(),
+        request_context=request_context,
+        agent_version="v0",
+        aggregation_claim=claim,
+        explicit_operation_id=operation.operation_id,
+    )
+    output = AgentPlaybook(
+        agent_version="v0",
+        content="Generated guidance",
+        playbook_name="default",
+        embedding=[0.1] * 512,
+    )
+    monkeypatch.setattr(aggregator, "get_clusters", lambda *_a, **_k: {0: inputs})
+    monkeypatch.setattr(
+        aggregator,
+        "_generate_playbooks_with_source_clusters",
+        lambda *_a, **_k: [(output, inputs, None)],
+    )
+    complete = sqlite_storage.complete_playbook_aggregation_operation
+    if crash_before_commit:
+
+        def crash(*args, **kwargs):
+            complete(*args, **kwargs)
+            raise RuntimeError("crash before receipt commit")
+
+        monkeypatch.setattr(
+            sqlite_storage, "complete_playbook_aggregation_operation", crash
+        )
+        with pytest.raises(RuntimeError, match="crash before receipt commit"):
+            aggregator.run(
+                PlaybookAggregatorRequest(
+                    agent_version="v0", rerun=True, operation_key=operation.operation_id
+                )
+            )
+        assert sqlite_storage.get_agent_playbooks() == []
+        assert (
+            sqlite_storage.get_lineage_events(request_id=operation.operation_id) == []
+        )
+        assert (
+            sqlite_storage.get_playbook_aggregation_operation(
+                operation.operation_id
+            ).status
+            == "running"
+        )
+    else:
+        stats = aggregator.run(
+            PlaybookAggregatorRequest(
+                agent_version="v0", rerun=True, operation_key=operation.operation_id
+            )
+        )
+        assert stats["playbooks_generated"] == 1
+        assert (
+            sqlite_storage.get_playbook_aggregation_operation(
+                operation.operation_id
+            ).result.playbooks_generated
+            == 1
+        )
+        assert len(sqlite_storage.get_agent_playbooks()) == 1
+        assert sqlite_storage.get_lineage_events(request_id=operation.operation_id)
+        assert sqlite_storage.next_playbook_aggregation_operation() is None
