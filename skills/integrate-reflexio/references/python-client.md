@@ -23,6 +23,8 @@ client = ReflexioClient(timeout=5)
 
 This reads `REFLEXIO_API_KEY` and uses `https://www.reflexio.ai/`. Do not pass `url_endpoint` and do not introduce `REFLEXIO_URL` for the default path.
 
+Use the intended managed project's API key for both search and publish, following the [connection contract](../SKILL.md#connection-contract).
+
 If and only if the user explicitly requests a custom endpoint, use one existing configuration value:
 
 ```python
@@ -53,7 +55,9 @@ In an async application, use the native async equivalent with the same arguments
 results = await client.search_async(...)
 ```
 
-Build the injected context from `content` and retain these stable identities:
+Check `results.success` before consuming results. A false value is an application-level failure even when HTTP succeeded. Handle it through the same safe diagnostic and fail-open path as a search exception, continuing the agent turn without Reflexio context or an experiment assignment from that failed search.
+
+Build the injected context from `content` and retain these stable identities. This example assumes every returned item is injected; if you filter or truncate results, build the references from only the retained items:
 
 ```python
 retrieved_learnings = [
@@ -80,6 +84,8 @@ retrieved_learnings = [
 
 Do not flatten the three result types into an undifferentiated instruction list. Render profiles as user facts/preferences and playbooks as behavioral guidance.
 
+Build a fresh list for each turn. Do not append earlier turns' references. Reusing `session_id` groups the conversation for evaluation and may suppress previously returned learnings; it does not require retaining those learnings for later turns.
+
 Also retain `results.experiment` when it is present. It is the server-assigned retrieval-experiment identity for this request; do not recalculate or replace it.
 
 ## Publish the completed turn
@@ -89,7 +95,7 @@ Use the synchronous method for a synchronous application:
 ```python
 from reflexio import InteractionData
 
-client.publish_interaction(
+publish_result = client.publish_interaction(
     user_id=user_id,
     session_id=session_id,
     source=source,
@@ -114,10 +120,14 @@ When no experiment is active, leave both values as `None`. When an assignment is
 In an async application, use the native async equivalent with the same arguments:
 
 ```python
-await client.publish_interaction_async(...)
+publish_result = await client.publish_interaction_async(...)
 ```
 
+Check `publish_result.success`; a false value must enter the application's publish-failure diagnostic path even if no exception was raised. Observe `publish_result.warnings`, which can report ignored fields or skipped interactions. Retain `publish_result.request_id` and `publish_result.learning_status` when present. Handle diagnostics without replacing the completed agent response or logging interaction content or credentials.
+
 Keep the normal defaults `wait_for_response=False`, `force_extraction=False`, and `skip_aggregation=False`. The call still waits for the HTTP response; `wait_for_response=False` means the server queues extraction instead of processing it synchronously.
+
+Acceptance does not imply extraction is complete. Only when the workflow needs completion tracking, use the returned request ID with `client.get_learning_status(publish_result.request_id)`; do not add polling to the normal agent response path.
 
 Create the client once at the application's normal client/service lifetime rather than once per token or tool event.
 
