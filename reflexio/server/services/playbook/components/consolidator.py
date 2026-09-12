@@ -4,7 +4,6 @@ and hybrid search against existing entries in the database.
 """
 
 import logging
-import os
 from datetime import UTC, datetime
 from typing import Annotated, Literal
 
@@ -21,6 +20,7 @@ from reflexio.models.structured_output import (
     normalize_provider_value,
 )
 from reflexio.server.api_endpoints.request_context import RequestContext
+from reflexio.server.env_utils import env_bool
 from reflexio.server.error_reporting import error_tags
 from reflexio.server.llm._litellm_types import ModelProvenance
 from reflexio.server.llm.litellm_client import (
@@ -966,7 +966,7 @@ class PlaybookConsolidator(BaseDeduplicator):
             raise TypeError("agent_version is required")
 
         # Check if mock mode is enabled
-        if os.getenv("MOCK_LLM_RESPONSE", "").lower() == "true":
+        if env_bool("MOCK_LLM_RESPONSE", default=False):
             logger.info("Mock mode: skipping consolidation")
             all_playbooks: list[UserPlaybook] = []
             for result in results:

@@ -24,6 +24,7 @@ from reflexio.models.api_schema.service_schemas import (
     WhoamiResponse,
 )
 from reflexio.server.cache.reflexio_cache import get_reflexio
+from reflexio.server.env_utils import env_truthy
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +88,7 @@ def my_config_allowed() -> bool:
     FastAPI endpoint wrapper in ``reflexio.server.api`` and does not
     flow through this helper.
     """
-    return os.environ.get(_ALLOW_MY_CONFIG_ENV_VAR, "").lower() in {"1", "true", "yes"}
+    return env_truthy(os.environ.get(_ALLOW_MY_CONFIG_ENV_VAR, ""))
 
 
 def my_config(org_id: str) -> MyConfigResponse:

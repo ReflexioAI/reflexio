@@ -25,6 +25,7 @@ from reflexio.models.config_schema import (
     PlaybookAggregatorConfig,
 )
 from reflexio.server.api_endpoints.request_context import RequestContext
+from reflexio.server.env_utils import env_bool
 from reflexio.server.error_reporting import capture_anomaly, error_tags
 from reflexio.server.llm._litellm_types import ModelProvenance
 from reflexio.server.llm.litellm_client import LiteLLMClient
@@ -2051,7 +2052,7 @@ class PlaybookAggregator:
             model_name=self.storage.embedding_model_name,
         )
         # Mock mode: cluster by trigger
-        if os.getenv("MOCK_LLM_RESPONSE", "").lower() == "true":
+        if env_bool("MOCK_LLM_RESPONSE", default=False):
             logger.info("Mock mode: clustering by trigger")
             return aggregator_clustering.cluster_by_trigger_mock(
                 user_playbooks, min_cluster_size
@@ -2327,7 +2328,7 @@ class PlaybookAggregator:
         if not cluster_playbooks:
             return AggregationGenerationOutcome("retryable_failure", [])
 
-        if os.getenv("MOCK_LLM_RESPONSE", "").lower() == "true":
+        if env_bool("MOCK_LLM_RESPONSE", default=False):
             # Extract structured fields directly from cluster
             triggers = [fb.trigger for fb in cluster_playbooks if fb.trigger]
 

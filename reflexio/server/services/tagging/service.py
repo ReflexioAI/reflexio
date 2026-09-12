@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import os
 
 from pydantic import ConfigDict, Field
 
@@ -13,6 +12,7 @@ from reflexio.models.api_schema.service_schemas import (
 )
 from reflexio.models.structured_output import StrictStructuredOutput
 from reflexio.server.api_endpoints.request_context import RequestContext
+from reflexio.server.env_utils import env_bool
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.llm.model_defaults import ModelRole, resolve_model_name
 from reflexio.server.services.service_utils import log_llm_messages, log_model_response
@@ -198,7 +198,7 @@ class TaggingService:
     def _generate_tags(
         self, *, tagging_definition_prompt: str, content: str
     ) -> list[str]:
-        if os.getenv("MOCK_LLM_RESPONSE", "").lower() == "true":
+        if env_bool("MOCK_LLM_RESPONSE", default=False):
             return ["example_tag"]
 
         prompt = self.request_context.prompt_manager.render_prompt(

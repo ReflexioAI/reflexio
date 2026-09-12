@@ -41,6 +41,7 @@ from typing import Any
 from unittest.mock import MagicMock, NonCallableMock, patch
 
 from reflexio.models.structured_output import find_schema_keyword as _find_schema_key
+from reflexio.server.env_utils import env_bool
 from reflexio.test_support.llm_model_registry import get_model_registry
 
 _LEARNING_REF_PATTERN = re.compile(r'"learning_ref":\s*"([^"]+)"')
@@ -324,7 +325,7 @@ def assert_litellm_unpatched() -> None:
             "tests/e2e_tests/ and must carry the requires_credentials marker; "
             "the e2e conftest lifts the session patch for those."
         )
-    if os.getenv("MOCK_LLM_RESPONSE", "").lower() == "true":
+    if env_bool("MOCK_LLM_RESPONSE", default=False):
         raise AssertionError(
             "MOCK_LLM_RESPONSE=true, so service code takes its canned branch "
             "without calling litellm at all -- this live-provider test would "

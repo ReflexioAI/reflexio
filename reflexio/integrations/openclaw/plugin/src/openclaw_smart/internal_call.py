@@ -20,6 +20,8 @@ Detection signals, OR'd:
 from __future__ import annotations
 
 import os
+
+from reflexio.server.env_utils import env_truthy
 from pathlib import Path
 from typing import Any
 
@@ -59,7 +61,7 @@ def is_internal_invocation(payload: dict[str, Any]) -> bool:
             reflexio repository. False otherwise, including when ``cwd`` is
             missing or unresolvable.
     """
-    if os.environ.get(INTERNAL_ENV) == "1":
+    if env_truthy(os.environ.get(INTERNAL_ENV, "")):
         return True
     cwd = payload.get("cwd") or payload.get("workspaceDir")
     if not isinstance(cwd, str) or not cwd:

@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+
+from reflexio.server.env_utils import env_truthy
 import sys
 from pathlib import Path
 from typing import Annotated
@@ -230,7 +232,7 @@ def start(
 
     if (
         not os.environ.get("REFLEXIO_EMBEDDING_PROVIDER")
-        and os.environ.get("CLAUDE_SMART_USE_LOCAL_EMBEDDING") == "1"
+        and env_truthy(os.environ.get("CLAUDE_SMART_USE_LOCAL_EMBEDDING", ""))
     ):
         os.environ["REFLEXIO_EMBEDDING_PROVIDER"] = "local_service"
 

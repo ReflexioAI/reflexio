@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import os
 from collections import Counter
 from typing import TYPE_CHECKING
 
@@ -9,6 +8,7 @@ from reflexio.models.api_schema.internal_schema import RequestInteractionDataMod
 from reflexio.models.api_schema.service_schemas import UserPlaybook
 from reflexio.models.config_schema import PlaybookConfig
 from reflexio.server.api_endpoints.request_context import RequestContext
+from reflexio.server.env_utils import env_bool
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.llm.model_defaults import ModelRole, resolve_model_name
 from reflexio.server.llm.token_accounting import RunTokenTotals, sum_trace_tokens
@@ -273,7 +273,7 @@ class PlaybookExtractor:
         )
 
         # Check if mock mode is enabled
-        if os.getenv("MOCK_LLM_RESPONSE", "").lower() == "true":
+        if env_bool("MOCK_LLM_RESPONSE", default=False):
             logger.info("Mock mode: generating mock playbook entry")
             mock_response = self._generate_mock_playbook_list(
                 request_interaction_data_models, prompt_context.evidence_sources

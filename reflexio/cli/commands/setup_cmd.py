@@ -8,6 +8,8 @@ in ``~/.claude/settings.json``.
 from __future__ import annotations
 
 import os
+
+from reflexio.server.env_utils import env_truthy
 import re
 import shutil
 import subprocess
@@ -188,7 +190,7 @@ def _is_non_interactive() -> bool:
     - stdin is not a TTY (``nohup``, container, pipe-fed shell)
     - ``REFLEXIO_NONINTERACTIVE=1`` in the environment (explicit opt-out)
     """
-    if os.environ.get("REFLEXIO_NONINTERACTIVE") == "1":
+    if env_truthy(os.environ.get("REFLEXIO_NONINTERACTIVE", "")):
         return True
     return not sys.stdin.isatty()
 

@@ -27,6 +27,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
+from reflexio.server.env_utils import env_bool
 from reflexio.server.services.braintrust.client import (
     DEFAULT_BASE_URL,
     BraintrustClient,
@@ -41,7 +42,7 @@ _TEST_INTERVAL_SECONDS = 5  # IS_TEST_ENV shortcut for fast tests
 
 def _interval_seconds() -> int:
     """Pick the recurring interval based on `IS_TEST_ENV`."""
-    if os.environ.get("IS_TEST_ENV", "").strip().lower() == "true":
+    if env_bool("IS_TEST_ENV", default=False):
         return _TEST_INTERVAL_SECONDS
     return _DEFAULT_INTERVAL_SECONDS
 

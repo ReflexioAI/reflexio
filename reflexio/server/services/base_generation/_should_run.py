@@ -18,12 +18,12 @@ patch effective. Method bodies are moved verbatim from the former monolithic
 """
 
 import logging
-import os
 import time
 from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 from reflexio.models.api_schema.internal_schema import RequestInteractionDataModel
 from reflexio.server.api_endpoints.request_context import RequestContext
+from reflexio.server.env_utils import env_bool
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.services.extractor_config_utils import get_extractor_name
 from reflexio.server.services.extractor_interaction_utils import (
@@ -101,7 +101,7 @@ class ShouldRunPrecheckMixin(Generic[TExtractorConfig, TGenerationServiceConfig]
             return True
 
         # Skip for mock mode
-        if os.getenv("MOCK_LLM_RESPONSE", "").lower() == "true":
+        if env_bool("MOCK_LLM_RESPONSE", default=False):
             return True
 
         # `force_extraction=True` is the caller's explicit "no gates" signal —

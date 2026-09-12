@@ -11,6 +11,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+
+from reflexio.server.env_utils import env_truthy
 import threading
 import time
 from dataclasses import dataclass
@@ -333,7 +335,7 @@ def embedding_provider_mode(model: str | None = None) -> EmbeddingProviderMode:
     if model and not _uses_embedding_service(model):
         return "cloud"
 
-    if os.environ.get(_ENV_CLAUDE_SMART_LOCAL) == "1":
+    if env_truthy(os.environ.get(_ENV_CLAUDE_SMART_LOCAL, "")):
         return "local_service"
 
     if os.environ.get(_ENV_SERVICE_URL, "").strip():
