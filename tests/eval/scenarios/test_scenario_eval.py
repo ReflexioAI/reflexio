@@ -14,6 +14,7 @@ from reflexio.server.services.playbook.components.consolidator import (
     RejectNewDecision,
     UnifyDecision,
 )
+from reflexio.test_support.llm_mock import assert_litellm_unpatched
 from reflexio.test_support.skip_decorators import skip_low_priority
 from tests.eval.consolidation.judge import ConsolidationVerdict
 from tests.eval.scenarios.book import _next_id, apply_consolidation
@@ -172,6 +173,10 @@ def test_wrong_consolidation_verdict_fails_scenario() -> None:
 
 @skip_low_priority
 def test_scenario_real(tmp_path) -> None:  # pragma: no cover - manual, costs money
+    # This test lives outside ``tests/e2e_tests/``, so the session-wide
+    # ``litellm.completion`` patch is installed for it. Without this it would
+    # grade canned mock text while reporting a real model.
+    assert_litellm_unpatched()
     from reflexio.server.api_endpoints.request_context import RequestContext
     from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
     from tests.eval.consolidation.providers import (
