@@ -1,17 +1,127 @@
 """Library lifecycle registration for the same durable extraction scheduler."""
 
 import threading
+import weakref
 
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.services.durable_learning.scheduler import DurableLearningScheduler
 
 _lock = threading.RLock()
-_contexts: dict[tuple[str, str | None], RequestContext] = {}
+
+# Lifecycle choice: contexts are held WEAKLY, and a directory's scheduler is
+# retired once every context for it has been collected.
+#
+# A library-local scheduler exists to serve live ``Reflexio`` handles, so "a
+# handle pointed at this directory is still reachable" is the only honest
+# signal that one is still needed. Reference counting would have said the same
+# thing but needs an explicit ``close()`` on a public API that has none today —
+# every caller would have to remember it, and the ones that forgot would leak
+# exactly as before. A weak registry gets the same answer for free and cannot
+# be forgotten.
+#
+# Retirement runs on the *caller's* thread inside ``ensure_local_extraction``
+# rather than from inside a tick: ``stop()`` joins the scheduler thread, and a
+# thread cannot join itself. Nothing is lost by waiting for the next caller —
+# durable work is persisted, and a dropped handle means nobody in this process
+# is waiting for its results; a later ``Reflexio`` on the same directory picks
+# the backlog up through the usual restart-recovery path.
+# Two registries, because "which context should the worker use?" and "is any
+# handle still alive?" are different questions and one structure cannot answer
+# both.
+#
+# IDENTITY. The CURRENT context per (org, directory). Overwriting is the point:
+# the worker must extract against the handle in use now, not an earlier one
+# whose storage may be gone.
+_contexts: "weakref.WeakValueDictionary[tuple[str, str | None], RequestContext]" = (
+    weakref.WeakValueDictionary()
+)
+# LIVENESS. EVERY live context, grouped by directory.
+#
+# `_contexts` alone cannot answer this: `ReflexioBase` builds a distinct
+# `RequestContext` per handle, so a second handle on the same org and directory
+# evicts the first from that key. Collecting the second then empties the key
+# while the first is still alive, and the sweep retires a scheduler that handle
+# still depends on -- extraction stopping silently under a live caller.
+# Measured on the identity map alone: with two same-key handles it held only
+# the second.
+#
+# Answering BOTH from one structure was tried and is worse. A set alone loses
+# identity: every e2e test shares one org and one directory, so the set
+# accumulates ("ctxs=4", then 5...) and the factory hands the worker an
+# arbitrary, usually stale context pointing at a previous test's storage. The
+# work never completes and publishes time out -- measured, 8 passed in 14.9s
+# became 2 failed in 275.8s.
+_live: "dict[str | None, weakref.WeakSet[RequestContext]]" = {}
 _schedulers: dict[str | None, DurableLearningScheduler] = {}
 _server_scheduler: DurableLearningScheduler | None = None
 
 
+def _start_scheduler(directory: str | None) -> DurableLearningScheduler:
+    """Build and start the scheduler that polls one storage directory.
+
+    Both closures capture only ``directory``, never a context, so the registry
+    stays the sole owner of context lifetime.
+
+    Args:
+        directory (str | None): Storage base directory the scheduler serves.
+
+    Returns:
+        DurableLearningScheduler: The started scheduler.
+    """
+
+    def factory(org_id: str) -> RequestContext:
+        with _lock:
+            cached = _contexts.get((org_id, directory))
+        return cached or RequestContext(org_id=org_id, storage_base_dir=directory)
+
+    def discover() -> list[str]:
+        with _lock:
+            contexts = [
+                ctx for (_, path), ctx in _contexts.items() if path == directory
+            ]
+        orgs = set()
+        for ctx in contexts:
+            if ctx.storage is not None:
+                orgs.update(ctx.storage.list_extraction_orgs())
+        return sorted(orgs)
+
+    scheduler = DurableLearningScheduler(
+        request_context_factory=factory, org_ids_provider=discover
+    )
+    scheduler.start()
+    return scheduler
+
+
+def _take_orphan_schedulers() -> list[DurableLearningScheduler]:
+    """Unregister the schedulers whose directory has no live context left.
+
+    Must be called with ``_lock`` held. The caller stops the returned
+    schedulers *after* releasing the lock: ``stop()`` joins the scheduler
+    thread, whose discovery callback takes ``_lock`` itself, so stopping under
+    the lock would stall until the join timed out and leave the thread alive.
+
+    Returns:
+        list[DurableLearningScheduler]: Schedulers removed from the registry,
+        which the caller owns and must stop.
+    """
+    # A WeakSet loses members as they are collected, so "no members left" is
+    # exactly "no handle for this directory is reachable".
+    for empty in [d for d, ctxs in _live.items() if not len(ctxs)]:
+        del _live[empty]
+    return [_schedulers.pop(d) for d in [*_schedulers] if d not in _live]
+
+
 def ensure_local_extraction(context: RequestContext) -> None:
+    """Keep a durable extraction scheduler polling this context's directory.
+
+    Registers ``context`` weakly and starts a scheduler for its directory if
+    one is not already running, then retires any scheduler whose directory has
+    no reachable context left.
+
+    Args:
+        context (RequestContext): Live context whose storage directory needs
+            local durable extraction.
+    """
     if context.storage is None:
         return
     directory = context.storage_base_dir
@@ -19,30 +129,12 @@ def ensure_local_extraction(context: RequestContext) -> None:
         if _server_scheduler is not None and _server_scheduler.is_running():
             return
         _contexts[(context.org_id, directory)] = context
-        if directory in _schedulers:
-            return
-
-        def factory(org_id: str) -> RequestContext:
-            with _lock:
-                cached = _contexts.get((org_id, directory))
-            return cached or RequestContext(org_id=org_id, storage_base_dir=directory)
-
-        def discover() -> list[str]:
-            with _lock:
-                contexts = [
-                    ctx for (_, path), ctx in _contexts.items() if path == directory
-                ]
-            orgs = set()
-            for ctx in contexts:
-                if ctx.storage is not None:
-                    orgs.update(ctx.storage.list_extraction_orgs())
-            return sorted(orgs)
-
-        scheduler = DurableLearningScheduler(
-            request_context_factory=factory, org_ids_provider=discover
-        )
-        _schedulers[directory] = scheduler
-        scheduler.start()
+        _live.setdefault(directory, weakref.WeakSet()).add(context)
+        orphans = _take_orphan_schedulers()
+        if directory not in _schedulers:
+            _schedulers[directory] = _start_scheduler(directory)
+    for orphan in orphans:
+        orphan.stop()
 
 
 def adopt_server_scheduler(scheduler: DurableLearningScheduler) -> None:
@@ -52,6 +144,7 @@ def adopt_server_scheduler(scheduler: DurableLearningScheduler) -> None:
         previous = list(_schedulers.values())
         _schedulers.clear()
         _contexts.clear()
+        _live.clear()
         _server_scheduler = scheduler
     for local in previous:
         local.stop()
