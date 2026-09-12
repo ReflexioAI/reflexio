@@ -669,29 +669,14 @@ class UserPlaybookLifecycleTerminationStore(Protocol):
         """Reselect the retained predecessor and terminalize, under a fence."""
         ...
 
-    def confirm_user_playbook_provisional_publication(
-        self,
-        *,
-        lifecycle_id: int,
-        expected_fence: int,
-        expected_successor_fingerprint: str,
-        support_session_count: int,
-        refute_session_count: int,
-        global_coverage_numerator: int,
-        global_coverage_denominator: int,
-        target_coverage_numerator: int,
-        target_coverage_denominator: int,
-    ) -> LifecycleTerminalResult:
-        """Keep the successor and terminalize as confirmed, under a fence.
-
-        No ``reason`` parameter: ``confirmed_online_support`` is the only reason
-        this transition can record, so passing it would create a second place
-        the pairing could drift. The six counts are the evidence the boundary
-        decided on; the RPC re-checks the arithmetic itself and refuses an
-        inadmissible set rather than obeying it.
-        """
-        ...
-
+    # There is no ``confirm_...`` member. It was the third of a termination
+    # TRIPLE -- restore, confirm, displace -- and it is deleted rather than left
+    # declared: its only caller was a confirmation boundary that could never
+    # fire (no confirmation analyst was ever implementable, so the support tally
+    # was permanently zero), and a published successor is now KEPT until the
+    # tuner's own next evidence pass revises it. A declared-but-uncallable
+    # member of a Protocol obliges every backend to implement a transition
+    # nothing can ask for.
     def displace_user_playbook_provisional_publication(
         self, *, lifecycle_id: int
     ) -> LifecycleTerminalResult:
