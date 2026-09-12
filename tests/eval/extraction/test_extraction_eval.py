@@ -14,6 +14,7 @@ from unittest.mock import MagicMock
 import pytest
 from pydantic import BaseModel
 
+from reflexio.test_support.llm_mock import assert_litellm_unpatched
 from reflexio.test_support.skip_decorators import skip_low_priority
 from tests.eval.conftest import _load, _load_rubric
 from tests.eval.extraction.providers import make_extraction_provider
@@ -180,6 +181,10 @@ def test_score_golden_case(extraction_case, extraction_judge):
 @skip_low_priority
 def test_real_judge_smoke():  # pragma: no cover - manual, costs money
     """Smoke test against a real judge model. Run manually with API keys."""
+    # This test lives outside ``tests/e2e_tests/``, so the session-wide
+    # ``litellm.completion`` patch is installed for it. Without this it would
+    # grade canned mock text while reporting a real model.
+    assert_litellm_unpatched()
     from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 
     rubric = _load_rubric("extraction_rubric.yaml")
@@ -298,6 +303,10 @@ def test_live_extraction_provider_real(tmp_path):  # pragma: no cover - manual
     in range), never exact scores. Run manually with API keys +
     RUN_LOW_PRIORITY=1.
     """
+    # This test lives outside ``tests/e2e_tests/``, so the session-wide
+    # ``litellm.completion`` patch is installed for it. Without this it would
+    # grade canned mock text while reporting a real model.
+    assert_litellm_unpatched()
     from reflexio.server.api_endpoints.request_context import RequestContext
     from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 
