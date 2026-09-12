@@ -91,7 +91,7 @@ Six skill folders ship under `plugin/skills/` (`reflexio` is the always-on contr
 | `show`      | Dump currently-known skills + preferences for this project as markdown     |
 | `dashboard` | Open the local reflexio web UI (`http://localhost:3001`, shared with claude-smart) |
 | `restart`   | Restart the local reflexio backend cleanly                                 |
-| `clear-all` | Delete all locally-stored skills + preferences (destructive, prompts)      |
+| `clear-all` | Delete this dataset's locally-stored skills + preferences (destructive, prompts) |
 
 ## Configuration
 

@@ -22,6 +22,7 @@ import argparse
 import json
 import os
 import shutil
+import sqlite3
 import subprocess
 import sys
 import time
@@ -48,6 +49,20 @@ _REFLEXIO_DIR = Path.home() / ".reflexio"
 _DEFAULT_STORAGE_ROOT = _REFLEXIO_DIR / "data"
 _REFLEXIO_CONFIG_PATH = _REFLEXIO_DIR / "configs" / "config_self-host-org.json"
 _LOCAL_STORAGE_ENV = "LOCAL_STORAGE_PATH"
+_DEFAULT_ORG_ID_ENV = "REFLEXIO_DEFAULT_ORG_ID"
+
+# Mirrors reflexio.cli.bootstrap_config._DEFAULT_ORG_ID.
+_DEFAULT_ORG_ID = "self-host-org"
+
+# Mirrors sqlite_storage._dataset_path. Duplicated rather than imported: that
+# module is cheap on its own, but reaching it executes the storage package's
+# __init__ and costs ~1.7s, and `openclaw-smart-hook` runs per session event.
+# `test_derived_filename_matches_the_canonical_resolver` pins the two together.
+_LEGACY_DB_FILENAME = "reflexio.db"
+_IDENTITY_CLAIM_TABLE = "_dataset_identity"
+
+# Files SQLite keeps beside the database it is given.
+_SQLITE_SIDECAR_SUFFIXES = ("", "-wal", "-shm", "-journal")
 
 
 def _latest_session_id() -> str | None:
@@ -410,10 +425,123 @@ def _disk_org_targets(base_dir: Path) -> list[_ClearAllTarget]:
     ]
 
 
-def _resolve_clear_all_targets() -> list[_ClearAllTarget]:
-    targets = [
-        _ClearAllTarget(_effective_storage_root(), "dir", "managed local storage root")
+def _derive_db_filename(org_id: str) -> str:
+    """Return the database filename *org_id* owns.
+
+    Args:
+        org_id (str): The dataset identity.
+
+    Returns:
+        str: The filename, e.g. ``reflexio_self-host-org.db``.
+    """
+    return f"reflexio_{org_id}.db"
+
+
+def _effective_org_id() -> str:
+    """Resolve the dataset identity this installation reads and writes.
+
+    Same precedence the server and ``reset_db.py`` use, so ``clear-all`` clears
+    the database the backend would actually open: ``REFLEXIO_DEFAULT_ORG_ID``
+    from the environment, then from ``~/.reflexio/.env``, then the default.
+
+    Returns:
+        str: The dataset identity.
+    """
+    raw = os.environ.get(_DEFAULT_ORG_ID_ENV, "").strip()
+    if not raw:
+        raw = _read_dotenv_value(_REFLEXIO_ENV_PATH, _DEFAULT_ORG_ID_ENV) or ""
+    return raw.strip() or _DEFAULT_ORG_ID
+
+
+def _claimed_identity(path: Path) -> str | None:
+    """Return the identity that claims *path*, if it records one.
+
+    Strictly read-only -- opened ``mode=ro`` so inspecting a database never
+    creates one, and never takes the write lock a running backend may hold.
+
+    Args:
+        path (Path): The database to inspect.
+
+    Returns:
+        str | None: The claiming identity, or ``None`` when the file is absent,
+        unreadable, or carries no claim.
+    """
+    if not path.is_file():
+        return None
+    try:
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return None
+    try:
+        row = conn.execute(
+            f"SELECT org_id FROM {_IDENTITY_CLAIM_TABLE} WHERE k = 1"  # noqa: S608
+        ).fetchone()
+    except sqlite3.Error:
+        return None
+    finally:
+        conn.close()
+    return str(row[0]) if row and row[0] else None
+
+
+def _sqlite_artifact_targets(db_path: Path, label: str) -> list[_ClearAllTarget]:
+    """The database plus the sidecars SQLite keeps beside it."""
+    return [
+        _ClearAllTarget(Path(f"{db_path}{suffix}"), "file", label)
+        for suffix in _SQLITE_SIDECAR_SUFFIXES
     ]
+
+
+def _identity_owned_targets(root: Path, org_id: str) -> list[_ClearAllTarget]:
+    """Targets under *root* that belong to *org_id*, and nothing else.
+
+    The storage root is shared: after dataset isolation it holds one
+    ``reflexio_<org>.db`` per identity, alongside artifacts this plugin does not
+    own (the enterprise ``sql_app.db``, ``disk_*`` trees). ``derive_db_path``
+    documents those siblings as untouched, so enumerate what we own instead of
+    deleting the directory that contains them.
+
+    Args:
+        root (Path): The storage root.
+        org_id (str): The dataset identity being cleared.
+
+    Returns:
+        list[_ClearAllTarget]: Targets owned by *org_id*.
+    """
+    if not root.is_dir():
+        return []
+
+    targets = _sqlite_artifact_targets(
+        root / _derive_db_filename(org_id), "this dataset's SQLite data"
+    )
+
+    # A pre-isolation install still reads `reflexio.db`, adopted in place by its
+    # first claimant. Clear it only when it is ours -- or when nobody has
+    # claimed it yet, in which case we are the installation that would adopt it.
+    legacy = root / _LEGACY_DB_FILENAME
+    if legacy.is_file():
+        owner = _claimed_identity(legacy)
+        if owner in (None, org_id):
+            targets.extend(_sqlite_artifact_targets(legacy, "legacy SQLite data"))
+
+    return targets
+
+
+def _resolve_clear_all_targets() -> list[_ClearAllTarget]:
+    """Resolve exactly what ``clear-all`` may delete.
+
+    Read-only: resolution never creates the root, a database, or an identity
+    claim. (``resolve_sqlite_db_path`` upstream deliberately does all three, so
+    it is not reusable here -- it would create a database in order to delete
+    one.)
+
+    Returns:
+        list[_ClearAllTarget]: Deduplicated, validated targets.
+
+    Raises:
+        _ClearAllError: If storage is remote, misconfigured, or a target is unsafe.
+    """
+    root = _effective_storage_root()
+    targets = _identity_owned_targets(root, _effective_org_id())
 
     config = _load_reflexio_config()
     storage_config = config.get("storage_config") if config else None
@@ -433,12 +561,7 @@ def _resolve_clear_all_targets() -> list[_ClearAllTarget]:
                     raw_db_path.strip(), source="configured SQLite db_path"
                 )
                 targets.extend(
-                    _ClearAllTarget(
-                        Path(f"{db_path}{suffix}"),
-                        "file",
-                        "configured SQLite data",
-                    )
-                    for suffix in ("", "-wal", "-shm", "-journal")
+                    _sqlite_artifact_targets(db_path, "configured SQLite data")
                 )
         elif kind == "disk":
             raw_dir_path = storage_config.get("dir_path")
