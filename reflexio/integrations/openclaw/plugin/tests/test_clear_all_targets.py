@@ -14,6 +14,7 @@ goes.
 
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 from pathlib import Path
@@ -182,6 +183,40 @@ def test_missing_root_resolves_without_creating_it(monkeypatch, tmp_path):
     cli._resolve_clear_all_targets()
 
     assert not absent.exists()
+
+
+@pytest.mark.parametrize(
+    "storage_config",
+    [
+        {"type": "disk", "dir_path": "/tmp/legacy"},
+        {"dir_path": "/tmp/legacy"},
+    ],
+    ids=["explicit-type", "bare-dir-path"],
+)
+def test_a_config_this_build_cannot_interpret_deletes_nothing(
+    monkeypatch, root, tmp_path, storage_config
+):
+    """A leftover disk config refuses, rather than being reinterpreted.
+
+    The disk backend was removed in #98 with no deprecation window, and
+    `validate_stored_config` rejects both of these shapes outright -- so the
+    server cannot load such an org either. We do not know what storage it uses.
+    Mapping them onto `sqlite` would assert something false and delete a
+    database on the strength of a guess; refusing is the existing behaviour for
+    any shape this build cannot interpret, and a destructive command should
+    take it.
+    """
+    ours = root / f"reflexio_{OUR_ORG}.db"
+    _make_db(ours, claimed_by=OUR_ORG)
+
+    config = tmp_path / "config.json"
+    config.write_text(json.dumps({"storage_config": storage_config}))
+    monkeypatch.setattr(cli, "_REFLEXIO_CONFIG_PATH", config)
+
+    with pytest.raises(cli._ClearAllError, match="unsupported"):
+        cli._resolve_clear_all_targets()
+
+    assert ours.exists(), "refused resolution must not have deleted anything"
 
 
 def test_derived_filename_matches_the_canonical_resolver():

@@ -364,8 +364,6 @@ def _storage_config_kind(storage_config: dict[str, object]) -> str:
     ).lower()
     if explicit_type in {"supabase", "postgres"}:
         return "remote"
-    if explicit_type == "disk":
-        return "disk"
     if explicit_type == "sqlite":
         return "sqlite"
     if (
@@ -376,10 +374,13 @@ def _storage_config_kind(storage_config: dict[str, object]) -> str:
         return "remote"
     if "db_url" in storage_config:
         return "remote"
-    if "dir_path" in storage_config:
-        return "disk"
     if "db_path" in storage_config or not storage_config:
         return "sqlite"
+    # Reached by any shape this build cannot interpret -- including a config
+    # left over from the removed disk backend (#98). `validate_stored_config`
+    # rejects those outright, so the server cannot load such an org either: we
+    # do not know what storage it uses, and guessing is not an option for a
+    # destructive command.
     raise _ClearAllError(
         "unsupported reflexio storage_config shape; refusing to delete local data"
     )
@@ -406,23 +407,6 @@ def _validate_deletion_target(path: Path) -> None:
     resolved = path.resolve(strict=False)
     if resolved in _dangerous_clear_all_paths():
         raise _ClearAllError(f"refusing to delete dangerous path: {resolved}")
-
-
-def _disk_org_targets(base_dir: Path) -> list[_ClearAllTarget]:
-    if base_dir.exists() and base_dir.is_symlink():
-        raise _ClearAllError(
-            f"refusing to inspect symlink disk storage dir: {base_dir}"
-        )
-    if not base_dir.exists():
-        return []
-    if not base_dir.is_dir():
-        raise _ClearAllError(
-            f"configured disk storage path is not a directory: {base_dir}"
-        )
-    return [
-        _ClearAllTarget(child, "dir", "disk org data")
-        for child in sorted(base_dir.glob("disk_*"))
-    ]
 
 
 def _derive_db_filename(org_id: str) -> str:
@@ -496,9 +480,9 @@ def _identity_owned_targets(root: Path, org_id: str) -> list[_ClearAllTarget]:
 
     The storage root is shared: after dataset isolation it holds one
     ``reflexio_<org>.db`` per identity, alongside artifacts this plugin does not
-    own (the enterprise ``sql_app.db``, ``disk_*`` trees). ``derive_db_path``
-    documents those siblings as untouched, so enumerate what we own instead of
-    deleting the directory that contains them.
+    own -- the enterprise ``sql_app.db``, for one. ``derive_db_path`` documents
+    those siblings as untouched, so enumerate what we own instead of deleting
+    the directory that contains them.
 
     Args:
         root (Path): The storage root.
@@ -563,14 +547,6 @@ def _resolve_clear_all_targets() -> list[_ClearAllTarget]:
                 targets.extend(
                     _sqlite_artifact_targets(db_path, "configured SQLite data")
                 )
-        elif kind == "disk":
-            raw_dir_path = storage_config.get("dir_path")
-            if not isinstance(raw_dir_path, str) or not raw_dir_path.strip():
-                raise _ClearAllError("configured disk storage is missing dir_path")
-            disk_base = _resolve_absolute_path(
-                raw_dir_path.strip(), source="configured disk dir_path"
-            )
-            targets.extend(_disk_org_targets(disk_base))
 
     deduped: list[_ClearAllTarget] = []
     seen: set[Path] = set()
