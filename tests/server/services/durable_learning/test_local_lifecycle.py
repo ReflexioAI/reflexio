@@ -91,3 +91,43 @@ def test_scheduler_survives_while_its_context_is_reachable(tmp_path, isolated_re
     assert local._schedulers.get(kept.storage_base_dir) is kept_scheduler
     assert kept_scheduler.is_running()
     assert str(tmp_path / "other") not in local._schedulers
+
+
+def test_two_handles_on_one_key_both_keep_the_scheduler_alive(
+    tmp_path, isolated_registry
+):
+    """A second handle on the same org+directory must not unregister the first.
+
+    `ReflexioBase` builds an independent `RequestContext` per handle, so two
+    handles sharing an org and a directory are two distinct objects. A registry
+    keyed by `(org_id, storage_base_dir)` collapses them: the second
+    registration evicts the first, and collecting the second empties the key
+    while the first handle is still alive and using its scheduler. The sweep
+    then retires that scheduler and extraction stops silently under a live
+    caller.
+
+    Measured on the keyed version: with both handles alive the registry held
+    only the second. This is the regression test for that.
+    """
+    shared = tmp_path / "shared"
+    first = _context(shared, "same-org")
+    local.ensure_local_extraction(first)
+    scheduler = local._schedulers[first.storage_base_dir]
+
+    second = _context(shared, "same-org")
+    assert second is not first, "precondition: the handles are distinct objects"
+    local.ensure_local_extraction(second)
+    # The first must still be represented -- the whole point of the set.
+    assert first in local._live[first.storage_base_dir]
+
+    del second
+    gc.collect()
+
+    # Any later caller triggers the sweep; the first handle is still alive, so
+    # its scheduler must survive it.
+    local.ensure_local_extraction(_context(tmp_path / "elsewhere", "other-org"))
+    gc.collect()
+
+    assert first in local._live[first.storage_base_dir]
+    assert local._schedulers.get(first.storage_base_dir) is scheduler
+    assert scheduler.is_running()

@@ -25,9 +25,33 @@ _lock = threading.RLock()
 # durable work is persisted, and a dropped handle means nobody in this process
 # is waiting for its results; a later ``Reflexio`` on the same directory picks
 # the backlog up through the usual restart-recovery path.
+# Two registries, because "which context should the worker use?" and "is any
+# handle still alive?" are different questions and one structure cannot answer
+# both.
+#
+# IDENTITY. The CURRENT context per (org, directory). Overwriting is the point:
+# the worker must extract against the handle in use now, not an earlier one
+# whose storage may be gone.
 _contexts: "weakref.WeakValueDictionary[tuple[str, str | None], RequestContext]" = (
     weakref.WeakValueDictionary()
 )
+# LIVENESS. EVERY live context, grouped by directory.
+#
+# `_contexts` alone cannot answer this: `ReflexioBase` builds a distinct
+# `RequestContext` per handle, so a second handle on the same org and directory
+# evicts the first from that key. Collecting the second then empties the key
+# while the first is still alive, and the sweep retires a scheduler that handle
+# still depends on -- extraction stopping silently under a live caller.
+# Measured on the identity map alone: with two same-key handles it held only
+# the second.
+#
+# Answering BOTH from one structure was tried and is worse. A set alone loses
+# identity: every e2e test shares one org and one directory, so the set
+# accumulates ("ctxs=4", then 5...) and the factory hands the worker an
+# arbitrary, usually stale context pointing at a previous test's storage. The
+# work never completes and publishes time out -- measured, 8 passed in 14.9s
+# became 2 failed in 275.8s.
+_live: "dict[str | None, weakref.WeakSet[RequestContext]]" = {}
 _schedulers: dict[str | None, DurableLearningScheduler] = {}
 _server_scheduler: DurableLearningScheduler | None = None
 
@@ -80,8 +104,11 @@ def _take_orphan_schedulers() -> list[DurableLearningScheduler]:
         list[DurableLearningScheduler]: Schedulers removed from the registry,
         which the caller owns and must stop.
     """
-    live = {directory for _, directory in _contexts}
-    return [_schedulers.pop(d) for d in [*_schedulers] if d not in live]
+    # A WeakSet loses members as they are collected, so "no members left" is
+    # exactly "no handle for this directory is reachable".
+    for empty in [d for d, ctxs in _live.items() if not len(ctxs)]:
+        del _live[empty]
+    return [_schedulers.pop(d) for d in [*_schedulers] if d not in _live]
 
 
 def ensure_local_extraction(context: RequestContext) -> None:
@@ -102,6 +129,7 @@ def ensure_local_extraction(context: RequestContext) -> None:
         if _server_scheduler is not None and _server_scheduler.is_running():
             return
         _contexts[(context.org_id, directory)] = context
+        _live.setdefault(directory, weakref.WeakSet()).add(context)
         orphans = _take_orphan_schedulers()
         if directory not in _schedulers:
             _schedulers[directory] = _start_scheduler(directory)
@@ -116,6 +144,7 @@ def adopt_server_scheduler(scheduler: DurableLearningScheduler) -> None:
         previous = list(_schedulers.values())
         _schedulers.clear()
         _contexts.clear()
+        _live.clear()
         _server_scheduler = scheduler
     for local in previous:
         local.stop()

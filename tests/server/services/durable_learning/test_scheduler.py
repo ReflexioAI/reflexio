@@ -99,6 +99,10 @@ def test_library_recovers_persisted_backlog_without_new_publish(tmp_path, monkey
     finally:
         with local._lock:
             scheduler = local._schedulers.pop(str(tmp_path), None)
-            local._contexts.pop((org, str(tmp_path)), None)
+            # `_contexts` is a WeakSet of live contexts, not a dict keyed by
+            # (org, dir) -- two handles here share that key, which is exactly
+            # why the key was removed. Clear it; this is teardown.
+            local._contexts.clear()
+            local._live.clear()
         if scheduler:
             scheduler.stop()
