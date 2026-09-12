@@ -17,6 +17,8 @@ from typing import Annotated
 
 import typer
 
+from reflexio.server.env_utils import env_truthy
+
 app = typer.Typer(
     help=(
         "Configure Reflexio: run 'init' for plain CLI setup, use 'openclaw' "
@@ -188,7 +190,7 @@ def _is_non_interactive() -> bool:
     - stdin is not a TTY (``nohup``, container, pipe-fed shell)
     - ``REFLEXIO_NONINTERACTIVE=1`` in the environment (explicit opt-out)
     """
-    if os.environ.get("REFLEXIO_NONINTERACTIVE") == "1":
+    if env_truthy(os.environ.get("REFLEXIO_NONINTERACTIVE", "")):
         return True
     return not sys.stdin.isatty()
 

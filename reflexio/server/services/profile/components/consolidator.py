@@ -4,7 +4,6 @@ and against existing profiles in the database using hybrid search and LLM.
 """
 
 import logging
-import os
 from collections import Counter
 from datetime import UTC, datetime
 
@@ -15,6 +14,7 @@ from reflexio.models.api_schema.service_schemas import Status, UserProfile
 from reflexio.models.profile_id import new_profile_id
 from reflexio.models.structured_output import StrictStructuredOutput
 from reflexio.server.api_endpoints.request_context import RequestContext
+from reflexio.server.env_utils import env_bool
 from reflexio.server.error_reporting import capture_anomaly
 from reflexio.server.llm._litellm_types import ModelProvenance
 from reflexio.server.llm.litellm_client import (
@@ -521,7 +521,7 @@ class ProfileConsolidator(BaseDeduplicator):
         self.consolidated_output_indices = set()
 
         # Check if mock mode is enabled
-        if os.getenv("MOCK_LLM_RESPONSE", "").lower() == "true":
+        if env_bool("MOCK_LLM_RESPONSE", default=False):
             logger.info("Mock mode: skipping deduplication")
             return new_profiles, [], []
 

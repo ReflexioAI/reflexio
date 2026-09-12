@@ -14,6 +14,7 @@ import openai.resources  # noqa: F401
 
 from reflexio.cli.env_loader import load_reflexio_env
 from reflexio.cli.paths import reflexio_home
+from reflexio.server.env_utils import env_truthy
 
 # Load environment variables using shared discovery logic
 load_reflexio_env()
@@ -131,7 +132,7 @@ class _LLMIOFormatter(_TZAwareFormatter):
 def _truthy_env(name: str) -> bool:
     """Return whether an environment variable is explicitly truthy."""
     raw = os.environ.get(name, "").strip().lower()
-    return raw in ("true", "yes", "1", "on")
+    return env_truthy(raw)
 
 
 def _is_production_environment() -> bool:

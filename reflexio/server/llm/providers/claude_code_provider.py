@@ -45,6 +45,7 @@ from litellm.types.utils import (
 )
 from pydantic import BaseModel
 
+from reflexio.server.env_utils import env_truthy
 from reflexio.server.llm.providers.claude_code_stream_parser import (
     ParseResult,
     classify_stall,
@@ -80,7 +81,6 @@ _DEFAULT_CLI_MODEL = "claude-sonnet-5"
 _WINDOWS_ARGV_SYSTEM_PROMPT_LIMIT = 3_000
 _WINDOWS_CLI_SUFFIXES = (".cmd", ".exe", ".bat")
 
-_TRUTHY_ENV_VALUES = {"1", "true", "yes"}
 _UNSUPPORTED_PARAMS_WARNED: set[str] = set()
 _IMAGE_WARNED = False
 _MULTITURN_WARNED = False
@@ -103,7 +103,7 @@ def _env_enabled() -> bool:
         bool: True if the opt-in env var is set, False otherwise.
     """
     raw = os.environ.get(ENV_ENABLE)
-    return bool(raw) and raw.lower() in _TRUTHY_ENV_VALUES
+    return bool(raw) and env_truthy(raw)
 
 
 def _host() -> str:

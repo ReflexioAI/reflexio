@@ -132,3 +132,38 @@ class TestMyConfigEndpoint:
         assert body["success"] is False
         assert body["message"] == "Failed to load storage configuration"
         assert "boom-secret-db-url" not in response.text
+
+
+def test_my_config_gate_accepts_only_true(monkeypatch) -> None:
+    """The credential-export gate must not be opened by an ambiguous spelling.
+
+    ``my_config`` is the "download my creds" endpoint: on OS/self-host its only
+    guard is this variable, and the response carries the caller's storage
+    configuration. So the gate is parsed with ``env_bool`` -- narrower than the
+    ``{"1", "true", "yes"}`` allowlist it replaced, and far narrower than the
+    permissive ``env_truthy`` (which accepts ``"on"``) briefly used here.
+
+    A wrong value raises rather than silently opening or closing the gate: for a
+    credential path, refusing to guess is the only safe behaviour.
+    """
+    from reflexio.server.api_endpoints.account_api import (
+        _ALLOW_MY_CONFIG_ENV_VAR,
+        my_config_allowed,
+    )
+    from reflexio.server.env_utils import EnvBoolError
+
+    monkeypatch.setenv(_ALLOW_MY_CONFIG_ENV_VAR, "true")
+    assert my_config_allowed() is True
+
+    monkeypatch.setenv(_ALLOW_MY_CONFIG_ENV_VAR, "false")
+    assert my_config_allowed() is False
+
+    monkeypatch.delenv(_ALLOW_MY_CONFIG_ENV_VAR, raising=False)
+    assert my_config_allowed() is False, "unset must not open the gate"
+
+    # "on" is the specific spelling that a permissive parser would have let
+    # through; "1" and "yes" were accepted by the older allowlist.
+    for ambiguous in ("on", "1", "yes", "y"):
+        monkeypatch.setenv(_ALLOW_MY_CONFIG_ENV_VAR, ambiguous)
+        with pytest.raises(EnvBoolError):
+            my_config_allowed()

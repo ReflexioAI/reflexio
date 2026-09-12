@@ -25,6 +25,8 @@ import litellm
 from litellm.llms.custom_llm import CustomLLM
 from litellm.types.utils import Choices, Message, ModelResponse, Usage
 
+from reflexio.server.env_utils import env_truthy
+
 _LOGGER = logging.getLogger(__name__)
 
 PROVIDER_KEY = "openclaw"
@@ -34,7 +36,6 @@ ENV_DEFAULT_MODEL = "OPENCLAW_DEFAULT_MODEL"
 ENV_TIMEOUT = "OPENCLAW_CLI_TIMEOUT"
 _DEFAULT_TIMEOUT_SECONDS = 180
 
-_TRUTHY = {"1", "true", "yes"}
 
 # Module-level state reset by tests via the _reset_module_state fixture.
 _REGISTERED: bool = False
@@ -51,7 +52,7 @@ def _env_enabled() -> bool:
     Returns:
         bool: True if the opt-in env var is set to a truthy value, else False.
     """
-    return os.environ.get(ENV_ENABLE, "").lower() in _TRUTHY
+    return env_truthy(os.environ.get(ENV_ENABLE, ""))
 
 
 def _resolve_cli_path() -> str | None:

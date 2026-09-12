@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import os
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
@@ -12,6 +11,7 @@ from reflexio.models.api_schema.service_schemas import (
 from reflexio.models.config_schema import ProfileExtractorConfig
 from reflexio.models.profile_id import new_profile_id
 from reflexio.server.api_endpoints.request_context import RequestContext
+from reflexio.server.env_utils import env_bool
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.llm.token_accounting import RunTokenTotals, sum_trace_tokens
 from reflexio.server.services.deferred_learning_plan import ExtractorBookmarkAdvance
@@ -341,8 +341,7 @@ class ProfileExtractor:
             list[dict]: List of profile dicts with content, time_to_live, and optional metadata
         """
         # Check if mock mode is enabled
-        mock_env_for_raw = os.getenv("MOCK_LLM_RESPONSE", "")
-        if mock_env_for_raw.lower() == "true":
+        if env_bool("MOCK_LLM_RESPONSE", default=False):
             return self._generate_mock_profiles(
                 request_interaction_data_models=request_interaction_data_models,
             )

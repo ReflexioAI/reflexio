@@ -20,6 +20,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from reflexio.server.env_utils import env_truthy
 from reflexio.server.tracing import profile_step
 
 _LOGGER = logging.getLogger(__name__)
@@ -333,7 +334,7 @@ def embedding_provider_mode(model: str | None = None) -> EmbeddingProviderMode:
     if model and not _uses_embedding_service(model):
         return "cloud"
 
-    if os.environ.get(_ENV_CLAUDE_SMART_LOCAL) == "1":
+    if env_truthy(os.environ.get(_ENV_CLAUDE_SMART_LOCAL, "")):
         return "local_service"
 
     if os.environ.get(_ENV_SERVICE_URL, "").strip():

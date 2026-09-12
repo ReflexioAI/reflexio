@@ -23,6 +23,8 @@ import os
 from pathlib import Path
 from typing import Any
 
+from reflexio.server.env_utils import env_truthy
+
 INTERNAL_ENV = "OPENCLAW_SMART_INTERNAL"
 
 # Plugin layout (in-repo / editable):
@@ -59,7 +61,7 @@ def is_internal_invocation(payload: dict[str, Any]) -> bool:
             reflexio repository. False otherwise, including when ``cwd`` is
             missing or unresolvable.
     """
-    if os.environ.get(INTERNAL_ENV) == "1":
+    if env_truthy(os.environ.get(INTERNAL_ENV, "")):
         return True
     cwd = payload.get("cwd") or payload.get("workspaceDir")
     if not isinstance(cwd, str) or not cwd:

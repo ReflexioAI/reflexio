@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import logging
-import os
 import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
+
+from reflexio.server.env_utils import env_bool
 
 if TYPE_CHECKING:
     from reflexio.server.api_endpoints.request_context import RequestContext
@@ -449,7 +450,7 @@ class PlaybookGenerationService(
             and reviewer.is_enabled()
             and playbook_config is not None
             and self.service_config is not None
-            and os.getenv("MOCK_LLM_RESPONSE", "").lower() != "true"
+            and not env_bool("MOCK_LLM_RESPONSE", default=False)
         ):
             review_interactions = self._review_interaction_window(all_playbooks)
             if not review_interactions:
