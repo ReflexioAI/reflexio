@@ -106,7 +106,11 @@ def test_env_bool_refuses_a_typo_rather_than_silently_returning_false() -> None:
     value must be loud.
     """
     with pytest.raises(EnvBoolError) as excinfo:
-        env_bool("REFLEXIO_REQUIRE_DATA_DB", default=False, env={"REFLEXIO_REQUIRE_DATA_DB": "ture"})
+        env_bool(
+            "REFLEXIO_REQUIRE_DATA_DB",
+            default=False,
+            env={"REFLEXIO_REQUIRE_DATA_DB": "ture"},
+        )
 
     message = str(excinfo.value)
     assert "REFLEXIO_REQUIRE_DATA_DB" in message, "the error must name the variable"

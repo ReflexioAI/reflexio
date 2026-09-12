@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 import math
-import os
 import time
 import uuid
 from collections.abc import Callable, Sequence
@@ -1772,9 +1771,8 @@ class PlaybookAggregator:
                         # other caller still aborts on a missing embedding: a
                         # centroid-less cluster row would silently break the
                         # incremental re-aggregation this table exists to feed.
-                        if (
-                            not saved_fb.embedding
-                            and os.getenv("MOCK_LLM_RESPONSE", "").lower() != "true"
+                        if not saved_fb.embedding and not env_bool(
+                            "MOCK_LLM_RESPONSE", default=False
                         ):
                             raise RuntimeError(
                                 "rerun agent playbook has no centroid embedding"

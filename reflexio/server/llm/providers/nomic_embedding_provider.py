@@ -34,6 +34,7 @@ import os
 import threading
 from typing import Any
 
+from reflexio.server.env_utils import env_truthy
 from reflexio.server.llm.llm_utils import positive_int_env
 
 _LOGGER = logging.getLogger(__name__)
@@ -286,7 +287,7 @@ def register_if_enabled() -> bool:
     global _REGISTERED
     if _REGISTERED:
         return True
-    if os.environ.get(_ENV_ENABLE) != "1":
+    if not env_truthy(os.environ.get(_ENV_ENABLE, "")):
         return False
     provider = os.environ.get(_ENV_PROVIDER, "").strip().lower()
     if provider in {"local_service", "internal_service", "off"}:
@@ -296,7 +297,7 @@ def register_if_enabled() -> bool:
             provider,
         )
         return False
-    if not provider and os.environ.get(_ENV_DAEMON) != "1":
+    if not provider and not env_truthy(os.environ.get(_ENV_DAEMON, "")):
         _LOGGER.info(
             "Nomic in-process prewarm skipped; %s=1 now defaults to the "
             "shared embedding service.",

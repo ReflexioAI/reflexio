@@ -8,8 +8,6 @@ in ``~/.claude/settings.json``.
 from __future__ import annotations
 
 import os
-
-from reflexio.server.env_utils import env_truthy
 import re
 import shutil
 import subprocess
@@ -18,6 +16,8 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
+
+from reflexio.server.env_utils import env_truthy
 
 app = typer.Typer(
     help=(

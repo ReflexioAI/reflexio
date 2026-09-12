@@ -28,6 +28,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, BinaryIO, cast
 
+from reflexio.server.env_utils import env_truthy
+
 try:
     import fcntl
 except ImportError:  # pragma: no cover - Windows only
@@ -505,7 +507,7 @@ def is_local_embedder_available() -> bool:
         bool: True when ``CLAUDE_SMART_USE_LOCAL_EMBEDDING=1``
             AND the ONNX dependencies are importable.
     """
-    if os.environ.get(_ENV_ENABLE) != "1":
+    if not env_truthy(os.environ.get(_ENV_ENABLE, "")):
         return False
     return are_local_embedding_dependencies_available()
 

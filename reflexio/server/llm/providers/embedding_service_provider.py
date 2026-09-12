@@ -11,8 +11,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-
-from reflexio.server.env_utils import env_truthy
 import threading
 import time
 from dataclasses import dataclass
@@ -22,6 +20,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from reflexio.server.env_utils import env_truthy
 from reflexio.server.tracing import profile_step
 
 _LOGGER = logging.getLogger(__name__)

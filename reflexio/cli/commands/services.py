@@ -5,8 +5,6 @@ from __future__ import annotations
 import argparse
 import logging
 import os
-
-from reflexio.server.env_utils import env_truthy
 import sys
 from pathlib import Path
 from typing import Annotated
@@ -16,6 +14,7 @@ import typer
 from reflexio.cli import run_services as run_mod
 from reflexio.cli import stop_services as stop_mod
 from reflexio.cli.bootstrap_config import _VALID_STORAGE_BACKENDS
+from reflexio.server.env_utils import env_truthy
 
 _logger = logging.getLogger(__name__)
 
@@ -230,9 +229,8 @@ def start(
     # (e.g. REFLEXIO_STORAGE=supabase) are visible to the resolution chain.
     load_reflexio_env()
 
-    if (
-        not os.environ.get("REFLEXIO_EMBEDDING_PROVIDER")
-        and env_truthy(os.environ.get("CLAUDE_SMART_USE_LOCAL_EMBEDDING", ""))
+    if not os.environ.get("REFLEXIO_EMBEDDING_PROVIDER") and env_truthy(
+        os.environ.get("CLAUDE_SMART_USE_LOCAL_EMBEDDING", "")
     ):
         os.environ["REFLEXIO_EMBEDDING_PROVIDER"] = "local_service"
 

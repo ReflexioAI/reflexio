@@ -15,7 +15,6 @@ lookups honour the same configurator that data reads/writes use.
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any, cast
 
 from reflexio.lib._storage_labels import describe_storage
@@ -24,7 +23,7 @@ from reflexio.models.api_schema.service_schemas import (
     WhoamiResponse,
 )
 from reflexio.server.cache.reflexio_cache import get_reflexio
-from reflexio.server.env_utils import env_truthy
+from reflexio.server.env_utils import env_bool
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +87,7 @@ def my_config_allowed() -> bool:
     FastAPI endpoint wrapper in ``reflexio.server.api`` and does not
     flow through this helper.
     """
-    return env_truthy(os.environ.get(_ALLOW_MY_CONFIG_ENV_VAR, ""))
+    return env_bool(_ALLOW_MY_CONFIG_ENV_VAR, default=False)
 
 
 def my_config(org_id: str) -> MyConfigResponse:

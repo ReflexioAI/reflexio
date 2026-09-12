@@ -20,10 +20,10 @@ Detection signals, OR'd:
 from __future__ import annotations
 
 import os
-
-from reflexio.server.env_utils import env_truthy
 from pathlib import Path
 from typing import Any
+
+from reflexio.server.env_utils import env_truthy
 
 INTERNAL_ENV = "OPENCLAW_SMART_INTERNAL"
 
