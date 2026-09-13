@@ -56,10 +56,18 @@ def record_extraction_tokens(
 ) -> None:
     """Emit the Learning cost facet — call only when extraction fired.
 
-    No-op when ``billing_input_tokens <= 0``. Each call mints a fresh
-    ``event_key=f"tok:{uuid4()}"`` so two token emits under the same
-    ``request_id`` (e.g. profile + playbook extraction in one request) never
-    collapse into one billed event downstream.
+    No-op only when the event would carry NOTHING: no metered basis *and* no
+    real provider tokens. Gating on ``billing_input_tokens <= 0`` alone silently
+    discarded real COGS on exactly the runs that motivated capturing it — a
+    stage outside extraction, or a run where ``_extraction_input_text`` raised
+    and the caller swallowed it to ``""`` (``_usage_billing`` around the
+    input-text call). ``count_value`` stays the metered basis, so a zero-basis
+    event carries provider tokens and bills nothing, which is what the two-meter
+    pricing intends.
+
+    Each call mints a fresh ``event_key=f"tok:{uuid4()}"`` so two token emits
+    under the same ``request_id`` (e.g. profile + playbook extraction in one
+    request) never collapse into one billed event downstream.
 
     Args:
         org_id: Organisation identifier.
@@ -72,7 +80,7 @@ def record_extraction_tokens(
         request_id: Optional request correlation ID.
         session_id: Optional session ID.
     """
-    if billing_input_tokens <= 0:
+    if billing_input_tokens <= 0 and prompt_tokens <= 0 and completion_tokens <= 0:
         return
     recorder = record_usage_event_strict if strict else record_usage_event
     recorder(
