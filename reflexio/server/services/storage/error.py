@@ -34,6 +34,27 @@ class OpenWorldQualificationConflictError(StorageError):
     """Raised when a cached qualification key resolves to a conflicting result."""
 
 
+class TenantSchemaMissingError(StorageError):
+    """Raised when a tenant schema the caller addressed does not exist or is unexposed.
+
+    ``handle_exceptions`` collapses every driver exception into an anonymous
+    ``StorageError`` carrying a formatted message, which erases the exception
+    class. Callers that need to branch on "this org's schema is gone" — the
+    durable-learning resume sweep, which parks such an org rather than
+    re-querying it every tick — cannot recover that fact from the message:
+    the rendered text is ``InvalidSchemaName: schema "org_N" does not exist``,
+    which matches neither ``isinstance(..., psycopg2.errors.InvalidSchemaName)``
+    nor the ``"invalid schema"`` substring (no space in ``InvalidSchemaName``).
+
+    So the classification is carried as a TYPE. Same rationale as
+    ``UserPlaybookRetentionHoldActiveError``: the caller needs a name it can
+    branch on rather than an anonymous ``StorageError``.
+
+    This is a classification, not a softening — for a verified org a missing
+    schema is still a real provisioning failure and still logs at ERROR.
+    """
+
+
 def require_non_empty_session_id(value: Any) -> str:
     """Return a stripped, non-empty request ``session_id`` or raise ``StorageError``.
 
