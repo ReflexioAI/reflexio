@@ -45,6 +45,8 @@ def record_extraction_tokens(
     billing_input_tokens: int,
     prompt_tokens: int,
     completion_tokens: int,
+    cache_read_input_tokens: int = 0,
+    cache_write_input_tokens: int = 0,
     platform_llm: bool | None,
     platform_storage: bool | None,
     pipeline: str | None = None,
@@ -74,6 +76,10 @@ def record_extraction_tokens(
         billing_input_tokens: Input-anchored token count (the metered basis).
         prompt_tokens: Real provider prompt tokens (COGS; not billed to customer).
         completion_tokens: Real provider completion tokens (COGS; not billed).
+        cache_read_input_tokens: Cached prompt tokens read, an INCLUSIVE
+            sub-bucket of ``prompt_tokens`` — never add the two.
+        cache_write_input_tokens: Prompt tokens written to the cache, likewise
+            an inclusive sub-bucket of ``prompt_tokens``.
         platform_llm: True iff the platform supplies the LLM for this org.
         platform_storage: True iff the platform supplies storage; None defers to rollup.
         pipeline: Optional pipeline tag (e.g. ``"profile"``).
@@ -94,6 +100,8 @@ def record_extraction_tokens(
         count_value=billing_input_tokens,
         prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens,
+        cache_read_input_tokens=cache_read_input_tokens,
+        cache_write_input_tokens=cache_write_input_tokens,
         billing_input_tokens=billing_input_tokens,
         platform_llm=platform_llm,
         platform_storage=platform_storage,

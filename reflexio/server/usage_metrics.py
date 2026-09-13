@@ -38,6 +38,12 @@ class UsageEvent:
     count_value: int = 1
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
+    # Inclusive sub-buckets of `prompt_tokens`, NOT additional tokens: the
+    # provider folds them in before we see them. They ride separately only
+    # because they are priced differently (cache read ~0.1x, cache write ~1.25x
+    # base input). Never add them to `prompt_tokens`, and never sum the four.
+    cache_read_input_tokens: int | None = None
+    cache_write_input_tokens: int | None = None
     billing_input_tokens: int | None = None
     platform_llm: bool | None = None
     platform_storage: bool | None = None
@@ -115,6 +121,8 @@ def record_usage_event(
     count_value: int = 1,
     prompt_tokens: int | None = None,
     completion_tokens: int | None = None,
+    cache_read_input_tokens: int | None = None,
+    cache_write_input_tokens: int | None = None,
     billing_input_tokens: int | None = None,
     platform_llm: bool | None = None,
     platform_storage: bool | None = None,
@@ -151,6 +159,8 @@ def record_usage_event(
             count_value=count_value,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
+            cache_read_input_tokens=cache_read_input_tokens,
+            cache_write_input_tokens=cache_write_input_tokens,
             billing_input_tokens=billing_input_tokens,
             platform_llm=platform_llm,
             platform_storage=platform_storage,
@@ -188,6 +198,8 @@ def record_usage_event_strict(
     count_value: int = 1,
     prompt_tokens: int | None = None,
     completion_tokens: int | None = None,
+    cache_read_input_tokens: int | None = None,
+    cache_write_input_tokens: int | None = None,
     billing_input_tokens: int | None = None,
     platform_llm: bool | None = None,
     platform_storage: bool | None = None,
@@ -227,6 +239,8 @@ def record_usage_event_strict(
             count_value=count_value,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
+            cache_read_input_tokens=cache_read_input_tokens,
+            cache_write_input_tokens=cache_write_input_tokens,
             billing_input_tokens=billing_input_tokens,
             platform_llm=platform_llm,
             platform_storage=platform_storage,
