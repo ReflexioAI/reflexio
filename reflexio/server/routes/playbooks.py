@@ -1,7 +1,7 @@
 """Playbook route handlers (extracted from api.py, Tier3 A2)."""
 
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Annotated, Any
 
 if TYPE_CHECKING:
     pass
@@ -10,9 +10,15 @@ from fastapi import (
     APIRouter,
     BackgroundTasks,
     Depends,
+    HTTPException,
     Request,
 )
 
+from reflexio.models.api_schema.aggregation_operations import (
+    AggregationOperationConflictError,
+    PlaybookAggregationOperation,
+    SubmitPlaybookAggregationRequest,
+)
 from reflexio.models.api_schema.retriever_schema import (
     GetAgentPlaybooksRequest,
     GetAgentPlaybooksViewResponse,
@@ -640,3 +646,45 @@ def downgrade_all_user_playbooks_endpoint(
 
     # Call downgrade_all_user_playbooks with request
     return reflexio.downgrade_all_user_playbooks(request=request)
+
+
+@router.post("/api/playbook_aggregation_operations", status_code=202)
+@limiter.limit("10/minute")
+def submit_playbook_aggregation_operation(
+    request: Request,
+    payload: SubmitPlaybookAggregationRequest,
+    org_id: Annotated[str, Depends(default_get_org_id)],
+) -> PlaybookAggregationOperation:
+    storage = publisher_api.get_reflexio(org_id=org_id).get_storage()
+    if storage is None or not getattr(
+        storage, "supports_incremental_playbook_aggregation", False
+    ):
+        raise HTTPException(503, "Durable aggregation is unavailable on this storage")
+    try:
+        return storage.submit_playbook_aggregation_operation(
+            payload.request_id, payload.agent_version
+        )
+    except AggregationOperationConflictError as exc:
+        raise HTTPException(
+            409, {"message": str(exc), "operation_id": exc.operation_id}
+        ) from exc
+
+
+@router.get("/api/playbook_aggregation_operations/{operation_id}")
+@limiter.limit("120/minute")
+def get_playbook_aggregation_operation(
+    request: Request,
+    operation_id: str,
+    org_id: Annotated[str, Depends(default_get_org_id)],
+) -> PlaybookAggregationOperation:
+    storage = publisher_api.get_reflexio(org_id=org_id).get_storage()
+    if storage is None:
+        raise HTTPException(503, "Storage not configured")
+    operation = storage.get_playbook_aggregation_operation(operation_id)
+    if operation is None:
+        if not getattr(storage, "supports_incremental_playbook_aggregation", False):
+            raise HTTPException(
+                503, "Durable aggregation is unavailable on this storage"
+            )
+        raise HTTPException(404, "Aggregation operation not found")
+    return operation
