@@ -3322,6 +3322,37 @@ class TestLogTokenUsage:
         assert capture.totals.cache_write_input_tokens == 100
         assert capture.totals.cache_read_input_tokens == 800
 
+    def test_openai_nested_cached_tokens_reach_the_capture(self, client):
+        """OpenAI nests cache reads; Anthropic puts them at the top level.
+
+        `prompt_tokens_details.cached_tokens` is read ten lines above the
+        `observe` call for the LOG line, and was not passed to it. Every OpenAI
+        call therefore recorded `cache_read_input_tokens=0` while the log beside
+        it printed the real number -- the capture disagreeing with its own log.
+        """
+        capture = begin_run_token_capture()
+        response = self._response(1000, 50)  # top-level cache fields are None
+        response.usage.prompt_tokens_details = MagicMock(cached_tokens=800)
+        client._log_token_usage({"model": "gpt-4o"}, response)
+
+        assert capture.totals.cache_read_input_tokens == 800
+        # Still a sub-bucket, never added into the input total.
+        assert capture.totals.prompt_tokens == 1000
+
+    def test_the_two_cache_read_sources_are_selected_between_never_summed(self, client):
+        """Both fields populated -> ONE value, because they are the same tokens.
+
+        Without this, "read the nested one too" invites `cache_read + cached`,
+        which double-counts the most expensive half of the bill. The top-level
+        value wins; 800 + 800 == 1600 is the number this forbids.
+        """
+        capture = begin_run_token_capture()
+        response = self._response(1000, 50, cache_read=800)
+        response.usage.prompt_tokens_details = MagicMock(cached_tokens=800)
+        client._log_token_usage({"model": "gpt-4o"}, response)
+
+        assert capture.totals.cache_read_input_tokens == 800
+
     def test_no_capture_installed_is_a_no_op(self, client):
         """Outside a generation run there is nothing to accumulate into.
 
@@ -4038,6 +4069,42 @@ class TestOwnedFallbackWalk:
         monkeypatch.setattr("litellm.completion", _fake)
         client.generate_chat_response(self._messages())
         assert all("fallbacks" not in p for p in seen)
+
+    def test_a_rung_with_an_unreadable_body_still_contributes_its_tokens(
+        self, monkeypatch
+    ):
+        """The provider charged for it, so the run must count it.
+
+        `_log_token_usage` -- the single chokepoint that accumulates the
+        run-scoped provider total -- used to run AFTER `_build_model_provenance`
+        and `response.choices[0].message`. A response carrying real usage but an
+        empty or malformed `choices` raises on that read, the walk catches it as
+        a transport failure and advances to the next rung, and the first rung's
+        tokens are silently dropped from the run while the bill includes them.
+
+        The primary below returns usage=(10, 5) with `choices = []`; the
+        fallback serves normally with its own usage. Both must land.
+        """
+        client = LiteLLMClient(
+            LiteLLMConfig(model="minimax/MiniMax-M3", fallback_models=["zai/glm-5.2"])
+        )
+
+        def _fake(**params):
+            if params["model"] == "minimax/MiniMax-M3":
+                broken = _make_completion_response("ignored")
+                broken.choices = []  # real usage, unreadable body
+                return broken
+            return _make_completion_response("ok")
+
+        monkeypatch.setattr("litellm.completion", _fake)
+
+        capture = begin_run_token_capture()
+        client.generate_chat_response(self._messages())
+
+        # Two completions, two contributions -- not just the one that parsed.
+        assert capture.completions == 2
+        assert capture.totals.prompt_tokens == 20
+        assert capture.totals.completion_tokens == 10
 
     def test_mixed_ladder_no_longer_raises_and_each_rung_gets_own_transport(
         self, monkeypatch
