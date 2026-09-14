@@ -1208,7 +1208,21 @@ class TextGenerationMixin:
             capture.observe(
                 prompt_tokens=getattr(usage, "prompt_tokens", None),
                 completion_tokens=getattr(usage, "completion_tokens", None),
-                cache_read_input_tokens=cache_read,
+                # Two providers report the same quantity in two places. Anthropic
+                # puts cache reads at the top level; OpenAI nests them under
+                # `prompt_tokens_details.cached_tokens` -- which this method
+                # already reads, ten lines up, for the log line. Passing only the
+                # top-level value recorded 0 for every OpenAI call while the log
+                # beside it printed the real count.
+                #
+                # SELECT, never sum: they are the same tokens, and both are
+                # sub-buckets of `prompt_tokens`, so adding would double-count
+                # the most expensive half of the bill.
+                cache_read_input_tokens=(
+                    cache_read
+                    if cache_read is not None
+                    else getattr(details, "cached_tokens", None)
+                ),
                 cache_write_input_tokens=cache_creation,
             )
 
@@ -1427,11 +1441,21 @@ class TextGenerationMixin:
                     response = self._completion_with_hard_timeout(
                         turn_params, turn_hard_timeout
                     )
+                # BEFORE any read of the response body. This call is what
+                # accumulates the run-scoped provider total, and everything
+                # below it can raise: `response.choices[0]` on an empty or
+                # malformed `choices` throws, `_make_request` catches it as a
+                # `LiteLLMClientError` and may advance to the next fallback rung
+                # -- whose usage IS captured. The run then bills the fallback's
+                # tokens while the provider charged for both.
+                #
+                # Nothing here needs the parsed body: `_log_token_usage` reads
+                # only `response.usage`, and returns early when it is absent.
+                self._log_token_usage(turn_params, response)
                 provenance = self._build_model_provenance(response)
                 message = response.choices[0].message  # type: ignore[reportAttributeAccessIssue]
                 content = message.content
                 finish_reason = response.choices[0].finish_reason  # type: ignore[reportAttributeAccessIssue]
-                self._log_token_usage(turn_params, response)
                 self.logger.info(
                     "event=llm_request_end model=%s timeout=%s has_response_format=%s elapsed_seconds=%.3f success=%s",
                     turn_params.get("model"),
