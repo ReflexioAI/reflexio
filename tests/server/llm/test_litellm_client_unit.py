@@ -62,6 +62,10 @@ from reflexio.server.llm.litellm_client import (
     create_litellm_client,
 )
 from reflexio.server.llm.llm_utils import make_strict_json_schema
+from reflexio.server.llm.token_accounting import (
+    begin_run_token_capture,
+    run_token_capture,
+)
 
 # ---------------------------------------------------------------------------
 # Pydantic models used for structured-output tests
@@ -3273,6 +3277,71 @@ class TestLogTokenUsage:
         response.usage.cache_read_input_tokens = 50
         # Should not raise
         client._log_token_usage({"model": "claude-3"}, response)
+
+    @staticmethod
+    def _response(prompt, completion, *, cache_write=None, cache_read=None):
+        response = MagicMock()
+        response.usage.prompt_tokens = prompt
+        response.usage.completion_tokens = completion
+        response.usage.total_tokens = prompt + completion
+        response.usage.prompt_tokens_details = None
+        response.usage.cache_creation_input_tokens = cache_write
+        response.usage.cache_read_input_tokens = cache_read
+        return response
+
+    def test_every_completion_in_a_run_accumulates_into_one_capture(self, client):
+        """The premise of run-scoped capture: a SECOND call still counts.
+
+        This is what makes the figure "generation-pipeline tokens" rather than
+        "extraction tokens". In a real run the later calls are the deduplicator,
+        the playbook aggregator and reviewer, and the should-run precheck — all
+        of which used to contribute nothing because the only producer folded one
+        extractor trace.
+        """
+        capture = begin_run_token_capture()
+        client._log_token_usage({"model": "gpt-4o"}, self._response(100, 10))
+        client._log_token_usage({"model": "gpt-4o"}, self._response(30, 4))
+
+        assert capture.completions == 2
+        assert capture.totals.prompt_tokens == 130
+        assert capture.totals.completion_tokens == 14
+
+    def test_cache_sub_buckets_are_captured_without_inflating_input(self, client):
+        """Cache counts ride alongside prompt_tokens, never added into it.
+
+        LiteLLM has already folded them in; re-adding would overstate the most
+        expensive half of the bill.
+        """
+        capture = begin_run_token_capture()
+        client._log_token_usage(
+            {"model": "claude-3"},
+            self._response(1000, 50, cache_write=100, cache_read=800),
+        )
+
+        assert capture.totals.prompt_tokens == 1000
+        assert capture.totals.cache_write_input_tokens == 100
+        assert capture.totals.cache_read_input_tokens == 800
+
+    def test_no_capture_installed_is_a_no_op(self, client):
+        """Outside a generation run there is nothing to accumulate into.
+
+        The chokepoint is on every completion in the process, including ones
+        with no run around them; it must not need one.
+        """
+        run_token_capture.set(None)
+        client._log_token_usage({"model": "gpt-4o"}, self._response(10, 1))
+        assert run_token_capture.get() is None
+
+    def test_a_response_without_usage_is_not_counted_as_an_observation(self, client):
+        """No usage means nothing was observed — not a zero-token observation.
+
+        The observation count decides whether the capture overrides another
+        producer, so counting a usage-less response would let an empty capture
+        overrule a real total.
+        """
+        capture = begin_run_token_capture()
+        client._log_token_usage({"model": "gpt-4o"}, MagicMock(spec=[]))
+        assert capture.completions == 0
 
 
 # ===================================================================

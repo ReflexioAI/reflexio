@@ -67,6 +67,53 @@ def test_record_extraction_tokens_noop_on_negative():
     hook.assert_not_called()
 
 
+def test_real_tokens_survive_a_zero_metered_basis():
+    """The durability axis: no metered basis must not discard real provider cost.
+
+    ``billing_input_tokens`` is a recount of the extraction INPUT text. It is 0
+    on a stage that has no such text, and on the failure path where
+    ``_extraction_input_text`` raises and the caller swallows it to ``""``. The
+    old ``billing_input_tokens <= 0`` gate returned there, throwing away the
+    provider tokens that motivated capturing them at all — and no accumulation
+    test varies this axis, because accumulation happens long before the gate.
+    """
+    with patch(HOOK) as hook:
+        record_extraction_tokens(
+            org_id="org1",
+            billing_input_tokens=0,
+            prompt_tokens=4200,
+            completion_tokens=310,
+            platform_llm=True,
+            platform_storage=None,
+        )
+    hook.assert_called_once()
+    kwargs = hook.call_args.kwargs
+    assert kwargs["prompt_tokens"] == 4200
+    assert kwargs["completion_tokens"] == 310
+    # The metered basis stays 0 — this event carries cost, and bills nothing.
+    assert kwargs["count_value"] == 0
+    assert kwargs["billing_input_tokens"] == 0
+
+
+def test_record_extraction_tokens_noop_when_the_event_would_carry_nothing():
+    """Still a no-op when there is neither a basis nor any provider tokens.
+
+    Widening the gate must not turn every empty run into an event: an all-zero
+    ``extraction_tokens`` event maps to an all-zero meter dict and is dropped
+    downstream as EXEMPT, so emitting one is pure noise.
+    """
+    with patch(HOOK) as hook:
+        record_extraction_tokens(
+            org_id="org1",
+            billing_input_tokens=0,
+            prompt_tokens=0,
+            completion_tokens=0,
+            platform_llm=True,
+            platform_storage=None,
+        )
+    hook.assert_not_called()
+
+
 def test_record_learnings_generated_uses_count_value():
     with patch(HOOK) as hook:
         record_learnings_generated(

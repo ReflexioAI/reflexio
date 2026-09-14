@@ -252,6 +252,8 @@ class UsageBillingMixin(Generic[TExtractorConfig, TGenerationServiceConfig]):  #
                 billing_input_tokens=billing_input_tokens,
                 prompt_tokens=totals.prompt_tokens,
                 completion_tokens=totals.completion_tokens,
+                cache_read_input_tokens=totals.cache_read_input_tokens,
+                cache_write_input_tokens=totals.cache_write_input_tokens,
                 platform_llm=platform_llm,
                 platform_storage=None,
                 pipeline=ctx.get("pipeline"),

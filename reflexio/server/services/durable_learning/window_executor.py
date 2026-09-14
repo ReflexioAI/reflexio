@@ -225,6 +225,11 @@ class WindowExecutor:
             ),
             "prompt_tokens": totals.prompt_tokens,
             "completion_tokens": totals.completion_tokens,
+            # `.get(...)` on the read side, not here: an effects blob written by
+            # an older image has no such key, and a KeyError at bill time would
+            # strand a window that already committed its learnings.
+            "cache_read_input_tokens": totals.cache_read_input_tokens,
+            "cache_write_input_tokens": totals.cache_write_input_tokens,
         }
 
     def _bill(self, window: Window, billing: dict[str, Any]) -> None:
@@ -249,6 +254,11 @@ class WindowExecutor:
             billing_input_tokens=billing["input_tokens"],
             prompt_tokens=billing["prompt_tokens"],
             completion_tokens=billing["completion_tokens"],
+            # Tolerant reads: an effects blob written before the cache fields
+            # existed is still billable, and a KeyError here would strand a
+            # window whose learnings are already committed.
+            cache_read_input_tokens=billing.get("cache_read_input_tokens", 0),
+            cache_write_input_tokens=billing.get("cache_write_input_tokens", 0),
             platform_llm=billing["platform_llm"],
             platform_storage=None,
             pipeline=window.kind,

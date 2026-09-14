@@ -15,7 +15,10 @@ from reflexio.models.api_schema.internal_schema import RequestInteractionDataMod
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm._litellm_types import ModelProvenance
 from reflexio.server.llm.litellm_client import LiteLLMClient
-from reflexio.server.llm.token_accounting import RunTokenTotals
+from reflexio.server.llm.token_accounting import (
+    RunTokenTotals,
+    begin_run_token_capture,
+)
 from reflexio.server.services.base_generation import (
     BatchProgressMixin,
     ConfigFilterMixin,
@@ -665,6 +668,23 @@ class BaseGenerationService(
             return None
 
         generation_start = time.perf_counter()
+        # Install the run-scoped token capture BEFORE the prepare gate, not
+        # beside the `_last_token_totals` reset below. The gate runs the
+        # should-run precheck, which is a real `generate_chat_response` call
+        # (`_should_run.py`); installing any later would leave its cost
+        # invisible, which is the whole class of omission this change exists to
+        # end. It is also, necessarily, before `_execute_extractor`'s
+        # `contextvars.copy_context()` — a copied context shares this object but
+        # not a later `set()`, so a capture installed deeper would never
+        # propagate back out.
+        #
+        # Per-run scope is preserved: `compute_generation` runs once per item,
+        # and each run installs a FRESH object. That is what keeps the
+        # double-bill guard intact (`test_base_generation_service_characterization`:
+        # "item 2 bills ZERO provider tokens") and what makes a worker orphaned
+        # by `_execute_extractor`'s timeout harmless — it keeps writing into the
+        # object the previous run left behind, which nothing reads again.
+        token_capture = begin_run_token_capture()
         prepared = self._prepare_generation_run(request)
         if prepared is None:
             return None
@@ -690,6 +710,25 @@ class BaseGenerationService(
             self._mark_extraction_runs_finalization_failed(exc)
             raise
 
+        # The capture now covers everything this run did in-process, not just
+        # the extractor's own tool loop: the should-run precheck in the prepare
+        # gate, and `_resolve_write_plan` above, which runs the deduplicator
+        # ("the 2nd LLM call") plus the playbook aggregator and reviewer. It
+        # REPLACES, and is never
+        # summed with, the trace fold `_execute_extractor` stored a moment ago —
+        # both observe the same completions, so adding them would double-count
+        # every extraction token.
+        #
+        # Only when it actually observed a completion, though. A capture that
+        # saw none has no opinion, not an answer of zero, so whatever the
+        # extractor reported stands: an extractor that produced its totals by
+        # some other route must not silently bill 0. In a live run the capture
+        # always sees the extractor's own completions (they go through the one
+        # `litellm.completion` wrapper), so it wins and brings the later stages
+        # with it. The trace fold also survives for the durable-resume path,
+        # which decodes in another process where this ContextVar is empty.
+        if token_capture.completions:
+            self._last_token_totals = token_capture.totals
         generated_count = self._count_generated_results(result)
         billable_count = (
             self._count_retained_online_learnings(write_plan)

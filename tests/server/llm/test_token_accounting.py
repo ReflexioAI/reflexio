@@ -1,13 +1,23 @@
 """Unit tests for the OSS per-run token accounting helpers.
 
-Covers ``RunTokenTotals.add`` (including the ``int(x or 0)`` None->0 coercion)
-and ``sum_trace_tokens`` (the missing/empty ``turns`` guard and summation across
-turns).
+Covers ``RunTokenTotals.add`` (including the ``int(x or 0)`` None->0 coercion),
+``sum_trace_tokens`` (the missing/empty ``turns`` guard and summation across
+turns), and the run-scoped ``RunTokenCapture`` — whose three load-bearing
+properties are the absent-by-default ContextVar, the fresh object per run, and
+the observation COUNT that distinguishes "saw nothing" from "saw zeros".
 """
 
+import contextvars
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
-from reflexio.server.llm.token_accounting import RunTokenTotals, sum_trace_tokens
+from reflexio.server.llm.token_accounting import (
+    RunTokenCapture,
+    RunTokenTotals,
+    begin_run_token_capture,
+    run_token_capture,
+    sum_trace_tokens,
+)
 
 
 def test_run_token_totals_default_zero() -> None:
@@ -105,3 +115,100 @@ def test_sum_trace_tokens_turn_none_token_values() -> None:
     totals = sum_trace_tokens(trace)
     assert totals.prompt_tokens == 8
     assert totals.completion_tokens == 6
+
+
+# ── The run-scoped capture (Change 1) ───────────────────────────────────────
+
+
+def test_cache_buckets_accumulate_separately_from_prompt_tokens() -> None:
+    """The cache fields are carried alongside, never folded into, prompt_tokens.
+
+    LiteLLM has already added cache-creation and cache-read into prompt_tokens
+    before we see them, so adding them again here would double-count the most
+    expensive half of the bill.
+    """
+    totals = RunTokenTotals()
+    totals.add(
+        prompt_tokens=1000,
+        completion_tokens=50,
+        cache_read_input_tokens=800,
+        cache_write_input_tokens=100,
+    )
+    assert totals.prompt_tokens == 1000
+    assert totals.cache_read_input_tokens == 800
+    assert totals.cache_write_input_tokens == 100
+
+
+def test_capture_counts_observations_not_just_tokens() -> None:
+    """A completion reporting 0/0 still counts as an observation.
+
+    ``claude_code`` and ``openclaw`` genuinely return ``Usage(0, 0)``. Inferring
+    "nothing was observed" from all-zero totals would make those runs fall back
+    to another producer, which is the bug this counter exists to prevent.
+    """
+    capture = RunTokenCapture()
+    assert capture.completions == 0
+    capture.observe(prompt_tokens=0, completion_tokens=0)
+    assert capture.completions == 1
+    assert capture.totals.prompt_tokens == 0
+
+
+def test_begin_run_token_capture_installs_a_fresh_object_each_time() -> None:
+    """Each run gets a NEW object, so a leaked writer cannot reach the next run.
+
+    ``_execute_extractor`` does not cancel its worker on a timeout, so an
+    orphaned thread can keep calling ``observe`` after the parent has moved on.
+    It holds the old object; replacing rather than zeroing is what makes those
+    late writes harmless.
+    """
+    first = begin_run_token_capture()
+    first.observe(prompt_tokens=10, completion_tokens=1)
+
+    second = begin_run_token_capture()
+    assert second is not first
+    assert second.completions == 0
+    assert second.totals.prompt_tokens == 0
+
+    # The "orphan" writes into the object it still holds; the live run is unmoved.
+    first.observe(prompt_tokens=999, completion_tokens=999)
+    assert run_token_capture.get() is second
+    assert second.totals.prompt_tokens == 0
+
+
+def test_capture_is_absent_by_default() -> None:
+    """Outside a generation run there is no capture at all — not a shared one.
+
+    A mutable ContextVar default would be one process-global object collecting
+    tokens across organisations, because a worker submitted to a bare
+    ThreadPoolExecutor never copies the context.
+    """
+
+    def read_in_uncopied_worker() -> RunTokenCapture | None:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(run_token_capture.get).result()
+
+    begin_run_token_capture()
+    # The worker inherits nothing: a new thread starts from an empty context.
+    assert read_in_uncopied_worker() is None
+
+
+def test_copied_context_shares_the_capture_object() -> None:
+    """The install must precede ``copy_context()`` — this pins why.
+
+    A copied context shares the object, so a worker's ``observe`` is visible to
+    the parent. It does NOT share a later ``set()``, which is why installing the
+    capture inside the worker would silently produce zero.
+    """
+    capture = begin_run_token_capture()
+    ctx = contextvars.copy_context()
+
+    def work() -> None:
+        inner = run_token_capture.get()
+        assert inner is capture
+        inner.observe(prompt_tokens=7, completion_tokens=2)
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        pool.submit(ctx.run, work).result()
+
+    assert capture.totals.prompt_tokens == 7
+    assert capture.completions == 1

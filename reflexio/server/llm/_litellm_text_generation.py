@@ -70,6 +70,7 @@ from reflexio.server.llm.model_defaults import (
     default_max_tokens_for_model,
     resolve_model_name,
 )
+from reflexio.server.llm.token_accounting import run_token_capture
 
 if TYPE_CHECKING:
     from reflexio.server.llm._litellm_types import LiteLLMConfig
@@ -1192,6 +1193,23 @@ class TextGenerationMixin:
         if cache_creation or cache_read:
             cache_info = (
                 f", cache_write: {cache_creation or 0}, cache_read: {cache_read or 0}"
+            )
+
+        # Accumulate into the run-scoped total, if a run installed one. This is
+        # the single chokepoint: `_completion_with_hard_timeout` is the only
+        # wrapper around `litellm.completion` in this module and has exactly one
+        # call site, three lines above the call to this method. Accumulating here
+        # rather than at 19 call sites means every future stage is counted by
+        # construction. `.get()` returns None outside a generation run (and in a
+        # worker whose context was not copied), where contributing nothing is the
+        # correct answer.
+        capture = run_token_capture.get()
+        if capture is not None:
+            capture.observe(
+                prompt_tokens=getattr(usage, "prompt_tokens", None),
+                completion_tokens=getattr(usage, "completion_tokens", None),
+                cache_read_input_tokens=cache_read,
+                cache_write_input_tokens=cache_creation,
             )
 
         cost = self._compute_cost_usd(response, params.get("model"))
