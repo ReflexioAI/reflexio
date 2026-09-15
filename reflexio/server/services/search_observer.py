@@ -4,7 +4,9 @@ import logging
 from dataclasses import dataclass
 from typing import Protocol
 
+from reflexio.server.callback_executor import submit_callback
 from reflexio.server.extensions import ServiceKey, get_service
+from reflexio.server.work_scope import WorkScope, bind_work_scope, current_project_id
 
 logger = logging.getLogger(__name__)
 
@@ -28,10 +30,23 @@ SEARCH_OBSERVER = ServiceKey[SearchObserver]("completed_search_observer")
 
 
 def observe_completed_search(search: CompletedSearch) -> None:
+    """Queue observation without waiting; saturation drops the oldest callback.
+
+    Capture only the tenant identifiers needed to restore scope on the worker.
+    A dropped or failed observation can be retried by running the search again.
+    """
     observer = get_service(SEARCH_OBSERVER)
-    if observer is not None:
-        try:
-            observer.observe(search)
-        except Exception:
-            # An ancillary progress write must never break a successful retrieval.
-            logger.warning("Completed search observation failed", exc_info=True)
+    if observer is None:
+        return
+    try:
+        scope = WorkScope(org_id=search.org_id, project_id=current_project_id())
+
+        def observe() -> None:
+            with bind_work_scope(scope):
+                observer.observe(search)
+
+        # The shared executor bounds workers/queue, logs dropped work and catches
+        # callback errors. Never wait for database work on the response path.
+        submit_callback("completed_search_observer", observe)
+    except Exception:
+        logger.warning("Completed search observation enqueue failed", exc_info=True)
