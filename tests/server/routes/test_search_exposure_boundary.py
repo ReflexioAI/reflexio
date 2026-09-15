@@ -477,3 +477,50 @@ def test_interaction_id_alone_is_not_correlation_and_records_nothing() -> None:
 
     assert response.status_code == 200, response.text
     assert recorder.batches == []
+
+
+def test_optional_completed_search_observer_receives_only_final_identifiers() -> None:
+    from reflexio.server.services.search_observer import SEARCH_OBSERVER
+
+    observer = MagicMock()
+    register_service(SEARCH_OBSERVER, observer)
+    with _search_results([_playbook(11, "Private content")]):
+        response = _client().post(
+            "/api/search",
+            json={"query": "answer", "user_id": "user-1", "request_id": "correlation"},
+        )
+    assert response.status_code == 200
+    event = observer.observe.call_args.args[0]
+    assert event.user_playbook_ids == ("11",)
+    assert event.request_id == "correlation"
+    assert event.caller_type == "production_agent"
+    assert "Private content" not in repr(event)
+
+
+def test_completed_search_observer_failure_does_not_fail_search() -> None:
+    from reflexio.server.services.search_observer import SEARCH_OBSERVER
+
+    observer = MagicMock()
+    observer.observe.side_effect = RuntimeError("progress store unavailable")
+    register_service(SEARCH_OBSERVER, observer)
+    with _search_results([_playbook(11, "First")]):
+        response = _client().post(
+            "/api/search", json={"query": "answer", "user_id": "user-1"}
+        )
+    assert response.status_code == 200
+    assert response.json()["success"] is True
+
+
+def test_failed_unified_search_is_not_observed() -> None:
+    from reflexio.server.services.search_observer import SEARCH_OBSERVER
+
+    observer = MagicMock()
+    register_service(SEARCH_OBSERVER, observer)
+    with _search_results([]) as reflexio:
+        reflexio.unified_search.return_value.success = False
+        response = _client().post(
+            "/api/search", json={"query": "answer", "user_id": "user-1"}
+        )
+    assert response.status_code == 200
+    assert response.json()["success"] is False
+    observer.observe.assert_not_called()

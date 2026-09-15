@@ -53,6 +53,10 @@ from reflexio.server.services.search_exposure import (
     record_search_exposures,
 )
 from reflexio.server.services.search_metering_worker import enqueue_search_metering
+from reflexio.server.services.search_observer import (
+    CompletedSearch,
+    observe_completed_search,
+)
 from reflexio.server.tracing import profile_step
 
 logger = logging.getLogger(__name__)
@@ -455,5 +459,19 @@ def unified_search_endpoint(
             record_search_request=True,
             request_id=getattr(payload, "request_id", None),
             session_id=getattr(payload, "session_id", None),
+        )
+    if resp.success:
+        observe_completed_search(
+            CompletedSearch(
+                org_id=org_id,
+                caller_type=caller_type,
+                user_id=payload.user_id,
+                session_id=payload.session_id,
+                request_id=payload.request_id,
+                profile_ids=tuple(p.profile_id for p in resp.profiles),
+                user_playbook_ids=tuple(
+                    str(p.user_playbook_id) for p in resp.user_playbooks
+                ),
+            )
         )
     return resp
