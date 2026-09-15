@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 from reflexio.models.api_schema.domain import UserPlaybook
 from reflexio.models.config_schema import Config, StorageConfigSQLite
 from reflexio.server.api import create_app
+from reflexio.server.callback_executor import drain_callbacks
 from reflexio.server.extensions import register_service
 from reflexio.server.services.search_exposure import SEARCH_EXPOSURE_RECORDER
 
@@ -477,3 +478,131 @@ def test_interaction_id_alone_is_not_correlation_and_records_nothing() -> None:
 
     assert response.status_code == 200, response.text
     assert recorder.batches == []
+
+
+def test_optional_completed_search_observer_receives_only_final_identifiers() -> None:
+    from reflexio.server.services.search_observer import SEARCH_OBSERVER
+
+    observer = MagicMock()
+    register_service(SEARCH_OBSERVER, observer)
+    with _search_results([_playbook(11, "Private content")]):
+        response = _client().post(
+            "/api/search",
+            json={"query": "answer", "user_id": "user-1", "request_id": "correlation"},
+        )
+    assert response.status_code == 200
+    assert drain_callbacks()
+    event = observer.observe.call_args.args[0]
+    assert event.user_playbook_ids == ("11",)
+    assert event.request_id == "correlation"
+    assert event.caller_type == "production_agent"
+    assert "Private content" not in repr(event)
+
+
+def test_completed_search_observer_failure_does_not_fail_search() -> None:
+    from reflexio.server.services.search_observer import SEARCH_OBSERVER
+
+    observer = MagicMock()
+    observer.observe.side_effect = RuntimeError("progress store unavailable")
+    register_service(SEARCH_OBSERVER, observer)
+    with _search_results([_playbook(11, "First")]):
+        response = _client().post(
+            "/api/search", json={"query": "answer", "user_id": "user-1"}
+        )
+    assert response.status_code == 200
+    assert response.json()["success"] is True
+    assert drain_callbacks()
+    observer.observe.assert_called_once()
+
+
+def test_failed_unified_search_is_not_observed() -> None:
+    from reflexio.server.services.search_observer import SEARCH_OBSERVER
+
+    observer = MagicMock()
+    register_service(SEARCH_OBSERVER, observer)
+    with _search_results([]) as reflexio:
+        reflexio.unified_search.return_value.success = False
+        response = _client().post(
+            "/api/search", json={"query": "answer", "user_id": "user-1"}
+        )
+    assert response.status_code == 200
+    assert response.json()["success"] is False
+    observer.observe.assert_not_called()
+
+
+def test_slow_observer_does_not_hold_the_search_response() -> None:
+    from threading import Event
+
+    from reflexio.server.services.search_observer import SEARCH_OBSERVER
+
+    entered, release, completed = Event(), Event(), Event()
+
+    def slow_observe(_search: Any) -> None:
+        entered.set()
+        release.wait(timeout=5)
+        completed.set()
+
+    observer = MagicMock()
+    observer.observe.side_effect = slow_observe
+    register_service(SEARCH_OBSERVER, observer)
+    try:
+        with _search_results([_playbook(11, "First")]):
+            response = _client().post(
+                "/api/search", json={"query": "answer", "user_id": "user-1"}
+            )
+        assert response.status_code == 200
+        assert entered.wait(timeout=1)
+        assert not completed.is_set(), "Response waited for the blocked observer"
+    finally:
+        release.set()
+        assert drain_callbacks()
+
+
+def test_observer_rebinds_captured_project_scope_on_the_worker() -> None:
+    from contextvars import ContextVar
+
+    from reflexio.server.services.search_observer import (
+        SEARCH_OBSERVER,
+        CompletedSearch,
+        observe_completed_search,
+    )
+    from reflexio.server.work_scope import WORK_SCOPE_PROVIDER, WorkScope
+
+    scope_var: ContextVar[WorkScope | None] = ContextVar("test_scope", default=None)
+    observed = []
+
+    class Provider:
+        def current(self) -> WorkScope | None:
+            return scope_var.get()
+
+        @contextmanager
+        def bind(self, scope: WorkScope) -> Iterator[None]:
+            token = scope_var.set(scope)
+            try:
+                yield
+            finally:
+                scope_var.reset(token)
+
+    register_service(WORK_SCOPE_PROVIDER, Provider())
+    observer = MagicMock()
+    observer.observe.side_effect = lambda _: observed.append(scope_var.get())
+    register_service(SEARCH_OBSERVER, observer)
+    for project_id in ("project-a", "project-b"):
+        token = scope_var.set(WorkScope(org_id="org-1", project_id=project_id))
+        try:
+            observe_completed_search(
+                CompletedSearch(
+                    org_id="org-1",
+                    caller_type="production_agent",
+                    user_id="user-1",
+                    session_id=None,
+                    request_id=None,
+                    profile_ids=(),
+                    user_playbook_ids=("11",),
+                )
+            )
+        finally:
+            scope_var.reset(token)
+    assert drain_callbacks()
+    assert {scope.project_id for scope in observed} == {"project-a", "project-b"}
+    assert scope_var.get() is None
