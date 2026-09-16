@@ -30,6 +30,7 @@ from reflexio.server.services.agent_success_evaluation.sampling import (
 from reflexio.server.services.agent_success_evaluation.scheduler import (
     GroupEvaluationScheduler,
 )
+from reflexio.server.services.external_admission import ExternalAdmissionParticipant
 from reflexio.server.services.operation_state_utils import OperationStateManager
 from reflexio.server.services.profile.service import (
     ProfileGenerationService,
@@ -154,6 +155,8 @@ class GenerationServiceResult:
 
     request_id: str | None = None
     warnings: list[str] = field(default_factory=list)
+    replayed: bool = False
+    interaction_ids: list[int] = field(default_factory=list)
 
 
 class GenerationService:
@@ -193,6 +196,7 @@ class GenerationService:
         use_publish_limiter: bool = True,  # noqa: ARG002 -- retained library compatibility
         publish_limiter_wait_forever: bool = True,  # noqa: ARG002 -- retained library compatibility
         defer_learning: bool = False,
+        admission_participant: ExternalAdmissionParticipant | None = None,
     ) -> GenerationServiceResult:
         """Atomically admit interactions to the durable extraction stream.
 
@@ -251,7 +255,8 @@ class GenerationService:
             result.request_id = request_id
 
             if (
-                caller_request_id is not None
+                admission_participant is None
+                and caller_request_id is not None
                 and self.storage.get_request(request_id) is not None  # type: ignore[reportOptionalMemberAccess]
             ):
                 raise ValueError(f"request_id {request_id!r} already exists")
@@ -326,6 +331,20 @@ class GenerationService:
             with storage.commit_scope():
                 storage.lock_extraction_stream(user_id)
                 check_admission_deadline()
+                if admission_participant is not None:
+                    receipt = admission_participant.claim(request_id, user_id)
+                    if receipt is not None:
+                        result.request_id = receipt.request_id
+                        result.interaction_ids = list(receipt.interaction_ids)
+                        result.replayed = True
+                        return result
+                    # Preparation may have outlived a policy edit or billing stall.
+                    stall_warning = self._active_learning_stall_warning()
+                    admission = extraction_admission(
+                        self.configurator.get_config(),
+                        publish_user_interaction_request,
+                        stalled=stall_warning is not None,
+                    )
                 if storage.get_request(request_id) is not None:
                     raise ValueError(f"request_id {request_id!r} already exists")
                 storage.add_request(new_request)
@@ -338,6 +357,11 @@ class GenerationService:
                     [i.interaction_id for i in new_interactions],
                     admission,
                 )
+                if admission_participant is not None:
+                    admission_participant.complete(
+                        new_request, new_interactions, admission
+                    )
+                result.interaction_ids = [i.interaction_id for i in new_interactions]
             ensure_local_extraction(self.request_context)
             self._schedule_post_publish_evaluations(
                 new_request=new_request,

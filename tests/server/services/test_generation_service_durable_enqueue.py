@@ -245,3 +245,69 @@ def test_no_get_embeddings_inside_scope_when_prepare_degraded(monkeypatch):
 # The allowlist (REFLEXIO_DURABLE_LEARNING_QUEUE_ORG_ALLOWLIST) only *narrows*
 # the durable path: empty/unset = current global behavior (all orgs durable
 # when the flag is on); a false flag always wins.
+
+
+def test_external_participant_rolls_back_then_replays_without_effects(
+    tmp_path, monkeypatch
+):
+    """Receipt failure rolls back requests, messages and extraction positions together."""
+    import json
+
+    from reflexio.server.services.external_admission import ExternalAdmissionReceipt
+
+    monkeypatch.setenv("REFLEXIO_EMBEDDING_PROVIDER", "off")
+    svc = _make_svc(str(tmp_path))
+    store = svc.storage
+    assert isinstance(store, SQLiteStorage)
+    store.conn.execute(
+        "CREATE TABLE external_receipt (request_id TEXT PRIMARY KEY, ids TEXT NOT NULL)"
+    )
+    store.conn.commit()
+    scheduled = Mock()
+    monkeypatch.setattr(svc, "_schedule_post_publish_evaluations", scheduled)
+
+    class Participant:
+        fail = True
+
+        def claim(self, request_id, user_id):
+            row = store.conn.execute(
+                "SELECT ids FROM external_receipt WHERE request_id=?", (request_id,)
+            ).fetchone()
+            return (
+                ExternalAdmissionReceipt(request_id, tuple(json.loads(row[0])))
+                if row
+                else None
+            )
+
+        def complete(self, request, interactions, admission):
+            store.conn.execute(
+                "INSERT INTO external_receipt VALUES (?,?)",
+                (
+                    request.request_id,
+                    json.dumps([i.interaction_id for i in interactions]),
+                ),
+            )
+            if self.fail:
+                raise RuntimeError("injected receipt failure")
+
+    participant = Participant()
+    request = _publish_request(user_id="u1", request_id="external-1")
+    with pytest.raises(RuntimeError, match="injected receipt failure"):
+        svc.run(request, defer_learning=True, admission_participant=participant)
+    assert store.get_request("external-1") is None
+    assert store.conn.execute("SELECT COUNT(*) FROM interactions").fetchone()[0] == 0
+    assert (
+        store.conn.execute("SELECT COUNT(*) FROM external_receipt").fetchone()[0] == 0
+    )
+    assert not scheduled.called
+    participant.fail = False
+    first = svc.run(request, defer_learning=True, admission_participant=participant)
+    replay = svc.run(request, defer_learning=True, admission_participant=participant)
+    assert replay.replayed and replay.interaction_ids == first.interaction_ids
+    assert scheduled.call_count == 1
+    assert store.conn.execute("SELECT COUNT(*) FROM interactions").fetchone()[0] == 1
+    assert (
+        store.conn.execute("SELECT COUNT(*) FROM external_receipt").fetchone()[0] == 1
+    )
+    with pytest.raises(ValueError, match="already exists"):
+        svc.run(request, defer_learning=True)
