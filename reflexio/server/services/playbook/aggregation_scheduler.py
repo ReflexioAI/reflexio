@@ -228,8 +228,17 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
                     ),
                 )
             heartbeat.require_live()
-            success = True
+            # `success` is set AFTER the backlog read, not before. Set before,
+            # a failing read left success=True, so the `finally:` below called
+            # finish(success=True, backlog=None) -- and finish recomputes the
+            # backlog when it is None, re-running the same failing query and
+            # raising a SECOND time, out of `finally:`. The lease was then
+            # never released and `_run_once` backed off the whole ORG for
+            # `_REPAIR_INTERVAL_SECONDS` rather than the one failing unit.
+            # With success=False, finish takes its `if not success:` branch,
+            # skips the recompute, releases the lease and schedules a retry.
             after = storage.get_playbook_aggregation_backlog(claim.agent_version)
+            success = True
         except TimeoutError:
             logger.warning(
                 "event=playbook_aggregation_progress state=deferred org_id=%s "

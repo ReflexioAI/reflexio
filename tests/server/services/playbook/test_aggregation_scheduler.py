@@ -395,3 +395,70 @@ def test_succeeded_log_distinguishes_a_starved_run_from_an_idle_one(
     assert "state=succeeded" in caplog.text
     assert "creations=0" in caplog.text
     assert expected in caplog.text
+
+
+def test_backlog_failure_finishes_as_failure_and_releases_the_lease(
+    monkeypatch, caplog
+) -> None:
+    """A failing backlog read must not be reported to ``finish`` as success.
+
+    ``success`` used to be set BEFORE the backlog read. When that read raised,
+    ``success`` was already True, so the ``finally:`` block called
+    ``finish(success=True, backlog=None)`` -- and ``finish`` recomputes the
+    backlog when it is None, re-running the same failing query and raising a
+    SECOND time, this time out of ``finally:``. The claim lease was therefore
+    never released, and the scheduler backed off the whole ORG rather than the
+    one failing unit.
+
+    That is exactly what production did: two tracebacks per cycle, one from
+    ``_run_context`` and one from ``finish``, with an aggregation unit stalled
+    behind a lease nobody released.
+
+    Observed failing before the reorder with ``assert True is False`` on the
+    ``success`` kwarg.
+    """
+    claim = PlaybookAggregationClaim("v1", "owner", 7, 3, 10_000)
+    storage = MagicMock(supports_incremental_playbook_aggregation=True)
+    storage.repair_playbook_aggregation_pending_state.return_value = []
+    storage.claim_due_playbook_aggregation.return_value = claim
+    storage.get_playbook_aggregation_invalidations.return_value = []
+    storage.finish_playbook_aggregation_claim.return_value = True
+    # The production failure: the backlog read raises.
+    storage.get_playbook_aggregation_backlog.side_effect = RuntimeError(
+        "more than one row returned by a subquery used as an expression"
+    )
+
+    class Aggregator:
+        def __init__(self, **kwargs: object) -> None: ...
+
+        def run(self, _request: object) -> dict[str, int]:
+            return {"playbooks_generated": 1}
+
+    monkeypatch.setattr(aggregation_scheduler, "PlaybookAggregator", Aggregator)
+    monkeypatch.setattr(aggregation_scheduler, "_aggregation_budget", lambda: 8)
+    monkeypatch.setattr(
+        "reflexio.lib.generation_client.create_generation_litellm_client",
+        lambda _context: MagicMock(),
+    )
+    monkeypatch.setattr(
+        aggregation_scheduler,
+        "run_with_operation_limit",
+        lambda *, fn, **_kwargs: fn(),
+    )
+    caplog.set_level(logging.INFO, logger=aggregation_scheduler.logger.name)
+
+    scheduler = aggregation_scheduler.PlaybookAggregationScheduler(
+        context_provider=lambda: [], worker_id="worker"
+    )
+    # Must not propagate: the retryable-failure handler owns this.
+    scheduler._run_context(_context(storage))
+
+    storage.finish_playbook_aggregation_claim.assert_called_once()
+    kwargs = storage.finish_playbook_aggregation_claim.call_args.kwargs
+    assert kwargs["success"] is False, (
+        "a failed backlog read was reported to finish as a SUCCESS, so finish "
+        "recomputes the backlog, raises again out of `finally:` and strands "
+        "the lease"
+    )
+    assert kwargs["backlog"] is None
+    assert "state=retryable_failed" in caplog.text
