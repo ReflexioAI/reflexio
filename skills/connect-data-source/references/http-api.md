@@ -37,3 +37,24 @@ counts are not additive across rules. Resolve conflicts before validation.
 Use integer revisions exactly as returned. Keep mapping revision separate from connection/stream/lifecycle revisions. HTTP 401 means invalid Reflexio credential, 403 insufficient role or wrong project, 409 stale/conflicting state, 410 expired evidence, 422 invalid configuration/provider credentials, and 429 provider rate limiting. Follow the response's safe `detail.code` / `detail.message`; do not log raw provider payloads.
 
 The activation API remains available to Reflexio's frontend. **This setup guide stops at a validated draft and review link. Do not call `/activate`.** Source management does not grant governance/erase permission.
+
+## Historical sample coverage and recovery
+
+Newer protocol-1 servers advertise `sampling` and `field_guidance` in setup context.
+A sample can include `buckets` (`start`, `end`, `status`, `retained`, `code`) and
+`example_ids`. Status distinguishes `sampled`, `empty` and `unread`. Read the full
+sample response, not only the summary inventory. Windowed samples longer than a day
+cover up to seven buckets within shared retention limits (50 records, 1 MB).
+These are sample counts, never estimated provider totals. Partial reads are retained;
+rate limits stop subsequent windows. Wait for cooldown before retrying; do not loop.
+
+Prefer the suggested examples, but inspect other retained answer layouts when coverage
+is incomplete. Preview `field_guidance` includes candidate identity paths and evidence
+IDs, unavailable-root explanations and next steps. Validate candidate semantics with
+the developer. Never map a path found on an unrelated helper to the answer trace.
+
+The optional Reflexio model endpoint can return `mapping_timeout`,
+`mapping_provider_unavailable`, `mapping_rate_limited`, or `mapping_invalid_output`.
+If using it, retry a timeout/connection failure at most once with the same revision.
+Do not automatically retry invalid output, conflicts or rate limits. Agent-inferred
+mappings still need no Reflexio model request.

@@ -41,3 +41,31 @@ After approval, inspect the application's actual Reflexio search, context inject
 Map `/metadata/reflexio/retrieved_learnings`. Supported kinds: `profile`, `user_playbook`, `agent_playbook`. Read IDs from the actual search results (`profile_id`, `user_playbook_id`, `agent_playbook_id`) and convert them to strings. Include only items actually injected into that response's context, not all retrieval candidates. Reset attribution per response; preserve request-local association under concurrent requests. Write `[]` when instrumentation knows that no learning was injected; leave absent if unknown. Never infer IDs from citations or manufacture references for historical traces.
 
 If the application does not yet retrieve Reflexio learning, explain that logging alone cannot create attribution; ask before adding retrieval/context integration. Reuse its existing tracing SDK/version and merge metadata without discarding existing fields. Do not add `publish_interaction`; the connector handles import after frontend activation. Test actual IDs, explicit empty capture, concurrent requests, and unchanged user responses before claiming instrumentation works.
+
+## Offer a patch for required response fields
+
+If the developer confirms that required fields are not logged on the response, offer
+to enrich its existing trace. Use real variables from that response's request context,
+not placeholders or inferred IDs. Preserve existing metadata and concurrent request
+isolation. For example, adapt the application's existing span logging call:
+
+```python
+span.log(
+    input=current_user_message,
+    output=final_user_facing_answer,
+    metadata={
+        **existing_metadata,
+        "user_id": actual_end_user_id,
+        "session_id": actual_conversation_id,
+    },
+)
+```
+
+Verify these variables' meanings with the developer, retain existing span completion
+instrumentation, and inspect a new trace after testing the patch. A visitor identifier
+can be appropriate if it really represents the end user; a merchant or task identifier
+cannot. An absent root is unavailable evidence, not proof of missing logging. Do not
+copy an earlier serialized chat history into `input` to make validation pass. Existing
+historical records remain held until their required evidence is resolved; this patch
+only improves newly recorded traces. Never introduce `publish_interaction` or enable
+M2 fetching/joins as a workaround.
