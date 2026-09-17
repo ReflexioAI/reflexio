@@ -39,6 +39,7 @@ from reflexio.server.services.storage.sqlite_storage.playbook._aggregation impor
 from reflexio.server.services.storage.storage_base.playbook import (
     PlaybookAggregationBacklog,
 )
+from reflexio.test_support.source_scan import package_source_files
 
 
 def _store(tmp_path) -> SQLiteStorage:
@@ -88,7 +89,12 @@ def test_lineage_silent_bulk_delete_callers_only_remove_ineligible_rows() -> Non
                         cleanup_statuses.append(argument.attr)
             self.generic_visit(node)
 
-    for path in package_root.rglob("*.py"):
+    # `package_source_files`, not a bare rglob: the plugin `.venv` under
+    # `reflexio/integrations/` is gitignored, so CI never saw it, but on a
+    # machine that has built that plugin it put sympy in this scan — 568 AST
+    # levels deep, which overflows this recursive visitor and fails a playbook
+    # deletion guard with `RecursionError`.
+    for path in package_source_files(package_root):
         tree = ast.parse(path.read_text(encoding="utf-8"))
         CallVisitor(str(path.relative_to(package_root))).visit(tree)
 
