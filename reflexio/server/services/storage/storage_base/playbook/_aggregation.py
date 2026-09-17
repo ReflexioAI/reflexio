@@ -16,13 +16,27 @@ AGGREGATION_INVALIDATION_RETENTION_SECONDS = 7 * 24 * 60 * 60
 
 @dataclass(frozen=True)
 class PlaybookAggregationClaim:
-    """One database-fenced, organization-wide aggregation claim."""
+    """One database-fenced aggregation claim.
+
+    The LEASE is organization-wide -- ``playbook_aggregation_lease`` is a
+    one-row singleton with no ``project_id`` -- but on a backend whose
+    ``playbook_aggregation_state`` is keyed ``(project_id, agent_version)`` the
+    claimed STATE ROW belongs to exactly one project. ``project_id`` records
+    which, so validation and completion act on the row the claim was taken
+    against rather than on whatever project happens to be bound at the time.
+
+    Optional, and ``None`` on single-project backends (SQLite), where the
+    column does not exist and the ambient binding is the only answer.
+    """
 
     agent_version: str
     owner: str
     fence: int
     state_version: int
     expires_at: int
+    # Last, with a default: every existing positional construction site and
+    # test literal keeps working unchanged.
+    project_id: str | None = None
 
 
 @dataclass(frozen=True)
