@@ -4,13 +4,14 @@ All requests go to the chosen Reflexio data-plane endpoint. Send:
 
 ```http
 Authorization: Bearer <REFLEXIO_API_KEY>
-X-Reflexio-Project: <destination-project-id>
 Content-Type: application/json
 ```
 
 Use the developer application's HTTP library or a short local Python/JavaScript HTTP script. Read keys from environment/secure input, use bounded timeouts, and inspect safe error codes. Never echo credential payloads. No CLI or SDK dependency is required.
 
-Base path: `/api/projects/{destination-project-id}/data-sources`.
+Start with `GET /api/data-sources/setup-context`. Base path: the returned `api_base_path` (currently `/api/data-sources`). The server derives the destination from the authenticated key. Do not send `X-Reflexio-Project` or ask for a Reflexio project ID. The returned `project_id` and `review_path` are server-generated context, not inputs the user must supply.
+
+Browser sessions retain `/api/projects/{project_id}/data-sources` with a matching `X-Reflexio-Project` header. This compatibility route is not needed for API-key setup. A conflicting header/path cannot redirect a key to another project. The key-scoped route rejects session tokens, limited keys, and revoked keys. A 404 at the initial endpoint on an older server means an upgrade is required; do not fall back to asking for an internal project ID.
 
 | Method and relative path | Request / result |
 | --- | --- |
@@ -47,6 +48,18 @@ sample response, not only the summary inventory. Windowed samples longer than a 
 cover up to seven buckets within shared retention limits (50 records, 1 MB).
 These are sample counts, never estimated provider totals. Partial reads are retained;
 rate limits stop subsequent windows. Wait for cooldown before retrying; do not loop.
+
+Servers advertising `automatic_read_retries` and `shared_connection_cooldown`
+automatically resume queued sample jobs after transient Braintrust failures.
+`retry_at` is a Unix timestamp: poll the same job, respecting that time rather
+than creating replacement jobs. Successfully read buckets and expanded traces
+are retained. `/status` exposes `provider_read.waiting`, `retry_at`, and `code`;
+active sources also expose `pending_context`, `held_for_review`, `history_position`
+and `history_pages`. A provider cooldown is not a missing-field finding. HTTP
+errors may include `detail.retry_after_seconds` and `Retry-After`; honor them.
+Older servers without these capabilities still require an explicit new sample.
+`historical_read_windows:checkpointed_utc_days` means imports resume date-scoped
+pagination without a total historical page ceiling; sample limits are unchanged.
 
 Prefer the suggested examples, but inspect other retained answer layouts when coverage
 is incomplete. Preview `field_guidance` includes candidate identity paths and evidence
