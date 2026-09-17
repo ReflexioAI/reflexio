@@ -25,6 +25,7 @@ from reflexio.server.services.playbook.playbook_service_utils import (
 from reflexio.server.services.storage.storage_base.playbook import (
     PlaybookAggregationClaim,
 )
+from reflexio.server.work_scope import current_project_id
 
 logger = logging.getLogger("reflexio.server.services.playbook.aggregation_scheduler")
 
@@ -116,6 +117,26 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
         # Organization execution is sequential on the scheduler thread.
         self._active_stage = "configuration"
 
+    @staticmethod
+    def _repair_scope_key(context: RequestContext) -> str:
+        """Throttle key for discovery repair: one slot per unit of work.
+
+        OSS has no project concept, so this is just the org id there. Under the
+        enterprise context provider the same ``RequestContext`` is yielded once
+        per project with a different project bound, so the bound project has to
+        enter the key or all but one project share a single throttle slot.
+
+        Read through the OSS ``work_scope`` seam, NOT by reaching for an
+        attribute on the context. ``RequestContext`` has no ``work_scope``
+        attribute -- a ``getattr(context, "work_scope", None)`` would return
+        ``None`` forever and silently leave this keyed by org alone, which is
+        the bug it is meant to fix. ``current_project_id()`` is inert in bare
+        OSS (no provider registered) and returns the bound project under
+        enterprise, which registers one.
+        """
+        project_id = current_project_id()
+        return f"{context.org_id}:{project_id}" if project_id else str(context.org_id)
+
     def _run_context(self, context: RequestContext) -> None:
         self._active_stage = "configuration"
         storage = context.storage
@@ -139,12 +160,21 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
                 )
             return
         repair_now = time.monotonic()
-        last_repair_at = self._last_repair_at.get(context.org_id)
+        # Keyed by (org, work scope) rather than by org alone. The enterprise
+        # context provider yields the SAME RequestContext once per project, so
+        # an org-keyed throttle let only the FIRST project of an org reach
+        # repair in each interval -- every other project's pending state was
+        # never repaired at all. That was masked while repair's own SQL was
+        # org-wide (the first project happened to repair everyone's); once that
+        # SQL is project-scoped, an org-keyed throttle here silently starves
+        # projects 2..N. The two must change together.
+        repair_key = self._repair_scope_key(context)
+        last_repair_at = self._last_repair_at.get(repair_key)
         if (
             last_repair_at is None
             or repair_now - last_repair_at >= _REPAIR_INTERVAL_SECONDS
         ):
-            self._last_repair_at[context.org_id] = repair_now
+            self._last_repair_at[repair_key] = repair_now
             self._active_stage = "repair"
             repaired = storage.repair_playbook_aggregation_pending_state()
             for agent_version in repaired:
