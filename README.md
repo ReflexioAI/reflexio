@@ -410,6 +410,10 @@ Copy the skill into the agent application's repository for Codex, Claude Code,
 or Cursor, or point a coding agent at the linked skill while it works in that
 application repository. The skill is not intended to modify Reflexio itself.
 
+For agents already logging to Braintrust, use [Connect a data source](skills/connect-data-source/SKILL.md)
+to prepare and validate importing through the setup API. The developer reviews the saved
+configuration and activates in Reflexio; no plugin or additional publish flow is needed.
+
 ## Community
 
 Join the Reflexio community on Discord: [discord.gg/7fnCxahase](https://discord.gg/7fnCxahase).
