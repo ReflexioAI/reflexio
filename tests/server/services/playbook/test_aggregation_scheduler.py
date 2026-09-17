@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
@@ -168,7 +169,16 @@ def test_scheduler_throttles_idle_repair_scans(monkeypatch) -> None:
 
     scheduler._run_context(context)
     scheduler._run_context(context)
-    scheduler._last_repair_at["org-1"] -= (
+    # The throttle key is an (org_id, project_id) TUPLE. In OSS no work-scope
+    # provider is registered, so `current_project_id()` is None and the key is
+    # ("org-1", None) -- which is exactly the property that keeps this
+    # single-project behaviour unchanged after the enterprise re-key.
+    scope = ("org-1", None)
+    assert scope in scheduler._last_repair_at, (
+        f"expected the throttle to be keyed {scope!r}; found "
+        f"{list(scheduler._last_repair_at)!r}"
+    )
+    scheduler._last_repair_at[scope] -= (
         aggregation_scheduler._REPAIR_INTERVAL_SECONDS + 1
     )
     scheduler._run_context(context)
@@ -462,3 +472,86 @@ def test_backlog_failure_finishes_as_failure_and_releases_the_lease(
     )
     assert kwargs["backlog"] is None
     assert "state=retryable_failed" in caplog.text
+
+
+def test_one_failing_scope_does_not_starve_its_siblings(monkeypatch) -> None:
+    """The failure backoff is per (org, project), not per org.
+
+    Raised by Codex on reflexio#510, correcting a call I had made explicitly:
+    I recorded `_retry_after` as "a backoff, not a correctness gate" and left it
+    org-keyed. It IS a correctness gate. Keyed by org, one project that fails
+    repeatedly skips EVERY later project of that org -- the same starvation the
+    repair-throttle re-key exists to remove, arriving by a different route.
+
+    Two contexts for one org. The first raises; the second must still run.
+    """
+    good = MagicMock(supports_incremental_playbook_aggregation=True)
+    good.repair_playbook_aggregation_pending_state.return_value = []
+    good.claim_due_playbook_aggregation.return_value = None
+
+    bad = MagicMock(supports_incremental_playbook_aggregation=True)
+    bad.repair_playbook_aggregation_pending_state.side_effect = RuntimeError("boom")
+
+    bad_context, good_context = _context(bad), _context(good)
+    # Map CONTEXT -> scope rather than pulling from an iterator: the scheduler
+    # calls _repair_scope_key twice per context (once in _run_once for the
+    # backoff, once in _run_context for the repair throttle), so an iterator
+    # desyncs after the first context and then raises StopIteration.
+    scope_by_storage = {
+        id(bad_context.storage): ("org-1", "prj_a"),
+        id(good_context.storage): ("org-1", "prj_b"),
+    }
+    monkeypatch.setattr(
+        aggregation_scheduler.PlaybookAggregationScheduler,
+        "_repair_scope_key",
+        staticmethod(lambda context: scope_by_storage[id(context.storage)]),
+    )
+
+    scheduler = aggregation_scheduler.PlaybookAggregationScheduler(
+        context_provider=lambda: [bad_context, good_context], worker_id="w"
+    )
+    scheduler._run_once()
+
+    assert good.claim_due_playbook_aggregation.call_count == 1, (
+        "the second project was skipped because the first one's failure was "
+        "recorded against the whole org"
+    )
+    assert list(scheduler._retry_after) == [("org-1", "prj_a")], (
+        f"backoff should name only the failing scope, got {scheduler._retry_after}"
+    )
+
+
+def test_throttle_state_is_pruned_for_scopes_that_disappear(monkeypatch) -> None:
+    """Keying by project must not leak an entry per project ever seen.
+
+    Raised by Codex on reflexio#510: the (org, project) key widened this map
+    from one entry per ORG to one per project, so a long-running scheduler
+    accumulates the lifetime project churn of the whole fleet.
+
+    Pruning to the scopes seen in a COMPLETED pass changes no throttling
+    semantics -- a scope the provider stopped yielding has no work, and a
+    returning one starts with a clean slot, exactly as a new project does.
+    """
+    storage = MagicMock(supports_incremental_playbook_aggregation=True)
+    storage.repair_playbook_aggregation_pending_state.return_value = []
+    storage.claim_due_playbook_aggregation.return_value = None
+
+    scheduler = aggregation_scheduler.PlaybookAggregationScheduler(
+        context_provider=lambda: [_context(storage)], worker_id="w"
+    )
+    # State left behind by projects that no longer exist.
+    scheduler._last_repair_at[("org-1", "prj_deleted")] = time.monotonic()
+    scheduler._retry_after[("org-9", "prj_gone")] = time.monotonic() + 999
+
+    monkeypatch.setattr(
+        aggregation_scheduler.PlaybookAggregationScheduler,
+        "_repair_scope_key",
+        staticmethod(lambda _context: ("org-1", "prj_live")),
+    )
+    scheduler._run_once()
+
+    assert ("org-1", "prj_deleted") not in scheduler._last_repair_at
+    assert ("org-9", "prj_gone") not in scheduler._retry_after
+    assert ("org-1", "prj_live") in scheduler._last_repair_at, (
+        "pruning removed the scope that WAS yielded this pass"
+    )

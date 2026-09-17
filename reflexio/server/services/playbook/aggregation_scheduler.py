@@ -112,14 +112,21 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
         self._context_provider = context_provider
         self._poll_interval_seconds = poll_interval_seconds
         self._worker_id = worker_id or uuid.uuid4().hex
-        self._last_repair_at: dict[str, float] = {}
-        self._retry_after: dict[str, float] = {}
+        # Keyed by (org_id, project_id) TUPLES, not by a joined string. Codex
+        # on reflexio#510: with `f"{org}:{project}"`, an org id containing a
+        # colon collides with a different (org, project) pair -- both
+        # ("a:b", "c") and ("a", "b:c") render as "a:b:c" -- and the first
+        # scope processed keeps refreshing the shared timestamp, permanently
+        # starving the other. Both identifiers are unconstrained strings, so a
+        # tuple is the only key that cannot be ambiguous.
+        self._last_repair_at: dict[tuple[str, str | None], float] = {}
+        self._retry_after: dict[tuple[str, str | None], float] = {}
         # Organization execution is sequential on the scheduler thread.
         self._active_stage = "configuration"
 
     @staticmethod
-    def _repair_scope_key(context: RequestContext) -> str:
-        """Throttle key for discovery repair: one slot per unit of work.
+    def _repair_scope_key(context: RequestContext) -> tuple[str, str | None]:
+        """Throttle key for one unit of work: (org, project).
 
         OSS has no project concept, so this is just the org id there. Under the
         enterprise context provider the same ``RequestContext`` is yielded once
@@ -134,8 +141,7 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
         OSS (no provider registered) and returns the bound project under
         enterprise, which registers one.
         """
-        project_id = current_project_id()
-        return f"{context.org_id}:{project_id}" if project_id else str(context.org_id)
+        return (str(context.org_id), current_project_id())
 
     def _run_context(self, context: RequestContext) -> None:
         self._active_stage = "configuration"
@@ -328,33 +334,69 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
                 )
 
     def _run_once(self) -> float:
+        seen: set[tuple[str, str | None]] = set()
         try:
             for context in self._context_provider():
                 if self._stop_event.is_set():
                     break
                 org_id = context.org_id
-                if time.monotonic() < self._retry_after.get(org_id, 0):
+                # The FAILURE backoff carries the same (org, project) scope as
+                # the repair throttle. Codex on reflexio#510, and it corrects a
+                # call I got wrong: I had recorded `_retry_after` as "a backoff,
+                # not a correctness gate" and left it org-keyed. It is a
+                # correctness gate. Keyed by org, one project that fails
+                # repeatedly skips EVERY later project of that org -- the exact
+                # starvation the repair re-key exists to remove, arriving by a
+                # different route.
+                scope = self._repair_scope_key(context)
+                seen.add(scope)
+                if time.monotonic() < self._retry_after.get(scope, 0):
                     continue
                 try:
                     self._run_context(context)
                 except Exception:
-                    self._retry_after[org_id] = (
+                    self._retry_after[scope] = (
                         time.monotonic() + _REPAIR_INTERVAL_SECONDS
                     )
                     logger.exception(
                         "event=playbook_aggregation_scheduler_org_failed org_id=%s "
-                        "stage=%s retry_after_seconds=%s",
+                        "project_id=%s stage=%s retry_after_seconds=%s",
                         org_id,
+                        scope[1],
                         self._active_stage,
                         _REPAIR_INTERVAL_SECONDS,
                     )
                 else:
-                    self._retry_after.pop(org_id, None)
+                    self._retry_after.pop(scope, None)
         except Exception:
             logger.exception(
                 "event=playbook_aggregation_scheduler_tick_failed stage=context_provider"
             )
+        else:
+            self._prune_scope_state(seen)
         return self._poll_interval_seconds
+
+    def _prune_scope_state(self, seen: set[tuple[str, str | None]]) -> None:
+        """Drop throttle state for scopes the provider no longer yields.
+
+        Codex on reflexio#510: keying by (org, project) widened this from one
+        entry per ORG to one per project, so in a long-running scheduler it
+        grows with the lifetime project churn of the whole fleet -- a slow leak
+        the org-keyed version did not have.
+
+        Pruning to the scopes seen in a COMPLETED pass changes no throttling
+        semantics: a scope the provider stopped yielding has no work, and if it
+        returns it simply starts with a clean slot, which is what a newly
+        discovered project gets anyway.
+
+        Only called when the pass completed. On an exception the iteration may
+        have stopped early, and `seen` would then be a partial list -- pruning
+        against it would discard live scopes' backoff and let a failing one
+        retry immediately.
+        """
+        for state in (self._last_repair_at, self._retry_after):
+            for key in [k for k in state if k not in seen]:
+                del state[key]
 
     def _on_started(self) -> None:
         logger.info("event=playbook_aggregation_scheduler_started")
