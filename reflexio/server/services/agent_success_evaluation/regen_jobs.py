@@ -6,6 +6,8 @@ backend restart. v2 will move job state to storage.
 
 from __future__ import annotations
 
+import contextvars
+import functools
 import logging
 import random
 import threading
@@ -429,13 +431,26 @@ def _run_pool(
     max_workers = max(1, job.concurrency_limit)
     observed_cancel = False
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        # A FRESH context copy per task, not one hoisted out of the
+        # comprehension. ``Context.run`` raises "cannot enter context: ... is
+        # already entered" if the same Context object is active in two threads
+        # at once, and this pool runs up to ``concurrency_limit`` (default 10)
+        # tasks concurrently -- so a shared copy would pass a single-candidate
+        # test and then fail in production on the second worker.
+        #
+        # The copy carries the caller's ContextVars into the worker thread,
+        # which is what keeps the deployment's project binding alive for the
+        # project-scoped writes ``_dispatch_one`` ultimately performs.
         future_to_sc: dict[Future[None], SampleCandidate] = {
             pool.submit(
-                _dispatch_one,
-                sc,
-                job=job,
-                request_context=request_context,
-                llm_client=llm_client,
+                contextvars.copy_context().run,
+                functools.partial(
+                    _dispatch_one,
+                    sc,
+                    job=job,
+                    request_context=request_context,
+                    llm_client=llm_client,
+                ),
             ): sc
             for sc in sampled
         }
