@@ -28,7 +28,7 @@ Base path: `/api/projects/{destination-project-id}/data-sources`.
 | POST `/streams/{id}/mapping/validate` | Same as preview plus `sample_digest` from that preview. Requires at least one eligible conversation or supported replay; does not activate. |
 | GET `/streams/{id}/status` | Lifecycle, saved `activation_draft`, coverage and counters. Draft means not importing. |
 
-Traffic filters use `{ "path": "span_attributes.name", "op": "eq", "values": ["respond"] }`. Other supported operations: `in`, `exists` (empty values); supported paths: `metadata.*`, `span_attributes.name`, `tags`. All filters must match. Offer filters based on observed traffic; ask before applying them. Filtering does not fetch related spans.
+Traffic filters use `{ "path": "span_attributes.name", "op": "eq", "values": ["respond"] }`. Other supported operations: `in`, `exists` (empty values); supported paths: `metadata.*`, `span_attributes.name`, `tags`. All filters must match. Offer filters based on observed traffic; ask before applying them. Filters select answer anchors. When setup context advertises `related_span_fetch`, sampling separately expands each retained trace without applying these filters to its supporting spans.
 
 `rule_coverage` includes matched/ready/held/excluded counts per rule and `conflicted`
 for overlapping selectors. Overlapping records count in each implicated rule; these
@@ -50,11 +50,20 @@ rate limits stop subsequent windows. Wait for cooldown before retrying; do not l
 
 Prefer the suggested examples, but inspect other retained answer layouts when coverage
 is incomplete. Preview `field_guidance` includes candidate identity paths and evidence
-IDs, unavailable-root explanations and next steps. Validate candidate semantics with
-the developer. Never map a path found on an unrelated helper to the answer trace.
+IDs, unavailable-root explanations and next steps. For a newly proposed or changed identity mapping, clarify uncertain semantics with
+the developer. When resuming a draft, preserve its existing identity mappings unless
+the evidence contradicts them; do not add a redundant confirmation gate for fields
+already mapped and resolving correctly. Only missing or conflicting required fields
+block validation. Never copy an unrelated helper field onto an answer.
 
 The optional Reflexio model endpoint can return `mapping_timeout`,
 `mapping_provider_unavailable`, `mapping_rate_limited`, or `mapping_invalid_output`.
 If using it, retry a timeout/connection failure at most once with the same revision.
 Do not automatically retry invalid output, conflicts or rate limits. Agent-inferred
 mappings still need no Reflexio model request.
+
+## Related-span capabilities and evidence
+
+Setup context advertises `mapping_versions:[1,2]`, `mapping_scopes` including `related.NAME`, `related_span_fetch:true`, `sibling_joins:true`, `related_span_layouts:["span"]`, and `related_span_correlations:"explicit_equality"` only on servers implementing the same resolver for preview and ingestion. Follow `related_span_limits`; currently 100 spans / five pages / 1 MB per trace and 8 MB per expanded sample. No separate expansion endpoint or raw Braintrust query is needed.
+
+The existing POST sample job and GET sample endpoints return anchors with `related_context`. Inspect `status` (`complete`, `partial`, `failed`, `pending`), optional safe `code`, and `records`. Use the mapping reference's version-2 fields with the existing mapping PUT, preview POST, and validation POST. A failed or truncated lookup is unavailable evidence, not proof of absent logging. The same mapping and evidence appear in the frontend review link. Setup must never call Activate.
