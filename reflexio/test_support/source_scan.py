@@ -34,11 +34,19 @@ _NON_SOURCE_DIRS = frozenset(
 )
 
 
+def _is_source_dir(name: str) -> bool:
+    return not name.startswith(".") and name not in _NON_SOURCE_DIRS
+
+
 def package_source_files(root: Path) -> Iterator[Path]:
     """Yield the package's own ``.py`` files beneath ``root``, sorted.
 
-    Skips any path with a `.`-prefixed or known build-output directory
-    component, so vendored dependencies and virtualenvs never reach a guard.
+    Excluded directories are PRUNED during the walk rather than filtered out
+    afterwards. Filtering `rglob` still enumerates and sorts every path in the
+    virtualenv first, which is most of the cost this exists to avoid — the
+    guards would stop parsing 17,000 third-party files but still pay to walk
+    them. `Path.walk` (3.12+) lets the excluded names be dropped from
+    `dirnames` in place, so traversal never descends into them at all.
 
     Args:
         root (Path): Directory to scan, normally the package root.
@@ -46,8 +54,15 @@ def package_source_files(root: Path) -> Iterator[Path]:
     Yields:
         Path: Each first-party Python source file, in sorted order.
     """
-    for path in sorted(root.rglob("*.py")):
-        parts = path.relative_to(root).parts[:-1]
-        if any(part.startswith(".") or part in _NON_SOURCE_DIRS for part in parts):
-            continue
-        yield path
+    found: list[Path] = []
+    for directory, dirnames, filenames in root.walk():
+        # In-place, because `Path.walk` reads this list back to decide where to
+        # descend. Rebinding the name would prune nothing.
+        dirnames[:] = [name for name in dirnames if _is_source_dir(name)]
+        found.extend(directory / name for name in filenames if name.endswith(".py"))
+    # Sorted at the end, not per-directory: `walk` is top-down, so yielding as
+    # we go would put a root-level `z.py` before `a/b.py`. Guards report
+    # offenders by path, and an order that shifts with directory layout makes
+    # the same defect print differently. The list is first-party only by now
+    # (~400 entries), so this costs nothing.
+    yield from sorted(found)

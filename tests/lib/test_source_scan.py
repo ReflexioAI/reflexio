@@ -47,15 +47,28 @@ def test_yields_package_sources_and_skips_build_output(tmp_path: Path) -> None:
     assert found == wanted
 
 
-def test_is_sorted_so_guard_output_is_stable(tmp_path: Path) -> None:
+def test_is_sorted_across_directories_not_just_within_them(tmp_path: Path) -> None:
     # Guards report offenders by path; unsorted output makes a failure message
     # differ run to run for the same defect.
-    for name in ("z.py", "a.py", "m.py"):
-        _write(tmp_path / name)
+    #
+    # NESTED on purpose. A flat fixture passes even for a top-down walk that
+    # yields every root file before descending, which is exactly the ordering
+    # `Path.walk` gives: `z.py` would precede `a/b.py`. Only a fixture that
+    # interleaves depth and name can tell the two apart.
+    _write(tmp_path / "z.py")
+    _write(tmp_path / "m.py")
+    _write(tmp_path / "a" / "b.py")
+    _write(tmp_path / "a" / "nested" / "c.py")
 
     found = list(package_source_files(tmp_path))
 
     assert found == sorted(found)
+    assert [p.relative_to(tmp_path).as_posix() for p in found] == [
+        "a/b.py",
+        "a/nested/c.py",
+        "m.py",
+        "z.py",
+    ]
 
 
 def test_a_dotfile_directory_at_the_root_is_skipped(tmp_path: Path) -> None:
