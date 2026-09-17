@@ -57,6 +57,7 @@ from reflexio.server.services.evaluation_overview.components.rule_attribution im
 from reflexio.server.services.evaluation_overview.components.shadow_aggregation import (
     compute_shadow_win_rate_trend,
 )
+from reflexio.server.tracing import profile_step
 
 _DAY_SECONDS = 24 * 60 * 60
 _WEEK_SECONDS = 7 * 24 * 60 * 60
@@ -105,12 +106,13 @@ class EvaluationOverviewService:
         load_from = min(request.from_ts, prev_from)
 
         start = time.perf_counter()
-        all_results = self.storage.get_agent_success_evaluation_results_in_window(  # type: ignore[attr-defined]
-            from_ts=load_from,
-            to_ts=request.to_ts,
-            agent_version=None,
-            include_embedding=False,
-        )
+        with profile_step("evaluation_overview.eval_results"):
+            all_results = self.storage.get_agent_success_evaluation_results_in_window(  # type: ignore[attr-defined]
+                from_ts=load_from,
+                to_ts=request.to_ts,
+                agent_version=None,
+                include_embedding=False,
+            )
         self._log_phase("eval_results", start, rows=len(all_results))
 
         results = [
@@ -138,7 +140,8 @@ class EvaluationOverviewService:
         else:
             source_keys = result_keys
         start = time.perf_counter()
-        session_sources = self._build_first_request_sources(source_keys)
+        with profile_step("evaluation_overview.session_sources"):
+            session_sources = self._build_first_request_sources(source_keys)
         self._log_phase(
             "session_sources",
             start,
@@ -147,7 +150,8 @@ class EvaluationOverviewService:
         )
 
         start = time.perf_counter()
-        citations_by_session, rule_titles = self._load_citations(result_keys)
+        with profile_step("evaluation_overview.citations"):
+            citations_by_session, rule_titles = self._load_citations(result_keys)
         self._log_phase(
             "citations",
             start,
@@ -162,9 +166,10 @@ class EvaluationOverviewService:
         )
         distribution = self._build_distribution(results_current_7d, results_prev_7d)
         start = time.perf_counter()
-        current_scores, prior_scores = self._load_braintrust_scores(
-            cur_7d_from, request.to_ts, prev_from, prev_to
-        )
+        with profile_step("evaluation_overview.braintrust"):
+            current_scores, prior_scores = self._load_braintrust_scores(
+                cur_7d_from, request.to_ts, prev_from, prev_to
+            )
         self._log_phase(
             "braintrust",
             start,
@@ -175,13 +180,14 @@ class EvaluationOverviewService:
             current_scores, prior_scores
         )
         start = time.perf_counter()
-        shadow_win_rate_trend = (
-            self._build_shadow_win_rate_trend(request.from_ts, request.to_ts)
-            if request.include_shadow
-            else ShadowWinRateTrend(
-                judge_prompt_version=self.config.shadow_comparison_judge_prompt_version
+        with profile_step("evaluation_overview.shadow"):
+            shadow_win_rate_trend = (
+                self._build_shadow_win_rate_trend(request.from_ts, request.to_ts)
+                if request.include_shadow
+                else ShadowWinRateTrend(
+                    judge_prompt_version=self.config.shadow_comparison_judge_prompt_version
+                )
             )
-        )
         self._log_phase("shadow", start, enabled=request.include_shadow)
         source_set_comparison = self._build_source_set_comparison(
             source_sets=request.source_sets,
