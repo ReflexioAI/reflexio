@@ -1,5 +1,7 @@
 """Evaluation route handlers (extracted from api.py, Tier3 A2)."""
 
+import contextvars
+import functools
 import logging
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
@@ -346,11 +348,24 @@ def start_regenerate(
         )
     except RuntimeError as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
+    # Run the job under a COPY of this request's context, per the idiom in
+    # ``reflexio.server.correlation``. Without it the worker thread starts with
+    # a fresh context and every ContextVar the request bound is gone -- in
+    # particular the deployment's project binding, whose absence makes every
+    # project-scoped write in the job fail closed ("No project bound for a
+    # write to project-scoped tenant table"). That is not a hypothetical: it
+    # failed 100% of sessions with ``agent_success_failed`` before this.
+    #
+    # ``Context.run`` takes positional args only, hence ``partial``.
+    ctx = contextvars.copy_context()
     _regen_executor.submit(
-        run_regen,
-        job=job,
-        request_context=reflexio.request_context,
-        llm_client=reflexio.llm_client,
+        ctx.run,
+        functools.partial(
+            run_regen,
+            job=job,
+            request_context=reflexio.request_context,
+            llm_client=reflexio.llm_client,
+        ),
     )
     return RegenerateStartResponse(job_id=job.job_id, total=job.total)
 
