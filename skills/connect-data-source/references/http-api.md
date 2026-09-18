@@ -66,8 +66,10 @@ is incomplete. Preview `field_guidance` includes candidate identity paths and ev
 IDs, unavailable-root explanations and next steps. For a newly proposed or changed identity mapping, clarify uncertain semantics with
 the developer. When resuming a draft, preserve its existing identity mappings unless
 the evidence contradicts them; do not add a redundant confirmation gate for fields
-already mapped and resolving correctly. Only missing or conflicting required fields
-block validation. Never copy an unrelated helper field onto an answer.
+already mapped and resolving correctly. Missing or conflicting required fields still
+need clarification. Before validation, resolve overlapping rule conflicts and ensure
+the preview contains at least one eligible conversation or supported replay. Never
+copy an unrelated helper field onto an answer.
 
 The optional Reflexio model endpoint can return `mapping_timeout`,
 `mapping_provider_unavailable`, `mapping_rate_limited`, or `mapping_invalid_output`.
