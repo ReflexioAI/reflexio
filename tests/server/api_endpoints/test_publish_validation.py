@@ -225,9 +225,15 @@ class TestLogSafety:
         """
         from pathlib import Path
 
+        from reflexio.test_support.source_scan import package_source_files
+
         root = Path(__file__).resolve().parents[3] / "reflexio"
         offenders: list[str] = []
-        for path in root.rglob("*.py"):
+        # Same reason as the aggregation guard: a bare rglob here also walked the
+        # gitignored plugin `.venv`. This one survived only because the file that
+        # breaks decoding happens to have "test" in its name and is skipped
+        # below — luck, not design, and it still cost ~17k files per run.
+        for path in package_source_files(root):
             if "test" in path.name:
                 continue
             lines = path.read_text().splitlines()
