@@ -67,6 +67,10 @@ Before implementation, present a short mapping such as:
 
 If the desired cross-service user-memory boundary or agent-playbook aggregation boundary cannot be inferred safely, ask the developer to confirm it before editing. Use the chosen values consistently for search and publish.
 
+## Existing trace sources
+
+If the developer wants Reflexio to read existing Braintrust traces instead of adding a publish flow, follow [Connect a data source](../connect-data-source/SKILL.md). That guide prepares a saved mapping and returns a frontend review link; the user activates importing in Reflexio. Do not run this guide's publish loop for the same traffic.
+
 ## Workflow
 
 1. Read the target repository's instructions and inspect its actual agent request path before editing.
