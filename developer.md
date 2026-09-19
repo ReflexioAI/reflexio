@@ -27,8 +27,10 @@ reflexio/
 ```
 
 Agent configuration lives in one place: `.agents/skills/` and `.agents/rules/`.
-`.claude/skills` and `.claude/rules` are symlinks into it, so Claude Code and
-Codex read the same copy rather than two that drift.
+`.claude/skills` and `.claude/rules` are symlinks into it, so there is one stored
+copy rather than two that drift. Codex reads the skills from `.agents/skills`
+directly; it takes durable guidance from the root `AGENTS.md`, not from
+`.agents/rules`, so those rules apply to Claude Code.
 
 Those two are **Git symlinks**. A checkout with `core.symlinks=false` — the
 default on Windows without Developer Mode or an elevated shell — materializes
