@@ -163,12 +163,11 @@ cython_debug/
 .idea/
 .pytest_cache
 .DS_Store
-# Ignore claude settings but keep commands, rules and skills for repo-wide sharing.
+# Ignore claude settings but keep rules and skills for repo-wide sharing.
 # NO trailing slashes on the negations: a trailing slash matches directories only,
-# and these three are symlinks into .agents/. Adding the slashes back silently drops
-# all three from the repo.
+# and both are symlinks into .agents/. Adding the slashes back silently drops
+# them from the repo.
 .claude/*
-!.claude/commands
 !.claude/skills
 !.claude/rules
 .playwright-mcp/

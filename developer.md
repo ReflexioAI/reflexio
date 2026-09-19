@@ -26,6 +26,17 @@ reflexio/
 └── notebooks/             # Jupyter notebooks (examples, quickstart)
 ```
 
+Agent configuration lives in one place: `.agents/skills/` and `.agents/rules/`.
+`.claude/skills` and `.claude/rules` are symlinks into it, so Claude Code and
+Codex read the same copy rather than two that drift.
+
+Those two are **Git symlinks**. A checkout with `core.symlinks=false` — the
+default on Windows without Developer Mode or an elevated shell — materializes
+them as plain text files containing `../.agents/skills`, and no skill or rule
+below them is reachable. Clone with `git clone -c core.symlinks=true`, or run
+`git config core.symlinks true` followed by `git checkout -- .claude` in an
+existing checkout.
+
 ## Services
 
 Two services, started together via `./run_services.sh`:
