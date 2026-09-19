@@ -230,7 +230,7 @@ When working in a git worktree, services must run on different ports to avoid co
 3. Copy `.env` from main worktree
 4. `uv sync && (cd docs && npm install)`
 5. `export BACKEND_PORT=8091 DOCS_PORT=3001`
-6. `./run_services.sh` (or `/run-services` skill for automatic port handling)
+6. `./run_services.sh`
 
 ### Notes
 
