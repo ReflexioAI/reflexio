@@ -2,6 +2,8 @@ import re
 import shutil
 from pathlib import Path
 
+import pytest
+
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 SKILL_ROOT = REPOSITORY_ROOT / "skills" / "integrate-reflexio"
 LOCAL_MARKDOWN_LINK = re.compile(
@@ -33,12 +35,26 @@ def _assert_portable_skill(skill_root: Path) -> None:
     assert "name: integrate-reflexio\n" in frontmatter
     assert "description:" in frontmatter
 
+    _assert_links_stay_inside(skill_root)
+
+
+def _assert_links_stay_inside(skill_root: Path) -> None:
+    """Every local markdown link must resolve inside the copied directory.
+
+    AI_AGENT_INTEGRATION.md tells integrators to copy one skill directory, so a
+    link reaching a sibling skill resolves in this repository and dangles in
+    every installed copy.
+    """
     resolved_root = skill_root.resolve()
     for markdown_file in skill_root.rglob("*.md"):
         markdown = markdown_file.read_text(encoding="utf-8")
         for relative_target in LOCAL_MARKDOWN_LINK.findall(markdown):
             resolved_target = (markdown_file.parent / relative_target).resolve()
-            assert resolved_target.is_relative_to(resolved_root)
+            assert resolved_target.is_relative_to(resolved_root), (
+                f"{markdown_file.relative_to(skill_root)} links to "
+                f"{relative_target}, outside the skill directory -- it will "
+                f"dangle once the skill is copied. Use an absolute URL."
+            )
             assert resolved_target.exists(), (
                 f"{markdown_file.relative_to(skill_root)} links to missing "
                 f"{relative_target}"
@@ -52,3 +68,13 @@ def test_integrate_reflexio_skill_is_portable(tmp_path: Path) -> None:
         copied_skill = tmp_path / coding_agent / target_location
         shutil.copytree(SKILL_ROOT, copied_skill)
         _assert_portable_skill(copied_skill)
+
+
+@pytest.mark.parametrize(
+    "skill_root",
+    sorted(p for p in (REPOSITORY_ROOT / "skills").iterdir() if p.is_dir()),
+    ids=lambda p: p.name,
+)
+def test_every_skill_keeps_its_links_inside(skill_root: Path) -> None:
+    """Enumerated from disk, so a new skill is covered without editing this file."""
+    _assert_links_stay_inside(skill_root)
