@@ -64,6 +64,7 @@ from reflexio.server.services.storage.storage_base.playbook import (
     PlaybookAggregationRebuildSample,
 )
 from reflexio.server.usage_metrics import record_usage_event
+from reflexio.server.work_scope import current_project_id
 
 logger = logging.getLogger(__name__)
 
@@ -1082,10 +1083,45 @@ class PlaybookAggregator:
         return stats
 
     def _stable_aggregation_cluster_id(self, fingerprint: str) -> str:
+        """Derive the cluster's identity, including the project that owns it.
+
+        The project belongs in the IDENTITY rather than in a composite key.
+        Without it, two projects in one org that cluster the same fingerprint
+        at the same agent version compute the SAME uuid, collide on the
+        org-wide primary key, and the second project's insert fails against a
+        row RLS hides from it. Putting the project in the key instead would
+        need an expand/contract sequence plus a rebuild of
+        ``playbook_aggregation_item``'s foreign key, which references the
+        org-wide column; deriving a distinct id needs neither, and makes the
+        rows distinct by construction rather than by constraint.
+
+        Read through the ``work_scope`` seam, not from ``request_context``,
+        which has no project attribute. ``current_project_id()`` is inert in
+        bare OSS -- no provider is registered there, projects do not exist, and
+        the scope segment is omitted so OSS ids are byte-identical to before.
+
+        Reading it HERE is safe for the same reason
+        ``AggregationScheduler._repair_scope_key`` reads it here: the
+        enterprise context provider yields one ``RequestContext`` per project
+        with that project bound for the duration, so this resolves the project
+        whose clusters are being built. That is not in tension with
+        ``current_project_id``'s "call at enqueue time, never at fire time"
+        note, which is about a debounced callback resolving whichever request
+        won a coalescing race; there is no debounce between the binding and
+        this call.
+
+        Enterprise ids DO change, and that is the accepted cost: clusters are
+        derived data that the aggregation rebuilds, so existing rows are
+        re-derived rather than migrated.
+        """
+        project_id = current_project_id()
+        scope = self.request_context.org_id
+        if project_id:
+            scope = f"{scope}:{project_id}"
         return str(
             uuid.uuid5(
                 uuid.NAMESPACE_URL,
-                f"{self.request_context.org_id}:{self.agent_version}:{fingerprint}",
+                f"{scope}:{self.agent_version}:{fingerprint}",
             )
         )
 
