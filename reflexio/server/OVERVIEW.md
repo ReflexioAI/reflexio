@@ -39,13 +39,10 @@ Client (SDK/Web)
 ```shell
 cp .env.example .env                         # Configure environment (set at least one LLM API key)
 uv sync                                      # Install Python dependencies (includes workspace packages)
-npm --prefix src/website install         # Install frontend dependencies
-npm --prefix src/public_docs install     # Install docs dependencies
-./run_services.sh                             # Starts API (8061), Website (8080), Docs (8062)
+npm --prefix docs install                    # Install docs frontend dependencies
+./run_services.sh                             # Starts backend (8061) and Docs (8062)
 ./stop_services.sh                            # Stop all services
 ```
-
-**Starting services:** Run `./run_services.sh`. It honours `BACKEND_PORT` and `DOCS_PORT` and starts the backend plus `docs/`.
 
 ## Development
 
