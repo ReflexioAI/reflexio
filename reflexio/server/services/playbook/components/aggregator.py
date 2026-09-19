@@ -56,6 +56,7 @@ from reflexio.server.services.playbook.playbook_service_utils import (
     StructuredPlaybookContent,
     ensure_playbook_content,
 )
+from reflexio.server.services.playbook.publication import canonical_json_bytes
 from reflexio.server.services.service_utils import log_model_response
 from reflexio.server.services.storage.storage_base import AGGREGATE_REASON_PREFIX
 from reflexio.server.services.storage.storage_base.playbook import (
@@ -64,8 +65,17 @@ from reflexio.server.services.storage.storage_base.playbook import (
     PlaybookAggregationRebuildSample,
 )
 from reflexio.server.usage_metrics import record_usage_event
+from reflexio.server.work_scope import current_project_id
 
 logger = logging.getLogger(__name__)
+
+#: Leading element of the project-scoped cluster-id payload. It keeps the two
+#: id spaces disjoint: an unscoped id hashes a bare ``org:version:fingerprint``
+#: string, a scoped one hashes a JSON array that always begins with this tag, so
+#: no org id can make an unscoped string coincide with a scoped payload without
+#: being deliberately crafted to start with it. Bump it only to deliberately
+#: re-derive every cluster.
+_CLUSTER_ID_SCHEME = "playbook-aggregation-cluster:v2"
 
 # Must stay strictly below the smallest server-side row cap of any backend, or a
 # capped page would look like a short final page and silently truncate the read.
@@ -1082,12 +1092,69 @@ class PlaybookAggregator:
         return stats
 
     def _stable_aggregation_cluster_id(self, fingerprint: str) -> str:
-        return str(
-            uuid.uuid5(
-                uuid.NAMESPACE_URL,
-                f"{self.request_context.org_id}:{self.agent_version}:{fingerprint}",
+        """Derive the cluster's identity, including the project that owns it.
+
+        The project belongs in the IDENTITY rather than in a composite key.
+        Without it, two projects in one org that cluster the same fingerprint
+        at the same agent version compute the SAME uuid, collide on the
+        org-wide primary key, and the second project's insert fails against a
+        row RLS hides from it. Putting the project in the key instead would
+        need an expand/contract sequence plus a rebuild of
+        ``playbook_aggregation_item``'s foreign key, which references the
+        org-wide column; deriving a distinct id needs neither, and makes the
+        rows distinct by construction rather than by constraint.
+
+        The scoped payload is canonical JSON rather than a delimiter-joined
+        string, because org and project are both unconstrained: joining them
+        with any separator means some pair of ids renders identically to
+        another and keeps colliding. Raised by Codex and CodeRabbit on
+        reflexio#517.
+
+        Read through the ``work_scope`` seam, not from ``request_context``,
+        which has no project attribute. ``current_project_id()`` is inert in
+        bare OSS -- no provider is registered there, projects do not exist, and
+        the scope segment is omitted so OSS ids are byte-identical to before.
+
+        Reading it HERE is safe for the same reason
+        ``AggregationScheduler._repair_scope_key`` reads it here: the
+        enterprise context provider yields one ``RequestContext`` per project
+        with that project bound for the duration, so this resolves the project
+        whose clusters are being built. That is not in tension with
+        ``current_project_id``'s "call at enqueue time, never at fire time"
+        note, which is about a debounced callback resolving whichever request
+        won a coalescing race; there is no debounce between the binding and
+        this call.
+
+        Enterprise ids DO change, and that is the accepted cost: clusters are
+        derived data that the aggregation rebuilds, so existing rows are
+        re-derived rather than migrated.
+        """
+        project_id = current_project_id()
+        if not project_id:
+            # OSS, byte-identical to before. No projects exist here, so there
+            # is no pair to disambiguate and no reason to churn existing ids.
+            return str(
+                uuid.uuid5(
+                    uuid.NAMESPACE_URL,
+                    f"{self.request_context.org_id}:{self.agent_version}:{fingerprint}",
+                )
             )
-        )
+        # Canonical JSON, not a colon join. Every component is an unconstrained
+        # string, so concatenation does not identify the tuple: org "a" with
+        # project "b:c" and org "a:b" with project "c" both render "a:b:c", and
+        # the collision this method exists to remove survives for exactly those
+        # ids. RFC 8785 encoding escapes the separators instead of hoping they
+        # are absent.
+        payload = canonical_json_bytes(
+            [
+                _CLUSTER_ID_SCHEME,
+                self.request_context.org_id,
+                project_id,
+                self.agent_version,
+                fingerprint,
+            ]
+        ).decode("utf-8")
+        return str(uuid.uuid5(uuid.NAMESPACE_URL, payload))
 
     def _resolve_legacy_agent_centroid(
         self,
