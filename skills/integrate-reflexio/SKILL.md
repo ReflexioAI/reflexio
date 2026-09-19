@@ -69,7 +69,7 @@ If the desired cross-service user-memory boundary or agent-playbook aggregation 
 
 ## Existing trace sources
 
-If the developer wants Reflexio to read existing Braintrust traces instead of adding a publish flow, follow [Connect a data source](../connect-data-source/SKILL.md). That guide prepares a saved mapping and returns a frontend review link; the user activates importing in Reflexio. Do not run this guide's publish loop for the same traffic.
+If the developer wants Reflexio to read existing Braintrust traces instead of adding a publish flow, follow [Connect a data source](https://github.com/ReflexioAI/reflexio/blob/main/skills/connect-data-source/SKILL.md). That guide prepares a saved mapping and returns a frontend review link; the user activates importing in Reflexio. Do not run this guide's publish loop for the same traffic.
 
 ## Workflow
 
