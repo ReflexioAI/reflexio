@@ -34,8 +34,9 @@ directly; it takes durable guidance from the root `AGENTS.md`, not from
 
 Those two are **Git symlinks**. A checkout with `core.symlinks=false` — the
 default on Windows without Developer Mode or an elevated shell — materializes
-them as plain text files containing `../.agents/skills`, and no skill or rule
-below them is reachable. Clone with `git clone -c core.symlinks=true`, or run
+them as plain text files — `.claude/skills` holding the literal text
+`../.agents/skills` and `.claude/rules` holding `../.agents/rules` — and no
+skill or rule below them is reachable. Clone with `git clone -c core.symlinks=true`, or run
 `git config core.symlinks true` followed by `git checkout -- .claude` in an
 existing checkout.
 
