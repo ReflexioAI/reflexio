@@ -26,6 +26,20 @@ reflexio/
 └── notebooks/             # Jupyter notebooks (examples, quickstart)
 ```
 
+Agent configuration lives in one place: `.agents/skills/` and `.agents/rules/`.
+`.claude/skills` and `.claude/rules` are symlinks into it, so there is one stored
+copy rather than two that drift. Codex reads the skills from `.agents/skills`
+directly; it takes durable guidance from the root `AGENTS.md`, not from
+`.agents/rules`, so those rules apply to Claude Code.
+
+Those two are **Git symlinks**. A checkout with `core.symlinks=false` — the
+default on Windows without Developer Mode or an elevated shell — materializes
+them as plain text files — `.claude/skills` holding the literal text
+`../.agents/skills` and `.claude/rules` holding `../.agents/rules` — and no
+skill or rule below them is reachable. Clone with `git clone -c core.symlinks=true`, or run
+`git config core.symlinks true` followed by `git checkout -- .claude` in an
+existing checkout.
+
 ## Services
 
 Two services, started together via `./run_services.sh`:
@@ -219,7 +233,7 @@ When working in a git worktree, services must run on different ports to avoid co
 3. Copy `.env` from main worktree
 4. `uv sync && (cd docs && npm install)`
 5. `export BACKEND_PORT=8091 DOCS_PORT=3001`
-6. `./run_services.sh` (or `/run-services` skill for automatic port handling)
+6. `./run_services.sh`
 
 ### Notes
 

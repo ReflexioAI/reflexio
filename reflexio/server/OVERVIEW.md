@@ -5,12 +5,11 @@ Description: Enable AI agent to self-improve through user interactions
 
 | Directory | Description | Details |
 |-----------|-------------|---------|
-| `src/server/` | FastAPI backend - processes interactions, generates profiles, extracts playbooks | [README](src/server/README.md) |
-| `src/reflexio_lib/` | Core library - `Reflexio` orchestrator connecting API to services | `reflexio_lib.py` |
-| `src/reflexio_client/` | Python SDK for interacting with Reflexio API | [README](src/README.md) |
-| `src/reflexio_commons/` | Shared schemas and configuration models | [README](src/README.md) |
-| `src/website/` | Next.js frontend - profiles, interactions, playbooks, evaluations, account, auth UI | `app/`, `components/` |
-| `demo/` | Conversation simulation demo - scenarios, simulator, and live viewer | [README](demo/readme.md) |
+| `reflexio/server/` | FastAPI backend - processes interactions, generates profiles, extracts playbooks | [README](README.md) |
+| `reflexio/lib/` | Core library - `Reflexio` orchestrator connecting API to services | `reflexio_lib.py` |
+| `reflexio/client/` | Python SDK for interacting with Reflexio API | `client.py` |
+| `reflexio/models/` | Shared schemas and configuration models | `api_schema/`, `config_schema.py` |
+| `reflexio/cli/` | `reflexio` command-line interface, including `services start` | `run_services.py` |
 | `docs/` | API reference documentation site (Next.js) | `app/`, `components/`, `lib/` |
 
 ## Architecture
@@ -39,13 +38,10 @@ Client (SDK/Web)
 ```shell
 cp .env.example .env                         # Configure environment (set at least one LLM API key)
 uv sync                                      # Install Python dependencies (includes workspace packages)
-npm --prefix src/website install         # Install frontend dependencies
-npm --prefix src/public_docs install     # Install docs dependencies
-./run_services.sh                             # Starts API (8061), Website (8080), Docs (8062)
+npm --prefix docs install                    # Install docs frontend dependencies
+./run_services.sh                             # Starts backend (8061) and Docs (8062)
 ./stop_services.sh                            # Stop all services
 ```
-
-**Claude Code users:** Run `/run-services` (in claude code) instead of `./run_services.sh` (in bash) — it auto-installs missing dependencies, health-checks services, and diagnoses/fixes/retries on failure.
 
 ## Development
 
@@ -58,7 +54,7 @@ npm --prefix src/public_docs install     # Install docs dependencies
 import reflexio
 client = reflexio.ReflexioClient(api_key="your-api-key", url_endpoint="http://127.0.0.1:8061/")
 ```
-See `notebooks/reflexio_cookbook.ipynb` and `src/tests/readme.md`
+See `notebooks/00_quickstart.ipynb` and the Testing section of [developer.md](../../developer.md)
 
 ## Publishing
 
