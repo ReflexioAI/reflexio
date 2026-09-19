@@ -26,6 +26,7 @@ from reflexio.server.extensions import register_service, reset_services
 from reflexio.server.services.playbook.components.aggregator import (
     PlaybookAggregator,
 )
+from reflexio.server.services.playbook.publication import canonical_json_bytes
 from reflexio.server.work_scope import WORK_SCOPE_PROVIDER, WorkScope
 
 if TYPE_CHECKING:
@@ -109,23 +110,80 @@ def test_an_unbound_project_is_treated_as_no_project() -> None:
     assert bound_empty == _cluster_id("org_1", "agent-v0", "fp")
 
 
-def test_the_scope_segment_cannot_be_forged_by_an_org_id() -> None:
-    """``org:project`` is joined with a colon, and both halves are unconstrained
-    strings. Pin the ambiguity so that if it is ever fixed by a different
-    separator or by hashing the parts, the change is deliberate."""
-    register_service(WORK_SCOPE_PROVIDER, _StubScopeProvider("b"))
-    colliding = _cluster_id("a", "agent-v0", "fp")
+def test_a_colon_in_an_id_cannot_forge_another_tenant() -> None:
+    """The ambiguity a delimiter-joined scope could not avoid.
+
+    org "a" + project "b" and org "a:b" + project "c" are different tenants.
+    Joined with a colon they render "a:b" and "a:b:c" — and org "a" with
+    project "b:c" renders "a:b:c" too, so that pair collides with the second.
+    Both reviewers on reflexio#517 named it; an earlier revision of this file
+    pinned it as accepted, on the reasoning that fixing it meant re-deriving
+    every id a second time. That reasoning was wrong: this change already
+    re-derives every enterprise id, so the fix rides along for free and the ids
+    move once rather than twice.
+    """
+    register_service(WORK_SCOPE_PROVIDER, _StubScopeProvider("b:c"))
+    left = _cluster_id("a", "agent-v0", "fp")
     reset_services()
-    register_service(WORK_SCOPE_PROVIDER, _StubScopeProvider(None))
-    naive = _cluster_id("a:b", "agent-v0", "fp")
-    assert colliding == naive, (
-        "org 'a' + project 'b' and org 'a:b' with no project still render to "
-        "the same scope string. That is today's behaviour, recorded rather "
-        "than claimed as safe: an org id containing a colon is the same "
-        "ambiguity AggregationScheduler._repair_scope_key avoided by keying on "
-        "a tuple. Fixing it here means re-deriving every id again, so it is "
-        "deliberately not bundled with this change."
+    register_service(WORK_SCOPE_PROVIDER, _StubScopeProvider("c"))
+    right = _cluster_id("a:b", "agent-v0", "fp")
+    assert left != right, (
+        'org "a" + project "b:c" and org "a:b" + project "c" are different '
+        "tenants and must not share a cluster id. A delimiter-joined scope "
+        "renders both as a:b:c; canonical JSON escapes the separator instead."
     )
+
+
+def test_a_quote_in_an_id_cannot_forge_another_tenant() -> None:
+    """The same property one level down: JSON's own delimiters are escaped.
+
+    Swapping a colon join for a JSON one would be no fix at all if a quote or
+    backslash in an id could close the string and re-open it.
+    """
+    register_service(WORK_SCOPE_PROVIDER, _StubScopeProvider('b","c'))
+    left = _cluster_id("a", "agent-v0", "fp")
+    reset_services()
+    register_service(WORK_SCOPE_PROVIDER, _StubScopeProvider("c"))
+    right = _cluster_id('a","b', "agent-v0", "fp")
+    assert left != right
+
+
+def test_the_scoped_payload_shape_is_pinned() -> None:
+    """Pin the exact bytes hashed, computed independently of the code.
+
+    An earlier revision asserted only that scoped and unscoped ids differ,
+    which is true with or without the scheme tag — so deleting the tag passed.
+    A guard that cannot fail for the thing it guards is the failure this file
+    has hit twice, so the payload is reconstructed here rather than described.
+
+    The tag is a VERSION marker: bumping it re-derives every scoped cluster in
+    one line. That is the property worth pinning, and pinning it means the tag
+    cannot be dropped silently.
+    """
+    register_service(WORK_SCOPE_PROVIDER, _StubScopeProvider("prj_a"))
+    expected = str(
+        uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            canonical_json_bytes(
+                [
+                    "playbook-aggregation-cluster:v2",
+                    "org_1",
+                    "prj_a",
+                    "agent-v0",
+                    "fp",
+                ]
+            ).decode("utf-8"),
+        )
+    )
+    assert _cluster_id("org_1", "agent-v0", "fp") == expected
+
+
+def test_the_scoped_and_unscoped_id_spaces_stay_disjoint() -> None:
+    """An unscoped id hashes a bare string, a scoped one a tagged JSON array."""
+    unscoped = _cluster_id("org_1", "agent-v0", "fp")
+    register_service(WORK_SCOPE_PROVIDER, _StubScopeProvider("prj_a"))
+    scoped = _cluster_id("org_1", "agent-v0", "fp")
+    assert unscoped != scoped
 
 
 def test_agent_version_still_separates_clusters() -> None:
