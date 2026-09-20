@@ -95,7 +95,7 @@ Status `backfill` contains `message_limit` (null means all), `imported_messages`
 `required_total`, and `state`. Distinguish `limit_reached` / `needs_higher_limit`
 from `complete`. Source-record scan estimates are not message counts.
 
-After setup, only on an explicit request to extend history, PUT
+After activation, and only on an explicit user request to extend history, PUT
 `/streams/{id}/backfill-limit` with `{ "revision": <lifecycle revision>,
 "message_limit": <new cumulative total> }`; send explicit null for all matching
 history in the saved range. Omission is invalid. A finite total must increase the
