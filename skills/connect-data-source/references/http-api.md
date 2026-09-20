@@ -82,3 +82,23 @@ mappings still need no Reflexio model request.
 Setup context advertises `mapping_versions:[1,2]`, `mapping_scopes` including `related.NAME`, `related_span_fetch:true`, `sibling_joins:true`, `related_span_layouts:["span"]`, and `related_span_correlations:"explicit_equality"` only on servers implementing the same resolver for preview and ingestion. Follow `related_span_limits`; currently 100 spans / five pages / 1 MB per trace and 8 MB per expanded sample. No separate expansion endpoint or raw Braintrust query is needed.
 
 The existing POST sample job and GET sample endpoints return anchors with `related_context`. Inspect `status` (`complete`, `partial`, `failed`, `pending`), optional safe `code`, and `records`. Use the mapping reference's version-2 fields with the existing mapping PUT, preview POST, and validation POST. A failed or truncated lookup is unavailable evidence, not proof of absent logging. The same mapping and evidence appear in the frontend review link. Setup must never call Activate.
+
+## Historical message allowance
+
+Servers advertising `backfill_limit` start new activations with a 5,000-message
+historical allowance. One interaction means one individual message, not one trace
+or conversation. Complete imports are atomic: the next import may require a
+higher total even before all 5,000 slots are used. Saved filters and history dates
+continue to bound the selection; ongoing traffic is collected independently.
+
+Status `backfill` contains `message_limit` (null means all), `imported_messages`,
+`required_total`, and `state`. Distinguish `limit_reached` / `needs_higher_limit`
+from `complete`. Source-record scan estimates are not message counts.
+
+After setup, only on an explicit request to extend history, PUT
+`/streams/{id}/backfill-limit` with `{ "revision": <lifecycle revision>,
+"message_limit": <new cumulative total> }`; send explicit null for all matching
+history in the saved range. Omission is invalid. A finite total must increase the
+existing allowance. Re-read status on conflict. This does not resume a paused
+source, change filters/dates, or reopen explicitly cancelled history. During setup,
+return the draft review link and leave this choice to the user in Overview.
