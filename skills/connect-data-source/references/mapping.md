@@ -20,6 +20,48 @@ A response rule has a unique `name`, `when` predicates (e.g. `{ "scope":"current
 
 Current/root lookup uses raw `span_id` and `root_span_id`: a root must be uniquely present in retained or expanded evidence. `is_root:true` alone is insufficient. Check setup-context capabilities; older servers without `related_span_fetch` support only current/root mappings. Do not send a version-2 mapping to those servers.
 
+## Recommended read pattern
+
+Use this sequence for the first setup, based on observed tracing code and samples:
+
+1. Select the user-facing **answer** span using a precise traffic filter, such as
+   `span_attributes.name == <observed answer name>`. Keep the agreed environment
+   and history range. Avoid all-span traffic when only answers are intended.
+2. Map user, session, answer, completion, and any available question directly from
+   that answer (`current`). Choose the actual message text, not all metadata,
+   a prompt, search results, or serialized conversation history.
+3. If a required field is on another span, use a version-2 named related source
+   with an observed operation-name selector and a verified message/turn correlation.
+   Add session correlation when that field is available on both spans; a verified
+   unique turn match within the same trace does not require a duplicated session ID.
+   Do not include helpers in the answer traffic filter. The related
+   lookup stays inside the same Braintrust project and trace.
+4. Preview several different turns, including two turns in the same conversation
+   where available. Confirm the question belongs to its answer, exactly one
+   candidate matches, user identity is stable across conversations, and helper
+   spans do not create extra interactions. Inspect provenance, held reasons and
+   complete-context status. Do not choose the first/newest candidate to hide ambiguity.
+5. Save, preview, and validate the exact mapping and selected time range. Return
+   the review link for activation. A clean sample establishes sample correctness,
+   not full-history coverage or a guaranteed import rate.
+
+On servers advertising `mapping_aware_reads`, this mapping drives a narrow field
+projection and trace-shaped reads that return matching answers together with their
+required supporting spans. Reflexio associates them locally and uses its canonical
+publish pipeline. Normal importing does not require a separate Braintrust request
+for every answer. History remains paginated; limits, late evidence, missing roots,
+and provider failures can still require bounded follow-up reads. The reader retains
+larger containers or full evidence where needed to preserve fallback semantics or
+older pending mappings. Older servers may use separate context reads; never claim
+this optimization merely because `related_span_fetch` is present.
+
+Prefer logging the current question and final answer together on the response span
+when the application already supports it. Existing split-span traces are supported;
+recover them with the mapping below before proposing an instrumentation change.
+After user activation, inspect source status for actual imports and held/provider
+errors before calling ingestion verified. Respect provider cooldowns; repeatedly
+refreshing samples or resuming collection does not remove a rate limit.
+
 ## Related fields (mapping version 2)
 
 Sampling automatically expands traces when `related_span_fetch` is true. Each anchor record has `source_project_id` and `related_context: {status, code?, records}`. Each related record has its own `id`, `source_project_id`, and `raw` Braintrust span. Only `status:"complete"` means the bounded lookup was exhausted; it does not promise no future spans will arrive. `partial`, `failed`, and `pending` cannot establish uniqueness. Inspect codes and refresh the sample when appropriate; do not work around limits by guessing.
