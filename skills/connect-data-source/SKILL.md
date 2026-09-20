@@ -15,6 +15,22 @@ Use the endpoint from the copied prompt. Hosted default is `https://www.reflexio
 
 Read [the API reference](references/http-api.md) and [mapping instructions](references/mapping.md) before sending setup requests. Resolve these relative URLs against this guide's GitHub location when reading remotely. GET the setup-context endpoint first. Stop with an upgrade/configuration explanation if the endpoint or protocol is unavailable. Check its capabilities before proposing a mapping. Never fall back to UI automation or direct database writes without a separate user request.
 
+## Prefer an efficient, verifiable mapping
+
+Follow [the recommended read pattern](references/mapping.md#recommended-read-pattern)
+when choosing traffic and fields. Select the actual user-facing answer spans, keep
+fields already on each answer in `current`, and use narrowly selected related spans
+with verified message/session correlations only for fields stored elsewhere. Do not
+broaden traffic to include question helpers just to make them visible: they are
+supporting evidence, not independent interactions.
+
+When setup context advertises `mapping_aware_reads`, the server derives the query
+from the saved mapping and fetches required context with each bounded page where
+supported. Do not build a client-side per-answer Braintrust lookup loop, submit raw
+BQL to Reflexio, or add a second publish flow. Initial discovery samples still need
+richer evidence before a mapping is known. Complete the preview and validation
+checks below; efficient reads cannot repair ambiguous or incorrect identities.
+
 ## Step-by-step setup
 
 1. **Resume or connect.** Inspect existing connection/stream IDs. There is one connected source per destination project. Resume its draft and preserve existing, resolving identity mappings unless evidence contradicts them; do not require their reconfirmation just because setup resumed. Identity guidance returned by preview *is* such evidence: a resumed mapping that earns `identity_path_collision` or `identity_equals_session` must be raised with the developer rather than carried forward because it was already saved. Do not replace a connection, rotate a key, or modify an active source without the developer's explicit request. Create a connection with the Braintrust read key only if none exists. No setup request below starts importing.

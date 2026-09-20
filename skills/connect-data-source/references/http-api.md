@@ -102,3 +102,12 @@ history in the saved range. Omission is invalid. A finite total must increase th
 existing allowance. Re-read status on conflict. This does not resume a paused
 source, change filters/dates, or reopen explicitly cancelled history. During setup,
 return the draft review link and leave this choice to the user in Overview.
+
+### Mapping-aware reads
+
+`mapping_aware_reads:true` means active ingestion derives its field projection and
+supporting-span selection from the saved mapping. Trace-shaped pages can include
+complete related context with the answer anchors; incomplete or late evidence uses
+bounded retries. This does not change the setup API or accept user-written BQL.
+Discovery sampling still gathers richer evidence before mapping. Use the efficient
+configuration checklist in [the mapping reference](mapping.md#recommended-read-pattern).
