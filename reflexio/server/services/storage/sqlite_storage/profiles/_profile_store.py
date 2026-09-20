@@ -281,13 +281,10 @@ class ProfileStoreMixin:
             for profile, lineage_context, subject_ref in rows:
                 with self._lock:
                     self._assert_subject_writable_locked(subject_ref)
-                    already_exists = (
-                        self.conn.execute(
-                            "SELECT 1 FROM profiles WHERE profile_id = ?",
-                            (profile.profile_id,),
-                        ).fetchone()
-                        is not None
-                    )
+                    existing = self.conn.execute(
+                        "SELECT created_at FROM profiles WHERE profile_id = ?",
+                        (profile.profile_id,),
+                    ).fetchone()
                     self.conn.execute(
                         """INSERT OR REPLACE INTO profiles
                            (profile_id, user_id, content, last_modified_timestamp,
@@ -316,13 +313,16 @@ class ProfileStoreMixin:
                             profile.reader_angle,
                             _json_dumps(profile.tags),
                             _json_dumps(profile.source_interaction_ids),
-                            _iso_now(),
+                            # Upserts preserve the original creation cohort.
+                            existing["created_at"]
+                            if existing is not None
+                            else _iso_now(),
                             profile.merged_into,
                             profile.superseded_by,
                             subject_ref,
                         ),
                     )
-                    if not already_exists:
+                    if existing is None:
                         _append_event_stmt(
                             self.conn,
                             org_id=self.org_id,
