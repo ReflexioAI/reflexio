@@ -1,4 +1,5 @@
 from abc import abstractmethod
+from typing import Literal
 
 from reflexio.models.api_schema.domain import (
     DeleteUserProfileRequest,
@@ -23,6 +24,9 @@ class ProfileStoreMixin:
         profile_time_to_live: str | None = None,
         start_time: int | None = None,
         end_time: int | None = None,
+        date_field: Literal[
+            "last_modified_timestamp", "created_at"
+        ] = "last_modified_timestamp",
     ) -> list[UserProfile]:
         raise NotImplementedError
 

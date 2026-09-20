@@ -90,16 +90,32 @@ class ExtrasMixin:
         current_time_iso = _epoch_to_iso(current_time)
         previous_start_iso = _epoch_to_iso(previous_start)
 
-        def count_in(table: str, time_col: str, start: Any, end: Any) -> int:
+        def count_in(
+            table: str,
+            time_col: str,
+            start: Any,
+            end: Any,
+            *,
+            current_only: bool = False,
+        ) -> int:
             row = self._fetchone(
-                f"SELECT COUNT(*) as cnt FROM {table} WHERE {time_col} >= ? AND {time_col} <= ?",
+                f"SELECT COUNT(*) as cnt FROM {table} WHERE {time_col} >= ? AND {time_col} <= ?"
+                + (" AND status IS NULL" if current_only else ""),
                 (start, end),
             )
             return row["cnt"] if row else 0
 
-        def count_in_lt(table: str, time_col: str, start: Any, end: Any) -> int:
+        def count_in_lt(
+            table: str,
+            time_col: str,
+            start: Any,
+            end: Any,
+            *,
+            current_only: bool = False,
+        ) -> int:
             row = self._fetchone(
-                f"SELECT COUNT(*) as cnt FROM {table} WHERE {time_col} >= ? AND {time_col} < ?",
+                f"SELECT COUNT(*) as cnt FROM {table} WHERE {time_col} >= ? AND {time_col} < ?"
+                + (" AND status IS NULL" if current_only else ""),
                 (start, end),
             )
             return row["cnt"] if row else 0
@@ -109,7 +125,11 @@ class ExtrasMixin:
                 "interactions", "created_at", current_start_iso, current_time_iso
             ),
             "total_profiles": count_in(
-                "profiles", "last_modified_timestamp", current_start, current_time
+                "profiles",
+                "created_at",
+                current_start_iso,
+                current_time_iso,
+                current_only=True,
             ),
             "total_playbooks": (
                 count_in(
@@ -126,7 +146,11 @@ class ExtrasMixin:
                 "interactions", "created_at", previous_start_iso, current_start_iso
             ),
             "total_profiles": count_in_lt(
-                "profiles", "last_modified_timestamp", previous_start, current_start
+                "profiles",
+                "created_at",
+                previous_start_iso,
+                current_start_iso,
+                current_only=True,
             ),
             "total_playbooks": (
                 count_in_lt(
@@ -169,8 +193,8 @@ class ExtrasMixin:
             (current_start_iso, current_time_iso),
         )
         profiles_ts = self._fetchall(
-            "SELECT last_modified_timestamp FROM profiles WHERE last_modified_timestamp >= ? AND last_modified_timestamp <= ? ORDER BY last_modified_timestamp",
-            (current_start, current_time),
+            "SELECT created_at FROM profiles WHERE status IS NULL AND created_at >= ? AND created_at <= ? ORDER BY created_at",
+            (current_start_iso, current_time_iso),
         )
         # Playbooks span two tables; mirror the total_playbooks count above
         # (user_playbooks + agent_playbooks) so the chart matches the stat card.
@@ -232,7 +256,7 @@ class ExtrasMixin:
                 [_iso_to_epoch(r["created_at"]) for r in interactions_ts]
             ),
             "profiles_time_series": count_series(
-                [r["last_modified_timestamp"] for r in profiles_ts]
+                [_iso_to_epoch(r["created_at"]) for r in profiles_ts]
             ),
             "playbooks_time_series": count_series(
                 [

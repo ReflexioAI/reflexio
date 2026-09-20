@@ -4,7 +4,7 @@ from collections import defaultdict
 logger = logging.getLogger(__name__)
 
 from datetime import UTC, datetime
-from typing import Protocol
+from typing import Literal, Protocol
 
 from reflexio.lib._base import (
     STORAGE_NOT_CONFIGURED_MSG,
@@ -474,6 +474,9 @@ class ProfilesMixin(ReflexioBase):
         profile_time_to_live: str | None = None,
         start_time: int | None = None,
         end_time: int | None = None,
+        date_field: Literal[
+            "last_modified_timestamp", "created_at"
+        ] = "last_modified_timestamp",
     ) -> GetUserProfilesResponse:
         """Get all user profiles across all users.
 
@@ -500,6 +503,7 @@ class ProfilesMixin(ReflexioBase):
             profile_time_to_live=profile_time_to_live,
             start_time=start_time,
             end_time=end_time,
+            date_field=date_field,
         )
         profiles = sorted(
             profiles, key=lambda x: x.last_modified_timestamp, reverse=True

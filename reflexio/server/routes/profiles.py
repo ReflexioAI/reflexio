@@ -1,7 +1,7 @@
 """Profile route handlers (extracted from api.py, Tier3 A2)."""
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     pass
@@ -183,6 +183,9 @@ def get_all_profiles(
     profile_time_to_live: str | None = None,
     start_time: int | None = None,
     end_time: int | None = None,
+    date_field: Literal[
+        "last_modified_timestamp", "created_at"
+    ] = "last_modified_timestamp",
     include_tombstones: bool = False,
     org_id: str = Depends(default_get_org_id),
 ) -> GetProfilesViewResponse:
@@ -196,8 +199,10 @@ def get_all_profiles(
         query (str, optional): Case-insensitive text filter across visible fields.
         source (str, optional): Exact profile source to filter by.
         profile_time_to_live (str, optional): Exact TTL value to filter by.
-        start_time (int, optional): Minimum last-modified epoch seconds.
-        end_time (int, optional): Maximum last-modified epoch seconds.
+        start_time (int, optional): Inclusive minimum epoch seconds for date_field.
+        end_time (int, optional): Inclusive maximum epoch seconds for date_field.
+        date_field: Date column to filter; defaults to last_modified_timestamp.
+            Use created_at for creation-time cohorts.
         include_tombstones (bool, optional): Include merged/superseded rows when
             looking up a specific profile_id.
         org_id (str): Organization ID
@@ -244,6 +249,7 @@ def get_all_profiles(
         profile_time_to_live=profile_time_to_live,
         start_time=start_time,
         end_time=end_time,
+        date_field=date_field,
     )
     return GetProfilesViewResponse(
         success=response.success,

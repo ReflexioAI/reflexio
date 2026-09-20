@@ -9,7 +9,7 @@ import logging
 import sqlite3
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any
+from typing import Any, Literal
 
 from reflexio.models.api_schema.domain.entities import LineageContext
 from reflexio.models.api_schema.service_schemas import (
@@ -26,6 +26,7 @@ from .._base import (
     SQLiteStorageBase,
     _build_status_sql,
     _epoch_now,
+    _epoch_to_iso,
     _iso_now,
     _json_dumps,
     _row_to_profile,
@@ -125,6 +126,9 @@ class ProfileStoreMixin:
         profile_time_to_live: str | None = None,
         start_time: int | None = None,
         end_time: int | None = None,
+        date_field: Literal[
+            "last_modified_timestamp", "created_at"
+        ] = "last_modified_timestamp",
     ) -> list[UserProfile]:
         if status_filter is None:
             status_filter = [None]
@@ -148,12 +152,19 @@ class ProfileStoreMixin:
         if profile_time_to_live:
             conditions.append("profile_time_to_live = ?")
             params.append(profile_time_to_live)
+        time_column = (
+            "created_at" if date_field == "created_at" else "last_modified_timestamp"
+        )
         if start_time is not None:
-            conditions.append("last_modified_timestamp >= ?")
-            params.append(start_time)
+            conditions.append(f"{time_column} >= ?")
+            params.append(
+                _epoch_to_iso(start_time) if date_field == "created_at" else start_time
+            )
         if end_time is not None:
-            conditions.append("last_modified_timestamp <= ?")
-            params.append(end_time)
+            conditions.append(f"{time_column} <= ?")
+            params.append(
+                _epoch_to_iso(end_time) if date_field == "created_at" else end_time
+            )
         sql = (
             f"SELECT * FROM profiles WHERE {' AND '.join(conditions)} "
             "ORDER BY last_modified_timestamp DESC LIMIT ?"
