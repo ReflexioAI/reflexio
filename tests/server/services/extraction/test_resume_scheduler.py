@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import threading
 from collections.abc import Callable
 from types import SimpleNamespace
@@ -256,3 +257,55 @@ def test_resume_scheduler_expires_pending_calls_on_each_discovered_ref(monkeypat
 
     storages["org_1"].expire_pending_tool_calls.assert_called_once()
     storages["org_2"].expire_pending_tool_calls.assert_called_once()
+
+
+def test_a_disabled_org_with_work_says_so_instead_of_skipping_silently(
+    monkeypatch, caplog
+):
+    """The skip is specified; its silence was not.
+
+    `test_resume_scheduler_observes_feature_enabled_after_startup` pins that a
+    disabled org is NOT drained, and that stays true. This pins that the skip
+    is legible: the provider has just named the org as having resumable work,
+    so an operator reading the logs must be able to tell "disabled on purpose"
+    from "broken".
+
+    Prod 2026-09-20 is why: 238 runs across three orgs sat behind this branch,
+    every one a finalization retry already holding `committed_output`, and the
+    sweep reported a nonzero `resumable_orgs` every two minutes with nothing
+    anywhere explaining why none of it moved.
+    """
+    context = _request_context(
+        storage=SimpleNamespace(
+            list_resumable_work_org_ids=MagicMock(return_value=[]),
+            expire_pending_tool_calls=MagicMock(return_value=0),
+        )
+    )
+    context.configurator.get_config().pending_tool_call_config.enabled = False
+    monkeypatch.setattr(
+        resume_scheduler,
+        "pending_tool_calls_enabled",
+        lambda ctx: ctx.configurator.get_config().pending_tool_call_config.enabled,
+    )
+    monkeypatch.setattr(
+        resume_scheduler.ExtractionResumeScheduler, "start", lambda _self: None
+    )
+    drain = MagicMock(return_value=0)
+    monkeypatch.setattr(
+        resume_scheduler,
+        "ExtractionResumeWorker",
+        lambda **_kwargs: SimpleNamespace(drain=drain),
+    )
+    scheduler = resume_scheduler.maybe_start_resume_scheduler(
+        cast(Callable[[str], RequestContext], lambda _org_id: context),
+        bootstrap_org_id="org_1",
+    )
+
+    with caplog.at_level(logging.INFO):
+        scheduler._run_once()
+
+    drain.assert_not_called()
+    assert any(
+        "extraction_resume_drain_skipped_feature_disabled" in record.message
+        for record in caplog.records
+    ), f"the skip must be logged; saw {[r.message for r in caplog.records]}"

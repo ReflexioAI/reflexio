@@ -102,6 +102,24 @@ class ExtractionResumeScheduler(ThreadedScheduler):
         try:
             ctx = self.request_context_factory(org_id)
             if not pending_tool_calls_enabled(ctx):
+                # Behaviour is deliberate and specified -- a disabled org's
+                # resume machinery stops. What was NOT deliberate is that it
+                # stopped SILENTLY: the provider had just named this org as
+                # having resumable work, and nothing said why none of it moved.
+                #
+                # Measured on prod 2026-09-20: 238 runs across three orgs sat
+                # here, every one of them a finalization retry already holding
+                # `committed_output`, none of them waiting on a pending-info
+                # tool -- and the sweep logged `resumable_orgs` without a
+                # single line explaining the stall. An operator reading the
+                # logs could not tell "disabled on purpose" from "broken".
+                logger.info(
+                    "event=extraction_resume_drain_skipped_feature_disabled "
+                    "org_id=%s -- the org has resumable work and "
+                    "pending_tool_call_config.enabled is false, so none of it "
+                    "will be drained until that is turned on",
+                    org_id,
+                )
                 return
             self._expire_pending_tool_calls(ctx)
             inspected = ExtractionResumeWorker(request_context=ctx).drain(
