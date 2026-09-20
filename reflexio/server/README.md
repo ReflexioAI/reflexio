@@ -232,6 +232,7 @@ Access: `SiteVarManager().get_site_var(key)` for raw values, `feature_flags.is_f
 **Encapsulated Components**:
 
 - **Publish pipeline**: `generation_service.py` coordinates interaction persistence, profile generation, playbook generation, and deferred evaluation scheduling.
+- **External source admission**: `services/external_admission.py` defines the optional library-only transaction participant. Its claim and receipt writes join the canonical storage commit scope; exceptions roll back all writes. Exact replay returns original IDs before embedding preparation and without repeating evaluation scheduling; a miss is fenced again at final admission. Final admission rechecks current stall policy, honors explicit stall overrides, and returns the warning matching that policy. The default publish API is unchanged.
 - **Profile memory**: `profile/` extracts, deduplicates, and applies user profile updates.
 - **Playbook memory**: `playbook/` extracts and consolidates user playbooks, durably schedules bounded same-version aggregation, and reconstructs aggregation change logs from lineage.
 - **Evaluation**: `agent_success_evaluation/service.py`, `agent_success_evaluation/runner.py`, `agent_success_evaluation/scheduler.py`, `agent_success_evaluation/components/evaluator.py`, `shadow_comparison/`, and `evaluation_overview/` handle session grading, per-turn shadow verdicts, regeneration jobs, and dashboard-facing rollups.

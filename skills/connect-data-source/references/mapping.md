@@ -4,7 +4,7 @@ Fetch `mapping_schema` from setup context; it is authoritative for the installed
 
 | Field | Meaning |
 | --- | --- |
-| `user` | Stable end-user identity; never a merchant, task label, trace ID or invented anonymous user. |
+| `user` | Stable end-user identity that recurs *across* conversations; never a merchant, task label, trace ID, conversation/session ID, or invented anonymous user. It must not read the same path as `session`, nor hold the same value as `session` on every record: that makes each conversation its own user, so profiles and playbooks never accumulate. Preview reports this as `identity_path_collision` / `identity_equals_session`. An identity is often on a sibling span rather than the answer — check related spans before concluding there is none, and ask the developer rather than choosing the nearest available ID. |
 | `session` | Stable conversation ID shared by its turns; never a generic operation name. |
 | `input` | Actual user-message text, not a system prompt or a message container. |
 | `output` | User-facing answer text, not classification, routing or tool output. |
