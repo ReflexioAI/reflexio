@@ -10,6 +10,8 @@ import time
 from typing import cast
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from reflexio.lib._base import STORAGE_NOT_CONFIGURED_MSG
 from reflexio.lib._profiles import ProfilesMixin
 from reflexio.models.api_schema.retriever_schema import (
@@ -184,13 +186,14 @@ class TestGetProfiles:
 
 
 class TestGetAllProfiles:
-    def test_returns_all(self):
+    @pytest.mark.parametrize("date_field", ["last_modified_timestamp", "created_at"])
+    def test_returns_all(self, date_field):
         """Returns all profiles across users."""
         mixin = _make_mixin()
         sample = _sample_profile()
         _get_storage(mixin).get_all_profiles.return_value = [sample]
 
-        response = mixin.get_all_profiles(limit=50)
+        response = mixin.get_all_profiles(limit=50, date_field=date_field)
 
         assert response.success is True
         assert len(response.user_profiles) == 1
@@ -204,6 +207,7 @@ class TestGetAllProfiles:
             profile_time_to_live=None,
             start_time=None,
             end_time=None,
+            date_field=date_field,
         )
 
     def test_storage_not_configured(self):

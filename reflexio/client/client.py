@@ -1559,6 +1559,9 @@ class ReflexioClient:
         profile_time_to_live: str | None = None,
         start_time: int | None = None,
         end_time: int | None = None,
+        date_field: Literal[
+            "last_modified_timestamp", "created_at"
+        ] = "last_modified_timestamp",
     ) -> GetProfilesViewResponse:
         """Get all user profiles across all users.
 
@@ -1572,8 +1575,10 @@ class ReflexioClient:
             query (str, optional): Case-insensitive text filter across visible fields.
             source (str, optional): Filter by exact profile source.
             profile_time_to_live (str, optional): Filter by profile TTL value.
-            start_time (int, optional): Minimum last-modified epoch seconds.
-            end_time (int, optional): Maximum last-modified epoch seconds.
+            start_time (int, optional): Inclusive minimum epoch seconds for date_field.
+            end_time (int, optional): Inclusive maximum epoch seconds for date_field.
+            date_field: Date column to filter; defaults to last_modified_timestamp.
+                Use created_at for creation-time cohorts.
 
         Returns:
             GetProfilesViewResponse: Response containing all user profiles
@@ -1594,6 +1599,9 @@ class ReflexioClient:
                     "profile_time_to_live": profile_time_to_live,
                     "start_time": start_time,
                     "end_time": end_time,
+                    "date_field": date_field
+                    if date_field != "last_modified_timestamp"
+                    else None,
                 }.items()
                 if value is not None
             }
