@@ -299,11 +299,42 @@ def test_external_participant_rolls_back_then_replays_without_effects(
     assert (
         store.conn.execute("SELECT COUNT(*) FROM external_receipt").fetchone()[0] == 0
     )
+    assert (
+        store.conn.execute(
+            "SELECT 1 FROM learning_work WHERE org_id=? AND user_id=?",
+            (store.org_id, "u1"),
+        ).fetchone()
+        is None
+    )
+    assert (
+        store.conn.execute(
+            "SELECT 1 FROM extraction_cursors WHERE user_id=?", ("u1",)
+        ).fetchone()
+        is None
+    )
     assert not scheduled.called
     participant.fail = False
     first = svc.run(request, defer_learning=True, admission_participant=participant)
+    work = tuple(
+        store.conn.execute(
+            "SELECT highwater,revision FROM learning_work WHERE org_id=? AND user_id=?",
+            (store.org_id, "u1"),
+        ).fetchone()
+    )
+    preparation = Mock(side_effect=AssertionError("Replay must not request embeddings"))
+    monkeypatch.setattr(store, "prepare_interaction_embeddings", preparation)
     replay = svc.run(request, defer_learning=True, admission_participant=participant)
+    preparation.assert_not_called()
     assert replay.replayed and replay.interaction_ids == first.interaction_ids
+    assert (
+        tuple(
+            store.conn.execute(
+                "SELECT highwater,revision FROM learning_work WHERE org_id=? AND user_id=?",
+                (store.org_id, "u1"),
+            ).fetchone()
+        )
+        == work
+    )
     assert scheduled.call_count == 1
     assert store.conn.execute("SELECT COUNT(*) FROM interactions").fetchone()[0] == 1
     assert (
@@ -311,3 +342,89 @@ def test_external_participant_rolls_back_then_replays_without_effects(
     )
     with pytest.raises(ValueError, match="already exists"):
         svc.run(request, defer_learning=True)
+
+
+@pytest.mark.parametrize(
+    ("initial", "final", "override"),
+    [
+        (None, "New provider stall; retry after reauthentication", False),
+        ("Old stall", None, False),
+        ("Old stall", "Changed stall", False),
+        ("Unchanged stall", "Unchanged stall", False),
+        ("Provider stalled", "Provider stalled", True),
+    ],
+)
+def test_external_admission_uses_final_stall_policy_and_warning(
+    tmp_path, monkeypatch, initial, final, override
+):
+    import json
+
+    monkeypatch.setenv("REFLEXIO_EMBEDDING_PROVIDER", "off")
+    svc = _make_svc(str(tmp_path))
+    store = svc.storage
+    assert isinstance(store, SQLiteStorage)
+    config = svc.configurator.get_config()
+    config.profile_extractor_config = ProfileExtractorConfig(
+        extraction_definition_prompt="Extract stable preferences."
+    )
+    svc.configurator.set_config(config)
+    stall = Mock(side_effect=[initial, final])
+    monkeypatch.setattr(svc, "_active_learning_stall_warning", stall)
+    participant = Mock()
+    participant.claim.return_value = None
+    request = _publish_request(user_id="u1", request_id="external-stall")
+    request.override_learning_stall = override
+
+    result = svc.run(request, defer_learning=True, admission_participant=participant)
+
+    policy = json.loads(
+        store.conn.execute(
+            "SELECT learning_admission FROM requests WHERE request_id=?",
+            (request.request_id,),
+        ).fetchone()[0]
+    )
+    assert policy["profile"]["eligible"] is (override or final is None)
+    assert result.warnings == ([final] if final and not override else [])
+    assert stall.call_count == (0 if override else 2)
+    assert participant.complete.call_args.args[2]["profile"] == policy["profile"]
+
+
+def test_external_receipt_committed_during_preparation_is_rechecked(
+    tmp_path, monkeypatch
+):
+    """A preflight miss does not remove the final transactional replay fence."""
+    from reflexio.server.services.external_admission import ExternalAdmissionReceipt
+
+    monkeypatch.setenv("REFLEXIO_EMBEDDING_PROVIDER", "off")
+    svc = _make_svc(str(tmp_path))
+    store = svc.storage
+    assert isinstance(store, SQLiteStorage)
+    receipts = {}
+    participant = Mock()
+    participant.claim.side_effect = lambda request_id, _user_id: receipts.get(
+        request_id
+    )
+
+    def complete(request, interactions, _admission):
+        receipts[request.request_id] = ExternalAdmissionReceipt(
+            request.request_id, tuple(i.interaction_id for i in interactions)
+        )
+
+    participant.complete.side_effect = complete
+    request = _publish_request(user_id="u1", request_id="external-race")
+    scheduled = Mock()
+    monkeypatch.setattr(svc, "_schedule_post_publish_evaluations", scheduled)
+
+    def concurrent_commit(_interactions):
+        # The outer preflight already saw no request. Another publish commits
+        # while its embeddings are being prepared, before its final claim.
+        with monkeypatch.context() as nested:
+            nested.setattr(store, "prepare_interaction_embeddings", lambda _: None)
+            svc.run(request, defer_learning=True, admission_participant=participant)
+
+    monkeypatch.setattr(store, "prepare_interaction_embeddings", concurrent_commit)
+    result = svc.run(request, defer_learning=True, admission_participant=participant)
+    assert result.replayed
+    assert result.interaction_ids == list(receipts[request.request_id].interaction_ids)
+    assert store.conn.execute("SELECT COUNT(*) FROM interactions").fetchone()[0] == 1
+    assert scheduled.call_count == participant.complete.call_count == 1

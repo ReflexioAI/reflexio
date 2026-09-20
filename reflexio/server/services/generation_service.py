@@ -253,11 +253,24 @@ class GenerationService:
                 else str(uuid.uuid4())
             )
             result.request_id = request_id
+            storage = self.storage
+            if storage is None:
+                raise RuntimeError("Publishing requires storage")
+
+            from reflexio.server.services.durable_learning.waiting import (
+                check_admission_deadline,
+            )
+
+            replay = self._replay_external_admission(
+                admission_participant, request_id, user_id
+            )
+            if replay is not None:
+                return replay
 
             if (
                 admission_participant is None
                 and caller_request_id is not None
-                and self.storage.get_request(request_id) is not None  # type: ignore[reportOptionalMemberAccess]
+                and storage.get_request(request_id) is not None
             ):
                 raise ValueError(f"request_id {request_id!r} already exists")
 
@@ -301,13 +314,9 @@ class GenerationService:
             )
 
             source = publish_user_interaction_request.source or None
-            stall_warning = (
-                self._active_learning_stall_warning()
-                if not publish_user_interaction_request.override_learning_stall
-                else None
+            stall_warning = self._refresh_publish_stall_warning(
+                publish_user_interaction_request, result
             )
-            if stall_warning:
-                result.warnings.append(stall_warning)
             admission = extraction_admission(
                 self.configurator.get_config(),
                 publish_user_interaction_request,
@@ -316,15 +325,8 @@ class GenerationService:
             if not new_interactions:
                 for kind in ("profile", "playbook"):
                     admission[kind]["eligible"] = False
-            storage = self.storage
-            if storage is None:
-                raise RuntimeError("Publishing requires storage")
             # Network preparation is outside the writer scope. The work row is
             # locked FIRST and its sequence allocation commits with every input.
-            from reflexio.server.services.durable_learning.waiting import (
-                check_admission_deadline,
-            )
-
             check_admission_deadline()
             storage.prepare_interaction_embeddings(new_interactions)
             check_admission_deadline()
@@ -339,7 +341,9 @@ class GenerationService:
                         result.replayed = True
                         return result
                     # Preparation may have outlived a policy edit or billing stall.
-                    stall_warning = self._active_learning_stall_warning()
+                    stall_warning = self._refresh_publish_stall_warning(
+                        publish_user_interaction_request, result, stall_warning
+                    )
                     admission = extraction_admission(
                         self.configurator.get_config(),
                         publish_user_interaction_request,
@@ -456,6 +460,56 @@ class GenerationService:
                     user_id,
                 )
             raise
+
+    def _replay_external_admission(
+        self,
+        participant: ExternalAdmissionParticipant | None,
+        request_id: str,
+        user_id: str,
+    ) -> GenerationServiceResult | None:
+        """Return a fenced existing receipt before preparing embeddings."""
+        if participant is None:
+            return None
+        storage = self.storage
+        if storage is None:
+            raise RuntimeError("Publishing requires storage")
+        from reflexio.server.services.durable_learning.waiting import (
+            check_admission_deadline,
+        )
+
+        # Read through the writer scope, but create/lock a work row only for a
+        # replay; ordinary misses must leave no state behind before admission.
+        with storage.commit_scope():
+            if storage.get_request(request_id) is None:
+                return None
+            storage.lock_extraction_stream(user_id)
+            check_admission_deadline()
+            receipt = participant.claim(request_id, user_id)
+            if receipt is None:
+                raise ValueError(f"request_id {request_id!r} already exists")
+            return GenerationServiceResult(
+                request_id=receipt.request_id,
+                interaction_ids=list(receipt.interaction_ids),
+                replayed=True,
+            )
+
+    def _refresh_publish_stall_warning(
+        self,
+        request: PublishUserInteractionRequest,
+        result: GenerationServiceResult,
+        previous_warning: str | None = None,
+    ) -> str | None:
+        """Keep the returned warning aligned with the admission's stall policy."""
+        if previous_warning:
+            result.warnings.remove(previous_warning)
+        warning = (
+            self._active_learning_stall_warning()
+            if not request.override_learning_stall
+            else None
+        )
+        if warning:
+            result.warnings.append(warning)
+        return warning
 
     def _emit_publish_success_events(
         self,

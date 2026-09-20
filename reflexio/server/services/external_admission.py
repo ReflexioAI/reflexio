@@ -4,6 +4,9 @@ Implementations must use the SAME storage commit_scope as GenerationService and
 perform no network I/O here. Claim runs after the canonical user stream lock;
 complete runs after canonical inserts and extraction admission. Either may raise
 to roll back the entire transaction. This is a library seam, never an HTTP input.
+For an existing canonical request, claim also runs before embedding preparation
+to return its receipt without model work. Misses are claimed again in the final
+admission transaction, preserving races and authorization fences.
 """
 
 from dataclasses import dataclass
