@@ -31,8 +31,10 @@ Use this sequence for the first setup, based on observed tracing code and sample
    that answer (`current`). Choose the actual message text, not all metadata,
    a prompt, search results, or serialized conversation history.
 3. If a required field is on another span, use a version-2 named related source
-   with an observed operation-name selector and verified message/turn plus session
-   correlations. Do not include helpers in the answer traffic filter. The related
+   with an observed operation-name selector and a verified message/turn correlation.
+   Add session correlation when that field is available on both spans; a verified
+   unique turn match within the same trace does not require a duplicated session ID.
+   Do not include helpers in the answer traffic filter. The related
    lookup stays inside the same Braintrust project and trace.
 4. Preview several different turns, including two turns in the same conversation
    where available. Confirm the question belongs to its answer, exactly one

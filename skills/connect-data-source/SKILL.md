@@ -20,7 +20,8 @@ Read [the API reference](references/http-api.md) and [mapping instructions](refe
 Follow [the recommended read pattern](references/mapping.md#recommended-read-pattern)
 when choosing traffic and fields. Select the actual user-facing answer spans, keep
 fields already on each answer in `current`, and use narrowly selected related spans
-with verified message/session correlations only for fields stored elsewhere. Do not
+with verified turn/message correlations only for fields stored elsewhere. Include
+session correlation when available on both spans. Do not
 broaden traffic to include question helpers just to make them visible: they are
 supporting evidence, not independent interactions.
 
