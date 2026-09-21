@@ -26,13 +26,34 @@ logger = logging.getLogger(__name__)
 _budget_lock = threading.Lock()
 _budget: threading.BoundedSemaphore | None = None
 
-# ``.../reflexio`` - the installed package root, used only to tell our own
-# frames from a dependency's. Never rendered into a log line itself.
-_FIRST_PARTY_ROOT = str(Path(__file__).resolve().parents[3]) + os.sep
-# A locator is two path components plus a line number, so it is already short;
-# the cap makes the bound total rather than merely customary, because this
-# value is persisted as well as logged.
-_LOCATOR_MAX = 120
+_VIA = "<-"
+# One coordinate, INCLUDING its ``:line`` suffix, which is never sacrificed.
+_POSITION_MAX = 59
+# Two coordinates joined by ``_VIA``. This bound is structural rather than a
+# trailing slice: a blind prefix cut lands mid-coordinate and strips the very
+# line number the field exists to carry, leaving something that reads as
+# diagnosed while pointing nowhere.
+_LOCATOR_MAX = 2 * _POSITION_MAX + len(_VIA)
+
+
+def _first_party_roots(module_file: str) -> tuple[str, ...]:
+    """Package-root prefixes for each spelling a deployment may import through.
+
+    ``co_filename`` keeps the path a module was imported *as*, so a release
+    that imports through a ``current``-style symlink produces symlinked frame
+    paths. Resolving only our own side would then match nothing and reject
+    every first-party frame - silently, everywhere, for the life of the
+    deployment. Keep both spellings and accept either.
+    """
+    # ``.absolute()``, never ``.resolve()``: resolving here would discard the
+    # as-imported spelling, which is the whole point of keeping both.
+    package = Path(module_file).absolute().parents[3]
+    spellings = {package, package.resolve()}
+    return tuple(sorted(str(path) + os.sep for path in spellings))
+
+
+# Used only to tell our own frames from a dependency's; never rendered itself.
+_FIRST_PARTY_ROOTS = _first_party_roots(__file__)
 
 
 def _tb_positions(exc: BaseException) -> list[tuple[str, int]]:
@@ -57,8 +78,17 @@ def _position(filename: str, lineno: int) -> str:
     One component would be ambiguous in this tree (``sqlite_storage`` and
     ``storage_base`` both hold an ``_extraction_stream.py``); two is enough,
     and keeps an absolute container path out of the field.
+
+    Should even two components overrun the budget, the PATH is elided from the
+    left and marked with ``~``, so that the tail identifying the file and the
+    ``:line`` both survive. A truncated coordinate must still name a line.
     """
-    return f"{'/'.join(Path(filename).parts[-2:])}:{lineno}"
+    suffix = f":{lineno}"
+    path = "/".join(Path(filename).parts[-2:])
+    budget = max(_POSITION_MAX - len(suffix), 0)
+    if len(path) > budget:
+        path = ("~" + path[len(path) - budget + 1 :]) if budget > 1 else ""
+    return path + suffix
 
 
 def exception_locator(exc: BaseException) -> str:
@@ -72,18 +102,21 @@ def exception_locator(exc: BaseException) -> str:
     innermost first-party frame is appended after ``<-``, because
     ``pydantic/main.py:210`` alone does not say which of our calls provoked
     it. When the two coincide only one is emitted.
+
+    Every coordinate returned names a line: each half is bounded on its own,
+    so the composition cannot overrun and need not be sliced afterwards.
     """
     positions = _tb_positions(exc)
     if not positions:
         return "unknown"
     raised = _position(*positions[-1])
     for filename, lineno in reversed(positions):
-        if filename.startswith(_FIRST_PARTY_ROOT):
+        if filename.startswith(_FIRST_PARTY_ROOTS):
             ours = _position(filename, lineno)
             if ours != raised:
-                raised = f"{raised}<-{ours}"
+                raised = f"{raised}{_VIA}{ours}"
             break
-    return raised[:_LOCATOR_MAX]
+    return raised
 
 
 def worker_count() -> int:

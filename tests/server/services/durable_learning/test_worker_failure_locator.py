@@ -19,8 +19,10 @@ three coincidences.
 from __future__ import annotations
 
 import logging
+import os
 import re
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any, cast
 
 import pytest
@@ -211,3 +213,120 @@ def test_first_party_raise_site_is_not_repeated() -> None:
 
 def test_locator_without_a_traceback_is_named_not_empty() -> None:
     assert exception_locator(ValueError(SENTINEL)) == "unknown"
+
+
+def _raise_through(dependency_path: str, first_party_path: str) -> BaseException:
+    """An exception whose frames carry the given ``co_filename`` values.
+
+    ``compile(..., path, ...)`` sets ``co_filename`` for real, so these are
+    genuine frames - the locator sees exactly what it would in production.
+    """
+
+    def _make(path: str, src: str) -> dict[str, Any]:
+        namespace: dict[str, Any] = {}
+        exec(compile(src, path, "exec"), namespace)  # noqa: S102
+        return namespace
+
+    inner = _make(dependency_path, "def boom():\n    raise ValueError('S')\n")
+    outer = _make(first_party_path, "def call(f):\n    f()\n")
+    try:
+        outer["call"](inner["boom"])
+    except ValueError as exc:
+        return exc
+    raise AssertionError("the helper must raise")
+
+
+def _package_root() -> str:
+    return str(Path(worker_module.__file__).resolve().parents[3])
+
+
+def test_a_truncated_locator_still_names_a_line() -> None:
+    """Overrunning the budget must cost path, never the ``:line``.
+
+    A blind prefix slice cut the appended first-party coordinate mid-filename,
+    which is worse than no locator: it reads as diagnosed and points nowhere.
+    """
+    long_dependency = (
+        "/srv/app/.venv/lib/python3.13/site-packages"
+        "/vendored_validation_namespace_pkg/generated_model_builder_impl.py"
+    )
+    long_first_party = str(
+        Path(_package_root())
+        / "server"
+        / "services"
+        / "durable_learning_window_delivery"
+        / "outcome_plan_decoder_helpers.py"
+    )
+    where = exception_locator(_raise_through(long_dependency, long_first_party))
+
+    # The case is only meaningful if the untruncated form would overrun.
+    assert len(f"{long_dependency}<-{long_first_party}") > worker_module._LOCATOR_MAX
+    assert len(where) <= worker_module._LOCATOR_MAX, where
+
+    halves = where.split("<-")
+    assert len(halves) == 2, where
+    # The invariant first: truncation may cost path, never the coordinate.
+    for half in halves:
+        assert re.search(r":\d+$", half), half
+    for half in halves:
+        assert len(half) <= worker_module._POSITION_MAX, half
+
+
+def test_a_single_component_path_cannot_crowd_out_the_line() -> None:
+    """Even a pathological path yields a coordinate that names its line."""
+    absurd = "/" + "z" * 400 + "/" + "y" * 400 + ".py"
+    position = worker_module._position(absurd, 987654)
+
+    assert position.endswith(":987654"), position
+    assert len(position) <= worker_module._POSITION_MAX, position
+
+
+def test_symlinked_deployment_still_matches_first_party_frames(
+    tmp_path: Path,
+) -> None:
+    """A ``current``-style release symlink must not reject every own frame.
+
+    ``co_filename`` keeps the path a module was imported *as*. Resolving only
+    our own side made the prefix test match nothing on such a deployment, so
+    no first-party frame was ever found - silently, and for good.
+    """
+    release = tmp_path / "current"
+    release.symlink_to(_package_root())
+    symlinked = str(release / "server" / "services" / "durable_learning" / "worker.py")
+    real = os.path.realpath(symlinked)
+
+    # The premise: one file, two spellings that genuinely disagree as strings.
+    assert symlinked != real
+    assert os.path.samefile(symlinked, real)
+
+    # Roots as computed by a deployment that imported THROUGH the symlink.
+    roots = worker_module._first_party_roots(symlinked)
+    assert symlinked.startswith(roots), roots
+    assert real.startswith(roots), roots
+
+
+def test_symlinked_first_party_frame_is_found_end_to_end(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The symlinked frame reaches the emitted locator, not just the predicate."""
+    release = tmp_path / "current"
+    release.symlink_to(_package_root())
+    symlinked_caller = str(
+        release / "server" / "services" / "durable_learning" / "window_executor.py"
+    )
+    monkeypatch.setattr(
+        worker_module,
+        "_FIRST_PARTY_ROOTS",
+        worker_module._first_party_roots(
+            str(release / "server" / "services" / "durable_learning" / "worker.py")
+        ),
+    )
+
+    where = exception_locator(
+        _raise_through(
+            "/srv/app/.venv/lib/python3.13/json/decoder.py", symlinked_caller
+        )
+    )
+
+    assert "<-" in where, where
+    assert where.endswith("durable_learning/window_executor.py:2"), where
