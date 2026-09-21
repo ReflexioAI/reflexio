@@ -162,6 +162,39 @@ def _pending_tool_call_config(request_context: RequestContext) -> Any | None:
     )
 
 
+def pending_tool_calls_disabled_reason(
+    request_context: RequestContext,
+) -> str | None:
+    """Return the FIRST closed gate, or ``None`` when every gate is open.
+
+    Exists so a caller can say WHICH gate is shut instead of guessing. There
+    are three, and they are not interchangeable: an operator told to turn on
+    ``pending_tool_call_config.enabled`` when it is already on, and the real
+    blocker is the per-org feature flag, has been sent to fix the wrong thing
+    by the very message that was meant to help.
+
+    ``pending_tool_calls_enabled`` is defined in terms of this function rather
+    than repeating the conditions, so the predicate and the explanation cannot
+    drift apart.
+
+    Args:
+        request_context (RequestContext): The org's context.
+
+    Returns:
+        str | None: A short reason naming the closed gate, or None.
+    """
+    pending_config = _pending_tool_call_config(request_context)
+    if pending_config is None:
+        return "no pending_tool_call_config on the resolved config"
+    if not pending_config.enabled:
+        return "pending_tool_call_config.enabled is false"
+    if not is_resumable_extraction_agent_feature_enabled(request_context.org_id):
+        return "the resumable_extraction_agent feature flag is off for this org"
+    if request_context.storage is None:
+        return "the request context has no storage"
+    return None
+
+
 def pending_tool_calls_enabled(request_context: RequestContext) -> bool:
     """Gate whether pending-info tools are offered.
 
@@ -169,13 +202,7 @@ def pending_tool_calls_enabled(request_context: RequestContext) -> bool:
     the extraction path. It only governs whether the resumable human-in-the-loop
     and prior-knowledge tools may be registered alongside ``finish_extraction``.
     """
-    pending_config = _pending_tool_call_config(request_context)
-    return bool(
-        pending_config
-        and pending_config.enabled
-        and is_resumable_extraction_agent_feature_enabled(request_context.org_id)
-        and request_context.storage is not None
-    )
+    return pending_tool_calls_disabled_reason(request_context) is None
 
 
 def create_pending_info_tools_for_extractor_kind(extractor_kind: str) -> list[Tool]:

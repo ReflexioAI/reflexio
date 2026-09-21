@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import threading
 from collections.abc import Callable
 from types import SimpleNamespace
@@ -256,3 +257,122 @@ def test_resume_scheduler_expires_pending_calls_on_each_discovered_ref(monkeypat
 
     storages["org_1"].expire_pending_tool_calls.assert_called_once()
     storages["org_2"].expire_pending_tool_calls.assert_called_once()
+
+
+def test_a_disabled_org_with_work_says_so_instead_of_skipping_silently(
+    monkeypatch, caplog
+):
+    """The skip is specified; its silence was not.
+
+    `test_resume_scheduler_observes_feature_enabled_after_startup` pins that a
+    disabled org is NOT drained, and that stays true. This pins that the skip
+    is legible: the provider has just named the org as having resumable work,
+    so an operator reading the logs must be able to tell "disabled on purpose"
+    from "broken".
+
+    Prod 2026-09-20 is why: 238 runs across three orgs sat behind this branch,
+    every one a finalization retry already holding `committed_output`, and the
+    sweep reported a nonzero `resumable_orgs` every two minutes with nothing
+    anywhere explaining why none of it moved.
+    """
+    context = _request_context(
+        storage=SimpleNamespace(
+            # NON-empty on purpose. An earlier cut stubbed `[]` and still
+            # asserted the line fired -- which passed only because the code
+            # logged for the unconditionally-prepended bootstrap org, i.e.
+            # the test encoded the very defect Codex caught (>17k
+            # misleading lines/day on an idle install). Discovery has to
+            # actually name the org for "has resumable work" to be true.
+            list_resumable_work_org_ids=MagicMock(return_value=["org_1"]),
+            expire_pending_tool_calls=MagicMock(return_value=0),
+        )
+    )
+    context.configurator.get_config().pending_tool_call_config.enabled = False
+    monkeypatch.setattr(
+        resume_scheduler,
+        "pending_tool_calls_enabled",
+        lambda ctx: ctx.configurator.get_config().pending_tool_call_config.enabled,
+    )
+    monkeypatch.setattr(
+        resume_scheduler.ExtractionResumeScheduler, "start", lambda _self: None
+    )
+    drain = MagicMock(return_value=0)
+    monkeypatch.setattr(
+        resume_scheduler,
+        "ExtractionResumeWorker",
+        lambda **_kwargs: SimpleNamespace(drain=drain),
+    )
+    scheduler = resume_scheduler.maybe_start_resume_scheduler(
+        cast(Callable[[str], RequestContext], lambda _org_id: context),
+        bootstrap_org_id="org_1",
+    )
+
+    with caplog.at_level(logging.INFO):
+        scheduler._run_once()
+
+    drain.assert_not_called()
+    skips = [
+        record.getMessage()
+        for record in caplog.records
+        if "extraction_resume_drain_skipped_gate_disabled" in record.getMessage()
+    ]
+    assert skips, f"the skip must be logged; saw {[r.message for r in caplog.records]}"
+    # It must name WHICH gate. `pending_tool_calls_enabled` is false for three
+    # different reasons, and an operator told to enable a setting that is
+    # already on has been sent to fix the wrong thing by the diagnostic.
+    assert "reason=pending_tool_call_config.enabled is false" in skips[0], skips[0]
+
+
+def test_an_idle_install_does_not_claim_the_bootstrap_org_has_work(monkeypatch, caplog):
+    """No provider, no discovered work: say nothing.
+
+    `_discover_local_org_ids` prepends the bootstrap org unconditionally so a
+    single-tenant install still drains. That org has NOT been shown to hold
+    resumable work, and the default OSS path has no provider to narrow it --
+    so an unconditional skip line fires on every tick. At the 5s default poll
+    interval that is >17,000 entries a day, each asserting work exists that
+    does not, on an install where nothing is wrong.
+
+    Caught by Codex on #522 against a first cut whose PR description claimed
+    the path was "already narrowed to orgs that actually have work". It was
+    not, on this path.
+    """
+    context = _request_context(
+        storage=SimpleNamespace(
+            list_resumable_work_org_ids=MagicMock(return_value=[]),
+            expire_pending_tool_calls=MagicMock(return_value=0),
+        )
+    )
+    context.configurator.get_config().pending_tool_call_config.enabled = False
+    monkeypatch.setattr(
+        resume_scheduler,
+        "pending_tool_calls_enabled",
+        lambda ctx: ctx.configurator.get_config().pending_tool_call_config.enabled,
+    )
+    monkeypatch.setattr(
+        resume_scheduler.ExtractionResumeScheduler, "start", lambda _self: None
+    )
+    drain = MagicMock(return_value=0)
+    monkeypatch.setattr(
+        resume_scheduler,
+        "ExtractionResumeWorker",
+        lambda **_kwargs: SimpleNamespace(drain=drain),
+    )
+    scheduler = resume_scheduler.maybe_start_resume_scheduler(
+        cast(Callable[[str], RequestContext], lambda _org_id: context),
+        bootstrap_org_id="org_1",
+    )
+
+    with caplog.at_level(logging.INFO):
+        scheduler._run_once()
+
+    drain.assert_not_called()
+    noise = [
+        record.getMessage()
+        for record in caplog.records
+        if "extraction_resume_drain_skipped" in record.getMessage()
+    ]
+    assert not noise, (
+        "an idle install must not claim the bootstrap org has resumable "
+        f"work; saw {noise}"
+    )

@@ -19,6 +19,7 @@ from reflexio.server.auth import DEFAULT_ORG_ID
 from reflexio.server.error_reporting import error_tags
 from reflexio.server.scheduling import ThreadedScheduler
 from reflexio.server.services.extraction.resumable_agent import (
+    pending_tool_calls_disabled_reason,
     pending_tool_calls_enabled,
 )
 from reflexio.server.services.extraction.resume_worker import ExtractionResumeWorker
@@ -51,18 +52,35 @@ class ExtractionResumeScheduler(ThreadedScheduler):
     def _on_stopped(self) -> None:
         logger.info("event=extraction_resume_scheduler_stopped")
 
-    def _discover_local_org_ids(self, bootstrap_ctx: RequestContext) -> list[str]:
-        """Return local actionable orgs plus the bootstrap org."""
-        org_ids: list[str] = []
+    def _discover_local_org_ids(
+        self, bootstrap_ctx: RequestContext
+    ) -> tuple[list[str], set[str]]:
+        """Return (orgs to drain, the subset KNOWN to hold resumable work).
+
+        The two differ, and conflating them is a defect rather than a detail.
+        The bootstrap org is prepended unconditionally so a single-tenant
+        install still drains, which means it appears here even when storage
+        reported no resumable work at all. Anything that wants to say "this
+        org has work" must consult the second value, never the first.
+
+        Args:
+            bootstrap_ctx (RequestContext): Context of the bootstrap org.
+
+        Returns:
+            tuple[list[str], set[str]]: Orgs to visit, and those with work.
+        """
+        discovered: list[str] = []
         storage = getattr(bootstrap_ctx, "storage", None)
         if storage is not None:
             try:
-                org_ids = storage.list_resumable_work_org_ids(now=datetime.now(UTC))
+                discovered = storage.list_resumable_work_org_ids(now=datetime.now(UTC))
             except NotImplementedError:
-                org_ids = []
+                discovered = []
+        known_work = set(discovered)
+        org_ids = list(discovered)
         if bootstrap_ctx.org_id not in org_ids:
             org_ids = [bootstrap_ctx.org_id, *org_ids]
-        return list(dict.fromkeys(org_ids))
+        return list(dict.fromkeys(org_ids)), known_work
 
     def _discover_provider_org_ids(self) -> list[str] | None:
         """Return the provider's authoritative list, or ``None`` on failure."""
@@ -98,10 +116,43 @@ class ExtractionResumeScheduler(ThreadedScheduler):
         if expired:
             logger.info("event=pending_tool_calls_expired expired=%d", expired)
 
-    def _drain_org(self, org_id: str) -> None:
+    def _drain_org(self, org_id: str, *, has_known_work: bool = False) -> None:
         try:
             ctx = self.request_context_factory(org_id)
             if not pending_tool_calls_enabled(ctx):
+                # Behaviour is deliberate and specified -- a disabled org's
+                # resume machinery stops. What was NOT deliberate is that it
+                # stopped SILENTLY: the provider had just named this org as
+                # having resumable work, and nothing said why none of it moved.
+                #
+                # Measured on prod 2026-09-20: 238 runs across three orgs sat
+                # here, every one of them a finalization retry already holding
+                # `committed_output`, none of them waiting on a pending-info
+                # tool -- and the sweep logged `resumable_orgs` without a
+                # single line explaining the stall. An operator reading the
+                # logs could not tell "disabled on purpose" from "broken".
+                #
+                # Gated on `has_known_work`, and that gate is the whole
+                # difference between a diagnostic and a noise generator. The
+                # default OSS path has no provider and prepends the bootstrap
+                # org whether or not storage found anything, so an idle
+                # single-tenant install reaches here on EVERY tick. At the
+                # 5s default poll interval an unconditional line would emit
+                # >17,000 entries a day, each one claiming work exists that
+                # does not. Say nothing unless discovery actually named it.
+                if has_known_work:
+                    logger.info(
+                        "event=extraction_resume_drain_skipped_gate_disabled "
+                        "org_id=%s reason=%s -- the org has resumable work and "
+                        "this gate is shut, so none of it will be drained "
+                        "until that changes",
+                        org_id,
+                        # Which gate, not a guess: `pending_tool_calls_enabled`
+                        # is false for three different reasons, and naming the
+                        # wrong one sends an operator to change a setting that
+                        # is already correct.
+                        pending_tool_calls_disabled_reason(ctx) or "gate closed",
+                    )
                 return
             self._expire_pending_tool_calls(ctx)
             inspected = ExtractionResumeWorker(request_context=ctx).drain(
@@ -139,18 +190,24 @@ class ExtractionResumeScheduler(ThreadedScheduler):
             bootstrap_ctx = self.request_context_factory(self.bootstrap_org_id)
             config = bootstrap_ctx.configurator.get_config()
             poll_interval = config.pending_tool_call_config.resume_poll_interval_seconds
+            # Orgs discovery PROVED hold resumable work, as opposed to orgs we
+            # merely visit. Only the former may be described as stalled.
+            known_work: set[str] = set()
             if provider_org_ids is not None:
                 org_ids = provider_org_ids
+                known_work = set(provider_org_ids)
             elif self.org_id_provider is not None:
                 # A raised provider cannot authoritatively replace the list;
                 # preserve the last known bootstrap as a one-org fallback.
+                # It is a fallback, NOT a discovery result -- the provider
+                # failed, so nothing here proves this org has work.
                 org_ids = [bootstrap_ctx.org_id]
             else:
-                org_ids = self._discover_local_org_ids(bootstrap_ctx)
+                org_ids, known_work = self._discover_local_org_ids(bootstrap_ctx)
             for org_id in org_ids:
                 if self._stop_event.is_set():
                     break
-                self._drain_org(org_id)
+                self._drain_org(org_id, has_known_work=org_id in known_work)
         except Exception as exc:
             with error_tags(
                 subsystem="extraction",
