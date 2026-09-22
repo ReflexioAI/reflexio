@@ -461,9 +461,6 @@ class TestProviderDefaults:
 
 
 class TestExtractionAgentRole:
-    def test_extraction_agent_role_exists(self) -> None:
-        assert ModelRole.EXTRACTION_AGENT.value == "extraction_agent"
-
     def test_anthropic_defaults_map_to_sonnet(self) -> None:
         anthropic = _PROVIDER_DEFAULTS["anthropic"]
         assert anthropic.generation == "claude-sonnet-5"

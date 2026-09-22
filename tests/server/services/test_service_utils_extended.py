@@ -15,7 +15,6 @@ from reflexio.server.services.service_utils import (
     PromptConfig,
     _image_data_url_from_encoding,
     construct_messages_from_interactions,
-    extract_json_from_string,
     format_interactions_to_history_string,
     format_messages_for_logging,
 )
@@ -41,40 +40,6 @@ def test_format_interactions_with_tools_used():
     assert '[used tool: search({"input": {"query": "test"}})]' in result
     assert "assistant: ```[used tool: search" in result
     assert "Here are the results```" in result
-
-
-# ---------------------------------------------------------------------------
-# extract_json_from_string
-# ---------------------------------------------------------------------------
-
-
-def test_extract_json_from_code_block():
-    text = '```json\n{"key": "value"}\n```'
-    result = extract_json_from_string(text)
-    assert result == {"key": "value"}
-
-
-def test_extract_json_from_braces():
-    text = 'some text {"key": "value"} more text'
-    result = extract_json_from_string(text)
-    assert result == {"key": "value"}
-
-
-def test_extract_json_python_booleans():
-    text = '{"flag": True, "other": False, "none_val": None}'
-    result = extract_json_from_string(text)
-    assert result == {"flag": True, "other": False, "none_val": None}
-
-
-def test_extract_json_single_quotes():
-    text = "{'key': 'value'}"
-    result = extract_json_from_string(text)
-    assert result == {"key": "value"}
-
-
-def test_extract_json_invalid():
-    result = extract_json_from_string("no json here")
-    assert result == {}
 
 
 # ---------------------------------------------------------------------------

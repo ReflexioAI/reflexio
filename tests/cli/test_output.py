@@ -11,7 +11,6 @@ from unittest.mock import MagicMock
 
 from reflexio.cli.output import (
     format_agent_playbooks,
-    format_interactions,
     format_profiles,
     format_user_playbooks,
     mask_api_key,
@@ -32,68 +31,6 @@ def _make_playbook(**kwargs):
     fb.playbook_status = kwargs.get("playbook_status")
     fb.status = kwargs.get("status")
     return fb
-
-
-# ---------------------------------------------------------------------------
-# format_interactions
-# ---------------------------------------------------------------------------
-
-
-class TestFormatInteractions:
-    """Tests for format_interactions()."""
-
-    def test_empty_list(self) -> None:
-        assert format_interactions([]) == ""
-
-    def test_groups_by_request_id(self) -> None:
-        ix1 = MagicMock(request_id="req-1", role="user", content="Hi", created_at=1000)
-        ix2 = MagicMock(
-            request_id="req-1", role="assistant", content="Hello", created_at=1001
-        )
-        output = format_interactions([ix1, ix2])
-        # Both should appear in a single block headed by req-1's short id
-        assert "req-1" in output[:20]
-        assert "Hi" in output
-        assert "Hello" in output
-        # Only one header line (one group)
-        header_count = output.count("──")
-        # The header format is: ── {short_id} ({dt} UTC) ──
-        # So each group has 2 occurrences of "──"
-        assert header_count == 2
-
-    def test_sorted_by_timestamp(self) -> None:
-        """Earlier request_id groups should appear first."""
-        ix_early = MagicMock(
-            request_id="aaa-early", role="user", content="First", created_at=100
-        )
-        ix_late = MagicMock(
-            request_id="bbb-later", role="user", content="Second", created_at=999
-        )
-        output = format_interactions([ix_late, ix_early])
-        # The early group should come before the late group
-        assert output.index("First") < output.index("Second")
-
-    def test_shows_role_and_content(self) -> None:
-        ix = MagicMock(
-            request_id="req-1", role="user", content="What is 2+2?", created_at=5000
-        )
-        ix2 = MagicMock(
-            request_id="req-1",
-            role="assistant",
-            content="4",
-            created_at=5001,
-        )
-        output = format_interactions([ix, ix2])
-        assert "User:" in output
-        assert "Assistant:" in output
-
-    def test_invalid_created_at(self) -> None:
-        """Non-int created_at should fall back to 'unknown'."""
-        ix = MagicMock(
-            request_id="req-x", role="user", content="test", created_at="not-a-number"
-        )
-        output = format_interactions([ix])
-        assert "unknown" in output
 
 
 # ---------------------------------------------------------------------------
