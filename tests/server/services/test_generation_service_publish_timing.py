@@ -6,7 +6,8 @@ the request path calls it from. A publish has three ways out and each is a
 separate placement:
 
 * it SUCCEEDS -- and must produce exactly one line, not two, even though a
-  `finally` backstop also runs;
+  `finally` backstop also runs; and if it was FAST it must produce none at all,
+  however long the caller then waits for coverage afterwards;
 * it RAISES -- the case most worth a breakdown, and before this it produced
   nothing at all, because the only `emit()` sat on the success path; and
 * it is CANCELLED while still queued for admission -- the dominant production
@@ -20,6 +21,7 @@ import asyncio
 import datetime
 import logging
 import tempfile
+import time
 from collections.abc import Iterator
 from datetime import UTC
 from types import SimpleNamespace
@@ -156,6 +158,45 @@ def test_a_successful_publish_reports_exactly_one_line(
     lines = _timing_lines(caplog)
     assert len(lines) == 1, f"expected exactly one timing line, got {lines}"
     assert "n_interactions=1" in lines[0]
+
+
+def test_the_backstop_never_folds_the_coverage_wait_into_the_duration(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A fast publish must stay silent even if the caller then waits.
+
+    `total_ms` is the time spent SERVING the publish. The in-process coverage
+    wait that `defer_learning=False` performs afterwards is a different
+    quantity -- blocking on a background worker -- and folding it in would make
+    every waited request look slow.
+
+    The at-most-once latch does not cover this on its own, which is the whole
+    bug: a publish below the threshold leaves the latch unset, so the `finally`
+    backstop got a second look at a clock that had meanwhile absorbed the wait.
+    Here the publish is far under 300ms and the wait is 500ms over it.
+    """
+    monkeypatch.setenv(publish_timing.ENV_THRESHOLD_MS, "300")
+
+    def slow_poll(*_args: object, **_kwargs: object) -> dict[str, str]:
+        time.sleep(0.5)
+        return {"status": "done", "reason": "complete"}
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        service = _service(temp_dir)
+        assert service.storage is not None
+        with (
+            caplog.at_level(logging.WARNING, logger=publish_timing.__name__),
+            patch.object(type(service.storage), "extraction_status", slow_poll),
+            publish_timing.collect(),
+        ):
+            service.run(_publish_request(), defer_learning=False)
+            elapsed_ms = publish_timing.snapshot() is not None
+
+    assert elapsed_ms  # the scope really was open for the whole call
+    assert _timing_lines(caplog) == [], (
+        "a fast publish was reported as slow because the coverage wait was "
+        f"counted against it: {_timing_lines(caplog)}"
+    )
 
 
 def test_a_publish_cancelled_while_queued_still_reports(

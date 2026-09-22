@@ -76,15 +76,32 @@ would make every waited request look slow.
 
 WHAT A DURATION ALONE CANNOT TELL YOU
 -------------------------------------
-The evidence says the missing time is a COUNT of serialized cross-region round
-trips rather than slow work: CPU stays at 3%, statement execution on the
-metrics DB is ~0.1ms, latency is flat against both request volume and payload
-size, and ``storage/_transaction_preamble.py`` already measured 23 statements
-for one admission sequence at ~60ms each. 8s / 60ms is roughly 130 round trips.
+Serialized cross-region round trips are a large part of the missing time but
+NOT all of it, and the distinction is measured rather than inferred. A counting
+harness against a real ``platform`` + Supabase app fits
+``statements = 50 + 7 x n_interactions`` exactly, reproduced across two
+independent process runs, so a typical publish makes ~57-68 round trips. At the
+observed per-backend latencies that is 3.6-4.4s of ~8s -- roughly half. The
+other half is unexplained and is not round trips.
 
-So ``add_interactions_ms=3200`` is ambiguous where it matters most: one slow
-statement and 53 fast ones look identical, and the remedy differs completely.
-A per-phase round-trip count would settle it and is the natural next field.
+(An earlier draft of this paragraph divided 8s by 60ms and asserted ~130 round
+trips. That was arithmetic, not a measurement, and it was wrong by a factor of
+two. It is recorded here because shipping an inference as a fact is the exact
+failure this module exists to escape.)
+
+That is what makes a per-phase round-trip COUNT the next field worth having,
+and it is worth more now than when the time was thought to be round trips all
+the way down: the count is known and the time is not, so a phase whose duration
+far exceeds ``count x 60ms`` is where the missing half lives.
+``add_interactions_ms=3200`` cannot distinguish one slow statement from 53 fast
+ones today, and the remedy differs completely.
+
+One lead, recorded rather than built: the same harness saw 1-5 NEW psycopg2
+connections per publish. A dial is free on loopback and ~4-6 round trips
+against a cross-region TLS pooler, and ``_pool.py`` / ``append.py`` already
+record a ~330ms cold dial for the metrics DB -- two per publish would be ~0.7s.
+Separating "acquiring a connection" from "using it" needs a phase inside the
+pool, which is the same enterprise-side change as the counter below.
 
 It is deliberately NOT added here, because it is not cheaply reachable from
 this module. The backends that would have to increment it live in

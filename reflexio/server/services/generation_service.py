@@ -228,6 +228,10 @@ class GenerationService:
         agent_version = resolve_agent_version(
             publish_user_interaction_request.agent_version
         )
+        # Set at the one normal exit, so the timing backstop in `finally` can
+        # tell "this request already had its reporting moment" from "this
+        # request left by a door nobody was watching". See that `finally`.
+        served_to_completion = False
 
         try:
             retrieval_experiment_id = getattr(
@@ -452,6 +456,7 @@ class GenerationService:
                         )
                     finally:
                         release_waiter(self.org_id)
+            served_to_completion = True
             return result
 
         except Exception as e:
@@ -484,23 +489,28 @@ class GenerationService:
             raise
         finally:
             # Backstop for every exit the success emit above does not reach:
-            # a raise (a storage timeout or a metering wait is exactly what
-            # this instrument was built to name, and the failure event carries
-            # only the aggregate duration), and the external-admission replay
-            # returns. Still inside the caller's `collect` scope, and after the
-            # failure metering phase has closed.
+            # a raise (a storage timeout is exactly what this instrument was
+            # built to name, and the failure event carries only the aggregate
+            # duration), and the external-admission replay returns. Still
+            # inside the caller's `collect` scope, and after the failure
+            # metering phase has closed.
             #
-            # `emit` is at-most-once per scope, so a request that already
-            # reported cannot log twice -- which is also what keeps the success
-            # line's placement authoritative: it is taken BEFORE the
-            # `defer_learning=False` coverage wait, and this one would
-            # otherwise fold that wait into `total_ms`.
-            publish_timing.emit(
-                org_id=self.org_id,
-                # None when the failure preceded id assignment -- `unknown` is
-                # readable where an empty `request_id=` is not.
-                request_id=result.request_id or "unknown",
-            )
+            # `served_to_completion` is what keeps the success emit's PLACEMENT
+            # authoritative, and the at-most-once latch is not enough on its
+            # own: that emit sits before the `defer_learning=False` coverage
+            # wait, but a publish UNDER the threshold declines to log and so
+            # leaves the latch unset. This call would then read a clock that
+            # had meanwhile absorbed the wait -- measured at 609ms for a
+            # publish whose own phases summed to ~110ms -- and report a healthy
+            # request as slow. The wait is time spent blocking on a background
+            # worker, not time spent serving the publish.
+            if not served_to_completion:
+                publish_timing.emit(
+                    org_id=self.org_id,
+                    # None when the failure preceded id assignment -- `unknown`
+                    # is readable where an empty `request_id=` is not.
+                    request_id=result.request_id or "unknown",
+                )
 
     def _replay_external_admission(
         self,
