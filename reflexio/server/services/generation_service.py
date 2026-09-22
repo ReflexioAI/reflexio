@@ -228,11 +228,6 @@ class GenerationService:
         agent_version = resolve_agent_version(
             publish_user_interaction_request.agent_version
         )
-        # Set at the one normal exit, so the timing backstop in `finally` can
-        # tell "this request already had its reporting moment" from "this
-        # request left by a door nobody was watching". See that `finally`.
-        served_to_completion = False
-
         try:
             retrieval_experiment_id = getattr(
                 publish_user_interaction_request,
@@ -412,7 +407,14 @@ class GenerationService:
                         "warning_count": len(result.warnings),
                     },
                 )
-            publish_timing.emit(org_id=self.org_id, request_id=request_id)
+            # No `emit` here, deliberately. This frame is too EARLY to report:
+            # the caller's post-commit coverage reads
+            # (`lib/_interactions.py::_safe_coverage`, two remote round trips
+            # on every publish) run after it returns and are part of serving
+            # the request. The worker's outermost frame,
+            # `publisher_api.add_user_interaction`, reports instead -- which
+            # also catches a failure that never reaches this method at all,
+            # such as a cold `get_reflexio` construction.
             if not defer_learning:
                 from reflexio.server.services.durable_learning.waiting import (
                     acquire_waiter,
@@ -420,22 +422,32 @@ class GenerationService:
                     release_waiter,
                 )
 
+                # Blocking on a background worker is not time spent SERVING
+                # this publish. Because the reporting frame sits further OUT
+                # than this one, the wait is SUBTRACTED rather than the clock
+                # stopped. Without this, a threshold low enough to be useful
+                # reports every waited request as slow -- measured at 609ms for
+                # a publish whose own phases summed to ~110ms.
                 if acquire_waiter(self.org_id):
                     try:
-                        deadline = publish_start + 240
-                        while time.perf_counter() < deadline:
-                            status = storage.extraction_status(user_id, request_id)
-                            if status["status"] == "done":
-                                break
-                            # A partial window needs input this caller does not
-                            # have, so the remaining deadline cannot change the
-                            # answer. Without this the default library publish
-                            # blocks the full 240s for any user below one window.
-                            if coverage_stalled(status):
-                                break
-                            time.sleep(
-                                min(0.25, max(0, deadline - time.perf_counter()))
-                            )
+                        with publish_timing.excluded():
+                            deadline = publish_start + 240
+                            while time.perf_counter() < deadline:
+                                status = storage.extraction_status(
+                                    user_id, request_id
+                                )
+                                if status["status"] == "done":
+                                    break
+                                # A partial window needs input this caller does
+                                # not have, so the remaining deadline cannot
+                                # change the answer. Without this the default
+                                # library publish blocks the full 240s for any
+                                # user below one window.
+                                if coverage_stalled(status):
+                                    break
+                                time.sleep(
+                                    min(0.25, max(0, deadline - time.perf_counter()))
+                                )
                     except Exception:  # noqa: BLE001
                         # Everything above this point has COMMITTED. The waiter
                         # only observes how far extraction has got; it performs
@@ -456,7 +468,6 @@ class GenerationService:
                         )
                     finally:
                         release_waiter(self.org_id)
-            served_to_completion = True
             return result
 
         except Exception as e:
@@ -487,30 +498,6 @@ class GenerationService:
                     user_id,
                 )
             raise
-        finally:
-            # Backstop for every exit the success emit above does not reach:
-            # a raise (a storage timeout is exactly what this instrument was
-            # built to name, and the failure event carries only the aggregate
-            # duration), and the external-admission replay returns. Still
-            # inside the caller's `collect` scope, and after the failure
-            # metering phase has closed.
-            #
-            # `served_to_completion` is what keeps the success emit's PLACEMENT
-            # authoritative, and the at-most-once latch is not enough on its
-            # own: that emit sits before the `defer_learning=False` coverage
-            # wait, but a publish UNDER the threshold declines to log and so
-            # leaves the latch unset. This call would then read a clock that
-            # had meanwhile absorbed the wait -- measured at 609ms for a
-            # publish whose own phases summed to ~110ms -- and report a healthy
-            # request as slow. The wait is time spent blocking on a background
-            # worker, not time spent serving the publish.
-            if not served_to_completion:
-                publish_timing.emit(
-                    org_id=self.org_id,
-                    # None when the failure preceded id assignment -- `unknown`
-                    # is readable where an empty `request_id=` is not.
-                    request_id=result.request_id or "unknown",
-                )
 
     def _replay_external_admission(
         self,

@@ -120,6 +120,7 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 import threading
 import time
 from collections.abc import Iterator, Mapping
@@ -158,6 +159,22 @@ PUBLISH_TIMING_LOG_LEVEL = logging.WARNING
 #: ``n_interactions=3`` is two integers with no way to know which is a clock.
 _MS_SUFFIX = "_ms"
 
+#: The record is space-delimited ``key=value``, so a caller-influenced value
+#: containing a space or an ``=`` does not merely look odd -- it creates
+#: FIELDS. ``sanitise_for_log`` bounds the length and strips control
+#: characters, which stops a forged LINE, and deliberately preserves printable
+#: whitespace, which leaves a forged FIELD:
+#:
+#:     request_id=req total_ms=999999 admission_ms=0 total_ms=13 embeddings_ms=13
+#:
+#: is what a ``request_id`` of ``req total_ms=999999 admission_ms=0`` produces.
+#: Two ``total_ms`` fields, the caller's first, plus a phase that never ran --
+#: a CloudWatch ``parse`` taking the first occurrence reads 999999.
+#:
+#: Restricting the charset has no escaping problem. Quoting would need the
+#: quote character escaped as well, and one unescaped quote reopens the hole.
+_UNSAFE_IN_TOKEN = re.compile(r"[^A-Za-z0-9_.:-]")
+
 _lock = threading.Lock()
 _last_logged_by_org: dict[str, float] = {}
 
@@ -168,6 +185,7 @@ class _Scope:
 
     started: float
     phases: dict[str, int] = field(default_factory=dict)
+    excluded_s: float = 0.0
     emitted: bool = False
 
 
@@ -281,6 +299,47 @@ def phase(name: str) -> Iterator[None]:
         scope.phases[key] = scope.phases.get(key, 0) + elapsed
 
 
+@contextmanager
+def excluded() -> Iterator[None]:
+    """Mark a region as NOT part of the request's served duration.
+
+    ``total_ms`` answers "how long did serving this publish take". A caller
+    that then blocks waiting for a background worker to catch up is doing
+    something else, and counting it would report every waited request as slow.
+    The one region this covers today is ``GenerationService.run``'s in-process
+    coverage wait under ``defer_learning=False``.
+
+    This exists rather than a "stop the clock here" flag because the reporting
+    point is further out than the wait: the worker's own outermost frame emits
+    *after* the post-commit coverage reads, which DO count.
+
+    Yields:
+        None: The elapsed time is added to the scope, not to the bound value.
+    """
+    scope = _scope.get()
+    if scope is None:
+        yield
+        return
+    start = time.perf_counter()
+    try:
+        yield
+    finally:
+        scope.excluded_s += time.perf_counter() - start
+
+
+def _log_token(value: str) -> str:
+    """Reduce a caller-influenced identifier to exactly ONE field's value.
+
+    Args:
+        value (str): The identifier as supplied.
+
+    Returns:
+        str: Length-bounded text containing no space and no ``=``, so it
+        cannot open, close or split a field in the record.
+    """
+    return _UNSAFE_IN_TOKEN.sub("?", sanitise_for_log(value))
+
+
 def record(name: str, value: int) -> None:
     """Attach a non-timing integer (a count) to the line, e.g. interactions.
 
@@ -336,7 +395,8 @@ def emit(*, org_id: str, request_id: str) -> bool:
     scope = _scope.get()
     if scope is None or scope.emitted:
         return False
-    total_ms = int((time.perf_counter() - scope.started) * 1000)
+    served_s = time.perf_counter() - scope.started - scope.excluded_s
+    total_ms = int(served_s * 1000)
     if total_ms < _threshold_ms():
         return False
     if not _should_log(org_id, time.monotonic()):
@@ -357,10 +417,14 @@ def emit(*, org_id: str, request_id: str) -> bool:
         PUBLISH_TIMING_LOG_LEVEL,
         fmt,
         # Both identifiers reach a shared multi-tenant log stream, and
-        # `request_id` is a caller-supplied unbounded `NonEmptyStr` -- a
-        # newline in it forges a line and a large one bloats the record.
-        sanitise_for_log(org_id),
-        sanitise_for_log(request_id),
+        # `request_id` is a caller-supplied unbounded `NonEmptyStr`. A newline
+        # forges a LINE and a large value bloats the record, which
+        # `sanitise_for_log` stops; a space or an `=` forges a FIELD, which it
+        # does not -- see `_UNSAFE_IN_TOKEN`. `org_id` is server-derived today
+        # and gets the same treatment, because the hole belongs to the format
+        # rather than to one of its values.
+        _log_token(org_id),
+        _log_token(request_id),
         total_ms,
         *[value for _, value in ordered],
     )
