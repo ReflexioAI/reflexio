@@ -130,9 +130,10 @@ _DEFAULT_THRESHOLD_MS = 2000
 ENV_INTERVAL_SECONDS = "REFLEXIO_PUBLISH_TIMING_INTERVAL_SECONDS"
 _DEFAULT_INTERVAL_SECONDS = 60.0
 
-#: WARNING, not INFO. See the module docstring -- INFO is invisible in the
-#: deployed configuration and a timing line nobody can read is worse than none,
-#: because it reads as coverage.
+#: WARNING, not INFO. See the module docstring: INFO from this logger is
+#: dropped in production unless someone adds it to ``REFLEXIO_INFO_LOGGERS``,
+#: and a timing line nobody can read is worse than none because it reads as
+#: coverage. Not that INFO is impossible -- that it needs a second change.
 PUBLISH_TIMING_LOG_LEVEL = logging.WARNING
 
 #: Durations carry this suffix so a CloudWatch Insights query can tell them
