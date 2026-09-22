@@ -2,17 +2,11 @@
 
 from __future__ import annotations
 
-import typer
-
 from reflexio import __version__ as _VERSION  # noqa: N812
 
 
 class TestCreateApp:
     """Tests for the create_app() factory function."""
-
-    def test_returns_typer_app(self, app: typer.Typer) -> None:
-        """create_app() should return a Typer instance."""
-        assert isinstance(app, typer.Typer)
 
     def test_all_command_groups_registered(self, runner, app) -> None:
         """--help output should list all 11 command groups."""

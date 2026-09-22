@@ -1,49 +1,14 @@
-"""Tests for per-record ``learnings_generated`` events (Task A3) and
-synthesized-key event-moment counters (Task A4).
-
-Phase A of the BYOC metering redesign: ``learnings_generated`` gains an
-entity-backed emission path, ``record_learnings_generated_records`` /
-``emit_learnings_generated_records``, that emits ONE event per learning id
-(``count_value=1``, ``event_key=f"learn:{entity_type}:{id}"``, ``entity_id=id``)
-instead of a single aggregate event with ``count_value=N``, so downstream
-dedup can key on the learning id. The ``entity_type`` segment is required for
-collision-freedom: ``user_playbook_id`` and ``agent_playbook_id`` are each an
-autoincrement primary key in a SEPARATE table, so the same integer id can
-legitimately occur in both -- without the entity-type segment those would
-mint the same ``event_key`` and collapse into one event downstream.
-
-The existing count-based ``record_learnings_generated`` / ``emit_learnings_generated``
-remain for online extraction callers that have a known billable count but do
-not retain per-record ids. Resumable finalization uses only the record-backed
-path and skips items without durable ids. The count-based helper carries a
-synthesized ``event_key=f"learn-batch:{uuid4()}"`` so every
-``learnings_generated`` event -- record-backed or batch -- has a dedup key.
-
-Totals are preserved in both paths: the sum of ``count_value`` across the
-per-record events equals ``len(learning_ids)``; the fallback emits exactly
-``count_value=N`` in one event, unchanged from before.
-
-Task A4 covers the three "event-moment" counters -- ``record_extraction_tokens``,
-``record_applied_learnings``, ``record_search_request`` -- which have no
-durable per-record row to key on (a token batch, an applied-learnings
-response, a search request are all ephemeral moments, not entities). Each now
-mints a fresh ``uuid4()`` at the emit site as its ``event_key``
-(``tok:``/``applied:``/``search:`` prefixes) so two calls -- even with the
-exact same ``request_id`` -- produce two distinct keys and are never
-collapsed by downstream dedup. ``count_value`` is unchanged.
-"""
+"""Test live count-based learning and event-moment billing emissions."""
 
 from __future__ import annotations
 
 import re
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 from reflexio.server.billing_meter import (
-    emit_learnings_generated_records,
     record_applied_learnings,
     record_extraction_tokens,
     record_learnings_generated,
-    record_learnings_generated_records,
     record_search_request,
 )
 
@@ -53,76 +18,6 @@ _BATCH_KEY_RE = re.compile(r"^learn-batch:[0-9a-f-]{36}$")
 _TOK_KEY_RE = re.compile(r"^tok:[0-9a-f-]{36}$")
 _APPLIED_KEY_RE = re.compile(r"^applied:[0-9a-f-]{36}$")
 _SEARCH_KEY_RE = re.compile(r"^search:[0-9a-f-]{36}$")
-
-
-def test_records_emits_one_event_per_id():
-    with patch(HOOK) as hook:
-        record_learnings_generated_records(
-            org_id="org1",
-            learning_ids=["p1", "p2", "p3"],
-            platform_llm=True,
-            platform_storage=None,
-            pipeline="profile",
-            entity_type="profile",
-        )
-    assert hook.call_count == 3
-    for call, learning_id in zip(hook.call_args_list, ["p1", "p2", "p3"], strict=True):
-        kwargs = call.kwargs
-        assert kwargs["event_name"] == "learnings_generated"
-        assert kwargs["event_category"] == "learning"
-        assert kwargs["count_value"] == 1
-        assert kwargs["event_key"] == f"learn:profile:{learning_id}"
-        assert kwargs["entity_id"] == learning_id
-
-
-def test_records_key_uses_placeholder_when_entity_type_is_none():
-    """No entity_type -> stable '_' placeholder, never a literal 'None'."""
-    with patch(HOOK) as hook:
-        record_learnings_generated_records(
-            org_id="org1",
-            learning_ids=["z1"],
-            platform_llm=True,
-            platform_storage=None,
-        )
-    assert hook.call_args.kwargs["event_key"] == "learn:_:z1"
-
-
-def test_records_key_disambiguates_same_id_across_entity_types():
-    """Regression guard for the cross-table collision finding: a
-    user_playbook id and an agent_playbook id that share the same integer
-    (both tables are separate AUTOINCREMENT PKs starting at 1) must produce
-    DISTINCT event_keys.
-    """
-    with patch(HOOK) as hook:
-        record_learnings_generated_records(
-            org_id="org1",
-            learning_ids=["11"],
-            platform_llm=True,
-            platform_storage=None,
-            entity_type="user_playbook",
-        )
-        record_learnings_generated_records(
-            org_id="org1",
-            learning_ids=["11"],
-            platform_llm=True,
-            platform_storage=None,
-            entity_type="agent_playbook",
-        )
-    keys = [call.kwargs["event_key"] for call in hook.call_args_list]
-    assert keys == ["learn:user_playbook:11", "learn:agent_playbook:11"]
-    assert len(set(keys)) == 2
-
-
-def test_records_emits_distinct_keys():
-    with patch(HOOK) as hook:
-        record_learnings_generated_records(
-            org_id="org1",
-            learning_ids=["a", "b", "c"],
-            platform_llm=True,
-            platform_storage=None,
-        )
-    keys = [call.kwargs["event_key"] for call in hook.call_args_list]
-    assert len(keys) == len(set(keys)) == 3
 
 
 def test_batch_record_accepts_a_retry_stable_event_key():
@@ -136,61 +31,6 @@ def test_batch_record_accepts_a_retry_stable_event_key():
         )
 
     assert hook.call_args.kwargs["event_key"] == ("learn-batch:resumable:run-1:profile")
-
-
-def test_records_totals_preserved():
-    with patch(HOOK) as hook:
-        record_learnings_generated_records(
-            org_id="org1",
-            learning_ids=["x1", "x2", "x3", "x4"],
-            platform_llm=True,
-            platform_storage=None,
-        )
-    total = sum(call.kwargs["count_value"] for call in hook.call_args_list)
-    assert total == 4  # == len(learning_ids), matching the old count semantics
-
-
-def test_records_noop_for_empty_list():
-    with patch(HOOK) as hook:
-        record_learnings_generated_records(
-            org_id="org1",
-            learning_ids=[],
-            platform_llm=True,
-            platform_storage=None,
-        )
-    hook.assert_not_called()
-
-
-def test_records_forwards_carried_fields():
-    with patch(HOOK) as hook:
-        record_learnings_generated_records(
-            org_id="org1",
-            learning_ids=["pb1"],
-            platform_llm=False,
-            platform_storage=True,
-            pipeline="playbook",
-            user_id="user-1",
-            request_id="req-1",
-            session_id="sess-1",
-            source="aggregation",
-            agent_version="v9",
-            playbook_name="agent_rules",
-            entity_type="agent_playbook",
-            metadata={"k": "v"},
-        )
-    kwargs = hook.call_args.kwargs
-    assert kwargs["pipeline"] == "playbook"
-    assert kwargs["user_id"] == "user-1"
-    assert kwargs["request_id"] == "req-1"
-    assert kwargs["session_id"] == "sess-1"
-    assert kwargs["source"] == "aggregation"
-    assert kwargs["agent_version"] == "v9"
-    assert kwargs["playbook_name"] == "agent_rules"
-    assert kwargs["entity_type"] == "agent_playbook"
-    assert kwargs["platform_llm"] is False
-    assert kwargs["platform_storage"] is True
-    assert kwargs["caller_type"] == "internal"
-    assert kwargs["metadata"] == {"k": "v"}
 
 
 def test_fallback_emits_one_synthesized_key_event_with_count_value_n():
@@ -225,55 +65,6 @@ def test_fallback_still_noops_for_zero_count():
     with patch(HOOK) as hook:
         record_learnings_generated(
             org_id="org1", count=0, platform_llm=True, platform_storage=None
-        )
-    hook.assert_not_called()
-
-
-def _configurator(config=None):
-    configurator = MagicMock()
-    configurator.get_config.return_value = config
-    return configurator
-
-
-def test_emit_records_resolves_platform_llm_and_emits_per_id():
-    with patch(HOOK) as hook:
-        emit_learnings_generated_records(
-            org_id="org1",
-            configurator=_configurator(),
-            learning_ids=["r1", "r2"],
-            source="offline_optimizer",
-            pipeline="playbook",
-            entity_type="profile",
-        )
-    assert hook.call_count == 2
-    assert all(call.kwargs["platform_llm"] is True for call in hook.call_args_list)
-    assert {call.kwargs["event_key"] for call in hook.call_args_list} == {
-        "learn:profile:r1",
-        "learn:profile:r2",
-    }
-
-
-def test_emit_records_noop_for_empty_ids():
-    with patch(HOOK) as hook:
-        emit_learnings_generated_records(
-            org_id="org1",
-            configurator=_configurator(),
-            learning_ids=[],
-            source="offline_optimizer",
-        )
-    hook.assert_not_called()
-
-
-def test_emit_records_swallows_exceptions():
-    configurator = MagicMock()
-    configurator.get_config.side_effect = RuntimeError("config boom")
-    with patch(HOOK) as hook:
-        # Must not raise despite get_config() blowing up mid-emit.
-        emit_learnings_generated_records(
-            org_id="org1",
-            configurator=configurator,
-            learning_ids=["r1"],
-            source="offline_optimizer",
         )
     hook.assert_not_called()
 

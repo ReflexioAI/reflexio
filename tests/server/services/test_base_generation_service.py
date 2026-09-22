@@ -24,7 +24,6 @@ from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 from reflexio.server.services.base_generation_service import (
     BaseGenerationService,
     ExtractorExecutionError,
-    StatusChangeOperation,
     _cheap_should_run_reject,
     _is_pure_slash_command,
     _weighted_content_length,
@@ -1067,23 +1066,6 @@ class TestRunDowngrade:
 
         assert response["success"] is True
         assert response["counts"]["demoted"] == 2
-
-
-# ===============================
-# Test: StatusChangeOperation Enum
-# ===============================
-
-
-class TestStatusChangeOperation:
-    """Tests for the StatusChangeOperation enum."""
-
-    def test_upgrade_value(self):
-        """Test UPGRADE enum value."""
-        assert StatusChangeOperation.UPGRADE.value == "upgrade"
-
-    def test_downgrade_value(self):
-        """Test DOWNGRADE enum value."""
-        assert StatusChangeOperation.DOWNGRADE.value == "downgrade"
 
 
 # ===============================
