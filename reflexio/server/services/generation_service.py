@@ -281,18 +281,30 @@ class GenerationService:
                 )
             )
 
-            record_usage_event(
-                org_id=self.org_id,
-                user_id=user_id,
-                request_id=request_id,
-                session_id=publish_user_interaction_request.session_id,
-                source=publish_user_interaction_request.source,
-                agent_version=agent_version,
-                event_name="publish_request_received",
-                event_category="publish",
-                outcome="received",
-                count_value=len(new_interactions),
-            )
+            # Same phase key as the success events below, which accumulates.
+            # This call reaches the same usage-event recorder and can wait on
+            # the same advisory lock, so leaving it outside would report a
+            # small `metering_ms` and leave the wait as an unexplained gap.
+            #
+            # Metering is NOT the prime suspect, whatever this module's history
+            # says: `pg_stat_statements` on the metrics DB put the lock's mean
+            # wait at 0.0086ms over a live 650s window (208 calls), against the
+            # 119,833ms maximum `append.py`'s docstring still quotes. Measured
+            # today it is ~0.24s of ~8s. The phase stays because it is free and
+            # the tail can return, not because it is where the time went.
+            with publish_timing.phase("metering"):
+                record_usage_event(
+                    org_id=self.org_id,
+                    user_id=user_id,
+                    request_id=request_id,
+                    session_id=publish_user_interaction_request.session_id,
+                    source=publish_user_interaction_request.source,
+                    agent_version=agent_version,
+                    event_name="publish_request_received",
+                    event_category="publish",
+                    outcome="received",
+                    count_value=len(new_interactions),
+                )
 
             # Store Request before adding interactions so downstream workers can
             # resolve the session's source and evaluation-only status.
@@ -396,11 +408,7 @@ class GenerationService:
                         "warning_count": len(result.warnings),
                     },
                 )
-            publish_timing.emit(
-                org_id=self.org_id,
-                request_id=request_id,
-                total_ms=int((time.perf_counter() - publish_start) * 1000),
-            )
+            publish_timing.emit(org_id=self.org_id, request_id=request_id)
             if not defer_learning:
                 from reflexio.server.services.durable_learning.waiting import (
                     acquire_waiter,
@@ -447,19 +455,20 @@ class GenerationService:
             return result
 
         except Exception as e:
-            record_usage_event(
-                org_id=self.org_id,
-                user_id=user_id,
-                request_id=result.request_id,
-                session_id=publish_user_interaction_request.session_id,
-                source=publish_user_interaction_request.source,
-                agent_version=agent_version,
-                event_name="publish_request_failed",
-                event_category="publish",
-                outcome="failed",
-                duration_ms=int((time.perf_counter() - publish_start) * 1000),
-                error_kind=type(e).__name__,
-            )
+            with publish_timing.phase("metering"):
+                record_usage_event(
+                    org_id=self.org_id,
+                    user_id=user_id,
+                    request_id=result.request_id,
+                    session_id=publish_user_interaction_request.session_id,
+                    source=publish_user_interaction_request.source,
+                    agent_version=agent_version,
+                    event_name="publish_request_failed",
+                    event_category="publish",
+                    outcome="failed",
+                    duration_ms=int((time.perf_counter() - publish_start) * 1000),
+                    error_kind=type(e).__name__,
+                )
             with error_tags(
                 subsystem="generation",
                 op="refresh_profile",
@@ -473,6 +482,25 @@ class GenerationService:
                     user_id,
                 )
             raise
+        finally:
+            # Backstop for every exit the success emit above does not reach:
+            # a raise (a storage timeout or a metering wait is exactly what
+            # this instrument was built to name, and the failure event carries
+            # only the aggregate duration), and the external-admission replay
+            # returns. Still inside the caller's `collect` scope, and after the
+            # failure metering phase has closed.
+            #
+            # `emit` is at-most-once per scope, so a request that already
+            # reported cannot log twice -- which is also what keeps the success
+            # line's placement authoritative: it is taken BEFORE the
+            # `defer_learning=False` coverage wait, and this one would
+            # otherwise fold that wait into `total_ms`.
+            publish_timing.emit(
+                org_id=self.org_id,
+                # None when the failure preceded id assignment -- `unknown` is
+                # readable where an empty `request_id=` is not.
+                request_id=result.request_id or "unknown",
+            )
 
     def _replay_external_admission(
         self,
