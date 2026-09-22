@@ -44,6 +44,7 @@ from reflexio.models.api_schema.service_schemas import (
 from reflexio.models.api_schema.ui.converters import (
     to_interaction_view,
 )
+from reflexio.server import publish_timing
 from reflexio.server.api_endpoints import (
     publisher_api,
 )
@@ -111,85 +112,96 @@ async def publish_user_interaction(
 
     deadline = time.monotonic() + PUBLISH_REQUEST_TIMEOUT_SECONDS
     payload.request_id = payload.request_id or str(uuid.uuid4())
-    if not await acquire_ingestion(org_id, deadline):
-        raise HTTPException(
-            status_code=503, detail="Publish capacity deadline exceeded"
+    # The accumulator spans the WHOLE handler, so `acquire_ingestion` -- pure
+    # queueing behind other publishes for this org -- is inside the same line
+    # as the storage phases. A breakdown that started after admission would
+    # attribute queue time to whatever ran next.
+    with publish_timing.collect():
+        ingestion_start = time.perf_counter()
+        admitted = await acquire_ingestion(org_id, deadline)
+        publish_timing.record(
+            "admission_ms", int((time.perf_counter() - ingestion_start) * 1000)
         )
-    token = admission_deadline.set(deadline)
-    try:
-        # Success is returned only after the atomic admission transaction.
-        # Cancellation must not release the slot while ingestion still runs.
-        operation = asyncio.create_task(
-            asyncio.to_thread(
-                publisher_api.add_user_interaction,
-                org_id=org_id,
-                request=payload,
-                use_publish_limiter=False,
-                defer_learning=True,
-            )
-        )
-        try:
-            response = await asyncio.wait_for(
-                asyncio.shield(operation), timeout=max(0, deadline - time.monotonic())
-            )
-        except TimeoutError:
-            operation.add_done_callback(lambda _: release_ingestion(org_id))
+        if not admitted:
             raise HTTPException(
-                status_code=504,
-                detail={
-                    "reason": "admission_timeout",
-                    "request_id": payload.request_id,
-                    "message": "Admission was not confirmed before the deadline; check this request ID before retrying.",
-                },
-            ) from None
-        except asyncio.CancelledError:
-            operation.add_done_callback(lambda _: release_ingestion(org_id))
-            raise
-        except Exception:
-            release_ingestion(org_id)
-            raise
-        else:
-            release_ingestion(org_id)
-    finally:
-        admission_deadline.reset(token)
-    response.warnings = [*response.warnings, *payload.payload_warnings()]
-    if not response.success or not wait_for_response:
-        return response
-    if not acquire_waiter(org_id):
-        response.learning_status = "deferred"
-        response.learning_reason = "waiter_capacity"
-        return response
-    try:
-        storage = reflexio_cache.get_reflexio(org_id=org_id).get_storage()
-        stalled_reason: str | None = None
-        while time.monotonic() < deadline:
-            status = await asyncio.to_thread(
-                storage.extraction_status, payload.user_id, payload.request_id
+                status_code=503, detail="Publish capacity deadline exceeded"
             )
-            if status["status"] == "done":
-                counts = await asyncio.to_thread(
-                    storage.extraction_counts, payload.user_id, payload.request_id
+        token = admission_deadline.set(deadline)
+        try:
+            # Success is returned only after the atomic admission transaction.
+            # Cancellation must not release the slot while ingestion still runs.
+            operation = asyncio.create_task(
+                asyncio.to_thread(
+                    publisher_api.add_user_interaction,
+                    org_id=org_id,
+                    request=payload,
+                    use_publish_limiter=False,
+                    defer_learning=True,
                 )
-                response.learning_status = "done"
-                response.learning_reason = status["reason"]
-                response.profiles_added = counts["profile"]
-                response.playbooks_added = counts["playbook"]
-                return response
-            # Holding the connection open for a window that only new input can
-            # close wastes the caller's deadline and a waiter slot, and reports
-            # `wait_timeout` for a healthy stream. Same break as the library
-            # waiter in generation_service.run -- one condition, both paths.
-            if coverage_stalled(status):
-                stalled_reason = status["reason"]
-                break
-            if await request.is_disconnected():
-                break
-            await asyncio.sleep(min(0.25, max(0, deadline - time.monotonic())))
-        response.learning_status = "deferred"
-        response.learning_reason = stalled_reason or "wait_timeout"
-        return response
-    finally:
-        release_waiter(org_id)
+            )
+            try:
+                response = await asyncio.wait_for(
+                    asyncio.shield(operation),
+                    timeout=max(0, deadline - time.monotonic()),
+                )
+            except TimeoutError:
+                operation.add_done_callback(lambda _: release_ingestion(org_id))
+                raise HTTPException(
+                    status_code=504,
+                    detail={
+                        "reason": "admission_timeout",
+                        "request_id": payload.request_id,
+                        "message": "Admission was not confirmed before the deadline; check this request ID before retrying.",
+                    },
+                ) from None
+            except asyncio.CancelledError:
+                operation.add_done_callback(lambda _: release_ingestion(org_id))
+                raise
+            except Exception:
+                release_ingestion(org_id)
+                raise
+            else:
+                release_ingestion(org_id)
+        finally:
+            admission_deadline.reset(token)
+        response.warnings = [*response.warnings, *payload.payload_warnings()]
+        if not response.success or not wait_for_response:
+            return response
+        if not acquire_waiter(org_id):
+            response.learning_status = "deferred"
+            response.learning_reason = "waiter_capacity"
+            return response
+        try:
+            storage = reflexio_cache.get_reflexio(org_id=org_id).get_storage()
+            stalled_reason: str | None = None
+            while time.monotonic() < deadline:
+                status = await asyncio.to_thread(
+                    storage.extraction_status, payload.user_id, payload.request_id
+                )
+                if status["status"] == "done":
+                    counts = await asyncio.to_thread(
+                        storage.extraction_counts, payload.user_id, payload.request_id
+                    )
+                    response.learning_status = "done"
+                    response.learning_reason = status["reason"]
+                    response.profiles_added = counts["profile"]
+                    response.playbooks_added = counts["playbook"]
+                    return response
+                # Holding the connection open for a window that only new input can
+                # close wastes the caller's deadline and a waiter slot, and reports
+                # `wait_timeout` for a healthy stream. Same break as the library
+                # waiter in generation_service.run -- one condition, both paths.
+                if coverage_stalled(status):
+                    stalled_reason = status["reason"]
+                    break
+                if await request.is_disconnected():
+                    break
+                await asyncio.sleep(min(0.25, max(0, deadline - time.monotonic())))
+            response.learning_status = "deferred"
+            response.learning_reason = stalled_reason or "wait_timeout"
+            return response
+        finally:
+            release_waiter(org_id)
 
 
 @router.delete(

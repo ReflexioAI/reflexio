@@ -17,6 +17,7 @@ from reflexio.models.api_schema.service_schemas import (
     Request,
 )
 from reflexio.models.config_schema import Config
+from reflexio.server import publish_timing
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.error_reporting import error_tags
 from reflexio.server.llm.litellm_client import LiteLLMClient
@@ -328,10 +329,13 @@ class GenerationService:
             # Network preparation is outside the writer scope. The work row is
             # locked FIRST and its sequence allocation commits with every input.
             check_admission_deadline()
-            storage.prepare_interaction_embeddings(new_interactions)
+            publish_timing.record("n_interactions", len(new_interactions))
+            with publish_timing.phase("embeddings"):
+                storage.prepare_interaction_embeddings(new_interactions)
             check_admission_deadline()
-            with storage.commit_scope():
-                storage.lock_extraction_stream(user_id)
+            with publish_timing.phase("commit_scope"), storage.commit_scope():
+                with publish_timing.phase("lock_stream"):
+                    storage.lock_extraction_stream(user_id)
                 check_admission_deadline()
                 if admission_participant is not None:
                     receipt = admission_participant.claim(request_id, user_id)
@@ -351,16 +355,19 @@ class GenerationService:
                     )
                 if storage.get_request(request_id) is not None:
                     raise ValueError(f"request_id {request_id!r} already exists")
-                storage.add_request(new_request)
-                storage.add_user_interactions_bulk(
-                    user_id, new_interactions, embeddings_prepared=True
-                )
-                storage.admit_extraction(
-                    user_id,
-                    request_id,
-                    [i.interaction_id for i in new_interactions],
-                    admission,
-                )
+                with publish_timing.phase("add_request"):
+                    storage.add_request(new_request)
+                with publish_timing.phase("add_interactions"):
+                    storage.add_user_interactions_bulk(
+                        user_id, new_interactions, embeddings_prepared=True
+                    )
+                with publish_timing.phase("admit_extraction"):
+                    storage.admit_extraction(
+                        user_id,
+                        request_id,
+                        [i.interaction_id for i in new_interactions],
+                        admission,
+                    )
                 if admission_participant is not None:
                     admission_participant.complete(
                         new_request, new_interactions, admission
@@ -374,19 +381,25 @@ class GenerationService:
                 agent_version=agent_version,
                 source=source,
             )
-            self._emit_publish_success_events(
-                interactions=new_interactions,
-                user_id=user_id,
+            with publish_timing.phase("metering"):
+                self._emit_publish_success_events(
+                    interactions=new_interactions,
+                    user_id=user_id,
+                    request_id=request_id,
+                    session_id=new_request.session_id,
+                    source=source,
+                    agent_version=agent_version,
+                    backend="durable",
+                    duration_ms=int((time.perf_counter() - publish_start) * 1000),
+                    metadata={
+                        "defer_learning": True,
+                        "warning_count": len(result.warnings),
+                    },
+                )
+            publish_timing.emit(
+                org_id=self.org_id,
                 request_id=request_id,
-                session_id=new_request.session_id,
-                source=source,
-                agent_version=agent_version,
-                backend="durable",
-                duration_ms=int((time.perf_counter() - publish_start) * 1000),
-                metadata={
-                    "defer_learning": True,
-                    "warning_count": len(result.warnings),
-                },
+                total_ms=int((time.perf_counter() - publish_start) * 1000),
             )
             if not defer_learning:
                 from reflexio.server.services.durable_learning.waiting import (
