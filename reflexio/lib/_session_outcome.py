@@ -128,6 +128,24 @@ class SessionOutcomeMixin(ReflexioBase):
                         outcome_contract_digest=result.outcome_contract_digest,
                         finalized_trajectory_digest=result.finalized_trajectory_digest,
                     )
+                if result.recorded and (result.outcome_revision or 1) > 1:
+                    # ONE LINE PER DISPLACEMENT, and displacement is one-way,
+                    # so this is bounded at once per session for the life of
+                    # the session -- it cannot become a flood the way a
+                    # per-attempt signal would.
+                    #
+                    # It is emitted so the RATE is visible. A single customer
+                    # correcting a guess is ordinary and uninteresting; a
+                    # sustained rate means the judge is systematically wrong
+                    # about this tenant's sessions, which is a different
+                    # problem from anything the tuner itself can fix, and it is
+                    # invisible in any per-revision flag.
+                    logger.info(
+                        "session outcome displaced an inferred one: "
+                        "session=%s revision=%s",
+                        sanitise_for_log(request.session_id),
+                        result.outcome_revision,
+                    )
                 return SetSessionOutcomeResponse(
                     success=True,
                     recorded=result.recorded,
