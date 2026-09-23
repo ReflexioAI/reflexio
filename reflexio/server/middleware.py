@@ -176,7 +176,11 @@ class TimeoutMiddleware(BaseHTTPMiddleware):
         except TimeoutError:
             return JSONResponse(
                 status_code=status.HTTP_504_GATEWAY_TIMEOUT,
-                content={"detail": "Request timeout"},
+                content={
+                    "detail": "Request timeout",
+                    "reason": "server_deadline",
+                    "correlation_id": correlation_id_var.get(),
+                },
             )
 
 

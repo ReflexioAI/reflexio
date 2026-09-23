@@ -297,3 +297,45 @@ def test_publish_interaction_dispatch_uses_the_backstop(monkeypatch):
     asyncio.run(TimeoutMiddleware(FastAPI()).dispatch(request, call_next))
 
     assert observed["timeout"] == 300.0
+
+
+def test_backstop_timeout_body_carries_the_correlation_id(monkeypatch):
+    """A 504 with no identifier is unactionable.
+
+    The client cannot correlate it with anything, and support cannot find the
+    request in logs. correlation_id_var is already set by the time the
+    timeout fires.
+    """
+    import asyncio
+    import json
+
+    from fastapi import FastAPI
+    from starlette.requests import Request
+
+    from reflexio.server.correlation import correlation_id_var
+    from reflexio.server.middleware import TimeoutMiddleware
+
+    async def call_next(_request):
+        raise TimeoutError
+
+    correlation_id_var.set("cid-under-test")
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "scheme": "http",
+            "path": "/api/some_slow_route",
+            "raw_path": b"/api/some_slow_route",
+            "query_string": b"",
+            "headers": [],
+            "client": ("testclient", 50000),
+            "server": ("testserver", 80),
+        }
+    )
+
+    response = asyncio.run(TimeoutMiddleware(FastAPI()).dispatch(request, call_next))
+
+    assert response.status_code == 504
+    body = json.loads(bytes(response.body))
+    assert body["correlation_id"] == "cid-under-test"
+    assert body["reason"] == "server_deadline"
