@@ -480,6 +480,11 @@ class TestPublishInteraction:
         )
         # The ledger itself, not the count: a release aimed at the wrong org
         # would satisfy the count and still leak this org's slot forever.
+        # `_ingesting` is process-global, so this can in principle surface a
+        # LEAK FROM ANOTHER TEST rather than from this one. Kept as is: a
+        # false positive here is a real leak somewhere, which is worth finding,
+        # and narrowing it to one org id would stop it catching a release aimed
+        # at the wrong key -- the thing it is here for.
         assert not waiting._ingesting, (
             f"ingestion slots leaked after the 202: {waiting._ingesting}"
         )
@@ -510,6 +515,49 @@ class TestPublishInteraction:
         assert detail["request_id"]
         assert "learning_status" not in detail, (
             "an un-admitted publish must not look deferred -- nothing is running"
+        )
+
+    def test_worker_timeout_is_not_reported_as_still_processing(
+        self, client, patched_reflexio
+    ):
+        """A TimeoutError raised BY THE WORKER must not become a 202.
+
+        `asyncio.wait_for` re-raises whatever the awaited task raised, so a
+        network timeout inside the publish -- `socket.timeout` IS TimeoutError
+        since 3.10 -- reaches the same `except TimeoutError` as `wait_for`
+        giving up on a task that is still running. Answering 202 there claims
+        "Admitted and processing" about an operation that is already dead, and
+        tells the caller not to retry it.
+
+        The route's own deadline is left at its default 240s: nothing here
+        times out, which is the point. Only the worker raises.
+        """
+        from reflexio.server.services.durable_learning import waiting
+
+        def worker_timeout(**_kwargs):
+            raise TimeoutError("socket read timed out")
+
+        with patch(
+            "reflexio.server.api_endpoints.publisher_api.add_user_interaction",
+            side_effect=worker_timeout,
+        ):
+            response = client.post(
+                "/api/publish_interaction", json=self._publish_payload()
+            )
+
+        assert response.status_code != 202, (
+            "a dead operation was reported as admitted and processing"
+        )
+        assert response.status_code == 504
+        detail = response.json()["detail"]
+        assert detail["reason"] == "publish_timeout"
+        assert detail["request_id"], "the id must survive -- it is the only handle"
+        assert "learning_status" not in detail, (
+            "nothing is running, so this must not look deferred"
+        )
+        # Released exactly once: inline here, and NOT also from a done-callback.
+        assert not waiting._ingesting, (
+            f"ingestion slots leaked on the worker-timeout path: {waiting._ingesting}"
         )
 
 

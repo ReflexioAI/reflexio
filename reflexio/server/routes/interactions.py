@@ -133,7 +133,27 @@ def get_session_outcomes(
                 "returned request_id for the outcome (200 committed, 404 not) "
                 "rather than retrying with a NEW request_id."
             ),
-        }
+        },
+        # Declared for the same reason 202 is: a contract a generated client
+        # cannot discover from the schema is one first-party callers will not
+        # adopt. Both carry a structured detail of reason/request_id/message.
+        503: {
+            "description": (
+                "Not admitted: publish capacity was not available before the "
+                "deadline, so nothing started and nothing will commit. "
+                "reason is 'capacity_deadline_exceeded'. Retry with the SAME "
+                "request_id."
+            ),
+        },
+        504: {
+            "description": (
+                "The publish itself timed out and may or may not have "
+                "committed -- distinct from 202, where it is still running. "
+                "reason is 'publish_timeout'. Check the returned request_id "
+                "with GET /api/learning_status before retrying, and retry "
+                "with that same request_id."
+            ),
+        },
     },
 )
 @limiter.limit("60/minute")  # Rate limit for write operations
@@ -227,7 +247,46 @@ async def publish_user_interaction(
                     asyncio.shield(operation),
                     timeout=max(0, response_deadline - time.monotonic()),
                 )
-            except TimeoutError:
+            except TimeoutError as exc:
+                # TWO different events arrive here, and only one of them means
+                # the publish is still running. `asyncio.wait_for` re-raises
+                # whatever the awaited task raised, so a TimeoutError raised BY
+                # THE WORKER -- `socket.timeout` is an alias of TimeoutError
+                # since 3.10, and `prepare_interaction_embeddings` makes a
+                # network call -- lands on the same handler as `wait_for`
+                # giving up on a task that is still going. Answering 202 for
+                # both says "Admitted and processing" about an operation that
+                # is already dead: the same false claim the worker-deadline fix
+                # above exists to remove, one branch over.
+                #
+                # `operation.done()` separates them exactly. `wait_for` cancels
+                # the SHIELD, never the operation, so a timed-out wait leaves
+                # it False; a task that finished by raising leaves it True.
+                if operation.done():
+                    # Nothing is running, so release inline rather than from a
+                    # done-callback, and do NOT also register the callback
+                    # below -- that would be a second release, which raises
+                    # KeyError.
+                    release_ingestion(org_id)
+                    raise HTTPException(
+                        status_code=504,
+                        detail={
+                            "reason": "publish_timeout",
+                            "request_id": payload.request_id,
+                            # Deliberately does not claim either outcome: the
+                            # timeout may have fired before or after the
+                            # durable write. `from exc` keeps the real error
+                            # for Sentry while the caller gets a body it can
+                            # act on.
+                            "message": (
+                                "The publish timed out before it could be "
+                                "confirmed, and may or may not have committed. "
+                                "Check this request ID with GET "
+                                "/api/learning_status before retrying, and "
+                                "retry with this same request_id."
+                            ),
+                        },
+                    ) from exc
                 # The operation is SHIELDED *and* holds a worker deadline
                 # that is still in the future, so "processing" is true when
                 # this is sent -- the shield alone never made it true, because
