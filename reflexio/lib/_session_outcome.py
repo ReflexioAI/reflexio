@@ -29,8 +29,19 @@ logger = logging.getLogger(__name__)
 class SessionOutcomeMixin(ReflexioBase):
     @_require_storage(SetSessionOutcomeResponse)
     def mark_session_outcome(
-        self, request: SetSessionOutcomeRequest | dict
+        self,
+        request: SetSessionOutcomeRequest | dict,
+        *,
+        is_inferred: bool = False,
     ) -> SetSessionOutcomeResponse:
+        """Record the first outcome for a session, or displace an inferred one.
+
+        ``is_inferred`` is an INTERNAL flag and is deliberately absent from
+        ``SetSessionOutcomeRequest``: the request model is the public body, so
+        a field there would let a customer mark their own outcome displaceable.
+        The HTTP route never passes it; the offline tuner's outcome bridge is
+        its only caller.
+        """
         if isinstance(request, dict):
             request = SetSessionOutcomeRequest(**request)
         if unknown_fields := request.unknown_field_names():
@@ -53,7 +64,13 @@ class SessionOutcomeMixin(ReflexioBase):
         try:
             for _attempt in range(3):
                 context = storage.get_session_outcome_context(request.session_id)
-                if not context.existing:
+                # A displaceable row is about to be REPLACED by a real
+                # report, so that write is a new outcome and earns the
+                # same validation a first write gets. For any other
+                # existing row the only legal write is a byte-exact
+                # retry, which has nothing left to validate.
+                displaceable = context.existing_is_inferred and not is_inferred
+                if not context.existing or displaceable:
                     if context.user_id is None or context.first_request_at is None:
                         return SetSessionOutcomeResponse(
                             success=False,
@@ -95,6 +112,7 @@ class SessionOutcomeMixin(ReflexioBase):
                     request,
                     created_at=received_at,
                     expected_context=context,
+                    is_inferred=is_inferred,
                 )
                 if result.context_changed:
                     continue

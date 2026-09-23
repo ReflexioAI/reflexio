@@ -1129,6 +1129,28 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                     "ALTER TABLE session_outcomes "
                     "ADD COLUMN governance_subject_ref TEXT"
                 )
+            # Displacement columns. Added here rather than left to `_DDL`,
+            # because `CREATE TABLE IF NOT EXISTS` is a no-op against a database
+            # that already has the table -- so an upgraded install would keep
+            # the old shape and every read of `is_inferred` would raise
+            # "no such column" at runtime rather than at startup.
+            #
+            # No CHECK on the added columns: SQLite cannot add a table-level
+            # constraint with ALTER TABLE, and the pairing is enforced by the
+            # single write path that sets them. Fresh databases get the CHECK
+            # from `_DDL`.
+            if session_outcome_columns and "is_inferred" not in session_outcome_columns:
+                self.conn.execute(
+                    "ALTER TABLE session_outcomes "
+                    "ADD COLUMN is_inferred INTEGER NOT NULL DEFAULT 0"
+                )
+            if (
+                session_outcome_columns
+                and "superseded_outcome" not in session_outcome_columns
+            ):
+                self.conn.execute(
+                    "ALTER TABLE session_outcomes ADD COLUMN superseded_outcome TEXT"
+                )
             cur = self.conn.cursor()
             cur.executescript(_DDL)
             init_subject_write_barrier_table(self.conn)
@@ -1452,6 +1474,18 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                         finalized_trajectory_digest TEXT NOT NULL,
                         governance_subject_ref TEXT NOT NULL,
                         created_at INTEGER NOT NULL,
+                        -- Carried here as well as in `_DDL`, because this
+                        -- rebuild runs AFTER the ALTER TABLE upgrade in
+                        -- `init` and would otherwise drop both columns again
+                        -- on any database still needing the identity
+                        -- migration. Defaulting is correct rather than merely
+                        -- convenient: this rebuild only fires on a schema
+                        -- predating the identity columns, which predates the
+                        -- outcome bridge, so no legacy row can be inferred.
+                        is_inferred INTEGER NOT NULL DEFAULT 0
+                            CHECK (is_inferred IN (0, 1)),
+                        superseded_outcome TEXT,
+                        CHECK (superseded_outcome IS NULL OR is_inferred = 0),
                         PRIMARY KEY (user_id, session_id)
                     )"""
                 )
@@ -3411,6 +3445,13 @@ CREATE TABLE IF NOT EXISTS session_outcomes (
     finalized_trajectory_digest TEXT NOT NULL,
     governance_subject_ref TEXT NOT NULL,
     created_at INTEGER NOT NULL,
+    -- Set only by the offline tuner's outcome bridge, never by a request body:
+    -- an inferred outcome is the one kind a customer's own report may displace.
+    is_inferred INTEGER NOT NULL DEFAULT 0 CHECK (is_inferred IN (0, 1)),
+    -- The displaced inferred outcome, kept whole. On the row rather than in a
+    -- sibling table so erasure has no new surface to learn about.
+    superseded_outcome TEXT,
+    CHECK (superseded_outcome IS NULL OR is_inferred = 0),
     PRIMARY KEY (user_id, session_id)
 );
 CREATE INDEX IF NOT EXISTS idx_session_outcomes_occurred_at ON session_outcomes(occurred_at);

@@ -741,3 +741,196 @@ def test_clear_outcomes_survives_governance_secret_rotation(
 
     assert counts == {"session_outcomes": 1}
     assert storage.get_session_outcomes(GetSessionOutcomesRequest()) == []
+
+
+# ---------------------------------------------------------------------------
+# Displacement: a customer's own report replaces an outcome the tuner inferred.
+#
+# Exactly one of the four write situations changes. The three that do NOT are
+# asserted here too, because "the customer always wins" would be the wrong fix
+# and these are what distinguish it from the right one.
+# ---------------------------------------------------------------------------
+
+
+def _seed_request(storage: BaseStorage, *, session_id: str = "s1") -> None:
+    storage.add_request(
+        Request(
+            request_id=f"r-{session_id}",
+            user_id="u1",
+            session_id=session_id,
+            source="published",
+            created_at=100,
+        )
+    )
+
+
+def _write(
+    storage: BaseStorage,
+    *,
+    outcome: SessionOutcomeKind,
+    is_inferred: bool,
+    created_at: int,
+    label: str | None = None,
+    session_id: str = "s1",
+):
+    request = SetSessionOutcomeRequest(
+        session_id=session_id,
+        outcome=outcome,
+        occurred_at=101,
+        label=label,
+    )
+    context = storage.get_session_outcome_context(session_id)
+    return storage.record_session_outcome(
+        request,
+        created_at=created_at,
+        expected_context=context,
+        is_inferred=is_inferred,
+    )
+
+
+def test_a_customer_report_displaces_an_inferred_outcome(
+    storage: BaseStorage,
+) -> None:
+    """THE POINT OF THE WHOLE CHANGE.
+
+    Before this, the tuner's guess took the session's only slot and the
+    customer's real report was refused forever -- which is the only reason the
+    bridge withheld verdicts for seven days.
+    """
+    _seed_request(storage)
+    inferred = _write(
+        storage,
+        outcome=SessionOutcomeKind.FAILURE,
+        is_inferred=True,
+        created_at=102,
+        label="inferred_from_agent_success_evaluation",
+    )
+    assert inferred.recorded is True
+    assert inferred.outcome_revision == 1
+
+    reported = _write(
+        storage,
+        outcome=SessionOutcomeKind.SUCCESS,
+        is_inferred=False,
+        created_at=103,
+        label="customer",
+    )
+    assert reported.recorded is True
+    assert reported.reason is None
+    # The session's SECOND outcome -- the first time this column has moved.
+    assert reported.outcome_revision == 2
+
+    records = storage.get_session_outcomes(GetSessionOutcomesRequest(session_ids=["s1"]))
+    assert len(records) == 1, "displacement must not leave two rows"
+    assert records[0].outcome == SessionOutcomeKind.SUCCESS
+    assert records[0].label == "customer"
+
+
+def test_the_displaced_outcome_is_kept_for_analysis(storage: BaseStorage) -> None:
+    """The judge-versus-customer comparison IS the analysis, so the displaced
+    row is archived whole rather than summarised."""
+    _seed_request(storage)
+    _write(
+        storage,
+        outcome=SessionOutcomeKind.FAILURE,
+        is_inferred=True,
+        created_at=102,
+        label="inferred_from_agent_success_evaluation",
+    )
+    _write(
+        storage,
+        outcome=SessionOutcomeKind.SUCCESS,
+        is_inferred=False,
+        created_at=103,
+    )
+
+    sqlite_storage = cast(Any, storage)
+    row = sqlite_storage.conn.execute(
+        "SELECT is_inferred, superseded_outcome FROM session_outcomes "
+        "WHERE session_id = ?",
+        ("s1",),
+    ).fetchone()
+    assert not row["is_inferred"], "the surviving row is the customer's, not a guess"
+    archived = __import__("json").loads(row["superseded_outcome"])
+    assert archived["outcome"] == "failure"
+    assert archived["label"] == "inferred_from_agent_success_evaluation"
+    assert archived["outcome_revision"] == 1
+    assert archived["displaced_at"] == 103
+
+
+def test_a_customer_outcome_is_still_immutable(storage: BaseStorage) -> None:
+    """THE GUARANTEE THAT MUST NOT MOVE.
+
+    Only the machine's guess became displaceable. A customer's own report is
+    as final as it ever was -- if this passes only because everything is
+    mutable now, the change is a regression rather than a feature.
+    """
+    _seed_request(storage)
+    _write(
+        storage,
+        outcome=SessionOutcomeKind.SUCCESS,
+        is_inferred=False,
+        created_at=102,
+    )
+    second = _write(
+        storage,
+        outcome=SessionOutcomeKind.FAILURE,
+        is_inferred=False,
+        created_at=103,
+    )
+
+    assert second.recorded is False
+    assert second.reason == SessionOutcomeFailureReason.CONFLICTING_FINALIZATION
+    records = storage.get_session_outcomes(GetSessionOutcomesRequest(session_ids=["s1"]))
+    assert records[0].outcome == SessionOutcomeKind.SUCCESS
+
+
+def test_the_tuner_never_displaces_a_customer_outcome(storage: BaseStorage) -> None:
+    """The bridge must not overwrite a real report with a guess, in either
+    direction -- it subtracts existing outcomes before writing, and this is the
+    storage-level backstop for when it does not."""
+    _seed_request(storage)
+    _write(
+        storage,
+        outcome=SessionOutcomeKind.SUCCESS,
+        is_inferred=False,
+        created_at=102,
+    )
+    tuner = _write(
+        storage,
+        outcome=SessionOutcomeKind.FAILURE,
+        is_inferred=True,
+        created_at=103,
+    )
+
+    assert tuner.recorded is False
+    assert tuner.reason == SessionOutcomeFailureReason.CONFLICTING_FINALIZATION
+
+
+def test_the_tuner_repeating_its_own_write_is_an_idempotent_retry(
+    storage: BaseStorage,
+) -> None:
+    """NOT a displacement. An inferred row plus an inferred writer is the
+    bridge retrying itself; treating that as displacement would bump the
+    revision and archive the row as a copy of itself on every pass."""
+    _seed_request(storage)
+    first = _write(
+        storage,
+        outcome=SessionOutcomeKind.FAILURE,
+        is_inferred=True,
+        created_at=102,
+        label="inferred_from_agent_success_evaluation",
+    )
+    retry = _write(
+        storage,
+        outcome=SessionOutcomeKind.FAILURE,
+        is_inferred=True,
+        created_at=102,
+        label="inferred_from_agent_success_evaluation",
+    )
+
+    assert first.recorded is True
+    assert retry.recorded is False
+    assert retry.reason is None, "an exact repeat is accepted, not conflicting"
+    records = storage.get_session_outcomes(GetSessionOutcomesRequest(session_ids=["s1"]))
+    assert records[0].outcome_revision == 1

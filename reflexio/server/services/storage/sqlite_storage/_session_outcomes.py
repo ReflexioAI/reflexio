@@ -41,6 +41,46 @@ def _canonical_metadata_json(metadata: object) -> str | None:
     )
 
 
+def _superseded_outcome_json(existing: Any, *, displaced_at: int) -> str:
+    """Archive a displaced inferred outcome, whole, as canonical JSON.
+
+    Kept on the surviving row rather than in a sibling table, and the reason is
+    erasure rather than size: a sibling table would be a new subject-bearing
+    surface that the erasure executor and the subject barrier would each have
+    to learn about, and forgetting either leaves a data subject's outcome
+    behind after a completed RTBF. Here it is removed by the DELETE that
+    already removes the outcome.
+
+    `metadata` is re-parsed rather than embedded as a string so the archive
+    nests as JSON, matching what the Postgres side's `jsonb_build_object`
+    produces -- otherwise the same field reads as an object on one backend and
+    a quoted blob on the other.
+    """
+    stored_metadata = existing["metadata"]
+    try:
+        metadata = json.loads(stored_metadata) if stored_metadata else None
+    except (TypeError, ValueError):
+        metadata = None
+    return json.dumps(
+        {
+            "outcome_id": existing["outcome_id"],
+            "outcome_revision": existing["outcome_revision"],
+            "outcome": existing["outcome"],
+            "occurred_at": existing["occurred_at"],
+            "source": existing["source"],
+            "label": existing["label"],
+            "value": existing["value"],
+            "metadata": metadata,
+            "outcome_contract_digest": existing["outcome_contract_digest"],
+            "finalized_trajectory_digest": existing["finalized_trajectory_digest"],
+            "created_at": existing["created_at"],
+            "displaced_at": displaced_at,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
 def _metadata_matches(*, stored_metadata: str | None, request_metadata: object) -> bool:
     if stored_metadata is None:
         stored_value = None
@@ -67,15 +107,27 @@ class SessionOutcomeStoreMixin:
     def get_session_outcome_context(self, session_id: str) -> SessionOutcomeContext:
         with self._lock:
             existing = self.conn.execute(
-                "SELECT user_id, source FROM session_outcomes WHERE session_id = ?",
+                """SELECT user_id, source, is_inferred
+                   FROM session_outcomes WHERE session_id = ?""",
                 (session_id,),
             ).fetchone()
-            if existing is not None:
+            existing_is_inferred = existing is not None and bool(
+                existing["is_inferred"]
+            )
+            if existing is not None and not existing_is_inferred:
+                # Settled by a real report: the only legal write left is a
+                # byte-exact retry, so the first-request context below would
+                # have nothing to validate.
                 return SessionOutcomeContext(
                     user_id=str(existing["user_id"]),
                     source=str(existing["source"]),
                     existing=True,
                 )
+            # An INFERRED row is displaceable, so the write that replaces it is
+            # a new outcome and needs the same first-request context a first
+            # write gets. Returning early here -- which is what this method did
+            # before displacement existed -- would leave `first_request_at`
+            # None and make every displacing write answer UNKNOWN_SESSION.
             first = self.conn.execute(
                 """SELECT user_id, source, created_at, request_id
                    FROM requests WHERE session_id = ?
@@ -83,7 +135,10 @@ class SessionOutcomeStoreMixin:
                 (session_id,),
             ).fetchone()
             if first is None:
-                return SessionOutcomeContext()
+                return SessionOutcomeContext(
+                    existing=existing is not None,
+                    existing_is_inferred=existing_is_inferred,
+                )
             counts = self.conn.execute(
                 """SELECT COUNT(DISTINCT user_id) AS user_count,
                           COUNT(DISTINCT COALESCE(source, '')) AS source_count
@@ -96,6 +151,8 @@ class SessionOutcomeStoreMixin:
                 first_request_at=_iso_to_epoch(first["created_at"]),
                 user_contract_violation=int(counts["user_count"]) > 1,
                 source_contract_violation=int(counts["source_count"]) > 1,
+                existing=existing is not None,
+                existing_is_inferred=existing_is_inferred,
             )
 
     @SQLiteStorageBase.handle_exceptions
@@ -105,6 +162,7 @@ class SessionOutcomeStoreMixin:
         *,
         created_at: int,
         expected_context: SessionOutcomeContext,
+        is_inferred: bool = False,
     ) -> SessionOutcomeWriteResult:
         with self._lock:
             try:
@@ -113,7 +171,19 @@ class SessionOutcomeStoreMixin:
                     "SELECT * FROM session_outcomes WHERE session_id = ?",
                     (request.session_id,),
                 ).fetchone()
-                if existing is not None:
+                # A customer's own report replaces an outcome the tuner merely
+                # INFERRED. Falling THROUGH to the ordinary write path rather
+                # than branching here is deliberate: that path already runs the
+                # subject barrier, the trajectory snapshot, the expected-context
+                # re-check and the occurred-before-session bound, and a
+                # displacing write is a real new outcome that earns every one of
+                # them. Only the final statement differs.
+                displacing = (
+                    existing is not None
+                    and bool(existing["is_inferred"])
+                    and not is_inferred
+                )
+                if existing is not None and not displacing:
                     early_first = self.conn.execute(
                         """SELECT user_id, source, governance_subject_ref
                            FROM requests WHERE session_id = ?
@@ -270,37 +340,74 @@ class SessionOutcomeStoreMixin:
                 contract_digest = self._outcome_contract_digest(source)
                 snapshot_digest = snapshot.digest
                 outcome_id = uuid4().hex
-                self.conn.execute(
-                    """INSERT INTO session_outcomes
-                       (outcome_id, outcome_revision, user_id, session_id, outcome,
-                        occurred_at, source, label, value, metadata,
-                        outcome_contract_digest, finalized_trajectory_digest,
-                        governance_subject_ref, created_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (
-                        outcome_id,
-                        1,
-                        user_id,
-                        request.session_id,
-                        str(request.outcome),
-                        request.occurred_at,
-                        source,
-                        request.label,
-                        request.value,
-                        self._metadata_json(request),
-                        contract_digest,
-                        snapshot_digest,
-                        subject_ref,
-                        created_at,
-                    ),
-                )
+                if displacing and existing is not None:
+                    # The displaced row is archived WHOLE rather than
+                    # summarised: the analysis this exists for is "what did the
+                    # judge say and what did the customer say", and a summary
+                    # drops exactly that half.
+                    revision = int(existing["outcome_revision"] or 1) + 1
+                    self.conn.execute(
+                        """UPDATE session_outcomes
+                              SET outcome_id = ?, outcome_revision = ?,
+                                  user_id = ?, outcome = ?, occurred_at = ?,
+                                  source = ?, label = ?, value = ?, metadata = ?,
+                                  outcome_contract_digest = ?,
+                                  finalized_trajectory_digest = ?,
+                                  governance_subject_ref = ?, created_at = ?,
+                                  is_inferred = 0, superseded_outcome = ?
+                            WHERE session_id = ?""",
+                        (
+                            outcome_id,
+                            revision,
+                            user_id,
+                            str(request.outcome),
+                            request.occurred_at,
+                            source,
+                            request.label,
+                            request.value,
+                            self._metadata_json(request),
+                            contract_digest,
+                            snapshot_digest,
+                            subject_ref,
+                            created_at,
+                            _superseded_outcome_json(existing, displaced_at=created_at),
+                            request.session_id,
+                        ),
+                    )
+                else:
+                    revision = 1
+                    self.conn.execute(
+                        """INSERT INTO session_outcomes
+                           (outcome_id, outcome_revision, user_id, session_id, outcome,
+                            occurred_at, source, label, value, metadata,
+                            outcome_contract_digest, finalized_trajectory_digest,
+                            governance_subject_ref, created_at, is_inferred)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (
+                            outcome_id,
+                            revision,
+                            user_id,
+                            request.session_id,
+                            str(request.outcome),
+                            request.occurred_at,
+                            source,
+                            request.label,
+                            request.value,
+                            self._metadata_json(request),
+                            contract_digest,
+                            snapshot_digest,
+                            subject_ref,
+                            created_at,
+                            1 if is_inferred else 0,
+                        ),
+                    )
                 self.conn.commit()
                 return SessionOutcomeWriteResult(
                     recorded=True,
                     user_id=user_id,
                     source=source,
                     outcome_id=outcome_id,
-                    outcome_revision=1,
+                    outcome_revision=revision,
                     outcome_contract_digest=contract_digest,
                     finalized_trajectory_digest=snapshot_digest,
                 )
