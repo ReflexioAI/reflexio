@@ -59,6 +59,21 @@ class TestHealthEndpoints:
         assert iscoroutinefunction(route.endpoint)
 
 
+# Pinned verbatim against routes/interactions.py's 202 TimeoutError branch.
+# Deliberately NOT imported from the route: a keyword-family check (tried
+# first) passed against "Your interaction is finalized and durably saved;
+# it is processing on our side. ..." -- containing none of
+# succeed/success/committed/complete while still asserting durable
+# completion at the moment the row does not yet exist in storage. An exact
+# match closes that evasion surface; duplicating the literal here means a
+# future wording change must be made deliberately in both places.
+PAST_DEADLINE_202_MESSAGE_TEMPLATE = (
+    "Admitted and processing. Follow with "
+    "GET /api/learning_status?request_id={request_id}. Retrying with a NEW "
+    "request_id duplicates it."
+)
+
+
 class TestPublishInteraction:
     """Tests for POST /api/publish_interaction."""
 
@@ -370,14 +385,10 @@ class TestPublishInteraction:
         assert data["learning_status"] == "deferred"
         assert data["learning_reason"] == "server_deadline"
         assert data["request_id"], "the id must survive exclude_none"
-        message = data["message"].lower()
-        assert "retry" in message
-        assert "processing" in message, message
-        # The admission transaction may not have committed yet -- a claim of
-        # success/completion here would be the exact false statement this
-        # task exists to remove.
-        for word in ("succeed", "success", "committed", "complete"):
-            assert word not in message, message
+        expected_message = PAST_DEADLINE_202_MESSAGE_TEMPLATE.format(
+            request_id=data["request_id"]
+        )
+        assert data["message"] == expected_message
 
     def test_publish_past_deadline_still_releases_the_slot(
         self, client, patched_reflexio, monkeypatch

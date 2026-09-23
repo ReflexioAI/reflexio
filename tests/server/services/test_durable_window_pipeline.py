@@ -21,6 +21,16 @@ from reflexio.server.services.profile.service import ProfileGenerationService
 
 pytestmark = pytest.mark.integration
 
+# Pinned verbatim against routes/interactions.py's 202 TimeoutError branch.
+# Deliberately NOT imported from the route -- see the identical constant and
+# comment in tests/server/api_endpoints/test_api_routes.py, which records why
+# a keyword-family check was not enough.
+PAST_DEADLINE_202_MESSAGE_TEMPLATE = (
+    "Admitted and processing. Follow with "
+    "GET /api/learning_status?request_id={request_id}. Retrying with a NEW "
+    "request_id duplicates it."
+)
+
 
 @pytest.fixture
 def pipeline(tmp_path, monkeypatch):
@@ -497,10 +507,10 @@ def test_http_budget_includes_ingestion_and_never_acknowledges_uncommitted_work(
             assert data["request_id"] == "slow"
             assert data["learning_status"] == "deferred"
             assert data["learning_reason"] == "server_deadline"
-            message = data["message"].lower()
-            assert "processing" in message, message
-            for word in ("succeed", "success", "committed", "complete"):
-                assert word not in message, message
+            expected_message = PAST_DEADLINE_202_MESSAGE_TEMPLATE.format(
+                request_id="slow"
+            )
+            assert data["message"] == expected_message
             assert time.monotonic() - started < 1
             assert engine.get_storage().get_request("slow") is None
         finally:
