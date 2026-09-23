@@ -5,9 +5,12 @@ from fastapi.testclient import TestClient
 
 from reflexio.server.api import create_app
 from reflexio.server.middleware import (
+    REQUEST_TIMEOUT_SECONDS,
+    ROUTE_BACKSTOP_SECONDS,
     SYNC_REQUEST_TIMEOUT_SECONDS,
     BodySizeLimitMiddleware,
     TimeoutMiddleware,
+    backstop_for,
 )
 
 
@@ -220,3 +223,36 @@ def test_security_headers_are_added(monkeypatch):
     assert response.headers["strict-transport-security"] == (
         "max-age=31536000; includeSubDomains"
     )
+
+
+def test_publish_backstop_is_above_the_routes_own_deadline():
+    """The route must reach its own deadline before the middleware fires.
+
+    This is the whole bug: a 60s middleware budget under a 240s route budget
+    made the route's request_id-bearing exit unreachable.
+    """
+    from reflexio.server.routes.interactions import PUBLISH_REQUEST_TIMEOUT_SECONDS
+
+    backstop = ROUTE_BACKSTOP_SECONDS["/api/publish_interaction"]
+    assert backstop > PUBLISH_REQUEST_TIMEOUT_SECONDS, (
+        f"backstop {backstop}s must exceed the route's own "
+        f"{PUBLISH_REQUEST_TIMEOUT_SECONDS}s deadline"
+    )
+
+
+def test_publish_backstop_wins_over_the_default():
+    assert backstop_for("/api/publish_interaction", wait_for_response=False) > (
+        REQUEST_TIMEOUT_SECONDS
+    )
+
+
+def test_publish_backstop_does_not_shorten_the_coverage_wait():
+    """wait_for_response=true must not land publish on a SHORTER budget.
+
+    The route's own 240s deadline covers the coverage wait too, so the publish
+    backstop has to sit above it in both modes. If this ever returns the
+    default 60s, a waited publish is cut off mid-wait.
+    """
+    waited = backstop_for("/api/publish_interaction", wait_for_response=True)
+    unwaited = backstop_for("/api/publish_interaction", wait_for_response=False)
+    assert waited == unwaited == ROUTE_BACKSTOP_SECONDS["/api/publish_interaction"]

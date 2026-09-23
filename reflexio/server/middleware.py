@@ -28,6 +28,43 @@ SYNC_REQUEST_TIMEOUT_SECONDS = (
 SYNC_REQUEST_PATHS = frozenset(
     {"/api/review_user_playbooks", "/api/run_playbook_aggregation"}
 )
+
+# Routes that enforce their OWN deadline get a middleware budget strictly
+# ABOVE it, so the route's exit — which knows whether work was admitted and
+# can therefore say something true — is the one the client sees.
+#
+# This table previously did not exist: every route shared REQUEST_TIMEOUT_
+# SECONDS = 60 while /api/publish_interaction budgeted 240, so the middleware
+# always won and answered "Request timeout" for a publish that was committing.
+#
+# INVARIANT, guarded by test_publish_backstop_is_above_the_routes_own_deadline:
+# for every path here, this value exceeds the deadline the route itself uses.
+ROUTE_BACKSTOP_SECONDS: dict[str, float] = {
+    "/api/publish_interaction": 300.0,
+}
+
+
+def backstop_for(path: str, wait_for_response: bool) -> float:
+    """Return the middleware's budget for one request.
+
+    Precedence is deliberate: a route that owns a deadline gets its backstop
+    regardless of ``wait_for_response``, because the route's own deadline
+    already covers both modes. Anything else keeps the previous behaviour.
+
+    Args:
+        path (str): The request path.
+        wait_for_response (bool): Whether the caller asked to wait.
+
+    Returns:
+        float: Seconds the middleware will allow before returning 504.
+    """
+    if path in ROUTE_BACKSTOP_SECONDS:
+        return ROUTE_BACKSTOP_SECONDS[path]
+    if path in SYNC_REQUEST_PATHS or wait_for_response:
+        return SYNC_REQUEST_TIMEOUT_SECONDS
+    return REQUEST_TIMEOUT_SECONDS
+
+
 SUSPICIOUS_USER_AGENTS = ["bot", "crawler", "spider", "scraper", "curl", "wget"]
 ALLOWED_EMPTY_UA_PATHS = ["/health", "/"]  # Paths that allow empty user agents
 DEFAULT_MAX_BODY_BYTES = 10 * 1024 * 1024
@@ -129,13 +166,10 @@ class TimeoutMiddleware(BaseHTTPMiddleware):
         """
         from starlette.responses import JSONResponse
 
-        # Use longer timeout for synchronous processing requests
-        timeout = REQUEST_TIMEOUT_SECONDS
-        if (
-            request.url.path in SYNC_REQUEST_PATHS
-            or request.query_params.get("wait_for_response", "").lower() == "true"
-        ):
-            timeout = SYNC_REQUEST_TIMEOUT_SECONDS
+        timeout = backstop_for(
+            request.url.path,
+            request.query_params.get("wait_for_response", "").lower() == "true",
+        )
 
         try:
             return await asyncio.wait_for(call_next(request), timeout=timeout)
