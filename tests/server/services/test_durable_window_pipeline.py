@@ -519,6 +519,76 @@ def test_http_budget_includes_ingestion_and_never_acknowledges_uncommitted_work(
     asyncio.run(invoke())
 
 
+def test_publish_past_deadline_commits_the_work_the_202_promised(pipeline, monkeypatch):
+    """The 202 says "Admitted and processing" -- so the work must survive.
+
+    This is the assertion the two pre-existing 202 tests could not make. One
+    patches ``add_user_interaction`` out entirely, so the worker's cooperative
+    deadline check never runs; the other reads ``get_request`` AT RESPONSE
+    TIME, which is ``None`` whether the work later commits or is discarded.
+
+    Here the embedding call is held past the RESPONSE deadline, released, and
+    then the shielded worker is awaited on the same loop. If the worker shares
+    the response clock, its next ``check_admission_deadline()`` raises and the
+    row never lands -- a 202 with ``success: true`` for discarded work.
+    """
+    engine, _, client = pipeline
+    from reflexio.server.routes import interactions as routes
+
+    monkeypatch.setattr(routes, "PUBLISH_REQUEST_TIMEOUT_SECONDS", 0.1)
+    storage = engine.get_storage()
+    real_prepare = storage.prepare_interaction_embeddings
+    entered = threading.Event()
+    released = threading.Event()
+
+    def slow_embedding(interactions):
+        entered.set()
+        assert released.wait(5)
+        return real_prepare(interactions)
+
+    monkeypatch.setattr(storage, "prepare_interaction_embeddings", slow_embedding)
+
+    import asyncio
+
+    import httpx
+
+    async def invoke():
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=client.app), base_url="http://test"
+        ) as session:
+            response = await session.post(
+                "/api/publish_interaction", json=payload("kept")
+            )
+            assert response.status_code == 202
+            assert response.json()["success"] is True
+            assert response.json()["learning_reason"] == "server_deadline"
+            # Not yet committed -- the embedding call is still blocked.
+            assert storage.get_request("kept") is None
+            assert entered.wait(5), "the publish never reached the embedding call"
+            released.set()
+            # Stay on THIS loop: the shielded task lives here, and letting
+            # asyncio.run() return would destroy it before it could commit.
+            deadline = time.monotonic() + 15
+            while time.monotonic() < deadline:
+                if await asyncio.to_thread(storage.get_request, "kept") is not None:
+                    break
+                await asyncio.sleep(0.05)
+
+    try:
+        asyncio.run(invoke())
+    finally:
+        released.set()
+
+    assert storage.get_request("kept") is not None, (
+        "the 202 claimed the publish was processing, but the worker aborted "
+        "and the row was never written"
+    )
+    status_response = client.get("/api/learning_status", params={"request_id": "kept"})
+    assert status_response.status_code == 200, (
+        "the 202 tells the caller to poll learning_status; it must not 404"
+    )
+
+
 def test_sync_tail_timeout_keeps_durable_pending_work(pipeline, monkeypatch):
     """A sync tail that runs out of clock must not discard the durable work.
 

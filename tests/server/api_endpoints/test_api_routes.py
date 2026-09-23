@@ -390,6 +390,44 @@ class TestPublishInteraction:
         )
         assert data["message"] == expected_message
 
+    def test_publish_past_deadline_reports_the_payload_warnings(
+        self, client, patched_reflexio, monkeypatch
+    ):
+        """A 202 must not silently answer "no warnings".
+
+        ``payload_warnings()`` is computed from the REQUEST, so it is known at
+        the 202 exit -- but the route's normal append happens after the
+        ``wait_for``, which the 202 returns before reaching. Without the line,
+        ``warnings`` serialises as [] and a caller cannot tell "nothing was
+        altered" from "never evaluated". This posts a mis-keyed field so the
+        list is genuinely non-empty; an empty one is the mutation.
+        """
+        import time as _time
+
+        monkeypatch.setattr(
+            "reflexio.server.routes.interactions.PUBLISH_REQUEST_TIMEOUT_SECONDS", 0.2
+        )
+        payload = self._publish_payload()
+        payload["interaction_data_list"] = [
+            {"role": "User", "content": "hi", "Content": "typo"}
+        ]
+
+        def slow_publish(**_kwargs):
+            _time.sleep(0.6)
+            return PublishUserInteractionResponse(success=True, message="late")
+
+        with patch(
+            "reflexio.server.api_endpoints.publisher_api.add_user_interaction",
+            side_effect=slow_publish,
+        ):
+            response = client.post("/api/publish_interaction", json=payload)
+
+        assert response.status_code == 202
+        warnings = response.json()["warnings"]
+        assert any("Content" in warning for warning in warnings), warnings
+        # Names only -- never the value, same rule as the 200 path.
+        assert not any("typo" in warning for warning in warnings), warnings
+
     def test_publish_past_deadline_still_releases_the_slot(
         self, client, patched_reflexio, monkeypatch
     ):
@@ -404,11 +442,21 @@ class TestPublishInteraction:
         monkeypatch.setattr(
             "reflexio.server.routes.interactions.PUBLISH_REQUEST_TIMEOUT_SECONDS", 0.2
         )
+        from reflexio.server.services.durable_learning import waiting
+
+        # Count releases by WRAPPING the real one, not by replacing it. A bare
+        # list-append records a second release as happily as a first, so it
+        # cannot catch a double release -- and the real release_ingestion
+        # raises KeyError on the second call, which is the behaviour that
+        # makes the count meaningful.
         released: list[str] = []
-        monkeypatch.setattr(
-            "reflexio.server.services.durable_learning.waiting.release_ingestion",
-            lambda org_id: released.append(org_id),
-        )
+        real_release = waiting.release_ingestion
+
+        def counting_release(org_id: str) -> None:
+            released.append(org_id)
+            real_release(org_id)
+
+        monkeypatch.setattr(waiting, "release_ingestion", counting_release)
 
         def slow_publish(**_kwargs):
             _time.sleep(0.5)
@@ -427,6 +475,14 @@ class TestPublishInteraction:
         while not released and _time.monotonic() < deadline:
             _time.sleep(0.05)
         assert released, "the ingestion slot was never released after the 202"
+        assert len(released) == 1, (
+            f"the slot was released {len(released)} times, not once: {released}"
+        )
+        # The ledger itself, not the count: a release aimed at the wrong org
+        # would satisfy the count and still leak this org's slot forever.
+        assert not waiting._ingesting, (
+            f"ingestion slots leaked after the 202: {waiting._ingesting}"
+        )
 
     def test_unadmitted_publish_returns_503_and_not_the_deferred_shape(
         self, client, patched_reflexio, monkeypatch

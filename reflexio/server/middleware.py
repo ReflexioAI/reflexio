@@ -37,8 +37,11 @@ SYNC_REQUEST_PATHS = frozenset(
 # SECONDS = 60 while /api/publish_interaction budgeted 240, so the middleware
 # always won and answered "Request timeout" for a publish that was committing.
 #
-# INVARIANT, guarded by test_publish_backstop_is_above_the_routes_own_deadline:
+# INVARIANT, guarded by test_every_backstop_row_exceeds_its_routes_own_deadline:
 # for every path here, this value exceeds the deadline the route itself uses.
+# That guard iterates THIS dict and fails on any row it has no route constant
+# for, so adding a second row without pairing it is a test failure rather than
+# an unguarded entry sitting under a comment that claims otherwise.
 ROUTE_BACKSTOP_SECONDS: dict[str, float] = {
     "/api/publish_interaction": 300.0,
 }

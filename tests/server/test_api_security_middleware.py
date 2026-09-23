@@ -225,18 +225,82 @@ def test_security_headers_are_added(monkeypatch):
     )
 
 
-def test_publish_backstop_is_above_the_routes_own_deadline():
+def _route_own_deadlines() -> dict[str, float]:
+    """Each backstop path paired with the deadline the route itself enforces.
+
+    Read at call time rather than at import, so a monkeypatched constant is
+    seen. Keys must match ROUTE_BACKSTOP_SECONDS exactly -- the guard below
+    fails in BOTH directions, so neither table can grow a row alone.
+    """
+    from reflexio.server.routes import interactions
+
+    return {
+        "/api/publish_interaction": interactions.PUBLISH_REQUEST_TIMEOUT_SECONDS,
+    }
+
+
+def test_every_backstop_row_exceeds_its_routes_own_deadline():
     """The route must reach its own deadline before the middleware fires.
 
     This is the whole bug: a 60s middleware budget under a 240s route budget
     made the route's request_id-bearing exit unreachable.
-    """
-    from reflexio.server.routes.interactions import PUBLISH_REQUEST_TIMEOUT_SECONDS
 
+    Iterating the table rather than indexing one hardcoded path is deliberate.
+    middleware.py claims the ordering holds "for every path here"; a guard that
+    read one path would let a second row ship unguarded under a comment that
+    says it is covered -- the same shape as a check that cannot fail.
+    """
+    own = _route_own_deadlines()
+    unpaired = sorted(set(ROUTE_BACKSTOP_SECONDS) - set(own))
+    assert not unpaired, (
+        f"backstop rows with no route deadline to compare against: {unpaired}. "
+        "Add the route's own constant to _route_own_deadlines()."
+    )
+    stale = sorted(set(own) - set(ROUTE_BACKSTOP_SECONDS))
+    assert not stale, f"paired routes with no backstop row: {stale}"
+    for path, backstop in ROUTE_BACKSTOP_SECONDS.items():
+        assert backstop > own[path], (
+            f"{path}: backstop {backstop}s must exceed the route's own "
+            f"{own[path]}s deadline"
+        )
+
+
+def test_the_publish_deadline_chain_is_strictly_ordered():
+    """response deadline < worker deadline < middleware backstop.
+
+    Enumerated as a SET in one place rather than as three scattered pairwise
+    assertions, because an ordering invariant is only visible as a whole: the
+    worker clock was added precisely because nobody had written down that the
+    response deadline was doing two jobs.
+
+    This asserts the DECLARED constants. The behavioural guard that the worker
+    actually outlives the response is
+    test_durable_window_pipeline.py::test_publish_past_deadline_commits_the_
+    work_the_202_promised, which drives a real publish and reads the row back.
+
+    Non-goal, stated beside the set so its absence is visible: the EDGE budgets
+    are AWS configuration and cannot be asserted from here. Measured read-only
+    on 2026-09-22, both sit BELOW the response deadline -- CloudFront
+    E15WBN9QYYCSND alb-origin OriginReadTimeout 30s, agenticmem-alb
+    idle_timeout.timeout_seconds 60s -- so the 202 exit does not currently
+    reach a client through https://reflexio.ai/api/*. See the design's §2a.
+    """
+    from reflexio.server.routes import interactions
+
+    response_deadline = interactions.PUBLISH_REQUEST_TIMEOUT_SECONDS
+    worker_deadline = response_deadline + interactions.PUBLISH_WORKER_GRACE_SECONDS
     backstop = ROUTE_BACKSTOP_SECONDS["/api/publish_interaction"]
-    assert backstop > PUBLISH_REQUEST_TIMEOUT_SECONDS, (
-        f"backstop {backstop}s must exceed the route's own "
-        f"{PUBLISH_REQUEST_TIMEOUT_SECONDS}s deadline"
+
+    assert worker_deadline > response_deadline, (
+        "the worker must outlive the response, or the 202 says 'processing' "
+        "about work whose next checkpoint aborts"
+    )
+    assert backstop > response_deadline, (
+        "the middleware must not pre-empt the route's own exit"
+    )
+    assert worker_deadline < backstop, (
+        "the worker clock is expected to stay inside the backstop, so no clock "
+        "on this path outlives the middleware's own budget"
     )
 
 

@@ -59,7 +59,33 @@ from reflexio.server.rate_limit import limiter
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+# The RESPONSE clock: when the route stops waiting and answers 202.
 PUBLISH_REQUEST_TIMEOUT_SECONDS = 240.0
+# The WORKER clock is this much LATER, and the gap is the whole point.
+#
+# `asyncio.to_thread` copies the context, so whatever `admission_deadline`
+# holds when the worker starts is the clock `check_admission_deadline()` runs
+# against for the rest of the publish -- and the route cannot reach it
+# afterwards, because the worker holds a COPY (`admission_deadline.reset()`
+# below restores the ROUTE's context only). Handing the worker the response
+# deadline therefore made the 202 false at the instant it was sent: `wait_for`
+# gave up and the worker's next checkpoint raised `TimeoutError`, so the route
+# said "Admitted and processing" about work that was being discarded.
+#
+# 30s is sized against the LARGEST gap between two consecutive
+# `check_admission_deadline()` calls in `generation_service.run` -- the
+# `prepare_interaction_embeddings` network call, then `lock_extraction_stream`
+# inside `commit_scope`. Production p99 for an ENTIRE publish is 22.5s
+# (34,944 spans, 30d), so 30s clears any single phase of it. Past the third
+# checkpoint there is no further check, so a commit already under way is never
+# interrupted; the grace only has to cover the run-up.
+#
+# Too small and the 202 goes back to being briefly true and then false. Too
+# large and a wedged publish holds an anyio worker thread -- and its ingestion
+# slot, which is released from the done-callback -- for longer. 30s also keeps
+# the whole chain monotone and inside the middleware backstop:
+# response 240s < worker 270s < ROUTE_BACKSTOP_SECONDS 300s.
+PUBLISH_WORKER_GRACE_SECONDS = 30.0
 
 
 @router.post(
@@ -126,7 +152,12 @@ async def publish_user_interaction(
         release_waiter,
     )
 
-    deadline = time.monotonic() + PUBLISH_REQUEST_TIMEOUT_SECONDS
+    # Two clocks. The route answers on `response_deadline`; the worker keeps
+    # running until `worker_deadline`, which is STRICTLY LATER -- see
+    # PUBLISH_WORKER_GRACE_SECONDS. Collapsing these into one deadline is the
+    # defect the 202 exit was shipped with.
+    response_deadline = time.monotonic() + PUBLISH_REQUEST_TIMEOUT_SECONDS
+    worker_deadline = response_deadline + PUBLISH_WORKER_GRACE_SECONDS
     payload.request_id = payload.request_id or str(uuid.uuid4())
     # The accumulator opens BEFORE `acquire_ingestion` -- pure queueing behind
     # other publishes for this org -- so that wait is both a field on the line
@@ -136,8 +167,11 @@ async def publish_user_interaction(
     # 8s queue wait followed by 50ms of fast work.
     with publish_timing.collect():
         try:
+            # Admission waits on the RESPONSE clock: there is no point
+            # holding a slot past the moment the route would have to answer
+            # anyway.
             with publish_timing.phase("admission"):
-                admitted = await acquire_ingestion(org_id, deadline)
+                admitted = await acquire_ingestion(org_id, response_deadline)
             if not admitted:
                 # Nothing was admitted and nothing will commit, so this is safe
                 # to retry -- and safe to retry WITH THIS ID, which is why it is
@@ -173,7 +207,7 @@ async def publish_user_interaction(
             # not assumed -- see the cancellation test.
             publish_timing.emit(org_id=org_id, request_id=payload.request_id)
             raise
-        token = admission_deadline.set(deadline)
+        token = admission_deadline.set(worker_deadline)
         try:
             # Success is returned only after the atomic admission transaction.
             # Cancellation must not release the slot while ingestion still runs.
@@ -189,12 +223,13 @@ async def publish_user_interaction(
             try:
                 response = await asyncio.wait_for(
                     asyncio.shield(operation),
-                    timeout=max(0, deadline - time.monotonic()),
+                    timeout=max(0, response_deadline - time.monotonic()),
                 )
             except TimeoutError:
-                # The operation is SHIELDED: it is still running and will commit.
-                # Saying "timeout" here states the opposite of what the server is
-                # doing, and drops the only key the caller could use to find out.
+                # The operation is SHIELDED *and* holds a worker deadline
+                # that is still in the future, so "processing" is true when
+                # this is sent -- the shield alone never made it true, because
+                # the cooperative deadline check is not asyncio cancellation.
                 operation.add_done_callback(lambda _: release_ingestion(org_id))
                 http_response.status_code = status.HTTP_202_ACCEPTED
                 return PublishUserInteractionResponse(
@@ -202,6 +237,11 @@ async def publish_user_interaction(
                     request_id=payload.request_id,
                     learning_status="deferred",
                     learning_reason="server_deadline",
+                    # Computed from the REQUEST, not the result, so it is
+                    # available here. Omitting it left `warnings` serialising
+                    # as [], which a caller cannot tell from "nothing was
+                    # altered".
+                    warnings=payload.payload_warnings(),
                     message=(
                         "Admitted and processing. Follow with "
                         "GET /api/learning_status?request_id="
@@ -229,7 +269,7 @@ async def publish_user_interaction(
         try:
             storage = reflexio_cache.get_reflexio(org_id=org_id).get_storage()
             stalled_reason: str | None = None
-            while time.monotonic() < deadline:
+            while time.monotonic() < response_deadline:
                 # Named to avoid shadowing the module-level `fastapi.status`
                 # import: assigning to `status` anywhere in this function makes
                 # Python treat it as local for the WHOLE function body, which
@@ -255,7 +295,9 @@ async def publish_user_interaction(
                     break
                 if await request.is_disconnected():
                     break
-                await asyncio.sleep(min(0.25, max(0, deadline - time.monotonic())))
+                await asyncio.sleep(
+                    min(0.25, max(0, response_deadline - time.monotonic()))
+                )
             response.learning_status = "deferred"
             response.learning_reason = stalled_reason or "wait_timeout"
             return response
