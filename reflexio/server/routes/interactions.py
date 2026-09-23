@@ -139,8 +139,19 @@ async def publish_user_interaction(
             with publish_timing.phase("admission"):
                 admitted = await acquire_ingestion(org_id, deadline)
             if not admitted:
+                # Nothing was admitted and nothing will commit, so this is safe
+                # to retry -- and safe to retry WITH THIS ID, which is why it is
+                # here.
                 raise HTTPException(
-                    status_code=503, detail="Publish capacity deadline exceeded"
+                    status_code=503,
+                    detail={
+                        "reason": "capacity_deadline_exceeded",
+                        "request_id": payload.request_id,
+                        "message": (
+                            "Publish capacity deadline exceeded; nothing was "
+                            "admitted. Retry with this same request_id."
+                        ),
+                    },
                 )
         except BaseException:
             # The ONLY exits that never reach `GenerationService.run`, and so

@@ -428,6 +428,34 @@ class TestPublishInteraction:
             _time.sleep(0.05)
         assert released, "the ingestion slot was never released after the 202"
 
+    def test_unadmitted_publish_returns_503_and_not_the_deferred_shape(
+        self, client, patched_reflexio, monkeypatch
+    ):
+        """Nothing was admitted, so nothing will commit -- this is NOT a 202.
+
+        Asserting only 'not 200' would pass against a version that returns 202
+        for both exits, which would tell the caller work is in flight when
+        none is. The distinction between these two exits is the whole design.
+        """
+
+        async def never_admitted(_org_id, _deadline):
+            return False
+
+        monkeypatch.setattr(
+            "reflexio.server.services.durable_learning.waiting.acquire_ingestion",
+            never_admitted,
+        )
+
+        response = client.post("/api/publish_interaction", json=self._publish_payload())
+
+        assert response.status_code == 503
+        detail = response.json()["detail"]
+        assert detail["reason"] == "capacity_deadline_exceeded"
+        assert detail["request_id"]
+        assert "learning_status" not in detail, (
+            "an un-admitted publish must not look deferred -- nothing is running"
+        )
+
 
 class TestSearchEndpoints:
     """Tests for search endpoints."""
