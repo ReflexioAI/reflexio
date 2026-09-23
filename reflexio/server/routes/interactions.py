@@ -94,6 +94,19 @@ def get_session_outcomes(
     "/api/publish_interaction",
     response_model=PublishUserInteractionResponse,
     response_model_exclude_none=True,
+    responses={
+        202: {
+            "model": PublishUserInteractionResponse,
+            "description": (
+                "Admitted and still processing: the server's deadline was "
+                "reached before the durable write confirmed, but the work is "
+                "shielded and keeps running. success is true and "
+                "learning_reason is 'server_deadline' -- poll "
+                "GET /api/learning_status with the returned request_id "
+                "rather than retrying the publish."
+            ),
+        }
+    },
 )
 @limiter.limit("60/minute")  # Rate limit for write operations
 async def publish_user_interaction(
@@ -425,5 +438,8 @@ def get_learning_status(
     req = storage.get_request(request_id)
     if req is None:
         raise HTTPException(status_code=404, detail="request not found")
-    status = storage.extraction_status(req.user_id, request_id)
-    return LearningStatusResponse(**status)
+    # Named to avoid shadowing the module-level `fastapi.status` import for
+    # this function's whole body -- see the identical note in
+    # publish_user_interaction above.
+    extraction_status = storage.extraction_status(req.user_id, request_id)
+    return LearningStatusResponse(**extraction_status)

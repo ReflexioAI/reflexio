@@ -497,7 +497,10 @@ def test_http_budget_includes_ingestion_and_never_acknowledges_uncommitted_work(
             assert data["request_id"] == "slow"
             assert data["learning_status"] == "deferred"
             assert data["learning_reason"] == "server_deadline"
-            assert "succeeded" not in data["message"].lower()
+            message = data["message"].lower()
+            assert "processing" in message, message
+            for word in ("succeed", "success", "committed", "complete"):
+                assert word not in message, message
             assert time.monotonic() - started < 1
             assert engine.get_storage().get_request("slow") is None
         finally:

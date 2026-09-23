@@ -370,7 +370,14 @@ class TestPublishInteraction:
         assert data["learning_status"] == "deferred"
         assert data["learning_reason"] == "server_deadline"
         assert data["request_id"], "the id must survive exclude_none"
-        assert "retry" in data["message"].lower()
+        message = data["message"].lower()
+        assert "retry" in message
+        assert "processing" in message, message
+        # The admission transaction may not have committed yet -- a claim of
+        # success/completion here would be the exact false statement this
+        # task exists to remove.
+        for word in ("succeed", "success", "committed", "complete"):
+            assert word not in message, message
 
     def test_publish_past_deadline_still_releases_the_slot(
         self, client, patched_reflexio, monkeypatch
