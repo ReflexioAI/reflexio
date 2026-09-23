@@ -1235,12 +1235,16 @@ class ReflexioClient:
         exact canonical retry must match the payload, contract, and trajectory;
         otherwise it is rejected with ``reason="conflicting_finalization"``.
 
-        Your report always wins over one Reflexio inferred for itself. Where a
+        Your report wins over one Reflexio inferred for itself. Where a
         session already carries an inferred outcome, this REPLACES it and
         returns ``recorded=True`` with ``outcome_revision=2``; the inferred
         outcome is retained internally for analysis. That is the only case in
         which a stored outcome is replaced -- an outcome you reported yourself
-        stays immutable.
+        stays immutable. The replacement is refused, with
+        ``reason="conflicting_finalization"``, when the session's earliest
+        request no longer resolves to the user the stored outcome is filed
+        under -- replacing it would move one user's recorded outcome under
+        another's, so the stored outcome is kept instead.
         Rolling-upgrade rows with all four identity fields null compare the
         caller payload and any available server-derived session context, but
         cannot compare absent contract or trajectory digests. An accepted retry

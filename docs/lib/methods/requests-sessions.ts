@@ -7,7 +7,7 @@ export const requestSessionMethods: MethodDef[] = [
     displayName: "Mark Session Outcome",
     group: "requests-sessions",
     description:
-      "Record the lifetime-durable first terminal outcome for an existing session. Idempotency requires unchanged payload, governance context, and finalized trajectory/session context; changed values conflict. User and source are derived from the first request.",
+      "Record the terminal outcome of an existing session. Your own outcome is lifetime-durable; the one exception is an outcome Reflexio inferred for itself, which your report replaces (returning outcome_revision=2). That replacement is refused when the session's earliest request no longer resolves to the user the stored outcome is filed under. Idempotency requires unchanged payload, governance context, and finalized trajectory/session context; changed values conflict. User and source are derived from the first request.",
     httpMethod: "POST",
     endpoint: "/api/session_outcome",
     requestStyle: "json_body",
