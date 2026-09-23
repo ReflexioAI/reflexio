@@ -1226,7 +1226,7 @@ class ReflexioClient:
         value: float | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> SetSessionOutcomeResponse:
-        """Record the immutable first outcome for a published session.
+        """Record the outcome of a published session.
 
         The session must already contain at least one published request. Reflexio
         derives both ``user_id`` and ``source`` from the earliest request ordered
@@ -1234,6 +1234,13 @@ class ReflexioClient:
         the server-owned outcome contract and canonical finalized trajectory. An
         exact canonical retry must match the payload, contract, and trajectory;
         otherwise it is rejected with ``reason="conflicting_finalization"``.
+
+        Your report always wins over one Reflexio inferred for itself. Where a
+        session already carries an inferred outcome, this REPLACES it and
+        returns ``recorded=True`` with ``outcome_revision=2``; the inferred
+        outcome is retained internally for analysis. That is the only case in
+        which a stored outcome is replaced -- an outcome you reported yourself
+        stays immutable.
         Rolling-upgrade rows with all four identity fields null compare the
         caller payload and any available server-derived session context, but
         cannot compare absent contract or trajectory digests. An accepted retry
