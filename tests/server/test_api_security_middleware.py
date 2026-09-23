@@ -256,3 +256,44 @@ def test_publish_backstop_does_not_shorten_the_coverage_wait():
     waited = backstop_for("/api/publish_interaction", wait_for_response=True)
     unwaited = backstop_for("/api/publish_interaction", wait_for_response=False)
     assert waited == unwaited == ROUTE_BACKSTOP_SECONDS["/api/publish_interaction"]
+
+
+def test_publish_interaction_dispatch_uses_the_backstop(monkeypatch):
+    """The middleware must actually USE the backstop table, not just define it.
+
+    The three tests above only exercise backstop_for() and module-level
+    constants — none of them calls TimeoutMiddleware.dispatch(), so none of
+    them can catch a dispatch() that still runs the old inline REQUEST_
+    TIMEOUT_SECONDS/SYNC_REQUEST_PATHS logic while ROUTE_BACKSTOP_SECONDS and
+    backstop_for sit unused beside it. That absence is exactly the production
+    bug: the middleware cutting a publish off at 60s.
+    """
+    observed: dict[str, float | None] = {}
+
+    async def fake_wait_for(awaitable, *, timeout=None):
+        observed["timeout"] = timeout
+        return await awaitable
+
+    async def call_next(_request):
+        from starlette.responses import Response
+
+        return Response()
+
+    monkeypatch.setattr(asyncio, "wait_for", fake_wait_for)
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "scheme": "http",
+            "path": "/api/publish_interaction",
+            "raw_path": b"/api/publish_interaction",
+            "query_string": b"",
+            "headers": [],
+            "client": ("testclient", 50000),
+            "server": ("testserver", 80),
+        }
+    )
+
+    asyncio.run(TimeoutMiddleware(FastAPI()).dispatch(request, call_next))
+
+    assert observed["timeout"] == 300.0
