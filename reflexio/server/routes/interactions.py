@@ -124,12 +124,14 @@ def get_session_outcomes(
         202: {
             "model": PublishUserInteractionResponse,
             "description": (
-                "Admitted and still processing: the server's deadline was "
-                "reached before the durable write confirmed, but the work is "
-                "shielded and keeps running. success is true and "
-                "learning_reason is 'server_deadline' -- poll "
-                "GET /api/learning_status with the returned request_id "
-                "rather than retrying the publish."
+                "Admitted and still running: the server's RESPONSE deadline "
+                "was reached before the durable write confirmed. The worker "
+                "runs on a deadline set deliberately later than the response, "
+                "so the publish is genuinely still in progress -- accepted, "
+                "not committed. success is true and learning_reason is "
+                "'server_deadline'; poll GET /api/learning_status with the "
+                "returned request_id for the outcome (200 committed, 404 not) "
+                "rather than retrying with a NEW request_id."
             ),
         }
     },
