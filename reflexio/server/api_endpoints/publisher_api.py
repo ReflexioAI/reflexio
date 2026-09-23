@@ -49,6 +49,7 @@ from reflexio.models.api_schema.service_schemas import (
     SetSessionOutcomeRequest,
     SetSessionOutcomeResponse,
 )
+from reflexio.server import publish_timing
 from reflexio.server.api_endpoints.precondition_checks import (
     validate_delete_user_profile_request,
     validate_publish_user_interaction_request,
@@ -99,17 +100,33 @@ def add_user_interaction(
     Returns:
         PublishUserInteractionResponse: Response containing success status and message
     """
-    is_valid, message = validate_publish_user_interaction_request(request)
-    if not is_valid:
-        return PublishUserInteractionResponse(success=False, message=message)
+    # The publish-timing line is emitted HERE, from the worker's outermost
+    # frame, because this is the only place that sees the whole of what
+    # serving a publish costs. `GenerationService.run` is too early -- the
+    # post-commit coverage reads in `lib/_interactions.py::_safe_coverage` are
+    # two more remote round trips after it returns -- and `get_reflexio` below
+    # can itself stall or raise on a cold construction, which `run` never sees
+    # at all. `emit` is at-most-once per scope and a no-op outside one, so a
+    # library or CLI caller pays a `ContextVar.get`.
+    try:
+        is_valid, message = validate_publish_user_interaction_request(request)
+        if not is_valid:
+            return PublishUserInteractionResponse(success=False, message=message)
 
-    reflexio = get_reflexio(org_id=org_id)
-    return reflexio.publish_interaction(
-        request=request,
-        use_publish_limiter=use_publish_limiter,
-        publish_limiter_wait_forever=publish_limiter_wait_forever,
-        defer_learning=defer_learning,
-    )
+        reflexio = get_reflexio(org_id=org_id)
+        return reflexio.publish_interaction(
+            request=request,
+            use_publish_limiter=use_publish_limiter,
+            publish_limiter_wait_forever=publish_limiter_wait_forever,
+            defer_learning=defer_learning,
+        )
+    finally:
+        publish_timing.emit(
+            org_id=org_id,
+            # The route assigns one before calling; `unknown` covers a direct
+            # caller that did not, where an empty `request_id=` would not read.
+            request_id=request.request_id or "unknown",
+        )
 
 
 def add_user_playbook(

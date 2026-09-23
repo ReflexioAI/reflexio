@@ -17,6 +17,7 @@ from reflexio.models.api_schema.service_schemas import (
     Request,
 )
 from reflexio.models.config_schema import Config
+from reflexio.server import publish_timing
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.error_reporting import error_tags
 from reflexio.server.llm.litellm_client import LiteLLMClient
@@ -227,7 +228,6 @@ class GenerationService:
         agent_version = resolve_agent_version(
             publish_user_interaction_request.agent_version
         )
-
         try:
             retrieval_experiment_id = getattr(
                 publish_user_interaction_request,
@@ -280,18 +280,30 @@ class GenerationService:
                 )
             )
 
-            record_usage_event(
-                org_id=self.org_id,
-                user_id=user_id,
-                request_id=request_id,
-                session_id=publish_user_interaction_request.session_id,
-                source=publish_user_interaction_request.source,
-                agent_version=agent_version,
-                event_name="publish_request_received",
-                event_category="publish",
-                outcome="received",
-                count_value=len(new_interactions),
-            )
+            # Same phase key as the success events below, which accumulates.
+            # This call reaches the same usage-event recorder and can wait on
+            # the same advisory lock, so leaving it outside would report a
+            # small `metering_ms` and leave the wait as an unexplained gap.
+            #
+            # Metering is NOT the prime suspect, whatever this module's history
+            # says: `pg_stat_statements` on the metrics DB put the lock's mean
+            # wait at 0.0086ms over a live 650s window (208 calls), against the
+            # 119,833ms maximum `append.py`'s docstring still quotes. Measured
+            # today it is ~0.24s of ~8s. The phase stays because it is free and
+            # the tail can return, not because it is where the time went.
+            with publish_timing.phase("metering"):
+                record_usage_event(
+                    org_id=self.org_id,
+                    user_id=user_id,
+                    request_id=request_id,
+                    session_id=publish_user_interaction_request.session_id,
+                    source=publish_user_interaction_request.source,
+                    agent_version=agent_version,
+                    event_name="publish_request_received",
+                    event_category="publish",
+                    outcome="received",
+                    count_value=len(new_interactions),
+                )
 
             # Store Request before adding interactions so downstream workers can
             # resolve the session's source and evaluation-only status.
@@ -328,10 +340,13 @@ class GenerationService:
             # Network preparation is outside the writer scope. The work row is
             # locked FIRST and its sequence allocation commits with every input.
             check_admission_deadline()
-            storage.prepare_interaction_embeddings(new_interactions)
+            publish_timing.record("n_interactions", len(new_interactions))
+            with publish_timing.phase("embeddings"):
+                storage.prepare_interaction_embeddings(new_interactions)
             check_admission_deadline()
-            with storage.commit_scope():
-                storage.lock_extraction_stream(user_id)
+            with publish_timing.phase("commit_scope"), storage.commit_scope():
+                with publish_timing.phase("lock_stream"):
+                    storage.lock_extraction_stream(user_id)
                 check_admission_deadline()
                 if admission_participant is not None:
                     receipt = admission_participant.claim(request_id, user_id)
@@ -351,16 +366,19 @@ class GenerationService:
                     )
                 if storage.get_request(request_id) is not None:
                     raise ValueError(f"request_id {request_id!r} already exists")
-                storage.add_request(new_request)
-                storage.add_user_interactions_bulk(
-                    user_id, new_interactions, embeddings_prepared=True
-                )
-                storage.admit_extraction(
-                    user_id,
-                    request_id,
-                    [i.interaction_id for i in new_interactions],
-                    admission,
-                )
+                with publish_timing.phase("add_request"):
+                    storage.add_request(new_request)
+                with publish_timing.phase("add_interactions"):
+                    storage.add_user_interactions_bulk(
+                        user_id, new_interactions, embeddings_prepared=True
+                    )
+                with publish_timing.phase("admit_extraction"):
+                    storage.admit_extraction(
+                        user_id,
+                        request_id,
+                        [i.interaction_id for i in new_interactions],
+                        admission,
+                    )
                 if admission_participant is not None:
                     admission_participant.complete(
                         new_request, new_interactions, admission
@@ -374,20 +392,29 @@ class GenerationService:
                 agent_version=agent_version,
                 source=source,
             )
-            self._emit_publish_success_events(
-                interactions=new_interactions,
-                user_id=user_id,
-                request_id=request_id,
-                session_id=new_request.session_id,
-                source=source,
-                agent_version=agent_version,
-                backend="durable",
-                duration_ms=int((time.perf_counter() - publish_start) * 1000),
-                metadata={
-                    "defer_learning": True,
-                    "warning_count": len(result.warnings),
-                },
-            )
+            with publish_timing.phase("metering"):
+                self._emit_publish_success_events(
+                    interactions=new_interactions,
+                    user_id=user_id,
+                    request_id=request_id,
+                    session_id=new_request.session_id,
+                    source=source,
+                    agent_version=agent_version,
+                    backend="durable",
+                    duration_ms=int((time.perf_counter() - publish_start) * 1000),
+                    metadata={
+                        "defer_learning": True,
+                        "warning_count": len(result.warnings),
+                    },
+                )
+            # No `emit` here, deliberately. This frame is too EARLY to report:
+            # the caller's post-commit coverage reads
+            # (`lib/_interactions.py::_safe_coverage`, two remote round trips
+            # on every publish) run after it returns and are part of serving
+            # the request. The worker's outermost frame,
+            # `publisher_api.add_user_interaction`, reports instead -- which
+            # also catches a failure that never reaches this method at all,
+            # such as a cold `get_reflexio` construction.
             if not defer_learning:
                 from reflexio.server.services.durable_learning.waiting import (
                     acquire_waiter,
@@ -395,22 +422,32 @@ class GenerationService:
                     release_waiter,
                 )
 
+                # Blocking on a background worker is not time spent SERVING
+                # this publish. Because the reporting frame sits further OUT
+                # than this one, the wait is SUBTRACTED rather than the clock
+                # stopped. Without this, a threshold low enough to be useful
+                # reports every waited request as slow -- measured at 609ms for
+                # a publish whose own phases summed to ~110ms.
                 if acquire_waiter(self.org_id):
                     try:
-                        deadline = publish_start + 240
-                        while time.perf_counter() < deadline:
-                            status = storage.extraction_status(user_id, request_id)
-                            if status["status"] == "done":
-                                break
-                            # A partial window needs input this caller does not
-                            # have, so the remaining deadline cannot change the
-                            # answer. Without this the default library publish
-                            # blocks the full 240s for any user below one window.
-                            if coverage_stalled(status):
-                                break
-                            time.sleep(
-                                min(0.25, max(0, deadline - time.perf_counter()))
-                            )
+                        with publish_timing.excluded():
+                            deadline = publish_start + 240
+                            while time.perf_counter() < deadline:
+                                status = storage.extraction_status(
+                                    user_id, request_id
+                                )
+                                if status["status"] == "done":
+                                    break
+                                # A partial window needs input this caller does
+                                # not have, so the remaining deadline cannot
+                                # change the answer. Without this the default
+                                # library publish blocks the full 240s for any
+                                # user below one window.
+                                if coverage_stalled(status):
+                                    break
+                                time.sleep(
+                                    min(0.25, max(0, deadline - time.perf_counter()))
+                                )
                     except Exception:  # noqa: BLE001
                         # Everything above this point has COMMITTED. The waiter
                         # only observes how far extraction has got; it performs
@@ -434,19 +471,20 @@ class GenerationService:
             return result
 
         except Exception as e:
-            record_usage_event(
-                org_id=self.org_id,
-                user_id=user_id,
-                request_id=result.request_id,
-                session_id=publish_user_interaction_request.session_id,
-                source=publish_user_interaction_request.source,
-                agent_version=agent_version,
-                event_name="publish_request_failed",
-                event_category="publish",
-                outcome="failed",
-                duration_ms=int((time.perf_counter() - publish_start) * 1000),
-                error_kind=type(e).__name__,
-            )
+            with publish_timing.phase("metering"):
+                record_usage_event(
+                    org_id=self.org_id,
+                    user_id=user_id,
+                    request_id=result.request_id,
+                    session_id=publish_user_interaction_request.session_id,
+                    source=publish_user_interaction_request.source,
+                    agent_version=agent_version,
+                    event_name="publish_request_failed",
+                    event_category="publish",
+                    outcome="failed",
+                    duration_ms=int((time.perf_counter() - publish_start) * 1000),
+                    error_kind=type(e).__name__,
+                )
             with error_tags(
                 subsystem="generation",
                 op="refresh_profile",
