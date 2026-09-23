@@ -33,6 +33,7 @@ from unittest.mock import patch
 
 import pytest
 from starlette.requests import Request
+from starlette.responses import Response
 
 from reflexio.lib.reflexio_lib import Reflexio
 from reflexio.models.api_schema.service_schemas import (
@@ -316,6 +317,11 @@ def test_a_publish_cancelled_while_queued_still_reports(
             interactions.publish_user_interaction(
                 request=_starlette_request(),
                 payload=_publish_request(),
+                # Supplied by FastAPI on a served request; this test calls the
+                # route function directly, so it stands in for the injected
+                # one. Only the 202 exit writes to it, which this path -- a
+                # cancel while still queued -- never reaches.
+                http_response=Response(),
                 org_id=_ORG_ID,
             )
         )

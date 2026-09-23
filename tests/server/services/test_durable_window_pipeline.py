@@ -457,6 +457,16 @@ def test_two_users_compute_concurrently_and_same_user_waits(pipeline, monkeypatc
 def test_http_budget_includes_ingestion_and_never_acknowledges_uncommitted_work(
     pipeline, monkeypatch
 ):
+    """The HTTP budget covers ingestion, and a still-running write is never
+    reported as done.
+
+    The route's deadline exit is a 202 (see routes/interactions.py): the
+    ingestion work is shielded and keeps running past the deadline, so the
+    caller is told it is admitted and PROCESSING, never that it succeeded or
+    completed. The load-bearing assertion is unchanged by that shift --
+    storage must not yet hold the row at the moment the response is sent,
+    since the embedding call is still blocked.
+    """
     engine, _, client = pipeline
     from reflexio.server.routes import interactions as routes
 
@@ -482,8 +492,12 @@ def test_http_budget_includes_ingestion_and_never_acknowledges_uncommitted_work(
                 response = await session.post(
                     "/api/publish_interaction", json=payload("slow")
                 )
-            assert response.status_code == 504
-            assert response.json()["detail"]["request_id"] == "slow"
+            assert response.status_code == 202
+            data = response.json()
+            assert data["request_id"] == "slow"
+            assert data["learning_status"] == "deferred"
+            assert data["learning_reason"] == "server_deadline"
+            assert "succeeded" not in data["message"].lower()
             assert time.monotonic() - started < 1
             assert engine.get_storage().get_request("slow") is None
         finally:

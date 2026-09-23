@@ -337,6 +337,79 @@ class TestPublishInteraction:
         # disappeared from the response schema entirely.
         assert response.json()["warnings"] == []
 
+    def test_publish_past_deadline_returns_202_with_the_request_id(
+        self, client, patched_reflexio, monkeypatch
+    ):
+        """An admitted publish that outruns the deadline is ACCEPTED, not failed.
+
+        The work is shielded and keeps committing, so reporting a timeout
+        states the opposite of what the server is doing. The request_id must
+        survive response_model_exclude_none=True -- it is the only thing that
+        makes the outcome retrievable.
+        """
+        monkeypatch.setattr(
+            "reflexio.server.routes.interactions.PUBLISH_REQUEST_TIMEOUT_SECONDS", 0.2
+        )
+
+        def slow_publish(**_kwargs):
+            time.sleep(1.0)
+            return PublishUserInteractionResponse(success=True, message="late")
+
+        with patch(
+            "reflexio.server.api_endpoints.publisher_api.add_user_interaction",
+            side_effect=slow_publish,
+        ):
+            response = client.post(
+                "/api/publish_interaction",
+                json=self._publish_payload(),
+            )
+
+        assert response.status_code == 202
+        data = response.json()
+        assert data["success"] is True
+        assert data["learning_status"] == "deferred"
+        assert data["learning_reason"] == "server_deadline"
+        assert data["request_id"], "the id must survive exclude_none"
+        assert "retry" in data["message"].lower()
+
+    def test_publish_past_deadline_still_releases_the_slot(
+        self, client, patched_reflexio, monkeypatch
+    ):
+        """Capacity must come back after a 202, or the fleet drains.
+
+        release_ingestion runs from a done-callback rather than inline, so a
+        return path that skips it leaks a slot on exactly the requests that
+        are already struggling.
+        """
+        import time as _time
+
+        monkeypatch.setattr(
+            "reflexio.server.routes.interactions.PUBLISH_REQUEST_TIMEOUT_SECONDS", 0.2
+        )
+        released: list[str] = []
+        monkeypatch.setattr(
+            "reflexio.server.services.durable_learning.waiting.release_ingestion",
+            lambda org_id: released.append(org_id),
+        )
+
+        def slow_publish(**_kwargs):
+            _time.sleep(0.5)
+            return PublishUserInteractionResponse(success=True, message="late")
+
+        with patch(
+            "reflexio.server.api_endpoints.publisher_api.add_user_interaction",
+            side_effect=slow_publish,
+        ):
+            response = client.post(
+                "/api/publish_interaction", json=self._publish_payload()
+            )
+
+        assert response.status_code == 202
+        deadline = _time.monotonic() + 5
+        while not released and _time.monotonic() < deadline:
+            _time.sleep(0.05)
+        assert released, "the ingestion slot was never released after the 202"
+
 
 class TestSearchEndpoints:
     """Tests for search endpoints."""

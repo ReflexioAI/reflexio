@@ -14,6 +14,8 @@ from fastapi import (
     Depends,
     HTTPException,
     Request,
+    Response,
+    status,
 )
 
 from reflexio.models.api_schema.retriever_schema import (
@@ -97,6 +99,7 @@ def get_session_outcomes(
 async def publish_user_interaction(
     request: Request,
     payload: PublishUserInteractionRequest,
+    http_response: Response,
     org_id: str = Depends(default_get_org_id),
     wait_for_response: bool = False,
     _gate: None = Depends(default_billing_gate("learnings_generated")),  # noqa: B008
@@ -165,15 +168,23 @@ async def publish_user_interaction(
                     timeout=max(0, deadline - time.monotonic()),
                 )
             except TimeoutError:
+                # The operation is SHIELDED: it is still running and will commit.
+                # Saying "timeout" here states the opposite of what the server is
+                # doing, and drops the only key the caller could use to find out.
                 operation.add_done_callback(lambda _: release_ingestion(org_id))
-                raise HTTPException(
-                    status_code=504,
-                    detail={
-                        "reason": "admission_timeout",
-                        "request_id": payload.request_id,
-                        "message": "Admission was not confirmed before the deadline; check this request ID before retrying.",
-                    },
-                ) from None
+                http_response.status_code = status.HTTP_202_ACCEPTED
+                return PublishUserInteractionResponse(
+                    success=True,
+                    request_id=payload.request_id,
+                    learning_status="deferred",
+                    learning_reason="server_deadline",
+                    message=(
+                        "Admitted and processing. Follow with "
+                        "GET /api/learning_status?request_id="
+                        f"{payload.request_id}. Retrying with a NEW request_id "
+                        "duplicates it."
+                    ),
+                )
             except asyncio.CancelledError:
                 operation.add_done_callback(lambda _: release_ingestion(org_id))
                 raise
@@ -195,15 +206,19 @@ async def publish_user_interaction(
             storage = reflexio_cache.get_reflexio(org_id=org_id).get_storage()
             stalled_reason: str | None = None
             while time.monotonic() < deadline:
-                status = await asyncio.to_thread(
+                # Named to avoid shadowing the module-level `fastapi.status`
+                # import: assigning to `status` anywhere in this function makes
+                # Python treat it as local for the WHOLE function body, which
+                # breaks the `status.HTTP_202_ACCEPTED` reference above.
+                extraction_status = await asyncio.to_thread(
                     storage.extraction_status, payload.user_id, payload.request_id
                 )
-                if status["status"] == "done":
+                if extraction_status["status"] == "done":
                     counts = await asyncio.to_thread(
                         storage.extraction_counts, payload.user_id, payload.request_id
                     )
                     response.learning_status = "done"
-                    response.learning_reason = status["reason"]
+                    response.learning_reason = extraction_status["reason"]
                     response.profiles_added = counts["profile"]
                     response.playbooks_added = counts["playbook"]
                     return response
@@ -211,8 +226,8 @@ async def publish_user_interaction(
                 # close wastes the caller's deadline and a waiter slot, and reports
                 # `wait_timeout` for a healthy stream. Same break as the library
                 # waiter in generation_service.run -- one condition, both paths.
-                if coverage_stalled(status):
-                    stalled_reason = status["reason"]
+                if coverage_stalled(extraction_status):
+                    stalled_reason = extraction_status["reason"]
                     break
                 if await request.is_disconnected():
                     break
