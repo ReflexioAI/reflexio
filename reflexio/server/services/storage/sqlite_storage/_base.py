@@ -1139,6 +1139,24 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             # constraint with ALTER TABLE, and the pairing is enforced by the
             # single write path that sets them. Fresh databases get the CHECK
             # from `_DDL`.
+            #
+            # EVERY PRE-EXISTING ROW BECOMES `is_inferred = 0`, AND THAT IS NOT
+            # A GUESS. The only writer of inferred outcomes is the offline
+            # tuner's outcome bridge, and the bridge ships in the SAME release
+            # as this column -- it reaches storage exclusively through the
+            # `is_inferred=True` keyword that did not exist until now. So no
+            # row written before this migration can be an inferred one, and
+            # there is nothing to backfill.
+            #
+            # BACKFILLING BY LABEL WOULD BE ACTIVELY WRONG, not merely
+            # unnecessary. The bridge stamps
+            # `label = 'inferred_from_agent_success_evaluation'`, but `label`
+            # is a field on `SetSessionOutcomeRequest` -- the PUBLIC request
+            # body -- so any customer can send that exact string. Promoting
+            # rows by label would hand a caller a way to mark their own outcome
+            # displaceable, which is the precise thing keeping `is_inferred`
+            # off the request model exists to prevent. Provenance that a
+            # customer can forge is not provenance.
             if session_outcome_columns and "is_inferred" not in session_outcome_columns:
                 self.conn.execute(
                     "ALTER TABLE session_outcomes "

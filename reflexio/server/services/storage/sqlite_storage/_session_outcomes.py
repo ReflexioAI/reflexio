@@ -325,6 +325,76 @@ class SessionOutcomeStoreMixin:
                         source=source,
                         context_changed=True,
                     )
+                subject_ref = str(
+                    first["governance_subject_ref"]
+                    or self._subject_ref_for_user_id(user_id)
+                )
+                # DISPLACEMENT MAY NOT CROSS A GOVERNANCE SUBJECT.
+                #
+                # The row is found by `session_id` alone, but it is ERASED by
+                # `user_id` (`clear_session_outcomes_for_user`) and gated by
+                # `governance_subject_ref`. The session's earliest request can
+                # change owners after the inferred write -- delete the original
+                # first request while another user's request remains in the
+                # same session and the "first request" is now somebody else's.
+                # Displacing there would rewrite `user_id` and
+                # `governance_subject_ref` to the NEW owner while
+                # `superseded_outcome` still holds the ORIGINAL subject's
+                # outcome, so erasing the original user would no longer reach
+                # it: a completed RTBF that silently leaves the subject's
+                # outcome behind under a stranger's key. The primary key is
+                # `(user_id, session_id)`, so the same rewrite can also collide
+                # with a row the new owner already has.
+                #
+                # Refused rather than re-owned. This is the tenancy answer, and
+                # it is deliberately conservative: a rotated governance secret
+                # can make two requests from the SAME user carry different
+                # stored refs, and refusing there costs one rejected report
+                # while accepting there would re-key a row to a subject whose
+                # barrier was never checked against the archived content. The
+                # settled-row retry check above already treats a differing
+                # stored ref the same way.
+                #
+                # A NULL stored ref is a mismatch too, for the same reason:
+                # there is nothing to prove the archived outcome belongs to the
+                # subject the row is about to be filed under.
+                if displacing and existing is not None:
+                    stored_subject_ref = existing["governance_subject_ref"]
+                    same_subject = (
+                        str(existing["user_id"]) == user_id
+                        and stored_subject_ref is not None
+                        and str(stored_subject_ref) == subject_ref
+                    )
+                    if not same_subject:
+                        stored_contract_digest = existing["outcome_contract_digest"]
+                        stored_snapshot_digest = existing["finalized_trajectory_digest"]
+                        self.conn.rollback()
+                        return SessionOutcomeWriteResult(
+                            recorded=False,
+                            user_id=str(existing["user_id"]),
+                            source=str(existing["source"]),
+                            reason=SessionOutcomeFailureReason.CONFLICTING_FINALIZATION,
+                            outcome_id=(
+                                str(existing["outcome_id"])
+                                if existing["outcome_id"] is not None
+                                else None
+                            ),
+                            outcome_revision=(
+                                int(existing["outcome_revision"])
+                                if existing["outcome_revision"] is not None
+                                else None
+                            ),
+                            outcome_contract_digest=(
+                                str(stored_contract_digest)
+                                if stored_contract_digest is not None
+                                else None
+                            ),
+                            finalized_trajectory_digest=(
+                                str(stored_snapshot_digest)
+                                if stored_snapshot_digest is not None
+                                else None
+                            ),
+                        )
                 if request.occurred_at < first_request_at:
                     self.conn.rollback()
                     return SessionOutcomeWriteResult(
@@ -333,10 +403,6 @@ class SessionOutcomeStoreMixin:
                         source=source,
                         reason=SessionOutcomeFailureReason.OCCURRED_BEFORE_SESSION,
                     )
-                subject_ref = str(
-                    first["governance_subject_ref"]
-                    or self._subject_ref_for_user_id(user_id)
-                )
                 contract_digest = self._outcome_contract_digest(source)
                 snapshot_digest = snapshot.digest
                 outcome_id = uuid4().hex

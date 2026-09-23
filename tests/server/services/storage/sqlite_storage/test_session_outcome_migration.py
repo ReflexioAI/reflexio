@@ -89,6 +89,32 @@ CREATE TABLE session_outcomes (
 """
 
 
+#: The canonical schema as it stood immediately BEFORE the displacement
+#: columns -- `governance_subject_ref` NOT NULL and the three-value `outcome`
+#: CHECK included, because `_migrate_session_outcomes_schema` treats anything
+#: short of that as legacy and rebuilds the table instead of leaving the
+#: ALTER-added columns alone.
+_PRE_DISPLACEMENT_SESSION_OUTCOMES_DDL = """
+CREATE TABLE session_outcomes (
+    outcome_id TEXT NOT NULL UNIQUE,
+    outcome_revision INTEGER NOT NULL CHECK (outcome_revision >= 1),
+    user_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    outcome TEXT NOT NULL CHECK (outcome IN ('success', 'failure', 'unknown')),
+    occurred_at INTEGER NOT NULL,
+    source TEXT NOT NULL,
+    label TEXT,
+    value REAL,
+    metadata TEXT,
+    outcome_contract_digest TEXT NOT NULL,
+    finalized_trajectory_digest TEXT NOT NULL,
+    governance_subject_ref TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (user_id, session_id)
+);
+"""
+
+
 _IDENTITY_COMPLETE_UNCONSTRAINED_REVISION_DDL = """
 CREATE TABLE session_outcomes (
     outcome_id TEXT NOT NULL UNIQUE,
@@ -812,3 +838,67 @@ def test_identity_complete_migration_backfills_missing_governance_subject_ref(
     assert row["governance_subject_ref"] == migrated._subject_ref_for_user_id(
         "complete-user"
     )
+
+
+def test_upgrade_leaves_every_legacy_outcome_not_inferred(tmp_path) -> None:
+    """The `is_inferred = 0` default on upgrade is a DECISION, pinned here.
+
+    The only writer of inferred outcomes is the offline tuner's outcome
+    bridge, which reaches storage exclusively through the ``is_inferred=True``
+    keyword shipping in this same release -- so no row written before the
+    column existed can be an inferred one and there is nothing to backfill.
+
+    The row below carries the bridge's own provenance label to pin the other
+    half: promoting rows BY LABEL would be wrong, not merely unnecessary.
+    ``label`` is a field on the public ``SetSessionOutcomeRequest``, so any
+    caller can send that exact string, and keying displaceability on it would
+    hand them the flag that is deliberately kept off the request model.
+
+    The DDL below is the CANONICAL schema minus the two displacement columns,
+    not the older identity-complete one, and that distinction decides what is
+    tested: a non-canonical schema sends `_migrate_session_outcomes_schema`
+    down its table-rebuild branch, which recreates the column from its own
+    CREATE and would mask anything the ALTER path did. This shape takes the
+    rebuild's early return, so the ALTER in `migrate` is what answers.
+    """
+    db_path = str(tmp_path / "legacy-inferred.db")
+    storage = SQLiteStorage(org_id="legacy-inferred", db_path=db_path)
+    storage.conn.execute("DROP TABLE session_outcomes")
+    storage.conn.executescript(_PRE_DISPLACEMENT_SESSION_OUTCOMES_DDL)
+    storage.conn.execute(
+        """INSERT INTO session_outcomes (
+               outcome_id, outcome_revision, user_id, session_id, outcome,
+               occurred_at, source, label, outcome_contract_digest,
+               finalized_trajectory_digest, governance_subject_ref, created_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            "legacy-inferred-outcome-id",
+            1,
+            "legacy-user",
+            "legacy-session",
+            "failure",
+            101,
+            "legacy-source",
+            "inferred_from_agent_success_evaluation",
+            "a" * 64,
+            "b" * 64,
+            "subject-ref",
+            102,
+        ),
+    )
+    storage.conn.commit()
+    storage.conn.close()
+
+    migrated = SQLiteStorage(org_id="legacy-inferred", db_path=db_path)
+
+    row = migrated.conn.execute(
+        """SELECT is_inferred, superseded_outcome, label
+           FROM session_outcomes WHERE session_id = ?""",
+        ("legacy-session",),
+    ).fetchone()
+    assert row is not None
+    assert row["label"] == "inferred_from_agent_success_evaluation"
+    assert row["is_inferred"] == 0, (
+        "a label a customer can send must never confer displaceability"
+    )
+    assert row["superseded_outcome"] is None

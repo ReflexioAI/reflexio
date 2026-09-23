@@ -820,7 +820,9 @@ def test_a_customer_report_displaces_an_inferred_outcome(
     # The session's SECOND outcome -- the first time this column has moved.
     assert reported.outcome_revision == 2
 
-    records = storage.get_session_outcomes(GetSessionOutcomesRequest(session_ids=["s1"]))
+    records = storage.get_session_outcomes(
+        GetSessionOutcomesRequest(session_ids=["s1"])
+    )
     assert len(records) == 1, "displacement must not leave two rows"
     assert records[0].outcome == SessionOutcomeKind.SUCCESS
     assert records[0].label == "customer"
@@ -881,7 +883,9 @@ def test_a_customer_outcome_is_still_immutable(storage: BaseStorage) -> None:
 
     assert second.recorded is False
     assert second.reason == SessionOutcomeFailureReason.CONFLICTING_FINALIZATION
-    records = storage.get_session_outcomes(GetSessionOutcomesRequest(session_ids=["s1"]))
+    records = storage.get_session_outcomes(
+        GetSessionOutcomesRequest(session_ids=["s1"])
+    )
     assert records[0].outcome == SessionOutcomeKind.SUCCESS
 
 
@@ -932,5 +936,242 @@ def test_the_tuner_repeating_its_own_write_is_an_idempotent_retry(
     assert first.recorded is True
     assert retry.recorded is False
     assert retry.reason is None, "an exact repeat is accepted, not conflicting"
-    records = storage.get_session_outcomes(GetSessionOutcomesRequest(session_ids=["s1"]))
+    records = storage.get_session_outcomes(
+        GetSessionOutcomesRequest(session_ids=["s1"])
+    )
+    assert records[0].outcome_revision == 1
+
+
+def test_displacement_refuses_to_cross_a_governance_subject(
+    storage: BaseStorage,
+) -> None:
+    """A TENANCY REFUSAL, not bookkeeping.
+
+    The outcome row is found by ``session_id``, but it is ERASED by ``user_id``
+    and gated by ``governance_subject_ref``. A session's earliest request can
+    change owners after the inferred write -- here the original first request
+    is deleted while a second user's request remains. Displacing would rewrite
+    the row to the new owner while ``superseded_outcome`` still held the
+    ORIGINAL subject's outcome, so erasing the original user would no longer
+    reach it: a completed erasure that quietly leaves the subject's outcome
+    behind under a stranger's key.
+    """
+    storage.add_request(
+        Request(
+            request_id="r-first",
+            user_id="u1",
+            session_id="s1",
+            source="published",
+            created_at=100,
+        )
+    )
+    storage.add_request(
+        Request(
+            request_id="r-second",
+            user_id="u2",
+            session_id="s1",
+            source="published",
+            created_at=101,
+        )
+    )
+    inferred = _write(
+        storage,
+        outcome=SessionOutcomeKind.FAILURE,
+        is_inferred=True,
+        created_at=102,
+        label="inferred_from_agent_success_evaluation",
+    )
+    assert inferred.recorded is True
+    assert inferred.user_id == "u1"
+
+    storage.delete_request("r-first")
+
+    reported = _write(
+        storage,
+        outcome=SessionOutcomeKind.SUCCESS,
+        is_inferred=False,
+        created_at=103,
+    )
+
+    assert reported.recorded is False
+    assert reported.reason == SessionOutcomeFailureReason.CONFLICTING_FINALIZATION
+    assert reported.user_id == "u1", "the refusal reports the STORED owner"
+    records = storage.get_session_outcomes(
+        GetSessionOutcomesRequest(session_ids=["s1"])
+    )
+    assert len(records) == 1
+    assert records[0].user_id == "u1", "the row must not be re-owned"
+    assert records[0].outcome == SessionOutcomeKind.FAILURE
+    assert records[0].outcome_revision == 1
+    # The decisive consequence: erasing the original subject still reaches it.
+    assert storage.clear_session_outcomes_for_user("u1") == {"session_outcomes": 1}
+
+
+def test_displacement_refuses_a_new_owner_that_shares_the_stored_subject_ref(
+    storage: BaseStorage,
+) -> None:
+    """The USER ID is checked in its own right, not merely via the subject ref.
+
+    Today a subject reference is derived from the user id, so the two checks
+    usually agree and either alone would refuse. They are not the same check.
+    ``user_id`` is what ``clear_session_outcomes_for_user`` erases by; the
+    subject ref is what the write barrier gates on. If subjects ever became
+    coarser than one-per-user -- a per-organisation subject, say -- two users
+    would share a ref and the ref comparison would stop refusing anything.
+    This pins the column erasure actually keys on, with the ref forced equal so
+    only the user-id comparison can answer.
+    """
+    storage.add_request(
+        Request(
+            request_id="r-first",
+            user_id="u1",
+            session_id="s1",
+            source="published",
+            created_at=100,
+        )
+    )
+    storage.add_request(
+        Request(
+            request_id="r-second",
+            user_id="u2",
+            session_id="s1",
+            source="published",
+            created_at=101,
+        )
+    )
+    inferred = _write(
+        storage,
+        outcome=SessionOutcomeKind.FAILURE,
+        is_inferred=True,
+        created_at=102,
+        label="inferred_from_agent_success_evaluation",
+    )
+    assert inferred.recorded is True
+    assert inferred.user_id == "u1"
+
+    connection = cast(Any, storage).conn
+    stored_ref = connection.execute(
+        "SELECT governance_subject_ref FROM session_outcomes WHERE session_id = ?",
+        ("s1",),
+    ).fetchone()["governance_subject_ref"]
+    connection.execute(
+        "UPDATE requests SET governance_subject_ref = ? WHERE request_id = ?",
+        (stored_ref, "r-second"),
+    )
+    connection.commit()
+    storage.delete_request("r-first")
+
+    reported = _write(
+        storage,
+        outcome=SessionOutcomeKind.SUCCESS,
+        is_inferred=False,
+        created_at=103,
+    )
+
+    assert reported.recorded is False
+    assert reported.reason == SessionOutcomeFailureReason.CONFLICTING_FINALIZATION
+    records = storage.get_session_outcomes(
+        GetSessionOutcomesRequest(session_ids=["s1"])
+    )
+    assert records[0].user_id == "u1", "the row must not be re-owned"
+    assert records[0].outcome_revision == 1
+
+
+def test_displacement_refuses_a_subject_ref_the_row_was_never_filed_under(
+    storage: BaseStorage, monkeypatch
+) -> None:
+    """The SUBJECT REF is checked in its own right, not just the user id.
+
+    Requests store the governance ref they were written with, so rotating the
+    governance secret leaves two requests from the SAME user carrying
+    DIFFERENT refs. Displacing across that would re-key the row -- archive
+    included -- to a subject reference whose write barrier was never checked
+    against the archived content.
+
+    Refusing is the conservative answer and it is chosen deliberately: the cost
+    is one rejected report in a rare window, where accepting silently re-files
+    a data subject's outcome. The settled-row retry check above already treats
+    a differing stored ref as a mismatch, so this is the same rule, not a new
+    one.
+    """
+    monkeypatch.setenv("REFLEXIO_GOVERNANCE_REF_SECRET", "old-secret")
+    storage.add_request(
+        Request(
+            request_id="r-old-epoch",
+            user_id="u1",
+            session_id="s1",
+            source="published",
+            created_at=100,
+        )
+    )
+    inferred = _write(
+        storage,
+        outcome=SessionOutcomeKind.FAILURE,
+        is_inferred=True,
+        created_at=102,
+        label="inferred_from_agent_success_evaluation",
+    )
+    assert inferred.recorded is True
+
+    monkeypatch.setenv("REFLEXIO_GOVERNANCE_REF_SECRET", "new-secret")
+    storage.add_request(
+        Request(
+            request_id="r-new-epoch",
+            user_id="u1",
+            session_id="s1",
+            source="published",
+            created_at=101,
+        )
+    )
+    storage.delete_request("r-old-epoch")
+
+    reported = _write(
+        storage,
+        outcome=SessionOutcomeKind.SUCCESS,
+        is_inferred=False,
+        created_at=103,
+    )
+
+    assert reported.recorded is False
+    assert reported.reason == SessionOutcomeFailureReason.CONFLICTING_FINALIZATION
+    records = storage.get_session_outcomes(
+        GetSessionOutcomesRequest(session_ids=["s1"])
+    )
+    assert records[0].outcome == SessionOutcomeKind.FAILURE
+    assert records[0].outcome_revision == 1
+
+
+def test_the_bridge_label_alone_does_not_make_an_outcome_displaceable(
+    storage: BaseStorage,
+) -> None:
+    """Displaceability comes from the INTERNAL flag, never from the label.
+
+    ``label`` is a field on ``SetSessionOutcomeRequest`` -- the public request
+    body -- so a customer can send the bridge's exact provenance string. If
+    that string were ever treated as provenance (by a read, or by a migration
+    backfilling historical rows), a caller could mark their own outcome
+    displaceable, which is the precise thing keeping ``is_inferred`` off the
+    request model exists to prevent.
+    """
+    _seed_request(storage)
+    _write(
+        storage,
+        outcome=SessionOutcomeKind.SUCCESS,
+        is_inferred=False,
+        created_at=102,
+        label="inferred_from_agent_success_evaluation",
+    )
+    second = _write(
+        storage,
+        outcome=SessionOutcomeKind.FAILURE,
+        is_inferred=False,
+        created_at=103,
+    )
+
+    assert second.recorded is False
+    assert second.reason == SessionOutcomeFailureReason.CONFLICTING_FINALIZATION
+    records = storage.get_session_outcomes(
+        GetSessionOutcomesRequest(session_ids=["s1"])
+    )
+    assert records[0].outcome == SessionOutcomeKind.SUCCESS
     assert records[0].outcome_revision == 1
