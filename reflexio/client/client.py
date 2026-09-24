@@ -1226,7 +1226,7 @@ class ReflexioClient:
         value: float | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> SetSessionOutcomeResponse:
-        """Record the immutable first outcome for a published session.
+        """Record the outcome of a published session.
 
         The session must already contain at least one published request. Reflexio
         derives both ``user_id`` and ``source`` from the earliest request ordered
@@ -1234,6 +1234,28 @@ class ReflexioClient:
         the server-owned outcome contract and canonical finalized trajectory. An
         exact canonical retry must match the payload, contract, and trajectory;
         otherwise it is rejected with ``reason="conflicting_finalization"``.
+
+        Your report wins over one Reflexio inferred for itself. Where a
+        session already carries an inferred outcome, this REPLACES it and
+        returns ``recorded=True`` with a FRESH ``outcome_id`` and
+        ``outcome_revision=2`` -- the replacement is a different outcome, so it
+        gets its own identity rather than inheriting the one it replaced. The
+        inferred outcome is retained internally for analysis. That is the only
+        case in which a stored outcome is replaced -- an outcome you reported
+        yourself stays immutable, and its ``outcome_id`` never changes. The
+        replacement is refused, with ``reason="conflicting_finalization"``,
+        when the session's earliest request no longer resolves to the user the
+        stored outcome is filed under -- replacing it would move one user's
+        recorded outcome under another's, so the stored outcome is kept
+        instead.
+
+        Reflexio may also re-derive an outcome it inferred, in place, as the
+        session it was judged from grows. That never touches an outcome you
+        reported, and it is not something this call can trigger. It is visible
+        only through :meth:`get_session_outcomes`, where such a row's verdict,
+        ``occurred_at`` and digests can change while its ``outcome_id`` and
+        ``outcome_revision`` stay exactly as they were; ``is_inferred`` on the
+        returned record is how you tell such a row from your own.
         Rolling-upgrade rows with all four identity fields null compare the
         caller payload and any available server-derived session context, but
         cannot compare absent contract or trajectory digests. An accepted retry

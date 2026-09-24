@@ -1106,7 +1106,20 @@ class DeleteSessionResponse(BaseModel):
 
 
 class SessionOutcomeRecord(BaseModel):
-    """Persisted outcome row, including its immutable historical source."""
+    """One persisted outcome row, with the session context it was derived from.
+
+    WHAT IS STABLE, AND WHAT IS NOT. An outcome a customer reported never
+    changes. A row Reflexio INFERRED for itself is not settled in the same way:
+    a customer's later report displaces it -- `outcome_id` changes and
+    `outcome_revision` advances to 2 -- and Reflexio may also re-derive its own
+    guess in place, which rewrites the verdict, `occurred_at` and the digests
+    while leaving `outcome_id` and `outcome_revision` exactly as they were. So
+    identity is stable per outcome, content is stable only once a customer has
+    reported one, and `created_at` is the time the row was last written rather
+    than the time the session was first judged.
+
+    `is_inferred` is how a reader tells the two apart.
+    """
 
     outcome_id: NonEmptyStr | None = None
     outcome_revision: int | None = Field(default=None, ge=1)
@@ -1121,6 +1134,19 @@ class SessionOutcomeRecord(BaseModel):
     outcome_contract_digest: Sha256Digest | None = None
     finalized_trajectory_digest: Sha256Digest | None = None
     created_at: int = Field(ge=0)
+    #: Whether Reflexio INFERRED this outcome rather than the customer
+    #: reporting it. Read-only, and read-side only: the field exists on this
+    #: record but deliberately NOT on ``SetSessionOutcomeRequest``, because the
+    #: hazard was ever letting a caller SET it -- that would let them mark
+    #: their own outcome replaceable -- not letting a reader see it.
+    #:
+    #: Defaults to ``False``, and the default is the safe one rather than the
+    #: convenient one: a backend that does not supply the field reads as "not
+    #: known to be inferred", so anything deciding whether an outcome may be
+    #: overwritten treats an unknown row as the customer's and leaves it
+    #: alone. Reading absence as "inferred" would invert that into silently
+    #: overwriting real reports.
+    is_inferred: bool = False
 
     @field_validator("outcome_contract_digest", "finalized_trajectory_digest")
     @classmethod

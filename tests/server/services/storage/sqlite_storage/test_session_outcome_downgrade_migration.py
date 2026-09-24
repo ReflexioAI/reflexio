@@ -98,6 +98,12 @@ def test_identity_schema_is_preserved_and_current_writes_resume(tmp_path) -> Non
         "finalized_trajectory_digest",
         "governance_subject_ref",
         "created_at",
+        # Displacement columns. An upgraded database gets these from the
+        # ALTER TABLE pair in `init`; a rebuilt one from the rebuild's own
+        # CREATE. Pinned here so a path that drops either is a failure rather
+        # than a runtime "no such column" on the next write.
+        "is_inferred",
+        "superseded_outcome",
     }
     records = migrated.get_session_outcomes(GetSessionOutcomesRequest())
     records_by_session = {record.session_id: record for record in records}

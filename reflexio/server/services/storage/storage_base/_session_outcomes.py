@@ -48,6 +48,13 @@ class SessionOutcomeContext:
     existing: bool = False
     user_contract_violation: bool = False
     source_contract_violation: bool = False
+    #: Whether the row that already exists was INFERRED by the offline tuner
+    #: rather than reported by the customer. Only such a row may be rewritten
+    #: -- displaced by a customer's report, or refreshed by the tuner itself --
+    #: and only a rewritable row needs the validity checks re-run: for every
+    #: other existing row the sole legal write is a byte-exact retry, which has
+    #: nothing left to validate. Meaningless when ``existing`` is False.
+    existing_is_inferred: bool = False
 
 
 class SessionOutcomeStoreMixin:
@@ -63,7 +70,23 @@ class SessionOutcomeStoreMixin:
         *,
         created_at: int,
         expected_context: SessionOutcomeContext,
+        is_inferred: bool = False,
     ) -> SessionOutcomeWriteResult:
+        """Record one outcome.
+
+        ``is_inferred`` marks a write the offline tuner produced from a judge
+        verdict rather than a customer's own report. It is NOT on
+        ``SetSessionOutcomeRequest`` on purpose: that model is the public
+        request body, so a field on it would let a caller declare their own
+        outcome displaceable. Only an internal caller can pass this.
+
+        Over an existing INFERRED row it also selects which rewrite happens: a
+        customer's write (``False``) displaces the row, archiving it and
+        advancing ``outcome_revision``; the tuner's own write (``True``)
+        refreshes it in place, archiving nothing and moving no
+        customer-visible field. A byte-exact repeat of either is an idempotent
+        no-op rather than a rewrite. Over a CUSTOMER's row neither is allowed.
+        """
         raise NotImplementedError
 
     @abstractmethod
