@@ -34,13 +34,25 @@ class SessionOutcomeMixin(ReflexioBase):
         *,
         is_inferred: bool = False,
     ) -> SetSessionOutcomeResponse:
-        """Record the first outcome for a session, or displace an inferred one.
+        """Record a session's outcome, or rewrite one the tuner inferred.
 
         ``is_inferred`` is an INTERNAL flag and is deliberately absent from
         ``SetSessionOutcomeRequest``: the request model is the public body, so
         a field there would let a customer mark their own outcome displaceable.
         The HTTP route never passes it; the offline tuner's outcome bridge is
         its only caller.
+
+        It decides which of the two rewrites an inferred row gets:
+
+        * ``is_inferred=False`` -- a customer's own report DISPLACES the guess.
+          The old row is archived and ``outcome_revision`` advances to 2.
+        * ``is_inferred=True`` -- the tuner REFRESHES its own guess in place.
+          Nothing is archived and no customer-visible field moves. This is what
+          lets a session that resumed after an inferred write be re-judged
+          against its grown trajectory instead of being stuck with a verdict
+          covering only a prefix.
+
+        A customer's own outcome is never rewritten by either.
         """
         if isinstance(request, dict):
             request = SetSessionOutcomeRequest(**request)
@@ -64,13 +76,19 @@ class SessionOutcomeMixin(ReflexioBase):
         try:
             for _attempt in range(3):
                 context = storage.get_session_outcome_context(request.session_id)
-                # A displaceable row is about to be REPLACED by a real
-                # report, so that write is a new outcome and earns the
-                # same validation a first write gets. For any other
-                # existing row the only legal write is a byte-exact
-                # retry, which has nothing left to validate.
-                displaceable = context.existing_is_inferred and not is_inferred
-                if not context.existing or displaceable:
+                # An INFERRED row is about to be rewritten -- displaced by a
+                # customer's real report, or refreshed by the tuner re-deriving
+                # its own guess -- so that write is a real write and earns the
+                # same validation a first write gets. Note this is
+                # `existing_is_inferred` and NOT "is a displacement": a refresh
+                # rewrites `occurred_at` and the trajectory digest just as a
+                # displacement does, so validating only displacements would let
+                # the tuner store an `occurred_at` that precedes the session
+                # the first write was refused for. For any other existing row
+                # the only legal write is a byte-exact retry, which has nothing
+                # left to validate.
+                rewritable = context.existing_is_inferred
+                if not context.existing or rewritable:
                     if context.user_id is None or context.first_request_at is None:
                         return SetSessionOutcomeResponse(
                             success=False,

@@ -1175,3 +1175,289 @@ def test_the_bridge_label_alone_does_not_make_an_outcome_displaceable(
     )
     assert records[0].outcome == SessionOutcomeKind.SUCCESS
     assert records[0].outcome_revision == 1
+
+
+# ---------------------------------------------------------------------------
+# Refresh: the tuner re-deriving its OWN guess.
+#
+# "Has an outcome" is not "is final". Only a customer's outcome is final; an
+# inferred one stays ours to re-derive. The negative cases below are the point
+# of the feature, not decoration -- a refresh that reached a customer's row, or
+# that crossed a subject, would be the same defect displacement was guarded
+# against.
+# ---------------------------------------------------------------------------
+
+
+def test_the_tuner_refreshes_its_own_guess_in_place(storage: BaseStorage) -> None:
+    """THE POINT OF THE CHANGE.
+
+    A session that RESUMES after an inferred write has a verdict covering only
+    a prefix and a stored trajectory digest describing a trajectory that no
+    longer exists. Before this the write that would fix both was refused as
+    ``conflicting_finalization``, permanently: the session reported
+    ``trajectory_changed`` forever and recruitment, which skips every
+    outcome-bearing session, never picked it up again.
+    """
+    _seed_request(storage)
+    first = _write(
+        storage,
+        outcome=SessionOutcomeKind.FAILURE,
+        is_inferred=True,
+        created_at=102,
+        label="inferred_from_agent_success_evaluation",
+    )
+    assert first.recorded is True
+
+    # The session resumes: a second request lands, so the canonical trajectory
+    # -- and therefore its digest -- is no longer the one the verdict saw.
+    storage.add_request(
+        Request(
+            request_id="r-resumed",
+            user_id="u1",
+            session_id="s1",
+            source="published",
+            created_at=110,
+        )
+    )
+    refreshed = _write(
+        storage,
+        outcome=SessionOutcomeKind.SUCCESS,
+        is_inferred=True,
+        created_at=111,
+        label="inferred_from_agent_success_evaluation",
+    )
+
+    assert refreshed.recorded is True
+    assert refreshed.reason is None
+    # Identity does NOT move: this is the same inferred outcome, re-derived.
+    assert refreshed.outcome_revision == 1
+    assert refreshed.outcome_id == first.outcome_id
+    # The digest is the whole reason the refresh exists.
+    assert refreshed.finalized_trajectory_digest != first.finalized_trajectory_digest
+
+    records = storage.get_session_outcomes(
+        GetSessionOutcomesRequest(session_ids=["s1"])
+    )
+    assert len(records) == 1, "a refresh must not leave two rows"
+    assert records[0].outcome == SessionOutcomeKind.SUCCESS
+    assert records[0].outcome_revision == 1
+
+
+def test_a_refresh_archives_nothing_and_stays_inferred(storage: BaseStorage) -> None:
+    """A refresh is our guess over our guess, so there is nothing to preserve.
+
+    The row must also stay ``is_inferred`` -- otherwise one tuner tick would
+    silently promote its own guess to the status of a customer report and make
+    it permanent, which is the exact failure this whole feature removes.
+    """
+    _seed_request(storage)
+    _write(
+        storage,
+        outcome=SessionOutcomeKind.FAILURE,
+        is_inferred=True,
+        created_at=102,
+        label="inferred_from_agent_success_evaluation",
+    )
+    storage.add_request(
+        Request(
+            request_id="r-resumed",
+            user_id="u1",
+            session_id="s1",
+            source="published",
+            created_at=110,
+        )
+    )
+    _write(
+        storage,
+        outcome=SessionOutcomeKind.SUCCESS,
+        is_inferred=True,
+        created_at=111,
+        label="inferred_from_agent_success_evaluation",
+    )
+
+    row = (
+        cast(Any, storage)
+        .conn.execute(
+            "SELECT outcome, is_inferred, superseded_outcome FROM session_outcomes "
+            "WHERE session_id = ?",
+            ("s1",),
+        )
+        .fetchone()
+    )
+    # Proves the refresh actually landed. Without it every assertion below is
+    # equally true of a refresh that was REFUSED, and the test would pass while
+    # verifying nothing about the branch it is named for.
+    assert row["outcome"] == "success", "the refreshed verdict must be stored"
+    assert row["is_inferred"], "a refreshed row is still the tuner's guess"
+    assert row["superseded_outcome"] is None, "a refresh archives nothing"
+
+    # Still displaceable afterwards -- the customer's report must keep winning.
+    reported = _write(
+        storage,
+        outcome=SessionOutcomeKind.FAILURE,
+        is_inferred=False,
+        created_at=112,
+        label="customer",
+    )
+    assert reported.recorded is True
+    assert reported.outcome_revision == 2, (
+        "a refresh must not consume the revision a REPORT is documented to get"
+    )
+
+
+def test_a_refresh_never_reaches_a_customer_outcome(storage: BaseStorage) -> None:
+    """The guarantee that must not move, restated for the new branch.
+
+    Refresh is keyed on the STORED row being inferred, never on the writer
+    being the tuner. If it were keyed the other way the tuner could quietly
+    overwrite a customer's own report with a judge's opinion.
+    """
+    _seed_request(storage)
+    _write(
+        storage,
+        outcome=SessionOutcomeKind.SUCCESS,
+        is_inferred=False,
+        created_at=102,
+        label="customer",
+    )
+    storage.add_request(
+        Request(
+            request_id="r-resumed",
+            user_id="u1",
+            session_id="s1",
+            source="published",
+            created_at=110,
+        )
+    )
+    tuner = _write(
+        storage,
+        outcome=SessionOutcomeKind.FAILURE,
+        is_inferred=True,
+        created_at=111,
+        label="inferred_from_agent_success_evaluation",
+    )
+
+    assert tuner.recorded is False
+    assert tuner.reason == SessionOutcomeFailureReason.CONFLICTING_FINALIZATION
+    records = storage.get_session_outcomes(
+        GetSessionOutcomesRequest(session_ids=["s1"])
+    )
+    assert records[0].outcome == SessionOutcomeKind.SUCCESS
+    assert records[0].label == "customer"
+
+
+def test_a_refresh_refuses_to_cross_a_governance_subject(
+    storage: BaseStorage,
+) -> None:
+    """The cross-subject guard covers refreshes too.
+
+    A refresh archives nothing, so it cannot strand an archive -- but it still
+    rewrites ``user_id`` and ``governance_subject_ref`` in place, which would
+    re-file the tuner's stored guess about one user under another's key and put
+    it beyond that user's erasure. Same defect, one field shorter.
+    """
+    storage.add_request(
+        Request(
+            request_id="r-first",
+            user_id="u1",
+            session_id="s1",
+            source="published",
+            created_at=100,
+        )
+    )
+    storage.add_request(
+        Request(
+            request_id="r-second",
+            user_id="u2",
+            session_id="s1",
+            source="published",
+            created_at=101,
+        )
+    )
+    inferred = _write(
+        storage,
+        outcome=SessionOutcomeKind.FAILURE,
+        is_inferred=True,
+        created_at=102,
+        label="inferred_from_agent_success_evaluation",
+    )
+    assert inferred.recorded is True
+    assert inferred.user_id == "u1"
+
+    storage.delete_request("r-first")
+
+    refreshed = _write(
+        storage,
+        outcome=SessionOutcomeKind.SUCCESS,
+        is_inferred=True,
+        created_at=103,
+        label="inferred_from_agent_success_evaluation",
+    )
+
+    assert refreshed.recorded is False
+    assert refreshed.reason == SessionOutcomeFailureReason.CONFLICTING_FINALIZATION
+    records = storage.get_session_outcomes(
+        GetSessionOutcomesRequest(session_ids=["s1"])
+    )
+    assert records[0].user_id == "u1", "the row must not be re-owned"
+    assert records[0].outcome == SessionOutcomeKind.FAILURE
+    assert storage.clear_session_outcomes_for_user("u1") == {"session_outcomes": 1}
+
+
+def test_get_session_outcomes_reports_whether_reflexio_inferred_the_outcome(
+    storage: BaseStorage,
+) -> None:
+    """The READ must distinguish our guess from the customer's report.
+
+    Every caller asking "does this session already have an outcome" reads this
+    record. Without the field the only honest answer is "yes, something", so an
+    inferred row blocks exactly as a real report does -- which is what made a
+    resumed session unrepairable in the first place: the recruiter skipped it
+    for having an outcome, and the writer refused to refresh it.
+
+    This is a BACKEND CONTRACT, not a SQLite detail. An adapter whose SELECT
+    names its columns and omits this one still validates -- the field defaults
+    to False -- so the feature would read as working while being inert on that
+    backend. That failure is silent by construction, which is why it is pinned
+    here rather than left to a caller to notice.
+    """
+    _seed_request(storage, session_id="inferred-session")
+    _seed_request(storage, session_id="reported-session")
+    _write(
+        storage,
+        outcome=SessionOutcomeKind.FAILURE,
+        is_inferred=True,
+        created_at=102,
+        label="inferred_from_agent_success_evaluation",
+        session_id="inferred-session",
+    )
+    _write(
+        storage,
+        outcome=SessionOutcomeKind.SUCCESS,
+        is_inferred=False,
+        created_at=102,
+        label="customer",
+        session_id="reported-session",
+    )
+
+    by_session = {
+        record.session_id: record
+        for record in storage.get_session_outcomes(GetSessionOutcomesRequest())
+    }
+    assert by_session["inferred-session"].is_inferred is True
+    assert by_session["reported-session"].is_inferred is False
+
+    # A displaced row is the customer's now, and must read that way.
+    _write(
+        storage,
+        outcome=SessionOutcomeKind.SUCCESS,
+        is_inferred=False,
+        created_at=103,
+        label="customer",
+        session_id="inferred-session",
+    )
+    displaced = storage.get_session_outcomes(
+        GetSessionOutcomesRequest(session_ids=["inferred-session"])
+    )[0]
+    assert displaced.is_inferred is False
+    assert displaced.outcome_revision == 2

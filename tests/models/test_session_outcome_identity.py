@@ -481,6 +481,13 @@ def test_session_outcome_record_accepts_unknown_and_serializes_identities() -> N
             "outcome_contract_digest": "a" * 64,
             "finalized_trajectory_digest": "b" * 64,
             "created_at": 2,
+            # Read-side provenance, and False is the value an OMITTED field
+            # takes -- which is what a backend whose SELECT forgets the column
+            # produces. Pinned explicitly, and by exact-dict comparison rather
+            # than a subset, so that a backend dropping it is a failure here
+            # rather than a feature that silently reads as "customer-reported"
+            # for every row.
+            "is_inferred": False,
         }
     ]
 
