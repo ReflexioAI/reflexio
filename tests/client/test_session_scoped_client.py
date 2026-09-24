@@ -532,21 +532,27 @@ def test_request_model_only_search_agrees_with_publish(monkeypatch) -> None:
     )
 
 
-def test_scoped_deprecated_alias_still_warns(monkeypatch) -> None:
-    """Binding must not swallow the deprecation.
+def test_scoped_deprecated_alias_warns_the_calling_frame(monkeypatch) -> None:
+    """The warning must be attributed to the caller, not to the wrapper.
 
-    The ``search_profiles`` wrapper forwards to the deprecated client method
-    rather than to its replacement precisely so the warning still reaches
-    the caller. Pointing it at ``search_user_profiles`` would be a tidier
-    line that silently removes a migration signal, so assert the warning
-    instead of describing the intent.
+    Emission alone is the wrong assertion, and an earlier version of this
+    test made it: pytest enables all warnings, so it passed while a real
+    user script saw nothing. Python's default filters surface a
+    DeprecationWarning only where it is attributed to ``__main__``, and a
+    wrapper that leans on the wrapped method's ``stacklevel=2`` gets the
+    warning blamed on ``client.py``. Asserting the recorded filename is what
+    makes that difference visible here.
     """
     client = _make_client()
     captured = _capture_sync(monkeypatch, client)
 
-    with pytest.warns(DeprecationWarning, match="search_profiles"):
+    with pytest.warns(DeprecationWarning, match="search_profiles") as record:
         client.for_session(BOUND).search_profiles(user_id="u1", query="q")
 
+    assert record[0].filename == __file__, (
+        "the deprecation was attributed to "
+        f"{record[0].filename}, not the caller -- default filters hide it"
+    )
     assert captured["/api/search_profiles"]["session_id"] == BOUND
 
 

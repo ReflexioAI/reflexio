@@ -3894,10 +3894,22 @@ class SessionScopedClient:
     ) -> SearchProfilesViewResponse:
         """Deprecated alias of :meth:`search_user_profiles`, session bound.
 
-        Forwards to the deprecated client method so its DeprecationWarning
-        still reaches the caller.
+        Warns from *this* frame and then forwards to the replacement, rather
+        than forwarding to the deprecated method and relying on its warning.
+        ``ReflexioClient.search_profiles`` warns with ``stacklevel=2``, which
+        names its immediate caller -- through a wrapper that is this module,
+        not the user's code. Python's default filters only surface a
+        DeprecationWarning attributed to ``__main__``, so the scoped alias
+        was silent for every caller not running with warnings enabled, while
+        the unscoped one warned normally.
         """
-        return self._client.search_profiles(
+        warnings.warn(
+            "ReflexioClient.search_profiles() is deprecated; use "
+            "search_user_profiles() instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self._client.search_user_profiles(
             self._bind_request(
                 request,
                 SearchUserProfileRequest,
