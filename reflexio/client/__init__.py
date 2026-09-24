@@ -1,3 +1,13 @@
-from .client import ConfigResponse, OfflineTunerConfigResponse, ReflexioClient
+from .client import (
+    ConfigResponse,
+    OfflineTunerConfigResponse,
+    ReflexioClient,
+    SessionScopedClient,
+)
 
-__all__ = ["ConfigResponse", "OfflineTunerConfigResponse", "ReflexioClient"]
+__all__ = [
+    "ConfigResponse",
+    "OfflineTunerConfigResponse",
+    "ReflexioClient",
+    "SessionScopedClient",
+]
