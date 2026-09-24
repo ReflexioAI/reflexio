@@ -220,7 +220,22 @@ class GenerationService:
             return result
 
         # Check if cleanup is needed before adding new interactions.
-        self._cleanup_storage_tables_if_needed()
+        #
+        # Timed because it is the largest untimed region on this path. The
+        # sweep is throttled per (org_id, project_id, target_name), so on most
+        # publishes it resolves the limits, finds nothing due, and returns in
+        # microseconds. When a window opens, ONE unlucky publish synchronously
+        # takes an `OperationStateManager` lock and probes every retention
+        # target, each on its own connection -- roughly twenty pool
+        # acquisitions, serialised, on the request thread. `publish_start`
+        # below is set two lines later, so that work was outside even
+        # `total_ms`: a publish could spend seconds here and report a fast
+        # line. The default sweep interval is 300s
+        # (`REFLEXIO_RETENTION_CLEANUP_INTERVAL_SECONDS`), which is the one
+        # period constant on this path matching the periodicity observed in
+        # production -- this phase is what would confirm or refute that.
+        with publish_timing.phase("retention_sweep"):
+            self._cleanup_storage_tables_if_needed()
 
         publish_start = time.perf_counter()
         # Resolve agent_version: explicit > env var > default. Resolved here
@@ -433,9 +448,7 @@ class GenerationService:
                         with publish_timing.excluded():
                             deadline = publish_start + 240
                             while time.perf_counter() < deadline:
-                                status = storage.extraction_status(
-                                    user_id, request_id
-                                )
+                                status = storage.extraction_status(user_id, request_id)
                                 if status["status"] == "done":
                                     break
                                 # A partial window needs input this caller does
