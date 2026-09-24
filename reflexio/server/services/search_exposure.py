@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import logging
+import threading
+import time
 from collections.abc import Sized
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -10,13 +13,24 @@ from secrets import token_hex
 from typing import Protocol
 
 from reflexio.models.api_schema.domain import UserPlaybook
+from reflexio.server.error_reporting import capture_anomaly
 from reflexio.server.extensions import ServiceKey, get_service
 from reflexio.server.services.playbook.publication import (
     canonical_json_bytes,
     incumbent_user_playbook_semantic_digest,
 )
 
+logger = logging.getLogger(__name__)
+
 MAX_EXPOSURE_EVENTS_PER_BATCH = 100
+
+# An uncorrelated refusal is per-search, so at fleet scale it is a firehose:
+# the deployment that motivated this signal refused roughly 95k of them. The
+# actionable fact is "this deployment is refusing exposures at all", not each
+# individual refusal, so refusals are counted and reported on a throttle that
+# carries the count since the last report. The FIRST refusal always reports,
+# because the whole point is to find out on day one rather than day thirteen.
+_UNCORRELATED_ANOMALY_THROTTLE_SECONDS = 3600.0
 
 
 @dataclass(frozen=True)
@@ -109,6 +123,72 @@ def batch_is_uncorrelated(batch: SearchExposureBatch) -> bool:
     return batch.request_id is None and batch.session_id is None
 
 
+_uncorrelated_lock = threading.Lock()
+_uncorrelated_since_report = 0
+_uncorrelated_last_report: float | None = None
+
+
+def _report_uncorrelated_batch(batch: SearchExposureBatch) -> None:
+    """Make an uncorrelated refusal visible, at a bounded rate.
+
+    Only fires when a recorder IS registered. That condition is what makes the
+    signal actionable rather than noise: a deployment with no recorder is a
+    supported configuration (shared ``create_app()`` installs none, so local
+    and no-auth OSS persist nothing by design), and telling it that its
+    exposures are uncorrelated would be reporting a non-problem on every
+    search. A deployment that went to the trouble of registering a recorder and
+    is still refusing every batch is, unambiguously, not recording the thing it
+    asked to record.
+
+    This is deliberately NOT raised, and deliberately not returned as a new
+    outcome. The routes ignore the outcome on purpose -- they cannot distinguish
+    a supported recorder-less deployment from an enterprise misconfiguration,
+    and asserting there would turn a supported deployment's search into a 500.
+    That reasoning is still right; the gap it left was that nobody was told
+    anything at all. So the signal goes here, where the distinction IS
+    available, and stays out of the response path entirely.
+    """
+    if get_service(SEARCH_EXPOSURE_RECORDER) is None:
+        return
+    global _uncorrelated_since_report, _uncorrelated_last_report
+    now = time.monotonic()
+    with _uncorrelated_lock:
+        _uncorrelated_since_report += 1
+        due = (
+            _uncorrelated_last_report is None
+            or now - _uncorrelated_last_report >= _UNCORRELATED_ANOMALY_THROTTLE_SECONDS
+        )
+        if not due:
+            return
+        refused = _uncorrelated_since_report
+        first = _uncorrelated_last_report is None
+        _uncorrelated_since_report = 0
+        _uncorrelated_last_report = now
+    # Emitted outside the lock: a reporter is caller code and may be slow.
+    logger.warning(
+        "event=search_exposure_uncorrelated_refused org_id=%s refused=%d first=%s"
+        " -- the caller sent neither request_id nor session_id, so nothing was"
+        " recorded and the serve can never be attributed",
+        batch.org_id,
+        refused,
+        first,
+    )
+    capture_anomaly(
+        "search_exposure.uncorrelated_refused",
+        org_id=batch.org_id,
+        refused_since_last_report=refused,
+        first_report=first,
+    )
+
+
+def reset_uncorrelated_reporting_state() -> None:
+    """Clear the throttle. For tests, which must not inherit each other's state."""
+    global _uncorrelated_since_report, _uncorrelated_last_report
+    with _uncorrelated_lock:
+        _uncorrelated_since_report = 0
+        _uncorrelated_last_report = None
+
+
 def record_search_exposures(batch: SearchExposureBatch) -> SearchExposureOutcome:
     """Synchronously invoke the optional enterprise exposure recorder.
 
@@ -132,6 +212,13 @@ def record_search_exposures(batch: SearchExposureBatch) -> SearchExposureOutcome
     A registered recorder that raises still propagates unchanged: enterprise
     search routes fail closed on recorder failure.
 
+    A refusal is reported (bounded) when a recorder IS registered -- see
+    ``_report_uncorrelated_batch``. The refusal itself is correct and stays;
+    what it lacked was anyone being told. A deployment can lose exposure intake
+    entirely, and therefore tuning eligibility, with no operator-visible signal
+    at all: that is how this deployment's intake went to zero on 2026-09-11 and
+    stayed there unnoticed.
+
     Args:
         batch (SearchExposureBatch): The final served user-playbook set.
 
@@ -142,6 +229,7 @@ def record_search_exposures(batch: SearchExposureBatch) -> SearchExposureOutcome
         was persisted.
     """
     if batch_is_uncorrelated(batch):
+        _report_uncorrelated_batch(batch)
         return SearchExposureOutcome.UNCORRELATED
     recorder = get_service(SEARCH_EXPOSURE_RECORDER)
     if recorder is None:
@@ -236,6 +324,7 @@ __all__ = [
     "SearchExposureRecorder",
     "UserPlaybookExposureEvent",
     "batch_is_uncorrelated",
+    "reset_uncorrelated_reporting_state",
     "build_user_playbook_exposure_event",
     "record_search_exposures",
     "user_playbook_full_version_fingerprint",

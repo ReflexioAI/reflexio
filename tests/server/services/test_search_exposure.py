@@ -9,12 +9,14 @@ import pytest
 from reflexio.models.api_schema.domain import BlockingIssue, UserPlaybook
 from reflexio.models.api_schema.domain.enums import BlockingIssueKind, Status
 from reflexio.server.extensions import register_service
+from reflexio.server.services import search_exposure as search_exposure_module
 from reflexio.server.services.search_exposure import (
     SEARCH_EXPOSURE_RECORDER,
     SearchExposureBatch,
     SearchExposureOutcome,
     build_user_playbook_exposure_event,
     record_search_exposures,
+    reset_uncorrelated_reporting_state,
     user_playbook_full_version_fingerprint,
 )
 
@@ -411,3 +413,141 @@ def test_any_single_correlation_handle_is_still_recorded(
 
     assert outcome is SearchExposureOutcome.RECORDED
     assert recorder.batches == [batch]
+
+
+@pytest.fixture(autouse=True)
+def _clean_uncorrelated_reporting_state():
+    """The throttle is process-global; tests must not inherit each other's."""
+    reset_uncorrelated_reporting_state()
+    yield
+    reset_uncorrelated_reporting_state()
+
+
+class _AnomalySpy:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict[str, object]]] = []
+
+    def __call__(self, message: str, **tags: object) -> None:
+        self.calls.append((message, tags))
+
+
+@pytest.fixture
+def anomalies(monkeypatch) -> _AnomalySpy:
+    spy = _AnomalySpy()
+    monkeypatch.setattr(search_exposure_module, "capture_anomaly", spy)
+    return spy
+
+
+def _uncorrelated_batch() -> SearchExposureBatch:
+    return _batch(_playbook(), request_id=None, session_id=None)
+
+
+def test_a_refused_batch_is_reported_when_a_recorder_is_registered(
+    anomalies: _AnomalySpy,
+) -> None:
+    """The gap this closes: refusal was correct, and completely silent.
+
+    A deployment can lose exposure intake -- and with it tuning eligibility --
+    with no operator-visible signal at all. That is how one deployment's intake
+    went to zero and stayed there for thirteen days before anyone looked.
+    """
+    register_service(SEARCH_EXPOSURE_RECORDER, _CollectingRecorder())
+
+    outcome = record_search_exposures(_uncorrelated_batch())
+
+    assert outcome is SearchExposureOutcome.UNCORRELATED
+    assert len(anomalies.calls) == 1
+    message, tags = anomalies.calls[0]
+    assert message == "search_exposure.uncorrelated_refused"
+    assert tags["refused_since_last_report"] == 1
+    assert tags["first_report"] is True
+
+
+def test_a_recorderless_deployment_is_not_told_about_a_non_problem(
+    anomalies: _AnomalySpy,
+) -> None:
+    """No recorder is a SUPPORTED configuration, not a misconfiguration.
+
+    Shared ``create_app()`` installs no default recorder, so local and no-auth
+    OSS deployments persist nothing by design. Reporting there would fire on
+    every search of every such deployment forever -- the signal has to be
+    absent exactly where it would be noise.
+    """
+    outcome = record_search_exposures(_uncorrelated_batch())
+
+    # Still UNCORRELATED, not NO_RECORDER: the refusal is decided before the
+    # recorder is consulted, and adding this signal did not reorder that.
+    assert outcome is SearchExposureOutcome.UNCORRELATED
+    assert anomalies.calls == []
+
+
+def test_a_correlated_batch_reports_nothing(anomalies: _AnomalySpy) -> None:
+    register_service(SEARCH_EXPOSURE_RECORDER, _CollectingRecorder())
+
+    outcome = record_search_exposures(_batch(_playbook()))
+
+    assert outcome is SearchExposureOutcome.RECORDED
+    assert anomalies.calls == []
+
+
+def test_a_storm_of_refusals_reports_once_and_counts_the_rest(
+    anomalies: _AnomalySpy,
+) -> None:
+    """Bounded by construction: the motivating deployment refused ~95k."""
+    register_service(SEARCH_EXPOSURE_RECORDER, _CollectingRecorder())
+
+    for _ in range(250):
+        record_search_exposures(_uncorrelated_batch())
+
+    assert len(anomalies.calls) == 1
+    assert anomalies.calls[0][1]["refused_since_last_report"] == 1
+
+
+def test_the_next_window_reports_the_refusals_it_accumulated(
+    anomalies: _AnomalySpy, monkeypatch
+) -> None:
+    """A throttle that only ever reports once would hide an ongoing outage."""
+    register_service(SEARCH_EXPOSURE_RECORDER, _CollectingRecorder())
+    record_search_exposures(_uncorrelated_batch())
+    assert len(anomalies.calls) == 1
+
+    for _ in range(4):
+        record_search_exposures(_uncorrelated_batch())
+    assert len(anomalies.calls) == 1, "still inside the first window"
+
+    monkeypatch.setattr(
+        search_exposure_module, "_UNCORRELATED_ANOMALY_THROTTLE_SECONDS", 0.0
+    )
+    record_search_exposures(_uncorrelated_batch())
+
+    assert len(anomalies.calls) == 2
+    second = anomalies.calls[1][1]
+    # The four suppressed refusals plus this one: a count, not a resampling.
+    assert second["refused_since_last_report"] == 5
+    assert second["first_report"] is False
+
+
+def test_reporting_never_changes_the_outcome_or_reaches_the_recorder(
+    anomalies: _AnomalySpy,
+) -> None:
+    """Observability must not become a behaviour change."""
+    recorder = _CollectingRecorder()
+    register_service(SEARCH_EXPOSURE_RECORDER, recorder)
+
+    outcome = record_search_exposures(_uncorrelated_batch())
+
+    assert outcome is SearchExposureOutcome.UNCORRELATED
+    assert recorder.batches == []
+
+
+def test_a_failing_reporter_does_not_break_the_search_path(monkeypatch) -> None:
+    """capture_anomaly is best-effort; a broken reporter must not 500 a search."""
+
+    def _boom(message: str, **tags: object) -> None:
+        raise RuntimeError("reporter down")
+
+    monkeypatch.setattr(search_exposure_module, "capture_anomaly", _boom)
+    register_service(SEARCH_EXPOSURE_RECORDER, _CollectingRecorder())
+
+    with pytest.raises(RuntimeError, match="reporter down"):
+        record_search_exposures(_uncorrelated_batch())
