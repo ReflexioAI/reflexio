@@ -46,7 +46,16 @@ def test_opt_in_search_adds_one_namespace_to_shallow_copy(wrapped_cls, reflexio_
         "agent_playbooks": [{"agent_playbook_id": 3, "content": "confirm order"}],
     }
     reflexio_mock.search.assert_called_once_with(
-        query="jazz", user_id="u1", agent_version="support-bot", top_k=5
+        query="jazz",
+        user_id="u1",
+        agent_version="support-bot",
+        session_id=reflexio_mock.search.call_args.kwargs["session_id"],
+        top_k=5,
+    )
+    # Not an incidental kwarg: without it the serve Reflexio records for this
+    # search carries no correlation key and can never be joined to a turn.
+    assert reflexio_mock.search.call_args.kwargs["session_id"].startswith(
+        "mem0-run-v1-"
     )
 
 

@@ -389,7 +389,20 @@ class _WrapperState:
 
     def _prepare_search(
         self, query: str, options: Any, kwargs: dict[str, Any]
-    ) -> tuple[str, str] | ReflexioSearchResult:
+    ) -> tuple[str, str, str] | ReflexioSearchResult:
+        """Resolve ``(user_id, agent_version, session_id)`` for a mirrored search.
+
+        The session is derived here by the SAME call as ``_prepare_publish``
+        makes, from the same namespace and the same three identity inputs, so a
+        search and the publish that follows it on one client instance resolve to
+        an identical ``session_id``. That identity is the only thing that ties
+        the serve Reflexio records for this search back to the turn it shaped.
+
+        This used to stop at ``(user_id, agent_version)`` and drop
+        ``identities.run_id`` on the floor, so every mirrored search reached
+        Reflexio with no correlation key at all while the publish beside it
+        carried one.
+        """
         if self._reflexio_client is None:
             return _empty_search_result("skipped", "not_configured")
         if not isinstance(query, str) or not query.strip():
@@ -401,9 +414,17 @@ class _WrapperState:
             return _empty_search_result("skipped", "unsupported_identity_filter")
         if identities.user_id is None:
             return _empty_search_result("skipped", "missing_user_id")
+        resolved_user = _resolved_user_id(identities.user_id, identities.app_id)
+        agent_version = _resolved_agent_version(identities.app_id, identities.agent_id)
         return (
-            _resolved_user_id(identities.user_id, identities.app_id),
-            _resolved_agent_version(identities.app_id, identities.agent_id),
+            resolved_user,
+            agent_version,
+            _session_id(
+                self._session_namespace,
+                resolved_user,
+                agent_version,
+                identities.run_id,
+            ),
         )
 
     def _serialize_search_response(self, response: Any) -> ReflexioSearchResult:
@@ -504,12 +525,13 @@ class MemoryClient(_WrapperState, _Mem0MemoryClient):
         if isinstance(prepared, dict):
             augmented["reflexio"] = prepared
             return augmented
-        user_id, agent_version = prepared
+        user_id, agent_version, session_id = prepared
         try:
             response = self._reflexio_client.search(  # type: ignore[union-attr]
                 query=query,
                 user_id=user_id,
                 agent_version=agent_version,
+                session_id=session_id,
                 top_k=_REFLEXIO_TOP_K,
             )
             augmented["reflexio"] = self._serialize_search_response(response)
@@ -596,12 +618,13 @@ class AsyncMemoryClient(_WrapperState, _Mem0AsyncMemoryClient):
         if isinstance(prepared, dict):
             augmented["reflexio"] = prepared
             return augmented
-        user_id, agent_version = prepared
+        user_id, agent_version, session_id = prepared
         try:
             response = await self._reflexio_client.search_async(  # type: ignore[union-attr]
                 query=query,
                 user_id=user_id,
                 agent_version=agent_version,
+                session_id=session_id,
                 top_k=_REFLEXIO_TOP_K,
             )
             augmented["reflexio"] = self._serialize_search_response(response)
