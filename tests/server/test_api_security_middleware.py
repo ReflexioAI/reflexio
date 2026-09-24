@@ -466,3 +466,10 @@ def test_backstop_timeout_body_carries_the_correlation_id(monkeypatch):
     body = json.loads(bytes(response.body))
     assert body["correlation_id"] == "cid-under-test"
     assert body["reason"] == "server_deadline"
+    # The publish route declares this exact shape as one of its two 504
+    # producers, so the emitted body must validate against the declared model
+    # -- otherwise a generated client fails to decode precisely the fallback
+    # the backstop exists to produce.
+    from reflexio.models.api_schema.service_schemas import BackstopTimeoutResponse
+
+    BackstopTimeoutResponse.model_validate(body)

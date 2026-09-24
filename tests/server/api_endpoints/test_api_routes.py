@@ -521,6 +521,37 @@ class TestPublishInteraction:
             "an un-admitted publish must not look deferred -- nothing is running"
         )
 
+    def test_an_expired_budget_is_not_reported_as_capacity_exhaustion(
+        self, client, patched_reflexio, monkeypatch
+    ):
+        """`acquire_ingestion` never looked at the ledger, so do not blame it.
+
+        Its loop condition is checked FIRST, so when the deadline has already
+        passed it returns False without reading `_ingesting` at all -- a slot
+        may well have been free. Reporting that as
+        `capacity_deadline_exceeded` states a saturation nobody observed.
+
+        Reached here by driving the real route with an already-expired budget,
+        which is exactly what a slow body parse or a queued auth/billing
+        dependency produces now that both clocks share an arrival origin.
+        """
+        monkeypatch.setattr(
+            "reflexio.server.routes.interactions.PUBLISH_REQUEST_TIMEOUT_SECONDS",
+            -1.0,
+        )
+
+        response = client.post("/api/publish_interaction", json=self._publish_payload())
+
+        assert response.status_code == 503
+        detail = response.json()["detail"]
+        assert detail["reason"] == "budget_exhausted_before_admission", (
+            "an expired pre-handler budget must not claim capacity saturation"
+        )
+        assert detail["request_id"]
+        assert "never checked" in detail["message"], (
+            f"the message must say capacity went unchecked: {detail['message']}"
+        )
+
     def test_worker_timeout_is_not_reported_as_still_processing(
         self, client, patched_reflexio
     ):
@@ -596,20 +627,36 @@ class TestPublishInteraction:
         responses = schema["paths"]["/api/publish_interaction"]["post"]["responses"]
         defs = schema["components"]["schemas"]
 
-        for code, model_name, reason in (
-            ("503", "PublishCapacityRefusedResponse", "capacity_deadline_exceeded"),
-            ("504", "PublishTimeoutResponse", "publish_timeout"),
-        ):
-            ref = responses[code]["content"]["application/json"]["schema"]["$ref"]
-            assert ref.endswith(f"/{model_name}"), (
-                f"{code} has no response schema; generated clients see nothing"
-            )
-            detail_ref = defs[model_name]["properties"]["detail"]["$ref"]
-            detail = defs[detail_ref.rsplit("/", 1)[-1]]
-            assert set(detail["properties"]) == {"reason", "request_id", "message"}, (
-                f"{code}'s detail schema does not match the emitted envelope"
-            )
-            assert detail["properties"]["reason"]["const"] == reason
+        ref = responses["503"]["content"]["application/json"]["schema"]["$ref"]
+        assert ref.endswith("/PublishCapacityRefusedResponse"), (
+            "503 has no response schema; generated clients see nothing"
+        )
+        detail_ref = defs["PublishCapacityRefusedResponse"]["properties"]["detail"]
+        detail = defs[detail_ref["$ref"].rsplit("/", 1)[-1]]
+        assert set(detail["properties"]) == {"reason", "request_id", "message"}
+        # Both reasons, because they are different facts -- see the model.
+        assert set(detail["properties"]["reason"]["enum"]) == {
+            "capacity_deadline_exceeded",
+            "budget_exhausted_before_admission",
+        }
+
+        # 504 has TWO producers and therefore two shapes. A client told only
+        # about the route's own envelope fails to decode exactly the fallback
+        # the middleware backstop exists to produce.
+        schema_504 = responses["504"]["content"]["application/json"]["schema"]
+        variants = {option["$ref"].rsplit("/", 1)[-1] for option in schema_504["anyOf"]}
+        assert variants == {"PublishTimeoutResponse", "BackstopTimeoutResponse"}, (
+            f"504 must declare both producers' shapes, got {variants}"
+        )
+        route_detail_ref = defs["PublishTimeoutResponse"]["properties"]["detail"]
+        route_detail = defs[route_detail_ref["$ref"].rsplit("/", 1)[-1]]
+        assert set(route_detail["properties"]) == {"reason", "request_id", "message"}
+        assert route_detail["properties"]["reason"]["const"] == "publish_timeout"
+        # The backstop's detail is a bare string: it runs outside the handler
+        # and never parsed the body, so it has no request_id to carry.
+        backstop = defs["BackstopTimeoutResponse"]
+        assert backstop["properties"]["detail"]["type"] == "string"
+        assert "request_id" not in backstop["properties"]
 
         # The live 503 body must parse as the model that describes it.
         async def never_admitted(_org_id, _deadline):

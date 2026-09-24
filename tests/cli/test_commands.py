@@ -531,6 +531,98 @@ class TestPublishUserIdResolution:
         path.write_text(json.dumps(payload))
         return str(path)
 
+    def test_request_id_flag_reaches_both_publish_paths(
+        self, runner, app, mock_client, tmp_path, monkeypatch
+    ) -> None:
+        """`--request-id` is what makes the 202/504 retry advice followable.
+
+        Both responses tell the operator to rerun with the SAME request_id,
+        and `request_id` is a primary key the server re-checks inside its
+        commit, so the retry publishes only if the first attempt did not.
+        Without the flag a rerun mints a new id and duplicates a publish that
+        committed.
+
+        Both call sites are covered, because the command has two -- the
+        single-turn path and the --file/--data payload path -- and wiring only
+        one leaves the advice false for half the CLI's users.
+        """
+        monkeypatch.setenv("REFLEXIO_USER_ID", "env-user")
+        mock_client.publish_interaction.return_value = MagicMock(
+            counts={"interactions": 2}, user_id="env-user"
+        )
+
+        payload_file = self._write_payload(tmp_path)
+        result = runner.invoke(
+            app,
+            [
+                "interactions",
+                "publish",
+                "--file",
+                payload_file,
+                "--request-id",
+                "req-operator-owned",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert (
+            mock_client.publish_interaction.call_args.kwargs["request_id"]
+            == "req-operator-owned"
+        )
+
+        mock_client.publish_interaction.reset_mock()
+        result = runner.invoke(
+            app,
+            [
+                "interactions",
+                "publish",
+                "--session-id",
+                "s1",
+                "--user-message",
+                "hi",
+                "--agent-response",
+                "hello",
+                "--request-id",
+                "req-single-turn",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert (
+            mock_client.publish_interaction.call_args.kwargs["request_id"]
+            == "req-single-turn"
+        )
+
+    def test_payload_request_id_wins_over_the_flag(
+        self, runner, app, mock_client, tmp_path, monkeypatch
+    ) -> None:
+        """Same precedence as every other field on the payload path.
+
+        A publish replayed from a saved --file keeps the id it was written
+        with, which is the whole point of having saved it.
+        """
+        monkeypatch.setenv("REFLEXIO_USER_ID", "env-user")
+        mock_client.publish_interaction.return_value = MagicMock(
+            counts={"interactions": 2}, user_id="env-user"
+        )
+        payload_file = self._write_payload(tmp_path, request_id="req-from-payload")
+
+        result = runner.invoke(
+            app,
+            [
+                "interactions",
+                "publish",
+                "--file",
+                payload_file,
+                "--request-id",
+                "req-from-flag",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert (
+            mock_client.publish_interaction.call_args.kwargs["request_id"]
+            == "req-from-payload"
+        )
+
     def test_env_user_id_used_when_flag_missing(
         self, runner, app, mock_client, tmp_path, monkeypatch
     ) -> None:

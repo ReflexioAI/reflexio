@@ -190,13 +190,22 @@ class TimeoutMiddleware(BaseHTTPMiddleware):
         try:
             return await asyncio.wait_for(call_next(request), timeout=timeout)
         except TimeoutError:
+            # Built FROM the model that `/api/publish_interaction` declares for
+            # this shape, not from a parallel dict. There are two 504 producers
+            # on that path -- the route's own, which carries a structured
+            # detail with the request_id, and this one, which cannot because it
+            # runs outside the handler and never parsed the body. Both are
+            # declared, so both must be constructed from what is declared or
+            # the OpenAPI drifts away from the wire.
+            from reflexio.models.api_schema.service_schemas import (
+                BackstopTimeoutResponse,
+            )
+
             return JSONResponse(
                 status_code=status.HTTP_504_GATEWAY_TIMEOUT,
-                content={
-                    "detail": "Request timeout",
-                    "reason": "server_deadline",
-                    "correlation_id": correlation_id_var.get(),
-                },
+                content=BackstopTimeoutResponse(
+                    correlation_id=correlation_id_var.get(),
+                ).model_dump(),
             )
 
 

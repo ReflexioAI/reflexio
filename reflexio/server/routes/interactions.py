@@ -25,6 +25,7 @@ from reflexio.models.api_schema.retriever_schema import (
     SessionView,
 )
 from reflexio.models.api_schema.service_schemas import (
+    BackstopTimeoutResponse,
     BulkDeleteResponse,
     DeleteRequestRequest,
     DeleteRequestResponse,
@@ -223,13 +224,24 @@ def get_session_outcomes(
             ),
         },
         504: {
-            "model": PublishTimeoutResponse,
+            # TWO producers, two shapes, so the declaration is a union. The
+            # route's own 504 carries the structured detail; the middleware
+            # backstop's fires when this handler never returned and carries
+            # only a string detail plus a correlation_id, because it sits
+            # outside the handler and never parsed the body. Declaring just
+            # the first would make a generated client fail to decode exactly
+            # the fallback the backstop exists to produce.
+            "model": PublishTimeoutResponse | BackstopTimeoutResponse,
             "description": (
                 "The publish did not confirm and may or may not have "
                 "committed. It differs from 202 only in that nothing is "
-                "still running. reason is 'publish_timeout'. Retry with the "
-                "SAME request_id: the server rejects a duplicate, so the "
-                "retry is safe either way."
+                "still running. Two shapes: the route's own timeout has "
+                "reason 'publish_timeout' inside a structured detail with "
+                "the request_id; the middleware backstop's has a string "
+                "detail and a correlation_id but NO request_id, which is why "
+                "you should send your own. Retry with the SAME request_id "
+                "either way: the server rejects a duplicate, so the retry is "
+                "safe."
             ),
         },
     },
@@ -287,6 +299,13 @@ async def publish_user_interaction(
             # holding a slot past the moment the route would have to answer
             # anyway.
             with publish_timing.phase("admission"):
+                # Sampled BEFORE the call, because `acquire_ingestion` cannot
+                # tell us afterwards: its loop condition is checked first, so
+                # an already-spent budget returns False without ever reading
+                # the ingestion ledger. Reporting that as capacity exhaustion
+                # would claim a saturation nobody observed -- a slot may have
+                # been free the whole time.
+                budget_already_spent = time.monotonic() >= response_deadline
                 admitted = await acquire_ingestion(org_id, response_deadline)
             if not admitted:
                 # Nothing was admitted and nothing will commit, so this is safe
@@ -295,10 +314,25 @@ async def publish_user_interaction(
                 raise HTTPException(
                     status_code=503,
                     detail=PublishCapacityRefusedDetail(
+                        reason=(
+                            "budget_exhausted_before_admission"
+                            if budget_already_spent
+                            else "capacity_deadline_exceeded"
+                        ),
                         request_id=payload.request_id,
                         message=(
-                            "Publish capacity deadline exceeded; nothing was "
-                            "admitted. Retry with this same request_id."
+                            (
+                                "This request's time budget was already spent "
+                                "before admission was attempted, so nothing "
+                                "was admitted; publish capacity was never "
+                                "checked. Retry with this same request_id."
+                            )
+                            if budget_already_spent
+                            else (
+                                "Publish capacity deadline exceeded; nothing "
+                                "was admitted. Retry with this same "
+                                "request_id."
+                            )
                         ),
                     ).model_dump(),
                 )

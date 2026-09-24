@@ -293,6 +293,19 @@ def publish(
             help="Run extraction even when a provider auth/billing stall is recorded. Use only for explicit retries after reauth or limit reset.",
         ),
     ] = False,
+    request_id: Annotated[
+        str | None,
+        typer.Option(
+            "--request-id",
+            help=(
+                "Idempotency key for this publish. Omit and the server mints "
+                "one. Supply the SAME value when retrying after a 202 or 504 "
+                "-- the server rejects a duplicate, so the retry publishes "
+                "only if the first attempt did not. Without it a rerun mints "
+                "a new id and can duplicate a publish that committed."
+            ),
+        ),
+    ] = None,
 ) -> None:
     """Publish interaction data for a user.
 
@@ -349,6 +362,7 @@ def publish(
             force_extraction=force_extraction,
             evaluation_only=evaluation_only,
             override_learning_stall=override_learning_stall,
+            request_id=request_id,
         )
         if json_mode:
             render(result, json_mode=True)
@@ -413,6 +427,10 @@ def publish(
             override_learning_stall=payload.get(
                 "override_learning_stall", override_learning_stall
             ),
+            # Same precedence as every other field on this path: the payload
+            # wins, the flag is the fallback. A publish replayed from a saved
+            # --file therefore keeps the id it was written with.
+            request_id=payload.get("request_id", request_id),
         )
         if json_mode:
             render(result, json_mode=True)

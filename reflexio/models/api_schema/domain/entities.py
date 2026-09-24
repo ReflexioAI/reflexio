@@ -94,6 +94,7 @@ __all__ = [
     "PublishCapacityRefusedResponse",
     "PublishTimeoutDetail",
     "PublishTimeoutResponse",
+    "BackstopTimeoutResponse",
     "WhoamiResponse",
     "MyConfigResponse",
     "AddUserPlaybookRequest",
@@ -1723,9 +1724,23 @@ class PublishUserInteractionResponse(BaseModel):
 # it claims to describe, and a generated client would then be typed against a
 # contract the server no longer emits.
 class PublishCapacityRefusedDetail(BaseModel):
-    """Structured body of the 503 raised when nothing was admitted."""
+    """Structured body of the 503 raised when nothing was admitted.
 
-    reason: Literal["capacity_deadline_exceeded"] = "capacity_deadline_exceeded"
+    TWO reasons, because they are different facts and only one of them is
+    about capacity. ``acquire_ingestion``'s loop condition is checked first,
+    so when the budget is already spent it returns False WITHOUT ever reading
+    the ingestion ledger -- a slot may well have been free. Reporting that as
+    ``capacity_deadline_exceeded`` claims saturation that was never observed.
+
+    The caller's action is the same either way (retry with this same
+    request_id); the distinction is diagnostic, and it is the difference
+    between "we are overloaded" and "this request spent its own budget before
+    admission was attempted".
+    """
+
+    reason: Literal[
+        "capacity_deadline_exceeded", "budget_exhausted_before_admission"
+    ] = "capacity_deadline_exceeded"
     request_id: str
     message: str
 
@@ -1748,6 +1763,30 @@ class PublishTimeoutResponse(BaseModel):
     """504 wire shape: the detail above, nested under ``detail``."""
 
     detail: PublishTimeoutDetail
+
+
+class BackstopTimeoutResponse(BaseModel):
+    """The OTHER 504 a publish can receive, emitted by ``TimeoutMiddleware``.
+
+    There are two 504 producers on this path and they are not interchangeable.
+    The route's own 504 is the one above. This one fires when the route never
+    returned at all -- the middleware backstop expiring, typically with a
+    synchronous dependency still blocked -- and it necessarily carries NO
+    ``request_id``: the middleware sits outside the handler and never parsed
+    the body, so there is no id to echo. That is why ``detail`` here is a bare
+    string rather than the structured object.
+
+    Declared beside the other rather than folded into it: a generated client
+    that only knew ``PublishTimeoutResponse`` would fail to decode precisely
+    the fallback response the backstop exists to produce.
+
+    The caller's action is unchanged -- retry with the request_id it sent --
+    which is why the docs tell publishers to supply their own.
+    """
+
+    detail: str = "Request timeout"
+    reason: Literal["server_deadline"] = "server_deadline"
+    correlation_id: str | None = None
 
 
 class LearningStatusResponse(BaseModel):
