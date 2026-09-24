@@ -12,6 +12,7 @@ from reflexio.server.middleware import (
     BodySizeLimitMiddleware,
     TimeoutMiddleware,
     backstop_for,
+    route_relative_path,
 )
 
 
@@ -307,6 +308,86 @@ def test_publish_interaction_dispatch_uses_the_backstop(monkeypatch):
     assert observed["timeout"] != REQUEST_TIMEOUT_SECONDS
 
 
+def test_publish_backstop_survives_a_mount_prefix(monkeypatch):
+    """A mounted app must still reach the publish backstop.
+
+    Starlette's ``Mount`` extends ``scope["root_path"]`` and leaves
+    ``scope["path"]`` holding the FULL prefixed path, so under a mount — or a
+    server started with ``--root-path`` — ``request.url.path`` reads
+    ``/reflexio/api/publish_interaction``. An exact lookup on that misses the
+    table, drops publish back to the 60s default and reinstates exactly the bug
+    this PR fixes, silently and only in the mounted deployment.
+
+    Asserted through ``dispatch`` rather than ``route_relative_path`` alone: a
+    correct helper that ``dispatch`` does not call is the same defect in a
+    different place, and this effort has already shipped one guard with that
+    hole in it.
+    """
+    observed: dict[str, float | None] = {}
+
+    async def fake_wait_for(awaitable, *, timeout=None):
+        observed["timeout"] = timeout
+        return await awaitable
+
+    async def call_next(_request):
+        from starlette.responses import Response
+
+        return Response()
+
+    monkeypatch.setattr(asyncio, "wait_for", fake_wait_for)
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "scheme": "http",
+            "root_path": "/reflexio",
+            "path": "/reflexio/api/publish_interaction",
+            "raw_path": b"/reflexio/api/publish_interaction",
+            "query_string": b"",
+            "headers": [],
+            "client": ("testclient", 50000),
+            "server": ("testserver", 80),
+        }
+    )
+
+    asyncio.run(TimeoutMiddleware(FastAPI()).dispatch(request, call_next))
+
+    assert observed["timeout"] == ROUTE_BACKSTOP_SECONDS["/api/publish_interaction"]
+    assert observed["timeout"] != REQUEST_TIMEOUT_SECONDS
+
+
+def test_route_relative_path_only_strips_a_whole_segment_prefix():
+    """Stripping must respect segment boundaries and the no-prefix case.
+
+    ``/ref`` is a prefix of the string ``/reflexio/...`` but not of its path, so
+    trimming by length alone would hand ``backstop_for`` the mangled
+    ``lexio/...``. The unprefixed row is what every non-mounted deployment —
+    i.e. production today — actually takes.
+    """
+    assert route_relative_path({"path": "/api/publish_interaction"}) == (
+        "/api/publish_interaction"
+    )
+    assert (
+        route_relative_path(
+            {"path": "/api/publish_interaction", "root_path": ""},
+        )
+        == "/api/publish_interaction"
+    )
+    assert (
+        route_relative_path(
+            {"path": "/reflexio/api/publish_interaction", "root_path": "/reflexio"},
+        )
+        == "/api/publish_interaction"
+    )
+    assert (
+        route_relative_path(
+            {"path": "/reflexio/api/publish_interaction", "root_path": "/ref"},
+        )
+        == "/reflexio/api/publish_interaction"
+    )
+    assert route_relative_path({"path": "/reflexio", "root_path": "/reflexio"}) == "/"
+
+
 def test_backstop_precedence_ignores_wait_for_response_for_table_paths():
     """``wait_for_response`` must not move publish onto a shorter budget.
 
@@ -340,7 +421,6 @@ def test_backstop_timeout_body_carries_a_correlation_id():
     async def call_next(_request):
         raise TimeoutError
 
-    correlation_id_var.set("cid-under-test")
     request = Request(
         {
             "type": "http",
@@ -355,7 +435,17 @@ def test_backstop_timeout_body_carries_a_correlation_id():
         }
     )
 
-    response = asyncio.run(TimeoutMiddleware(FastAPI()).dispatch(request, call_next))
+    # Reset in `finally`: a bare `.set()` leaves "cid-under-test" installed in
+    # this xdist worker's context, and with work stealing a later test on the
+    # same worker inherits it instead of the declared "" default -- which is
+    # exactly what the correlation assertions in this file are reading.
+    token = correlation_id_var.set("cid-under-test")
+    try:
+        response = asyncio.run(
+            TimeoutMiddleware(FastAPI()).dispatch(request, call_next)
+        )
+    finally:
+        correlation_id_var.reset(token)
 
     assert response.status_code == 504
     body = json.loads(bytes(response.body))
@@ -363,3 +453,7 @@ def test_backstop_timeout_body_carries_a_correlation_id():
     assert body["detail"] == "Request timeout"
     assert body["correlation_id"] == "cid-under-test"
     assert body["reason"] == "backstop_timeout"
+    # The `finally` above must actually have run: leak "cid-under-test" into
+    # this worker's context and, under work stealing, a later test reads it
+    # instead of the declared "" default. Drop the reset and this line fails.
+    assert correlation_id_var.get() == ""

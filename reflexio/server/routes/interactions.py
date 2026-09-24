@@ -123,17 +123,28 @@ async def publish_user_interaction(
             with publish_timing.phase("admission"):
                 admitted = await acquire_ingestion(org_id, deadline)
             if not admitted:
-                # Nothing was admitted and nothing will commit, so this is safe
-                # to retry -- and safe to retry with THIS id, which is the only
-                # reason the id is worth returning. Contrast the 504 below,
-                # where admission may already have happened and the same id
-                # must be checked before it is reused.
+                # Nothing was admitted and nothing will commit, so this is
+                # unambiguously safe to retry. Contrast the 504 below, where
+                # admission may already have happened and a bare retry is not
+                # safe without checking first.
+                #
+                # The id is returned as a CORRELATION handle -- it names this
+                # attempt in logs and support requests -- and the message must
+                # not instruct the caller to resend it. `request_id` is a field
+                # on the request model, but the SDK's
+                # `_build_publish_interaction_request` never forwards one, so
+                # for callers on the primary `ReflexioClient.publish_interaction`
+                # path the server minted this id itself and there is no
+                # parameter through which to hand it back. Advertising a retry
+                # key that most callers cannot set is worse than advertising
+                # nothing. Guarded by a test that keys off that signature, so
+                # it relaxes on its own if the SDK ever gains the parameter.
                 raise HTTPException(
                     status_code=503,
                     detail={
                         "reason": "capacity_deadline_exceeded",
                         "request_id": payload.request_id,
-                        "message": "Publish capacity deadline exceeded; nothing was admitted. Retry with this same request ID.",
+                        "message": "Publish capacity deadline exceeded; nothing was admitted, so this publish can be retried safely.",
                     },
                 )
         except BaseException:

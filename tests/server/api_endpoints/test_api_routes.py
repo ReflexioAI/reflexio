@@ -387,14 +387,31 @@ class TestPublishInteraction:
     def test_capacity_refusal_503_names_the_request_and_is_not_the_504(
         self, client, patched_reflexio, monkeypatch
     ):
-        """A refused publish admitted nothing, so the SAME id is safe to retry.
+        """A refused publish admitted nothing, so it is safe to retry.
 
-        That is the only reason the id is worth returning here, and it is the
-        opposite of the 504 above — where admission may already have happened
-        and the id must be checked first. Both are 5xx and both carry a
+        That is the opposite of the 504 above — where admission may already have
+        happened and a bare retry is not safe. Both are 5xx and both carry a
         request_id, so this asserts the discriminating ``reason`` as well as the
         status; "not 200" would not tell the two apart.
+
+        The message is also checked for a promise the SDK cannot keep. The id
+        here is a CORRELATION handle: ``request_id`` is a field on the request
+        model, but ``ReflexioClient._build_publish_interaction_request`` never
+        forwards one, so on the primary SDK path the server minted it and the
+        caller has no parameter to hand it back through. The check keys off that
+        signature, so it relaxes on its own the day the SDK gains the parameter
+        rather than having to be deleted.
+
+        Deliberately matched on any mention of an id rather than on an
+        instruction to reuse one: the narrower shape is what a reword slips
+        past, and two honesty checks in this effort were already evaded that
+        way. Known residual — a phrasing that instructs reuse without naming an
+        id ("send it back with your retry") would pass.
         """
+        import inspect
+        import re
+
+        from reflexio.client.client import ReflexioClient
         from reflexio.server.services.durable_learning import waiting
 
         async def refuse(_org_id, _deadline):
@@ -412,7 +429,21 @@ class TestPublishInteraction:
         assert detail["request_id"] == "req-refused"
         assert detail["reason"] == "capacity_deadline_exceeded"
         assert detail["reason"] != "admission_timeout"
-        assert "same request ID" in detail["message"]
+
+        sdk_can_send_request_id = (
+            "request_id"
+            in inspect.signature(
+                ReflexioClient._build_publish_interaction_request
+            ).parameters
+        )
+        if not sdk_can_send_request_id:
+            assert not re.search(
+                r"\bid(?:s|entifier|entifiers)?\b", detail["message"], re.IGNORECASE
+            ), (
+                "the 503 message advertises a retry id, but "
+                "_build_publish_interaction_request cannot send one, so SDK "
+                f"callers cannot act on it: {detail['message']!r}"
+            )
 
 
 class TestSearchEndpoints:

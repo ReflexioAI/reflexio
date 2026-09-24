@@ -47,6 +47,40 @@ ROUTE_BACKSTOP_SECONDS: dict[str, float] = {
 }
 
 
+def route_relative_path(scope: Scope) -> str:
+    """Return the path with any mount/ASGI prefix removed.
+
+    ``ROUTE_BACKSTOP_SECONDS`` is keyed by the path the ROUTE declares, but
+    Starlette's ``Mount`` extends ``scope["root_path"]`` and leaves
+    ``scope["path"]`` holding the full, prefixed path -- so under a mount (or a
+    server started with ``--root-path``) ``request.url.path`` reads
+    ``/prefix/api/publish_interaction`` and an exact lookup silently misses,
+    dropping publish back to the 60s default and restoring the very bug this
+    table exists to fix.
+
+    Mirrors ``starlette._utils.get_route_path``, deliberately reimplemented
+    rather than imported: that module is private and FastAPI does not depend on
+    it, so importing it would couple us to an internal API for four lines. The
+    boundary check matters -- a ``root_path`` of ``/ref`` must not strip the
+    front of ``/reflexio/...``.
+
+    Args:
+        scope (Scope): The ASGI scope of the incoming request.
+
+    Returns:
+        str: The route-relative path used to look up a backstop.
+    """
+    path: str = scope["path"]
+    root_path: str = scope.get("root_path", "")
+    if not root_path or not path.startswith(root_path):
+        return path
+    if path == root_path:
+        return "/"
+    if path[len(root_path)] != "/":
+        return path
+    return path[len(root_path) :]
+
+
 def backstop_for(path: str, wait_for_response: bool) -> float:
     """Return the middleware's timeout budget for one request.
 
@@ -55,7 +89,9 @@ def backstop_for(path: str, wait_for_response: bool) -> float:
     already covers both modes. Anything else keeps the previous behaviour.
 
     Args:
-        path (str): The request path.
+        path (str): The ROUTE-RELATIVE request path, as returned by
+            ``route_relative_path`` -- not ``request.url.path``, which still
+            carries any mount prefix and would miss every table row.
         wait_for_response (bool): Whether the caller asked to wait.
 
     Returns:
@@ -170,7 +206,7 @@ class TimeoutMiddleware(BaseHTTPMiddleware):
         from starlette.responses import JSONResponse
 
         timeout = backstop_for(
-            request.url.path,
+            route_relative_path(request.scope),
             request.query_params.get("wait_for_response", "").lower() == "true",
         )
 
