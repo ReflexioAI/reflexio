@@ -33,15 +33,33 @@ client = ReflexioClient(url_endpoint=settings.reflexio_url, timeout=5)
 
 Alternatively, let the client read a user-supplied `REFLEXIO_URL`. Do not implement both mechanisms without a reason.
 
+## Bind the session before the turn
+
+Bind the session once, at the top of the turn, and make every Reflexio call
+for that turn through the returned object:
+
+```python
+session = client.for_session(session_id)
+```
+
+The search and the publish must agree on the session, or the retrieval
+cannot be attributed to the turn it informed and contributes no evidence.
+Binding removes the opportunity to disagree: both calls below read the
+session from the same place. Passing `session_id=` to each call
+individually still works, but it has to be right at every call site, and
+omitting it from one of them is silent and successful.
+
+`session` shares the client's connections, authentication, cache, and
+configuration; it is a binding of one argument, not a second client.
+
 ## Search and preserve learning identities
 
 Use the synchronous method for a synchronous application:
 
 ```python
-results = client.search(
+results = session.search(
     query=user_message,
     user_id=user_id,
-    session_id=session_id,
     agent_version=agent_version,
     entity_types=["profiles", "user_playbooks", "agent_playbooks"],
     agent_playbook_status_filter=["approved"],
@@ -52,7 +70,7 @@ results = client.search(
 In an async application, use the native async equivalent with the same arguments:
 
 ```python
-results = await client.search_async(...)
+results = await session.search_async(...)
 ```
 
 Check `results.success` before consuming results. A false value is an application-level failure even when HTTP succeeded. Handle it through the same safe diagnostic and fail-open path as a search exception, continuing the agent turn without Reflexio context or an experiment assignment from that failed search.
@@ -95,9 +113,8 @@ Use the synchronous method for a synchronous application:
 ```python
 from reflexio import InteractionData
 
-publish_result = client.publish_interaction(
+publish_result = session.publish_interaction(
     user_id=user_id,
-    session_id=session_id,
     source=source,
     agent_version=agent_version,
     retrieval_experiment_id=(
@@ -120,7 +137,7 @@ When no experiment is active, leave both values as `None`. When an assignment is
 In an async application, use the native async equivalent with the same arguments:
 
 ```python
-publish_result = await client.publish_interaction_async(...)
+publish_result = await session.publish_interaction_async(...)
 ```
 
 Check `publish_result.success`; a false value must enter the application's publish-failure diagnostic path even if no exception was raised. Observe `publish_result.warnings`, which can report ignored fields or skipped interactions. Retain `publish_result.request_id` and `publish_result.learning_status` when present. Handle diagnostics without replacing the completed agent response or logging interaction content or credentials.

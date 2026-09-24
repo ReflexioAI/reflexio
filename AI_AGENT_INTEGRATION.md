@@ -128,7 +128,7 @@ learns, what stays private to a user scope, and what transfers to other users.
 | --- | --- | --- |
 | `user_id` | Scope for profiles and user playbooks | Use the human user, tenant, workspace, repo, or project whose preferences should be isolated. For example, use a project id when repo-specific rules should not leak into unrelated repos. |
 | `agent_version` | Scope for shared agent playbooks | Use a stable agent name plus major behavior version, for example `my-agent-v1`. Keep it stable if learnings should transfer across users/projects. If you omit it, the SDK uses `DEFAULT_AGENT_VERSION` (`"agent-v0"`) — fine for a single agent, but set an explicit value before you run more than one. |
-| `session_id` | Group turns for one conversation | Use the host session/conversation id. Generate a UUID if the host does not provide one. |
+| `session_id` | Group turns for one conversation, and link the searches in that conversation to the turns they informed | Use the host session/conversation id. Generate a UUID if the host does not provide one. Bind it once with `client.for_session(session_id)` and make every search and publish for that conversation through the returned object, so the two cannot disagree. |
 | `source` | Producer/workflow label | Use a non-sensitive machine label such as `support-agent:v2`. Where the API permits an empty value, empty means the source is absent. Every non-empty value must match `^[a-z0-9][a-z0-9._:-]{0,127}$` and is limited to 128 ASCII characters. Do not include user identifiers, email addresses, or other PII. |
 
 `user_id` and `agent_version` work together:
@@ -356,14 +356,13 @@ def publish_turns(
     if not interactions:
         return "advance"
 
-    client = reflexio_client()
+    session = reflexio_client().for_session(session_id)
     try:
-        response = client.publish_interaction(
+        response = session.publish_interaction(
             user_id=user_id,
             interactions=interactions,
             source="support-agent:v2",
             agent_version=agent_version,
-            session_id=session_id,
             wait_for_response=False,
             force_extraction=False,
             skip_aggregation=False,
@@ -534,9 +533,9 @@ Use unified search so profiles, user playbooks, and shared agent playbooks are
 retrieved together:
 
 ```python
-def search_reflexio(user_id: str, agent_version: str, query: str):
-    client = reflexio_client()
-    return client.search(
+def search_reflexio(session_id: str, user_id: str, agent_version: str, query: str):
+    session = reflexio_client().for_session(session_id)
+    return session.search(
         query=query,
         user_id=user_id,
         agent_version=agent_version,
@@ -547,6 +546,20 @@ def search_reflexio(user_id: str, agent_version: str, query: str):
         search_mode="hybrid",
     )
 ```
+
+**Pass the same `session_id` you publish under.** This is the single most
+commonly dropped argument in a Reflexio integration, and dropping it is
+silent — the search succeeds and returns good results either way. What
+is lost is the link between *what was shown to the model* and *how the
+session went*, which is the only evidence Reflexio has for deciding
+whether a learning earns its place. An uncorrelated search turn cannot
+be attributed to any session, so it contributes nothing.
+
+`for_session()` exists so this cannot happen by omission: bind the
+session once and every call made through the returned object carries it.
+Prefer it to passing `session_id=` at each call site — the per-call form
+still works, but it puts the burden on every call, and every call is one
+place it can be forgotten.
 
 `top_k` and `threshold` are per entity type; if omitted they default to `5` and
 `0.3`. Keep `top_k` small on interactive paths so injected context stays short.
@@ -727,6 +740,12 @@ Run these checks before considering the integration complete:
 
 - Publishing without a stable `session_id`; new publishes require a non-empty
   value, and unstable one-off ids make later auditing harder.
+- **Passing `session_id` to the publish but not to the search.** This is the
+  most common Reflexio integration bug and the hardest to notice, because
+  both calls succeed. The search turn is then attributable to no session, so
+  nothing can measure whether the learnings it injected helped. Use
+  `client.for_session(session_id)` and make both calls through it rather than
+  threading the argument to each call site by hand.
 - Using a global `user_id` when project/user isolation is required.
 - Changing `agent_version` on every build and accidentally hiding shared
   playbooks from future searches.

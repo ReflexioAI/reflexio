@@ -12,6 +12,7 @@ The official Python SDK for [Reflexio](https://www.reflexio.ai/) — the learnin
 - [Installation](#installation)
 - [Quick Start](#quick-start)
 - [Authentication](#authentication)
+- [Working in a Session](#working-in-a-session)
 - [Publishing Interactions](#publishing-interactions)
 - [Profiles](#profiles)
 - [Interactions](#interactions)
@@ -57,14 +58,21 @@ The client authenticates via Bearer token. Provide your API key in one of two wa
 
 The base URL defaults to `https://www.reflexio.ai/` and can be overridden with `url_endpoint` or the `REFLEXIO_URL` env var.
 
-## Publishing Interactions
+## Working in a Session
 
-Publish user interactions to trigger profile extraction, playbook generation, and evaluation:
+A conversation is a session. Reflexio learns from the *pairing* of what it
+showed your agent and how that conversation turned out — so the search that
+retrieved context and the publish that recorded the turn have to agree on
+which session they belong to.
+
+Bind the session once and make every call through the result:
 
 ```python
-# Server-async mode: HTTP round-trip blocks, but server returns as soon as
-# it has registered the background extraction (~100 ms).
-response = client.publish_interaction(
+session = client.for_session("session-abc")
+
+context = session.search(query="how do I reset my password?", user_id="user-123")
+# ... your agent answers, using `context` ...
+session.publish_interaction(
     user_id="user-123",
     interactions=[
         {"role": "user",      "content": "How do I reset my password?"},
@@ -72,11 +80,52 @@ response = client.publish_interaction(
     ],
     source="support-bot",
     agent_version="v2.1",
-    session_id="session-abc",
+)
+```
+
+Both calls read the session from the same place, so they cannot disagree.
+This is the recommended form. Every method that takes a `session_id`
+(`search`, `search_async`, `search_user_playbooks`, `publish_interaction`,
+`publish_interaction_async`, `mark_session_outcome`, `get_session_outcomes`,
+`delete_session`, `get_requests`, `grade_on_demand`, and
+`get_retrieved_learning_evaluation_results`) is bound. Methods that have
+nothing to do with sessions are forwarded unchanged, so a scoped client
+works for the whole API.
+
+The scoped client shares the connection pool, authentication, cache and
+configuration of the client it came from — it binds one argument rather
+than opening a second client — so creating one per conversation is cheap.
+Reach the unscoped client again through `session.client`.
+
+Passing a `session_id` that differs from the bound one raises `ValueError`
+rather than picking a winner, since the call site disagrees with itself
+about which session it is in.
+
+> Passing `session_id=` to each call still works and is fully supported.
+> It is just easier to get wrong: omitting it from the search but not the
+> publish is silent, successful, and loses the link Reflexio needs.
+
+## Publishing Interactions
+
+Publish user interactions to trigger profile extraction, playbook generation, and evaluation:
+
+```python
+session = client.for_session("session-abc")
+
+# Server-async mode: HTTP round-trip blocks, but server returns as soon as
+# it has registered the background extraction (~100 ms).
+response = session.publish_interaction(
+    user_id="user-123",
+    interactions=[
+        {"role": "user",      "content": "How do I reset my password?"},
+        {"role": "assistant", "content": "Go to Settings > Security > Reset Password."},
+    ],
+    source="support-bot",
+    agent_version="v2.1",
 )
 
 # Wait for the server to finish processing before returning.
-response = client.publish_interaction(
+response = session.publish_interaction(
     user_id="user-123",
     interactions=[
         {"role": "user",      "content": "Thanks, that worked!"},
@@ -87,6 +136,10 @@ response = client.publish_interaction(
 )
 print(response.success, response.message)
 ```
+
+`session_id` is required on every publish. Binding it with `for_session`
+is the simplest way to satisfy that and keep the matching search
+correlated at the same time.
 
 ## Profiles
 
@@ -150,6 +203,9 @@ client.delete_request(request_id="req-001", wait_for_response=True)
 
 # Delete all requests in a session
 client.delete_session(session_id="session-abc", wait_for_response=True)
+
+# Or, from a scoped client, the bound session is the target
+client.for_session("session-abc").delete_session(wait_for_response=True)
 ```
 
 ## Playbooks
@@ -162,8 +218,9 @@ from reflexio import UserPlaybook
 # Get user playbooks
 playbooks = client.get_user_playbooks(playbook_name="usability", limit=50)
 
-# Search user playbooks
-results = client.search_user_playbooks(query="slow response", agent_version="v2.1")
+# Search user playbooks -- scope it to the session you will publish under,
+# so the retrieval can be attributed to the turn it informed.
+results = session.search_user_playbooks(query="slow response", agent_version="v2.1")
 
 # Add a user playbook directly
 client.add_user_playbook(user_playbooks=[
@@ -223,7 +280,9 @@ Search across profiles, agent playbooks, user playbooks, and skills in one call:
 ```python
 from reflexio import ConversationTurn
 
-results = client.search(
+session = client.for_session("session-abc")
+
+results = session.search(
     query="user prefers dark mode",
     top_k=5,
     agent_version="v2.1",

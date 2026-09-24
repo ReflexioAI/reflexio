@@ -201,10 +201,15 @@ client = reflexio.ReflexioClient(
     url_endpoint="http://localhost:8061/"
 )
 
+# A conversation is a session. Bind it once, then every call you make
+# through `session` carries it — so the searches that fed the agent and
+# the turns you publish stay linked to each other.
+session = client.for_session("deploy-demo-1")
+
 # Publish a multi-turn conversation where the user corrects the agent —
 # Reflexio can extract a profile ("prod region = us-west-2") and a playbook
 # ("confirm region before deploying").
-client.publish_interaction(
+session.publish_interaction(
     user_id="alice",
     interactions=[
         {"role": "user",      "content": "Deploy the new service."},
@@ -212,7 +217,6 @@ client.publish_interaction(
         {"role": "user",      "content": "Wait — we never deploy production to us-east-1. Always use us-west-2."},
         {"role": "assistant", "content": "Understood. Switching to us-west-2."},
     ],
-    session_id="deploy-demo-1",
 )
 ```
 
@@ -285,15 +289,22 @@ client = reflexio.ReflexioClient(
     url_endpoint="http://localhost:8061/"
 )
 
+# Bind the conversation's session id once. Recommended: it keeps the
+# searches that retrieve context and the turns you publish correlated,
+# which is what lets Reflexio tell whether a learning actually helped.
+session = client.for_session("session-abc")
+
+# Retrieve context for this turn
+context = session.search(query="deployment region preference", user_id="user-123")
+
 # Publish interactions
-client.publish_interaction(
+session.publish_interaction(
     user_id="user-123",
     interactions=[
         {"role": "user",      "content": "..."},
         {"role": "assistant", "content": "..."},
     ],
     agent_version="v1",       # optional: track agent versions
-    session_id="session-abc", # required: stable conversation/session id
 )
 
 # Search profiles
