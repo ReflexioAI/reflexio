@@ -23,7 +23,7 @@ client = ReflexioClient(timeout=5)
 
 This reads `REFLEXIO_API_KEY` and uses `https://www.reflexio.ai/`. Do not pass `url_endpoint` and do not introduce `REFLEXIO_URL` for the default path.
 
-Use the intended managed project's API key for both search and publish, following the [connection contract](../SKILL.md#connection-contract).
+Use a full-access key for the intended managed project; search and publish both reject limited keys. See [Credentials and connection](../SKILL.md#credentials-and-connection).
 
 If and only if the user explicitly requests a custom endpoint, use one existing configuration value:
 
@@ -139,12 +139,12 @@ Local validation failures are permanent and should not be retried. Raw HTTP does
 
 ## Connection check
 
-When `REFLEXIO_API_KEY` is available, this is a read-only connection check:
+When `REFLEXIO_API_KEY` is available, check it with one search that publishes nothing:
 
 ```python
-identity = client.whoami()
+check = client.search(query="connection check", user_id="reflexio-connection-check", top_k=1)
 ```
 
-Inspect the returned identity or the raised exception. Do not print the API key.
+A raised exception or `check.success` being false means the key cannot serve the runtime loop. Do not rely on `client.whoami()` alone: it succeeds for limited keys, which search and publish reject. An empty result is expected on a new project. Do not print the API key.
 
 For additional examples and complete method parameters, start with the [documentation index for agents](https://www.reflexio.ai/docs/llms.txt), then consult [search](https://www.reflexio.ai/docs/build/search), [publishing interactions](https://www.reflexio.ai/docs/build/user-interactions), and the [API reference](https://www.reflexio.ai/docs/api-reference).

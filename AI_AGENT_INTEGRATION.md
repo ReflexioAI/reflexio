@@ -38,19 +38,37 @@ builder's repository; the copied skill is only the coding-agent workflow.
 
 Reflexio integration has two jobs:
 
-1. Publish useful interaction history so Reflexio can extract user profiles and
-   playbooks.
+1. Supply useful interaction history through explicit publishing or a connected
+   data source so Reflexio can extract user profiles and playbooks.
 2. Retrieve relevant profiles and playbooks before the agent acts, then inject
    them into the agent context.
 
-The recommended pattern is to capture every turn through host lifecycle hooks,
-buffer locally so the agent never blocks on Reflexio availability, publish in the
-background, and inject only query-relevant learnings before the next response or
-tool action.
+Before adding publishing code, inspect the application's existing tracing.
+When a supported platform is already in use, recommend connecting it through
+[Connect a data source](skills/connect-data-source/SKILL.md), currently supporting
+Braintrust, and work through setup with the developer. Honor an explicit preference
+for direct publishing; use it when no supported source is available. Clarify
+ambiguous tracing evidence and do not silently switch to publishing if setup is
+blocked. The connection skill owns mapping, validation, optional trace attribution,
+and the review link; the developer activates importing in Reflexio. A validated
+draft does not mean importing is active.
+
+For direct publishing, the recommended pattern is to capture every turn through
+host lifecycle hooks, buffer locally so the agent never blocks on Reflexio
+availability, publish in the background, and inject only query-relevant learnings
+before the next response or tool action.
 
 ## Integration Checklist
 
-Complete these steps in order:
+The checklist and publishing examples below describe the direct-publishing path.
+For a connected source, follow the connection skill for ingestion and apply this
+guide's identity, retrieval, context-injection, and resilience guidance using the
+same identities as the imported traffic. Do not add publishing, buffering, flush,
+or learn-now hooks for connected traffic. Resolve any overlap with an existing
+publish flow with the developer before activation. Optional attribution uses the
+existing tracing path and its field mapping, not a second publish flow.
+
+For direct publishing, complete these steps in order:
 
 1. Choose the identity model:
    - Set `user_id` to the boundary where private facts, preferences, and
@@ -105,6 +123,8 @@ Complete these steps in order:
     - Confirm Reflexio-down behavior does not break the agent.
 
 ## Target Architecture
+
+For direct publishing:
 
 ```text
 Agent host hooks

@@ -409,6 +409,9 @@ supporting concepts and background.
 Copy the skill into the agent application's repository for Codex, Claude Code,
 or Cursor, or point a coding agent at the linked skill while it works in that
 application repository. The skill is not intended to modify Reflexio itself.
+It checks for supported tracing already in use and helps choose between connecting
+that data source and publishing interactions directly, while integrating retrieval
+for either method.
 
 For agents already logging to Braintrust, use [Connect a data source](skills/connect-data-source/SKILL.md)
 to prepare and validate importing through the setup API. The developer reviews the saved

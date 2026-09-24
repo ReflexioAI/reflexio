@@ -22,7 +22,7 @@ User-Agent: <application-name>-reflexio
 
 If the developer explicitly requested a default unauthenticated Local OSS endpoint, omit only the `Authorization` header.
 
-For Hosted Enterprise, use the intended managed project's API key for both routes, following the [connection contract](../SKILL.md#connection-contract).
+For Hosted Enterprise, use a full-access key for the intended managed project; both routes below reject limited keys. See [Credentials and connection](../SKILL.md#credentials-and-connection).
 
 Keep a bounded timeout. Inspect the HTTP status and raw response body before diagnosing authentication, routing, or schema failures. Never log the bearer token.
 
@@ -104,12 +104,18 @@ Inspect the publish response JSON even on HTTP 200: `success=false` is an applic
 
 Use the same identity values as search. Treat permanent `4xx` validation failures as rejected publishes. A timeout, connection loss, or `5xx` is ambiguous because the server may have accepted the request before the response was lost; quarantine that batch for reconciliation rather than automatically replaying it. Retry only when the host can prove the server did not accept the request. Keep failures observable without replacing a valid agent response.
 
-## Read-only connection check
+## Connection check
+
+Send one search, with the same headers, that publishes nothing:
 
 ```http
-GET /api/whoami
+POST /api/search
 ```
 
-Use the same headers. A successful identity response verifies the endpoint and API key without publishing customer or synthetic interaction data.
+```json
+{"query": "connection check", "user_id": "reflexio-connection-check", "top_k": 1}
+```
+
+An HTTP error or `success=false` means the key cannot serve the runtime loop. Do not rely on `GET /api/whoami` alone: it succeeds for limited keys, which search and publish reject. An empty result is expected on a new project.
 
 For additional examples and complete request and response fields, start with the [documentation index for agents](https://www.reflexio.ai/docs/llms.txt), then consult [search](https://www.reflexio.ai/docs/build/search), [publishing interactions](https://www.reflexio.ai/docs/build/user-interactions), and the [API reference](https://www.reflexio.ai/docs/api-reference).
