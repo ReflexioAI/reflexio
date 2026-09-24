@@ -133,6 +133,30 @@ def test_search_all_passes_agent_version():
         assert kwargs["user_id"] == "p"
 
 
+def test_search_all_forwards_session_id():
+    """Without it the server's exposure row has no correlation key at all,
+    so the serve can never be joined to the turn it was injected into."""
+    fake_client = MagicMock()
+    fake_client.search.return_value = MagicMock(
+        user_playbooks=[], agent_playbooks=[], profiles=[]
+    )
+    adapter = Adapter()
+    with patch.object(adapter, "_get_client", return_value=fake_client):
+        adapter.search_all(project_id="p", query="q", top_k=5, session_id="agent:a:b")
+        assert fake_client.search.call_args[1]["session_id"] == "agent:a:b"
+
+
+def test_search_all_sends_none_rather_than_an_empty_session_id():
+    fake_client = MagicMock()
+    fake_client.search.return_value = MagicMock(
+        user_playbooks=[], agent_playbooks=[], profiles=[]
+    )
+    adapter = Adapter()
+    with patch.object(adapter, "_get_client", return_value=fake_client):
+        adapter.search_all(project_id="p", query="q", top_k=5, session_id="")
+        assert fake_client.search.call_args[1]["session_id"] is None
+
+
 def test_fetch_user_playbooks_degrades_to_empty():
     adapter = Adapter()
     with patch.object(adapter, "_get_client", return_value=None):

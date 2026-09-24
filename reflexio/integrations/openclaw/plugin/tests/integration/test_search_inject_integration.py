@@ -112,6 +112,48 @@ def test_emit_context_wraps_hits_in_prependContext_envelope(
     assert "validate user input" in md.lower()
     # Citation registry was persisted for the agent_end hook to consume.
     assert (isolated_state / "sess-hit.injected.jsonl").exists()
+    # The session the caller already holds is forwarded, so the server's
+    # exposure row for this search carries a correlation key.
+    assert fake_adapter.search_all.call_args[1]["session_id"] == "sess-hit"
+    # ...and the publish path learns what was injected for this turn.
+    from openclaw_smart import state
+
+    refs = [
+        rec["retrieved_learning_refs"]
+        for rec in state.read_all("sess-hit")
+        if "retrieved_learning_refs" in rec
+    ]
+    assert refs == [[{"kind": "user_playbook", "learning_id": "pb-1"}]]
+
+
+def test_emit_context_folds_injected_learnings_into_the_published_turn(
+    monkeypatch: pytest.MonkeyPatch, isolated_state: Path
+) -> None:
+    """The whole point: the interaction that reaches reflexio declares the
+    user playbook that was injected for it, so the serve is attributable."""
+    from openclaw_smart import context_inject, state
+
+    monkeypatch.setattr(sys, "stdout", StringIO())
+    fake_adapter = MagicMock()
+    fake_adapter.search_all.return_value = (
+        [{"content": "Prefer small diffs.", "user_playbook_id": "pb-7"}],
+        [],
+        [],
+    )
+
+    context_inject.emit_context(
+        session_id="sess-pub",
+        project_id="proj-1",
+        query="how big should a diff be",
+        top_k=3,
+        adapter=fake_adapter,
+    )
+    state.append("sess-pub", {"role": "Assistant", "content": "Keep them small."})
+
+    _, turns = state.unpublished_slice(state.read_all("sess-pub"))
+    assert turns[-1]["retrieved_learnings"] == [
+        {"kind": "user_playbook", "learning_id": "pb-7"}
+    ]
 
 
 def test_emit_context_against_live_backend(

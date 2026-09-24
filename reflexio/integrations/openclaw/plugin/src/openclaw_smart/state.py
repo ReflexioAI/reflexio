@@ -7,6 +7,9 @@ Each openClaw session gets one file at
 - ``{"role": "Assistant", ...}`` — a finalized assistant turn
 - ``{"role": "Assistant_tool", ...}`` — a single tool invocation, attached
   to the next assistant turn at ``agent_end`` time
+- ``{"retrieved_learning_refs": [{"kind", "learning_id"}, ...]}`` — what
+  ``context_inject`` injected for the turn in progress, attached to the next
+  assistant turn as ``retrieved_learnings``
 - ``{"published_up_to": N}`` — high-water mark so ``agent_end`` /
   ``session_end`` don't re-publish rows already sent to reflexio
 
@@ -71,6 +74,19 @@ _WIRE_FIELDS = _INTERACTION_DATA_FIELDS - {"created_at"}
 _VALID_CITATION_KINDS = frozenset(
     {"playbook", "profile", "user_playbook", "agent_playbook"}
 )
+
+# Wire kinds accepted by ``InteractionData.retrieved_learnings``. The citation
+# registry stores playbooks under the display kind ``"playbook"`` with the real
+# kind on ``source_kind``; the wire wants the real kind.
+_VALID_RETRIEVED_PLAYBOOK_KINDS = frozenset({"user_playbook", "agent_playbook"})
+_VALID_RETRIEVED_KINDS = _VALID_RETRIEVED_PLAYBOOK_KINDS | {"profile"}
+
+# The server rejects a publish request carrying more than 1000
+# ``retrieved_learnings`` across ALL its interactions. The adapter swallows a
+# rejected publish without advancing the watermark, so an over-cap batch would
+# retry forever and the session buffer would never drain again. Trimming the
+# tail keeps the batch publishable; the drop is logged at WARNING.
+_RETRIEVED_LEARNINGS_PUBLISH_CAP = 1000
 
 
 def _truncate_tool_data_field(value: Any) -> Any:
@@ -213,6 +229,52 @@ def read_injected(session_id: str) -> dict[str, dict[str, Any]]:
     return registry
 
 
+def _normalize_registry_ref(entry: Any) -> dict[str, str] | None:
+    """Map one citation-registry entry to the ``retrieved_learnings`` identity pair.
+
+    The registry (``context_format.render_inline_with_registry``) keys
+    playbooks under the display kind ``"playbook"`` and carries the real kind
+    on ``source_kind``; profiles use ``"profile"`` directly. Entries without a
+    ``real_id`` are injections the renderer could not tie back to a stored row
+    — the server cannot join them, so they are dropped here rather than sent.
+    """
+    if not isinstance(entry, dict):
+        return None
+    learning_id = entry.get("real_id")
+    if not isinstance(learning_id, str) or not learning_id:
+        return None
+    kind = entry.get("kind")
+    if kind == "profile":
+        wire_kind = "profile"
+    elif kind == "playbook" and entry.get("source_kind") in (
+        _VALID_RETRIEVED_PLAYBOOK_KINDS
+    ):
+        wire_kind = str(entry["source_kind"])
+    else:
+        return None
+    return {"kind": wire_kind, "learning_id": learning_id}
+
+
+def append_retrieved_learning_refs(
+    session_id: str, entries: Iterable[dict[str, Any]]
+) -> None:
+    """Record what was injected, in buffer order, for the next Assistant turn.
+
+    Written as its own ordered buffer record rather than merged into the
+    ``.injected.jsonl`` citation sidecar: the sidecar is a whole-session
+    lookup keyed by short id, so reading it at publish time would attribute
+    every learning injected all session long to every later Assistant turn.
+    ``unpublished_slice`` folds these refs into the *next* Assistant turn only.
+
+    Silently no-ops when nothing normalises — an injection with no resolvable
+    storage id is not something the server can record.
+    """
+    refs = [ref for ref in (_normalize_registry_ref(e) for e in entries) if ref]
+    if not refs:
+        return
+    append(session_id, {"retrieved_learning_refs": refs})
+
+
 def append(session_id: str, record: dict[str, Any]) -> None:
     """Append one JSON record to the session buffer. Creates the dir if needed.
 
@@ -294,6 +356,19 @@ def _to_wire_citations(cited_items: Any) -> list[dict[str, str]]:
     return out
 
 
+def _wire_retrieved_ref(value: Any) -> dict[str, str] | None:
+    """Validate one identity pair read back out of the session buffer."""
+    if not isinstance(value, dict):
+        return None
+    kind = value.get("kind")
+    learning_id = value.get("learning_id")
+    if kind not in _VALID_RETRIEVED_KINDS:
+        return None
+    if not isinstance(learning_id, str) or not learning_id:
+        return None
+    return {"kind": str(kind), "learning_id": learning_id}
+
+
 def unpublished_slice(
     records: Iterable[dict[str, Any]],
 ) -> tuple[int, list[dict[str, Any]]]:
@@ -302,7 +377,15 @@ def unpublished_slice(
     Walks the records in order, tracking the most recent ``published_up_to``
     marker and collecting turn records (anything with a ``role``) that come
     after it. Tool records are folded into the closest following Assistant
-    turn's ``tools_used``.
+    turn's ``tools_used``; ``retrieved_learning_refs`` records are folded into
+    the closest following Assistant turn's ``retrieved_learnings``.
+
+    Refs with no following Assistant turn are dropped, exactly as trailing
+    ``Assistant_tool`` records already are: the watermark this buffer stamps
+    is always ``len(records)``, and its marker-handling clears the in-flight
+    accumulators, so a partial watermark is not representable here. In
+    practice ``agent_end`` appends the Assistant turn before it publishes, so
+    the refs for a turn and the turn itself are always in the same slice.
 
     Returns:
         tuple[int, list[dict]]: ``(published_up_to, interactions)``. The
@@ -311,7 +394,10 @@ def unpublished_slice(
     """
     published = 0
     pending_tools: list[dict[str, Any]] = []
+    pending_refs: list[dict[str, str]] = []
     turns: list[dict[str, Any]] = []
+    attached_total = 0
+    truncated = 0
     for idx, rec in enumerate(records):
         if "published_up_to" in rec:
             marker = rec.get("published_up_to")
@@ -322,9 +408,18 @@ def unpublished_slice(
             if isinstance(marker, int) and 0 <= marker <= idx:
                 published = marker
             pending_tools = []
+            pending_refs = []
             turns = []
+            attached_total = 0
+            truncated = 0
             continue
         if idx < published:
+            continue
+        raw_refs = rec.get("retrieved_learning_refs")
+        if "role" not in rec and isinstance(raw_refs, list):
+            pending_refs.extend(
+                ref for ref in (_wire_retrieved_ref(v) for v in raw_refs) if ref
+            )
             continue
         role = rec.get("role")
         if role == "Assistant_tool":
@@ -360,5 +455,26 @@ def unpublished_slice(
                 if pending_tools:
                     turn["tools_used"] = pending_tools
                     pending_tools = []
+                retrieved: list[dict[str, str]] = []
+                seen: set[tuple[str, str]] = set()
+                for ref in pending_refs:
+                    key = (ref["kind"], ref["learning_id"])
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    if attached_total >= _RETRIEVED_LEARNINGS_PUBLISH_CAP:
+                        truncated += 1
+                        continue
+                    retrieved.append(ref)
+                    attached_total += 1
+                pending_refs = []
+                if retrieved:
+                    turn["retrieved_learnings"] = retrieved
             turns.append(turn)
+    if truncated:
+        _LOGGER.warning(
+            "Dropped %d retrieved-learning refs at the publish request cap of %d",
+            truncated,
+            _RETRIEVED_LEARNINGS_PUBLISH_CAP,
+        )
     return published, turns

@@ -55,6 +55,7 @@ def emit_context(
         project_id=project_id,
         query=query,
         top_k=top_k,
+        session_id=session_id,
     )
     markdown, registry = context_format.render_inline_with_registry(
         project_id=project_id,
@@ -70,6 +71,13 @@ def emit_context(
         session_id,
         (dict(entry, ts=int(time.time())) for entry in registry),
     )
+    # The sidecar above is display metadata for ``agent_end``'s citation
+    # resolution. This second record is the publish-path half: it declares
+    # what was injected for THIS turn, so the interaction reaching reflexio
+    # carries ``retrieved_learnings``. Citations are the agent's claim of
+    # influence and cover only what it chose to cite; without this, nothing
+    # the plugin retrieves is ever attributable to the turn it shaped.
+    state.append_retrieved_learning_refs(session_id, registry)
 
     sys.stdout.write(json.dumps({"prependContext": markdown}))
     sys.stdout.write("\n")
