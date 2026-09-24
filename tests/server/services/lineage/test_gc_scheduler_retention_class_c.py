@@ -168,3 +168,84 @@ def test_a_project_whose_enumeration_failed_gets_no_pass():
         _scheduler()._sweep_org(_ORG)
 
     assert calls == []
+
+
+# ---------------------------------------------------------------------------
+# The scheduler must START for retention, not only run Class C once started
+# ---------------------------------------------------------------------------
+#
+# The tests above call `_sweep_org` directly, which bypasses the start gate
+# entirely -- so `test_class_c_runs_with_every_gated_sweep_disabled` is named for
+# a claim it cannot check on its own. Before this block existed, turning
+# `lineage_gc` off in an OSS deployment stopped row-count retention completely:
+# the caps had been enforced on every publish, `maybe_start_lineage_gc` returned
+# None, and nothing swept and nothing said so.
+
+
+def _bootstrap_ctx(*, lineage_gc: bool, expiry: bool, governance: bool):
+    return types.SimpleNamespace(
+        storage=types.SimpleNamespace(),
+        configurator=types.SimpleNamespace(
+            get_config=lambda: types.SimpleNamespace(
+                lineage_gc=types.SimpleNamespace(
+                    enabled=lineage_gc, poll_interval_seconds=86400
+                ),
+                expiry_reclamation=types.SimpleNamespace(enabled=expiry),
+                governance_retention=types.SimpleNamespace(
+                    audit_events_retention_enabled=governance
+                ),
+            )
+        ),
+    )
+
+
+def test_the_scheduler_starts_for_retention_with_every_other_gate_off(monkeypatch):
+    """Row caps are unconditional, so they must not need another feature's flag.
+
+    The production change this must catch: dropping retention from
+    `maybe_start_lineage_gc`'s start conditions. With `lineage_gc`,
+    `expiry_reclamation` and `governance_retention` all off and no sweep hook
+    registered, the scheduler previously returned None and the caps went
+    unenforced with no signal.
+    """
+    started: list[object] = []
+    monkeypatch.setattr(LineageGCScheduler, "start", lambda self: started.append(self))
+
+    scheduler = gc_scheduler.maybe_start_lineage_gc(
+        lambda _org: _bootstrap_ctx(lineage_gc=False, expiry=False, governance=False),
+        bootstrap_org_id="org-boot",
+    )
+
+    assert scheduler is not None, (
+        "the scheduler did not start, so row-count retention never runs: a "
+        "deployment with lineage_gc disabled silently loses its caps"
+    )
+    assert started == [scheduler]
+
+
+def test_the_scheduler_still_declines_when_every_retention_cap_is_disabled(
+    monkeypatch,
+):
+    """The converse, so the new start condition is not a rubber stamp.
+
+    With every row limit set to 0 there is no retention work either, and the
+    pre-existing "nothing to do" answer must survive.
+    """
+    monkeypatch.setattr(
+        gc_scheduler, "get_row_retention_limits", lambda: {"interactions": 0}
+    )
+    monkeypatch.setattr(
+        LineageGCScheduler,
+        "start",
+        lambda _self: pytest.fail("scheduler started with no work to do"),
+    )
+
+    assert (
+        gc_scheduler.maybe_start_lineage_gc(
+            lambda _org: _bootstrap_ctx(
+                lineage_gc=False, expiry=False, governance=False
+            ),
+            bootstrap_org_id="org-boot",
+        )
+        is None
+    )

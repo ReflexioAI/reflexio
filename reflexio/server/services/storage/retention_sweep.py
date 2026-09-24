@@ -31,13 +31,14 @@ import logging
 import time
 
 from reflexio.server.error_reporting import capture_anomaly, error_tags
+from reflexio.server.extensions import get_service
 from reflexio.server.services.operation_state_utils import OperationStateManager
 from reflexio.server.services.storage.retention import (
     delete_count_for_retention,
     get_row_retention_limits,
 )
 from reflexio.server.services.storage.storage_base import BaseStorage
-from reflexio.server.work_scope import current_project_id
+from reflexio.server.work_scope import WORK_SCOPE_PROVIDER, current_project_id
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +56,12 @@ CAP_WARN_FRACTION = 0.90
 #: already means retention alone is a third of the org's allowance.
 SLOW_SWEEP_SECONDS = 20.0
 
+#: Tag value for a pass whose project could not be resolved. A literal, because
+#: ``error_reporting._normalize_tags`` DROPS ``None`` values: tagging the real
+#: ``None`` would make an unbound enterprise pass byte-identical in Sentry to a
+#: correct OSS one, which is the one distinction that matters here.
+UNBOUND_PROJECT_TAG = "<unbound>"
+
 
 def sweep_retention_caps(org_id: str, storage: BaseStorage) -> int:
     """Enforce row-count caps for the project bound on this thread.
@@ -66,18 +73,46 @@ def sweep_retention_caps(org_id: str, storage: BaseStorage) -> int:
     Returns:
         int: Rows deleted across all targets (0 on skip, refused lease, or error).
     """
+    # `started` is outside the try because `time.monotonic()` cannot raise;
+    # `project_id` is pre-bound so the failure handler can tag with it even if
+    # resolving it is what failed. Everything that CAN raise is inside, because
+    # `gc_scheduler._sweep_project_data` calls this with no backstop of its own
+    # -- an escape from here aborts the org's remaining projects AND the
+    # enterprise per-org governance sweep, and on the serial fan-out path every
+    # remaining org in the tick.
     started = time.monotonic()
-    project_id = current_project_id()
-    limits = {
-        target_name: limit
-        for target_name, limit in get_row_retention_limits().items()
-        if limit > 0
-    }
-    if not limits:
-        return 0
-
+    project_id: str | None = None
     deleted_total = 0
     try:
+        project_id = current_project_id()
+
+        # Refuse an unbound pass rather than trusting the call site's position.
+        # With a provider registered, "no project bound" means the scope was
+        # lost: under the row-level policies that pass reads ZERO ROWS and
+        # reports success, so it is invisible to every count-based check. A
+        # deployment with no provider at all is OSS, where no project exists and
+        # an unscoped sweep is the correct behaviour.
+        if project_id is None and get_service(WORK_SCOPE_PROVIDER) is not None:
+            capture_anomaly(
+                "retention.sweep.unbound",
+                org_id=org_id,
+                project_id=UNBOUND_PROJECT_TAG,
+            )
+            logger.error(
+                "event=retention_sweep_unbound org_id=%s -- refusing to sweep: a "
+                "work-scope provider is registered but no project is bound",
+                org_id,
+            )
+            return 0
+
+        limits = {
+            target_name: limit
+            for target_name, limit in get_row_retention_limits().items()
+            if limit > 0
+        }
+        if not limits:
+            return 0
+
         mgr = OperationStateManager(
             storage,  # type: ignore[reportArgumentType]
             org_id,
@@ -110,7 +145,7 @@ def sweep_retention_caps(org_id: str, storage: BaseStorage) -> int:
         capture_anomaly(
             "retention.sweep.failed",
             org_id=org_id,
-            project_id=project_id,
+            project_id=project_id or UNBOUND_PROJECT_TAG,
             error_type=type(exc).__name__,
         )
         logger.exception("event=retention_sweep_failed org_id=%s", org_id)

@@ -34,6 +34,7 @@ from reflexio.server.env_utils import env_str
 from reflexio.server.error_reporting import capture_anomaly
 from reflexio.server.org_fanout import iterate_orgs_bounded
 from reflexio.server.scheduling import LeaderGate, ThreadedScheduler
+from reflexio.server.services.storage.retention import get_row_retention_limits
 from reflexio.server.services.storage.retention_sweep import sweep_retention_caps
 from reflexio.server.services.storage.storage_base import BaseStorage
 from reflexio.server.work_scope import WorkScope, WorkScopeError, bind_work_scope
@@ -792,7 +793,22 @@ def maybe_start_lineage_gc(
     # scheduler must run even if the bootstrap org's config has all flags off.
     # This preserves the "start unconditionally, gate per-org" invariant of
     # the deleted GovernanceRetentionScheduler.
-    if not (config_enabled or has_registered_sweeps):
+    #
+    # Class C (row-count retention) is its own start condition, and must be:
+    # the caps are env-driven and unconditional, so they cannot ride another
+    # feature's flag. Before this was here, an OSS deployment that set
+    # `lineage_gc.enabled = false` -- which this module's own docstring frames
+    # as a deliberate operator choice, and which `maybe_start_lineage_gc`'s
+    # criteria REQUIRE until DPO sign-off -- got no scheduler, and so no row
+    # caps at all. They had been enforced on every publish until the sweep
+    # moved here, so that would have been a silent regression into unbounded
+    # table growth.
+    #
+    # Gated on a positive limit rather than hardcoded True so that disabling
+    # every cap (`REFLEXIO_ROW_LIMIT_*=0`) still answers "nothing to do".
+    retention_enabled = any(limit > 0 for limit in get_row_retention_limits().values())
+
+    if not (config_enabled or has_registered_sweeps or retention_enabled):
         return None
 
     scheduler = LineageGCScheduler(

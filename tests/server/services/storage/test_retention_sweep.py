@@ -131,7 +131,7 @@ def test_a_refused_lease_probes_nothing(storage, anomalies):
 
 
 def test_a_failing_target_does_not_stop_the_rest(storage, granted_lock, anomalies):
-    """Review Focus 1: a backend missing one hook must not cost the other 16."""
+    """One target raising must not cost the other 16."""
     storage.count_retention_target_rows.side_effect = lambda target: (
         1 / 0 if target == "broken" else 600
     )
@@ -143,6 +143,48 @@ def test_a_failing_target_does_not_stop_the_rest(storage, granted_lock, anomalie
     storage.delete_oldest_retention_target_rows.assert_called_once_with(
         "interactions", 120
     )
+
+
+def test_a_backend_missing_the_hook_does_not_stop_the_rest(granted_lock, anomalies):
+    """Review Focus 1, with the exception the condition actually raises.
+
+    The sibling above uses a ``MagicMock``, on which EVERY attribute exists --
+    so it raises ``ZeroDivisionError`` and never reaches the ``AttributeError``
+    that a backend genuinely lacking ``RetentionMixin`` would produce. That is
+    the gap the type-ignore comment in ``retention_sweep.py`` points at, and a
+    test named for a condition it cannot reach is a check that cannot fail.
+    """
+
+    class _HookLessStorage:
+        """A backend that never mixed in ``RetentionMixin``."""
+
+        def __init__(self) -> None:
+            self.deleted: list[tuple[str, int]] = []
+
+        def count_retention_target_rows(self, target_name: str) -> int:
+            if target_name == "hookless":
+                raise AttributeError("count_retention_target_rows")
+            return 600
+
+        def delete_oldest_retention_target_rows(
+            self, target_name: str, count: int
+        ) -> int:
+            self.deleted.append((target_name, count))
+            return count
+
+    storage = _HookLessStorage()
+
+    with _limits(hookless=500, interactions=500, profiles=500):
+        deleted = sweep_retention_caps(_ORG, storage)  # type: ignore[arg-type]
+
+    assert storage.deleted == [("interactions", 120), ("profiles", 120)], (
+        f"a missing hook stopped the siblings: {storage.deleted}"
+    )
+    assert deleted == 240
+    assert [name for name, _ in anomalies] == [
+        "retention.cap.enforced",
+        "retention.cap.enforced",
+    ]
 
 
 def test_the_lease_is_released_when_a_target_raises(storage, granted_lock):
@@ -175,3 +217,102 @@ def test_a_slow_pass_reports_itself(storage, granted_lock, anomalies, monkeypatc
         sweep_retention_caps(_ORG, storage)
 
     assert [name for name, _ in anomalies] == ["retention.sweep.slow"]
+
+
+# ---------------------------------------------------------------------------
+# The sweep must REFUSE an unbound delete, not merely happen to sit where one
+# cannot occur
+# ---------------------------------------------------------------------------
+#
+# `project_id` was read only to decorate anomaly tags, so nothing in this module
+# checked it before deleting -- the invariant rested entirely on where the call
+# site sits. And `error_reporting._normalize_tags` DROPS None values, so an
+# unbound enforcement in an enterprise deployment was indistinguishable in Sentry
+# from a correct OSS one: both simply carried no `project_id` tag.
+
+
+class _RecordingProvider:
+    """A registered work-scope provider that reports no bound project."""
+
+    def current(self):
+        return None
+
+    def bind(self, scope):  # pragma: no cover - never called here
+        raise AssertionError("not used")
+
+
+@pytest.fixture
+def unbound_provider():
+    from reflexio.server.extensions import register_service
+    from reflexio.server.work_scope import WORK_SCOPE_PROVIDER
+
+    register_service(WORK_SCOPE_PROVIDER, _RecordingProvider(), override=True)
+    yield
+    register_service(WORK_SCOPE_PROVIDER, None, override=True)
+
+
+def test_an_unbound_pass_refuses_to_probe_when_a_provider_is_registered(
+    storage, granted_lock, anomalies, unbound_provider
+):
+    """A registered provider plus no bound project means the scope was lost.
+
+    In that deployment an unbound pass reads zero rows under the row-level
+    policies and reports success, so it is invisible to any count-based check.
+    Refusing is the only way it becomes an event rather than a silence.
+    """
+    storage.count_retention_target_rows.return_value = 10_000_000
+
+    with _limits(interactions=500):
+        assert sweep_retention_caps(_ORG, storage) == 0
+
+    storage.count_retention_target_rows.assert_not_called()
+    storage.delete_oldest_retention_target_rows.assert_not_called()
+    assert [name for name, _ in anomalies] == ["retention.sweep.unbound"]
+
+
+def test_oss_without_a_provider_is_not_treated_as_unbound(
+    storage, granted_lock, anomalies
+):
+    """The converse: no provider registered is OSS, where no project exists.
+
+    Without this the refusal above would disable retention entirely on SQLite.
+    """
+    storage.count_retention_target_rows.return_value = 600
+    storage.delete_oldest_retention_target_rows.return_value = 120
+
+    with _limits(interactions=500):
+        assert sweep_retention_caps(_ORG, storage) == 120
+
+    assert [name for name, _ in anomalies] == ["retention.cap.enforced"]
+
+
+def test_an_unbound_project_is_tagged_distinguishably(
+    storage, granted_lock, anomalies, unbound_provider
+):
+    """`_normalize_tags` drops None, so an absent tag cannot mean two things."""
+    with _limits(interactions=500):
+        sweep_retention_caps(_ORG, storage)
+
+    _, tags = anomalies[0]
+    assert tags["project_id"] == "<unbound>", (
+        f"an unbound pass must not be tag-identical to a correct OSS pass: {tags}"
+    )
+
+
+def test_nothing_escapes_the_sweep_into_the_scheduler(storage, anomalies):
+    """The module docstring promises this, and the call site has no backstop.
+
+    `gc_scheduler._sweep_project_data` calls this with no try/except precisely
+    because the sweep absorbs its own errors. An escape aborts the remaining
+    projects AND the enterprise per-org governance sweep, and on the serial
+    fan-out path every remaining org in the tick.
+    """
+    boom = patch.object(
+        retention_sweep,
+        "get_row_retention_limits",
+        side_effect=RuntimeError("limits blew up"),
+    )
+    with boom:
+        assert sweep_retention_caps(_ORG, storage) == 0
+
+    assert [name for name, _ in anomalies] == ["retention.sweep.failed"]
