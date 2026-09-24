@@ -96,15 +96,21 @@ far exceeds ``count x 60ms`` is where the missing half lives.
 ``add_interactions_ms=3200`` cannot distinguish one slow statement from 53 fast
 ones today, and the remedy differs completely.
 
-One lead, recorded rather than built: the same harness saw 1-5 NEW psycopg2
-connections per publish. A dial is free on loopback and ~4-6 round trips
-against a cross-region TLS pooler, and ``_pool.py`` / ``append.py`` already
-record a ~330ms cold dial for the metrics DB -- two per publish would be ~0.7s.
-Separating "acquiring a connection" from "using it" needs a phase inside the
-pool, which is the same enterprise-side change as the counter below.
+That lead has since been built, and it is worth saying what it did and did not
+close. The same harness saw 1-5 NEW psycopg2 connections per publish; a dial is
+free on loopback and ~4-6 round trips against a cross-region TLS pooler, and
+``_pool.py`` / ``append.py`` already record a ~330ms cold dial for the metrics
+DB, so two per publish would be ~0.7s. Separating "acquiring a connection" from
+"using it" needed a phase inside the pool, which is enterprise-side:
+``reflexio_ext/server/services/storage/postgres_storage/_pool.py`` now opens
+``pool_wait`` around the permit acquire and ``pool_dial`` around ``getconn``,
+composed with the ``profile_step`` spans already there rather than replacing
+them. Both accumulate across a publish's several borrows, which is the figure
+worth having when the borrow count varies.
 
-It is deliberately NOT added here, because it is not cheaply reachable from
-this module. The backends that would have to increment it live in
+The COUNT below is a different field and is still NOT added here, because it is
+not cheaply reachable from this module. The backends that would have to
+increment it live in
 ``reflexio_ext`` -- 41 separate cursor acquisitions across ten files for the
 native path, and 198 PostgREST ``.execute()`` call sites for the platform one
 -- with no chokepoint to wrap, and "a round trip" is a different object on each
