@@ -316,3 +316,39 @@ def test_nothing_escapes_the_sweep_into_the_scheduler(storage, anomalies):
         assert sweep_retention_caps(_ORG, storage).deleted == 0
 
     assert [name for name, _ in anomalies] == ["retention.sweep.failed"]
+
+
+def test_every_target_failing_fails_the_pass(granted_lock, anomalies):
+    """A backend-wide transient hits all targets and must not read as clean.
+
+    One target raising stays isolated (see the sibling above); all of them
+    raising is the shape `PGRST002` takes, and absorbing it target by target
+    would hand the scheduler a tick that looks successful.
+    """
+
+    class _DeadBackend:
+        def count_retention_target_rows(self, target_name: str) -> int:
+            raise RuntimeError("PGRST002 schema cache cold")
+
+        def delete_oldest_retention_target_rows(
+            self, *_a: object
+        ) -> int:  # pragma: no cover
+            raise AssertionError("must not delete")
+
+    with _limits(interactions=500, profiles=500):
+        result = sweep_retention_caps(_ORG, _DeadBackend())  # type: ignore[arg-type]
+
+    assert result.failed, "all targets failed but the pass reported success"
+    assert [name for name, _ in anomalies] == ["retention.sweep.all_targets_failed"]
+
+
+def test_one_target_failing_still_does_not_fail_the_pass(storage, granted_lock):
+    """The deliberate non-escalation, pinned so the fix above did not widen it."""
+    storage.count_retention_target_rows.side_effect = lambda target: (
+        1 / 0 if target == "broken" else 100
+    )
+
+    with _limits(broken=500, interactions=500):
+        result = sweep_retention_caps(_ORG, storage)
+
+    assert not result.failed

@@ -363,3 +363,81 @@ def test_a_success_after_failures_resets_the_retry_budget():
         assert sched._run_once() == 86400
     with patch.object(gc_scheduler, "sweep_retention_caps", lambda _o, _s: failing):
         assert sched._run_once() == gc_scheduler._FAILED_TICK_RETRY_SECONDS
+
+
+def test_a_configured_interval_shorter_than_the_retry_is_not_lengthened():
+    """`poll_interval_seconds` may be as low as 1; "retry sooner" must not slow it.
+
+    Returning the flat 300s constant here would delay lineage GC and every
+    registered global sweep relative to the operator's chosen cadence.
+    """
+    sched = _tick_scheduler()
+    sched.request_context_factory = lambda _org: types.SimpleNamespace(  # type: ignore[assignment]
+        storage=types.SimpleNamespace(),
+        configurator=types.SimpleNamespace(
+            get_config=lambda: types.SimpleNamespace(
+                lineage_gc=types.SimpleNamespace(
+                    enabled=False, poll_interval_seconds=60
+                ),
+                expiry_reclamation=types.SimpleNamespace(enabled=False),
+            )
+        ),
+    )
+    with patch.object(
+        gc_scheduler,
+        "sweep_retention_caps",
+        lambda _o, _s: gc_scheduler.RetentionSweepResult(0, failed=True),
+    ):
+        assert sched._run_once() == 60
+
+
+def test_a_project_enumeration_failure_fails_the_tick():
+    """No project ids means no pass ran at all — including Class C."""
+    sched = _tick_scheduler()
+
+    def _boom(_org: str) -> list[str]:
+        raise RuntimeError("control plane down")
+
+    set_project_id_provider(_boom)
+    with patch.object(
+        gc_scheduler,
+        "sweep_retention_caps",
+        lambda _o, _s: gc_scheduler.RetentionSweepResult(0),
+    ):
+        assert sched._run_once() == gc_scheduler._FAILED_TICK_RETRY_SECONDS
+
+
+def test_a_timed_out_org_fails_the_tick(monkeypatch):
+    """A straggler did not finish, so the tick is not clean.
+
+    Recorded from `_gc_tick` rather than the worker thread, which may still be
+    running and would otherwise land its failure in a LATER tick's state.
+    """
+    sched = _tick_scheduler()
+    monkeypatch.setattr(gc_scheduler, "iterate_orgs_bounded", lambda *_a, **_k: [_ORG])
+    with patch.object(
+        gc_scheduler,
+        "sweep_retention_caps",
+        lambda _o, _s: gc_scheduler.RetentionSweepResult(0),
+    ):
+        assert sched._run_once() == gc_scheduler._FAILED_TICK_RETRY_SECONDS
+
+
+def test_retention_still_starts_when_the_bootstrap_config_read_fails():
+    """A config failure must not decide an env-driven cap's fate.
+
+    `retention_enabled` is resolved before the config read for this reason; the
+    handler for that read returns early, and retention would be lost with it.
+    """
+    started: list[object] = []
+
+    def _boom(_org: str):
+        raise RuntimeError("bootstrap config unreadable")
+
+    with patch.object(LineageGCScheduler, "start", lambda self: started.append(self)):
+        sched = gc_scheduler.maybe_start_lineage_gc(_boom, bootstrap_org_id="org-boot")
+
+    assert sched is not None, (
+        "a bootstrap config failure dropped row-count retention, which does not "
+        "depend on that config at all"
+    )

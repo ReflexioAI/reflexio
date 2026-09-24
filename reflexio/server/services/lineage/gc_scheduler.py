@@ -413,6 +413,10 @@ class LineageGCScheduler(ThreadedScheduler):
             logger.exception(
                 "event=lineage_gc_project_enumeration_failed org_id=%s", org_id
             )
+            # No project ids means NO pass runs for this org -- including Class C
+            # -- so without this the tick reports clean while retention did not
+            # run at all. That is the silence this whole change exists to remove.
+            self._record_tick_failure()
             return []
         if not project_ids:
             # NOT a fallback to one unscoped pass. Under project row-level
@@ -560,6 +564,12 @@ class LineageGCScheduler(ThreadedScheduler):
             per_org_timeout_seconds=_ORG_SWEEP_TIMEOUT_SECONDS,
             stop_event=self._stop_event,
         )
+        if timed_out:
+            # An org that ran out of budget did NOT finish its sweeps, so this
+            # tick is not clean. Recorded here rather than in the straggler
+            # thread, which may still be running and would otherwise land its
+            # failure in a LATER tick's state.
+            self._record_tick_failure()
         for org_id in set(timed_out) & self._prior_timeout_orgs:
             capture_anomaly("lineage.gc.org_sweep_timeout_repeat", org_id=org_id)
         self._prior_timeout_orgs = set(timed_out)
@@ -684,6 +694,11 @@ class LineageGCScheduler(ThreadedScheduler):
             return max(poll_interval, _MIN_POLL_SECONDS)
 
         self._consecutive_failed_ticks += 1
+        # `min`, not the constant: `poll_interval_seconds` may legitimately be
+        # configured below 300 (the schema permits 1), and a "retry sooner" path
+        # that returned 300 there would SLOW the scheduler -- for lineage GC and
+        # every registered global sweep too, not just retention.
+        fast = min(_FAILED_TICK_RETRY_SECONDS, poll_interval)
         if self._consecutive_failed_ticks > _MAX_CONSECUTIVE_FAST_RETRIES:
             logger.warning(
                 "event=lineage_gc_fast_retry_exhausted consecutive=%d — backing "
@@ -694,10 +709,10 @@ class LineageGCScheduler(ThreadedScheduler):
 
         logger.warning(
             "event=lineage_gc_tick_retry_soon in=%.0fs consecutive=%d",
-            _FAILED_TICK_RETRY_SECONDS,
+            fast,
             self._consecutive_failed_ticks,
         )
-        return _FAILED_TICK_RETRY_SECONDS
+        return max(fast, _MIN_POLL_SECONDS)
 
     def _run_once(self) -> float:
         self._tick_had_failure = False
@@ -796,6 +811,14 @@ def maybe_start_lineage_gc(
         _per_org_sweep_hooks or _global_sweep_hooks or _always_global_sweep_hooks
     )
 
+    # Resolved BEFORE the config read, because that read can fail and its
+    # handler returns early. Row caps are env-driven and do not depend on the
+    # bootstrap org's config at all, so letting a config failure decide them
+    # would drop retention for exactly the deployment that is already unhealthy.
+    # Gated on a positive limit rather than hardcoded True so that disabling
+    # every cap (`REFLEXIO_ROW_LIMIT_*=0`) still answers "nothing to do".
+    retention_enabled = any(limit > 0 for limit in get_row_retention_limits().values())
+
     try:
         ctx = request_context_factory(bootstrap_org_id)
         cfg = ctx.configurator.get_config()
@@ -837,7 +860,7 @@ def maybe_start_lineage_gc(
         )
     except Exception as exc:
         # Only a deployment with nothing registered has nothing to lose here.
-        if not has_registered_sweeps:
+        if not (has_registered_sweeps or retention_enabled):
             logger.warning(
                 "event=lineage_gc_scheduler_start_skipped error_type=%s error=%s",
                 type(exc).__name__,
@@ -871,12 +894,7 @@ def maybe_start_lineage_gc(
     # criteria REQUIRE until DPO sign-off -- got no scheduler, and so no row
     # caps at all. They had been enforced on every publish until the sweep
     # moved here, so that would have been a silent regression into unbounded
-    # table growth.
-    #
-    # Gated on a positive limit rather than hardcoded True so that disabling
-    # every cap (`REFLEXIO_ROW_LIMIT_*=0`) still answers "nothing to do".
-    retention_enabled = any(limit > 0 for limit in get_row_retention_limits().values())
-
+    # table growth. `retention_enabled` is resolved above, before the config read.
     if not (config_enabled or has_registered_sweeps or retention_enabled):
         return None
 

@@ -79,10 +79,13 @@ class RetentionSweepResult:
         deleted (int): Rows removed across all targets this pass.
         failed (bool): True when the pass could not complete -- a refused lease
             or a disabled cap is NOT a failure, because there was nothing to do.
-            Nor is a single target raising: that is isolated deliberately, is
+            Nor is a *single* target raising: that is isolated deliberately, is
             usually permanent (a table the backend does not have), and escalating
             it would spend the scheduler's bounded fast-retry budget on something
             a retry cannot fix. Such a target is still logged with ``error_tags``.
+            But EVERY target failing is a different animal -- that is the shape a
+            backend-wide transient takes, and absorbing it target by target would
+            hand the scheduler a clean-looking tick.
     """
 
     deleted: int
@@ -111,6 +114,7 @@ def sweep_retention_caps(org_id: str, storage: BaseStorage) -> RetentionSweepRes
     started = time.monotonic()
     project_id: str | None = None
     deleted_total = 0
+    targets_failed = 0
     try:
         project_id = current_project_id()
 
@@ -157,6 +161,7 @@ def sweep_retention_caps(org_id: str, storage: BaseStorage) -> RetentionSweepRes
                         org_id, project_id, storage, target_name, limit
                     )
                 except Exception as exc:  # noqa: BLE001
+                    targets_failed += 1
                     with error_tags(
                         subsystem="retention",
                         op="sweep_target",
@@ -188,6 +193,18 @@ def sweep_retention_caps(org_id: str, storage: BaseStorage) -> RetentionSweepRes
             elapsed_seconds=round(elapsed, 1),
             targets=len(limits),
         )
+    # EVERY target failing is a different animal from one failing: a single bad
+    # table is isolated and usually permanent, but a backend-wide transient
+    # (the PGRST002 that prompted the retry cadence) lands on all of them and
+    # would otherwise be absorbed target by target into a clean-looking tick.
+    if targets_failed and targets_failed == len(limits):
+        capture_anomaly(
+            "retention.sweep.all_targets_failed",
+            org_id=org_id,
+            project_id=project_id or UNBOUND_PROJECT_TAG,
+            targets=targets_failed,
+        )
+        return RetentionSweepResult(deleted_total, failed=True)
     return RetentionSweepResult(deleted_total)
 
 
