@@ -34,6 +34,7 @@ from reflexio.server.env_utils import env_str
 from reflexio.server.error_reporting import capture_anomaly
 from reflexio.server.org_fanout import iterate_orgs_bounded
 from reflexio.server.scheduling import LeaderGate, ThreadedScheduler
+from reflexio.server.services.storage.retention_sweep import sweep_retention_caps
 from reflexio.server.services.storage.storage_base import BaseStorage
 from reflexio.server.work_scope import WorkScope, WorkScopeError, bind_work_scope
 
@@ -495,6 +496,20 @@ class LineageGCScheduler(ThreadedScheduler):
                         org_id,
                         method_name,
                     )
+
+        # Class C: row-count retention caps. UNGATED -- the caps are env-driven
+        # and always in force, so this block has no config flag of its own, and
+        # deliberately does not inherit Class A's or Class B's.
+        #
+        # It lives HERE, inside the per-project loop, and not on the
+        # `register_per_org_sweep` seam, because that seam fires outside the
+        # loop with no project bound. An unbound pass reads zero rows under the
+        # row-level policies and reports success -- the silent failure mode
+        # documented on `_sweep_org`.
+        #
+        # `sweep_retention_caps` absorbs its own errors and emits its own
+        # `retention.sweep.failed` anomaly, so there is no generic backstop here.
+        sweep_retention_caps(org_id, storage)
 
     def _gc_tick(self, org_ids: list[str], *, max_workers: int = 1) -> None:
         """Run one GC pass across the given org IDs.
