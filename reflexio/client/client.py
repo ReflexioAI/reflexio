@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 import logging
 import os
 import time
@@ -6,7 +7,7 @@ import warnings
 from collections.abc import Callable, Coroutine, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
-from typing import Any, Literal, TypeVar
+from typing import Any, Literal, TypeVar, get_args
 from urllib.parse import urljoin
 
 import aiohttp
@@ -200,6 +201,45 @@ class ReflexioClient:
         # returned HTML 200, which then crashed ``response.json()``.
         self.session.max_redirects = 0
         self._cache = InMemoryCache()
+
+    def for_session(self, session_id: str) -> "SessionScopedClient":
+        """Bind a session ID once and get a client that cannot forget it.
+
+        This is the **recommended** way to use the client. Correlation is
+        what makes retrieval measurable: Reflexio can only tell which
+        learnings were shown and whether the session went well if the
+        search that surfaced them and the publish that recorded the turn
+        agree on one session ID.
+
+        The per-call ``session_id`` argument leaves that agreement up to
+        every call site, and every call site is one place it can be
+        dropped. Passing it to the publish but not the search is silent
+        and successful, and has been made independently by separate
+        integrations -- including one that derived a session internally,
+        used it on publish, and discarded it for search. Binding it once
+        removes the opportunity::
+
+            session = client.for_session(session_id)
+            context = session.search(query="...", user_id="u1")
+            session.publish_interaction(user_id="u1", interactions=[...])
+
+        Both calls above read the session from the same place, so they
+        cannot disagree.
+
+        The returned object shares this client's connection pool, auth,
+        cache, and configuration -- it binds one argument, it is not a
+        second client. Creating one per session is cheap.
+
+        Args:
+            session_id (str): The session ID to bind. Must be non-empty.
+
+        Returns:
+            SessionScopedClient: A view of this client with the session bound.
+
+        Raises:
+            ValueError: If ``session_id`` is None, empty, or whitespace.
+        """
+        return SessionScopedClient(self, session_id)
 
     def _get_auth_headers(self) -> dict:
         """Get authentication headers with Bearer token if api_key is configured.
@@ -2162,6 +2202,11 @@ class ReflexioClient:
         if not force_refresh:
             cached_result = self._cache.get(
                 "get_agent_playbooks",
+                # Part of the key, or a scoped call would be served another
+                # session's cached response and never reach the server to be
+                # metered -- re-losing the correlation the binding just made.
+                # Unscoped callers pass None, so their key is unpartitioned.
+                session_id=req.session_id,
                 limit=req.limit,
                 agent_playbook_id=req.agent_playbook_id,
                 query=req.query,
@@ -2188,6 +2233,7 @@ class ReflexioClient:
         self._cache.set(
             "get_agent_playbooks",
             result,
+            session_id=req.session_id,  # keep in step with the lookup key above
             limit=req.limit,
             agent_playbook_id=req.agent_playbook_id,
             query=req.query,
@@ -3343,3 +3389,771 @@ class ReflexioClient:
         # Nuclear — clear everything that could reference this user.
         self._cache.clear()
         return ClearUserDataResponse(**response)
+
+
+# Names that carry session correlation, whether they appear as a method
+# parameter or as a field of the request model that method builds. Any client
+# method reaching one of these either way must have an explicit binding
+# wrapper on ``SessionScopedClient``; ``__getattr__`` refuses to forward the
+# rest so a newly added method cannot silently reach callers unbound.
+_SESSION_PARAM_NAMES = frozenset({"session_id", "session_ids"})
+
+_MISSING = object()
+
+
+def _session_model_fields(annotation: Any) -> set[str]:
+    """Session-correlation fields reachable through a request model.
+
+    Walks the whole annotation, not just its outermost type: the request
+    parameter is spelled ``Model | dict | None``, so the model that carries
+    the field is a union member rather than the annotation itself.
+    """
+    found: set[str] = set()
+    stack: list[Any] = [annotation]
+    seen: set[int] = set()
+    while stack:
+        current = stack.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        if isinstance(current, type) and issubclass(current, BaseModel):
+            found |= set(current.model_fields) & _SESSION_PARAM_NAMES
+        stack.extend(get_args(current))
+    return found
+
+
+def _accepts_session_argument(func: Any) -> bool:
+    """Report whether ``func`` can carry session correlation.
+
+    Two shapes count, and the second is the one a signature-only check
+    misses. ``search`` exposes ``session_id`` as a parameter; but
+    ``search_agent_playbooks``, ``search_profiles``, ``search_user_profiles``
+    and ``get_agent_playbooks`` expose it **only** as a field of the request
+    model they build. Reading parameter names alone reported all four
+    session-free, so ``__getattr__`` forwarded them unchanged and a scoped
+    call went out with ``session_id: null`` -- the exact uncorrelated
+    exposure this client exists to prevent. Checking request-model fields
+    too is what makes a newly added method of either shape fail loudly here
+    instead of silently reaching callers unbound.
+    """
+    try:
+        parameters = inspect.signature(func).parameters
+    except (TypeError, ValueError):  # builtins / C functions
+        return False
+    for name, parameter in parameters.items():
+        if name in _SESSION_PARAM_NAMES:
+            return True
+        if parameter.annotation is inspect.Parameter.empty:
+            continue
+        if _session_model_fields(parameter.annotation):
+            return True
+    return False
+
+
+class SessionScopedClient:
+    """A :class:`ReflexioClient` with one session ID bound to every call.
+
+    Obtained from :meth:`ReflexioClient.for_session`, not constructed
+    directly in normal use::
+
+        session = client.for_session(session_id)
+        context = session.search(query="how do I refund?", user_id="u1")
+        session.publish_interaction(user_id="u1", interactions=[...])
+
+    Why this exists: ``search`` and ``publish_interaction`` each accepted
+    ``session_id`` independently, nothing linked them, and omitting it from
+    either was silent and successful. Every call that reads the session
+    through this object reads it from one place, so two calls in the same
+    turn cannot disagree about which session they belong to -- which is the
+    property Reflexio needs to attribute a retrieved learning to the session
+    it actually influenced.
+
+    This is a **view**, not a second client. It holds the client you made it
+    from and forwards to it, so connections, authentication, cache, and
+    configuration are shared and unchanged. Creating one per session is
+    cheap and expected.
+
+    Methods that do not involve a session are forwarded unchanged, so a
+    scoped client can be used for the whole API surface::
+
+        session.get_profiles(user_id="u1")   # forwarded as-is
+
+    Passing ``session_id`` explicitly to a scoped method is allowed only
+    when it equals the bound one. A different value raises
+    :class:`ValueError`: the call site disagrees with itself about which
+    session it is in, and either answer would be a guess. Reach the
+    unscoped client through :attr:`client` to work with another session.
+    """
+
+    def __init__(self, client: "ReflexioClient", session_id: str) -> None:
+        """Bind ``session_id`` to ``client``.
+
+        Args:
+            client (ReflexioClient): The client to forward to. Not copied.
+            session_id (str): The session ID to bind. Must be non-empty.
+
+        Raises:
+            ValueError: If ``session_id`` is None, empty, or whitespace.
+        """
+        if session_id is None or not str(session_id).strip():
+            raise ValueError("session_id is required and cannot be empty")
+        self._client = client
+        # Store the STRIPPED value, not the original. The schemas disagree
+        # about whitespace: publish and lifecycle requests type session_id as
+        # NonEmptyStr, whose validator strips it, while the search requests
+        # use a plain str and send it verbatim. Binding "  abc  " would then
+        # put "abc" on the publish and "  abc  " on the search -- two calls
+        # through one scoped client, landing in two different sessions, which
+        # is precisely the disagreement this class exists to make impossible.
+        self._session_id = str(session_id).strip()
+
+    @property
+    def session_id(self) -> str:
+        """The bound session ID."""
+        return self._session_id
+
+    @property
+    def client(self) -> "ReflexioClient":
+        """The underlying unscoped client this view forwards to."""
+        return self._client
+
+    def __repr__(self) -> str:
+        return f"{type(self).__name__}(session_id={self._session_id!r})"
+
+    # -- binding helpers --------------------------------------------------
+
+    def _resolve(self, explicit: str | None) -> str:
+        """Return the bound session ID, rejecting a conflicting explicit one.
+
+        ``None`` means "not supplied" and yields the bound ID. An explicit
+        value equal to the bound ID is accepted so existing call sites can
+        be wrapped without being edited first. Comparison is on the stripped
+        value, matching how the bound ID was normalized: " abc " and "abc"
+        name one session, and refusing that pair would be a false conflict.
+        """
+        if explicit is not None and str(explicit).strip() != self._session_id:
+            raise ValueError(
+                f"session_id={explicit!r} was passed to a client scoped to "
+                f"session_id={self._session_id!r}. A scoped call cannot "
+                "belong to two sessions, and silently preferring either one "
+                "would mis-attribute this turn. Drop the argument to use the "
+                "bound session, call client.for_session() again for the other "
+                "session, or use the unscoped client via `.client`."
+            )
+        return self._session_id
+
+    def _resolve_many(self, explicit: list[str] | None) -> list[str]:
+        """Return ``[bound session]``, rejecting a conflicting explicit list."""
+        if explicit is not None and [str(s).strip() for s in explicit] != [
+            self._session_id
+        ]:
+            raise ValueError(
+                f"session_ids={list(explicit)!r} was passed to a client scoped "
+                f"to session_id={self._session_id!r}. A scoped read covers the "
+                "bound session only. Drop the argument, or use the unscoped "
+                "client via `.client` to read across sessions."
+            )
+        return [self._session_id]
+
+    def _scope_request(self, request: Any) -> Any:
+        """Apply the bound session to a request object or dict.
+
+        The client's request-object form bypasses keyword arguments
+        entirely, so binding has to reach inside it or a scoped call made
+        with ``request=`` would go out uncorrelated.
+        """
+        if request is None:
+            return None
+        if isinstance(request, dict):
+            self._resolve(request.get("session_id"))
+            return {**request, "session_id": self._session_id}
+        existing = getattr(request, "session_id", _MISSING)
+        if existing is _MISSING:
+            return request
+        self._resolve(existing)  # type: ignore[arg-type]
+        if existing == self._session_id:
+            return request
+        return request.model_copy(update={"session_id": self._session_id})
+
+    def _bind_request(
+        self, request: Any, model_class: type[BaseModel], **kwargs: Any
+    ) -> Any:
+        """Build a wrapped method's request object with the session bound.
+
+        For the four retrieval methods that expose correlation only through
+        their request model, binding has to happen on the built object -- the
+        method has no ``session_id`` parameter to pass one through.
+
+        The merge must happen *here* rather than by forwarding ``request``
+        and the keyword arguments together: ``_build_request`` returns the
+        supplied ``request`` untouched and **ignores every keyword argument**
+        when one is given, so a wrapper that passed both would silently drop
+        the caller's kwargs. Building the finished object and handing it down
+        as ``request=`` is what keeps them.
+        """
+        return self._scope_request(
+            self._client._build_request(request, model_class, **kwargs)
+        )
+
+    def __getattr__(self, name: str) -> Any:
+        """Forward session-free methods to the underlying client.
+
+        Refuses to forward anything that takes a session parameter without
+        an explicit wrapper here: a method added upstream must be bound
+        deliberately, not reach callers unbound through this fallback.
+        """
+        if name.startswith("_"):
+            raise AttributeError(name)
+        attribute = getattr(self._client, name)
+        if callable(attribute) and _accepts_session_argument(attribute):
+            raise AttributeError(
+                f"{type(self).__name__} has no binding for {name!r}, which "
+                "takes a session argument. Forwarding it would let a scoped "
+                "call go out uncorrelated. Add an explicit wrapper to "
+                "SessionScopedClient, or reach the unscoped method via "
+                "`.client`."
+            )
+        return attribute
+
+    # -- publishing -------------------------------------------------------
+
+    def publish_interaction(
+        self,
+        user_id: str,
+        interactions: Sequence[InteractionData | dict],
+        source: str = "",
+        agent_version: str = DEFAULT_AGENT_VERSION,
+        session_id: str | None = None,
+        wait_for_response: bool = False,
+        skip_aggregation: bool = False,
+        force_extraction: bool = False,
+        evaluation_only: bool = False,
+        override_learning_stall: bool = False,
+        retrieval_experiment_id: str | None = None,
+        retrieval_experiment_arm: Literal["treatment", "holdout"] | None = None,
+    ) -> PublishUserInteractionResponse:
+        """Publish interactions into the bound session.
+
+        Identical to :meth:`ReflexioClient.publish_interaction` except that
+        ``session_id`` defaults to the bound session.
+        """
+        return self._client.publish_interaction(
+            user_id=user_id,
+            interactions=interactions,
+            source=source,
+            agent_version=agent_version,
+            session_id=self._resolve(session_id),
+            wait_for_response=wait_for_response,
+            skip_aggregation=skip_aggregation,
+            force_extraction=force_extraction,
+            evaluation_only=evaluation_only,
+            override_learning_stall=override_learning_stall,
+            retrieval_experiment_id=retrieval_experiment_id,
+            retrieval_experiment_arm=retrieval_experiment_arm,
+        )
+
+    async def publish_interaction_async(
+        self,
+        user_id: str,
+        interactions: Sequence[InteractionData | dict],
+        source: str = "",
+        agent_version: str = DEFAULT_AGENT_VERSION,
+        session_id: str | None = None,
+        wait_for_response: bool = False,
+        skip_aggregation: bool = False,
+        force_extraction: bool = False,
+        evaluation_only: bool = False,
+        override_learning_stall: bool = False,
+        retrieval_experiment_id: str | None = None,
+        retrieval_experiment_arm: Literal["treatment", "holdout"] | None = None,
+    ) -> PublishUserInteractionResponse:
+        """Native-async counterpart to :meth:`publish_interaction`."""
+        return await self._client.publish_interaction_async(
+            user_id=user_id,
+            interactions=interactions,
+            source=source,
+            agent_version=agent_version,
+            session_id=self._resolve(session_id),
+            wait_for_response=wait_for_response,
+            skip_aggregation=skip_aggregation,
+            force_extraction=force_extraction,
+            evaluation_only=evaluation_only,
+            override_learning_stall=override_learning_stall,
+            retrieval_experiment_id=retrieval_experiment_id,
+            retrieval_experiment_arm=retrieval_experiment_arm,
+        )
+
+    # -- search -----------------------------------------------------------
+
+    def search(
+        self,
+        request: UnifiedSearchRequest | dict | None = None,
+        *,
+        query: str | None = None,
+        top_k: int | None = None,
+        threshold: float | None = None,
+        agent_version: str | None = None,
+        playbook_name: str | None = None,
+        user_id: str | None = None,
+        source: str | None = None,
+        tags: list[str] | None = None,
+        entity_types: list[str] | None = None,
+        agent_playbook_status_filter: list[PlaybookStatus | str] | None = None,
+        enable_reformulation: bool | None = None,
+        enable_agent_answer: bool | None = None,
+        conversation_history: list[ConversationTurn] | list[dict] | None = None,
+        search_mode: SearchMode | str | None = None,
+        request_id: str | None = None,
+        session_id: str | None = None,
+        interaction_id: int | None = None,
+    ) -> UnifiedSearchViewResponse:
+        """Search within the bound session.
+
+        Identical to :meth:`ReflexioClient.search` except that
+        ``session_id`` defaults to the bound session, so the learnings this
+        returns are attributable to the same session a later
+        :meth:`publish_interaction` records.
+        """
+        return self._client.search(
+            self._scope_request(request),
+            query=query,
+            top_k=top_k,
+            threshold=threshold,
+            agent_version=agent_version,
+            playbook_name=playbook_name,
+            user_id=user_id,
+            source=source,
+            tags=tags,
+            entity_types=entity_types,
+            agent_playbook_status_filter=agent_playbook_status_filter,
+            enable_reformulation=enable_reformulation,
+            enable_agent_answer=enable_agent_answer,
+            conversation_history=conversation_history,
+            search_mode=search_mode,
+            request_id=request_id,
+            session_id=self._resolve(session_id),
+            interaction_id=interaction_id,
+        )
+
+    async def search_async(
+        self,
+        request: UnifiedSearchRequest | dict | None = None,
+        *,
+        query: str | None = None,
+        top_k: int | None = None,
+        threshold: float | None = None,
+        agent_version: str | None = None,
+        playbook_name: str | None = None,
+        user_id: str | None = None,
+        source: str | None = None,
+        tags: list[str] | None = None,
+        entity_types: list[str] | None = None,
+        agent_playbook_status_filter: list[PlaybookStatus | str] | None = None,
+        enable_reformulation: bool | None = None,
+        enable_agent_answer: bool | None = None,
+        conversation_history: list[ConversationTurn] | list[dict] | None = None,
+        search_mode: SearchMode | str | None = None,
+        request_id: str | None = None,
+        session_id: str | None = None,
+        interaction_id: int | None = None,
+    ) -> UnifiedSearchViewResponse:
+        """Native-async counterpart to :meth:`search`."""
+        return await self._client.search_async(
+            self._scope_request(request),
+            query=query,
+            top_k=top_k,
+            threshold=threshold,
+            agent_version=agent_version,
+            playbook_name=playbook_name,
+            user_id=user_id,
+            source=source,
+            tags=tags,
+            entity_types=entity_types,
+            agent_playbook_status_filter=agent_playbook_status_filter,
+            enable_reformulation=enable_reformulation,
+            enable_agent_answer=enable_agent_answer,
+            conversation_history=conversation_history,
+            search_mode=search_mode,
+            request_id=request_id,
+            session_id=self._resolve(session_id),
+            interaction_id=interaction_id,
+        )
+
+    def search_user_playbooks(
+        self,
+        request: SearchUserPlaybookRequest | dict | None = None,
+        *,
+        query: str | None = None,
+        user_id: str | None = None,
+        agent_version: str | None = None,
+        playbook_name: str | None = None,
+        source: str | None = None,
+        start_time: datetime | None = None,
+        end_time: datetime | None = None,
+        status_filter: list[Status | None] | None = None,
+        tags: list[str] | None = None,
+        top_k: int | None = None,
+        threshold: float | None = None,
+        enable_reformulation: bool | None = None,
+        search_mode: SearchMode | None = None,
+        request_id: str | None = None,
+        session_id: str | None = None,
+    ) -> SearchUserPlaybooksViewResponse:
+        """Search user playbooks within the bound session.
+
+        Identical to :meth:`ReflexioClient.search_user_playbooks` except
+        that ``session_id`` defaults to the bound session.
+        """
+        return self._client.search_user_playbooks(
+            self._scope_request(request),
+            query=query,
+            user_id=user_id,
+            agent_version=agent_version,
+            playbook_name=playbook_name,
+            source=source,
+            start_time=start_time,
+            end_time=end_time,
+            status_filter=status_filter,
+            tags=tags,
+            top_k=top_k,
+            threshold=threshold,
+            enable_reformulation=enable_reformulation,
+            search_mode=search_mode,
+            request_id=request_id,
+            session_id=self._resolve(session_id),
+        )
+
+    # -- retrieval bound through the request model ------------------------
+    #
+    # These four take no ``session_id`` parameter: they carry correlation
+    # only as a field of the request they build. Each therefore binds by
+    # building that request here and handing it down, rather than by passing
+    # an argument through.
+
+    def search_user_profiles(
+        self,
+        request: SearchUserProfileRequest | dict | None = None,
+        *,
+        user_id: str | None = None,
+        generated_from_request_id: str | None = None,
+        query: str | None = None,
+        start_time: datetime | None = None,
+        end_time: datetime | None = None,
+        top_k: int | None = None,
+        source: str | None = None,
+        custom_feature: str | None = None,
+        extractor_name: str | None = None,
+        tags: list[str] | None = None,
+        threshold: float | None = None,
+        enable_reformulation: bool | None = None,
+        search_mode: SearchMode | None = None,
+    ) -> SearchProfilesViewResponse:
+        """Search user profiles within the bound session.
+
+        Identical to :meth:`ReflexioClient.search_user_profiles` except that
+        the request carries the bound session.
+        """
+        return self._client.search_user_profiles(
+            self._bind_request(
+                request,
+                SearchUserProfileRequest,
+                user_id=user_id,
+                generated_from_request_id=generated_from_request_id,
+                query=query,
+                start_time=start_time,
+                end_time=end_time,
+                top_k=top_k,
+                source=source,
+                custom_feature=custom_feature,
+                extractor_name=extractor_name,
+                tags=tags,
+                threshold=threshold,
+                enable_reformulation=enable_reformulation,
+                search_mode=search_mode,
+            )
+        )
+
+    # NOTE: keep signature in sync with search_user_profiles
+    def search_profiles(
+        self,
+        request: SearchUserProfileRequest | dict | None = None,
+        *,
+        user_id: str | None = None,
+        generated_from_request_id: str | None = None,
+        query: str | None = None,
+        start_time: datetime | None = None,
+        end_time: datetime | None = None,
+        top_k: int | None = None,
+        source: str | None = None,
+        custom_feature: str | None = None,
+        extractor_name: str | None = None,
+        tags: list[str] | None = None,
+        threshold: float | None = None,
+        enable_reformulation: bool | None = None,
+        search_mode: SearchMode | None = None,
+    ) -> SearchProfilesViewResponse:
+        """Deprecated alias of :meth:`search_user_profiles`, session bound.
+
+        Warns from *this* frame and then forwards to the replacement, rather
+        than forwarding to the deprecated method and relying on its warning.
+        ``ReflexioClient.search_profiles`` warns with ``stacklevel=2``, which
+        names its immediate caller -- through a wrapper that is this module,
+        not the user's code. Python's default filters only surface a
+        DeprecationWarning attributed to ``__main__``, so the scoped alias
+        was silent for every caller not running with warnings enabled, while
+        the unscoped one warned normally.
+        """
+        warnings.warn(
+            "ReflexioClient.search_profiles() is deprecated; use "
+            "search_user_profiles() instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self._client.search_user_profiles(
+            self._bind_request(
+                request,
+                SearchUserProfileRequest,
+                user_id=user_id,
+                generated_from_request_id=generated_from_request_id,
+                query=query,
+                start_time=start_time,
+                end_time=end_time,
+                top_k=top_k,
+                source=source,
+                custom_feature=custom_feature,
+                extractor_name=extractor_name,
+                tags=tags,
+                threshold=threshold,
+                enable_reformulation=enable_reformulation,
+                search_mode=search_mode,
+            )
+        )
+
+    def search_agent_playbooks(
+        self,
+        request: SearchAgentPlaybookRequest | dict | None = None,
+        *,
+        query: str | None = None,
+        user_id: str | None = None,
+        agent_version: str | None = None,
+        playbook_name: str | None = None,
+        source: str | None = None,
+        start_time: datetime | None = None,
+        end_time: datetime | None = None,
+        status_filter: list[Status | None] | None = None,
+        playbook_status_filter: PlaybookStatus | None = None,
+        tags: list[str] | None = None,
+        top_k: int | None = None,
+        threshold: float | None = None,
+        enable_reformulation: bool | None = None,
+        search_mode: SearchMode | None = None,
+    ) -> SearchAgentPlaybooksViewResponse:
+        """Search agent playbooks within the bound session.
+
+        Identical to :meth:`ReflexioClient.search_agent_playbooks` except
+        that the request carries the bound session.
+        """
+        return self._client.search_agent_playbooks(
+            self._bind_request(
+                request,
+                SearchAgentPlaybookRequest,
+                query=query,
+                user_id=user_id,
+                agent_version=agent_version,
+                playbook_name=playbook_name,
+                source=source,
+                start_time=start_time,
+                end_time=end_time,
+                status_filter=status_filter,
+                playbook_status_filter=playbook_status_filter,
+                tags=tags,
+                top_k=top_k,
+                threshold=threshold,
+                enable_reformulation=enable_reformulation,
+                search_mode=search_mode,
+            )
+        )
+
+    def get_agent_playbooks(
+        self,
+        request: GetAgentPlaybooksRequest | dict | None = None,
+        force_refresh: bool = False,
+        *,
+        limit: int | None = None,
+        agent_playbook_id: int | None = None,
+        query: str | None = None,
+        playbook_name: str | None = None,
+        agent_version: str | None = None,
+        start_time: datetime | None = None,
+        end_time: datetime | None = None,
+        status_filter: list[Status | None] | None = None,
+        playbook_status_filter: PlaybookStatus | None = None,
+        tags: list[str] | None = None,
+    ) -> GetAgentPlaybooksViewResponse:
+        """Get agent playbooks within the bound session.
+
+        Identical to :meth:`ReflexioClient.get_agent_playbooks` except that
+        the request carries the bound session. ``force_refresh`` is not a
+        request field, so it is forwarded as an argument.
+        """
+        return self._client.get_agent_playbooks(
+            self._bind_request(
+                request,
+                GetAgentPlaybooksRequest,
+                limit=limit,
+                agent_playbook_id=agent_playbook_id,
+                query=query,
+                playbook_name=playbook_name,
+                agent_version=agent_version,
+                start_time=start_time,
+                end_time=end_time,
+                status_filter=status_filter,
+                playbook_status_filter=playbook_status_filter,
+                tags=tags,
+            ),
+            force_refresh,
+        )
+
+    # -- session lifecycle ------------------------------------------------
+
+    def mark_session_outcome(
+        self,
+        *,
+        outcome: SessionOutcomeKind | str,
+        occurred_at: int,
+        session_id: str | None = None,
+        label: str | None = None,
+        value: float | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> SetSessionOutcomeResponse:
+        """Record the outcome of the bound session.
+
+        Identical to :meth:`ReflexioClient.mark_session_outcome` except
+        that ``session_id`` defaults to the bound session.
+        """
+        return self._client.mark_session_outcome(
+            session_id=self._resolve(session_id),
+            outcome=outcome,
+            occurred_at=occurred_at,
+            label=label,
+            value=value,
+            metadata=metadata,
+        )
+
+    def get_session_outcomes(
+        self,
+        *,
+        session_ids: list[str] | None = None,
+        user_id: str | None = None,
+        source: str | None = None,
+        outcome: SessionOutcomeKind | str | None = None,
+        label: str | None = None,
+        start_time: int | None = None,
+        end_time: int | None = None,
+        top_k: int = 100,
+        offset: int = 0,
+    ) -> GetSessionOutcomesResponse:
+        """Read outcomes for the bound session.
+
+        Identical to :meth:`ReflexioClient.get_session_outcomes` except
+        that ``session_ids`` defaults to ``[bound session]``. Use
+        ``.client`` to read across sessions.
+        """
+        return self._client.get_session_outcomes(
+            session_ids=self._resolve_many(session_ids),
+            user_id=user_id,
+            source=source,
+            outcome=outcome,
+            label=label,
+            start_time=start_time,
+            end_time=end_time,
+            top_k=top_k,
+            offset=offset,
+        )
+
+    def delete_session(
+        self, session_id: str | None = None, wait_for_response: bool = False
+    ) -> DeleteSessionResponse | None:
+        """Delete the bound session's requests and interactions.
+
+        Identical to :meth:`ReflexioClient.delete_session` except that
+        ``session_id`` defaults to the bound session.
+        """
+        return self._client.delete_session(
+            self._resolve(session_id), wait_for_response=wait_for_response
+        )
+
+    # -- reads and evaluation ---------------------------------------------
+
+    def get_requests(
+        self,
+        request: GetRequestsRequest | dict | None = None,
+        *,
+        user_id: str | None = None,
+        request_id: str | None = None,
+        session_id: str | None = None,
+        source: str | None = None,
+        start_time: datetime | None = None,
+        end_time: datetime | None = None,
+        top_k: int | None = None,
+    ) -> GetRequestsViewResponse:
+        """Read requests in the bound session.
+
+        Identical to :meth:`ReflexioClient.get_requests` except that
+        ``session_id`` defaults to the bound session.
+        """
+        return self._client.get_requests(
+            self._scope_request(request),
+            user_id=user_id,
+            request_id=request_id,
+            session_id=self._resolve(session_id),
+            source=source,
+            start_time=start_time,
+            end_time=end_time,
+            top_k=top_k,
+        )
+
+    def get_retrieved_learning_evaluation_results(
+        self,
+        request: GetRetrievedLearningEvaluationResultsRequest | dict | None = None,
+        *,
+        user_id: str | None = None,
+        session_id: str | None = None,
+        start_time: datetime | None = None,
+        end_time: datetime | None = None,
+        limit: int | None = None,
+    ) -> GetRetrievedLearningEvaluationResultsResponse:
+        """Read retrieved-learning verdicts for the bound session.
+
+        Identical to
+        :meth:`ReflexioClient.get_retrieved_learning_evaluation_results`
+        except that ``session_id`` defaults to the bound session.
+        """
+        return self._client.get_retrieved_learning_evaluation_results(
+            self._scope_request(request),
+            user_id=user_id,
+            session_id=self._resolve(session_id),
+            start_time=start_time,
+            end_time=end_time,
+            limit=limit,
+        )
+
+    def grade_on_demand(
+        self,
+        request: GradeOnDemandRequest | dict | None = None,
+        *,
+        session_id: str | None = None,
+        agent_version: str | None = None,
+        evaluation_name: str | None = None,
+    ) -> GradeOnDemandResponse:
+        """Grade the bound session synchronously.
+
+        Identical to :meth:`ReflexioClient.grade_on_demand` except that
+        ``session_id`` defaults to the bound session.
+        """
+        return self._client.grade_on_demand(
+            self._scope_request(request),
+            session_id=self._resolve(session_id),
+            agent_version=agent_version,
+            evaluation_name=evaluation_name,
+        )

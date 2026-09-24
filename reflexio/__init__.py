@@ -88,7 +88,7 @@ from reflexio.models.config_schema import (
     UserPlaybookExtractorConfig,
 )
 
-from .client import ReflexioClient
+from .client import ReflexioClient, SessionScopedClient
 
 debug = False
 log = None  # Set to either 'debug' or 'info', controls console logging
@@ -97,6 +97,7 @@ log = None  # Set to either 'debug' or 'info', controls console logging
 __all__ = [
     "__version__",
     "ReflexioClient",
+    "SessionScopedClient",
     # Data models (internal, with embeddings)
     "UserActionType",
     "ProfileTimeToLive",
