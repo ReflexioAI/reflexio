@@ -268,9 +268,22 @@ class Adapter:
     # -----------------------------------------------------------------
 
     def search_all(
-        self, *, project_id: str, query: str, top_k: int = 5
+        self,
+        *,
+        project_id: str,
+        query: str,
+        top_k: int = 5,
+        session_id: str | None = None,
     ) -> tuple[list[Any], list[Any], list[Any]]:
-        """Unified hybrid search → ``(user_playbooks, agent_playbooks, preferences)``."""
+        """Unified hybrid search → ``(user_playbooks, agent_playbooks, preferences)``.
+
+        ``session_id`` is the openClaw ``sessionKey`` the caller already holds.
+        It is forwarded so the exposure event the server records for this
+        search carries a correlation key. Without it the server still records
+        the exposure, but with neither ``request_id`` nor ``session_id`` set,
+        which leaves the row permanently unjoinable to the interaction the
+        retrieved items were injected into -- the whole point of recording it.
+        """
         client = self._get_client()
         if client is None:
             return [], [], []
@@ -284,6 +297,7 @@ class Adapter:
                 enable_agent_answer=False,
                 top_k=top_k,
                 search_mode=_SEARCH_MODE_HYBRID,
+                session_id=session_id or None,
             )
         except Exception as exc:  # noqa: BLE001
             _LOGGER.debug("unified search failed: %s", exc)

@@ -390,6 +390,28 @@ class _WrapperState:
     def _prepare_search(
         self, query: str, options: Any, kwargs: dict[str, Any]
     ) -> tuple[str, str] | ReflexioSearchResult:
+        """Resolve ``(user_id, agent_version)`` for a mirrored search.
+
+        Deliberately no ``session_id``, and this is a trade rather than an
+        oversight. Passing one would let Reflexio correlate the serve with the
+        publish that follows -- ``_prepare_publish`` derives exactly such an id
+        from the same identities -- but on the server a ``session_id`` is not
+        only a correlation key: it also arms the session-scoped seen-result
+        cache (``services/retrieval/session_dedup.py``), which skips items
+        already served to that session and, in its own words, keeps an item
+        "suppressed for the session's lifetime".
+
+        mem0's ``search`` contract is "the most relevant memories", not "the
+        most relevant ones you have not already seen". A stable per-run id
+        would therefore make the second and later searches of a conversation
+        quietly return different, lower-ranked learnings -- trading retrieval
+        quality for instrumentation, invisibly, in a wrapper whose whole
+        premise is that mem0 behaviour is unchanged.
+
+        So the mirrored search stays uncorrelated until the server can accept a
+        correlation key without arming dedup. Reinstating it is a one-line
+        change here plus the two call sites, deliberately kept that cheap.
+        """
         if self._reflexio_client is None:
             return _empty_search_result("skipped", "not_configured")
         if not isinstance(query, str) or not query.strip():
@@ -506,6 +528,9 @@ class MemoryClient(_WrapperState, _Mem0MemoryClient):
             return augmented
         user_id, agent_version = prepared
         try:
+            # No session_id: see _prepare_search. It would correlate the serve
+            # AND arm the server's session-scoped result dedup, and mem0's
+            # search contract does not permit silently withholding results.
             response = self._reflexio_client.search(  # type: ignore[union-attr]
                 query=query,
                 user_id=user_id,
@@ -598,6 +623,7 @@ class AsyncMemoryClient(_WrapperState, _Mem0AsyncMemoryClient):
             return augmented
         user_id, agent_version = prepared
         try:
+            # No session_id: same reason as the sync path above.
             response = await self._reflexio_client.search_async(  # type: ignore[union-attr]
                 query=query,
                 user_id=user_id,

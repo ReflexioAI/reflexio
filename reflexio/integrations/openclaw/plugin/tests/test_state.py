@@ -330,3 +330,219 @@ class TestWireFieldAllowlist:
         )
         assert turns[0]["shadow_content"] == "s"
         assert turns[0]["user_action"] == "click"
+
+
+class TestRetrievedLearningRefs:
+    """``retrieved_learnings`` is what correlates a serve to the turn it shaped.
+
+    The citation sidecar is a whole-session lookup keyed by short id, so it
+    cannot answer "what was injected for THIS turn". The refs ride the ordered
+    buffer instead, and fold into the next Assistant turn.
+    """
+
+    def test_registry_entries_normalise_to_identity_pairs(self):
+        state.append_retrieved_learning_refs(
+            "r1",
+            [
+                {
+                    "id": "a1",
+                    "kind": "playbook",
+                    "source_kind": "user_playbook",
+                    "real_id": "12",
+                },
+                {
+                    "id": "a2",
+                    "kind": "playbook",
+                    "source_kind": "agent_playbook",
+                    "real_id": "34",
+                },
+                {"id": "a3", "kind": "profile", "real_id": "p-9"},
+            ],
+        )
+        records = state.read_all("r1")
+        assert len(records) == 1
+        assert records[0]["retrieved_learning_refs"] == [
+            {"kind": "user_playbook", "learning_id": "12"},
+            {"kind": "agent_playbook", "learning_id": "34"},
+            {"kind": "profile", "learning_id": "p-9"},
+        ]
+
+    def test_entries_without_a_resolvable_storage_id_are_dropped(self):
+        state.append_retrieved_learning_refs(
+            "r2",
+            [
+                {
+                    "id": "a1",
+                    "kind": "playbook",
+                    "source_kind": "user_playbook",
+                    "real_id": None,
+                },
+                {"id": "a2", "kind": "playbook", "real_id": "7"},
+                {
+                    "id": "a3",
+                    "kind": "playbook",
+                    "source_kind": "nonsense",
+                    "real_id": "8",
+                },
+            ],
+        )
+        assert state.read_all("r2") == []
+
+    def test_refs_attach_to_the_next_assistant_turn_only(self):
+        _, turns = state.unpublished_slice(
+            [
+                {"role": "User", "content": "q"},
+                {
+                    "retrieved_learning_refs": [
+                        {"kind": "user_playbook", "learning_id": "12"}
+                    ]
+                },
+                {"role": "Assistant", "content": "a"},
+                {"role": "Assistant", "content": "b"},
+            ]
+        )
+        assert "retrieved_learnings" not in turns[0]
+        assert turns[1]["retrieved_learnings"] == [
+            {"kind": "user_playbook", "learning_id": "12"}
+        ]
+        assert "retrieved_learnings" not in turns[2]
+
+    def test_repeated_injections_in_one_turn_are_deduped(self):
+        _, turns = state.unpublished_slice(
+            [
+                {
+                    "retrieved_learning_refs": [
+                        {"kind": "user_playbook", "learning_id": "12"}
+                    ]
+                },
+                {
+                    "retrieved_learning_refs": [
+                        {"kind": "user_playbook", "learning_id": "12"},
+                        {"kind": "profile", "learning_id": "p1"},
+                    ]
+                },
+                {"role": "Assistant", "content": "a"},
+            ]
+        )
+        assert turns[0]["retrieved_learnings"] == [
+            {"kind": "user_playbook", "learning_id": "12"},
+            {"kind": "profile", "learning_id": "p1"},
+        ]
+
+    def test_malformed_refs_are_skipped_not_published(self):
+        _, turns = state.unpublished_slice(
+            [
+                {
+                    "retrieved_learning_refs": [
+                        {"kind": "user_playbook", "learning_id": ""},
+                        {"kind": "not_a_kind", "learning_id": "9"},
+                        "garbage",
+                        {"kind": "profile", "learning_id": "ok"},
+                    ]
+                },
+                {"role": "Assistant", "content": "a"},
+            ]
+        )
+        assert turns[0]["retrieved_learnings"] == [
+            {"kind": "profile", "learning_id": "ok"}
+        ]
+
+    def test_refs_do_not_survive_a_published_watermark(self):
+        _, turns = state.unpublished_slice(
+            [
+                {
+                    "retrieved_learning_refs": [
+                        {"kind": "user_playbook", "learning_id": "12"}
+                    ]
+                },
+                {"published_up_to": 1},
+                {"role": "Assistant", "content": "a"},
+            ]
+        )
+        assert "retrieved_learnings" not in turns[0]
+
+    def test_session_cap_trims_the_tail(self):
+        """Over-cap the evaluator returns failed/candidate_limit_exceeded for
+        the whole session, and the server 422s an over-cap publish request."""
+        cap = state._RETRIEVED_LEARNINGS_SESSION_CAP
+        refs = [
+            {"kind": "user_playbook", "learning_id": str(n)} for n in range(cap + 5)
+        ]
+        _, turns = state.unpublished_slice(
+            [{"retrieved_learning_refs": refs}, {"role": "Assistant", "content": "a"}]
+        )
+        assert len(turns[0]["retrieved_learnings"]) == cap
+
+    def test_the_cap_counts_across_the_whole_session_not_per_publish(self):
+        """The evaluator's limit is session-wide, so the count must be too.
+
+        Resetting at each watermark bounded one HTTP request and nothing else:
+        a long session sails past the evaluator's session-wide limit with every
+        publish accepted, and then every evaluation of that session fails
+        permanently with ``candidate_limit_exceeded`` and zero LLM calls.
+        """
+        cap = state._RETRIEVED_LEARNINGS_SESSION_CAP
+        first = cap - 400
+        records = [
+            {
+                "retrieved_learning_refs": [
+                    {"kind": "user_playbook", "learning_id": f"a{n}"}
+                    for n in range(first)
+                ]
+            },
+            {"role": "Assistant", "content": "published turn"},
+            {"published_up_to": 2},
+            {
+                "retrieved_learning_refs": [
+                    {"kind": "user_playbook", "learning_id": f"b{n}"}
+                    for n in range(600)
+                ]
+            },
+            {"role": "Assistant", "content": "current turn"},
+        ]
+        published, turns = state.unpublished_slice(records)
+
+        assert published == 2
+        assert [turn["content"] for turn in turns] == ["current turn"]
+        # 600 would be the per-request answer; 400 is what the session has left.
+        assert len(turns[0]["retrieved_learnings"]) == cap - first
+
+    def test_a_record_appended_during_an_in_flight_publish_survives(self):
+        """The watermark must not destroy what it does not claim.
+
+        ``publish_unpublished`` reads a snapshot of length N, sends it, then
+        stamps ``published_up_to = N``. A hook firing during that HTTP call
+        appends at index N, so the marker lands at index N+1 declaring N. The
+        record at index N was never published and must still be returned.
+        """
+        records = [
+            {"role": "User", "content": "q"},
+            {"role": "Assistant", "content": "a"},
+            # Appended while the publish of the two records above was in flight.
+            {
+                "retrieved_learning_refs": [
+                    {"kind": "user_playbook", "learning_id": "12"}
+                ]
+            },
+            {"published_up_to": 2},
+            {"role": "Assistant", "content": "b"},
+        ]
+        published, turns = state.unpublished_slice(records)
+
+        assert published == 2
+        assert [turn["content"] for turn in turns] == ["b"]
+        assert turns[0]["retrieved_learnings"] == [
+            {"kind": "user_playbook", "learning_id": "12"}
+        ]
+
+    def test_a_user_turn_racing_a_publish_is_not_swallowed(self):
+        """Same race, the pre-existing half: it ate plain turns too."""
+        records = [
+            {"role": "User", "content": "first"},
+            {"role": "User", "content": "raced in"},
+            {"published_up_to": 1},
+        ]
+        published, turns = state.unpublished_slice(records)
+
+        assert published == 1
+        assert [turn["content"] for turn in turns] == ["raced in"]
