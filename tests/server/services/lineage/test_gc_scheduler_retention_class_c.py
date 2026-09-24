@@ -113,7 +113,9 @@ def test_each_retention_pass_runs_under_its_own_project():
     with patch.object(
         gc_scheduler,
         "sweep_retention_caps",
-        lambda _org, _storage: bound.append(current_project_id()) or 0,
+        lambda _org, _storage: (
+            bound.append(current_project_id()) or gc_scheduler.RetentionSweepResult(0)
+        ),
     ):
         _scheduler()._sweep_org(_ORG)
 
@@ -130,7 +132,7 @@ def test_class_c_runs_with_every_gated_sweep_disabled():
     with patch.object(
         gc_scheduler,
         "sweep_retention_caps",
-        lambda org, _storage: calls.append(org) or 0,
+        lambda org, _storage: calls.append(org) or gc_scheduler.RetentionSweepResult(0),
     ):
         _scheduler()._sweep_org(_ORG)
 
@@ -144,7 +146,9 @@ def test_no_project_provider_still_sweeps_once_unscoped():
     with patch.object(
         gc_scheduler,
         "sweep_retention_caps",
-        lambda _org, _storage: bound.append(current_project_id()) or 0,
+        lambda _org, _storage: (
+            bound.append(current_project_id()) or gc_scheduler.RetentionSweepResult(0)
+        ),
     ):
         _scheduler()._sweep_org(_ORG)
 
@@ -163,7 +167,7 @@ def test_a_project_whose_enumeration_failed_gets_no_pass():
     with patch.object(
         gc_scheduler,
         "sweep_retention_caps",
-        lambda org, _storage: calls.append(org) or 0,
+        lambda org, _storage: calls.append(org) or gc_scheduler.RetentionSweepResult(0),
     ):
         _scheduler()._sweep_org(_ORG)
 
@@ -249,3 +253,113 @@ def test_the_scheduler_still_declines_when_every_retention_cap_is_disabled(
         )
         is None
     )
+
+
+# ---------------------------------------------------------------------------
+# A tick that FAILED must not wait a full poll interval to try again
+# ---------------------------------------------------------------------------
+#
+# Measured on staging, 2026-09-24: 18 of 18 orgs failed one tick with
+# `PGRST002: Could not query the database for the schema cache. Retrying.`
+# raised from `acquire_simple_lock`. The scheduler's first tick fires seconds
+# after boot, which is exactly when PostgREST's schema cache is cold after a
+# deploy -- so the boot tick is the MOST likely to hit it, not the least.
+#
+# On the old publish path a transient cost one publish and retried ~300s later.
+# Here `_run_once` returned `poll_interval_seconds` (86400s by default) whether
+# the tick worked or not, so one boot transient cost a DAY of retention -- and a
+# service redeployed more often than daily would never sweep at all.
+#
+# The retry is bounded: after `_MAX_CONSECUTIVE_FAST_RETRIES` failed ticks the
+# cadence falls back to the poll interval. A persistently broken dependency is
+# already firing anomalies on every tick, and hammering it every 5 minutes
+# forever would reintroduce exactly the repeated-probe cost this whole change
+# removed from the publish path.
+
+
+def _failing_ctx():
+    """A bootstrap context whose per-org sweep raises inside Class C."""
+    return types.SimpleNamespace(
+        storage=types.SimpleNamespace(),
+        configurator=types.SimpleNamespace(
+            get_config=lambda: types.SimpleNamespace(
+                lineage_gc=types.SimpleNamespace(
+                    enabled=False, poll_interval_seconds=86400
+                ),
+                expiry_reclamation=types.SimpleNamespace(enabled=False),
+            )
+        ),
+    )
+
+
+def _tick_scheduler() -> LineageGCScheduler:
+    sched = LineageGCScheduler(
+        request_context_factory=lambda _org_id: _failing_ctx(),  # type: ignore[arg-type]
+        bootstrap_org_id="org-boot",
+    )
+    sched._discover_org_ids = lambda _ctx: [_ORG]  # type: ignore[method-assign]
+    return sched
+
+
+def test_a_clean_tick_waits_the_full_poll_interval():
+    """The baseline the retry must not disturb."""
+    sched = _tick_scheduler()
+    with patch.object(
+        gc_scheduler,
+        "sweep_retention_caps",
+        lambda _org, _storage: gc_scheduler.RetentionSweepResult(0, failed=False),
+    ):
+        assert sched._run_once() == 86400
+
+
+def test_a_failed_tick_retries_soon_instead_of_in_a_day():
+    """THE assertion. Without it, one boot transient costs a full day."""
+    sched = _tick_scheduler()
+    with patch.object(
+        gc_scheduler,
+        "sweep_retention_caps",
+        lambda _org, _storage: gc_scheduler.RetentionSweepResult(0, failed=True),
+    ):
+        interval = sched._run_once()
+
+    assert interval == gc_scheduler._FAILED_TICK_RETRY_SECONDS, (
+        f"a failed tick waits {interval}s; retention would be down that long"
+    )
+
+
+def test_the_fast_retry_is_bounded():
+    """A persistently broken dependency must not be hammered forever."""
+    sched = _tick_scheduler()
+    intervals: list[float] = []
+    with patch.object(
+        gc_scheduler,
+        "sweep_retention_caps",
+        lambda _org, _storage: gc_scheduler.RetentionSweepResult(0, failed=True),
+    ):
+        intervals.extend(
+            sched._run_once()
+            for _ in range(gc_scheduler._MAX_CONSECUTIVE_FAST_RETRIES + 2)
+        )
+
+    fast = gc_scheduler._FAILED_TICK_RETRY_SECONDS
+    assert (
+        intervals[: gc_scheduler._MAX_CONSECUTIVE_FAST_RETRIES]
+        == [fast] * gc_scheduler._MAX_CONSECUTIVE_FAST_RETRIES
+    ), intervals
+    assert intervals[gc_scheduler._MAX_CONSECUTIVE_FAST_RETRIES :] == [86400, 86400], (
+        f"the fast retry never gave up: {intervals}"
+    )
+
+
+def test_a_success_after_failures_resets_the_retry_budget():
+    """Otherwise one bad day permanently spends the fast retries."""
+    sched = _tick_scheduler()
+    failing = gc_scheduler.RetentionSweepResult(0, failed=True)
+    clean = gc_scheduler.RetentionSweepResult(0, failed=False)
+
+    with patch.object(gc_scheduler, "sweep_retention_caps", lambda _o, _s: failing):
+        assert sched._run_once() == gc_scheduler._FAILED_TICK_RETRY_SECONDS
+    with patch.object(gc_scheduler, "sweep_retention_caps", lambda _o, _s: clean):
+        assert sched._run_once() == 86400
+    with patch.object(gc_scheduler, "sweep_retention_caps", lambda _o, _s: failing):
+        assert sched._run_once() == gc_scheduler._FAILED_TICK_RETRY_SECONDS

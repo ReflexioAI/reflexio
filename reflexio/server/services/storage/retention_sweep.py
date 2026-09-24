@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import logging
 import time
+from dataclasses import dataclass
 
 from reflexio.server.error_reporting import capture_anomaly, error_tags
 from reflexio.server.extensions import get_service
@@ -63,7 +64,32 @@ SLOW_SWEEP_SECONDS = 20.0
 UNBOUND_PROJECT_TAG = "<unbound>"
 
 
-def sweep_retention_caps(org_id: str, storage: BaseStorage) -> int:
+@dataclass(frozen=True, slots=True)
+class RetentionSweepResult:
+    """What one project-pass did, and whether it got to finish.
+
+    ``failed`` exists because this function absorbs its own exceptions -- the
+    call site in ``gc_scheduler`` has no backstop, by contract -- and a caller
+    that cannot tell "swept, nothing due" from "could not sweep at all" will
+    schedule its next attempt as if all is well. On staging that meant a
+    ``PGRST002`` transient at the boot tick put retention off for a full
+    ``poll_interval_seconds`` (86400s by default).
+
+    Attributes:
+        deleted (int): Rows removed across all targets this pass.
+        failed (bool): True when the pass could not complete -- a refused lease
+            or a disabled cap is NOT a failure, because there was nothing to do.
+            Nor is a single target raising: that is isolated deliberately, is
+            usually permanent (a table the backend does not have), and escalating
+            it would spend the scheduler's bounded fast-retry budget on something
+            a retry cannot fix. Such a target is still logged with ``error_tags``.
+    """
+
+    deleted: int
+    failed: bool = False
+
+
+def sweep_retention_caps(org_id: str, storage: BaseStorage) -> RetentionSweepResult:
     """Enforce row-count caps for the project bound on this thread.
 
     Args:
@@ -71,7 +97,9 @@ def sweep_retention_caps(org_id: str, storage: BaseStorage) -> int:
         storage (BaseStorage): The org's app-role storage.
 
     Returns:
-        int: Rows deleted across all targets (0 on skip, refused lease, or error).
+        RetentionSweepResult: Rows deleted, and whether the pass could not
+        complete. The scheduler reads ``failed`` to decide how soon to tick
+        again; see ``gc_scheduler._FAILED_TICK_RETRY_SECONDS``.
     """
     # `started` is outside the try because `time.monotonic()` cannot raise;
     # `project_id` is pre-bound so the failure handler can tag with it even if
@@ -103,7 +131,7 @@ def sweep_retention_caps(org_id: str, storage: BaseStorage) -> int:
                 "work-scope provider is registered but no project is bound",
                 org_id,
             )
-            return 0
+            return RetentionSweepResult(0, failed=True)
 
         limits = {
             target_name: limit
@@ -111,7 +139,7 @@ def sweep_retention_caps(org_id: str, storage: BaseStorage) -> int:
             if limit > 0
         }
         if not limits:
-            return 0
+            return RetentionSweepResult(0)
 
         mgr = OperationStateManager(
             storage,  # type: ignore[reportArgumentType]
@@ -119,7 +147,7 @@ def sweep_retention_caps(org_id: str, storage: BaseStorage) -> int:
             "storage_table_cleanup",  # type: ignore[reportArgumentType]
         )
         if not mgr.acquire_simple_lock(stale_seconds=CLEANUP_STALE_LOCK_SECONDS):
-            return 0
+            return RetentionSweepResult(0)
         try:
             for target_name, limit in limits.items():
                 # Isolate per-target failures so one bad table does not
@@ -149,7 +177,7 @@ def sweep_retention_caps(org_id: str, storage: BaseStorage) -> int:
             error_type=type(exc).__name__,
         )
         logger.exception("event=retention_sweep_failed org_id=%s", org_id)
-        return deleted_total
+        return RetentionSweepResult(deleted_total, failed=True)
 
     elapsed = time.monotonic() - started
     if elapsed > SLOW_SWEEP_SECONDS:
@@ -160,7 +188,7 @@ def sweep_retention_caps(org_id: str, storage: BaseStorage) -> int:
             elapsed_seconds=round(elapsed, 1),
             targets=len(limits),
         )
-    return deleted_total
+    return RetentionSweepResult(deleted_total)
 
 
 def _sweep_target(

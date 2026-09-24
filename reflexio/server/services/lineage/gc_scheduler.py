@@ -24,6 +24,7 @@ all sweep classes share that cadence.
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from collections.abc import Callable
 
@@ -35,7 +36,10 @@ from reflexio.server.error_reporting import capture_anomaly
 from reflexio.server.org_fanout import iterate_orgs_bounded
 from reflexio.server.scheduling import LeaderGate, ThreadedScheduler
 from reflexio.server.services.storage.retention import get_row_retention_limits
-from reflexio.server.services.storage.retention_sweep import sweep_retention_caps
+from reflexio.server.services.storage.retention_sweep import (
+    RetentionSweepResult,
+    sweep_retention_caps,
+)
 from reflexio.server.services.storage.storage_base import BaseStorage
 from reflexio.server.work_scope import WorkScope, WorkScopeError, bind_work_scope
 
@@ -46,6 +50,23 @@ _MIN_POLL_SECONDS = 1
 _BOOTSTRAP_RETRY_INTERVAL_SECONDS = 5
 _ORG_SWEEP_TIMEOUT_SECONDS = 60.0
 _DEFAULT_ORG_FANOUT_WORKERS = 8
+
+# How soon to tick again after a tick in which work FAILED, rather than waiting
+# the full `poll_interval_seconds` (86400s by default).
+#
+# Measured on staging, 2026-09-24: 18 of 18 orgs failed one tick with PostgREST
+# `PGRST002: Could not query the database for the schema cache. Retrying.` The
+# scheduler's first tick fires seconds after boot, which is exactly when that
+# cache is cold after a deploy -- so the boot tick is the MOST likely to hit it.
+# Waiting a full day on a transient PostgREST itself calls retryable put
+# retention off for 24h, and a service redeployed more often than daily would
+# never have swept at all.
+_FAILED_TICK_RETRY_SECONDS = 300.0
+
+# ...but bounded. A persistently broken dependency already fires an anomaly on
+# every tick; retrying it every 5 minutes forever would reintroduce exactly the
+# repeated-probe cost that moving this sweep off the publish path removed.
+_MAX_CONSECUTIVE_FAST_RETRIES = 3
 
 # Window-misconfiguration tripwire: if a single tick deletes more than this
 # many tombstones for one org, something is likely wrong with the grace window.
@@ -241,6 +262,13 @@ class LineageGCScheduler(ThreadedScheduler):
         self.org_id_provider = org_id_provider
         # Orgs that timed out on the PREVIOUS tick; a repeat escalates.
         self._prior_timeout_orgs: set[str] = set()
+        # Set by any org's Class C pass that could not complete. Written from
+        # up to `_org_fanout_workers` threads, so it takes a lock rather than
+        # relying on the GIL to make `|=` atomic.
+        self._tick_had_failure = False
+        self._failure_lock = threading.Lock()
+        # Consecutive ticks that ended in failure, to bound the fast retry.
+        self._consecutive_failed_ticks = 0
 
     def _on_started(self) -> None:
         logger.info("event=lineage_gc_scheduler_started")
@@ -510,7 +538,9 @@ class LineageGCScheduler(ThreadedScheduler):
         #
         # `sweep_retention_caps` absorbs its own errors and emits its own
         # `retention.sweep.failed` anomaly, so there is no generic backstop here.
-        sweep_retention_caps(org_id, storage)
+        result: RetentionSweepResult = sweep_retention_caps(org_id, storage)
+        if result.failed:
+            self._record_tick_failure()
 
     def _gc_tick(self, org_ids: list[str], *, max_workers: int = 1) -> None:
         """Run one GC pass across the given org IDs.
@@ -632,7 +662,45 @@ class LineageGCScheduler(ThreadedScheduler):
                 capture_anomaly("lineage.always_global_sweep.failed", sweep=sweep_id)
                 logger.exception("event=always_global_sweep_failed sweep=%s", sweep_id)
 
+    def _record_tick_failure(self) -> None:
+        """Mark this tick as having failed work, from any fan-out worker."""
+        with self._failure_lock:
+            self._tick_had_failure = True
+
+    def _next_interval(self, poll_interval: float) -> float:
+        """Return how long to wait, shortening a failed tick's wait.
+
+        A clean tick resets the budget, so one bad day cannot permanently spend
+        the fast retries.
+
+        Args:
+            poll_interval (float): The configured cadence for a healthy tick.
+
+        Returns:
+            float: Seconds to wait before the next tick.
+        """
+        if not self._tick_had_failure:
+            self._consecutive_failed_ticks = 0
+            return max(poll_interval, _MIN_POLL_SECONDS)
+
+        self._consecutive_failed_ticks += 1
+        if self._consecutive_failed_ticks > _MAX_CONSECUTIVE_FAST_RETRIES:
+            logger.warning(
+                "event=lineage_gc_fast_retry_exhausted consecutive=%d — backing "
+                "off to the configured interval; the per-org anomalies say why",
+                self._consecutive_failed_ticks,
+            )
+            return max(poll_interval, _MIN_POLL_SECONDS)
+
+        logger.warning(
+            "event=lineage_gc_tick_retry_soon in=%.0fs consecutive=%d",
+            _FAILED_TICK_RETRY_SECONDS,
+            self._consecutive_failed_ticks,
+        )
+        return _FAILED_TICK_RETRY_SECONDS
+
     def _run_once(self) -> float:
+        self._tick_had_failure = False
         self._run_always_global_sweeps()
         poll_interval = _DEFAULT_POLL_INTERVAL_SECONDS
         try:
@@ -656,7 +724,8 @@ class LineageGCScheduler(ThreadedScheduler):
             self._run_global_sweeps(cfg)
         except Exception:
             logger.exception("event=lineage_gc_scheduler_tick_failed")
-        return max(poll_interval, _MIN_POLL_SECONDS)
+            self._record_tick_failure()
+        return self._next_interval(poll_interval)
 
 
 def maybe_start_lineage_gc(

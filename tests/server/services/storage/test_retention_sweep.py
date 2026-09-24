@@ -53,7 +53,7 @@ def _limits(**kwargs: int):
 def test_a_disabled_limit_issues_no_probe(storage, granted_lock, anomalies):
     """Review Focus 2: ``REFLEXIO_ROW_LIMIT_X=0`` disables the cap entirely."""
     with _limits(interactions=0):
-        assert sweep_retention_caps(_ORG, storage) == 0
+        assert sweep_retention_caps(_ORG, storage).deleted == 0
 
     storage.count_retention_target_rows.assert_not_called()
     assert anomalies == []
@@ -63,7 +63,7 @@ def test_a_count_below_the_limit_deletes_nothing(storage, granted_lock, anomalie
     storage.count_retention_target_rows.return_value = 100
 
     with _limits(interactions=500):
-        assert sweep_retention_caps(_ORG, storage) == 0
+        assert sweep_retention_caps(_ORG, storage).deleted == 0
 
     storage.delete_oldest_retention_target_rows.assert_not_called()
     assert anomalies == []
@@ -75,7 +75,7 @@ def test_a_count_equal_to_the_limit_deletes(storage, granted_lock, anomalies):
     storage.delete_oldest_retention_target_rows.return_value = 100
 
     with _limits(interactions=500):
-        assert sweep_retention_caps(_ORG, storage) == 100
+        assert sweep_retention_caps(_ORG, storage).deleted == 100
 
     storage.delete_oldest_retention_target_rows.assert_called_once_with(
         "interactions", 100
@@ -88,7 +88,7 @@ def test_the_warn_boundary_is_inclusive(storage, granted_lock, anomalies):
     storage.count_retention_target_rows.return_value = 450
 
     with _limits(interactions=500):
-        assert sweep_retention_caps(_ORG, storage) == 0
+        assert sweep_retention_caps(_ORG, storage).deleted == 0
 
     storage.delete_oldest_retention_target_rows.assert_not_called()
     assert [name for name, _ in anomalies] == ["retention.cap.approaching"]
@@ -112,7 +112,7 @@ def test_an_enforced_delete_reports_what_it_removed(storage, granted_lock, anoma
     storage.delete_oldest_retention_target_rows.return_value = 120
 
     with _limits(interactions=500):
-        assert sweep_retention_caps(_ORG, storage) == 120
+        assert sweep_retention_caps(_ORG, storage).deleted == 120
 
     assert [name for name, _ in anomalies] == ["retention.cap.enforced"]
     _, tags = anomalies[0]
@@ -125,7 +125,7 @@ def test_a_refused_lease_probes_nothing(storage, anomalies):
     with patch.object(retention_sweep, "OperationStateManager") as cls:
         cls.return_value.acquire_simple_lock.return_value = False
         with _limits(interactions=1):
-            assert sweep_retention_caps(_ORG, storage) == 0
+            assert sweep_retention_caps(_ORG, storage).deleted == 0
 
     storage.count_retention_target_rows.assert_not_called()
 
@@ -138,7 +138,7 @@ def test_a_failing_target_does_not_stop_the_rest(storage, granted_lock, anomalie
     storage.delete_oldest_retention_target_rows.return_value = 120
 
     with _limits(broken=500, interactions=500):
-        assert sweep_retention_caps(_ORG, storage) == 120
+        assert sweep_retention_caps(_ORG, storage).deleted == 120
 
     storage.delete_oldest_retention_target_rows.assert_called_once_with(
         "interactions", 120
@@ -175,12 +175,12 @@ def test_a_backend_missing_the_hook_does_not_stop_the_rest(granted_lock, anomali
     storage = _HookLessStorage()
 
     with _limits(hookless=500, interactions=500, profiles=500):
-        deleted = sweep_retention_caps(_ORG, storage)  # type: ignore[arg-type]
+        result = sweep_retention_caps(_ORG, storage)  # type: ignore[arg-type]
 
     assert storage.deleted == [("interactions", 120), ("profiles", 120)], (
         f"a missing hook stopped the siblings: {storage.deleted}"
     )
-    assert deleted == 240
+    assert result.deleted == 240
     assert [name for name, _ in anomalies] == [
         "retention.cap.enforced",
         "retention.cap.enforced",
@@ -202,7 +202,7 @@ def test_a_failure_outside_target_isolation_emits_its_own_anomaly(storage, anoma
     with patch.object(retention_sweep, "OperationStateManager") as cls:
         cls.return_value.acquire_simple_lock.side_effect = RuntimeError("no lease")
         with _limits(interactions=500):
-            assert sweep_retention_caps(_ORG, storage) == 0
+            assert sweep_retention_caps(_ORG, storage).deleted == 0
 
     assert [name for name, _ in anomalies] == ["retention.sweep.failed"]
     _, tags = anomalies[0]
@@ -263,7 +263,7 @@ def test_an_unbound_pass_refuses_to_probe_when_a_provider_is_registered(
     storage.count_retention_target_rows.return_value = 10_000_000
 
     with _limits(interactions=500):
-        assert sweep_retention_caps(_ORG, storage) == 0
+        assert sweep_retention_caps(_ORG, storage).deleted == 0
 
     storage.count_retention_target_rows.assert_not_called()
     storage.delete_oldest_retention_target_rows.assert_not_called()
@@ -281,7 +281,7 @@ def test_oss_without_a_provider_is_not_treated_as_unbound(
     storage.delete_oldest_retention_target_rows.return_value = 120
 
     with _limits(interactions=500):
-        assert sweep_retention_caps(_ORG, storage) == 120
+        assert sweep_retention_caps(_ORG, storage).deleted == 120
 
     assert [name for name, _ in anomalies] == ["retention.cap.enforced"]
 
@@ -313,6 +313,6 @@ def test_nothing_escapes_the_sweep_into_the_scheduler(storage, anomalies):
         side_effect=RuntimeError("limits blew up"),
     )
     with boom:
-        assert sweep_retention_caps(_ORG, storage) == 0
+        assert sweep_retention_caps(_ORG, storage).deleted == 0
 
     assert [name for name, _ in anomalies] == ["retention.sweep.failed"]
