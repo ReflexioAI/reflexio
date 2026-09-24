@@ -81,12 +81,25 @@ _VALID_CITATION_KINDS = frozenset(
 _VALID_RETRIEVED_PLAYBOOK_KINDS = frozenset({"user_playbook", "agent_playbook"})
 _VALID_RETRIEVED_KINDS = _VALID_RETRIEVED_PLAYBOOK_KINDS | {"profile"}
 
-# The server rejects a publish request carrying more than 1000
-# ``retrieved_learnings`` across ALL its interactions. The adapter swallows a
+# Two limits sit at 1000, and the SESSION one binds first.
+#
+# The server rejects a publish REQUEST carrying more than 1000
+# ``retrieved_learnings`` across all its interactions; the adapter swallows a
 # rejected publish without advancing the watermark, so an over-cap batch would
-# retry forever and the session buffer would never drain again. Trimming the
-# tail keeps the batch publishable; the drop is logged at WARNING.
-_RETRIEVED_LEARNINGS_PUBLISH_CAP = 1000
+# retry forever and the buffer would never drain again.
+#
+# ``RetrievedLearningEvaluator`` separately refuses a SESSION carrying more
+# than ``MAX_CANONICAL_CANDIDATES`` (also 1000) distinct
+# ``(interaction_id, kind, learning_id)`` refs: it returns ``failed`` with
+# ``candidate_limit_exceeded`` and makes zero LLM calls, deliberately rather
+# than truncating. A session only grows, so crossing that line makes every
+# later evaluation of the session fail permanently, even though every publish
+# was accepted.
+#
+# Counting session-wide therefore satisfies both: it is never looser than the
+# per-request cap, and it is the only one of the two that a long-lived session
+# can actually breach. The drop is logged at WARNING.
+_RETRIEVED_LEARNINGS_SESSION_CAP = 1000
 
 
 def _truncate_tool_data_field(value: Any) -> Any:
@@ -369,51 +382,78 @@ def _wire_retrieved_ref(value: Any) -> dict[str, str] | None:
     return {"kind": str(kind), "learning_id": learning_id}
 
 
+def _published_watermark(records: list[dict[str, Any]]) -> int:
+    """Return the offset the last valid ``published_up_to`` marker declares.
+
+    Clamped to the marker's own index: an over-range marker (tampered or
+    corrupt buffer) would otherwise skip every later turn and silently drop
+    valid unpublished records.
+    """
+    published = 0
+    for idx, rec in enumerate(records):
+        if "published_up_to" not in rec:
+            continue
+        marker = rec.get("published_up_to")
+        if isinstance(marker, int) and 0 <= marker <= idx:
+            published = marker
+    return published
+
+
 def unpublished_slice(
     records: Iterable[dict[str, Any]],
 ) -> tuple[int, list[dict[str, Any]]]:
     """Split records into (last-published index, unpublished turn records).
 
-    Walks the records in order, tracking the most recent ``published_up_to``
-    marker and collecting turn records (anything with a ``role``) that come
-    after it. Tool records are folded into the closest following Assistant
-    turn's ``tools_used``; ``retrieved_learning_refs`` records are folded into
-    the closest following Assistant turn's ``retrieved_learnings``.
+    The watermark is resolved first, then the buffer is folded from index 0
+    and turns at or after the watermark are returned. Tool records fold into
+    the closest following Assistant turn's ``tools_used``;
+    ``retrieved_learning_refs`` records fold into the closest following
+    Assistant turn's ``retrieved_learnings``.
 
-    Refs with no following Assistant turn are dropped, exactly as trailing
-    ``Assistant_tool`` records already are: the watermark this buffer stamps
-    is always ``len(records)``, and its marker-handling clears the in-flight
-    accumulators, so a partial watermark is not representable here. In
-    practice ``agent_end`` appends the Assistant turn before it publishes, so
-    the refs for a turn and the turn itself are always in the same slice.
+    Folding from 0 rather than resetting at the marker is load-bearing twice
+    over, and both are real losses rather than tidiness:
+
+    * A record appended WHILE a publish is in flight used to be destroyed by
+      that publish's own watermark. ``publish_unpublished`` reads a snapshot
+      of length N, sends it, then stamps ``published_up_to = N`` -- but a hook
+      firing during the HTTP call appends at index N, so the marker lands at
+      index N+1 declaring N. The old single pass cleared its accumulators on
+      seeing any marker, so the record at index N -- a refs record, a user
+      turn, a tool call -- was dropped even though the marker never claimed
+      it. Resolving the watermark first and filtering by index keeps exactly
+      the records the marker does not cover.
+    * ``attached_total`` used to reset at every marker, which bounded each
+      HTTP request and nothing else. The binding limit is the evaluator's, and
+      it is SESSION-wide: ``RetrievedLearningEvaluator`` refuses a session
+      carrying more than ``MAX_CANONICAL_CANDIDATES`` distinct
+      ``(interaction_id, kind, learning_id)`` refs, returning ``failed`` with
+      ``candidate_limit_exceeded`` and making zero LLM calls. A session only
+      grows, so once crossed, every later evaluation of that session fails
+      permanently -- at up to nine refs per turn, around 112 attributed turns.
+      Counting from 0 makes the cap mean what the evaluator means by it.
 
     Returns:
         tuple[int, list[dict]]: ``(published_up_to, interactions)``. The
             integer is the watermark after which all turns are unpublished;
             the list is formatted for ``InteractionData`` construction.
     """
-    published = 0
+    buffered = list(records)
+    published = _published_watermark(buffered)
     pending_tools: list[dict[str, Any]] = []
     pending_refs: list[dict[str, str]] = []
     turns: list[dict[str, Any]] = []
     attached_total = 0
     truncated = 0
-    for idx, rec in enumerate(records):
-        if "published_up_to" in rec:
-            marker = rec.get("published_up_to")
-            # Clamp to the number of records seen before this marker (``idx``).
-            # An over-range marker (e.g. from a tampered/corrupt buffer) would
-            # otherwise skip every subsequent turn via the ``idx < published``
-            # gate below, silently dropping valid unpublished records.
-            if isinstance(marker, int) and 0 <= marker <= idx:
-                published = marker
+    for idx, rec in enumerate(buffered):
+        if idx == published:
+            # Pending state does not cross the watermark. Refs or tool calls
+            # sitting unattached when a publish completed belong to turns that
+            # were already sent; carrying them forward would attribute stale
+            # context to the next turn. They have still been counted above,
+            # because the evaluator counts them against the session.
             pending_tools = []
             pending_refs = []
-            turns = []
-            attached_total = 0
-            truncated = 0
-            continue
-        if idx < published:
+        if "published_up_to" in rec:
             continue
         raw_refs = rec.get("retrieved_learning_refs")
         if "role" not in rec and isinstance(raw_refs, list):
@@ -462,7 +502,9 @@ def unpublished_slice(
                     if key in seen:
                         continue
                     seen.add(key)
-                    if attached_total >= _RETRIEVED_LEARNINGS_PUBLISH_CAP:
+                    # Counted across the whole session, published turns
+                    # included, because the evaluator's limit is session-wide.
+                    if attached_total >= _RETRIEVED_LEARNINGS_SESSION_CAP:
                         truncated += 1
                         continue
                     retrieved.append(ref)
@@ -470,11 +512,12 @@ def unpublished_slice(
                 pending_refs = []
                 if retrieved:
                     turn["retrieved_learnings"] = retrieved
-            turns.append(turn)
+            if idx >= published:
+                turns.append(turn)
     if truncated:
         _LOGGER.warning(
-            "Dropped %d retrieved-learning refs at the publish request cap of %d",
+            "Dropped %d retrieved-learning refs at the session cap of %d",
             truncated,
-            _RETRIEVED_LEARNINGS_PUBLISH_CAP,
+            _RETRIEVED_LEARNINGS_SESSION_CAP,
         )
     return published, turns

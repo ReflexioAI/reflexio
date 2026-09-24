@@ -461,10 +461,10 @@ class TestRetrievedLearningRefs:
         )
         assert "retrieved_learnings" not in turns[0]
 
-    def test_publish_request_cap_trims_the_tail(self):
-        """Over-cap the server 422s the whole batch, and the adapter swallows
-        it without advancing the watermark -- the buffer would never drain."""
-        cap = state._RETRIEVED_LEARNINGS_PUBLISH_CAP
+    def test_session_cap_trims_the_tail(self):
+        """Over-cap the evaluator returns failed/candidate_limit_exceeded for
+        the whole session, and the server 422s an over-cap publish request."""
+        cap = state._RETRIEVED_LEARNINGS_SESSION_CAP
         refs = [
             {"kind": "user_playbook", "learning_id": str(n)} for n in range(cap + 5)
         ]
@@ -472,3 +472,77 @@ class TestRetrievedLearningRefs:
             [{"retrieved_learning_refs": refs}, {"role": "Assistant", "content": "a"}]
         )
         assert len(turns[0]["retrieved_learnings"]) == cap
+
+    def test_the_cap_counts_across_the_whole_session_not_per_publish(self):
+        """The evaluator's limit is session-wide, so the count must be too.
+
+        Resetting at each watermark bounded one HTTP request and nothing else:
+        a long session sails past the evaluator's session-wide limit with every
+        publish accepted, and then every evaluation of that session fails
+        permanently with ``candidate_limit_exceeded`` and zero LLM calls.
+        """
+        cap = state._RETRIEVED_LEARNINGS_SESSION_CAP
+        first = cap - 400
+        records = [
+            {
+                "retrieved_learning_refs": [
+                    {"kind": "user_playbook", "learning_id": f"a{n}"}
+                    for n in range(first)
+                ]
+            },
+            {"role": "Assistant", "content": "published turn"},
+            {"published_up_to": 2},
+            {
+                "retrieved_learning_refs": [
+                    {"kind": "user_playbook", "learning_id": f"b{n}"}
+                    for n in range(600)
+                ]
+            },
+            {"role": "Assistant", "content": "current turn"},
+        ]
+        published, turns = state.unpublished_slice(records)
+
+        assert published == 2
+        assert [turn["content"] for turn in turns] == ["current turn"]
+        # 600 would be the per-request answer; 400 is what the session has left.
+        assert len(turns[0]["retrieved_learnings"]) == cap - first
+
+    def test_a_record_appended_during_an_in_flight_publish_survives(self):
+        """The watermark must not destroy what it does not claim.
+
+        ``publish_unpublished`` reads a snapshot of length N, sends it, then
+        stamps ``published_up_to = N``. A hook firing during that HTTP call
+        appends at index N, so the marker lands at index N+1 declaring N. The
+        record at index N was never published and must still be returned.
+        """
+        records = [
+            {"role": "User", "content": "q"},
+            {"role": "Assistant", "content": "a"},
+            # Appended while the publish of the two records above was in flight.
+            {
+                "retrieved_learning_refs": [
+                    {"kind": "user_playbook", "learning_id": "12"}
+                ]
+            },
+            {"published_up_to": 2},
+            {"role": "Assistant", "content": "b"},
+        ]
+        published, turns = state.unpublished_slice(records)
+
+        assert published == 2
+        assert [turn["content"] for turn in turns] == ["b"]
+        assert turns[0]["retrieved_learnings"] == [
+            {"kind": "user_playbook", "learning_id": "12"}
+        ]
+
+    def test_a_user_turn_racing_a_publish_is_not_swallowed(self):
+        """Same race, the pre-existing half: it ate plain turns too."""
+        records = [
+            {"role": "User", "content": "first"},
+            {"role": "User", "content": "raced in"},
+            {"published_up_to": 1},
+        ]
+        published, turns = state.unpublished_slice(records)
+
+        assert published == 1
+        assert [turn["content"] for turn in turns] == ["raced in"]
