@@ -90,6 +90,10 @@ __all__ = [
     "InteractionData",
     "PublishUserInteractionRequest",
     "PublishUserInteractionResponse",
+    "PublishCapacityRefusedDetail",
+    "PublishCapacityRefusedResponse",
+    "PublishTimeoutDetail",
+    "PublishTimeoutResponse",
     "WhoamiResponse",
     "MyConfigResponse",
     "AddUserPlaybookRequest",
@@ -1706,6 +1710,44 @@ class PublishUserInteractionResponse(BaseModel):
     # otherwise deferred. learning_reason explains coverage/waiting.
     learning_status: str | None = None
     learning_reason: str | None = None
+
+
+# Publish error envelopes.
+#
+# FastAPI's ``HTTPException(detail=...)`` serialises as ``{"detail": <detail>}``,
+# so the wire shape is a WRAPPER around the structured body -- these models
+# mirror that nesting exactly rather than describing the inner object alone.
+#
+# The route builds its ``detail`` FROM these models rather than from a bare
+# dict. A declared schema that nothing constructs drifts silently from the body
+# it claims to describe, and a generated client would then be typed against a
+# contract the server no longer emits.
+class PublishCapacityRefusedDetail(BaseModel):
+    """Structured body of the 503 raised when nothing was admitted."""
+
+    reason: Literal["capacity_deadline_exceeded"] = "capacity_deadline_exceeded"
+    request_id: str
+    message: str
+
+
+class PublishCapacityRefusedResponse(BaseModel):
+    """503 wire shape: the detail above, nested under ``detail``."""
+
+    detail: PublishCapacityRefusedDetail
+
+
+class PublishTimeoutDetail(BaseModel):
+    """Structured body of the 504 raised when the publish did not confirm."""
+
+    reason: Literal["publish_timeout"] = "publish_timeout"
+    request_id: str
+    message: str
+
+
+class PublishTimeoutResponse(BaseModel):
+    """504 wire shape: the detail above, nested under ``detail``."""
+
+    detail: PublishTimeoutDetail
 
 
 class LearningStatusResponse(BaseModel):

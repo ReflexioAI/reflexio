@@ -21,14 +21,16 @@ from reflexio.server.services.profile.service import ProfileGenerationService
 
 pytestmark = pytest.mark.integration
 
-# Pinned verbatim against routes/interactions.py's 202 TimeoutError branch.
+# Pinned verbatim against routes/interactions.py's PAST_DEADLINE_202_MESSAGE.
 # Deliberately NOT imported from the route -- see the identical constant and
 # comment in tests/server/api_endpoints/test_api_routes.py, which records why
 # a keyword-family check was not enough.
-PAST_DEADLINE_202_MESSAGE_TEMPLATE = (
-    "Admitted and processing. Follow with "
-    "GET /api/learning_status?request_id={request_id}. Retrying with a NEW "
-    "request_id duplicates it."
+PAST_DEADLINE_202_MESSAGE = (
+    "Accepted; the outcome is not yet known. The server stopped waiting "
+    "before this publish confirmed, so it may or may not have committed. "
+    "Retry with this same request_id: the server rejects a duplicate, so the "
+    "retry is safe whether or not the first attempt landed. A NEW request_id "
+    "would publish it a second time."
 )
 
 
@@ -472,7 +474,7 @@ def test_http_budget_includes_ingestion_and_never_acknowledges_uncommitted_work(
 
     The route's deadline exit is a 202 (see routes/interactions.py): the
     ingestion work is shielded and keeps running past the deadline, so the
-    caller is told it is admitted and PROCESSING, never that it succeeded or
+    caller is told the outcome is not yet known -- never that it succeeded or
     completed. The load-bearing assertion is unchanged by that shift --
     storage must not yet hold the row at the moment the response is sent,
     since the embedding call is still blocked.
@@ -507,10 +509,7 @@ def test_http_budget_includes_ingestion_and_never_acknowledges_uncommitted_work(
             assert data["request_id"] == "slow"
             assert data["learning_status"] == "deferred"
             assert data["learning_reason"] == "server_deadline"
-            expected_message = PAST_DEADLINE_202_MESSAGE_TEMPLATE.format(
-                request_id="slow"
-            )
-            assert data["message"] == expected_message
+            assert data["message"] == PAST_DEADLINE_202_MESSAGE
             assert time.monotonic() - started < 1
             assert engine.get_storage().get_request("slow") is None
         finally:
@@ -520,7 +519,14 @@ def test_http_budget_includes_ingestion_and_never_acknowledges_uncommitted_work(
 
 
 def test_publish_past_deadline_commits_the_work_the_202_promised(pipeline, monkeypatch):
-    """The 202 says "Admitted and processing" -- so the work must survive.
+    """The 202 leaves the outcome open -- so the work must still be able to land.
+
+    The message no longer claims the publish is processing (see
+    PAST_DEADLINE_202_MESSAGE), but the two-clock design is what makes that
+    open outcome worth anything: if the worker shared the response clock, the
+    outcome would be settled and settled as *discarded*, every time. So the
+    behaviour under test is unchanged -- the worker must outlive the response
+    and commit.
 
     This is the assertion the two pre-existing 202 tests could not make. One
     patches ``add_user_interaction`` out entirely, so the worker's cooperative
@@ -585,7 +591,119 @@ def test_publish_past_deadline_commits_the_work_the_202_promised(pipeline, monke
     )
     status_response = client.get("/api/learning_status", params={"request_id": "kept"})
     assert status_response.status_code == 200, (
-        "the 202 tells the caller to poll learning_status; it must not 404"
+        "once the row has committed, learning_status must resolve -- a 404 "
+        "there is only ever 'not yet visible', and this is after the write"
+    )
+
+
+def test_deadline_abort_crosses_the_library_boundary(pipeline):
+    """A worker deadline abort must RAISE out of the mixin, not return.
+
+    This is the guard for the defect: ``InteractionsMixin.publish_interaction``
+    wraps ``GenerationService.run`` in a bare ``except Exception``, and
+    ``TimeoutError`` is an ``Exception``. A deadline abort was therefore
+    flattened into ``PublishUserInteractionResponse(success=False)``, the route
+    took its completed-task path, and the declared 504 ``publish_timeout``
+    contract could not fire for any input.
+
+    Nothing here is mocked above the defect. The real ``Reflexio`` engine, the
+    real ``GenerationService``, the real ``check_admission_deadline`` and real
+    SQLite storage all run; the only thing set is ``admission_deadline``, to a
+    value in the past -- which is exactly what the route hands the worker, and
+    exactly what the worker sees once its grace window has elapsed.
+
+    A sibling test asserting the ROUTE returns 504 would not cover this: the
+    pre-existing one patches ``publisher_api.add_user_interaction`` out
+    entirely, so the mixin it is meant to exercise never executes.
+    """
+    from reflexio.server.services.durable_learning.waiting import (
+        PublishDeadlineExceededError,
+        admission_deadline,
+    )
+
+    engine, _, _ = pipeline
+    storage = engine.get_storage()
+
+    token = admission_deadline.set(time.monotonic() - 1)
+    try:
+        with pytest.raises(PublishDeadlineExceededError):
+            engine.publish_interaction(payload("aborted"))
+    finally:
+        admission_deadline.reset(token)
+
+    # The abort fires before `commit_scope`, so nothing may be left behind --
+    # a raise that happened after a partial write would be a different bug
+    # wearing the same exception.
+    assert storage.get_request("aborted") is None
+
+
+def test_only_the_deadline_abort_crosses_the_library_boundary(pipeline, monkeypatch):
+    """Everything else still degrades to ``success=False``.
+
+    The narrowness is the point, and it is half the fix. The CLI and every
+    library caller are written against a response, not an exception, so
+    widening the boundary to propagate all failures would break them. This
+    pins the other side: an ordinary failure inside the publish -- and
+    specifically a *plain* ``TimeoutError``, which a socket read raises and
+    which is what makes ``except TimeoutError`` too coarse a filter -- still
+    comes back as a response.
+
+    ``request_id`` must survive onto that response too. A caller that let the
+    server mint one otherwise has no handle at all and cannot check whether
+    the publish committed before retrying.
+    """
+
+    def boom(_interactions):
+        raise TimeoutError("socket read timed out")
+
+    engine, _, _ = pipeline
+    monkeypatch.setattr(engine.get_storage(), "prepare_interaction_embeddings", boom)
+
+    result = engine.publish_interaction(payload("socket-timeout"))
+
+    assert result.success is False
+    assert "socket read timed out" in result.message
+    assert result.request_id == "socket-timeout"
+
+
+def test_route_maps_a_deadline_abort_to_504(pipeline, monkeypatch):
+    """End to end: worker aborts on its own clock, route answers 504.
+
+    Drives the REAL mixin -- ``publisher_api.add_user_interaction`` is not
+    patched, so the publish runs through ``GenerationService.run`` and the
+    real ``check_admission_deadline``.
+
+    The grace is made negative so the worker's clock expires BEFORE the
+    route's, which is the only arrangement in which the route is still waiting
+    when the abort happens. The shipped ordering is the opposite by design
+    (``test_deadline_ordering_is_monotone`` pins worker > response), and that
+    is recorded rather than worked around: with the shipped constants this
+    branch is reached by a worker ``PublishDeadlineExceededError`` only if the
+    ordering invariant is relaxed. What this test establishes is that the
+    mechanism works when it is reached -- the exception survives the library
+    boundary, the route maps it to 504 with the request_id, and the slot is
+    released exactly once.
+    """
+    from reflexio.server.services.durable_learning import waiting
+
+    engine, _, client = pipeline
+    from reflexio.server.routes import interactions as routes
+
+    monkeypatch.setattr(routes, "PUBLISH_REQUEST_TIMEOUT_SECONDS", 5.0)
+    monkeypatch.setattr(routes, "PUBLISH_WORKER_GRACE_SECONDS", -10.0)
+
+    response = client.post("/api/publish_interaction", json=payload("late"))
+
+    assert response.status_code == 504, response.text
+    detail = response.json()["detail"]
+    assert detail["reason"] == "publish_timeout"
+    assert detail["request_id"] == "late"
+    assert "learning_status" not in detail, (
+        "nothing is running, so this must not look deferred"
+    )
+    assert engine.get_storage().get_request("late") is None
+    assert not waiting._ingesting, (
+        f"ingestion slots leaked on the deadline-abort path: {waiting._ingesting}"
     )
 
 

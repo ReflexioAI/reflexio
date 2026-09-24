@@ -4,10 +4,8 @@ import asyncio
 import logging
 import time
 import uuid
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    pass
+from collections.abc import Callable
+from typing import Any
 
 from fastapi import (
     APIRouter,
@@ -38,6 +36,10 @@ from reflexio.models.api_schema.service_schemas import (
     GetSessionOutcomesRequest,
     GetSessionOutcomesResponse,
     LearningStatusResponse,
+    PublishCapacityRefusedDetail,
+    PublishCapacityRefusedResponse,
+    PublishTimeoutDetail,
+    PublishTimeoutResponse,
     PublishUserInteractionRequest,
     PublishUserInteractionResponse,
     SetSessionOutcomeRequest,
@@ -69,8 +71,8 @@ PUBLISH_REQUEST_TIMEOUT_SECONDS = 240.0
 # afterwards, because the worker holds a COPY (`admission_deadline.reset()`
 # below restores the ROUTE's context only). Handing the worker the response
 # deadline therefore made the 202 false at the instant it was sent: `wait_for`
-# gave up and the worker's next checkpoint raised `TimeoutError`, so the route
-# said "Admitted and processing" about work that was being discarded.
+# gave up and the worker's next checkpoint aborted, so the route reported an
+# in-flight publish about work that was being discarded.
 #
 # 30s is sized against the LARGEST gap between two consecutive
 # `check_admission_deadline()` calls in `generation_service.run` -- the
@@ -86,6 +88,72 @@ PUBLISH_REQUEST_TIMEOUT_SECONDS = 240.0
 # the whole chain monotone and inside the middleware backstop:
 # response 240s < worker 270s < ROUTE_BACKSTOP_SECONDS 300s.
 PUBLISH_WORKER_GRACE_SECONDS = 30.0
+
+# The 202 body's message. It promises exactly one thing, and that thing is
+# verifiable: a retry under the SAME id is safe.
+#
+# It deliberately claims NEITHER outcome. `operation.done() is False` says only
+# that the task has not returned -- a publish can commit and then sit in
+# post-commit work (`ensure_local_extraction`, success metering, the
+# `_safe_coverage` reads), and if that tail crosses the response deadline this
+# same 202 is sent for work that IS committed. "Still running" and "not
+# committed" are both false in that case, so neither is stated.
+#
+# It also stops directing the caller to `GET /api/learning_status` as the
+# answer. That endpoint reads `storage.get_request`, and the request row is
+# written INSIDE `commit_scope`, so it 404s for every publish that has not
+# committed yet -- i.e. for the common case this message is sent in. A 404
+# there means "not yet visible", never "lost", and a contract that cannot
+# distinguish those is not one to hand a caller as its primary path.
+#
+# The retry instruction is checked, not assumed: `request_id` is a PRIMARY KEY
+# in both backends (`sqlite_storage/_base.py` "request_id TEXT PRIMARY KEY";
+# the Supabase tenant baseline's `requests_pkey PRIMARY KEY (request_id)`), and
+# `generation_service.run` reads `get_request` twice -- once up front, once
+# under `lock_extraction_stream` INSIDE `commit_scope` -- raising rather than
+# writing a second row. So the retry publishes if and only if the first attempt
+# did not.
+PAST_DEADLINE_202_MESSAGE = (
+    "Accepted; the outcome is not yet known. The server stopped waiting "
+    "before this publish confirmed, so it may or may not have committed. "
+    "Retry with this same request_id: the server rejects a duplicate, so the "
+    "retry is safe whether or not the first attempt landed. A NEW request_id "
+    "would publish it a second time."
+)
+
+
+def _release_and_drain(org_id: str) -> "Callable[[asyncio.Task[Any]], None]":
+    """Build the done-callback for a publish the route has stopped awaiting.
+
+    Two jobs, and the second one is not optional. It releases the ingestion
+    slot, and it RETRIEVES the task's exception.
+
+    Without the retrieve, a worker that aborts after the 202 -- the ordinary
+    end of the grace window, where ``check_admission_deadline`` raises
+    ``PublishDeadlineExceededError`` -- leaves an un-consumed exception on a task
+    nobody awaits, and asyncio logs "Task exception was never retrieved" at
+    collection time. That is a normal, already-reported outcome, not an
+    unhandled error, and logging it as one trains readers to ignore the
+    message. It became reachable the moment the deadline abort stopped being
+    swallowed at the library boundary.
+    """
+    from reflexio.server.services.durable_learning.waiting import release_ingestion
+
+    def _done(task: "asyncio.Task[Any]") -> None:
+        release_ingestion(org_id)
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            logger.info(
+                "Publish for org %s ended with %s after the route had already "
+                "answered; the caller was told the outcome was unknown.",
+                org_id,
+                type(exc).__name__,
+                exc_info=exc,
+            )
+
+    return _done
 
 
 @router.post(
@@ -124,20 +192,29 @@ def get_session_outcomes(
         202: {
             "model": PublishUserInteractionResponse,
             "description": (
-                "Admitted and still running: the server's RESPONSE deadline "
-                "was reached before the durable write confirmed. The worker "
-                "runs on a deadline set deliberately later than the response, "
-                "so the publish is genuinely still in progress -- accepted, "
-                "not committed. success is true and learning_reason is "
-                "'server_deadline'; poll GET /api/learning_status with the "
-                "returned request_id for the outcome (200 committed, 404 not) "
-                "rather than retrying with a NEW request_id."
+                "Accepted, outcome not yet known: the server's RESPONSE "
+                "deadline was reached before the publish confirmed. This "
+                "asserts NEITHER that the work committed nor that it did "
+                "not -- the worker runs on a deliberately later deadline and "
+                "is usually still going, but the same 202 is sent when the "
+                "durable write has already committed and only post-commit "
+                "work is outstanding. success is true and learning_reason is "
+                "'server_deadline'. Retry with the SAME request_id: it is a "
+                "primary key and the server rejects a duplicate, so the retry "
+                "is safe either way. Never retry with a NEW request_id. "
+                "GET /api/learning_status?request_id=<id> may 404 while the "
+                "write is still in flight; that means 'not yet visible', not "
+                "'lost'."
             ),
         },
-        # Declared for the same reason 202 is: a contract a generated client
-        # cannot discover from the schema is one first-party callers will not
-        # adopt. Both carry a structured detail of reason/request_id/message.
+        # Modeled, not just described: a contract a generated client cannot
+        # discover from the schema is one first-party callers will not adopt,
+        # and a description alone leaves reason/request_id/message -- which
+        # HTTPException additionally nests under `detail` -- untyped. The route
+        # constructs both bodies from these same models, so the declaration
+        # cannot drift from what is emitted.
         503: {
+            "model": PublishCapacityRefusedResponse,
             "description": (
                 "Not admitted: publish capacity was not available before the "
                 "deadline, so nothing started and nothing will commit. "
@@ -146,12 +223,13 @@ def get_session_outcomes(
             ),
         },
         504: {
+            "model": PublishTimeoutResponse,
             "description": (
-                "The publish itself timed out and may or may not have "
-                "committed -- distinct from 202, where it is still running. "
-                "reason is 'publish_timeout'. Check the returned request_id "
-                "with GET /api/learning_status before retrying, and retry "
-                "with that same request_id."
+                "The publish did not confirm and may or may not have "
+                "committed. It differs from 202 only in that nothing is "
+                "still running. reason is 'publish_timeout'. Retry with the "
+                "SAME request_id: the server rejects a duplicate, so the "
+                "retry is safe either way."
             ),
         },
     },
@@ -200,14 +278,13 @@ async def publish_user_interaction(
                 # here.
                 raise HTTPException(
                     status_code=503,
-                    detail={
-                        "reason": "capacity_deadline_exceeded",
-                        "request_id": payload.request_id,
-                        "message": (
+                    detail=PublishCapacityRefusedDetail(
+                        request_id=payload.request_id,
+                        message=(
                             "Publish capacity deadline exceeded; nothing was "
                             "admitted. Retry with this same request_id."
                         ),
-                    },
+                    ).model_dump(),
                 )
         except BaseException:
             # The ONLY exits that never reach `GenerationService.run`, and so
@@ -248,20 +325,25 @@ async def publish_user_interaction(
                     timeout=max(0, response_deadline - time.monotonic()),
                 )
             except TimeoutError as exc:
-                # TWO different events arrive here, and only one of them means
-                # the publish is still running. `asyncio.wait_for` re-raises
-                # whatever the awaited task raised, so a TimeoutError raised BY
-                # THE WORKER -- `socket.timeout` is an alias of TimeoutError
-                # since 3.10, and `prepare_interaction_embeddings` makes a
-                # network call -- lands on the same handler as `wait_for`
-                # giving up on a task that is still going. Answering 202 for
-                # both says "Admitted and processing" about an operation that
-                # is already dead: the same false claim the worker-deadline fix
-                # above exists to remove, one branch over.
+                # TWO different events arrive here, and only one of them leaves
+                # the outcome open. `asyncio.wait_for` re-raises whatever the
+                # awaited task raised, so a TimeoutError raised BY THE WORKER
+                # lands on the same handler as `wait_for` giving up on a task
+                # that is still going. Answering 202 for both would leave the
+                # outcome open about an operation that is already dead, and
+                # withhold the 504's retry instruction.
                 #
-                # `operation.done()` separates them exactly. `wait_for` cancels
-                # the SHIELD, never the operation, so a timed-out wait leaves
-                # it False; a task that finished by raising leaves it True.
+                # Which worker failures actually arrive here is decided one
+                # layer down, by `InteractionsMixin.publish_interaction`: it
+                # re-raises `PublishDeadlineExceededError` and flattens
+                # everything else -- including a plain `socket.timeout`, which
+                # IS a TimeoutError since 3.10 -- into `success=False`. That
+                # narrowing is deliberate; see the mixin.
+                #
+                # `operation.done()` separates the two exactly. `wait_for`
+                # cancels the SHIELD, never the operation, so a timed-out wait
+                # leaves it False; a task that finished by raising leaves it
+                # True.
                 if operation.done():
                     # Nothing is running, so release inline rather than from a
                     # done-callback, and do NOT also register the callback
@@ -270,28 +352,30 @@ async def publish_user_interaction(
                     release_ingestion(org_id)
                     raise HTTPException(
                         status_code=504,
-                        detail={
-                            "reason": "publish_timeout",
-                            "request_id": payload.request_id,
-                            # Deliberately does not claim either outcome: the
-                            # timeout may have fired before or after the
-                            # durable write. `from exc` keeps the real error
-                            # for Sentry while the caller gets a body it can
-                            # act on.
-                            "message": (
-                                "The publish timed out before it could be "
-                                "confirmed, and may or may not have committed. "
-                                "Check this request ID with GET "
-                                "/api/learning_status before retrying, and "
-                                "retry with this same request_id."
+                        # Deliberately does not claim either outcome: the
+                        # timeout may have fired before or after the durable
+                        # write. `from exc` keeps the real error for Sentry
+                        # while the caller gets a body it can act on. The
+                        # retry instruction, not a poll, is the actionable
+                        # half -- see PAST_DEADLINE_202_MESSAGE for why.
+                        detail=PublishTimeoutDetail(
+                            request_id=payload.request_id,
+                            message=(
+                                "The publish did not confirm, and may or may "
+                                "not have committed. Retry with this same "
+                                "request_id: the server rejects a duplicate, "
+                                "so the retry is safe whether or not the "
+                                "first attempt landed."
                             ),
-                        },
+                        ).model_dump(),
                     ) from exc
-                # The operation is SHIELDED *and* holds a worker deadline
-                # that is still in the future, so "processing" is true when
-                # this is sent -- the shield alone never made it true, because
-                # the cooperative deadline check is not asyncio cancellation.
-                operation.add_done_callback(lambda _: release_ingestion(org_id))
+                # The operation is SHIELDED *and* holds a worker deadline that
+                # is still in the future, so it is genuinely still going --
+                # the shield alone never made that true, because the
+                # cooperative deadline check is not asyncio cancellation. The
+                # response still does not SAY so; see
+                # PAST_DEADLINE_202_MESSAGE.
+                operation.add_done_callback(_release_and_drain(org_id))
                 http_response.status_code = status.HTTP_202_ACCEPTED
                 return PublishUserInteractionResponse(
                     success=True,
@@ -303,15 +387,10 @@ async def publish_user_interaction(
                     # as [], which a caller cannot tell from "nothing was
                     # altered".
                     warnings=payload.payload_warnings(),
-                    message=(
-                        "Admitted and processing. Follow with "
-                        "GET /api/learning_status?request_id="
-                        f"{payload.request_id}. Retrying with a NEW request_id "
-                        "duplicates it."
-                    ),
+                    message=PAST_DEADLINE_202_MESSAGE,
                 )
             except asyncio.CancelledError:
-                operation.add_done_callback(lambda _: release_ingestion(org_id))
+                operation.add_done_callback(_release_and_drain(org_id))
                 raise
             except Exception:
                 release_ingestion(org_id)

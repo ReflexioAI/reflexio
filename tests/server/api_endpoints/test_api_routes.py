@@ -59,7 +59,7 @@ class TestHealthEndpoints:
         assert iscoroutinefunction(route.endpoint)
 
 
-# Pinned verbatim against routes/interactions.py's 202 TimeoutError branch.
+# Pinned verbatim against routes/interactions.py's PAST_DEADLINE_202_MESSAGE.
 # Deliberately NOT imported from the route: a keyword-family check (tried
 # first) passed against "Your interaction is finalized and durably saved;
 # it is processing on our side. ..." -- containing none of
@@ -67,10 +67,12 @@ class TestHealthEndpoints:
 # completion at the moment the row does not yet exist in storage. An exact
 # match closes that evasion surface; duplicating the literal here means a
 # future wording change must be made deliberately in both places.
-PAST_DEADLINE_202_MESSAGE_TEMPLATE = (
-    "Admitted and processing. Follow with "
-    "GET /api/learning_status?request_id={request_id}. Retrying with a NEW "
-    "request_id duplicates it."
+PAST_DEADLINE_202_MESSAGE = (
+    "Accepted; the outcome is not yet known. The server stopped waiting "
+    "before this publish confirmed, so it may or may not have committed. "
+    "Retry with this same request_id: the server rejects a duplicate, so the "
+    "retry is safe whether or not the first attempt landed. A NEW request_id "
+    "would publish it a second time."
 )
 
 
@@ -359,8 +361,8 @@ class TestPublishInteraction:
 
         The work is shielded and keeps committing, so reporting a timeout
         states the opposite of what the server is doing. The request_id must
-        survive response_model_exclude_none=True -- it is the only thing that
-        makes the outcome retrievable.
+        survive response_model_exclude_none=True -- it is the handle the
+        message's retry instruction depends on.
         """
         monkeypatch.setattr(
             "reflexio.server.routes.interactions.PUBLISH_REQUEST_TIMEOUT_SECONDS", 0.2
@@ -385,10 +387,12 @@ class TestPublishInteraction:
         assert data["learning_status"] == "deferred"
         assert data["learning_reason"] == "server_deadline"
         assert data["request_id"], "the id must survive exclude_none"
-        expected_message = PAST_DEADLINE_202_MESSAGE_TEMPLATE.format(
-            request_id=data["request_id"]
-        )
-        assert data["message"] == expected_message
+        # Exact equality, not a keyword family. The message must claim NEITHER
+        # outcome -- `operation.done() is False` says only that the task has
+        # not returned, and a publish that HAS committed and is finishing
+        # post-commit work produces this same 202 -- and "does not contain the
+        # words I thought of" has already been shown here not to enforce that.
+        assert data["message"] == PAST_DEADLINE_202_MESSAGE
 
     def test_publish_past_deadline_reports_the_payload_warnings(
         self, client, patched_reflexio, monkeypatch
@@ -522,20 +526,31 @@ class TestPublishInteraction:
     ):
         """A TimeoutError raised BY THE WORKER must not become a 202.
 
-        `asyncio.wait_for` re-raises whatever the awaited task raised, so a
-        network timeout inside the publish -- `socket.timeout` IS TimeoutError
-        since 3.10 -- reaches the same `except TimeoutError` as `wait_for`
-        giving up on a task that is still running. Answering 202 there claims
-        "Admitted and processing" about an operation that is already dead, and
-        tells the caller not to retry it.
+        `asyncio.wait_for` re-raises whatever the awaited task raised, so an
+        exception that completes the task reaches the same
+        `except TimeoutError` as `wait_for` giving up on a task that is still
+        going. Answering 202 there leaves the outcome open about an operation
+        that is already dead, and withholds the 504's retry instruction.
+
+        SCOPE, stated because this file has shipped guards that measured less
+        than they claimed: this patches `publisher_api.add_user_interaction`,
+        so it covers only the route's MAPPING of the exception onto a 504. It
+        cannot see `InteractionsMixin.publish_interaction`, which sits below
+        the patch and used to swallow exactly this exception --
+        `test_deadline_abort_crosses_the_library_boundary` in
+        tests/server/services/test_durable_window_pipeline.py is the guard for
+        that, and it mocks nothing above the defect.
 
         The route's own deadline is left at its default 240s: nothing here
         times out, which is the point. Only the worker raises.
         """
         from reflexio.server.services.durable_learning import waiting
+        from reflexio.server.services.durable_learning.waiting import (
+            PublishDeadlineExceededError,
+        )
 
         def worker_timeout(**_kwargs):
-            raise TimeoutError("socket read timed out")
+            raise PublishDeadlineExceededError("Publish admission deadline exceeded")
 
         with patch(
             "reflexio.server.api_endpoints.publisher_api.add_user_interaction",
@@ -559,6 +574,56 @@ class TestPublishInteraction:
         assert not waiting._ingesting, (
             f"ingestion slots leaked on the worker-timeout path: {waiting._ingesting}"
         )
+
+    def test_timeout_error_bodies_are_in_the_generated_openapi(self, client):
+        """503 and 504 must carry a response SCHEMA, not just a description.
+
+        `HTTPException` nests the structured body under `detail`, so a
+        generated client has to be told about two levels, not one. A prose
+        description gives it neither, and the retry contract these statuses
+        exist to expose is then undiscoverable.
+
+        Both halves are asserted, and the second is the one that keeps the
+        first honest: the declared schema, and that the route's live body
+        VALIDATES against it. A declaration nothing constructs drifts silently
+        from what is emitted.
+        """
+        from reflexio.models.api_schema.service_schemas import (
+            PublishCapacityRefusedResponse,
+        )
+
+        schema = client.app.openapi()
+        responses = schema["paths"]["/api/publish_interaction"]["post"]["responses"]
+        defs = schema["components"]["schemas"]
+
+        for code, model_name, reason in (
+            ("503", "PublishCapacityRefusedResponse", "capacity_deadline_exceeded"),
+            ("504", "PublishTimeoutResponse", "publish_timeout"),
+        ):
+            ref = responses[code]["content"]["application/json"]["schema"]["$ref"]
+            assert ref.endswith(f"/{model_name}"), (
+                f"{code} has no response schema; generated clients see nothing"
+            )
+            detail_ref = defs[model_name]["properties"]["detail"]["$ref"]
+            detail = defs[detail_ref.rsplit("/", 1)[-1]]
+            assert set(detail["properties"]) == {"reason", "request_id", "message"}, (
+                f"{code}'s detail schema does not match the emitted envelope"
+            )
+            assert detail["properties"]["reason"]["const"] == reason
+
+        # The live 503 body must parse as the model that describes it.
+        async def never_admitted(_org_id, _deadline):
+            return False
+
+        with patch(
+            "reflexio.server.services.durable_learning.waiting.acquire_ingestion",
+            never_admitted,
+        ):
+            response = client.post(
+                "/api/publish_interaction", json=self._publish_payload()
+            )
+        assert response.status_code == 503
+        PublishCapacityRefusedResponse.model_validate(response.json())
 
 
 class TestSearchEndpoints:

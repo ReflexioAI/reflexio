@@ -41,10 +41,28 @@ def coverage_stalled(status: dict[str, Any]) -> bool:
     return status["status"] == "pending" and status["reason"] == "waiting_for_window"
 
 
+class PublishDeadlineExceededError(TimeoutError):
+    """The publish worker ran past the deadline it was admitted under.
+
+    A ``TimeoutError`` subclass so the publish route's ``except TimeoutError``
+    -- which also has to catch ``asyncio.wait_for`` giving up -- sees it, and
+    the ``operation.done()`` discriminator there tells the two apart.
+
+    It is a distinct TYPE because ``InteractionsMixin.publish_interaction``
+    deliberately converts every ``Exception`` into
+    ``PublishUserInteractionResponse(success=False)`` for its library and CLI
+    callers. A bare ``TimeoutError`` was therefore swallowed at that boundary
+    and never reached the route, which made the declared 504
+    ``publish_timeout`` contract unreachable. This one type is re-raised
+    through the boundary; every other failure still degrades to
+    ``success=False``, because those callers have no exception contract.
+    """
+
+
 def check_admission_deadline() -> None:
     deadline = admission_deadline.get()
     if deadline is not None and time.monotonic() >= deadline:
-        raise TimeoutError("Publish admission deadline exceeded")
+        raise PublishDeadlineExceededError("Publish admission deadline exceeded")
 
 
 async def acquire_ingestion(org_id: str, deadline: float) -> bool:

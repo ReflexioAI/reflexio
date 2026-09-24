@@ -433,9 +433,7 @@ class GenerationService:
                         with publish_timing.excluded():
                             deadline = publish_start + 240
                             while time.perf_counter() < deadline:
-                                status = storage.extraction_status(
-                                    user_id, request_id
-                                )
+                                status = storage.extraction_status(user_id, request_id)
                                 if status["status"] == "done":
                                     break
                                 # A partial window needs input this caller does

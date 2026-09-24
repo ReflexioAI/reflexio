@@ -28,6 +28,9 @@ from reflexio.models.api_schema.service_schemas import (
     PublishUserInteractionRequest,
     PublishUserInteractionResponse,
 )
+from reflexio.server.services.durable_learning.waiting import (
+    PublishDeadlineExceededError,
+)
 from reflexio.server.services.generation_service import GenerationService
 from reflexio.server.services.storage.storage_base import BaseStorage
 
@@ -162,8 +165,30 @@ class InteractionsMixin(ReflexioBase):
                 ),
                 learning_reason=None if status is None else status["reason"],
             )
+        except PublishDeadlineExceededError:
+            # The ONE failure that must cross this boundary as an exception.
+            # The HTTP route maps it to a 504 carrying the request_id; nothing
+            # else can, because `success=False` is indistinguishable from a
+            # validation refusal once it has been flattened into a response.
+            #
+            # Deliberately narrow. Every other exception -- including a bare
+            # `TimeoutError` from a socket read -- keeps the `success=False`
+            # contract the CLI and library callers are written against.
+            raise
         except Exception as e:
-            return PublishUserInteractionResponse(success=False, message=str(e))
+            # Carry the id even on the failure path. Without it a caller that
+            # supplied one still has it, but a caller relying on the server to
+            # mint one is left with no handle at all, and so cannot check
+            # whether the publish committed before retrying.
+            return PublishUserInteractionResponse(
+                success=False,
+                message=str(e),
+                request_id=(
+                    request.request_id
+                    if isinstance(request, PublishUserInteractionRequest)
+                    else None
+                ),
+            )
 
     def search_interactions(
         self,
