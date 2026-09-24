@@ -9,13 +9,16 @@ each other rather than to a literal.
 """
 
 import inspect
+import warnings
 from typing import Any
 
 import pytest
 
 from reflexio import ReflexioClient, SessionScopedClient
+from reflexio.client.client import _accepts_session_argument
 from reflexio.models.api_schema.retriever_schema import (
     GetRequestsRequest,
+    SearchAgentPlaybookRequest,
     UnifiedSearchRequest,
 )
 
@@ -28,11 +31,8 @@ INTERACTIONS = [{"role": "user", "content": "how do I get a refund?"}]
 # itself, not a call that needs binding. It is the only legitimate exemption.
 BINDING_ENTRY_POINT = {"for_session"}
 
-# Every other ReflexioClient method that takes a session-correlation argument.
-# Pinned so that adding one upstream fails here until it is given an
-# explicit binding on SessionScopedClient rather than silently reaching
-# callers uncorrelated.
-SESSION_TAKING_CLIENT_METHODS = {
+# ReflexioClient methods whose SIGNATURE exposes a session argument.
+SESSION_PARAM_CLIENT_METHODS = {
     "delete_session",
     "get_requests",
     "get_retrieved_learning_evaluation_results",
@@ -45,6 +45,26 @@ SESSION_TAKING_CLIENT_METHODS = {
     "search_async",
     "search_user_playbooks",
 }
+
+# Methods that carry correlation ONLY as a field of the request model they
+# build -- no session parameter appears in the signature at all. Kept as a
+# separate set because a signature-only scan reports every one of these
+# session-free: that is exactly how they shipped forwarding unbound, sending
+# ``session_id: null`` from a scoped client.
+SESSION_MODEL_CLIENT_METHODS = {
+    "get_agent_playbooks",
+    "search_agent_playbooks",
+    "search_profiles",
+    "search_user_profiles",
+}
+
+# Every ReflexioClient method that can carry session correlation, either way.
+# Pinned so that adding one upstream fails here until it is given an
+# explicit binding on SessionScopedClient rather than silently reaching
+# callers uncorrelated.
+SESSION_TAKING_CLIENT_METHODS = (
+    SESSION_PARAM_CLIENT_METHODS | SESSION_MODEL_CLIENT_METHODS
+)
 
 _RESPONSES: dict[str, dict[str, Any]] = {
     "/api/search": {
@@ -61,6 +81,19 @@ _RESPONSES: dict[str, dict[str, Any]] = {
     "/api/get_retrieved_learning_evaluation_results": {"success": True, "results": []},
     "/api/evaluations/grade_on_demand": {"session_id": BOUND},
     "/api/delete_session": {"success": True},
+    "/api/search_agent_playbooks": {"success": True, "agent_playbooks": []},
+    "/api/search_profiles": {"success": True, "user_profiles": []},
+    "/api/get_agent_playbooks": {"success": True, "agent_playbooks": []},
+}
+
+# The four request-model-only methods, with the path each posts to and a
+# minimal call. ``search_profiles`` and ``search_user_profiles`` share an
+# endpoint -- they are the deprecated alias and its replacement.
+MODEL_BOUND_CALLS = {
+    "search_agent_playbooks": ("/api/search_agent_playbooks", {"query": "q"}),
+    "search_user_profiles": ("/api/search_profiles", {"user_id": "u1", "query": "q"}),
+    "search_profiles": ("/api/search_profiles", {"user_id": "u1", "query": "q"}),
+    "get_agent_playbooks": ("/api/get_agent_playbooks", {"query": "q"}),
 }
 
 
@@ -420,15 +453,19 @@ def test_forwarding_refuses_an_unbound_session_taking_method() -> None:
 
 
 def _session_taking_methods(cls: type) -> set[str]:
+    """Discover session-carrying methods using the PRODUCTION check.
+
+    Deliberately not a reimplementation. ``_accepts_session_argument`` is
+    what ``__getattr__`` consults to decide whether forwarding a method is
+    safe, so a scan that re-derived the answer here could agree with the
+    pinned set below while the shipped guard disagreed with both -- which is
+    how four methods stayed broken under a green drift test.
+    """
     found = set()
     for name, member in inspect.getmembers(cls, callable):
         if name.startswith("_"):
             continue
-        try:
-            parameters = inspect.signature(member).parameters
-        except (TypeError, ValueError):
-            continue
-        if parameters.keys() & {"session_id", "session_ids"}:
+        if _accepts_session_argument(member):
             found.add(name)
     return found - BINDING_ENTRY_POINT
 
@@ -450,6 +487,213 @@ def test_every_session_taking_client_method_has_a_scoped_binding() -> None:
         "wrapper on SessionScopedClient, so a scoped call would go out "
         "uncorrelated."
     )
+
+
+# ---------------------------------------------------------------------------
+# Correlation carried by the request model rather than by a parameter
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("method_name", sorted(MODEL_BOUND_CALLS))
+def test_request_model_only_method_sends_the_bound_session(
+    monkeypatch, method_name: str
+) -> None:
+    """The bound session must reach the WIRE, not merely a wrapper.
+
+    These four expose correlation only through their request model, so the
+    original signature-only guard called them session-free and forwarded
+    them unchanged -- every one of them sent ``session_id: null``. The
+    assertion is on the JSON body the server would receive, because a test
+    that only proved the wrapper ran would have passed against that too.
+    """
+    path, kwargs = MODEL_BOUND_CALLS[method_name]
+    client = _make_client()
+    captured = _capture_sync(monkeypatch, client)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        getattr(client.for_session(BOUND), method_name)(**kwargs)
+
+    assert captured[path]["session_id"] == BOUND
+
+
+def test_request_model_only_search_agrees_with_publish(monkeypatch) -> None:
+    """The point of binding: the retrieval and the turn land in ONE session."""
+    client = _make_client()
+    captured = _capture_sync(monkeypatch, client)
+    scoped = client.for_session(BOUND)
+
+    scoped.search_agent_playbooks(query="how do I get a refund?")
+    scoped.publish_interaction(user_id="u1", interactions=INTERACTIONS)
+
+    assert (
+        captured["/api/search_agent_playbooks"]["session_id"]
+        == captured["/api/publish_interaction"]["session_id"]
+    )
+
+
+def test_request_model_binding_keeps_the_callers_other_arguments(monkeypatch) -> None:
+    """Binding must MERGE, not replace, the caller's arguments.
+
+    ``_build_request`` ignores every keyword argument when ``request`` is
+    supplied, so a wrapper that forwarded both would send a request carrying
+    the session and nothing else. This fails the moment that happens.
+    """
+    client = _make_client()
+    captured = _capture_sync(monkeypatch, client)
+
+    client.for_session(BOUND).search_agent_playbooks(
+        query="refunds", agent_version="v9", top_k=7
+    )
+
+    body = captured["/api/search_agent_playbooks"]
+    assert body["session_id"] == BOUND
+    assert body["query"] == "refunds"
+    assert body["agent_version"] == "v9"
+    assert body["top_k"] == 7
+
+
+def test_build_request_ignores_kwargs_when_a_request_is_given() -> None:
+    """Pin the premise the wrapper's merge exists for.
+
+    ``_bind_request`` says it must merge locally *because* ``_build_request``
+    drops keyword arguments alongside a ``request``. If that stopped being
+    true the comment would be stale and the merge redundant -- so assert the
+    behaviour rather than trusting the prose.
+    """
+    client = _make_client()
+    built = client._build_request(
+        SearchAgentPlaybookRequest(query="from-request"),
+        SearchAgentPlaybookRequest,
+        query="from-kwargs",
+        top_k=7,
+    )
+
+    assert built.query == "from-request"
+    assert built.top_k != 7
+
+
+@pytest.mark.parametrize("method_name", sorted(SESSION_MODEL_CLIENT_METHODS))
+def test_model_bound_methods_are_detected_only_via_their_request_model(
+    method_name: str,
+) -> None:
+    """These have no session parameter -- detection must come from the model.
+
+    Guards the widening itself: narrowing ``_accepts_session_argument`` back
+    to parameter names would leave the first assertion true and the second
+    false, which is the state the four shipped in.
+    """
+    method = getattr(ReflexioClient, method_name)
+    parameters = inspect.signature(method).parameters
+
+    assert not parameters.keys() & {"session_id", "session_ids"}
+    assert _accepts_session_argument(method)
+
+
+@pytest.mark.parametrize("method_name", sorted(MODEL_BOUND_CALLS))
+def test_request_model_only_method_refuses_a_conflicting_session(
+    method_name: str,
+) -> None:
+    """A conflict inside the request object is refused, as elsewhere.
+
+    The session goes in the request dict alongside the other fields rather
+    than beside it as a kwarg: ``_build_request`` drops kwargs whenever a
+    request is supplied, so a half-and-half call would fail model validation
+    before ever reaching the conflict check.
+    """
+    _, kwargs = MODEL_BOUND_CALLS[method_name]
+    scoped = _make_client().for_session(BOUND)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        with pytest.raises(ValueError, match="cannot belong to two sessions"):
+            getattr(scoped, method_name)(request={"session_id": OTHER, **kwargs})
+
+
+def test_scoped_agent_playbook_cache_does_not_serve_another_session(
+    monkeypatch,
+) -> None:
+    """A cache hit that skips the server loses the correlation again.
+
+    ``get_agent_playbooks`` is the one bound method with a client-side
+    cache. If the session is not part of the key, the second session is
+    served the first one's response, never reaches the server, and is never
+    metered -- undoing the binding for every call after the first.
+    """
+    client = _make_client()
+    paths: list[str] = []
+    bodies: list[dict[str, Any]] = []
+
+    def fake_make_request(method: str, path: str, **kwargs: Any) -> dict[str, Any]:
+        paths.append(path)
+        bodies.append(kwargs.get("json", {}))
+        return _RESPONSES[path]
+
+    monkeypatch.setattr(client, "_make_request", fake_make_request)
+
+    client.for_session(BOUND).get_agent_playbooks(query="q")
+    client.for_session(OTHER).get_agent_playbooks(query="q")
+
+    assert len(paths) == 2, "the second session was served from cache"
+    assert [b["session_id"] for b in bodies] == [BOUND, OTHER]
+
+
+# ---------------------------------------------------------------------------
+# Whitespace: one bound session must mean one session on every schema
+# ---------------------------------------------------------------------------
+
+
+def test_a_padded_session_id_is_normalized_before_binding() -> None:
+    scoped = _make_client().for_session(f"  {BOUND}  ")
+
+    assert scoped.session_id == BOUND
+
+
+def test_a_padded_session_id_still_correlates_search_with_publish(
+    monkeypatch,
+) -> None:
+    """The schemas disagree about whitespace; the bound value must not.
+
+    Search requests type ``session_id`` as a plain ``str`` and send it
+    verbatim, while publish types it ``NonEmptyStr``, which strips. Binding
+    the raw value therefore put a padded ID on one call and a stripped ID on
+    the other -- two calls through a single scoped client, landing in two
+    different sessions.
+    """
+    client = _make_client()
+    captured = _capture_sync(monkeypatch, client)
+    scoped = client.for_session(f"  {BOUND}  ")
+
+    scoped.search(query="q", user_id="u1")
+    scoped.publish_interaction(user_id="u1", interactions=INTERACTIONS)
+
+    assert (
+        captured["/api/search"]["session_id"]
+        == captured["/api/publish_interaction"]["session_id"]
+        == BOUND
+    )
+
+
+def test_the_search_schema_really_does_not_normalize_whitespace() -> None:
+    """Pin the reason the client normalizes at binding time.
+
+    If ``UnifiedSearchRequest`` ever gained a stripping validator, the
+    explanation above would be stale. Assert the asymmetry rather than
+    describing it.
+    """
+    padded = f"  {BOUND}  "
+
+    assert UnifiedSearchRequest(query="q", session_id=padded).session_id == padded
+
+
+def test_an_explicit_padded_session_id_is_not_a_conflict(monkeypatch) -> None:
+    """ " abc " and "abc" name one session -- refusing the pair is a false alarm."""
+    client = _make_client()
+    captured = _capture_sync(monkeypatch, client)
+
+    client.for_session(BOUND).search(query="q", user_id="u1", session_id=f"  {BOUND}  ")
+
+    assert captured["/api/search"]["session_id"] == BOUND
 
 
 def test_scoped_bindings_accept_every_parameter_of_the_method_they_wrap() -> None:

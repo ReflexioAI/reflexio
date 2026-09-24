@@ -7,7 +7,7 @@ import warnings
 from collections.abc import Callable, Coroutine, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
-from typing import Any, Literal, TypeVar
+from typing import Any, Literal, TypeVar, get_args
 from urllib.parse import urljoin
 
 import aiohttp
@@ -2202,6 +2202,11 @@ class ReflexioClient:
         if not force_refresh:
             cached_result = self._cache.get(
                 "get_agent_playbooks",
+                # Part of the key, or a scoped call would be served another
+                # session's cached response and never reach the server to be
+                # metered -- re-losing the correlation the binding just made.
+                # Unscoped callers pass None, so their key is unpartitioned.
+                session_id=req.session_id,
                 limit=req.limit,
                 agent_playbook_id=req.agent_playbook_id,
                 query=req.query,
@@ -2228,6 +2233,7 @@ class ReflexioClient:
         self._cache.set(
             "get_agent_playbooks",
             result,
+            session_id=req.session_id,  # keep in step with the lookup key above
             limit=req.limit,
             agent_playbook_id=req.agent_playbook_id,
             query=req.query,
@@ -3385,22 +3391,63 @@ class ReflexioClient:
         return ClearUserDataResponse(**response)
 
 
-# Parameter names that carry session correlation. Any client method taking one
-# of these must have an explicit binding wrapper on ``SessionScopedClient``;
-# ``__getattr__`` refuses to forward the rest so a newly added method cannot
-# silently reach callers unbound.
+# Names that carry session correlation, whether they appear as a method
+# parameter or as a field of the request model that method builds. Any client
+# method reaching one of these either way must have an explicit binding
+# wrapper on ``SessionScopedClient``; ``__getattr__`` refuses to forward the
+# rest so a newly added method cannot silently reach callers unbound.
 _SESSION_PARAM_NAMES = frozenset({"session_id", "session_ids"})
 
 _MISSING = object()
 
 
+def _session_model_fields(annotation: Any) -> set[str]:
+    """Session-correlation fields reachable through a request model.
+
+    Walks the whole annotation, not just its outermost type: the request
+    parameter is spelled ``Model | dict | None``, so the model that carries
+    the field is a union member rather than the annotation itself.
+    """
+    found: set[str] = set()
+    stack: list[Any] = [annotation]
+    seen: set[int] = set()
+    while stack:
+        current = stack.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        if isinstance(current, type) and issubclass(current, BaseModel):
+            found |= set(current.model_fields) & _SESSION_PARAM_NAMES
+        stack.extend(get_args(current))
+    return found
+
+
 def _accepts_session_argument(func: Any) -> bool:
-    """Report whether ``func`` takes a session-correlation parameter."""
+    """Report whether ``func`` can carry session correlation.
+
+    Two shapes count, and the second is the one a signature-only check
+    misses. ``search`` exposes ``session_id`` as a parameter; but
+    ``search_agent_playbooks``, ``search_profiles``, ``search_user_profiles``
+    and ``get_agent_playbooks`` expose it **only** as a field of the request
+    model they build. Reading parameter names alone reported all four
+    session-free, so ``__getattr__`` forwarded them unchanged and a scoped
+    call went out with ``session_id: null`` -- the exact uncorrelated
+    exposure this client exists to prevent. Checking request-model fields
+    too is what makes a newly added method of either shape fail loudly here
+    instead of silently reaching callers unbound.
+    """
     try:
         parameters = inspect.signature(func).parameters
     except (TypeError, ValueError):  # builtins / C functions
         return False
-    return any(name in _SESSION_PARAM_NAMES for name in parameters)
+    for name, parameter in parameters.items():
+        if name in _SESSION_PARAM_NAMES:
+            return True
+        if parameter.annotation is inspect.Parameter.empty:
+            continue
+        if _session_model_fields(parameter.annotation):
+            return True
+    return False
 
 
 class SessionScopedClient:
@@ -3451,7 +3498,14 @@ class SessionScopedClient:
         if session_id is None or not str(session_id).strip():
             raise ValueError("session_id is required and cannot be empty")
         self._client = client
-        self._session_id = session_id
+        # Store the STRIPPED value, not the original. The schemas disagree
+        # about whitespace: publish and lifecycle requests type session_id as
+        # NonEmptyStr, whose validator strips it, while the search requests
+        # use a plain str and send it verbatim. Binding "  abc  " would then
+        # put "abc" on the publish and "  abc  " on the search -- two calls
+        # through one scoped client, landing in two different sessions, which
+        # is precisely the disagreement this class exists to make impossible.
+        self._session_id = str(session_id).strip()
 
     @property
     def session_id(self) -> str:
@@ -3473,9 +3527,11 @@ class SessionScopedClient:
 
         ``None`` means "not supplied" and yields the bound ID. An explicit
         value equal to the bound ID is accepted so existing call sites can
-        be wrapped without being edited first.
+        be wrapped without being edited first. Comparison is on the stripped
+        value, matching how the bound ID was normalized: " abc " and "abc"
+        name one session, and refusing that pair would be a false conflict.
         """
-        if explicit is not None and explicit != self._session_id:
+        if explicit is not None and str(explicit).strip() != self._session_id:
             raise ValueError(
                 f"session_id={explicit!r} was passed to a client scoped to "
                 f"session_id={self._session_id!r}. A scoped call cannot "
@@ -3488,7 +3544,9 @@ class SessionScopedClient:
 
     def _resolve_many(self, explicit: list[str] | None) -> list[str]:
         """Return ``[bound session]``, rejecting a conflicting explicit list."""
-        if explicit is not None and list(explicit) != [self._session_id]:
+        if explicit is not None and [str(s).strip() for s in explicit] != [
+            self._session_id
+        ]:
             raise ValueError(
                 f"session_ids={list(explicit)!r} was passed to a client scoped "
                 f"to session_id={self._session_id!r}. A scoped read covers the "
@@ -3516,6 +3574,26 @@ class SessionScopedClient:
         if existing == self._session_id:
             return request
         return request.model_copy(update={"session_id": self._session_id})
+
+    def _bind_request(
+        self, request: Any, model_class: type[BaseModel], **kwargs: Any
+    ) -> Any:
+        """Build a wrapped method's request object with the session bound.
+
+        For the four retrieval methods that expose correlation only through
+        their request model, binding has to happen on the built object -- the
+        method has no ``session_id`` parameter to pass one through.
+
+        The merge must happen *here* rather than by forwarding ``request``
+        and the keyword arguments together: ``_build_request`` returns the
+        supplied ``request`` untouched and **ignores every keyword argument**
+        when one is given, so a wrapper that passed both would silently drop
+        the caller's kwargs. Building the finished object and handing it down
+        as ``request=`` is what keeps them.
+        """
+        return self._scope_request(
+            self._client._build_request(request, model_class, **kwargs)
+        )
 
     def __getattr__(self, name: str) -> Any:
         """Forward session-free methods to the underlying client.
@@ -3743,6 +3821,185 @@ class SessionScopedClient:
             search_mode=search_mode,
             request_id=request_id,
             session_id=self._resolve(session_id),
+        )
+
+    # -- retrieval bound through the request model ------------------------
+    #
+    # These four take no ``session_id`` parameter: they carry correlation
+    # only as a field of the request they build. Each therefore binds by
+    # building that request here and handing it down, rather than by passing
+    # an argument through.
+
+    def search_user_profiles(
+        self,
+        request: SearchUserProfileRequest | dict | None = None,
+        *,
+        user_id: str | None = None,
+        generated_from_request_id: str | None = None,
+        query: str | None = None,
+        start_time: datetime | None = None,
+        end_time: datetime | None = None,
+        top_k: int | None = None,
+        source: str | None = None,
+        custom_feature: str | None = None,
+        extractor_name: str | None = None,
+        tags: list[str] | None = None,
+        threshold: float | None = None,
+        enable_reformulation: bool | None = None,
+        search_mode: SearchMode | None = None,
+    ) -> SearchProfilesViewResponse:
+        """Search user profiles within the bound session.
+
+        Identical to :meth:`ReflexioClient.search_user_profiles` except that
+        the request carries the bound session.
+        """
+        return self._client.search_user_profiles(
+            self._bind_request(
+                request,
+                SearchUserProfileRequest,
+                user_id=user_id,
+                generated_from_request_id=generated_from_request_id,
+                query=query,
+                start_time=start_time,
+                end_time=end_time,
+                top_k=top_k,
+                source=source,
+                custom_feature=custom_feature,
+                extractor_name=extractor_name,
+                tags=tags,
+                threshold=threshold,
+                enable_reformulation=enable_reformulation,
+                search_mode=search_mode,
+            )
+        )
+
+    # NOTE: keep signature in sync with search_user_profiles
+    def search_profiles(
+        self,
+        request: SearchUserProfileRequest | dict | None = None,
+        *,
+        user_id: str | None = None,
+        generated_from_request_id: str | None = None,
+        query: str | None = None,
+        start_time: datetime | None = None,
+        end_time: datetime | None = None,
+        top_k: int | None = None,
+        source: str | None = None,
+        custom_feature: str | None = None,
+        extractor_name: str | None = None,
+        tags: list[str] | None = None,
+        threshold: float | None = None,
+        enable_reformulation: bool | None = None,
+        search_mode: SearchMode | None = None,
+    ) -> SearchProfilesViewResponse:
+        """Deprecated alias of :meth:`search_user_profiles`, session bound.
+
+        Forwards to the deprecated client method so its DeprecationWarning
+        still reaches the caller.
+        """
+        return self._client.search_profiles(
+            self._bind_request(
+                request,
+                SearchUserProfileRequest,
+                user_id=user_id,
+                generated_from_request_id=generated_from_request_id,
+                query=query,
+                start_time=start_time,
+                end_time=end_time,
+                top_k=top_k,
+                source=source,
+                custom_feature=custom_feature,
+                extractor_name=extractor_name,
+                tags=tags,
+                threshold=threshold,
+                enable_reformulation=enable_reformulation,
+                search_mode=search_mode,
+            )
+        )
+
+    def search_agent_playbooks(
+        self,
+        request: SearchAgentPlaybookRequest | dict | None = None,
+        *,
+        query: str | None = None,
+        user_id: str | None = None,
+        agent_version: str | None = None,
+        playbook_name: str | None = None,
+        source: str | None = None,
+        start_time: datetime | None = None,
+        end_time: datetime | None = None,
+        status_filter: list[Status | None] | None = None,
+        playbook_status_filter: PlaybookStatus | None = None,
+        tags: list[str] | None = None,
+        top_k: int | None = None,
+        threshold: float | None = None,
+        enable_reformulation: bool | None = None,
+        search_mode: SearchMode | None = None,
+    ) -> SearchAgentPlaybooksViewResponse:
+        """Search agent playbooks within the bound session.
+
+        Identical to :meth:`ReflexioClient.search_agent_playbooks` except
+        that the request carries the bound session.
+        """
+        return self._client.search_agent_playbooks(
+            self._bind_request(
+                request,
+                SearchAgentPlaybookRequest,
+                query=query,
+                user_id=user_id,
+                agent_version=agent_version,
+                playbook_name=playbook_name,
+                source=source,
+                start_time=start_time,
+                end_time=end_time,
+                status_filter=status_filter,
+                playbook_status_filter=playbook_status_filter,
+                tags=tags,
+                top_k=top_k,
+                threshold=threshold,
+                enable_reformulation=enable_reformulation,
+                search_mode=search_mode,
+            )
+        )
+
+    def get_agent_playbooks(
+        self,
+        request: GetAgentPlaybooksRequest | dict | None = None,
+        force_refresh: bool = False,
+        *,
+        limit: int | None = None,
+        agent_playbook_id: int | None = None,
+        query: str | None = None,
+        playbook_name: str | None = None,
+        agent_version: str | None = None,
+        start_time: datetime | None = None,
+        end_time: datetime | None = None,
+        status_filter: list[Status | None] | None = None,
+        playbook_status_filter: PlaybookStatus | None = None,
+        tags: list[str] | None = None,
+    ) -> GetAgentPlaybooksViewResponse:
+        """Get agent playbooks within the bound session.
+
+        Identical to :meth:`ReflexioClient.get_agent_playbooks` except that
+        the request carries the bound session. ``force_refresh`` is not a
+        request field, so it is forwarded as an argument.
+        """
+        return self._client.get_agent_playbooks(
+            self._bind_request(
+                request,
+                GetAgentPlaybooksRequest,
+                limit=limit,
+                agent_playbook_id=agent_playbook_id,
+                query=query,
+                playbook_name=playbook_name,
+                agent_version=agent_version,
+                start_time=start_time,
+                end_time=end_time,
+                status_filter=status_filter,
+                playbook_status_filter=playbook_status_filter,
+                tags=tags,
+            ),
+            force_refresh,
         )
 
     # -- session lifecycle ------------------------------------------------
