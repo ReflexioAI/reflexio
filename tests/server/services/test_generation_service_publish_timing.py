@@ -332,64 +332,45 @@ def test_a_publish_cancelled_while_queued_still_reports(
     assert "admission_ms=" in lines[0], lines[0]
 
 
-def test_the_retention_sweep_is_attributed_to_its_own_phase() -> None:
-    """The largest untimed region on the publish path must report itself.
+def test_the_publish_path_issues_no_retention_round_trips() -> None:
+    """INVERTED from a phase-attribution guard when its subject was deleted.
 
-    `_cleanup_storage_tables_if_needed` ran two lines above `publish_start`,
-    so it was outside the service's own clock entirely. Most publishes find
-    nothing due and return in microseconds; when the throttle window opens,
-    ONE publish takes a lock and probes every retention target on its own
-    connection -- ~20 serialised pool acquisitions on the request thread,
-    attributed to nothing.
+    This test used to assert that `retention_sweep_ms` was present and contained
+    the sweep's elapsed time, because the sweep ran two lines above
+    `publish_start` and was in no phase at all. The sweep has since moved to the
+    lineage GC scheduler, so the subject of that assertion is gone. Where the
+    deleted thing WAS the test's subject, invert the test: asserting
+    `retention_sweep_ms == 0` would be a check that cannot fail, because a key
+    that is never written reads as absent either way.
 
-    The assertion is bounded on BOTH sides on purpose. A lower bound alone
-    passes against a wrap placed around the whole of `run()`, which would
-    report the sweep's cost plus everything else under a name that claims to
-    be the sweep -- the same "something else satisfied the condition" shape
-    `verifying-before-building.md` catalogues. So a second, deliberately
-    slower region runs inside `run()` and the sweep phase must NOT contain it.
+    BOTH halves are required. The missing-phase-key assertion alone still passes
+    if someone calls the storage hook outside a `publish_timing.phase` wrapper,
+    which is precisely the defect shape the instrument was built to find.
     """
-    sweep_s = 0.25
-    ingest_s = 0.6
-
     with tempfile.TemporaryDirectory() as temp_dir:
         service = _service(temp_dir)
         storage = service.storage
         assert storage is not None
-        original_bulk = type(storage).add_user_interactions_bulk
 
-        def slow_bulk(self: object, *args: object, **kwargs: object) -> object:
-            time.sleep(ingest_s)
-            return original_bulk(self, *args, **kwargs)  # type: ignore[arg-type]
+        probes: list[str] = []
+
+        def recording_count(_self: object, target_name: str) -> int:
+            probes.append(target_name)
+            return 0
 
         with (
-            patch.object(
-                type(service),
-                "_cleanup_storage_tables_if_needed",
-                lambda _self: time.sleep(sweep_s),
-            ),
-            patch.object(type(storage), "add_user_interactions_bulk", slow_bulk),
+            patch.object(type(storage), "count_retention_target_rows", recording_count),
             publish_timing.collect(),
         ):
             service.run(_publish_request(), defer_learning=True)
             snap = publish_timing.snapshot()
 
     assert snap is not None
-    assert "retention_sweep_ms" in snap, (
-        "the retention sweep is in no phase, so a publish that spends seconds "
-        f"in it reports nothing about where the time went: {sorted(snap)}"
+    assert "retention_sweep_ms" not in snap, (
+        "the publish path still reports a retention phase, so the sweep was not "
+        f"removed from it: {sorted(snap)}"
     )
-    sweep_ms = snap["retention_sweep_ms"]
-    assert sweep_ms >= int(sweep_s * 1000 * 0.75), (
-        f"retention_sweep_ms={sweep_ms} does not contain the {int(sweep_s * 1000)}ms "
-        "sweep, so the phase is not around the sweep call"
-    )
-    # Proves the upper bound below is not vacuous: the region the sweep phase
-    # must exclude really did cost measurable time on this run.
-    assert snap.get("add_interactions_ms", 0) >= int(ingest_s * 1000 * 0.75), (
-        f"the contrasting region was not slow, so the bound proves nothing: {snap}"
-    )
-    assert sweep_ms < int((sweep_s + ingest_s * 0.5) * 1000), (
-        f"retention_sweep_ms={sweep_ms} has swallowed the {int(ingest_s * 1000)}ms "
-        "ingest, so the phase is wrapped around more than the sweep"
+    assert probes == [], (
+        "the publish path still probes retention targets, so it still pays for "
+        f"them whether or not a phase reports it: {probes}"
     )

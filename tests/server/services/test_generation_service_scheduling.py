@@ -273,7 +273,6 @@ def test_learning_stall_path_calls_post_publish_helper(
         llm_client=MagicMock(name="llm_client"),
         request_context=cast(Any, request_context),
     )
-    service._cleanup_storage_tables_if_needed = MagicMock()  # type: ignore[method-assign]
     post_publish = MagicMock()
     monkeypatch.setattr(
         GenerationService,

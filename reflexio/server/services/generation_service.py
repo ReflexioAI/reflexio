@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import logging
-import os
-import threading
 import time
 import uuid
 from collections.abc import Callable, Mapping
@@ -32,7 +30,6 @@ from reflexio.server.services.agent_success_evaluation.scheduler import (
     GroupEvaluationScheduler,
 )
 from reflexio.server.services.external_admission import ExternalAdmissionParticipant
-from reflexio.server.services.operation_state_utils import OperationStateManager
 from reflexio.server.services.profile.service import (
     ProfileGenerationService,
 )
@@ -43,10 +40,6 @@ from reflexio.server.services.shadow_comparison.worker import (
     ShadowComparisonJob,
     enqueue_shadow_comparison,
 )
-from reflexio.server.services.storage.retention import (
-    delete_count_for_retention,
-    get_row_retention_limits,
-)
 from reflexio.server.usage_metrics import record_usage_event
 from reflexio.server.work_scope import current_project_id
 
@@ -55,7 +48,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 # Stale lock timeout - if cleanup started > 10 min ago and still "in_progress", assume it crashed
-CLEANUP_STALE_LOCK_SECONDS = 600
 _STALL_WARNING_PREFIX = "Reflexio learning is paused"
 
 
@@ -90,53 +82,6 @@ _DURABLE_LOCK_CLEARED_STATE = {
     "pending_request_id": None,
     "pending_request_queue": [],
 }
-
-
-def _retention_cleanup_interval_seconds() -> float:
-    raw = os.getenv("REFLEXIO_RETENTION_CLEANUP_INTERVAL_SECONDS", "300") or "300"
-    try:
-        return max(0.0, float(raw))
-    except ValueError:
-        logger.warning(
-            "Invalid REFLEXIO_RETENTION_CLEANUP_INTERVAL_SECONDS=%r; using 300",
-            raw,
-        )
-        return 300.0
-
-
-_RETENTION_CLEANUP_INTERVAL_SECONDS = _retention_cleanup_interval_seconds()
-# Keyed ``(org_id, project_id, target_name)``. The project component is what
-# keeps per-project retention alive: the throttle is consulted BEFORE the
-# ``storage_table_cleanup`` lease is taken, so an org-wide key would let the
-# first project to sweep silence every sibling project for a full interval --
-# no error, no log, just a retention pass that never happens. ``project_id`` is
-# ``None`` wherever projects do not exist (OSS) or the caller is unbound, which
-# makes the key a 1:1 relabel of the old org-wide one for those installs.
-_retention_cleanup_last_run: dict[tuple[str, str | None, str], float] = {}
-_retention_cleanup_lock = threading.Lock()
-# Soft cap on tracked keys. The key space now grows with project count as well
-# as org count, so bound it -- but only by evicting entries whose interval has
-# already elapsed. Such an entry would admit its next check anyway, so dropping
-# it is semantics-preserving; the surviving working set is whatever actually
-# published inside one interval, which real traffic already bounds.
-_RETENTION_CLEANUP_TRACKED_KEYS_SOFT_CAP = 4096
-
-
-def _prune_expired_retention_keys(now: float) -> None:
-    """Drop throttle entries whose interval has elapsed.
-
-    Callers must hold ``_retention_cleanup_lock``.
-
-    Args:
-        now (float): ``time.monotonic()`` reading of the current check.
-    """
-    expired = [
-        key
-        for key, last_run in _retention_cleanup_last_run.items()
-        if now - last_run >= _RETENTION_CLEANUP_INTERVAL_SECONDS
-    ]
-    for key in expired:
-        del _retention_cleanup_last_run[key]
 
 
 @dataclass
@@ -218,35 +163,6 @@ class GenerationService:
         if not user_id:
             logger.error("Received None user_id in publish_user_interaction_request")
             return result
-
-        # Check if cleanup is needed before adding new interactions.
-        #
-        # Timed because it is the largest untimed region on this path. The
-        # sweep is throttled per (org_id, project_id, target_name), so on most
-        # publishes it resolves the limits, finds nothing due, and returns in
-        # microseconds. When a window opens, ONE unlucky publish synchronously
-        # takes an `OperationStateManager` lock and probes every registered
-        # retention target -- 17 today, each its own SERIALISED remote round
-        # trip on the request thread, and more where a target has rows to
-        # delete. `publish_start` below is set two lines later, so none of that
-        # was in the service's own clock: a publish could spend seconds here
-        # and report a fast one.
-        #
-        # What the round trip IS differs by backend, which matters for reading
-        # the line: the platform path issues a PostgREST `count=exact` select
-        # per target (`supabase_storage/base/_deletion.py`), so it does NOT
-        # show up in the enterprise `pool_wait`/`pool_dial` phases and this
-        # figure is disjoint from them. The native-Postgres path borrows a
-        # pooled psycopg2 connection, so there the two overlap by
-        # construction.
-        #
-        # The default sweep interval is 300s
-        # (`REFLEXIO_RETENTION_CLEANUP_INTERVAL_SECONDS`), the one period
-        # constant on this path matching the periodicity observed in
-        # production -- this phase is what would confirm or refute that. It
-        # measures; it changes no behaviour.
-        with publish_timing.phase("retention_sweep"):
-            self._cleanup_storage_tables_if_needed()
 
         publish_start = time.perf_counter()
         # Resolve agent_version: explicit > env var > default. Resolved here
@@ -813,95 +729,6 @@ class GenerationService:
             samples_retrieved_learning(agent_success_config, **scope),
         )
 
-    def _cleanup_storage_tables_if_needed(self) -> None:
-        """Best-effort publish-boundary cleanup for capped storage tables."""
-        now = time.monotonic()
-        # Resolved once, here on the request thread that is publishing. Under
-        # per-project retention each project must be throttled independently;
-        # see the note on ``_retention_cleanup_last_run``.
-        project_id = current_project_id()
-        limits = {
-            target_name: limit
-            for target_name, limit in get_row_retention_limits().items()
-            if limit > 0
-            and self._should_check_retention_target(target_name, project_id, now)
-        }
-        if not limits:
-            return
-
-        try:
-            mgr = OperationStateManager(
-                self.storage,  # type: ignore[reportArgumentType]
-                self.org_id,
-                "storage_table_cleanup",  # type: ignore[reportArgumentType]
-            )
-            if not mgr.acquire_simple_lock(stale_seconds=CLEANUP_STALE_LOCK_SECONDS):
-                return
-
-            try:
-                for target_name, limit in limits.items():
-                    # Isolate per-target failures so one bad table does not
-                    # short-circuit cleanup for every subsequent target.
-                    try:
-                        self._cleanup_retention_target(target_name, limit)
-                    except Exception as e:  # noqa: BLE001
-                        with error_tags(
-                            subsystem="generation",
-                            op="cleanup_retention_target",
-                            org_id=self.org_id,
-                            target_name=target_name,
-                            error_type=type(e).__name__,
-                        ):
-                            logger.exception(
-                                "Failed to cleanup retention target %s",
-                                target_name,
-                            )
-            finally:
-                mgr.release_simple_lock()
-
-        except Exception as e:
-            with error_tags(
-                subsystem="generation",
-                op="cleanup_storage_tables",
-                org_id=self.org_id,
-                error_type=type(e).__name__,
-            ):
-                logger.exception("Failed to cleanup storage tables")
-            # Don't raise - cleanup failure shouldn't block normal operation
-
-    def _should_check_retention_target(
-        self, target_name: str, project_id: str | None, now: float
-    ) -> bool:
-        """Whether this org/project/target is due for a retention sweep.
-
-        Args:
-            target_name (str): Capped storage table being considered.
-            project_id (str | None): Project the publishing request is bound to,
-                or ``None`` in OSS and for an unbound caller.
-            now (float): ``time.monotonic()`` reading of the current check.
-
-        Returns:
-            bool: True when the target is due, stamping the throttle as a side
-            effect; False while the interval is still open.
-        """
-        if _RETENTION_CLEANUP_INTERVAL_SECONDS <= 0:
-            return True
-        key = (self.org_id, project_id, target_name)
-        with _retention_cleanup_lock:
-            last_run = _retention_cleanup_last_run.get(key)
-            if (
-                last_run is not None
-                and now - last_run < _RETENTION_CLEANUP_INTERVAL_SECONDS
-            ):
-                return False
-            if (
-                len(_retention_cleanup_last_run)
-                >= _RETENTION_CLEANUP_TRACKED_KEYS_SOFT_CAP
-            ):
-                _prune_expired_retention_keys(now)
-            _retention_cleanup_last_run[key] = now
-            return True
-
     def _active_learning_stall_warning(self) -> str | None:
         """Return a warning when extraction should not auto-retry.
 
@@ -931,23 +758,6 @@ class GenerationService:
             "override retry to resume."
         )
         return f"{_STALL_WARNING_PREFIX} ({reason}); {suffix}"
-
-    def _cleanup_retention_target(self, target_name: str, limit: int) -> None:
-        total_count = self.storage.count_retention_target_rows(target_name)  # type: ignore[reportOptionalMemberAccess]
-        if total_count < limit:
-            return
-        delete_count = delete_count_for_retention(total_count)
-        deleted = self.storage.delete_oldest_retention_target_rows(  # type: ignore[reportOptionalMemberAccess]
-            target_name,
-            delete_count,
-        )
-        logger.info(
-            "Cleaned up %d oldest %s row(s) (total was %d, limit %d)",
-            deleted,
-            target_name,
-            total_count,
-            limit,
-        )
 
     # ===============================
     # static methods
