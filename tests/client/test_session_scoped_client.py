@@ -532,6 +532,24 @@ def test_request_model_only_search_agrees_with_publish(monkeypatch) -> None:
     )
 
 
+def test_scoped_deprecated_alias_still_warns(monkeypatch) -> None:
+    """Binding must not swallow the deprecation.
+
+    The ``search_profiles`` wrapper forwards to the deprecated client method
+    rather than to its replacement precisely so the warning still reaches
+    the caller. Pointing it at ``search_user_profiles`` would be a tidier
+    line that silently removes a migration signal, so assert the warning
+    instead of describing the intent.
+    """
+    client = _make_client()
+    captured = _capture_sync(monkeypatch, client)
+
+    with pytest.warns(DeprecationWarning, match="search_profiles"):
+        client.for_session(BOUND).search_profiles(user_id="u1", query="q")
+
+    assert captured["/api/search_profiles"]["session_id"] == BOUND
+
+
 def test_request_model_binding_keeps_the_callers_other_arguments(monkeypatch) -> None:
     """Binding must MERGE, not replace, the caller's arguments.
 
