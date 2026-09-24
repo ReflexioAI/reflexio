@@ -28,6 +28,46 @@ SYNC_REQUEST_TIMEOUT_SECONDS = (
 SYNC_REQUEST_PATHS = frozenset(
     {"/api/review_user_playbooks", "/api/run_playbook_aggregation"}
 )
+
+# Routes that enforce their OWN deadline get a middleware budget strictly ABOVE
+# it, so the route's exit -- which knows whether work was admitted and can
+# therefore name the request it was shepherding -- is the one the client sees.
+#
+# This table did not exist before: every route shared REQUEST_TIMEOUT_SECONDS =
+# 60 while /api/publish_interaction budgets 240, so the middleware always won
+# and answered a bare "Request timeout" for a publish the route was still
+# committing. The route's own 504 was unreachable code.
+#
+# INVARIANT: for every path here, this value exceeds the deadline the route
+# itself uses. It is asserted by a test that imports both modules -- this one
+# must NOT import the routes, because routes import middleware-adjacent server
+# state and the cycle would be paid on every request.
+ROUTE_BACKSTOP_SECONDS: dict[str, float] = {
+    "/api/publish_interaction": 300.0,
+}
+
+
+def backstop_for(path: str, wait_for_response: bool) -> float:
+    """Return the middleware's timeout budget for one request.
+
+    Precedence is deliberate: a route that owns a deadline gets its backstop
+    regardless of ``wait_for_response``, because the route's own deadline
+    already covers both modes. Anything else keeps the previous behaviour.
+
+    Args:
+        path (str): The request path.
+        wait_for_response (bool): Whether the caller asked to wait.
+
+    Returns:
+        float: Seconds the middleware allows before it returns a generic 504.
+    """
+    if path in ROUTE_BACKSTOP_SECONDS:
+        return ROUTE_BACKSTOP_SECONDS[path]
+    if path in SYNC_REQUEST_PATHS or wait_for_response:
+        return SYNC_REQUEST_TIMEOUT_SECONDS
+    return REQUEST_TIMEOUT_SECONDS
+
+
 SUSPICIOUS_USER_AGENTS = ["bot", "crawler", "spider", "scraper", "curl", "wget"]
 ALLOWED_EMPTY_UA_PATHS = ["/health", "/"]  # Paths that allow empty user agents
 DEFAULT_MAX_BODY_BYTES = 10 * 1024 * 1024
@@ -129,20 +169,26 @@ class TimeoutMiddleware(BaseHTTPMiddleware):
         """
         from starlette.responses import JSONResponse
 
-        # Use longer timeout for synchronous processing requests
-        timeout = REQUEST_TIMEOUT_SECONDS
-        if (
-            request.url.path in SYNC_REQUEST_PATHS
-            or request.query_params.get("wait_for_response", "").lower() == "true"
-        ):
-            timeout = SYNC_REQUEST_TIMEOUT_SECONDS
+        timeout = backstop_for(
+            request.url.path,
+            request.query_params.get("wait_for_response", "").lower() == "true",
+        )
 
         try:
             return await asyncio.wait_for(call_next(request), timeout=timeout)
         except TimeoutError:
+            # This handler runs OUTSIDE the route, so it never parsed the body
+            # and cannot name a request_id. The correlation id is the only
+            # handle it has, and without one this 504 is uncorrelatable -- the
+            # reported complaint. `detail` keeps its exact previous string
+            # because existing clients read it.
             return JSONResponse(
                 status_code=status.HTTP_504_GATEWAY_TIMEOUT,
-                content={"detail": "Request timeout"},
+                content={
+                    "detail": "Request timeout",
+                    "reason": "backstop_timeout",
+                    "correlation_id": correlation_id_var.get(),
+                },
             )
 
 

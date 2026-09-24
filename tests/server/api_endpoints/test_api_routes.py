@@ -337,6 +337,83 @@ class TestPublishInteraction:
         # disappeared from the response schema entirely.
         assert response.json()["warnings"] == []
 
+    def test_route_owned_504_is_reachable_and_names_the_request(
+        self, client, patched_reflexio, monkeypatch
+    ):
+        """The headline fix: the route's own timeout exit reaches the client.
+
+        The route has always raised a structured 504 naming the request_id, but
+        ``TimeoutMiddleware`` cut every path at 60s while this route budgets
+        240s, so the middleware always answered first and the client got a bare
+        ``{"detail": "Request timeout"}`` with nothing to correlate. The route's
+        exit was unreachable code.
+
+        Driven through the full app — middleware included — rather than by
+        calling the handler, because the layer that answers IS the thing under
+        test. Constants are scaled down so it runs in under a second while
+        keeping the real ordering: default 0.2s < route 0.5s < backstop 1.0s.
+        Revert ``dispatch`` to the inline pre-fix logic and this path falls back
+        to the 0.2s default, the middleware pre-empts, and the assertions below
+        fail on the body's identity rather than on a status code both layers
+        can produce.
+        """
+        from reflexio.server import middleware
+        from reflexio.server.routes import interactions
+
+        monkeypatch.setattr(middleware, "REQUEST_TIMEOUT_SECONDS", 0.2)
+        monkeypatch.setitem(
+            middleware.ROUTE_BACKSTOP_SECONDS, "/api/publish_interaction", 1.0
+        )
+        monkeypatch.setattr(interactions, "PUBLISH_REQUEST_TIMEOUT_SECONDS", 0.5)
+
+        payload = self._publish_payload()
+        payload["request_id"] = "req-under-test"
+
+        with patch(
+            "reflexio.server.api_endpoints.publisher_api.add_user_interaction",
+            side_effect=lambda **_: time.sleep(5),
+        ):
+            response = client.post("/api/publish_interaction", json=payload)
+
+        assert response.status_code == 504, response.text
+        detail = response.json()["detail"]
+        assert isinstance(detail, dict), (
+            "the generic middleware 504 pre-empted the route's own exit: "
+            f"{response.text[:200]}"
+        )
+        assert detail["reason"] == "admission_timeout"
+        assert detail["request_id"] == "req-under-test"
+
+    def test_capacity_refusal_503_names_the_request_and_is_not_the_504(
+        self, client, patched_reflexio, monkeypatch
+    ):
+        """A refused publish admitted nothing, so the SAME id is safe to retry.
+
+        That is the only reason the id is worth returning here, and it is the
+        opposite of the 504 above — where admission may already have happened
+        and the id must be checked first. Both are 5xx and both carry a
+        request_id, so this asserts the discriminating ``reason`` as well as the
+        status; "not 200" would not tell the two apart.
+        """
+        from reflexio.server.services.durable_learning import waiting
+
+        async def refuse(_org_id, _deadline):
+            return False
+
+        monkeypatch.setattr(waiting, "acquire_ingestion", refuse)
+
+        payload = self._publish_payload()
+        payload["request_id"] = "req-refused"
+        response = client.post("/api/publish_interaction", json=payload)
+
+        assert response.status_code == 503, response.text
+        detail = response.json()["detail"]
+        assert isinstance(detail, dict), response.text
+        assert detail["request_id"] == "req-refused"
+        assert detail["reason"] == "capacity_deadline_exceeded"
+        assert detail["reason"] != "admission_timeout"
+        assert "same request ID" in detail["message"]
+
 
 class TestSearchEndpoints:
     """Tests for search endpoints."""
