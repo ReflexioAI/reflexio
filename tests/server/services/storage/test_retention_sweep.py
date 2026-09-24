@@ -352,3 +352,38 @@ def test_one_target_failing_still_does_not_fail_the_pass(storage, granted_lock):
         result = sweep_retention_caps(_ORG, storage)
 
     assert not result.failed
+
+
+def test_the_library_entry_point_throttles_per_org(storage, granted_lock, monkeypatch):
+    """The embedded path has no scheduler, so it sweeps itself -- but not every publish.
+
+    Regression guard for the P1 on #535: moving the sole sweep invocation onto
+    `LineageGCScheduler` removed row caps entirely for `Reflexio.publish_interaction`,
+    because `maybe_start_lineage_gc` is only ever called from the FastAPI lifespan.
+    """
+    monkeypatch.setattr(retention_sweep, "_library_last_sweep", {})
+    storage.count_retention_target_rows.return_value = 0
+
+    with _limits(interactions=500):
+        first = retention_sweep.maybe_sweep_retention_caps_for_library(_ORG, storage)
+        second = retention_sweep.maybe_sweep_retention_caps_for_library(_ORG, storage)
+
+    assert first is not None, "the first embedded publish did not sweep at all"
+    assert second is None, "the throttle did not suppress the immediate re-sweep"
+    assert storage.count_retention_target_rows.call_count == 1
+
+
+def test_the_library_throttle_is_per_org(storage, granted_lock, monkeypatch):
+    """One org publishing must not suppress another org's caps."""
+    monkeypatch.setattr(retention_sweep, "_library_last_sweep", {})
+    storage.count_retention_target_rows.return_value = 0
+
+    with _limits(interactions=500):
+        assert (
+            retention_sweep.maybe_sweep_retention_caps_for_library("org-a", storage)
+            is not None
+        )
+        assert (
+            retention_sweep.maybe_sweep_retention_caps_for_library("org-b", storage)
+            is not None
+        )

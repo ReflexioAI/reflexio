@@ -28,6 +28,7 @@ nothing to do is what every tick looks like today.
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from dataclasses import dataclass
 
@@ -90,6 +91,48 @@ class RetentionSweepResult:
 
     deleted: int
     failed: bool = False
+
+
+#: Minimum gap between embedded-library sweeps for one org.
+#:
+#: The library has NO background scheduler -- `maybe_start_lineage_gc` is called
+#: only from the FastAPI lifespan -- so an embedded/SQLite user who publishes
+#: through `Reflexio.publish_interaction` would otherwise get no row caps at all
+#: once the sweep left the server's request path. Sweeping there is correct and
+#: cheap: the cost this change removed was a REMOTE round trip per target, and
+#: the embedded case is typically a local file. The throttle keeps it from
+#: running on every single publish, exactly as the request path used to.
+LIBRARY_SWEEP_MIN_INTERVAL_SECONDS = 300.0
+
+_library_last_sweep: dict[str, float] = {}
+_library_sweep_lock = threading.Lock()
+
+
+def maybe_sweep_retention_caps_for_library(
+    org_id: str, storage: BaseStorage
+) -> RetentionSweepResult | None:
+    """Sweep for an embedded caller that has no scheduler, at most every 5 min.
+
+    For the SERVER path this is the wrong entry point -- there the sweep belongs
+    on ``LineageGCScheduler`` and must not touch the request thread. This exists
+    only for :mod:`reflexio.lib`, which constructs ``GenerationService`` directly
+    and starts no daemons.
+
+    Args:
+        org_id (str): Org whose caps to enforce.
+        storage (BaseStorage): The caller's storage.
+
+    Returns:
+        RetentionSweepResult | None: The pass's result, or ``None`` when the
+        throttle suppressed it.
+    """
+    now = time.monotonic()
+    with _library_sweep_lock:
+        last = _library_last_sweep.get(org_id)
+        if last is not None and now - last < LIBRARY_SWEEP_MIN_INTERVAL_SECONDS:
+            return None
+        _library_last_sweep[org_id] = now
+    return sweep_retention_caps(org_id, storage)
 
 
 def sweep_retention_caps(org_id: str, storage: BaseStorage) -> RetentionSweepResult:
