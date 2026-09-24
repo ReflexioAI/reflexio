@@ -454,6 +454,7 @@ class ReflexioClient:
         override_learning_stall: bool,
         retrieval_experiment_id: str | None,
         retrieval_experiment_arm: Literal["treatment", "holdout"] | None,
+        request_id: str | None = None,
     ) -> PublishUserInteractionRequest:
         """Validate and build the request shared by sync and async publishing."""
         if session_id is None or not session_id.strip():
@@ -469,6 +470,14 @@ class ReflexioClient:
         return PublishUserInteractionRequest(
             session_id=session_id,
             user_id=user_id,
+            # Omitted -> the server mints a UUID. Supplying one is what makes
+            # the 202/504 retry contract usable: both tell the caller to retry
+            # under the SAME id, and `request_id` is a primary key the server
+            # re-checks inside its commit, so the retry publishes if and only
+            # if the first attempt did not. Without this parameter a retry
+            # through the SDK got a fresh id and duplicated a publish that had
+            # in fact committed.
+            request_id=request_id,
             interaction_data_list=interaction_data_list,
             source=source,
             agent_version=agent_version,
@@ -505,6 +514,7 @@ class ReflexioClient:
         override_learning_stall: bool = False,
         retrieval_experiment_id: str | None = None,
         retrieval_experiment_arm: Literal["treatment", "holdout"] | None = None,
+        request_id: str | None = None,
     ) -> PublishUserInteractionResponse:
         """Publish user interactions.
 
@@ -553,6 +563,14 @@ class ReflexioClient:
                 ``retrieval_experiment_arm``.
             retrieval_experiment_arm: ``"treatment"`` or ``"holdout"`` as
                 returned by learning search. Supply together with the ID.
+            request_id: Idempotency key for this publish. Omit it and the
+                server mints a UUID. Supply one — and reuse it — to make a
+                retry safe: ``request_id`` is a primary key the server
+                re-checks inside its commit, so a retry publishes if and only
+                if the first attempt did not. This is what the 202 and 504
+                responses mean by "retry with this same request_id"; without
+                it, retrying calls this method again, a fresh id is minted,
+                and a publish that did commit is duplicated.
 
         Returns:
             PublishUserInteractionResponse: Server response.
@@ -586,6 +604,7 @@ class ReflexioClient:
             override_learning_stall=override_learning_stall,
             retrieval_experiment_id=retrieval_experiment_id,
             retrieval_experiment_arm=retrieval_experiment_arm,
+            request_id=request_id,
         )
         result = self._publish_interaction_sync(
             request, wait_for_response=wait_for_response
@@ -612,6 +631,7 @@ class ReflexioClient:
         override_learning_stall: bool = False,
         retrieval_experiment_id: str | None = None,
         retrieval_experiment_arm: Literal["treatment", "holdout"] | None = None,
+        request_id: str | None = None,
     ) -> PublishUserInteractionResponse:
         """Native-async counterpart to :meth:`publish_interaction`."""
         request = self._build_publish_interaction_request(
@@ -626,6 +646,7 @@ class ReflexioClient:
             override_learning_stall=override_learning_stall,
             retrieval_experiment_id=retrieval_experiment_id,
             retrieval_experiment_arm=retrieval_experiment_arm,
+            request_id=request_id,
         )
         result = await self._publish_interaction_async(
             request, wait_for_response=wait_for_response

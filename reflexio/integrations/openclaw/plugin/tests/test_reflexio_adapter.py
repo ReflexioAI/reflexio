@@ -113,6 +113,65 @@ def test_publish_returns_false_on_exception():
         )
 
 
+def test_publish_reports_a_provisional_202_as_not_published():
+    """An unknown outcome must not stamp the watermark.
+
+    The server's 202 exit carries ``learning_reason="server_deadline"`` and
+    means the publish may or may not have committed. It is a 2xx with
+    ``success=True``, so the client does not raise and every other check in
+    ``publish`` passes -- returning True here would let
+    ``publish_unpublished`` advance ``published_up_to`` and discard the
+    buffered turns, which are the only copy. Before the route grew this exit
+    the same case arrived as a 504 and was retried.
+    """
+    fake_client = MagicMock()
+    fake_client.publish_interaction.return_value = SimpleNamespace(
+        success=True,
+        learning_status="deferred",
+        learning_reason="server_deadline",
+        request_id="req-1",
+        warnings=[],
+    )
+    adapter = Adapter()
+    with patch.object(adapter, "_get_client", return_value=fake_client):
+        assert (
+            adapter.publish(
+                session_id="s",
+                project_id="p",
+                interactions=[{"role": "User", "content": "x"}],
+            )
+            is False
+        )
+
+
+def test_publish_reports_an_ordinary_deferred_response_as_published():
+    """The narrowness half: only ``server_deadline`` is provisional.
+
+    An ordinary deferred publish (``wait_for_response=False``, which is what
+    this adapter always sends) has COMMITTED -- the server returns after the
+    durable write and queues extraction. Treating every ``deferred`` response
+    as provisional would stall the buffer forever on the normal path.
+    """
+    fake_client = MagicMock()
+    fake_client.publish_interaction.return_value = SimpleNamespace(
+        success=True,
+        learning_status="deferred",
+        learning_reason="queued",
+        request_id="req-2",
+        warnings=[],
+    )
+    adapter = Adapter()
+    with patch.object(adapter, "_get_client", return_value=fake_client):
+        assert (
+            adapter.publish(
+                session_id="s",
+                project_id="p",
+                interactions=[{"role": "User", "content": "x"}],
+            )
+            is True
+        )
+
+
 def test_search_all_degrades_to_empty():
     adapter = Adapter()
     with patch.object(adapter, "_get_client", return_value=None):

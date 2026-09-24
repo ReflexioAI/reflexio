@@ -106,6 +106,32 @@ class Adapter:
                 _LOGGER.warning("reflexio dropped part of the payload: %s", warning)
         except Exception as exc:  # noqa: BLE001 — never fail an accepted publish.
             _LOGGER.debug("could not report publish warnings: %s", exc)
+        # A PROVISIONAL response is not an accepted publish. The server answers
+        # HTTP 202 with learning_reason="server_deadline" when it stopped
+        # waiting before the publish confirmed: the outcome is unknown, and the
+        # work may still abort at the worker's own later deadline without ever
+        # writing a request row.
+        #
+        # 202 is a 2xx, so the client does not raise and every check above
+        # passes. Returning True here would let `publish_unpublished` stamp the
+        # watermark, and the buffered turns -- the only copy -- would be
+        # dropped for work that may never have landed. Before the route grew
+        # this exit the same case arrived as a 504, which raised and left the
+        # batch to be retried; reporting it as failed restores that.
+        #
+        # The retry that follows re-sends the same turns under a NEW server
+        # minted id, so a first attempt that did commit is duplicated. That is
+        # the pre-existing behaviour of this watermark protocol and is strictly
+        # better than silent loss. Closing it needs a stable per-slice
+        # `request_id` -- `ReflexioClient.publish_interaction` now accepts one
+        # -- which is a change to this buffer's on-disk protocol and is
+        # deliberately not folded in here.
+        if _is_provisional(response):
+            _LOGGER.info(
+                "reflexio accepted the publish but its outcome is unknown; "
+                "leaving the buffer unstamped so the batch is retried."
+            )
+            return False
         return True
 
     def apply_extraction_defaults(self, *, window_size: int, stride_size: int) -> bool:
@@ -320,6 +346,36 @@ class Adapter:
                 self.fetch_project_profiles, project_id, profile_top_k
             )
         return up_future.result(), ap_future.result(), pr_future.result()
+
+
+def _is_provisional(response: Any) -> bool:
+    """Report whether a publish response left its outcome unknown.
+
+    The server's HTTP 202 exit carries ``learning_reason="server_deadline"``
+    and nothing else distinguishes it: it is a 2xx with ``success=True``, so a
+    caller that only asks "did this throw?" reads it as a committed publish.
+    ``server_deadline`` is emitted on that one branch and by no other
+    ``learning_reason`` the route can return.
+
+    Total by construction, like ``_publish_warnings`` beside it: ``response``
+    is whatever the client handed back, so a property may raise and ``.get``
+    may be overridden. An unreadable response is reported as NOT provisional,
+    which keeps the pre-existing behaviour for every shape this cannot parse
+    rather than stalling a healthy buffer on an attribute error.
+
+    Args:
+        response (Any): The object returned by ``publish_interaction``.
+
+    Returns:
+        bool: True only when the response is the deadline 202.
+    """
+    try:
+        reason = getattr(response, "learning_reason", None)
+        if reason is None and isinstance(response, dict):
+            reason = response.get("learning_reason")
+        return reason == "server_deadline"
+    except Exception:  # noqa: BLE001 — an unreadable response is not provisional.
+        return False
 
 
 def _publish_warnings(response: Any) -> list[str]:

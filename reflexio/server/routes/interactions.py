@@ -256,7 +256,23 @@ async def publish_user_interaction(
     # running until `worker_deadline`, which is STRICTLY LATER -- see
     # PUBLISH_WORKER_GRACE_SECONDS. Collapsing these into one deadline is the
     # defect the 202 exit was shipped with.
-    response_deadline = time.monotonic() + PUBLISH_REQUEST_TIMEOUT_SECONDS
+    #
+    # Both are measured from the moment `TimeoutMiddleware` started ITS clock,
+    # not from the moment this handler began. Those differ by however long
+    # body parsing and the sync auth/billing dependencies took, and the
+    # backstop has been counting throughout. Starting an independent clock
+    # here made the guarded ordering (240 < 270 < 300) true of the CONSTANTS
+    # while false in wall-clock terms: burn the 60s gap in dependency
+    # resolution and the middleware expires first, answering its generic 504
+    # with no request_id for a publish this route was still shepherding.
+    #
+    # The fallback keeps the route working when the middleware is absent --
+    # which is every TestClient app built without it, and any embedding of
+    # this router elsewhere.
+    arrival = getattr(request.state, "backstop_started", None)
+    if arrival is None:
+        arrival = time.monotonic()
+    response_deadline = arrival + PUBLISH_REQUEST_TIMEOUT_SECONDS
     worker_deadline = response_deadline + PUBLISH_WORKER_GRACE_SECONDS
     payload.request_id = payload.request_id or str(uuid.uuid4())
     # The accumulator opens BEFORE `acquire_ingestion` -- pure queueing behind

@@ -1,4 +1,5 @@
 import asyncio
+from unittest.mock import patch
 
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
@@ -298,9 +299,71 @@ def test_the_publish_deadline_chain_is_strictly_ordered():
     assert backstop > response_deadline, (
         "the middleware must not pre-empt the route's own exit"
     )
-    assert worker_deadline < backstop, (
-        "the worker clock is expected to stay inside the backstop, so no clock "
-        "on this path outlives the middleware's own budget"
+
+
+def test_slow_dependencies_do_not_let_the_backstop_pre_empt_the_route(monkeypatch):
+    """The ordering above is only real if both clocks share an ORIGIN.
+
+    The constants can be strictly ordered while the wall-clock deadlines are
+    not. The backstop starts in ``TimeoutMiddleware.dispatch``; the route's own
+    deadline could only start once FastAPI had parsed the body and resolved the
+    sync auth/billing dependencies, which run in the threadpool and can queue.
+    Burn the gap between the two constants there and the MIDDLEWARE expires
+    first, answering its generic 504 -- no request_id, no retry instruction --
+    for a publish the route was still shepherding.
+
+    Driven behaviourally rather than by reading the source, and scaled down so
+    it runs in under a second: backstop 1.0s, route deadline 0.5s, and a
+    dependency that sleeps 0.7s.
+
+    - Shared origin: the route aims at 0.5s, which has already passed when the
+      handler starts at 0.7s, so ``acquire_ingestion`` refuses at once and the
+      ROUTE answers -- a 503 whose detail carries the request_id. Refusing is
+      the correct call: the budget really is spent, and nothing was admitted.
+    - Independent clocks: the route aims at 0.7 + 0.5 = 1.2s, PAST the 1.0s
+      backstop, so the MIDDLEWARE answers first with ``{"detail": "Request
+      timeout"}`` -- no request_id, no retry instruction.
+
+    The assertion is therefore on IDENTITY -- which layer produced the body --
+    not on a status code, because both layers can answer 5xx.
+    """
+    import time as _time
+
+    from reflexio.server.routes import interactions
+
+    monkeypatch.setitem(ROUTE_BACKSTOP_SECONDS, "/api/publish_interaction", 1.0)
+    monkeypatch.setattr(interactions, "PUBLISH_REQUEST_TIMEOUT_SECONDS", 0.5)
+
+    def slow_org_id() -> str:
+        # Stands in for auth/billing resolution queueing on the threadpool.
+        _time.sleep(0.7)
+        return "clock-origin-test"
+
+    app = create_app(get_org_id=slow_org_id)
+    client = TestClient(app, raise_server_exceptions=False)
+
+    with patch(
+        "reflexio.server.api_endpoints.publisher_api.add_user_interaction",
+        side_effect=lambda **_: _time.sleep(5),
+    ):
+        response = client.post(
+            "/api/publish_interaction",
+            json={
+                "user_id": "u",
+                "session_id": "s",
+                "interaction_data_list": [{"role": "User", "content": "hi"}],
+            },
+        )
+
+    detail = response.json().get("detail")
+    assert detail != "Request timeout", (
+        "the middleware backstop pre-empted the route: the two publish clocks "
+        f"are not measured from one arrival (got {response.status_code}: "
+        f"{response.text[:200]})"
+    )
+    assert isinstance(detail, dict) and detail.get("request_id"), (
+        "a route-owned exit must carry the request_id the generic backstop "
+        f"cannot (got {response.status_code}: {response.text[:200]})"
     )
 
 

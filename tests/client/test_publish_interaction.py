@@ -129,6 +129,58 @@ def test_publish_interaction_sends_retrieval_experiment_attribution(
     assert sent["retrieval_experiment_arm"] == "treatment"
 
 
+@patch("reflexio.client.client.requests.Session")
+def test_publish_interaction_sends_a_caller_supplied_request_id(mock_session_class):
+    """The 202/504 retry contract is unusable through the SDK without this.
+
+    Both responses tell the caller to retry under the SAME request_id, and
+    `request_id` is a primary key the server re-checks inside its commit, so
+    the retry publishes if and only if the first attempt did not. If the
+    public method cannot carry the id, retrying means calling it again, the
+    server mints a fresh UUID, and a publish that DID commit is duplicated --
+    which is precisely what the advice was meant to prevent.
+    """
+    mock_session = MagicMock()
+    mock_session_class.return_value = mock_session
+    mock_session.request.return_value.status_code = 200
+    mock_session.request.return_value.json.return_value = {"success": True}
+    client = ReflexioClient(api_key="test_key")
+
+    client.publish_interaction(
+        user_id="user",
+        interactions=[{"content": "real"}],
+        session_id="s",
+        request_id="req-caller-owned",
+    )
+
+    sent = mock_session.request.call_args.kwargs["json"]
+    assert sent["request_id"] == "req-caller-owned"
+
+
+@patch("reflexio.client.client.requests.Session")
+def test_publish_interaction_omits_request_id_when_not_supplied(mock_session_class):
+    """Omitting it must still let the server mint one.
+
+    The parameter is an override, not a new requirement: sending an explicit
+    null is the same as sending nothing, and every existing caller passes
+    nothing.
+    """
+    mock_session = MagicMock()
+    mock_session_class.return_value = mock_session
+    mock_session.request.return_value.status_code = 200
+    mock_session.request.return_value.json.return_value = {"success": True}
+    client = ReflexioClient(api_key="test_key")
+
+    client.publish_interaction(
+        user_id="user",
+        interactions=[{"content": "real"}],
+        session_id="s",
+    )
+
+    sent = mock_session.request.call_args.kwargs["json"]
+    assert sent.get("request_id") is None
+
+
 @pytest.mark.asyncio
 async def test_publish_interaction_async_uses_shared_validation_and_warnings(
     monkeypatch,

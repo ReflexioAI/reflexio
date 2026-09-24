@@ -9,6 +9,7 @@ import-time constant or an env var — so this extraction is behavior-preserving
 import asyncio
 import logging
 import os
+import time
 
 from anyio.to_thread import current_default_thread_limiter
 from fastapi import Request, status
@@ -173,6 +174,18 @@ class TimeoutMiddleware(BaseHTTPMiddleware):
             request.url.path,
             request.query_params.get("wait_for_response", "").lower() == "true",
         )
+
+        # The origin BOTH clocks are measured from. The backstop starts here,
+        # but a route's own deadline could only start once FastAPI had parsed
+        # the body and resolved its dependencies -- so the two clocks had
+        # different origins, and the ordering invariant
+        # (route deadline < backstop) held only in the gap between them.
+        # Auth/billing dependencies run in the sync threadpool and can queue;
+        # spend the gap there and the backstop expires FIRST, returning the
+        # generic 504 below with no request_id, for a publish the route was
+        # still shepherding. Publishing the arrival time makes the invariant
+        # hold in wall-clock terms rather than only on paper.
+        request.state.backstop_started = time.monotonic()
 
         try:
             return await asyncio.wait_for(call_next(request), timeout=timeout)
