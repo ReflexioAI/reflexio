@@ -4,10 +4,15 @@ from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
 from reflexio.server.api import create_app
+from reflexio.server.correlation import correlation_id_var
 from reflexio.server.middleware import (
+    REQUEST_TIMEOUT_SECONDS,
+    ROUTE_BACKSTOP_SECONDS,
     SYNC_REQUEST_TIMEOUT_SECONDS,
     BodySizeLimitMiddleware,
     TimeoutMiddleware,
+    backstop_for,
+    route_relative_path,
 )
 
 
@@ -220,3 +225,235 @@ def test_security_headers_are_added(monkeypatch):
     assert response.headers["strict-transport-security"] == (
         "max-age=31536000; includeSubDomains"
     )
+
+
+def _route_own_deadlines() -> dict[str, float]:
+    """Each backstop path paired with the deadline the route itself enforces.
+
+    Read at call time rather than at import so the pairing resolves against the
+    live module. Keys must match ``ROUTE_BACKSTOP_SECONDS`` exactly — the guard
+    below fails in BOTH directions, so neither table can grow a row alone and
+    sit unchecked under a comment claiming it is covered.
+
+    Returns:
+        dict[str, float]: Path -> the route's own deadline, in seconds.
+    """
+    from reflexio.server.routes import interactions
+
+    return {
+        "/api/publish_interaction": interactions.PUBLISH_REQUEST_TIMEOUT_SECONDS,
+    }
+
+
+def test_every_backstop_row_exceeds_its_routes_own_deadline():
+    """The route must reach its own deadline before the middleware fires.
+
+    This is the whole bug: a 60s middleware budget under a 240s route budget
+    made the route's request_id-bearing 504 unreachable, so every timed-out
+    publish came back as an uncorrelatable ``{"detail": "Request timeout"}``.
+    """
+    own = _route_own_deadlines()
+    unpaired = sorted(set(ROUTE_BACKSTOP_SECONDS) - set(own))
+    assert not unpaired, (
+        f"backstop rows with no route deadline to compare against: {unpaired}. "
+        "Add the route's own constant to _route_own_deadlines()."
+    )
+    stale = sorted(set(own) - set(ROUTE_BACKSTOP_SECONDS))
+    assert not stale, f"paired routes with no backstop row: {stale}"
+    for path, backstop in ROUTE_BACKSTOP_SECONDS.items():
+        assert backstop > own[path], (
+            f"{path}: backstop {backstop}s must exceed the route's own "
+            f"{own[path]}s deadline"
+        )
+
+
+def test_publish_interaction_dispatch_uses_the_backstop(monkeypatch):
+    """``dispatch`` must USE the table, not merely define it beside the old code.
+
+    Asserting on ``backstop_for()`` alone cannot catch a ``dispatch`` still
+    running the inline ``REQUEST_TIMEOUT_SECONDS`` / ``SYNC_REQUEST_PATHS``
+    logic while the table sits unused — and that absence IS the production bug.
+    So this drives the real dispatch and reads the timeout ``asyncio.wait_for``
+    was actually handed.
+    """
+    observed: dict[str, float | None] = {}
+
+    async def fake_wait_for(awaitable, *, timeout=None):
+        observed["timeout"] = timeout
+        return await awaitable
+
+    async def call_next(_request):
+        from starlette.responses import Response
+
+        return Response()
+
+    monkeypatch.setattr(asyncio, "wait_for", fake_wait_for)
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "scheme": "http",
+            "path": "/api/publish_interaction",
+            "raw_path": b"/api/publish_interaction",
+            "query_string": b"",
+            "headers": [],
+            "client": ("testclient", 50000),
+            "server": ("testserver", 80),
+        }
+    )
+
+    asyncio.run(TimeoutMiddleware(FastAPI()).dispatch(request, call_next))
+
+    assert observed["timeout"] == ROUTE_BACKSTOP_SECONDS["/api/publish_interaction"]
+    assert observed["timeout"] != REQUEST_TIMEOUT_SECONDS
+
+
+def test_publish_backstop_survives_a_mount_prefix(monkeypatch):
+    """A mounted app must still reach the publish backstop.
+
+    Starlette's ``Mount`` extends ``scope["root_path"]`` and leaves
+    ``scope["path"]`` holding the FULL prefixed path, so under a mount — or a
+    server started with ``--root-path`` — ``request.url.path`` reads
+    ``/reflexio/api/publish_interaction``. An exact lookup on that misses the
+    table, drops publish back to the 60s default and reinstates exactly the bug
+    this PR fixes, silently and only in the mounted deployment.
+
+    Asserted through ``dispatch`` rather than ``route_relative_path`` alone: a
+    correct helper that ``dispatch`` does not call is the same defect in a
+    different place, and this effort has already shipped one guard with that
+    hole in it.
+    """
+    observed: dict[str, float | None] = {}
+
+    async def fake_wait_for(awaitable, *, timeout=None):
+        observed["timeout"] = timeout
+        return await awaitable
+
+    async def call_next(_request):
+        from starlette.responses import Response
+
+        return Response()
+
+    monkeypatch.setattr(asyncio, "wait_for", fake_wait_for)
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "scheme": "http",
+            "root_path": "/reflexio",
+            "path": "/reflexio/api/publish_interaction",
+            "raw_path": b"/reflexio/api/publish_interaction",
+            "query_string": b"",
+            "headers": [],
+            "client": ("testclient", 50000),
+            "server": ("testserver", 80),
+        }
+    )
+
+    asyncio.run(TimeoutMiddleware(FastAPI()).dispatch(request, call_next))
+
+    assert observed["timeout"] == ROUTE_BACKSTOP_SECONDS["/api/publish_interaction"]
+    assert observed["timeout"] != REQUEST_TIMEOUT_SECONDS
+
+
+def test_route_relative_path_only_strips_a_whole_segment_prefix():
+    """Stripping must respect segment boundaries and the no-prefix case.
+
+    ``/ref`` is a prefix of the string ``/reflexio/...`` but not of its path, so
+    trimming by length alone would hand ``backstop_for`` the mangled
+    ``lexio/...``. The unprefixed row is what every non-mounted deployment —
+    i.e. production today — actually takes.
+    """
+    assert route_relative_path({"path": "/api/publish_interaction"}) == (
+        "/api/publish_interaction"
+    )
+    assert (
+        route_relative_path(
+            {"path": "/api/publish_interaction", "root_path": ""},
+        )
+        == "/api/publish_interaction"
+    )
+    assert (
+        route_relative_path(
+            {"path": "/reflexio/api/publish_interaction", "root_path": "/reflexio"},
+        )
+        == "/api/publish_interaction"
+    )
+    assert (
+        route_relative_path(
+            {"path": "/reflexio/api/publish_interaction", "root_path": "/ref"},
+        )
+        == "/reflexio/api/publish_interaction"
+    )
+    assert route_relative_path({"path": "/reflexio", "root_path": "/reflexio"}) == "/"
+
+
+def test_backstop_precedence_ignores_wait_for_response_for_table_paths():
+    """``wait_for_response`` must not move publish onto a shorter budget.
+
+    The route's own deadline covers the coverage wait too, so the publish
+    backstop wins in both modes. Lose that precedence and an unwaited publish
+    drops back to the 60s default — the original bug. The two non-table
+    assertions pin the fallback rule the table must not have disturbed.
+    """
+    waited = backstop_for("/api/publish_interaction", wait_for_response=True)
+    unwaited = backstop_for("/api/publish_interaction", wait_for_response=False)
+    assert waited == unwaited == ROUTE_BACKSTOP_SECONDS["/api/publish_interaction"]
+    assert backstop_for("/api/other", wait_for_response=False) == (
+        REQUEST_TIMEOUT_SECONDS
+    )
+    assert backstop_for("/api/other", wait_for_response=True) == (
+        SYNC_REQUEST_TIMEOUT_SECONDS
+    )
+
+
+def test_backstop_timeout_body_carries_a_correlation_id():
+    """A generic 504 carrying no identifier is unactionable.
+
+    This handler runs outside the route, so it cannot name a request_id; the
+    correlation id is the only handle it has, and without one neither the
+    client nor support can find the request. ``correlation_id_var`` defaults to
+    ``""``, so the assertion is on a non-empty value — asserting the key is
+    merely present would pass against an empty one.
+    """
+    import json
+
+    async def call_next(_request):
+        raise TimeoutError
+
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "scheme": "http",
+            "path": "/api/some_slow_route",
+            "raw_path": b"/api/some_slow_route",
+            "query_string": b"",
+            "headers": [],
+            "client": ("testclient", 50000),
+            "server": ("testserver", 80),
+        }
+    )
+
+    # Reset in `finally`: a bare `.set()` leaves "cid-under-test" installed in
+    # this xdist worker's context, and with work stealing a later test on the
+    # same worker inherits it instead of the declared "" default -- which is
+    # exactly what the correlation assertions in this file are reading.
+    token = correlation_id_var.set("cid-under-test")
+    try:
+        response = asyncio.run(
+            TimeoutMiddleware(FastAPI()).dispatch(request, call_next)
+        )
+    finally:
+        correlation_id_var.reset(token)
+
+    assert response.status_code == 504
+    body = json.loads(bytes(response.body))
+    # Unchanged on purpose: existing clients read this exact string.
+    assert body["detail"] == "Request timeout"
+    assert body["correlation_id"] == "cid-under-test"
+    assert body["reason"] == "backstop_timeout"
+    # The `finally` above must actually have run: leak "cid-under-test" into
+    # this worker's context and, under work stealing, a later test reads it
+    # instead of the declared "" default. Drop the reset and this line fails.
+    assert correlation_id_var.get() == ""

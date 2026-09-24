@@ -28,6 +28,82 @@ SYNC_REQUEST_TIMEOUT_SECONDS = (
 SYNC_REQUEST_PATHS = frozenset(
     {"/api/review_user_playbooks", "/api/run_playbook_aggregation"}
 )
+
+# Routes that enforce their OWN deadline get a middleware budget strictly ABOVE
+# it, so the route's exit -- which knows whether work was admitted and can
+# therefore name the request it was shepherding -- is the one the client sees.
+#
+# This table did not exist before: every route shared REQUEST_TIMEOUT_SECONDS =
+# 60 while /api/publish_interaction budgets 240, so the middleware always won
+# and answered a bare "Request timeout" for a publish the route was still
+# committing. The route's own 504 was unreachable code.
+#
+# INVARIANT: for every path here, this value exceeds the deadline the route
+# itself uses. It is asserted by a test that imports both modules -- this one
+# must NOT import the routes, because routes import middleware-adjacent server
+# state and the cycle would be paid on every request.
+ROUTE_BACKSTOP_SECONDS: dict[str, float] = {
+    "/api/publish_interaction": 300.0,
+}
+
+
+def route_relative_path(scope: Scope) -> str:
+    """Return the path with any mount/ASGI prefix removed.
+
+    ``ROUTE_BACKSTOP_SECONDS`` is keyed by the path the ROUTE declares, but
+    Starlette's ``Mount`` extends ``scope["root_path"]`` and leaves
+    ``scope["path"]`` holding the full, prefixed path -- so under a mount (or a
+    server started with ``--root-path``) ``request.url.path`` reads
+    ``/prefix/api/publish_interaction`` and an exact lookup silently misses,
+    dropping publish back to the 60s default and restoring the very bug this
+    table exists to fix.
+
+    Mirrors ``starlette._utils.get_route_path``, deliberately reimplemented
+    rather than imported: that module is private and FastAPI does not depend on
+    it, so importing it would couple us to an internal API for four lines. The
+    boundary check matters -- a ``root_path`` of ``/ref`` must not strip the
+    front of ``/reflexio/...``.
+
+    Args:
+        scope (Scope): The ASGI scope of the incoming request.
+
+    Returns:
+        str: The route-relative path used to look up a backstop.
+    """
+    path: str = scope["path"]
+    root_path: str = scope.get("root_path", "")
+    if not root_path or not path.startswith(root_path):
+        return path
+    if path == root_path:
+        return "/"
+    if path[len(root_path)] != "/":
+        return path
+    return path[len(root_path) :]
+
+
+def backstop_for(path: str, wait_for_response: bool) -> float:
+    """Return the middleware's timeout budget for one request.
+
+    Precedence is deliberate: a route that owns a deadline gets its backstop
+    regardless of ``wait_for_response``, because the route's own deadline
+    already covers both modes. Anything else keeps the previous behaviour.
+
+    Args:
+        path (str): The ROUTE-RELATIVE request path, as returned by
+            ``route_relative_path`` -- not ``request.url.path``, which still
+            carries any mount prefix and would miss every table row.
+        wait_for_response (bool): Whether the caller asked to wait.
+
+    Returns:
+        float: Seconds the middleware allows before it returns a generic 504.
+    """
+    if path in ROUTE_BACKSTOP_SECONDS:
+        return ROUTE_BACKSTOP_SECONDS[path]
+    if path in SYNC_REQUEST_PATHS or wait_for_response:
+        return SYNC_REQUEST_TIMEOUT_SECONDS
+    return REQUEST_TIMEOUT_SECONDS
+
+
 SUSPICIOUS_USER_AGENTS = ["bot", "crawler", "spider", "scraper", "curl", "wget"]
 ALLOWED_EMPTY_UA_PATHS = ["/health", "/"]  # Paths that allow empty user agents
 DEFAULT_MAX_BODY_BYTES = 10 * 1024 * 1024
@@ -129,20 +205,26 @@ class TimeoutMiddleware(BaseHTTPMiddleware):
         """
         from starlette.responses import JSONResponse
 
-        # Use longer timeout for synchronous processing requests
-        timeout = REQUEST_TIMEOUT_SECONDS
-        if (
-            request.url.path in SYNC_REQUEST_PATHS
-            or request.query_params.get("wait_for_response", "").lower() == "true"
-        ):
-            timeout = SYNC_REQUEST_TIMEOUT_SECONDS
+        timeout = backstop_for(
+            route_relative_path(request.scope),
+            request.query_params.get("wait_for_response", "").lower() == "true",
+        )
 
         try:
             return await asyncio.wait_for(call_next(request), timeout=timeout)
         except TimeoutError:
+            # This handler runs OUTSIDE the route, so it never parsed the body
+            # and cannot name a request_id. The correlation id is the only
+            # handle it has, and without one this 504 is uncorrelatable -- the
+            # reported complaint. `detail` keeps its exact previous string
+            # because existing clients read it.
             return JSONResponse(
                 status_code=status.HTTP_504_GATEWAY_TIMEOUT,
-                content={"detail": "Request timeout"},
+                content={
+                    "detail": "Request timeout",
+                    "reason": "backstop_timeout",
+                    "correlation_id": correlation_id_var.get(),
+                },
             )
 
 
