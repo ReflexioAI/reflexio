@@ -167,5 +167,9 @@ def test_run_once_invokes_always_global_sweep_during_bootstrap_failure(
         bootstrap_org_id="org-boot",
     )
 
-    assert scheduler._run_once() == 86400
+    # A failed bootstrap did NO work this tick, so it now retries soon rather
+    # than waiting the full poll interval — the same reason a failed Class C
+    # pass does. The always-global sweep still ran exactly once regardless,
+    # which is what this test is actually about.
+    assert scheduler._run_once() == gc_scheduler._FAILED_TICK_RETRY_SECONDS
     assert len(calls) == 1

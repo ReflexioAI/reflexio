@@ -177,8 +177,20 @@ def test_class_b_runs_when_lineage_gc_disabled(tmp_path, org_id):
 # ---------------------------------------------------------------------------
 
 
-def test_scheduler_does_not_start_when_both_disabled(tmp_path, org_id):
-    """maybe_start_lineage_gc returns None when both flags are False."""
+def test_scheduler_does_not_start_when_both_disabled(tmp_path, org_id, monkeypatch):
+    """maybe_start_lineage_gc returns None when NO class of work is configured.
+
+    Row-count retention became a third start condition when the sweep moved off
+    the publish path (Class C), so the two flags below no longer decide this on
+    their own -- the caps are unconditional and would otherwise stop being
+    enforced anywhere at all. Disabling every row limit keeps this test on its
+    original subject instead of on the old list of conditions.
+    """
+    from reflexio.server.services.lineage import gc_scheduler
+
+    monkeypatch.setattr(
+        gc_scheduler, "get_row_retention_limits", lambda: {"interactions": 0}
+    )
     _, factory = _make_ctx_factory(
         tmp_path,
         lineage_gc_enabled=False,
@@ -186,8 +198,8 @@ def test_scheduler_does_not_start_when_both_disabled(tmp_path, org_id):
     )
     result = maybe_start_lineage_gc(factory, bootstrap_org_id=org_id)
     assert result is None, (
-        "Scheduler must not start when lineage_gc.enabled=False and "
-        "expiry_reclamation.enabled=False"
+        "Scheduler must not start when lineage_gc.enabled=False, "
+        "expiry_reclamation.enabled=False and every row limit is 0"
     )
 
 

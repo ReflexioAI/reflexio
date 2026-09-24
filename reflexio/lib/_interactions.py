@@ -29,6 +29,9 @@ from reflexio.models.api_schema.service_schemas import (
     PublishUserInteractionResponse,
 )
 from reflexio.server.services.generation_service import GenerationService
+from reflexio.server.services.storage.retention_sweep import (
+    maybe_sweep_retention_caps_for_library,
+)
 from reflexio.server.services.storage.storage_base import BaseStorage
 
 logger = logging.getLogger(__name__)
@@ -146,6 +149,13 @@ class InteractionsMixin(ReflexioBase):
             status, counts = _safe_coverage(
                 storage, request.user_id, result.request_id or ""
             )
+            # Row caps, for embedded callers only. The server enforces these on
+            # `LineageGCScheduler` and deliberately does NOT touch its request
+            # path; the library starts no daemons at all, so without this an
+            # embedded user's tables grow past every configured limit. Throttled
+            # per org, and AFTER the durable commit so a sweep failure can never
+            # report `success=False` for a publish that already landed.
+            maybe_sweep_retention_caps_for_library(self.request_context.org_id, storage)
             return PublishUserInteractionResponse(
                 success=True,
                 message=message,

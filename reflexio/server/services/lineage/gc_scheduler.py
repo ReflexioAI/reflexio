@@ -24,6 +24,7 @@ all sweep classes share that cadence.
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from collections.abc import Callable
 
@@ -34,6 +35,11 @@ from reflexio.server.env_utils import env_str
 from reflexio.server.error_reporting import capture_anomaly
 from reflexio.server.org_fanout import iterate_orgs_bounded
 from reflexio.server.scheduling import LeaderGate, ThreadedScheduler
+from reflexio.server.services.storage.retention import get_row_retention_limits
+from reflexio.server.services.storage.retention_sweep import (
+    RetentionSweepResult,
+    sweep_retention_caps,
+)
 from reflexio.server.services.storage.storage_base import BaseStorage
 from reflexio.server.work_scope import WorkScope, WorkScopeError, bind_work_scope
 
@@ -44,6 +50,23 @@ _MIN_POLL_SECONDS = 1
 _BOOTSTRAP_RETRY_INTERVAL_SECONDS = 5
 _ORG_SWEEP_TIMEOUT_SECONDS = 60.0
 _DEFAULT_ORG_FANOUT_WORKERS = 8
+
+# How soon to tick again after a tick in which work FAILED, rather than waiting
+# the full `poll_interval_seconds` (86400s by default).
+#
+# Measured on staging, 2026-09-24: 18 of 18 orgs failed one tick with PostgREST
+# `PGRST002: Could not query the database for the schema cache. Retrying.` The
+# scheduler's first tick fires seconds after boot, which is exactly when that
+# cache is cold after a deploy -- so the boot tick is the MOST likely to hit it.
+# Waiting a full day on a transient PostgREST itself calls retryable put
+# retention off for 24h, and a service redeployed more often than daily would
+# never have swept at all.
+_FAILED_TICK_RETRY_SECONDS = 300.0
+
+# ...but bounded. A persistently broken dependency already fires an anomaly on
+# every tick; retrying it every 5 minutes forever would reintroduce exactly the
+# repeated-probe cost that moving this sweep off the publish path removed.
+_MAX_CONSECUTIVE_FAST_RETRIES = 3
 
 # Window-misconfiguration tripwire: if a single tick deletes more than this
 # many tombstones for one org, something is likely wrong with the grace window.
@@ -239,6 +262,13 @@ class LineageGCScheduler(ThreadedScheduler):
         self.org_id_provider = org_id_provider
         # Orgs that timed out on the PREVIOUS tick; a repeat escalates.
         self._prior_timeout_orgs: set[str] = set()
+        # Set by any org's Class C pass that could not complete. Written from
+        # up to `_org_fanout_workers` threads, so it takes a lock rather than
+        # relying on the GIL to make `|=` atomic.
+        self._tick_had_failure = False
+        self._failure_lock = threading.Lock()
+        # Consecutive ticks that ended in failure, to bound the fast retry.
+        self._consecutive_failed_ticks = 0
 
     def _on_started(self) -> None:
         logger.info("event=lineage_gc_scheduler_started")
@@ -383,6 +413,10 @@ class LineageGCScheduler(ThreadedScheduler):
             logger.exception(
                 "event=lineage_gc_project_enumeration_failed org_id=%s", org_id
             )
+            # No project ids means NO pass runs for this org -- including Class C
+            # -- so without this the tick reports clean while retention did not
+            # run at all. That is the silence this whole change exists to remove.
+            self._record_tick_failure()
             return []
         if not project_ids:
             # NOT a fallback to one unscoped pass. Under project row-level
@@ -496,6 +530,22 @@ class LineageGCScheduler(ThreadedScheduler):
                         method_name,
                     )
 
+        # Class C: row-count retention caps. UNGATED -- the caps are env-driven
+        # and always in force, so this block has no config flag of its own, and
+        # deliberately does not inherit Class A's or Class B's.
+        #
+        # It lives HERE, inside the per-project loop, and not on the
+        # `register_per_org_sweep` seam, because that seam fires outside the
+        # loop with no project bound. An unbound pass reads zero rows under the
+        # row-level policies and reports success -- the silent failure mode
+        # documented on `_sweep_org`.
+        #
+        # `sweep_retention_caps` absorbs its own errors and emits its own
+        # `retention.sweep.failed` anomaly, so there is no generic backstop here.
+        result: RetentionSweepResult = sweep_retention_caps(org_id, storage)
+        if result.failed:
+            self._record_tick_failure()
+
     def _gc_tick(self, org_ids: list[str], *, max_workers: int = 1) -> None:
         """Run one GC pass across the given org IDs.
 
@@ -514,6 +564,12 @@ class LineageGCScheduler(ThreadedScheduler):
             per_org_timeout_seconds=_ORG_SWEEP_TIMEOUT_SECONDS,
             stop_event=self._stop_event,
         )
+        if timed_out:
+            # An org that ran out of budget did NOT finish its sweeps, so this
+            # tick is not clean. Recorded here rather than in the straggler
+            # thread, which may still be running and would otherwise land its
+            # failure in a LATER tick's state.
+            self._record_tick_failure()
         for org_id in set(timed_out) & self._prior_timeout_orgs:
             capture_anomaly("lineage.gc.org_sweep_timeout_repeat", org_id=org_id)
         self._prior_timeout_orgs = set(timed_out)
@@ -616,7 +672,50 @@ class LineageGCScheduler(ThreadedScheduler):
                 capture_anomaly("lineage.always_global_sweep.failed", sweep=sweep_id)
                 logger.exception("event=always_global_sweep_failed sweep=%s", sweep_id)
 
+    def _record_tick_failure(self) -> None:
+        """Mark this tick as having failed work, from any fan-out worker."""
+        with self._failure_lock:
+            self._tick_had_failure = True
+
+    def _next_interval(self, poll_interval: float) -> float:
+        """Return how long to wait, shortening a failed tick's wait.
+
+        A clean tick resets the budget, so one bad day cannot permanently spend
+        the fast retries.
+
+        Args:
+            poll_interval (float): The configured cadence for a healthy tick.
+
+        Returns:
+            float: Seconds to wait before the next tick.
+        """
+        if not self._tick_had_failure:
+            self._consecutive_failed_ticks = 0
+            return max(poll_interval, _MIN_POLL_SECONDS)
+
+        self._consecutive_failed_ticks += 1
+        # `min`, not the constant: `poll_interval_seconds` may legitimately be
+        # configured below 300 (the schema permits 1), and a "retry sooner" path
+        # that returned 300 there would SLOW the scheduler -- for lineage GC and
+        # every registered global sweep too, not just retention.
+        fast = min(_FAILED_TICK_RETRY_SECONDS, poll_interval)
+        if self._consecutive_failed_ticks > _MAX_CONSECUTIVE_FAST_RETRIES:
+            logger.warning(
+                "event=lineage_gc_fast_retry_exhausted consecutive=%d — backing "
+                "off to the configured interval; the per-org anomalies say why",
+                self._consecutive_failed_ticks,
+            )
+            return max(poll_interval, _MIN_POLL_SECONDS)
+
+        logger.warning(
+            "event=lineage_gc_tick_retry_soon in=%.0fs consecutive=%d",
+            fast,
+            self._consecutive_failed_ticks,
+        )
+        return max(fast, _MIN_POLL_SECONDS)
+
     def _run_once(self) -> float:
+        self._tick_had_failure = False
         self._run_always_global_sweeps()
         poll_interval = _DEFAULT_POLL_INTERVAL_SECONDS
         try:
@@ -640,7 +739,8 @@ class LineageGCScheduler(ThreadedScheduler):
             self._run_global_sweeps(cfg)
         except Exception:
             logger.exception("event=lineage_gc_scheduler_tick_failed")
-        return max(poll_interval, _MIN_POLL_SECONDS)
+            self._record_tick_failure()
+        return self._next_interval(poll_interval)
 
 
 def maybe_start_lineage_gc(
@@ -711,6 +811,14 @@ def maybe_start_lineage_gc(
         _per_org_sweep_hooks or _global_sweep_hooks or _always_global_sweep_hooks
     )
 
+    # Resolved BEFORE the config read, because that read can fail and its
+    # handler returns early. Row caps are env-driven and do not depend on the
+    # bootstrap org's config at all, so letting a config failure decide them
+    # would drop retention for exactly the deployment that is already unhealthy.
+    # Gated on a positive limit rather than hardcoded True so that disabling
+    # every cap (`REFLEXIO_ROW_LIMIT_*=0`) still answers "nothing to do".
+    retention_enabled = any(limit > 0 for limit in get_row_retention_limits().values())
+
     try:
         ctx = request_context_factory(bootstrap_org_id)
         cfg = ctx.configurator.get_config()
@@ -752,7 +860,7 @@ def maybe_start_lineage_gc(
         )
     except Exception as exc:
         # Only a deployment with nothing registered has nothing to lose here.
-        if not has_registered_sweeps:
+        if not (has_registered_sweeps or retention_enabled):
             logger.warning(
                 "event=lineage_gc_scheduler_start_skipped error_type=%s error=%s",
                 type(exc).__name__,
@@ -777,7 +885,17 @@ def maybe_start_lineage_gc(
     # scheduler must run even if the bootstrap org's config has all flags off.
     # This preserves the "start unconditionally, gate per-org" invariant of
     # the deleted GovernanceRetentionScheduler.
-    if not (config_enabled or has_registered_sweeps):
+    #
+    # Class C (row-count retention) is its own start condition, and must be:
+    # the caps are env-driven and unconditional, so they cannot ride another
+    # feature's flag. Before this was here, an OSS deployment that set
+    # `lineage_gc.enabled = false` -- which this module's own docstring frames
+    # as a deliberate operator choice, and which `maybe_start_lineage_gc`'s
+    # criteria REQUIRE until DPO sign-off -- got no scheduler, and so no row
+    # caps at all. They had been enforced on every publish until the sweep
+    # moved here, so that would have been a silent regression into unbounded
+    # table growth. `retention_enabled` is resolved above, before the config read.
+    if not (config_enabled or has_registered_sweeps or retention_enabled):
         return None
 
     scheduler = LineageGCScheduler(

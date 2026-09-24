@@ -300,11 +300,35 @@ def test_lineage_gc_enabled_default_is_true():
 # ---------------------------------------------------------------------------
 
 
-def test_maybe_start_lineage_gc_returns_none_when_disabled():
+def test_maybe_start_lineage_gc_returns_none_when_disabled(monkeypatch):
+    """No configured work of ANY class means no scheduler.
+
+    Row-count retention became a third start condition when the sweep moved off
+    the publish path, so ``lineage_gc.enabled=False`` alone no longer implies
+    None -- the caps are unconditional and would otherwise stop being enforced
+    anywhere. Disabling every row limit here keeps this test asserting what it
+    always meant, rather than asserting the old set of conditions.
+    """
+    monkeypatch.setattr(
+        gc_scheduler, "get_row_retention_limits", lambda: {"interactions": 0}
+    )
     cfg = LineageGCConfig(enabled=False)
     ctx = _make_ctx("org_1", lineage_gc=cfg)
     result = maybe_start_lineage_gc(lambda _: ctx, bootstrap_org_id="org_1")  # type: ignore[arg-type]
     assert result is None
+
+
+def test_maybe_start_lineage_gc_starts_for_retention_alone():
+    """The converse of the above, and the reason it needed the monkeypatch.
+
+    With every other gate off but row caps still active, the scheduler MUST
+    start: Class C is where retention now runs, and nothing else would run it.
+    """
+    cfg = LineageGCConfig(enabled=False)
+    ctx = _make_ctx("org_1", lineage_gc=cfg)
+    sched = maybe_start_lineage_gc(lambda _: ctx, bootstrap_org_id="org_1")  # type: ignore[arg-type]
+    assert sched is not None
+    sched.stop(timeout_seconds=1.0)
 
 
 def test_maybe_start_lineage_gc_returns_scheduler_when_enabled():
@@ -341,7 +365,18 @@ def test_gc_scheduler_recovers_when_first_org_appears():
     scheduler._gc_tick.assert_called_once()  # type: ignore[attr-defined]
 
 
-def test_maybe_start_lineage_gc_returns_none_on_factory_error():
+def test_maybe_start_lineage_gc_returns_none_on_factory_error(monkeypatch):
+    """A factory error yields no scheduler when there is no other work either.
+
+    Row-count retention does NOT depend on the bootstrap context or its config,
+    so it deliberately survives this failure — see
+    `test_retention_still_starts_when_the_bootstrap_config_read_fails`. Disabling
+    every row limit here keeps this test on the factory error it is named for.
+    """
+    monkeypatch.setattr(
+        gc_scheduler, "get_row_retention_limits", lambda: {"interactions": 0}
+    )
+
     def bad_factory(org_id: str):
         raise RuntimeError("can't build context")
 

@@ -27,6 +27,7 @@ import logging
 import tempfile
 import time
 from collections.abc import Iterator
+from contextlib import ExitStack
 from datetime import UTC
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -332,64 +333,92 @@ def test_a_publish_cancelled_while_queued_still_reports(
     assert "admission_ms=" in lines[0], lines[0]
 
 
-def test_the_retention_sweep_is_attributed_to_its_own_phase() -> None:
-    """The largest untimed region on the publish path must report itself.
+def _retention_entry_points() -> list[str]:
+    """Every storage method by which a publish could pay retention cost.
 
-    `_cleanup_storage_tables_if_needed` ran two lines above `publish_start`,
-    so it was outside the service's own clock entirely. Most publishes find
-    nothing due and return in microseconds; when the throttle window opens,
-    ONE publish takes a lock and probes every retention target on its own
-    connection -- ~20 serialised pool acquisitions on the request thread,
-    attributed to nothing.
-
-    The assertion is bounded on BOTH sides on purpose. A lower bound alone
-    passes against a wrap placed around the whole of `run()`, which would
-    report the sweep's cost plus everything else under a name that claims to
-    be the sweep -- the same "something else satisfied the condition" shape
-    `verifying-before-building.md` catalogues. So a second, deliberately
-    slower region runs inside `run()` and the sweep phase must NOT contain it.
+    DERIVED from ``RetentionMixin``'s public surface rather than hand-listed, so
+    a new retention entry point is watched the day it is added -- plus the two
+    legacy interaction-cap methods, which predate the mixin and are a live
+    bypass: ``count_all_interactions`` + ``delete_oldest_interactions`` reproduce
+    the exact cost (an exact COUNT and an irreversible oldest-rows delete)
+    without touching a single mixin method.
     """
-    sweep_s = 0.25
-    ingest_s = 0.6
+    from reflexio.server.services.storage.retention_mixin import RetentionMixin
+
+    derived = [
+        name
+        for name in vars(RetentionMixin)
+        if not name.startswith("_") and callable(vars(RetentionMixin)[name])
+    ]
+    assert derived, "the RetentionMixin scan found nothing -- it moved or was renamed"
+    return sorted({*derived, "count_all_interactions", "delete_oldest_interactions"})
+
+
+def test_the_publish_path_issues_no_retention_round_trips() -> None:
+    """INVERTED from a phase-attribution guard when its subject was deleted.
+
+    This test used to assert that `retention_sweep_ms` was present and contained
+    the sweep's elapsed time, because the sweep ran two lines above
+    `publish_start` and was in no phase at all. The sweep has since moved to the
+    lineage GC scheduler, so the subject of that assertion is gone. Where the
+    deleted thing WAS the test's subject, invert the test: asserting
+    `retention_sweep_ms == 0` would be a check that cannot fail, because a key
+    that is never written reads as absent either way.
+
+    BOTH halves are required. The missing-phase-key assertion alone still passes
+    if someone calls a storage hook outside a `publish_timing.phase` wrapper,
+    which is precisely the defect shape the instrument was built to find.
+
+    The call half watches a DERIVED SET, not one method name. A review of the
+    first version produced a working bypass in three lines -- `count_all_interactions`
+    then `delete_oldest_interactions`, both live in production today, neither
+    named `count_retention_target_rows` -- which reintroduced an exact count and
+    an irreversible delete onto the publish path while the guard stayed green.
+
+    Known limits, stated rather than left for the next reader to discover:
+    it sees only the OSS SQLite storage class, so an enterprise-side publish
+    hook is invisible to it; and `calls` is read synchronously after `run`
+    returns, so a sweep moved onto a thread spawned by publish would race it.
+    """
+    watched = _retention_entry_points()
+    calls: list[str] = []
 
     with tempfile.TemporaryDirectory() as temp_dir:
         service = _service(temp_dir)
         storage = service.storage
         assert storage is not None
-        original_bulk = type(storage).add_user_interactions_bulk
+        storage_cls = type(storage)
 
-        def slow_bulk(self: object, *args: object, **kwargs: object) -> object:
-            time.sleep(ingest_s)
-            return original_bulk(self, *args, **kwargs)  # type: ignore[arg-type]
+        def _recorder(name: str):
+            def _record(_self: object, *_args: object, **_kwargs: object) -> int:
+                calls.append(name)
+                return 0
 
-        with (
-            patch.object(
-                type(service),
-                "_cleanup_storage_tables_if_needed",
-                lambda _self: time.sleep(sweep_s),
-            ),
-            patch.object(type(storage), "add_user_interactions_bulk", slow_bulk),
-            publish_timing.collect(),
-        ):
+            return _record
+
+        patches = [
+            patch.object(storage_cls, name, _recorder(name))
+            for name in watched
+            if hasattr(storage_cls, name)
+        ]
+        assert len(patches) >= 3, (
+            f"only {len(patches)} of {len(watched)} entry points exist on "
+            f"{storage_cls.__name__}; the scan is no longer watching the code it guards"
+        )
+
+        with ExitStack() as stack:
+            for p in patches:
+                stack.enter_context(p)
+            stack.enter_context(publish_timing.collect())
             service.run(_publish_request(), defer_learning=True)
             snap = publish_timing.snapshot()
 
     assert snap is not None
-    assert "retention_sweep_ms" in snap, (
-        "the retention sweep is in no phase, so a publish that spends seconds "
-        f"in it reports nothing about where the time went: {sorted(snap)}"
+    assert "retention_sweep_ms" not in snap, (
+        "the publish path still reports a retention phase, so the sweep was not "
+        f"removed from it: {sorted(snap)}"
     )
-    sweep_ms = snap["retention_sweep_ms"]
-    assert sweep_ms >= int(sweep_s * 1000 * 0.75), (
-        f"retention_sweep_ms={sweep_ms} does not contain the {int(sweep_s * 1000)}ms "
-        "sweep, so the phase is not around the sweep call"
-    )
-    # Proves the upper bound below is not vacuous: the region the sweep phase
-    # must exclude really did cost measurable time on this run.
-    assert snap.get("add_interactions_ms", 0) >= int(ingest_s * 1000 * 0.75), (
-        f"the contrasting region was not slow, so the bound proves nothing: {snap}"
-    )
-    assert sweep_ms < int((sweep_s + ingest_s * 0.5) * 1000), (
-        f"retention_sweep_ms={sweep_ms} has swallowed the {int(ingest_s * 1000)}ms "
-        "ingest, so the phase is wrapped around more than the sweep"
+    assert calls == [], (
+        "the publish path still reaches retention storage methods, so it still "
+        f"pays for them whether or not a phase reports it: {sorted(set(calls))}"
     )
