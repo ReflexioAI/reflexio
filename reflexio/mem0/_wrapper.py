@@ -389,19 +389,28 @@ class _WrapperState:
 
     def _prepare_search(
         self, query: str, options: Any, kwargs: dict[str, Any]
-    ) -> tuple[str, str, str] | ReflexioSearchResult:
-        """Resolve ``(user_id, agent_version, session_id)`` for a mirrored search.
+    ) -> tuple[str, str] | ReflexioSearchResult:
+        """Resolve ``(user_id, agent_version)`` for a mirrored search.
 
-        The session is derived here by the SAME call as ``_prepare_publish``
-        makes, from the same namespace and the same three identity inputs, so a
-        search and the publish that follows it on one client instance resolve to
-        an identical ``session_id``. That identity is the only thing that ties
-        the serve Reflexio records for this search back to the turn it shaped.
+        Deliberately no ``session_id``, and this is a trade rather than an
+        oversight. Passing one would let Reflexio correlate the serve with the
+        publish that follows -- ``_prepare_publish`` derives exactly such an id
+        from the same identities -- but on the server a ``session_id`` is not
+        only a correlation key: it also arms the session-scoped seen-result
+        cache (``services/retrieval/session_dedup.py``), which skips items
+        already served to that session and, in its own words, keeps an item
+        "suppressed for the session's lifetime".
 
-        This used to stop at ``(user_id, agent_version)`` and drop
-        ``identities.run_id`` on the floor, so every mirrored search reached
-        Reflexio with no correlation key at all while the publish beside it
-        carried one.
+        mem0's ``search`` contract is "the most relevant memories", not "the
+        most relevant ones you have not already seen". A stable per-run id
+        would therefore make the second and later searches of a conversation
+        quietly return different, lower-ranked learnings -- trading retrieval
+        quality for instrumentation, invisibly, in a wrapper whose whole
+        premise is that mem0 behaviour is unchanged.
+
+        So the mirrored search stays uncorrelated until the server can accept a
+        correlation key without arming dedup. Reinstating it is a one-line
+        change here plus the two call sites, deliberately kept that cheap.
         """
         if self._reflexio_client is None:
             return _empty_search_result("skipped", "not_configured")
@@ -414,17 +423,9 @@ class _WrapperState:
             return _empty_search_result("skipped", "unsupported_identity_filter")
         if identities.user_id is None:
             return _empty_search_result("skipped", "missing_user_id")
-        resolved_user = _resolved_user_id(identities.user_id, identities.app_id)
-        agent_version = _resolved_agent_version(identities.app_id, identities.agent_id)
         return (
-            resolved_user,
-            agent_version,
-            _session_id(
-                self._session_namespace,
-                resolved_user,
-                agent_version,
-                identities.run_id,
-            ),
+            _resolved_user_id(identities.user_id, identities.app_id),
+            _resolved_agent_version(identities.app_id, identities.agent_id),
         )
 
     def _serialize_search_response(self, response: Any) -> ReflexioSearchResult:
@@ -525,13 +526,15 @@ class MemoryClient(_WrapperState, _Mem0MemoryClient):
         if isinstance(prepared, dict):
             augmented["reflexio"] = prepared
             return augmented
-        user_id, agent_version, session_id = prepared
+        user_id, agent_version = prepared
         try:
+            # No session_id: see _prepare_search. It would correlate the serve
+            # AND arm the server's session-scoped result dedup, and mem0's
+            # search contract does not permit silently withholding results.
             response = self._reflexio_client.search(  # type: ignore[union-attr]
                 query=query,
                 user_id=user_id,
                 agent_version=agent_version,
-                session_id=session_id,
                 top_k=_REFLEXIO_TOP_K,
             )
             augmented["reflexio"] = self._serialize_search_response(response)
@@ -618,13 +621,13 @@ class AsyncMemoryClient(_WrapperState, _Mem0AsyncMemoryClient):
         if isinstance(prepared, dict):
             augmented["reflexio"] = prepared
             return augmented
-        user_id, agent_version, session_id = prepared
+        user_id, agent_version = prepared
         try:
+            # No session_id: same reason as the sync path above.
             response = await self._reflexio_client.search_async(  # type: ignore[union-attr]
                 query=query,
                 user_id=user_id,
                 agent_version=agent_version,
-                session_id=session_id,
                 top_k=_REFLEXIO_TOP_K,
             )
             augmented["reflexio"] = self._serialize_search_response(response)
