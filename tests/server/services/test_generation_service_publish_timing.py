@@ -12,7 +12,10 @@ are exactly two reporting points, and they partition the exits:
   trips on every publish) and never sees a cold `get_reflexio` fail at all.
 * the route reports the admission exits, which never reach the worker: the
   503, and a client disconnect while the request is still queued. That is the
-  dominant production outcome -- 97.4% of publishes end as an ELB 460.
+  dominant production outcome: measured from ALB access logs 2026-09-24,
+  23:15-23:45 UTC, 59 of 59 publish requests ended `elb=460 target=-`. A 460
+  is the client giving up, NOT a lost publish -- 48 of those 59 still
+  committed.
 
 And one thing that must NOT be counted: the in-process coverage wait under
 `defer_learning=False` is blocking on a background worker, not serving the
@@ -293,7 +296,8 @@ def test_a_publish_cancelled_while_queued_still_reports(
 ) -> None:
     """The dominant production shape: the client gives up before admission.
 
-    97.4% of production publishes end as an ELB 460 -- the client's own ~8s
+    Nearly every production publish ends as an ELB 460 (59/59 in the measured
+    window above) -- the client's own ~8s
     timeout fires before the load balancer can respond. A request cancelled
     while still queued in `acquire_ingestion` never reaches the worker at all,
     so the route has to report it.

@@ -152,11 +152,21 @@ async def publish_user_interaction(
             # the only ones nothing else will report: the 503 above, and a
             # client disconnect while this request is still queued.
             #
-            # That second one is not rare. 97.4% of production publishes end as
-            # an ELB 460 -- the client's own ~8s timeout fires first -- so a
-            # request that spends its whole life in this queue and is then
-            # abandoned is exactly the shape the instrument exists to catch,
-            # and it would otherwise be the silent majority.
+            # That second one is not rare -- it is the norm. Measured from ALB
+            # access logs on 2026-09-24, 23:15-23:45 UTC: of 59 requests to
+            # /api/publish_interaction, 59 ended `elb=460 target=-`. The
+            # client's own ~8s timeout fires long before a publish that takes
+            # 12-66s can answer.
+            #
+            # A 460 is NOT a lost publish, and reading it that way sends you
+            # after the wrong problem. Over the same window 48 of those 59 --
+            # 81% -- still committed their rows: the server finishes inside
+            # `commit_scope` and the caller is simply no longer there to be
+            # told. The ~19% that produce nothing died in the admission queue
+            # before reaching the scope.
+            #
+            # So: the request is abandoned, the work usually is not, and this
+            # exit is the only place either fact can be reported.
             #
             # Once the worker HAS started this is unnecessary, and a `finally`
             # spanning the whole handler would be actively wrong: the work is
