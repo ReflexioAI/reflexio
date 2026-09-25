@@ -149,8 +149,6 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
         playbook_config = getattr(
             context.configurator.get_config(), "user_playbook_extractor_config", None
         )
-        if playbook_config is None or playbook_config.aggregation_config is None:
-            return
         if storage is None:
             return
         if not getattr(storage, "supports_incremental_playbook_aggregation", False):
@@ -164,6 +162,14 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
                     context.org_id,
                     blocked_reason,
                 )
+            return
+        from reflexio.server.services.playbook.aggregation_operations import (
+            run_explicit_operation,
+        )
+
+        if run_explicit_operation(context, owner=f"explicit:{self._worker_id}"):
+            return
+        if playbook_config is None or playbook_config.aggregation_config is None:
             return
         repair_now = time.monotonic()
         # Keyed by (org, work scope) rather than by org alone. The enterprise
