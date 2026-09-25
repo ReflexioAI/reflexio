@@ -121,7 +121,7 @@ def test_the_duplicate_check_is_attributed_to_its_own_phase() -> None:
 
         def slow_get_request(_self: object, *_a: object, **_k: object) -> None:
             time.sleep(dup_s)
-            return None
+            return
 
         with (
             patch.object(storage_cls, "add_user_interactions_bulk", slow_bulk),
@@ -137,11 +137,17 @@ def test_the_duplicate_check_is_attributed_to_its_own_phase() -> None:
     assert snap is not None
     assert "dup_check_ms" in snap, sorted(snap)
     dup_ms = snap["dup_check_ms"]
-    assert dup_ms >= int(dup_s * 1000 * 0.75), (
-        f"dup_check_ms={dup_ms} does not contain the {int(dup_s * 1000)}ms read"
+    # TWO lookups on the HTTP path: a preflight before the scope and the
+    # in-scope one. `phase` accumulates by name, so the line must report the
+    # total both round trips cost -- reporting only the second would leave the
+    # first in the unattributed remainder, which is the whole point of this
+    # change. Raised by review on #536.
+    assert dup_ms >= int(2 * dup_s * 1000 * 0.75), (
+        f"dup_check_ms={dup_ms} does not cover BOTH lookups "
+        f"({int(2 * dup_s * 1000)}ms expected); only one is phased"
     )
     assert snap.get("add_interactions_ms", 0) >= int(ingest_s * 1000 * 0.75), snap
-    assert dup_ms < int((dup_s + ingest_s * 0.5) * 1000), (
+    assert dup_ms < int((2 * dup_s + ingest_s * 0.5) * 1000), (
         f"dup_check_ms={dup_ms} swallowed the ingest, so the phase is too wide"
     )
 
