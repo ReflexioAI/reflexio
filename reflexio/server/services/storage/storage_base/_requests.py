@@ -21,6 +21,15 @@ class RequestMixin:
         """
         raise NotImplementedError
 
+    def add_request_if_absent(self, request: Request) -> bool:
+        """Atomically insert a publish request; return False if its ID exists.
+
+        Storage backends supporting publish must override this operation and
+        join commit_scope. A check-then-upsert fallback is not concurrency-safe.
+        Existing add_request callers retain their upsert behavior.
+        """
+        raise NotImplementedError("Storage must implement atomic request insertion")
+
     @abstractmethod
     def get_request(self, request_id: str) -> Request | None:
         """Get a request by its ID.

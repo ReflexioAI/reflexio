@@ -101,3 +101,21 @@ class TestCommitScopeAtomicity:
         with storage.commit_scope():
             _seed_request(storage, "r-after-begin-fail", "u-after-begin-fail")
         assert storage.get_request("r-after-begin-fail") is not None
+
+
+def test_insert_if_absent_never_replaces_and_joins_rollback(storage):
+    original = Request(request_id="duplicate", user_id="first", session_id="s")
+    assert storage.add_request_if_absent(original)
+    assert not storage.add_request_if_absent(
+        original.model_copy(update={"user_id": "second"})
+    )
+    assert storage.get_request("duplicate").user_id == "first"
+    with pytest.raises(RuntimeError), storage.commit_scope():
+        assert storage.add_request_if_absent(
+            original.model_copy(update={"request_id": "rollback"})
+        )
+        raise RuntimeError("abort")
+    assert storage.get_request("rollback") is None
+    # Other clients still deliberately use upsert.
+    storage.add_request(original.model_copy(update={"user_id": "updated"}))
+    assert storage.get_request("duplicate").user_id == "updated"

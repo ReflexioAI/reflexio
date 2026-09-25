@@ -321,6 +321,7 @@ def test_external_participant_rolls_back_then_replays_without_effects(
             (store.org_id, "u1"),
         ).fetchone()
     )
+    original_prepare = store.prepare_interaction_embeddings
     preparation = Mock(side_effect=AssertionError("Replay must not request embeddings"))
     monkeypatch.setattr(store, "prepare_interaction_embeddings", preparation)
     replay = svc.run(request, defer_learning=True, admission_participant=participant)
@@ -340,6 +341,7 @@ def test_external_participant_rolls_back_then_replays_without_effects(
     assert (
         store.conn.execute("SELECT COUNT(*) FROM external_receipt").fetchone()[0] == 1
     )
+    monkeypatch.setattr(store, "prepare_interaction_embeddings", original_prepare)
     with pytest.raises(ValueError, match="already exists"):
         svc.run(request, defer_learning=True)
 

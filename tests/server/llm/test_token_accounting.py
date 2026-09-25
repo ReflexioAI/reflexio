@@ -204,6 +204,7 @@ def test_copied_context_shares_the_capture_object() -> None:
 
     def work() -> None:
         inner = run_token_capture.get()
+        assert inner is not None
         assert inner is capture
         inner.observe(prompt_tokens=7, completion_tokens=2)
 

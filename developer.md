@@ -248,3 +248,20 @@ When working in a git worktree, services must run on different ports to avoid co
 | `uv sync` fails | Ensure Python >= 3.14, try `uv self update` |
 | Docs frontend won't start | Run `npm --prefix docs install` first |
 | Import errors after pull | Run `uv sync` to update dependencies |
+
+### Storage requirements for publishing
+
+Custom storage backends must implement `add_request_if_absent(request) -> bool`
+as an atomic insert that participates in `commit_scope`: return false for an
+existing request ID without modifying it. The base implementation raises
+`NotImplementedError`; a check followed by an upsert cannot safely substitute
+for this operation. `add_request` retains its existing upsert contract for other
+callers. Duplicate publishes may prepare embeddings before rejection; external
+admission receipt replays still skip that preparation.
+
+`ExtractionStreamStore.extraction_report(user_id, request_id)` returns the status
+and output counts together using one SQL scope and admission lookup. Backends
+with custom coverage implementations should override this operation too.
+Standalone `extraction_status` and `extraction_counts` remain available. Publish
+omits reporting fields on a post-commit reporting failure while preserving
+`success=True` for the durable write. HTTP and client schemas are unchanged.

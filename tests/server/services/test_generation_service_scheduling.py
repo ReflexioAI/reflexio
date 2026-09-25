@@ -248,7 +248,7 @@ def test_learning_stall_path_calls_post_publish_helper(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     storage = MagicMock(name="storage")
-    storage.get_request.return_value = None
+    storage.add_request_if_absent.return_value = True
     storage.get_stall_state.return_value = SimpleNamespace(
         stalled=True,
         reason="auth_error",
@@ -296,7 +296,8 @@ def test_learning_stall_path_calls_post_publish_helper(
     )
 
     assert result.request_id is not None
-    storage.add_request.assert_called_once()
+    storage.add_request_if_absent.assert_called_once()
+    storage.add_request.assert_not_called()
     storage.add_user_interactions_bulk.assert_called_once()
     post_publish.assert_called_once()
 

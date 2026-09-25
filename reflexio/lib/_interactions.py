@@ -43,7 +43,7 @@ def _safe_coverage(
 ) -> tuple[dict[str, Any] | None, dict[str, int] | None]:
     """Read extraction coverage and counts, or ``(None, None)`` on failure.
 
-    Both reads happen after the publish has committed, so they describe the
+    Reporting happens after the publish has committed, so it describes the
     write rather than performing it. Never raises — surfacing a reporting
     failure as a failed publish would tell the caller to retry work that is
     already durable.
@@ -56,13 +56,10 @@ def _safe_coverage(
     Returns:
         tuple[dict[str, Any] | None, dict[str, int] | None]: The
             ``extraction_status`` and ``extraction_counts`` results, or
-            ``(None, None)`` if either read failed.
+            ``(None, None)`` if reporting failed.
     """
     try:
-        return (
-            storage.extraction_status(user_id, request_id),
-            storage.extraction_counts(user_id, request_id),
-        )
+        return storage.extraction_report(user_id, request_id)
     except Exception:  # noqa: BLE001
         # `request_id` is caller-supplied (NonEmptyStr: no length cap, no
         # character restrictions), so a newline in it would forge a line in a
@@ -147,9 +144,8 @@ class InteractionsMixin(ReflexioBase):
             # is the invariant the pre-durable ``_safe_count`` helper carried
             # ("a storage hiccup during counting shouldn't block the publish
             # itself from returning a useful response").
-            # Two remote round trips on EVERY publish, after `run` returns and
-            # before the timing line is emitted -- so their cost is inside
-            # `total_ms` and, until this phase existed, attributed to nothing.
+            # Report after durable admission using one connection and a shared
+            # admission lookup. Include every reporting query in this phase.
             # Measured on prod: 68% of a publish fell outside every named phase.
             with publish_timing.phase("coverage_reads"):
                 status, counts = _safe_coverage(

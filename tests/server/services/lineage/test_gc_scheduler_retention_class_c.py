@@ -28,10 +28,11 @@ from __future__ import annotations
 import types
 from collections.abc import Iterator
 from contextlib import contextmanager
-from unittest.mock import patch
+from unittest.mock import create_autospec, patch
 
 import pytest
 
+from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.extensions import register_service
 from reflexio.server.services.lineage import gc_scheduler
 from reflexio.server.services.lineage.gc_scheduler import (
@@ -186,21 +187,23 @@ def test_a_project_whose_enumeration_failed_gets_no_pass():
 # None, and nothing swept and nothing said so.
 
 
-def _bootstrap_ctx(*, lineage_gc: bool, expiry: bool, governance: bool):
-    return types.SimpleNamespace(
-        storage=types.SimpleNamespace(),
-        configurator=types.SimpleNamespace(
-            get_config=lambda: types.SimpleNamespace(
-                lineage_gc=types.SimpleNamespace(
-                    enabled=lineage_gc, poll_interval_seconds=86400
-                ),
-                expiry_reclamation=types.SimpleNamespace(enabled=expiry),
-                governance_retention=types.SimpleNamespace(
-                    audit_events_retention_enabled=governance
-                ),
-            )
-        ),
+def _bootstrap_ctx(
+    *, lineage_gc: bool, expiry: bool, governance: bool
+) -> RequestContext:
+    context = create_autospec(RequestContext, instance=True)
+    context.storage = types.SimpleNamespace()
+    context.configurator = types.SimpleNamespace(
+        get_config=lambda: types.SimpleNamespace(
+            lineage_gc=types.SimpleNamespace(
+                enabled=lineage_gc, poll_interval_seconds=86400
+            ),
+            expiry_reclamation=types.SimpleNamespace(enabled=expiry),
+            governance_retention=types.SimpleNamespace(
+                audit_events_retention_enabled=governance
+            ),
+        )
     )
+    return context
 
 
 def test_the_scheduler_starts_for_retention_with_every_other_gate_off(monkeypatch):
