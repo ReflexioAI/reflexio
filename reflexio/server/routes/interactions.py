@@ -152,21 +152,23 @@ async def publish_user_interaction(
             # the only ones nothing else will report: the 503 above, and a
             # client disconnect while this request is still queued.
             #
-            # That second one is not rare -- it is the norm. Measured from ALB
-            # access logs on 2026-09-24, 23:15-23:45 UTC: of 59 requests to
-            # /api/publish_interaction, 59 ended `elb=460 target=-`. The
-            # client's own ~8s timeout fires long before a publish that takes
-            # 12-66s can answer.
+            # Two different counts, and conflating them points you at the
+            # wrong problem. Measured from ALB access logs on 2026-09-24,
+            # 23:15-23:45 UTC, 59 requests to /api/publish_interaction:
             #
-            # A 460 is NOT a lost publish, and reading it that way sends you
-            # after the wrong problem. Over the same window 48 of those 59 --
-            # 81% -- still committed their rows: the server finishes inside
-            # `commit_scope` and the caller is simply no longer there to be
-            # told. The ~19% that produce nothing died in the admission queue
-            # before reaching the scope.
+            #   59 of 59  ended `elb=460 target=-`  -- the CLIENT gave up.
+            #             Its own ~8s timeout fires long before a publish
+            #             taking 12-66s can answer. A 460 is not a lost
+            #             publish.
+            #   48 of 59  committed their rows anyway (81%). Those were
+            #             already admitted, so the worker emits their timing
+            #             itself and this exit never sees them.
+            #   11 of 59  never left the admission queue (19%). THOSE are
+            #             what this branch reports -- the minority case.
             #
-            # So: the request is abandoned, the work usually is not, and this
-            # exit is the only place either fact can be reported.
+            # So the 460 rate is not this exit's frequency: abandonment is
+            # near-universal, cancellation-while-queued is about a fifth of
+            # it, and only the latter reaches here.
             #
             # Once the worker HAS started this is unnecessary, and a `finally`
             # spanning the whole handler would be actively wrong: the work is

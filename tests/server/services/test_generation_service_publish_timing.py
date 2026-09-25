@@ -11,11 +11,12 @@ are exactly two reporting points, and they partition the exits:
   coverage reads (`lib/_interactions.py::_safe_coverage`, two remote round
   trips on every publish) and never sees a cold `get_reflexio` fail at all.
 * the route reports the admission exits, which never reach the worker: the
-  503, and a client disconnect while the request is still queued. That is the
-  dominant production outcome: measured from ALB access logs 2026-09-24,
-  23:15-23:45 UTC, 59 of 59 publish requests ended `elb=460 target=-`. A 460
-  is the client giving up, NOT a lost publish -- 48 of those 59 still
-  committed.
+  503, and a client disconnect while the request is still QUEUED. Measured
+  from ALB access logs 2026-09-24, 23:15-23:45 UTC, over 59 publish requests:
+  59 of 59 ended `elb=460 target=-` (the client gave up -- not a lost
+  publish), but 48 of those had already been admitted and committed, so the
+  worker reported them itself. The 11 that died in the queue are the ones this
+  exit exists for.
 
 And one thing that must NOT be counted: the in-process coverage wait under
 `defer_learning=False` is blocking on a background worker, not serving the
@@ -294,13 +295,14 @@ def test_the_coverage_wait_is_not_counted_as_serving_time(
 def test_a_publish_cancelled_while_queued_still_reports(
     caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The dominant production shape: the client gives up before admission.
+    """A client that gives up while the request is still QUEUED.
 
-    Nearly every production publish ends as an ELB 460 (59/59 in the measured
-    window above) -- the client's own ~8s
-    timeout fires before the load balancer can respond. A request cancelled
-    while still queued in `acquire_ingestion` never reaches the worker at all,
-    so the route has to report it.
+    Not to be confused with the 460 rate. In the measured window every one of
+    the 59 publishes ended as an ELB 460 -- the client's own ~8s timeout fires
+    before the load balancer can respond -- but 48 of those were already
+    admitted and committed, and the worker reports its own timing for them.
+    The remaining 11 were cancelled while still queued in `acquire_ingestion`,
+    never reached the worker, and are the case this test covers.
 
     A request that HAS reached the worker needs no such help: the work is
     shielded and runs to completion in a thread holding its own copy of this
