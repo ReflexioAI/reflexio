@@ -28,6 +28,7 @@ from reflexio.models.api_schema.service_schemas import (
     PublishUserInteractionRequest,
     PublishUserInteractionResponse,
 )
+from reflexio.server import publish_timing
 from reflexio.server.services.generation_service import GenerationService
 from reflexio.server.services.storage.retention_sweep import (
     maybe_sweep_retention_caps_for_library,
@@ -146,9 +147,14 @@ class InteractionsMixin(ReflexioBase):
             # is the invariant the pre-durable ``_safe_count`` helper carried
             # ("a storage hiccup during counting shouldn't block the publish
             # itself from returning a useful response").
-            status, counts = _safe_coverage(
-                storage, request.user_id, result.request_id or ""
-            )
+            # Two remote round trips on EVERY publish, after `run` returns and
+            # before the timing line is emitted -- so their cost is inside
+            # `total_ms` and, until this phase existed, attributed to nothing.
+            # Measured on prod: 68% of a publish fell outside every named phase.
+            with publish_timing.phase("coverage_reads"):
+                status, counts = _safe_coverage(
+                    storage, request.user_id, result.request_id or ""
+                )
             # Row caps, for embedded callers only. The server enforces these on
             # `LineageGCScheduler` and deliberately does NOT touch its request
             # path; the library starts no daemons at all, so without this an
