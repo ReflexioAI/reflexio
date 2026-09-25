@@ -8,8 +8,8 @@ are exactly two reporting points, and they partition the exits:
 * `publisher_api.add_user_interaction` -- the worker's outermost frame --
   reports everything that reached the worker. It is out here rather than in
   `GenerationService.run` because `run` returns BEFORE the post-commit
-  coverage reads (`lib/_interactions.py::_safe_coverage`, two remote round
-  trips on every publish) and never sees a cold `get_reflexio` fail at all.
+  coverage reads (`lib/_interactions.py::_safe_coverage`, several SQL
+  queries on every publish) and never sees a cold `get_reflexio` fail at all.
 * the route reports the admission exits, which never reach the worker: the
   503, and a client disconnect while the request is still QUEUED. Measured
   from ALB access logs 2026-09-24, 23:15-23:45 UTC, over 59 publish requests:
@@ -147,22 +147,22 @@ def test_the_line_covers_the_post_commit_coverage_reads(
 ) -> None:
     """`_safe_coverage` runs AFTER `run()` returns and is part of serving.
 
-    Two remote round trips on every publish. Reporting from inside `run()`
+    Multiple reporting queries on every publish. Reporting from inside `run()`
     left them out entirely: a publish whose service portion was under the
     threshold and whose coverage reads stalled produced no line at all.
     """
     slow_read_s = 0.4
 
-    def slow_status(*_args: object, **_kwargs: object) -> dict[str, str]:
+    def slow_status(*_args: object, **_kwargs: object):
         time.sleep(slow_read_s)
-        return {"status": "done", "reason": "complete"}
+        return ({"status": "done", "reason": "complete"}, {"profile": 0, "playbook": 0})
 
     with tempfile.TemporaryDirectory() as temp_dir:
         reflexio = _reflexio(temp_dir)
         storage = reflexio._get_storage()  # noqa: SLF001 -- patching its class
         with (
             patch(f"{_PUBLISHER_MODULE}.get_reflexio", return_value=reflexio),
-            patch.object(type(storage), "extraction_status", slow_status),
+            patch.object(type(storage), "extraction_report", slow_status),
             caplog.at_level(logging.WARNING, logger=publish_timing.__name__),
             publish_timing.collect(),
         ):
@@ -260,10 +260,8 @@ def test_the_coverage_wait_is_not_counted_as_serving_time(
     """
     monkeypatch.setenv(publish_timing.ENV_THRESHOLD_MS, "300")
 
-    # `extraction_status` is called twice on this path and the two calls are
-    # not alike: the FIRST is `run()`'s coverage wait, which is excluded, and
-    # the second is `_safe_coverage`'s reporting read, which is counted.
-    # Slowing both would prove nothing -- the line would be legitimately slow.
+    # Only the standalone coverage poll is delayed. The combined reporting
+    # read remains fast and is included in the served duration.
     calls = {"n": 0}
 
     def slow_first_poll(*_args: object, **_kwargs: object) -> dict[str, str]:
@@ -284,7 +282,7 @@ def test_the_coverage_wait_is_not_counted_as_serving_time(
             publisher_api.add_user_interaction(
                 org_id=_ORG_ID, request=_publish_request(), defer_learning=False
             )
-    assert calls["n"] >= 2, "the coverage wait and the reporting read both run"
+    assert calls["n"] == 1, "the coverage wait uses the standalone poll"
 
     assert _timing_lines(caplog) == [], (
         "a fast publish was reported as slow because the coverage wait was "

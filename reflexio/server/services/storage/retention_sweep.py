@@ -60,7 +60,7 @@ SLOW_SWEEP_SECONDS = 20.0
 
 #: Tag value for a pass whose project could not be resolved. A literal, because
 #: ``error_reporting._normalize_tags`` DROPS ``None`` values: tagging the real
-#: ``None`` would make an unbound enterprise pass byte-identical in Sentry to a
+#: ``None`` would make an unbound enterprise pass byte-identical in error reports to a
 #: correct OSS one, which is the one distinction that matters here.
 UNBOUND_PROJECT_TAG = "<unbound>"
 

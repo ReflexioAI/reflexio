@@ -2,7 +2,7 @@
 
 Prod once emitted ``Extraction window failed kind=profile error=ValueError``
 twice in one night. That is the whole signal: no message, no frame, and a
-WARNING sits below the Sentry quota floor, so nothing richer existed anywhere.
+WARNING sits below the error-reporting quota floor, so nothing richer existed anywhere.
 The class name is logged *instead of* the message on purpose - an exception
 raised on this path can quote the customer's own interaction text, and on the
 window handler the value is persisted as well as logged.

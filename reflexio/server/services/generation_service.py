@@ -209,18 +209,6 @@ class GenerationService:
             if replay is not None:
                 return replay
 
-            if admission_participant is None and caller_request_id is not None:
-                # The FIRST of two duplicate lookups on the HTTP publish path
-                # (`routes/interactions.py` always supplies a request_id, and
-                # leaves `admission_participant` at None), so this branch always
-                # runs there. It shares the `dup_check` key with the in-scope
-                # lookup below: `phase` accumulates by name, so the line reports
-                # the TOTAL both round trips cost rather than only the second.
-                with publish_timing.phase("dup_check"):
-                    preflight = storage.get_request(request_id)
-                if preflight is not None:
-                    raise ValueError(f"request_id {request_id!r} already exists")
-
             new_interactions: list[Interaction] = (
                 GenerationService.get_interaction_from_publish_user_interaction_request(
                     publish_user_interaction_request, request_id
@@ -311,15 +299,12 @@ class GenerationService:
                         publish_user_interaction_request,
                         stalled=stall_warning is not None,
                     )
-                # A remote read on every publish, inside the scope and until
-                # now inside no phase -- part of the 11,656ms that `commit_scope`
-                # reported but did not attribute.
-                with publish_timing.phase("dup_check"):
-                    existing = storage.get_request(request_id)
-                if existing is not None:
-                    raise ValueError(f"request_id {request_id!r} already exists")
+                # The unique request key arbitrates concurrent publishes, even
+                # across users whose extraction-stream locks are independent.
+                # Never upsert here: a duplicate must roll back the whole scope.
                 with publish_timing.phase("add_request"):
-                    storage.add_request(new_request)
+                    if not storage.add_request_if_absent(new_request):
+                        raise ValueError(f"request_id {request_id!r} already exists")
                 with publish_timing.phase("add_interactions"):
                     storage.add_user_interactions_bulk(
                         user_id, new_interactions, embeddings_prepared=True

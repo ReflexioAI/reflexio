@@ -342,3 +342,92 @@ def test_receipts_do_not_attribute_disabled_or_erased_gaps(storage):
     assert storage.extraction_counts("u", "disabled")["profile"] == 0
     assert storage.extraction_counts("u", "erased")["profile"] == 0
     assert storage.extraction_counts("u", "included")["profile"] == 1
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "before_cutover",
+        "not_applicable",
+        "inputs_erased",
+        "cursor_unavailable",
+        "waiting_for_window",
+        "queued",
+        "extracting",
+        "retrying",
+        "covered",
+    ],
+)
+def test_combined_report_preserves_status_and_shares_admission(
+    storage, monkeypatch, reason
+):
+    from contextlib import contextmanager
+
+    if reason != "before_cutover":
+        publish(
+            storage,
+            0
+            if reason == "not_applicable"
+            else 1
+            if reason == "waiting_for_window"
+            else 10,
+        )
+    if reason == "inputs_erased":
+        with storage._stream_sql() as db:
+            db.query("DELETE FROM interactions WHERE user_id=?", ("u",))
+    if reason == "cursor_unavailable":
+        with storage._stream_sql() as db:
+            db.query("DELETE FROM extraction_cursors WHERE user_id=?", ("u",))
+    if reason in {"extracting", "retrying", "covered"}:
+        user, token = storage.claim_extraction("worker", 300)
+        window = storage.prepare_extraction(user, token)
+        if reason == "retrying":
+            storage.retry_extraction(window, token, "test retry")
+        elif reason == "covered":
+            storage.complete_extraction(
+                window, token, {"billing": {"ids": ["profile"]}}
+            )
+    expected = (
+        storage.extraction_status("u", "r"),
+        storage.extraction_counts("u", "r"),
+    )
+    assert expected[0]["reason"] == reason
+    original = storage._stream_sql
+    queries, scopes, clocks = [], [], []
+
+    @contextmanager
+    def observed(**kwargs):
+        scopes.append(kwargs)
+        with original(**kwargs) as db:
+            query, now = db.query, db.now
+
+            def read(sql, params=()):
+                queries.append(sql)
+                return query(sql, params)
+
+            def clock():
+                clocks.append(1)
+                return now()
+
+            db.query, db.now = read, clock
+            yield db
+
+    monkeypatch.setattr(storage, "_stream_sql", observed)
+    assert storage.extraction_report("u", "r") == expected
+    assert len(scopes) == 1
+    assert sum(q.startswith("SELECT learning_admission FROM") for q in queries) == 1
+    assert len(clocks) <= 1
+
+
+def test_combined_report_counts_more_than_one_receipt_page(storage):
+    publish(storage, 201, width=1, stride=1)
+    for _ in range(201):
+        user, token = storage.claim_extraction("worker", 300)
+        window = storage.prepare_extraction(user, token)
+        storage.complete_extraction(
+            window, token, {"billing": {"ids": [window.window_id]}}
+        )
+        storage.ack_extraction_effects(window.window_id)
+    status, counts = storage.extraction_report("u", "r")
+    assert status == {"status": "done", "reason": "covered"}
+    assert counts == {"profile": 201, "playbook": 0}

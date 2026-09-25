@@ -10,13 +10,11 @@ arriving with nothing else in flight. Counting network round trips accounted
 for ~1.3s of ~8s. The remaining ~6.7s was in no signal anyone could read.
 
 The obvious instrument -- the ~30 ``profile_step`` call sites already on this
-path -- was unavailable. Not because tracing is disabled (the production task
-definition sets ``SENTRY_TRACES_SAMPLE_RATE=0.1`` and attaches a DSN) but
-because the Sentry account is over quota: one self-host deployment emitted 92%
+path -- was unavailable. Tracing was enabled with a 10% sample rate, but
+the tracing account was over quota: one self-host deployment emitted 92%
 of the fleet's spans over seven days and ``environment:production`` went to
 zero. A vendor budget is not something this module can fix, so it carries its
-own signal to the one channel a production container always has -- stderr, via
-the log record.
+own signal through the production container's log stream.
 
 WHAT MAKES THIS DEFENSIBLE AT WARNING
 -------------------------------------
@@ -36,8 +34,8 @@ configuration rather than describing it:
 
 * there IS a root handler (``StreamHandler`` at INFO). Records do not fall to
   ``logging.lastResort``; and
-* ``_configure_first_party_sentry_log_levels`` pinning ``reflexio`` to WARNING
-  for ``SENTRY_LOGS_LEVEL=warning`` is redundant here rather than a second,
+* an enterprise logging hook pinning ``reflexio`` to WARNING
+  is redundant here rather than a second,
   independent mechanism -- with the pin removed, this logger's effective level
   is still WARNING by inheritance. Nor does the pin defeat the allowlist:
   ``setLevel`` on an ancestor leaves a descendant that was set explicitly, so
@@ -105,8 +103,13 @@ DB, so two per publish would be ~0.7s. Separating "acquiring a connection" from
 ``reflexio_ext/server/services/storage/postgres_storage/_pool.py`` now opens
 ``pool_wait`` around the permit acquire and ``pool_dial`` around ``getconn``,
 composed with the ``profile_step`` spans already there rather than replacing
-them. Both accumulate across a publish's several borrows, which is the figure
-worth having when the borrow count varies.
+them. Both accumulate across a publish's several borrows. Despite its historical
+name, pool_dial includes the driver's internal checkout lock wait. The native
+pool also records pool_connect_ms and pool_connect_attempts at actual
+connection creation, including failed attempts and initial pool creation.
+These timers overlap; they are not additive. Healthy demand-created connections
+are retained up to the configured pool size instead of shrinking to one idle
+connection after each burst.
 
 The COUNT below is a different field and is still NOT added here, because it is
 not cheaply reachable from this module. The backends that would have to
@@ -357,6 +360,13 @@ def record(name: str, value: int) -> None:
     scope = _scope.get()
     if scope is not None:
         scope.phases[name] = value
+
+
+def increment(name: str, value: int = 1) -> None:
+    """Accumulate a counter across repeated operations in one publish."""
+    scope = _scope.get()
+    if scope is not None:
+        scope.phases[name] = scope.phases.get(name, 0) + value
 
 
 def _should_log(org_id: str, now: float) -> bool:

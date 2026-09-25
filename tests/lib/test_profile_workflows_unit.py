@@ -1084,6 +1084,7 @@ def test_publish_succeeds_when_coverage_wait_fails(reflexio_with_config, monkeyp
         raise RuntimeError("stream read unavailable")
 
     monkeypatch.setattr(storage, "extraction_status", unavailable)
+    monkeypatch.setattr(storage, "extraction_report", unavailable)
 
     response = reflexio.publish_interaction(
         PublishUserInteractionRequest(

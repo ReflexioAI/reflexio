@@ -418,65 +418,97 @@ class ExtractionStreamStore:
                 (self.org_id, window.user_id),
             )
 
+    def _request_admission(
+        self, db: StreamSQL, user_id: str, request_id: str
+    ) -> dict[str, Any] | None:
+        rows = db.query(
+            f"SELECT learning_admission FROM {db.table('requests')} WHERE user_id=? AND request_id=?",
+            (user_id, request_id),
+        )
+        return decoded(rows[0]["learning_admission"]) if rows else None
+
+    def extraction_report(
+        self, user_id: str, request_id: str
+    ) -> tuple[dict[str, Any], dict[str, int]]:
+        """Read status and counts using one connection and admission lookup.
+
+        Reporting remains post-commit and best-effort. This shares work, not a
+        repeatable-read snapshot: extraction can advance between statements.
+        """
+        with self._stream_sql(read_only=True) as db:
+            admission = self._request_admission(db, user_id, request_id)
+            return (
+                self._extraction_status(db, user_id, request_id, admission),
+                self._extraction_counts(db, user_id, request_id, admission),
+            )
+
     def extraction_status(self, user_id: str, request_id: str) -> dict[str, Any]:
         with self._stream_sql(read_only=True) as db:
-            rows = db.query(
-                f"SELECT learning_admission FROM {db.table('requests')} WHERE user_id=? AND request_id=?",
-                (user_id, request_id),
+            return self._extraction_status(
+                db,
+                user_id,
+                request_id,
+                self._request_admission(db, user_id, request_id),
             )
-            if not rows or rows[0]["learning_admission"] is None:
-                return {"status": "not_tracked", "reason": "before_cutover"}
-            admission = decoded(rows[0]["learning_admission"])
-            surviving = db.query(
-                f"SELECT MAX(ingestion_seq) AS end_seq FROM {db.table('interactions')} WHERE user_id=? AND request_id=?",
-                (user_id, request_id),
-            )[0]["end_seq"]
-            if surviving is None:
-                return {
-                    "status": "done",
-                    "reason": "inputs_erased"
-                    if admission["max_seq"] >= admission["min_seq"]
-                    else "not_applicable",
-                }
-            cursors = db.query(
-                f"SELECT * FROM {db.table('extraction_cursors')} WHERE user_id=? AND project_id=?",
-                (user_id, current_project_id() or ""),
-            )
-            by_kind = {c["kind"]: c for c in cursors}
-            required = [
-                kind for kind in KINDS if admission.get(kind, {}).get("eligible")
-            ]
-            missing = [kind for kind in required if kind not in by_kind]
-            if missing:
-                return {"status": "pending", "reason": "cursor_unavailable"}
-            pending = [
-                by_kind[kind]
-                for kind in required
-                if int(by_kind[kind]["completed_seq"]) < int(surviving)
-            ]
-            if not pending:
-                return {
-                    "status": "done",
-                    "reason": "covered" if required else "not_applicable",
-                }
-            if any(c["retry_at"] > db.now() for c in pending):
-                return {"status": "pending", "reason": "retrying"}
-            work = db.query(
-                f"SELECT lease_until FROM {db.table('learning_work')} WHERE org_id=? AND user_id=?",
-                (self.org_id, user_id),
-            )
-            if (
-                any(c["window_id"] for c in pending)
-                and work
-                and work[0]["lease_until"] > db.now()
-            ):
-                return {"status": "processing", "reason": "extracting"}
-            if any(
-                c["window_id"] or self._select(db, user_id, c["kind"], c)[0] is not None
-                for c in pending
-            ):
-                return {"status": "pending", "reason": "queued"}
-            return {"status": "pending", "reason": "waiting_for_window"}
+
+    def _extraction_status(
+        self,
+        db: StreamSQL,
+        user_id: str,
+        request_id: str,
+        admission: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        if admission is None:
+            return {"status": "not_tracked", "reason": "before_cutover"}
+        surviving = db.query(
+            f"SELECT MAX(ingestion_seq) AS end_seq FROM {db.table('interactions')} WHERE user_id=? AND request_id=?",
+            (user_id, request_id),
+        )[0]["end_seq"]
+        if surviving is None:
+            return {
+                "status": "done",
+                "reason": "inputs_erased"
+                if admission["max_seq"] >= admission["min_seq"]
+                else "not_applicable",
+            }
+        cursors = db.query(
+            f"SELECT kind,completed_seq,retry_at,window_id,project_id,started FROM {db.table('extraction_cursors')} WHERE user_id=? AND project_id=?",
+            (user_id, current_project_id() or ""),
+        )
+        by_kind = {c["kind"]: c for c in cursors}
+        required = [kind for kind in KINDS if admission.get(kind, {}).get("eligible")]
+        missing = [kind for kind in required if kind not in by_kind]
+        if missing:
+            return {"status": "pending", "reason": "cursor_unavailable"}
+        pending = [
+            by_kind[kind]
+            for kind in required
+            if int(by_kind[kind]["completed_seq"]) < int(surviving)
+        ]
+        if not pending:
+            return {
+                "status": "done",
+                "reason": "covered" if required else "not_applicable",
+            }
+        now = db.now()
+        if any(c["retry_at"] > now for c in pending):
+            return {"status": "pending", "reason": "retrying"}
+        work = db.query(
+            f"SELECT lease_until FROM {db.table('learning_work')} WHERE org_id=? AND user_id=?",
+            (self.org_id, user_id),
+        )
+        if (
+            any(c["window_id"] for c in pending)
+            and work
+            and work[0]["lease_until"] > now
+        ):
+            return {"status": "processing", "reason": "extracting"}
+        if any(
+            c["window_id"] or self._select(db, user_id, c["kind"], c)[0] is not None
+            for c in pending
+        ):
+            return {"status": "pending", "reason": "queued"}
+        return {"status": "pending", "reason": "waiting_for_window"}
 
     def list_extraction_orgs(self) -> list[str]:
         with self._stream_sql(read_only=True) as db:
@@ -584,25 +616,41 @@ class ExtractionStreamStore:
             )
 
     def extraction_counts(self, user_id: str, request_id: str) -> dict[str, int]:
-        result = {"profile": 0, "playbook": 0}
         with self._stream_sql(read_only=True) as db:
-            rows = db.query(
-                f"SELECT learning_admission FROM {db.table('requests')} WHERE user_id=? AND request_id=?",
-                (user_id, request_id),
+            return self._extraction_counts(
+                db,
+                user_id,
+                request_id,
+                self._request_admission(db, user_id, request_id),
             )
-            if not rows or rows[0]["learning_admission"] is None:
-                return result
-            admission = decoded(rows[0]["learning_admission"])
-            for row in db.query(
-                f"SELECT kind,effects FROM {db.table('extraction_windows')} "
-                "WHERE user_id=? AND project_id=? AND completed=1 AND predecessor<? AND end_seq>=?",
+
+    def _extraction_counts(
+        self,
+        db: StreamSQL,
+        user_id: str,
+        request_id: str,
+        admission: dict[str, Any] | None,
+    ) -> dict[str, int]:
+        result = {"profile": 0, "playbook": 0}
+        if admission is None:
+            return result
+        after = ""
+        while True:
+            rows = db.query(
+                f"SELECT window_id,kind,effects FROM {db.table('extraction_windows')} "
+                "WHERE user_id=? AND project_id=? AND completed=1 AND predecessor<? AND end_seq>=? "
+                "AND window_id>? ORDER BY window_id LIMIT 200",
                 (
                     user_id,
                     current_project_id() or "",
                     admission["max_seq"],
                     admission["min_seq"],
+                    after,
                 ),
-            ):
+            )
+            if not rows:
+                return result
+            for row in rows:
                 effect = decoded(row["effects"])
                 if (
                     effect
@@ -611,7 +659,11 @@ class ExtractionStreamStore:
                     and admission.get(row["kind"], {}).get("eligible")
                 ):
                     result[row["kind"]] += len(effect["billing"]["ids"])
-        return result
+            # StreamSQL executes native SQL (never PostgREST), so LIMIT 200
+            # cannot be shortened by an HTTP server row cap.
+            if len(rows) < 200:
+                return result
+            after = rows[-1]["window_id"]
 
     def filter_extraction_retention(
         self, target: str, keys: list[tuple[Any, ...]]

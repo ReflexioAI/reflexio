@@ -12,9 +12,10 @@ from openclaw_smart.reflexio_adapter import Adapter
 _ADAPTER_LOGGER = "openclaw_smart.reflexio_adapter"
 
 
-def test_default_url_is_8071():
+def test_default_url_is_8071(monkeypatch):
     # 8071/8072 matches claude-smart so the two plugins share one local
     # reflexio backend; 8061 is reserved for a developer's own instance.
+    monkeypatch.delenv("REFLEXIO_URL", raising=False)
     adapter = Adapter()
     assert adapter.url == "http://localhost:8071/"
 

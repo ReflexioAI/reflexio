@@ -227,7 +227,7 @@ def test_a_slow_pass_reports_itself(storage, granted_lock, anomalies, monkeypatc
 # `project_id` was read only to decorate anomaly tags, so nothing in this module
 # checked it before deleting -- the invariant rested entirely on where the call
 # site sits. And `error_reporting._normalize_tags` DROPS None values, so an
-# unbound enforcement in an enterprise deployment was indistinguishable in Sentry
+# unbound enforcement in an enterprise deployment was indistinguishable in reports
 # from a correct OSS one: both simply carried no `project_id` tag.
 
 

@@ -684,7 +684,11 @@ class TestGetCachedRequestContext:
 
         try:
             # The tenancy property: one file per org, never a shared one.
-            db_paths = [str(context.storage.db_path) for context in contexts]
+            db_paths = []
+            for context in contexts:
+                storage = context.storage
+                assert isinstance(storage, SQLiteStorage)
+                db_paths.append(str(storage.db_path))
             assert len(set(db_paths)) == len(org_ids), (
                 f"orgs share a SQLite file, so their rows commingle: {db_paths}"
             )

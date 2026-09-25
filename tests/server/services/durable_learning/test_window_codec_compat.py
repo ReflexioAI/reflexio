@@ -80,6 +80,7 @@ def test_encode_writes_only_the_pinned_compatibility_floor() -> None:
         cache_write_input_tokens=10,
     )
     encoded = _encode_token_totals(totals)
+    assert encoded is not None
     assert encoded == {"prompt_tokens": 100, "completion_tokens": 20}
     assert set(encoded) == set(_PERSISTED_TOKEN_FIELDS)
     assert _encode_token_totals(None) is None

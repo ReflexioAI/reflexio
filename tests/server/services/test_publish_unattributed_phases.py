@@ -49,7 +49,7 @@ def _timing_on(monkeypatch):
 
 
 def test_the_coverage_reads_are_attributed_to_their_own_phase() -> None:
-    """`_safe_coverage` is two remote round trips on EVERY publish."""
+    """Every query in the combined coverage report belongs to this phase."""
     coverage_s = 0.30
     ingest_s = 0.60
 
@@ -64,13 +64,16 @@ def test_the_coverage_reads_are_attributed_to_their_own_phase() -> None:
             time.sleep(ingest_s)
             return original_bulk(self, *args, **kwargs)  # type: ignore[arg-type]
 
-        def slow_status(_self: object, *_a: object, **_k: object) -> None:
+        def slow_status(_self: object, *_a: object, **_k: object):
             time.sleep(coverage_s)
-            return
+            return (
+                {"status": "pending", "reason": "queued"},
+                {"profile": 0, "playbook": 0},
+            )
 
         with (
             patch.object(storage_cls, "add_user_interactions_bulk", slow_bulk),
-            patch.object(storage_cls, "extraction_status", slow_status),
+            patch.object(storage_cls, "extraction_report", slow_status),
             publish_timing.collect(),
         ):
             response = reflexio.publish_interaction(
@@ -99,57 +102,33 @@ def test_the_coverage_reads_are_attributed_to_their_own_phase() -> None:
     )
 
 
-def test_the_duplicate_check_is_attributed_to_its_own_phase() -> None:
-    """`get_request` is a remote read on every publish, inside the scope.
-
-    It was part of the 11,656ms that `commit_scope_ms` reported and did not
-    attribute to anything it contains.
-    """
-    dup_s = 0.30
-    ingest_s = 0.60
-
+def test_publish_checks_duplicates_only_in_the_atomic_insert() -> None:
+    """No preflight read; the measured insertion arbitrates duplicate IDs."""
     with tempfile.TemporaryDirectory() as temp_dir:
         reflexio = _reflexio(temp_dir)
         storage = reflexio._get_storage()
         assert storage is not None
-        storage_cls = type(storage)
-        original_bulk = storage_cls.add_user_interactions_bulk
-
-        def slow_bulk(self: object, *a: object, **k: object) -> object:
-            time.sleep(ingest_s)
-            return original_bulk(self, *a, **k)  # type: ignore[arg-type]
-
-        def slow_get_request(_self: object, *_a: object, **_k: object) -> None:
-            time.sleep(dup_s)
-            return
-
         with (
-            patch.object(storage_cls, "add_user_interactions_bulk", slow_bulk),
-            patch.object(storage_cls, "get_request", slow_get_request),
+            patch.object(
+                type(storage),
+                "get_request",
+                side_effect=AssertionError("duplicate read"),
+            ),
             publish_timing.collect(),
         ):
             response = reflexio.publish_interaction(
                 _publish_request(), defer_learning=True
             )
             snap = publish_timing.snapshot()
-
+        duplicate = reflexio.publish_interaction(
+            _publish_request(), defer_learning=True
+        )
     assert response.success, response.message
+    assert not duplicate.success
+    assert "already exists" in duplicate.message
     assert snap is not None
-    assert "dup_check_ms" in snap, sorted(snap)
-    dup_ms = snap["dup_check_ms"]
-    # TWO lookups on the HTTP path: a preflight before the scope and the
-    # in-scope one. `phase` accumulates by name, so the line must report the
-    # total both round trips cost -- reporting only the second would leave the
-    # first in the unattributed remainder, which is the whole point of this
-    # change. Raised by review on #536.
-    assert dup_ms >= int(2 * dup_s * 1000 * 0.75), (
-        f"dup_check_ms={dup_ms} does not cover BOTH lookups "
-        f"({int(2 * dup_s * 1000)}ms expected); only one is phased"
-    )
-    assert snap.get("add_interactions_ms", 0) >= int(ingest_s * 1000 * 0.75), snap
-    assert dup_ms < int((2 * dup_s + ingest_s * 0.5) * 1000), (
-        f"dup_check_ms={dup_ms} swallowed the ingest, so the phase is too wide"
-    )
+    assert "add_request_ms" in snap
+    assert "dup_check_ms" not in snap
 
 
 def test_the_new_phases_all_appear_on_an_ordinary_publish() -> None:
@@ -170,7 +149,7 @@ def test_the_new_phases_all_appear_on_an_ordinary_publish() -> None:
     assert snap is not None
     for key in (
         "coverage_reads_ms",
-        "dup_check_ms",
+        "add_request_ms",
         "post_publish_ms",
         "scope_commit_ms",
     ):

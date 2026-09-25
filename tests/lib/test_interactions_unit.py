@@ -34,8 +34,8 @@ def _make_mixin(*, storage_configured: bool = True) -> InteractionsMixin:
     """Create an InteractionsMixin instance with mocked internals.
 
     ``publish_interaction`` reports what the durable stream recorded for the
-    request via ``extraction_counts``, and its coverage via
-    ``extraction_status``. Both are wired to a quiet default here: covered, with
+    request via ``extraction_report``. Its status and counts have a quiet
+    default here: covered, with
     nothing extracted. They must return real dicts, not bare ``MagicMock``s —
     ``status["status"]`` on a ``MagicMock`` yields another ``MagicMock``, which
     then fails ``PublishUserInteractionResponse`` validation and turns a
@@ -46,11 +46,10 @@ def _make_mixin(*, storage_configured: bool = True) -> InteractionsMixin:
     """
     mixin = object.__new__(InteractionsMixin)
     mock_storage = MagicMock()
-    mock_storage.extraction_counts.return_value = {"profile": 0, "playbook": 0}
-    mock_storage.extraction_status.return_value = {
-        "status": "done",
-        "reason": "covered",
-    }
+    mock_storage.extraction_report.return_value = (
+        {"status": "done", "reason": "covered"},
+        {"profile": 0, "playbook": 0},
+    )
 
     mock_request_context = MagicMock()
     mock_request_context.org_id = "test_org"
@@ -481,10 +480,10 @@ class TestPublishInteraction:
         """
         mixin = _make_mixin()
         storage = _get_storage(mixin)
-        as_mock(storage.extraction_counts).return_value = {
-            "profile": 3,
-            "playbook": 3,
-        }
+        as_mock(storage.extraction_report).return_value = (
+            {"status": "done", "reason": "covered"},
+            {"profile": 3, "playbook": 3},
+        )
         mock_gen_instance = MagicMock()
         mock_gen_instance.run.return_value = GenerationServiceResult(
             request_id="req-1",
@@ -508,7 +507,7 @@ class TestPublishInteraction:
     def test_publish_succeeds_when_coverage_read_fails(self, mock_gen_cls):
         """A failed coverage read must not report a committed publish as failed.
 
-        ``extraction_status`` / ``extraction_counts`` run AFTER the interactions
+        ``extraction_report`` runs AFTER the interactions
         are durably committed and only describe that write. They share the
         publish's ``try``, so an unguarded raise would return ``success=False``
         for work already on disk and invite the caller to retry it. The counts
@@ -516,7 +515,7 @@ class TestPublishInteraction:
         """
         mixin = _make_mixin()
         storage = _get_storage(mixin)
-        as_mock(storage.extraction_status).side_effect = RuntimeError("db down")
+        as_mock(storage.extraction_report).side_effect = RuntimeError("db down")
         mock_gen_instance = MagicMock()
         mock_gen_instance.run.return_value = GenerationServiceResult(
             request_id="req-ok",
@@ -534,6 +533,7 @@ class TestPublishInteraction:
 
         assert response.success is True
         assert response.request_id == "req-ok"
+        as_mock(storage.extraction_report).assert_called_once()
         # Omitted rather than guessed — an absent count is honest, a 0 is not.
         assert response.profiles_added is None
         assert response.playbooks_added is None

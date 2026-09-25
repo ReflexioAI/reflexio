@@ -41,6 +41,14 @@ class RequestMixin:
 
     @SQLiteStorageBase.handle_exceptions
     def add_request(self, request: Request) -> None:
+        self._write_request(request, if_absent=False)
+
+    @SQLiteStorageBase.handle_exceptions
+    def add_request_if_absent(self, request: Request) -> bool:
+        """Insert without replacing an existing publish, joining commit_scope."""
+        return self._write_request(request, if_absent=True)
+
+    def _write_request(self, request: Request, *, if_absent: bool) -> bool:
         source = validate_session_outcome_source(request.source)
         created_at_iso = _epoch_to_iso(request.created_at)
         subject_ref = self._subject_ref_for_user_id(request.user_id)
@@ -50,12 +58,14 @@ class RequestMixin:
                 if own_txn:
                     self.conn.execute("BEGIN IMMEDIATE")
                 self._assert_subject_writable_locked(subject_ref)
-                self.conn.execute(
-                    """INSERT OR REPLACE INTO requests
+                cursor = self.conn.execute(
+                    ("INSERT" if if_absent else "INSERT OR REPLACE")
+                    + """ INTO requests
                        (request_id, user_id, created_at, source, agent_version, session_id,
                         evaluation_only, governance_subject_ref,
                         retrieval_experiment_id, retrieval_experiment_arm)
-                       VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                       VALUES (?,?,?,?,?,?,?,?,?,?)"""
+                    + (" ON CONFLICT(request_id) DO NOTHING" if if_absent else ""),
                     (
                         request.request_id,
                         request.user_id,
@@ -71,6 +81,7 @@ class RequestMixin:
                 )
                 if own_txn:
                     self.conn.commit()
+                return cursor.rowcount > 0
             except Exception:
                 if own_txn:
                     self.conn.rollback()
