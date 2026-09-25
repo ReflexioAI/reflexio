@@ -113,7 +113,11 @@ def add_user_interaction(
         if not is_valid:
             return PublishUserInteractionResponse(success=False, message=message)
 
-        reflexio = get_reflexio(org_id=org_id)
+        # Named in the comment above as invisible to `run`: a cold construction
+        # decrypts config, builds storage pools and LLM clients. Phased so a
+        # slow one is attributable instead of landing in the unnamed remainder.
+        with publish_timing.phase("context_acquire"):
+            reflexio = get_reflexio(org_id=org_id)
         return reflexio.publish_interaction(
             request=request,
             use_publish_limiter=use_publish_limiter,

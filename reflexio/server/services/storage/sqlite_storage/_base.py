@@ -45,6 +45,7 @@ from reflexio.models.config_schema import (
     LLMConfig,
     SearchMode,
 )
+from reflexio.server import publish_timing
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 from reflexio.server.llm.model_defaults import (
     ModelRole,
@@ -1079,7 +1080,12 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             self._scope_depth = 1
             try:
                 yield
-                self.conn.commit()
+                # The COMMIT itself. Separated from the scope's other work
+                # because `commit_scope_ms` reported 15.6s on prod of which
+                # 11.7s was outside every phase it contains -- this says how
+                # much of that is the commit rather than the writes.
+                with publish_timing.phase("scope_commit"):
+                    self.conn.commit()
                 ops, self._deferred_index_ops = self._deferred_index_ops, []
                 for kind, args in ops:
                     self._flush_index_op(kind, args)  # self-commits — fine post-commit

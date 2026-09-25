@@ -306,7 +306,12 @@ class GenerationService:
                         publish_user_interaction_request,
                         stalled=stall_warning is not None,
                     )
-                if storage.get_request(request_id) is not None:
+                # A remote read on every publish, inside the scope and until
+                # now inside no phase -- part of the 11,656ms that `commit_scope`
+                # reported but did not attribute.
+                with publish_timing.phase("dup_check"):
+                    existing = storage.get_request(request_id)
+                if existing is not None:
                     raise ValueError(f"request_id {request_id!r} already exists")
                 with publish_timing.phase("add_request"):
                     storage.add_request(new_request)
@@ -326,7 +331,8 @@ class GenerationService:
                         new_request, new_interactions, admission
                     )
                 result.interaction_ids = [i.interaction_id for i in new_interactions]
-            ensure_local_extraction(self.request_context)
+            with publish_timing.phase("post_publish"):
+                ensure_local_extraction(self.request_context)
             self._schedule_post_publish_evaluations(
                 new_request=new_request,
                 interactions=new_interactions,
