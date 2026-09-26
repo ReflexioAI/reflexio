@@ -399,3 +399,32 @@ def test_window_retry_redirected_to_effects_has_correct_phase(monkeypatch):
         if call.args[0] == "worker.retries"
     ]
     assert retries == [{"phase": "effects"}]
+
+
+@pytest.mark.parametrize(
+    "operation", ["pending_extraction_effects", "prepare_extraction"]
+)
+def test_setup_lease_loss_does_not_schedule_or_count_retry(monkeypatch, operation):
+    from unittest.mock import Mock
+
+    from reflexio.server.services.storage.storage_base._extraction_stream import (
+        LeaseLostError,
+    )
+
+    sink = Mock()
+    monkeypatch.setattr("reflexio.server.operational_metrics._sink", sink)
+    storage = _Storage()
+    monkeypatch.setattr(storage, operation, Mock(side_effect=LeaseLostError()))
+    _run_turn(monkeypatch, storage)
+    assert storage.deferred == 0
+    assert not storage.retried
+    assert not storage.effects_retried
+    attempts = [
+        call.kwargs["attributes"]
+        for call in sink.record.call_args_list
+        if call.args[0] == "worker.attempts"
+    ]
+    assert attempts == [{"phase": "prepare", "outcome": "lease_lost"}]
+    assert not any(
+        call.args[0] == "worker.retries" for call in sink.record.call_args_list
+    )

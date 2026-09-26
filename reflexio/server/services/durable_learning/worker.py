@@ -295,6 +295,10 @@ class DurableLearningWorker:
                         record_health("worker.retries", phase="window")
                     return 0
             return 1
+        except LeaseLostError:
+            # A stale claim cannot schedule setup work; its new owner proceeds.
+            outcome = "lease_lost"
+            return 0
         except WorkScopeError:
             from reflexio.server.error_reporting import capture_anomaly
 
