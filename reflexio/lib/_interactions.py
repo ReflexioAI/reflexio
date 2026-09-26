@@ -157,7 +157,10 @@ class InteractionsMixin(ReflexioBase):
             # embedded user's tables grow past every configured limit. Throttled
             # per org, and AFTER the durable commit so a sweep failure can never
             # report `success=False` for a publish that already landed.
-            maybe_sweep_retention_caps_for_library(self.request_context.org_id, storage)
+            with publish_timing.phase("retention"):
+                maybe_sweep_retention_caps_for_library(
+                    self.request_context.org_id, storage
+                )
             return PublishUserInteractionResponse(
                 success=True,
                 message=message,

@@ -30,6 +30,9 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 
 from reflexio.server.error_reporting import capture_anomaly, error_tags
@@ -106,6 +109,24 @@ LIBRARY_SWEEP_MIN_INTERVAL_SECONDS = 300.0
 
 _library_last_sweep: dict[str, float] = {}
 _library_sweep_lock = threading.Lock()
+_scheduler_managed: ContextVar[bool] = ContextVar(
+    "retention_scheduler_managed", default=False
+)
+
+
+@contextmanager
+def scheduler_managed_retention() -> Iterator[None]:
+    """Keep server calls out of embedded cleanup without changing library defaults.
+
+    The server's lifespan owns the per-project retention scheduler. Scope this
+    to its publish worker so embedded calls in other threads keep their cleanup,
+    and reset even when publishing fails.
+    """
+    token = _scheduler_managed.set(True)
+    try:
+        yield
+    finally:
+        _scheduler_managed.reset(token)
 
 
 def maybe_sweep_retention_caps_for_library(
@@ -126,6 +147,8 @@ def maybe_sweep_retention_caps_for_library(
         RetentionSweepResult | None: The pass's result, or ``None`` when the
         throttle suppressed it.
     """
+    if _scheduler_managed.get():
+        return None
     now = time.monotonic()
     with _library_sweep_lock:
         last = _library_last_sweep.get(org_id)
