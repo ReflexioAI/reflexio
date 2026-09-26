@@ -338,3 +338,7 @@ Sparse aggregation consumers can use `on_work_claimed(context)` to requeue a sco
 for the next normal tick. The callback runs only after a successful authoritative
 claim, within the existing failure/finalization handling; an empty claim does not
 requeue. This preserves draining cadence when many items share one scope.
+
+Sparse providers can retain failed scopes with `on_scope_deferred(context, delay)`;
+the scheduler emits it on pre-claim failures and when skipping existing backoff.
+The provider should retain the scope until that remaining delay expires.

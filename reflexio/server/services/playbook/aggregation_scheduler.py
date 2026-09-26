@@ -110,6 +110,7 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
         scope_inventory_provider: Callable[[], Iterable[tuple[str, str | None]] | None]
         | None = None,
         on_work_claimed: Callable[[RequestContext], None] | None = None,
+        on_scope_deferred: Callable[[RequestContext, float], None] | None = None,
         poll_interval_seconds: float = _POLL_SECONDS,
         leader_gate: LeaderGate | None = None,
         worker_id: str | None = None,
@@ -121,6 +122,7 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
         self._context_provider = context_provider
         self._scope_inventory_provider = scope_inventory_provider
         self._on_work_claimed = on_work_claimed
+        self._on_scope_deferred = on_scope_deferred
         self._poll_interval_seconds = poll_interval_seconds
         self._worker_id = worker_id or uuid.uuid4().hex
         # Keyed by (org_id, project_id) TUPLES, not by a joined string. Codex
@@ -363,7 +365,10 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
                 # different route.
                 scope = self._repair_scope_key(context)
                 seen.add(scope)
-                if time.monotonic() < self._retry_after.get(scope, 0):
+                retry_delay = self._retry_after.get(scope, 0) - time.monotonic()
+                if retry_delay > 0:
+                    if self._on_scope_deferred is not None:
+                        self._on_scope_deferred(context, retry_delay)
                     continue
                 try:
                     self._run_context(context)
@@ -371,6 +376,8 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
                     self._retry_after[scope] = (
                         time.monotonic() + _REPAIR_INTERVAL_SECONDS
                     )
+                    if self._on_scope_deferred is not None:
+                        self._on_scope_deferred(context, _REPAIR_INTERVAL_SECONDS)
                     logger.exception(
                         "event=playbook_aggregation_scheduler_org_failed org_id=%s "
                         "project_id=%s stage=%s retry_after_seconds=%s",

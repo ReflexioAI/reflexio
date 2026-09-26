@@ -615,3 +615,31 @@ def test_shutdown_during_inventory_does_not_prune() -> None:
     scheduler._retry_after[("org-2", "project-2")] = 100
     scheduler._run_once()
     assert scheduler._retry_after == {("org-2", "project-2"): 100}
+
+
+def test_sparse_provider_retains_preclaim_failures_and_remaining_backoff(monkeypatch):
+    now = [100.0]
+    monkeypatch.setattr(aggregation_scheduler.time, "monotonic", lambda: now[0])
+    storage = MagicMock(supports_incremental_playbook_aggregation=True)
+    storage.repair_playbook_aggregation_pending_state.return_value = []
+    storage.claim_due_playbook_aggregation.side_effect = RuntimeError(
+        "transient claim failure"
+    )
+    context = _context(storage)
+    deferred = MagicMock()
+    scheduler = aggregation_scheduler.PlaybookAggregationScheduler(
+        context_provider=lambda: [context],
+        on_scope_deferred=deferred,
+    )
+    scheduler._run_once()
+    deferred.assert_called_once_with(context, 300)
+    now[0] += 20
+    scheduler._run_once()
+    assert deferred.call_args.args == (context, 280)
+    assert storage.claim_due_playbook_aggregation.call_count == 1
+    now[0] += 281
+    storage.claim_due_playbook_aggregation.side_effect = None
+    storage.claim_due_playbook_aggregation.return_value = None
+    scheduler._run_once()
+    assert storage.claim_due_playbook_aggregation.call_count == 2
+    assert deferred.call_count == 2
