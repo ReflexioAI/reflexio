@@ -45,17 +45,17 @@ configuration rather than describing it:
 So INFO is REACHABLE, and the case for WARNING is not that it is impossible.
 It is that INFO costs a second, coordinated change -- ``REFLEXIO_INFO_LOGGERS``
 edited on every deployment that wants the signal, including self-host ones we
-do not operate -- to read a line that only exists when something is already
-wrong. Putting the level on the record needs no such coordination, which is
+do not operate -- to read a diagnostic line when request timing needs
+investigation. Putting the level on the record needs no such coordination, which is
 what ``offline_tuner/config.py::TUNER_OUTCOME_LOG_LEVEL`` already does.
 
 That precedent justified WARNING on being "one line per completed attempt, not
-one per request". This IS one per request, so the justification has to be
-supplied here instead, and it is supplied by suppression: a request that is
-fast logs nothing, and a second slow request for the same org inside the
-throttle window logs nothing. On a healthy fleet this module is silent. It only
-speaks when something is already wrong, which is the condition under which a
-line is worth its cost.
+one per request". The handler event instead relies on suppression: a fast
+handler logs nothing, and a second slow handler for the same org inside the
+throttle window logs nothing. The companion HTTP event has its own throttle
+and can also report expected extraction waits. Filter ``wait_for_response=1``
+out of ordinary acknowledgement analysis; a slow HTTP event alone does not
+prove the publish handler is unhealthy.
 
 THE SCOPE OWNS THE WHOLE-REQUEST CLOCK
 --------------------------------------

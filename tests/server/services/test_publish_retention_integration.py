@@ -47,8 +47,13 @@ def _request(number: int):
 
 def test_http_persists_without_sweeping_then_scheduler_enforces_caps(
     reflexio: Reflexio,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
+    monkeypatch.setenv(publish_timing.ENV_THRESHOLD_MS, "0")
+    monkeypatch.setenv(publish_timing.ENV_INTERVAL_SECONDS, "0")
     app = FastAPI()
+    app.add_middleware(publish_timing.PublishHttpTimingMiddleware)
     app.include_router(interactions.router)
     # Resolve the real route's two auth dependencies without booting enterprise.
     route = next(
@@ -84,6 +89,20 @@ def test_http_persists_without_sweeping_then_scheduler_enforces_caps(
             )
             assert response.status_code == 200
             assert response.json()["success"] is True
+            records = [
+                dict(part.split("=", 1) for part in record.getMessage().split())
+                for record in caplog.records
+                if record.name == publish_timing.__name__
+                and record.getMessage().startswith("event=publish_")
+                and f"request_id=retention-{number} " in record.getMessage()
+            ]
+            handler = next(r for r in records if r["event"] == "publish_timing")
+            http = next(r for r in records if r["event"] == "publish_http_timing")
+            assert handler["timing_id"] == http["timing_id"]
+            assert "worker_dispatch_ms" in handler
+            assert "before_handler_ms" in http
+            assert http["handler_completed"] == "1"
+            assert http["wait_for_response"] == "0"
             # A separate connection cannot see an uncommitted acknowledgement.
             with sqlite3.connect(storage.db_path) as reader:
                 assert (
