@@ -36,9 +36,12 @@ def default_get_org_id() -> str:
     """
     # Lazy import keeps this deliberately cycle-free module independent of the
     # ``reflexio.server`` package init (see module docstring).
+    from reflexio.server import publish_timing
     from reflexio.server.env_utils import env_str
 
-    return env_str("REFLEXIO_DEFAULT_ORG_ID", DEFAULT_ORG_ID)
+    org_id = env_str("REFLEXIO_DEFAULT_ORG_ID", DEFAULT_ORG_ID)
+    publish_timing.http_org_resolved(org_id)
+    return org_id
 
 
 def default_get_caller_type() -> str:

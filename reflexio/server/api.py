@@ -1,7 +1,7 @@
 """OSS FastAPI app composer (Tier3 A2).
 
 ``create_app`` is a thin composition root: it builds the FastAPI instance, wires
-the five middleware (in order), registers the CORS + rate-limit + auth-override
+the middleware stack, registers the CORS + rate-limit + auth-override
 seams, mounts the data-plane routers, and attaches the capability lifespan loop.
 
 The data-plane handlers live in ``reflexio.server.routes.<domain>`` sub-routers.
@@ -52,6 +52,7 @@ from reflexio.server.middleware import (
     _resolve_cors_origins,
 )
 from reflexio.server.operation_limiter import log_publish_hardware_capacity
+from reflexio.server.publish_timing import PublishHttpTimingMiddleware
 from reflexio.server.rate_limit import configure_rate_limiter, limiter
 from reflexio.server.routes import (
     braintrust,
@@ -647,7 +648,7 @@ def create_app(  # noqa: C901
     # Bot protection
     app.add_middleware(BotProtectionMiddleware)
 
-    # Correlation ID — added last so it runs outermost (Starlette reverses order)
+    # Correlation ID wraps the request-processing middleware above.
     app.add_middleware(CorrelationIdMiddleware)
 
     # Override get_org_id dependency if custom one provided
@@ -699,6 +700,9 @@ def create_app(  # noqa: C901
 
     # Health/observability endpoint (per-worker metrics for recycling)
     health_api.install(app)
+
+    # Added last so timing includes the entire application middleware stack.
+    app.add_middleware(PublishHttpTimingMiddleware)
 
     return app
 

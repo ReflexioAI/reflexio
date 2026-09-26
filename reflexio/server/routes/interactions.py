@@ -112,6 +112,11 @@ async def publish_user_interaction(
 
     deadline = time.monotonic() + PUBLISH_REQUEST_TIMEOUT_SECONDS
     payload.request_id = payload.request_id or str(uuid.uuid4())
+    publish_timing.handler_started(
+        org_id=org_id,
+        request_id=payload.request_id,
+        wait_for_response=wait_for_response,
+    )
     # The accumulator opens BEFORE `acquire_ingestion` -- pure queueing behind
     # other publishes for this org -- so that wait is both a field on the line
     # and part of the duration the threshold is applied to. `collect` starts
@@ -183,6 +188,7 @@ async def publish_user_interaction(
         try:
             # Success is returned only after the atomic admission transaction.
             # Cancellation must not release the slot while ingestion still runs.
+            publish_timing.worker_queued()
             operation = asyncio.create_task(
                 asyncio.to_thread(
                     publisher_api.add_user_interaction,

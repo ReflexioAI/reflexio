@@ -181,8 +181,10 @@ class GenerationService:
                 "retrieval_experiment_arm",
                 None,
             )
+            with publish_timing.phase("publish_config"):
+                attribution_config = self.configurator.get_config()
             validate_retrieval_experiment_attribution(
-                config=self.configurator.get_config(),
+                config=attribution_config,
                 org_id=self.org_id,
                 user_id=user_id,
                 experiment_id=retrieval_experiment_id,
@@ -264,8 +266,10 @@ class GenerationService:
             stall_warning = self._refresh_publish_stall_warning(
                 publish_user_interaction_request, result
             )
+            with publish_timing.phase("publish_config"):
+                admission_config = self.configurator.get_config()
             admission = extraction_admission(
-                self.configurator.get_config(),
+                admission_config,
                 publish_user_interaction_request,
                 stalled=stall_warning is not None,
             )
@@ -323,13 +327,14 @@ class GenerationService:
                 result.interaction_ids = [i.interaction_id for i in new_interactions]
             with publish_timing.phase("post_publish"):
                 ensure_local_extraction(self.request_context)
-            self._schedule_post_publish_evaluations(
-                new_request=new_request,
-                interactions=new_interactions,
-                user_id=user_id,
-                agent_version=agent_version,
-                source=source,
-            )
+            with publish_timing.phase("evaluation_schedule"):
+                self._schedule_post_publish_evaluations(
+                    new_request=new_request,
+                    interactions=new_interactions,
+                    user_id=user_id,
+                    agent_version=agent_version,
+                    source=source,
+                )
             with publish_timing.phase("metering"):
                 self._emit_publish_success_events(
                     interactions=new_interactions,
@@ -590,12 +595,13 @@ class GenerationService:
         )
         if self.storage is not None:
             try:
-                self.storage.record_retrieved_learning_sampling_decision(
-                    user_id=user_id,
-                    session_id=session_id,
-                    request_id=new_request.request_id,
-                    sampled=run_retrieved_learning,
-                )
+                with publish_timing.phase("sampling_decision"):
+                    self.storage.record_retrieved_learning_sampling_decision(
+                        user_id=user_id,
+                        session_id=session_id,
+                        request_id=new_request.request_id,
+                        sampled=run_retrieved_learning,
+                    )
             except Exception:
                 logger.exception(
                     "Failed to persist retrieved-learning sampling decision for "
@@ -711,7 +717,8 @@ class GenerationService:
         Returns:
             tuple[bool, bool]: ``(run_agent_success, run_retrieved_learning)``.
         """
-        config = self.configurator.get_config()
+        with publish_timing.phase("evaluation_config"):
+            config = self.configurator.get_config()
         agent_success_config = getattr(config, "agent_success_config", None)
         scope = {
             "org_id": self.org_id,

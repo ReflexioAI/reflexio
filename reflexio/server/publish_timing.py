@@ -45,17 +45,17 @@ configuration rather than describing it:
 So INFO is REACHABLE, and the case for WARNING is not that it is impossible.
 It is that INFO costs a second, coordinated change -- ``REFLEXIO_INFO_LOGGERS``
 edited on every deployment that wants the signal, including self-host ones we
-do not operate -- to read a line that only exists when something is already
-wrong. Putting the level on the record needs no such coordination, which is
+do not operate -- to read a diagnostic line when request timing needs
+investigation. Putting the level on the record needs no such coordination, which is
 what ``offline_tuner/config.py::TUNER_OUTCOME_LOG_LEVEL`` already does.
 
 That precedent justified WARNING on being "one line per completed attempt, not
-one per request". This IS one per request, so the justification has to be
-supplied here instead, and it is supplied by suppression: a request that is
-fast logs nothing, and a second slow request for the same org inside the
-throttle window logs nothing. On a healthy fleet this module is silent. It only
-speaks when something is already wrong, which is the condition under which a
-line is worth its cost.
+one per request". The handler event instead relies on suppression: a fast
+handler logs nothing, and a second slow handler for the same org inside the
+throttle window logs nothing. The companion HTTP event has its own throttle
+and can also report expected extraction waits. Filter ``wait_for_response=1``
+out of ordinary acknowledgement analysis; a slow HTTP event alone does not
+prove the publish handler is unhealthy.
 
 THE SCOPE OWNS THE WHOLE-REQUEST CLOCK
 --------------------------------------
@@ -71,6 +71,13 @@ The scope deliberately stops at :func:`emit`, which runs before the route's
 ``wait_for_response`` extraction poll. That poll is a different quantity --
 waiting on a background worker, not serving the publish -- and folding it in
 would make every waited request look slow.
+
+The companion ``publish_http_timing`` event measures from ASGI entry through
+the final response body, including dependencies and explicit extraction waits.
+It shares a generated ``timing_id`` with the handler event. Each event type
+has its own threshold and per-org throttle; at most two lines per org per
+window are emitted. HTTP records mark incomplete workers rather than treating
+a timeout response as publish completion.
 
 WHAT A DURATION ALONE CANNOT TELL YOU
 -------------------------------------
@@ -132,10 +139,13 @@ import math
 import re
 import threading
 import time
+import uuid
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
+
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from reflexio.models.api_schema.common import sanitise_for_log
 from reflexio.server.env_utils import env_bool, env_str
@@ -151,7 +161,7 @@ ENV_ENABLED = "REFLEXIO_PUBLISH_TIMING_ENABLED"
 ENV_THRESHOLD_MS = "REFLEXIO_PUBLISH_TIMING_THRESHOLD_MS"
 _DEFAULT_THRESHOLD_MS = 2000
 
-#: At most one line per org per window, so a sustained incident reports the
+#: At most one line per event type per org per window, so an incident reports the
 #: shape of the problem without reporting it thousands of times. Same shape as
 #: ``operation_limiter._should_log_publish_pressure``.
 ENV_INTERVAL_SECONDS = "REFLEXIO_PUBLISH_TIMING_INTERVAL_SECONDS"
@@ -186,6 +196,7 @@ _UNSAFE_IN_TOKEN = re.compile(r"[^A-Za-z0-9_.:-]")
 
 _lock = threading.Lock()
 _last_logged_by_org: dict[str, float] = {}
+_last_http_logged_by_org: dict[str, float] = {}
 
 
 @dataclass
@@ -196,6 +207,27 @@ class _Scope:
     phases: dict[str, int] = field(default_factory=dict)
     excluded_s: float = 0.0
     emitted: bool = False
+    worker_queued_at: float | None = None
+
+
+@dataclass
+class _HttpScope:
+    """Shared across ASGI child tasks and the shielded publish worker."""
+
+    started: float
+    timing_id: str = field(default_factory=lambda: uuid.uuid4().hex)
+    org_id: str = "unknown"
+    request_id: str = "unknown"
+    handler_started: float | None = None
+    handler_finished: float | None = None
+    handler_ms: int | None = None
+    wait_for_response: bool = False
+    phases: dict[str, int] = field(default_factory=dict)
+
+
+_http_scope: ContextVar[_HttpScope | None] = ContextVar(
+    "publish_http_scope", default=None
+)
 
 
 #: Per-request state. A ContextVar rather than an attribute on any shared
@@ -277,6 +309,56 @@ def collect() -> Iterator[None]:
         yield
     finally:
         _scope.reset(token)
+
+
+def http_org_resolved(org_id: str) -> None:
+    """Attribute dependency failures once trusted organization identity is known."""
+    scope = _http_scope.get()
+    if scope is not None:
+        scope.org_id = org_id
+
+
+def handler_started(*, org_id: str, request_id: str, wait_for_response: bool) -> None:
+    """Mark route entry after dependencies, without moving the handler clock."""
+    scope = _http_scope.get()
+    if scope is not None:
+        scope.org_id = org_id
+        scope.request_id = request_id
+        scope.wait_for_response = wait_for_response
+        scope.handler_started = time.perf_counter()
+
+
+def worker_queued() -> None:
+    """Start dispatch timing immediately before scheduling the publish worker."""
+    scope = _scope.get()
+    if scope is not None:
+        scope.worker_queued_at = time.perf_counter()
+
+
+def worker_started() -> None:
+    """Record dispatch delay in the worker's inherited request scope."""
+    scope = _scope.get()
+    if scope is not None and scope.worker_queued_at is not None:
+        scope.phases["worker_dispatch_ms"] = int(
+            (time.perf_counter() - scope.worker_queued_at) * 1000
+        )
+
+
+@contextmanager
+def http_phase(name: str) -> Iterator[None]:
+    """Time a dependency within the HTTP boundary, separately from handler phases."""
+    scope = _http_scope.get()
+    if scope is None:
+        yield
+        return
+    start = time.perf_counter()
+    try:
+        yield
+    finally:
+        key = f"{name}_ms"
+        scope.phases[key] = scope.phases.get(key, 0) + int(
+            (time.perf_counter() - start) * 1000
+        )
 
 
 @contextmanager
@@ -369,7 +451,7 @@ def increment(name: str, value: int = 1) -> None:
         scope.phases[name] = scope.phases.get(name, 0) + value
 
 
-def _should_log(org_id: str, now: float) -> bool:
+def _should_log(org_id: str, now: float, *, http: bool = False) -> bool:
     """Return whether this org's throttle window is open, claiming it if so.
 
     Args:
@@ -381,10 +463,11 @@ def _should_log(org_id: str, now: float) -> bool:
     """
     interval = _interval_seconds()
     with _lock:
-        last = _last_logged_by_org.get(org_id)
+        logged = _last_http_logged_by_org if http else _last_logged_by_org
+        last = logged.get(org_id)
         if last is not None and now - last < interval:
             return False
-        _last_logged_by_org[org_id] = now
+        logged[org_id] = now
         return True
 
 
@@ -402,7 +485,7 @@ def emit(*, org_id: str, request_id: str) -> bool:
 
     Args:
         org_id (str): Throttle key -- one line per org per window.
-        request_id (str): Correlates the line with an ALB access-log entry.
+        request_id (str): Identifies the publish; timing_id links HTTP timing.
 
     Returns:
         bool: Whether a line was emitted. Returned for tests, which otherwise
@@ -411,8 +494,15 @@ def emit(*, org_id: str, request_id: str) -> bool:
     scope = _scope.get()
     if scope is None or scope.emitted:
         return False
-    served_s = time.perf_counter() - scope.started - scope.excluded_s
+    finished = time.perf_counter()
+    served_s = finished - scope.started - scope.excluded_s
     total_ms = int(served_s * 1000)
+    http = _http_scope.get()
+    if http is not None and http.handler_finished is None:
+        http.org_id = org_id
+        http.request_id = request_id
+        http.handler_ms = total_ms
+        http.handler_finished = finished
     if total_ms < _threshold_ms():
         return False
     if not _should_log(org_id, time.monotonic()):
@@ -425,8 +515,9 @@ def emit(*, org_id: str, request_id: str) -> bool:
     # emitted. Sorted so the field order is stable between lines and a human
     # can diff two of them.
     ordered = sorted(scope.phases.items())
+    correlation = " timing_id=%s" if http is not None else ""
     fmt = " ".join(
-        ["event=publish_timing org_id=%s request_id=%s total_ms=%s"]
+        ["event=publish_timing org_id=%s request_id=%s total_ms=%s" + correlation]
         + [f"{key}=%s" for key, _ in ordered]
     )
     logger.log(
@@ -442,6 +533,7 @@ def emit(*, org_id: str, request_id: str) -> bool:
         _log_token(org_id),
         _log_token(request_id),
         total_ms,
+        *([http.timing_id] if http is not None else []),
         *[value for _, value in ordered],
     )
     return True
@@ -462,3 +554,94 @@ def reset_for_tests() -> None:
     """Clear the per-org throttle state between tests."""
     with _lock:
         _last_logged_by_org.clear()
+        _last_http_logged_by_org.clear()
+
+
+class PublishHttpTimingMiddleware:
+    """Measure publish HTTP lifetime without consuming the body or changing tasks.
+
+    Installed outermost by both app composers. When enterprise adds middleware
+    around the OSS app, its outer instance owns the scope; the inner instance
+    passes through. Handler timing retains its existing admission-to-worker-end
+    meaning. HTTP timing includes dependency resolution and explicit extraction
+    waits; ``wait_for_response`` distinguishes the latter.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        from reflexio.server.middleware import route_relative_path
+
+        if (
+            scope["type"] != "http"
+            or scope.get("method") != "POST"
+            or route_relative_path(scope) != "/api/publish_interaction"
+            or not publish_timing_enabled()
+            or _http_scope.get() is not None
+        ):
+            await self.app(scope, receive, send)
+            return
+        timing = _HttpScope(started=time.perf_counter())
+        token = _http_scope.set(timing)
+        status = 0
+        response_complete = False
+
+        async def timed_send(message: Message) -> None:
+            nonlocal status, response_complete
+            if message["type"] == "http.response.start":
+                status = message["status"]
+            await send(message)
+            if message["type"] == "http.response.body" and not message.get(
+                "more_body", False
+            ):
+                response_complete = True
+                _emit_http(timing, status=status, response_complete=True)
+
+        try:
+            await self.app(scope, receive, timed_send)
+        finally:
+            if not response_complete:
+                _emit_http(timing, status=status, response_complete=False)
+            _http_scope.reset(token)
+
+
+def _emit_http(scope: _HttpScope, *, status: int, response_complete: bool) -> None:
+    """Emit a separately throttled HTTP record, including incomplete workers."""
+    finished = time.perf_counter()
+    total_ms = int((finished - scope.started) * 1000)
+    if total_ms < _threshold_ms() or not _should_log(
+        scope.org_id, time.monotonic(), http=True
+    ):
+        return
+    fields = dict(scope.phases)
+    fields["http_total_ms"] = total_ms
+    fields["status_code"] = status
+    fields["response_complete"] = int(response_complete)
+    fields["wait_for_response"] = int(scope.wait_for_response)
+    handler_finished = scope.handler_finished
+    handler_completed = handler_finished is not None and handler_finished <= finished
+    fields["handler_completed"] = int(handler_completed)
+    if scope.handler_started is not None:
+        fields["before_handler_ms"] = int(
+            (scope.handler_started - scope.started) * 1000
+        )
+    if (
+        handler_completed
+        and handler_finished is not None
+        and scope.handler_ms is not None
+    ):
+        fields["handler_ms"] = scope.handler_ms
+        fields["after_handler_ms"] = int((finished - handler_finished) * 1000)
+    ordered = sorted(fields.items())
+    fmt = "event=publish_http_timing timing_id=%s org_id=%s request_id=%s " + " ".join(
+        f"{key}=%s" for key, _ in ordered
+    )
+    logger.log(
+        PUBLISH_TIMING_LOG_LEVEL,
+        fmt,
+        scope.timing_id,
+        _log_token(scope.org_id),
+        _log_token(scope.request_id),
+        *[value for _, value in ordered],
+    )
