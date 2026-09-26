@@ -148,6 +148,40 @@ def test_oss_composer_measures_real_publish_dependency_rejection(caplog):
     assert not records(caplog, "publish_timing")
 
 
+def test_default_org_is_known_before_request_validation(monkeypatch, caplog):
+    from fastapi.testclient import TestClient
+
+    from reflexio.server.api import create_app
+
+    monkeypatch.setenv("REFLEXIO_DEFAULT_ORG_ID", "local-org")
+    response = TestClient(create_app()).post("/api/publish_interaction", json={})
+    assert response.status_code == 422
+    (http,) = records(caplog, "publish_http_timing")
+    assert http["org_id"] == "local-org" and http["handler_completed"] == "0"
+
+
+def test_known_org_dependency_rejections_have_separate_throttles(monkeypatch, caplog):
+    monkeypatch.setenv(timing.ENV_INTERVAL_SECONDS, "60")
+
+    async def app(asgi_scope, _receive, send):
+        timing.http_org_resolved(asgi_scope["org"])
+        await respond(send, 402)
+
+    async def send(_message):
+        pass
+
+    middleware = timing.PublishHttpTimingMiddleware(app)
+
+    async def run():
+        for org in ("first-org", "second-org", "first-org"):
+            await middleware({**scope(), "org": org}, receive, send)
+
+    asyncio.run(run())
+    http = records(caplog, "publish_http_timing")
+    assert [row["org_id"] for row in http] == ["first-org", "second-org"]
+    assert all(row["handler_completed"] == "0" for row in http)
+
+
 def test_late_worker_keeps_correlation_without_claiming_http_success(caplog):
     entered = threading.Event()
     release = threading.Event()

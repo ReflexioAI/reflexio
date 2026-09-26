@@ -311,6 +311,13 @@ def collect() -> Iterator[None]:
         _scope.reset(token)
 
 
+def http_org_resolved(org_id: str) -> None:
+    """Attribute dependency failures once trusted organization identity is known."""
+    scope = _http_scope.get()
+    if scope is not None:
+        scope.org_id = org_id
+
+
 def handler_started(*, org_id: str, request_id: str, wait_for_response: bool) -> None:
     """Mark route entry after dependencies, without moving the handler clock."""
     scope = _http_scope.get()
