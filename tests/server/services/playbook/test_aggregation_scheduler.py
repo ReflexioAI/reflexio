@@ -30,8 +30,9 @@ def _context(storage: Any) -> Any:
     )
 
 
+@pytest.mark.parametrize("callback_raises", [False, True])
 def test_scheduler_keeps_invalidation_and_clustering_budgets_separate(
-    monkeypatch, caplog
+    monkeypatch, caplog, callback_raises
 ) -> None:
     claim = PlaybookAggregationClaim("v1", "owner", 7, 3, 10_000)
     storage = MagicMock(supports_incremental_playbook_aggregation=True)
@@ -67,7 +68,9 @@ def test_scheduler_keeps_invalidation_and_clustering_budgets_separate(
     )
     caplog.set_level(logging.INFO, logger=aggregation_scheduler.logger.name)
 
-    claimed = MagicMock()
+    claimed = MagicMock(
+        side_effect=RuntimeError("notification failed") if callback_raises else None
+    )
     scheduler = aggregation_scheduler.PlaybookAggregationScheduler(
         context_provider=lambda: [], worker_id="worker", on_work_claimed=claimed
     )
@@ -615,3 +618,57 @@ def test_shutdown_during_inventory_does_not_prune() -> None:
     scheduler._retry_after[("org-2", "project-2")] = 100
     scheduler._run_once()
     assert scheduler._retry_after == {("org-2", "project-2"): 100}
+
+
+def test_sparse_provider_retains_preclaim_failures_and_remaining_backoff(monkeypatch):
+    now = [100.0]
+    monkeypatch.setattr(aggregation_scheduler.time, "monotonic", lambda: now[0])
+    storage = MagicMock(supports_incremental_playbook_aggregation=True)
+    storage.repair_playbook_aggregation_pending_state.return_value = []
+    storage.claim_due_playbook_aggregation.side_effect = RuntimeError(
+        "transient claim failure"
+    )
+    context = _context(storage)
+    deferred = MagicMock()
+    scheduler = aggregation_scheduler.PlaybookAggregationScheduler(
+        context_provider=lambda: [context],
+        on_scope_deferred=deferred,
+    )
+    scheduler._run_once()
+    deferred.assert_called_once_with(context, 300)
+    now[0] += 20
+    scheduler._run_once()
+    assert deferred.call_args.args == (context, 280)
+    assert storage.claim_due_playbook_aggregation.call_count == 1
+    now[0] += 281
+    storage.claim_due_playbook_aggregation.side_effect = None
+    storage.claim_due_playbook_aggregation.return_value = None
+    scheduler._run_once()
+    assert storage.claim_due_playbook_aggregation.call_count == 2
+    assert deferred.call_count == 2
+
+
+def test_deferred_callback_failure_does_not_starve_later_scopes(monkeypatch, caplog):
+    monkeypatch.setattr(aggregation_scheduler.time, "monotonic", lambda: 100.0)
+    broken = MagicMock(supports_incremental_playbook_aggregation=True)
+    broken.repair_playbook_aggregation_pending_state.return_value = []
+    broken.claim_due_playbook_aggregation.side_effect = RuntimeError(
+        "original storage failure"
+    )
+    healthy = MagicMock(supports_incremental_playbook_aggregation=True)
+    healthy.repair_playbook_aggregation_pending_state.return_value = []
+    healthy.claim_due_playbook_aggregation.return_value = None
+    first, second = _context(broken), _context(healthy)
+    second.org_id = "org-2"
+    callback = MagicMock(side_effect=RuntimeError("callback failure"))
+    scheduler = aggregation_scheduler.PlaybookAggregationScheduler(
+        context_provider=lambda: [first, second],
+        on_scope_deferred=callback,
+    )
+    scheduler._run_once()  # storage failure path
+    scheduler._run_once()  # remaining-backoff path
+    assert callback.call_count == 2
+    assert healthy.claim_due_playbook_aggregation.call_count == 2
+    assert broken.claim_due_playbook_aggregation.call_count == 1
+    assert "original storage failure" in caplog.text
+    assert "playbook_aggregation_scope_defer_failed" in caplog.text

@@ -110,6 +110,7 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
         scope_inventory_provider: Callable[[], Iterable[tuple[str, str | None]] | None]
         | None = None,
         on_work_claimed: Callable[[RequestContext], None] | None = None,
+        on_scope_deferred: Callable[[RequestContext, float], None] | None = None,
         poll_interval_seconds: float = _POLL_SECONDS,
         leader_gate: LeaderGate | None = None,
         worker_id: str | None = None,
@@ -121,6 +122,7 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
         self._context_provider = context_provider
         self._scope_inventory_provider = scope_inventory_provider
         self._on_work_claimed = on_work_claimed
+        self._on_scope_deferred = on_scope_deferred
         self._poll_interval_seconds = poll_interval_seconds
         self._worker_id = worker_id or uuid.uuid4().hex
         # Keyed by (org_id, project_id) TUPLES, not by a joined string. Codex
@@ -224,7 +226,13 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
         after = None
         try:
             if self._on_work_claimed is not None:
-                self._on_work_claimed(context)
+                try:
+                    self._on_work_claimed(context)
+                except Exception:
+                    logger.exception(
+                        "event=playbook_aggregation_claim_notification_failed org_id=%s",
+                        context.org_id,
+                    )
             budget = _aggregation_budget()
             invalidation_page = storage.get_playbook_aggregation_invalidations(
                 claim.agent_version, limit=AGGREGATION_INVALIDATION_BATCH_SIZE + 1
@@ -346,6 +354,19 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
                     result.get("embedding_pending", 0),
                 )
 
+    def _defer_scope(self, context: RequestContext, delay: float) -> None:
+        if self._on_scope_deferred is None:
+            return
+        try:
+            self._on_scope_deferred(context, delay)
+        except Exception:
+            # A provider failure cannot mask the original storage error or
+            # prevent independent scopes from making progress.
+            logger.exception(
+                "event=playbook_aggregation_scope_defer_failed org_id=%s",
+                context.org_id,
+            )
+
     def _run_once(self) -> float:
         seen: set[tuple[str, str | None]] = set()
         try:
@@ -363,7 +384,9 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
                 # different route.
                 scope = self._repair_scope_key(context)
                 seen.add(scope)
-                if time.monotonic() < self._retry_after.get(scope, 0):
+                retry_delay = self._retry_after.get(scope, 0) - time.monotonic()
+                if retry_delay > 0:
+                    self._defer_scope(context, retry_delay)
                     continue
                 try:
                     self._run_context(context)
@@ -371,6 +394,7 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
                     self._retry_after[scope] = (
                         time.monotonic() + _REPAIR_INTERVAL_SECONDS
                     )
+                    self._defer_scope(context, _REPAIR_INTERVAL_SECONDS)
                     logger.exception(
                         "event=playbook_aggregation_scheduler_org_failed org_id=%s "
                         "project_id=%s stage=%s retry_after_seconds=%s",
