@@ -119,6 +119,7 @@ class SQLiteExtractionStreamMixin:
         *,
         discovery: bool = False,  # noqa: ARG002 -- SQLite has no separate discovery role.
         read_only: bool = False,
+        coordination: bool = False,  # noqa: ARG002 -- Shared work has no separate SQLite role.
     ) -> Iterator[StreamSQL]:
         if read_only:
             with self._lock:

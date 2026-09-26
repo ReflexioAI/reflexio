@@ -83,7 +83,11 @@ class ExtractionStreamStore:
     org_id: str
 
     def _stream_sql(
-        self, *, discovery: bool = False, read_only: bool = False
+        self,
+        *,
+        discovery: bool = False,
+        read_only: bool = False,
+        coordination: bool = False,
     ) -> AbstractContextManager[StreamSQL]:
         raise NotImplementedError
 
@@ -153,7 +157,7 @@ class ExtractionStreamStore:
         self, owner: str, lease_seconds: int
     ) -> tuple[str, str] | None:
         """Claim ONE user only after the caller has reserved execution capacity."""
-        with self._stream_sql() as db:
+        with self._stream_sql(coordination=True) as db:
             now = db.now()
             work = db.table("learning_work")
             rows = db.query(
@@ -173,7 +177,7 @@ class ExtractionStreamStore:
             return user_id, token
 
     def renew_extraction(self, user_id: str, token: str, seconds: int) -> bool:
-        with self._stream_sql() as db:
+        with self._stream_sql(coordination=True) as db:
             now = db.now()
             return bool(
                 db.query(
@@ -511,7 +515,7 @@ class ExtractionStreamStore:
         return {"status": "pending", "reason": "waiting_for_window"}
 
     def list_extraction_orgs(self) -> list[str]:
-        with self._stream_sql(read_only=True) as db:
+        with self._stream_sql(read_only=True, coordination=True) as db:
             now = db.now()
             return [
                 row["org_id"]
@@ -522,7 +526,7 @@ class ExtractionStreamStore:
             ]
 
     def oldest_extraction_backlog_age(self) -> float | None:
-        with self._stream_sql(read_only=True) as db:
+        with self._stream_sql(read_only=True, coordination=True) as db:
             first = db.query(
                 f"SELECT MIN(pending_since) AS oldest FROM {db.table('learning_work')} WHERE pending_since>0"
             )[0]["oldest"]
@@ -768,7 +772,7 @@ class ExtractionStreamStore:
             return token if rows else None
 
     def release_user_extraction(self, user_id: str, token: str) -> None:
-        with self._stream_sql() as db:
+        with self._stream_sql(coordination=True) as db:
             db.query(
                 f"UPDATE {db.table('learning_work')} SET lease_token=NULL,lease_until=0 "
                 "WHERE org_id=? AND user_id=? AND lease_token=?",
@@ -776,7 +780,7 @@ class ExtractionStreamStore:
             )
 
     def defer_extraction_setup(self, user_id: str, token: str) -> None:
-        with self._stream_sql() as db:
+        with self._stream_sql(coordination=True) as db:
             db.query(
                 f"UPDATE {db.table('learning_work')} SET due_at=? "
                 "WHERE org_id=? AND user_id=? AND lease_token=?",
@@ -784,7 +788,7 @@ class ExtractionStreamStore:
             )
 
     def fence_user_extraction(self, user_id: str, token: str) -> None:
-        with self._stream_sql() as db:
+        with self._stream_sql(coordination=True) as db:
             self._fence(db, user_id, token)
 
     def validate_extraction_inputs(self, window: Window) -> None:
