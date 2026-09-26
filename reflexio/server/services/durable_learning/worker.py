@@ -290,7 +290,9 @@ class DurableLearningWorker:
                         )
                     except LeaseLostError:
                         storage.retry_extraction_effects(window)
-                    record_health("worker.retries", phase=phase)
+                        record_health("worker.retries", phase="effects")
+                    else:
+                        record_health("worker.retries", phase="window")
                     return 0
             return 1
         except WorkScopeError:
@@ -304,6 +306,7 @@ class DurableLearningWorker:
                 user_id=user_id,
             )
             storage.defer_extraction_setup(user_id, token)
+            record_health("worker.retries", phase="prepare")
             return 0
         except Exception as exc:
             logger.warning(
@@ -313,6 +316,7 @@ class DurableLearningWorker:
                 exception_locator(exc),
             )
             storage.defer_extraction_setup(user_id, token)
+            record_health("worker.retries", phase="prepare")
             return 0
         finally:
             if outcome != "idle":

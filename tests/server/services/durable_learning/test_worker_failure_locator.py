@@ -355,3 +355,47 @@ def test_effects_lease_loss_retains_retry_and_reports_lease_lost(monkeypatch):
         "phase": "effects",
         "outcome": "lease_lost",
     }
+
+
+@pytest.mark.parametrize("scope_error", [False, True])
+def test_setup_deferral_counts_scheduled_retry(monkeypatch, scope_error):
+    from unittest.mock import Mock
+
+    from reflexio.server.work_scope import WorkScopeError
+
+    sink = Mock()
+    monkeypatch.setattr("reflexio.server.operational_metrics._sink", sink)
+    storage = _Storage(claim_raises=not scope_error)
+    if scope_error:
+        monkeypatch.setattr(
+            worker_module, "bind_work_scope", Mock(side_effect=WorkScopeError())
+        )
+    _run_turn(monkeypatch, storage)
+    assert storage.deferred == 1
+    retries = [
+        call.kwargs["attributes"]
+        for call in sink.record.call_args_list
+        if call.args[0] == "worker.retries"
+    ]
+    assert retries == [{"phase": "prepare"}]
+
+
+def test_window_retry_redirected_to_effects_has_correct_phase(monkeypatch):
+    from unittest.mock import Mock
+
+    from reflexio.server.services.storage.storage_base._extraction_stream import (
+        LeaseLostError,
+    )
+
+    sink = Mock()
+    monkeypatch.setattr("reflexio.server.operational_metrics._sink", sink)
+    storage = _Storage()
+    monkeypatch.setattr(storage, "retry_extraction", Mock(side_effect=LeaseLostError()))
+    _run_turn(monkeypatch, storage)
+    assert storage.effects_retried == ["w1"]
+    retries = [
+        call.kwargs["attributes"]
+        for call in sink.record.call_args_list
+        if call.args[0] == "worker.retries"
+    ]
+    assert retries == [{"phase": "effects"}]
