@@ -110,9 +110,10 @@ class InteractionsMixin(ReflexioBase):
         # Describe the storage the server is actually writing to so the CLI
         # can surface it. Computed once, up-front, so the response reflects
         # the resolved config at the moment of the call.
-        storage_type, storage_label = describe_storage(
-            self.request_context.configurator.get_current_storage_configuration()
-        )
+        with publish_timing.phase("publish_config"):
+            storage_type, storage_label = describe_storage(
+                self.request_context.configurator.get_current_storage_configuration()
+            )
         try:
             # Convert dict to PublishUserInteractionRequest if needed
             if isinstance(request, dict):

@@ -268,6 +268,33 @@ omits reporting fields on a post-commit reporting failure while preserving
 
 ### Publish and retention ownership
 
+Publish diagnostics have two independently thresholded/throttled records under
+the existing `REFLEXIO_PUBLISH_TIMING_*` settings (at most two lines per org per
+interval). `publish_timing.total_ms` retains its admission-to-worker-completion
+boundary. `publish_http_timing.http_total_ms` measures ASGI entry through sending
+the final response body, including authentication/dependencies and response work.
+Both share a generated `timing_id`; no request bodies or credentials are logged.
+The HTTP record reports `before_handler_ms`, `handler_ms`, `after_handler_ms`,
+HTTP status and `response_complete`/`handler_completed`. Missing handler fields
+mean the handler did not start or had not finished when HTTP ended; a later
+shielded worker can still emit its own record with the same ID. Status 0 means
+no response status was observed. Post-response background work is excluded.
+Explicit extraction waiting counts in HTTP duration and is marked
+`wait_for_response=1`; it remains outside the handler timer. HTTP measurements
+exclude network time before ASGI entry and after ASGI send, so are not client RTT.
+
+New top-level handler phases are `publish_config` (the three pre-admission
+configuration reads), `worker_dispatch`, and `evaluation_schedule`. The latter
+contains `evaluation_config` and `sampling_decision`; these child timers must not
+be added again when calculating unattributed time. Configuration freshness and
+the sampling write are unchanged. Enterprise HTTP `auth_binding` and
+`billing_gate` timers are subsets of `before_handler_ms`: billing dependency
+construction and other middleware/framework work remain in the remainder.
+
+Each app composer installs the pure-ASGI timing middleware outermost. Enterprise's
+outer instance owns collection, including limited-key rejection, while the
+inherited OSS instance passes through the already-open scope.
+
 HTTP publishing runs inside `scheduler_managed_retention()` in the server
 adapter. The library's inline retention helper skips that context without
 advancing its per-org throttle. Direct embedded calls still sweep at most once

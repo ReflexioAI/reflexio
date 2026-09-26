@@ -45,6 +45,7 @@ from reflexio.server.api import create_app
 
 # ── Golden: create_app() (full, data-plane mounted) ─────────────────────
 FULL_MIDDLEWARE = [
+    "PublishHttpTimingMiddleware",
     "BaseHTTPMiddleware",
     "CorrelationIdMiddleware",
     "BotProtectionMiddleware",

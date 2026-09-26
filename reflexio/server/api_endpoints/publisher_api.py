@@ -108,6 +108,7 @@ def add_user_interaction(
     # can itself stall or raise on a cold construction, which `run` never sees
     # at all. `emit` is at-most-once per scope and a no-op outside one, so a
     # library or CLI caller pays a `ContextVar.get`.
+    publish_timing.worker_started()
     try:
         is_valid, message = validate_publish_user_interaction_request(request)
         if not is_valid:
