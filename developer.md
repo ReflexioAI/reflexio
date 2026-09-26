@@ -310,3 +310,12 @@ waits `lineage_gc.poll_interval_seconds` after a successful tick (default 86400,
 The sweep still protects unfinished extraction inputs, overlap context and
 retention holds; caps may be exceeded between sweeps. Publishing acknowledges
 the durable admission transaction and does not wait for this housekeeping.
+
+### Sparse aggregation discovery
+
+`PlaybookAggregationScheduler` accepts an optional `scope_inventory_provider`.
+A provider that yields only contexts with due work must also supply the complete
+live set of `(org_id, project_id)` tuples for pruning retry and repair state.
+An unavailable inventory returns `None` or raises; an empty inventory means
+there are no live scopes. Failed or interrupted scans never prune. Existing
+full-sweep providers need no changes. Claims and execution are unchanged.
