@@ -392,7 +392,9 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
                     # None means unavailable, not an empty fleet. Materialize
                     # before pruning so a partial iterator cannot erase state.
                     if inventory is not None:
-                        self._prune_scope_state(set(inventory))
+                        live_scopes = set(inventory)
+                        if not self._stop_event.is_set():
+                            self._prune_scope_state(live_scopes)
                 except Exception:
                     logger.exception(
                         "event=playbook_aggregation_scheduler_tick_failed "
@@ -401,22 +403,11 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
         return self._poll_interval_seconds
 
     def _prune_scope_state(self, seen: set[tuple[str, str | None]]) -> None:
-        """Drop throttle state for scopes the provider no longer yields.
+        """Drop state only for scopes absent from a complete live inventory.
 
-        Codex on reflexio#510: keying by (org, project) widened this from one
-        entry per ORG to one per project, so in a long-running scheduler it
-        grows with the lifetime project churn of the whole fleet -- a slow leak
-        the org-keyed version did not have.
-
-        Pruning to the scopes seen in a COMPLETED pass changes no throttling
-        semantics: a scope the provider stopped yielding has no work, and if it
-        returns it simply starts with a clean slot, which is what a newly
-        discovered project gets anyway.
-
-        Only called when the pass completed. On an exception the iteration may
-        have stopped early, and `seen` would then be a partial list -- pruning
-        against it would discard live scopes' backoff and let a failing one
-        retry immediately.
+        Sparse providers supply that inventory separately from due contexts.
+        Legacy full-sweep providers use contexts observed in a completed pass.
+        Failed or interrupted iterations must never prune partial inventories.
         """
         for state in (self._last_repair_at, self._retry_after):
             for key in [k for k in state if k not in seen]:

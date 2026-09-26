@@ -596,3 +596,17 @@ def test_shutdown_does_not_prune_partial_sweep() -> None:
     scheduler._stop_event.set()
     scheduler._run_once()
     assert scheduler._retry_after == {("org-1", None): 100}
+
+
+def test_shutdown_during_inventory_does_not_prune() -> None:
+    def inventory():
+        yield ("org-1", "project-1")
+        scheduler._stop_event.set()
+
+    scheduler = aggregation_scheduler.PlaybookAggregationScheduler(
+        context_provider=lambda: [],
+        scope_inventory_provider=inventory,
+    )
+    scheduler._retry_after[("org-2", "project-2")] = 100
+    scheduler._run_once()
+    assert scheduler._retry_after == {("org-2", "project-2"): 100}
