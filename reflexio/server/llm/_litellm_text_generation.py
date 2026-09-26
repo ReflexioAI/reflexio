@@ -1978,6 +1978,7 @@ class TextGenerationMixin:
             )
 
         last_error: Exception | None = None
+        primary_error: Exception | None = None
         # First accepted parse across the whole walk — not per-rung. Consolidator
         # salvage keeps the first parsed *content* via a shared validator closure;
         # this field must match that content's served model, not the last rung's.
@@ -2007,6 +2008,8 @@ class TextGenerationMixin:
                 if first_parsed is not None and ladder_first_parsed_provenance is None:
                     ladder_first_parsed_provenance = first_parsed
                 last_error = exc
+                if index == 0:
+                    primary_error = exc
                 if not is_last:
                     continue
                 # Final rung failed. Preserve the typed repair error (callers keep
@@ -2034,7 +2037,7 @@ class TextGenerationMixin:
             else:
                 if index > 0:
                     self._emit_fallback_signal(
-                        ladder[0], rung, reason=_rung_reason(last_error)
+                        ladder[0], rung, reason=_rung_reason(primary_error)
                     )
                 return value
 

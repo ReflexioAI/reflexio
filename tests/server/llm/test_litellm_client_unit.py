@@ -4439,6 +4439,55 @@ class TestFallbackObservability:
 
         assert "llm.fallback_used" not in tags
 
+    def test_three_rung_recovery_reports_primary_failure_reason(self, monkeypatch):
+        from contextlib import contextmanager
+        from unittest.mock import Mock
+
+        from reflexio.server.llm._provider_concurrency import ProviderCapSaturatedError
+
+        tags = self._install_recording_reporter(monkeypatch)
+        sink = Mock()
+        monkeypatch.setattr("reflexio.server.operational_metrics._sink", sink)
+        client = LiteLLMClient(
+            LiteLLMConfig(
+                model="minimax/MiniMax-M3",
+                fallback_models=["zai/glm-5.2", "gpt-5.4-mini"],
+            )
+        )
+        visited = []
+
+        @contextmanager
+        def slot(model):
+            visited.append(model)
+            if model == "minimax/MiniMax-M3":
+                raise ProviderCapSaturatedError("primary saturated")
+            yield
+
+        def complete(**params):
+            if params["model"] == "zai/glm-5.2":
+                raise APIConnectionError(
+                    message="offline", llm_provider="zai", model="m"
+                )
+            return _make_completion_response("recovered")
+
+        monkeypatch.setattr(
+            "reflexio.server.llm._litellm_text_generation.provider_slot", slot
+        )
+        monkeypatch.setattr("litellm.completion", complete)
+        assert (
+            client.generate_chat_response([{"role": "user", "content": "hi"}])
+            == "recovered"
+        )
+        assert visited == ["minimax/MiniMax-M3", "zai/glm-5.2", "gpt-5.4-mini"]
+        assert tags["llm.fallback_reason"] == "cap_saturated"
+        fallback = [
+            call
+            for call in sink.record.call_args_list
+            if call.args[0] == "llm.fallback"
+        ]
+        assert len(fallback) == 1
+        assert fallback[0].kwargs["attributes"] == {"reason": "cap_saturated"}
+
     def test_error_reason_tag_reflects_failure_class(self, monkeypatch):
         """The new ``llm.fallback_reason`` tag distinguishes an outage from a
         broken-but-reachable primary. A transport error on the primary tags the
