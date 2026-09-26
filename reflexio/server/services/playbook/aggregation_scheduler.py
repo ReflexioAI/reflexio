@@ -109,6 +109,7 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
         context_provider: Callable[[], Iterable[RequestContext]],
         scope_inventory_provider: Callable[[], Iterable[tuple[str, str | None]] | None]
         | None = None,
+        on_work_claimed: Callable[[RequestContext], None] | None = None,
         poll_interval_seconds: float = _POLL_SECONDS,
         leader_gate: LeaderGate | None = None,
         worker_id: str | None = None,
@@ -119,6 +120,7 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
         )
         self._context_provider = context_provider
         self._scope_inventory_provider = scope_inventory_provider
+        self._on_work_claimed = on_work_claimed
         self._poll_interval_seconds = poll_interval_seconds
         self._worker_id = worker_id or uuid.uuid4().hex
         # Keyed by (org_id, project_id) TUPLES, not by a joined string. Codex
@@ -221,6 +223,8 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
         result: dict[str, Any] = {}
         after = None
         try:
+            if self._on_work_claimed is not None:
+                self._on_work_claimed(context)
             budget = _aggregation_budget()
             invalidation_page = storage.get_playbook_aggregation_invalidations(
                 claim.agent_version, limit=AGGREGATION_INVALIDATION_BATCH_SIZE + 1

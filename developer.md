@@ -333,3 +333,8 @@ Window attempts and side-effect delivery attempts are separate. LLM measurements
 cover the whole fallback ladder: recovered fallback is success; exhausted calls
 are failure; guard cancellation is separate. Call sites emit no user, tenant,
 prompt, model endpoint, or request identifiers.
+
+Sparse aggregation consumers can use `on_work_claimed(context)` to requeue a scope
+for the next normal tick. The callback runs only after a successful authoritative
+claim, within the existing failure/finalization handling; an empty claim does not
+requeue. This preserves draining cadence when many items share one scope.

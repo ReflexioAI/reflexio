@@ -67,11 +67,16 @@ def test_scheduler_keeps_invalidation_and_clustering_budgets_separate(
     )
     caplog.set_level(logging.INFO, logger=aggregation_scheduler.logger.name)
 
+    claimed = MagicMock()
     scheduler = aggregation_scheduler.PlaybookAggregationScheduler(
-        context_provider=lambda: [], worker_id="worker"
+        context_provider=lambda: [], worker_id="worker", on_work_claimed=claimed
     )
     scheduler._run_context(_context(storage))
 
+    claimed.assert_called_once()
+    storage.claim_due_playbook_aggregation.return_value = None
+    scheduler._run_context(_context(storage))
+    claimed.assert_called_once()  # empty authoritative claim stops rescheduling
     assert captured["aggregation_claim"] == claim
     assert captured["residual_batch_limit"] == 8
     storage.finish_playbook_aggregation_claim.assert_called_once()
