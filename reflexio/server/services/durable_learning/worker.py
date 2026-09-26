@@ -232,6 +232,11 @@ class DurableLearningWorker:
                         ).deliver(effect_window, effects, token=token)
                         outcome = "success"
                     except Exception as exc:
+                        outcome = (
+                            "lease_lost"
+                            if isinstance(exc, LeaseLostError)
+                            else "failure"
+                        )
                         storage.retry_extraction_effects(effect_window)
                         record_health("worker.retries", phase=phase)
                         # Log-only, unlike the window handler below: the effects

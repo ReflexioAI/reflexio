@@ -330,3 +330,28 @@ def test_symlinked_first_party_frame_is_found_end_to_end(
 
     assert "<-" in where, where
     assert where.endswith("durable_learning/window_executor.py:2"), where
+
+
+def test_effects_lease_loss_retains_retry_and_reports_lease_lost(monkeypatch):
+    from unittest.mock import Mock
+
+    from reflexio.server.services.storage.storage_base._extraction_stream import (
+        LeaseLostError,
+    )
+
+    sink = Mock()
+    monkeypatch.setattr("reflexio.server.operational_metrics._sink", sink)
+    monkeypatch.setattr(
+        __name__ + "._raise_from_a_dependency", Mock(side_effect=LeaseLostError())
+    )
+    storage = _Storage(pending_effects=True)
+    _run_turn(monkeypatch, storage)
+    assert storage.effects_retried == ["effects-w"]
+    attempts = [
+        call for call in sink.record.call_args_list if call.args[0] == "worker.attempts"
+    ]
+    assert len(attempts) == 1
+    assert attempts[0].kwargs["attributes"] == {
+        "phase": "effects",
+        "outcome": "lease_lost",
+    }
