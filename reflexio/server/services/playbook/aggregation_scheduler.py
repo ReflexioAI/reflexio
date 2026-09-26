@@ -95,12 +95,20 @@ class AggregationLeaseHeartbeat:
 
 
 class PlaybookAggregationScheduler(ThreadedScheduler):
-    """Poll durable per-version state and run one bounded unit per organization."""
+    """Poll durable per-version state and run one bounded unit per organization.
+
+    Sparse context providers must supply ``scope_inventory_provider``: the
+    complete live (organization, project) inventory, independent of due work.
+    Return None or raise when that inventory is unavailable; throttle state
+    is then retained. Without it, context iteration is a complete fleet sweep.
+    """
 
     def __init__(
         self,
         *,
         context_provider: Callable[[], Iterable[RequestContext]],
+        scope_inventory_provider: Callable[[], Iterable[tuple[str, str | None]] | None]
+        | None = None,
         poll_interval_seconds: float = _POLL_SECONDS,
         leader_gate: LeaderGate | None = None,
         worker_id: str | None = None,
@@ -110,6 +118,7 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
             leader_gate=leader_gate,
         )
         self._context_provider = context_provider
+        self._scope_inventory_provider = scope_inventory_provider
         self._poll_interval_seconds = poll_interval_seconds
         self._worker_id = worker_id or uuid.uuid4().hex
         # Keyed by (org_id, project_id) TUPLES, not by a joined string. Codex
@@ -373,26 +382,32 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
                 "event=playbook_aggregation_scheduler_tick_failed stage=context_provider"
             )
         else:
-            self._prune_scope_state(seen)
+            if not self._stop_event.is_set():
+                try:
+                    inventory = (
+                        self._scope_inventory_provider()
+                        if self._scope_inventory_provider is not None
+                        else seen
+                    )
+                    # None means unavailable, not an empty fleet. Materialize
+                    # before pruning so a partial iterator cannot erase state.
+                    if inventory is not None:
+                        live_scopes = set(inventory)
+                        if not self._stop_event.is_set():
+                            self._prune_scope_state(live_scopes)
+                except Exception:
+                    logger.exception(
+                        "event=playbook_aggregation_scheduler_tick_failed "
+                        "stage=scope_inventory"
+                    )
         return self._poll_interval_seconds
 
     def _prune_scope_state(self, seen: set[tuple[str, str | None]]) -> None:
-        """Drop throttle state for scopes the provider no longer yields.
+        """Drop state only for scopes absent from a complete live inventory.
 
-        Codex on reflexio#510: keying by (org, project) widened this from one
-        entry per ORG to one per project, so in a long-running scheduler it
-        grows with the lifetime project churn of the whole fleet -- a slow leak
-        the org-keyed version did not have.
-
-        Pruning to the scopes seen in a COMPLETED pass changes no throttling
-        semantics: a scope the provider stopped yielding has no work, and if it
-        returns it simply starts with a clean slot, which is what a newly
-        discovered project gets anyway.
-
-        Only called when the pass completed. On an exception the iteration may
-        have stopped early, and `seen` would then be a partial list -- pruning
-        against it would discard live scopes' backoff and let a failing one
-        retry immediately.
+        Sparse providers supply that inventory separately from due contexts.
+        Legacy full-sweep providers use contexts observed in a completed pass.
+        Failed or interrupted iterations must never prune partial inventories.
         """
         for state in (self._last_repair_at, self._retry_after):
             for key in [k for k in state if k not in seen]:

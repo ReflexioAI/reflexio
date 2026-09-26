@@ -555,3 +555,58 @@ def test_throttle_state_is_pruned_for_scopes_that_disappear(monkeypatch) -> None
     assert ("org-1", "prj_live") in scheduler._last_repair_at, (
         "pruning removed the scope that WAS yielded this pass"
     )
+
+
+@pytest.mark.parametrize("unavailable", [False, True])
+def test_sparse_tick_retains_live_scope_backoff(unavailable: bool) -> None:
+    live = ("org-1", "project-1")
+    removed = ("org-2", "project-2")
+    scheduler = aggregation_scheduler.PlaybookAggregationScheduler(
+        context_provider=lambda: [],
+        scope_inventory_provider=lambda: None if unavailable else [live],
+    )
+    scheduler._retry_after.update({live: 100, removed: 100})
+    scheduler._last_repair_at.update({live: 50, removed: 50})
+    scheduler._run_once()
+    expected = {live, removed} if unavailable else {live}
+    assert set(scheduler._retry_after) == expected
+    assert set(scheduler._last_repair_at) == expected
+
+
+def test_partial_inventory_does_not_prune(caplog) -> None:
+    def inventory():
+        yield ("org-1", "project-1")
+        raise RuntimeError("incomplete directory")
+
+    scheduler = aggregation_scheduler.PlaybookAggregationScheduler(
+        context_provider=lambda: [],
+        scope_inventory_provider=inventory,
+    )
+    scheduler._retry_after[("org-2", "project-2")] = 100
+    scheduler._run_once()
+    assert scheduler._retry_after == {("org-2", "project-2"): 100}
+    assert "stage=scope_inventory" in caplog.text
+
+
+def test_shutdown_does_not_prune_partial_sweep() -> None:
+    scheduler = aggregation_scheduler.PlaybookAggregationScheduler(
+        context_provider=lambda: [],
+    )
+    scheduler._retry_after[("org-1", None)] = 100
+    scheduler._stop_event.set()
+    scheduler._run_once()
+    assert scheduler._retry_after == {("org-1", None): 100}
+
+
+def test_shutdown_during_inventory_does_not_prune() -> None:
+    def inventory():
+        yield ("org-1", "project-1")
+        scheduler._stop_event.set()
+
+    scheduler = aggregation_scheduler.PlaybookAggregationScheduler(
+        context_provider=lambda: [],
+        scope_inventory_provider=inventory,
+    )
+    scheduler._retry_after[("org-2", "project-2")] = 100
+    scheduler._run_once()
+    assert scheduler._retry_after == {("org-2", "project-2"): 100}
