@@ -348,6 +348,19 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
                     result.get("embedding_pending", 0),
                 )
 
+    def _defer_scope(self, context: RequestContext, delay: float) -> None:
+        if self._on_scope_deferred is None:
+            return
+        try:
+            self._on_scope_deferred(context, delay)
+        except Exception:
+            # A provider failure cannot mask the original storage error or
+            # prevent independent scopes from making progress.
+            logger.exception(
+                "event=playbook_aggregation_scope_defer_failed org_id=%s",
+                context.org_id,
+            )
+
     def _run_once(self) -> float:
         seen: set[tuple[str, str | None]] = set()
         try:
@@ -367,8 +380,7 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
                 seen.add(scope)
                 retry_delay = self._retry_after.get(scope, 0) - time.monotonic()
                 if retry_delay > 0:
-                    if self._on_scope_deferred is not None:
-                        self._on_scope_deferred(context, retry_delay)
+                    self._defer_scope(context, retry_delay)
                     continue
                 try:
                     self._run_context(context)
@@ -376,8 +388,7 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
                     self._retry_after[scope] = (
                         time.monotonic() + _REPAIR_INTERVAL_SECONDS
                     )
-                    if self._on_scope_deferred is not None:
-                        self._on_scope_deferred(context, _REPAIR_INTERVAL_SECONDS)
+                    self._defer_scope(context, _REPAIR_INTERVAL_SECONDS)
                     logger.exception(
                         "event=playbook_aggregation_scheduler_org_failed org_id=%s "
                         "project_id=%s stage=%s retry_after_seconds=%s",
