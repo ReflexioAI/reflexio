@@ -30,8 +30,9 @@ def _context(storage: Any) -> Any:
     )
 
 
+@pytest.mark.parametrize("callback_raises", [False, True])
 def test_scheduler_keeps_invalidation_and_clustering_budgets_separate(
-    monkeypatch, caplog
+    monkeypatch, caplog, callback_raises
 ) -> None:
     claim = PlaybookAggregationClaim("v1", "owner", 7, 3, 10_000)
     storage = MagicMock(supports_incremental_playbook_aggregation=True)
@@ -67,7 +68,9 @@ def test_scheduler_keeps_invalidation_and_clustering_budgets_separate(
     )
     caplog.set_level(logging.INFO, logger=aggregation_scheduler.logger.name)
 
-    claimed = MagicMock()
+    claimed = MagicMock(
+        side_effect=RuntimeError("notification failed") if callback_raises else None
+    )
     scheduler = aggregation_scheduler.PlaybookAggregationScheduler(
         context_provider=lambda: [], worker_id="worker", on_work_claimed=claimed
     )

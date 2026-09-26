@@ -226,7 +226,13 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
         after = None
         try:
             if self._on_work_claimed is not None:
-                self._on_work_claimed(context)
+                try:
+                    self._on_work_claimed(context)
+                except Exception:
+                    logger.exception(
+                        "event=playbook_aggregation_claim_notification_failed org_id=%s",
+                        context.org_id,
+                    )
             budget = _aggregation_budget()
             invalidation_page = storage.get_playbook_aggregation_invalidations(
                 claim.agent_version, limit=AGGREGATION_INVALIDATION_BATCH_SIZE + 1
