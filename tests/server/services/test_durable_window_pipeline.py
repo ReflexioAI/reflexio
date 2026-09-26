@@ -3,7 +3,7 @@
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -217,6 +217,8 @@ def test_computed_outcome_survives_failed_commit_without_model_replay(
 
 
 def test_billing_retry_does_not_repeat_extraction(pipeline, monkeypatch):
+    sink = Mock()
+    monkeypatch.setattr("reflexio.server.operational_metrics._sink", sink)
     engine, worker, client = pipeline
     from reflexio.server.services.durable_learning.window_executor import WindowExecutor
 
@@ -245,6 +247,20 @@ def test_billing_retry_does_not_repeat_extraction(pipeline, monkeypatch):
     assert worker.drain_org("stream-test", 1, 300) == 1
     assert storage.pending_extraction_effects() == []
     assert storage.count_all_profiles() == before
+    commits = [
+        call for call in sink.record.call_args_list if call.args[0] == "worker.commits"
+    ]
+    attempts = [
+        call.kwargs["attributes"]
+        for call in sink.record.call_args_list
+        if call.args[0] == "worker.attempts"
+    ]
+    assert len(commits) == 1
+    assert attempts == [
+        {"phase": "window", "outcome": "success"},
+        {"phase": "effects", "outcome": "failure"},
+        {"phase": "effects", "outcome": "success"},
+    ]
 
 
 def test_transient_failures_retry_beyond_three_attempts(pipeline, monkeypatch):

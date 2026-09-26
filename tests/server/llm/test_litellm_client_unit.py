@@ -3675,6 +3675,8 @@ class TestLitellmIntegration:
         """Config-explicit fallback (opt-in at construction): the owned walk
         advances to it when the primary fails, and NEVER hands ``fallbacks`` to
         litellm."""
+        sink = MagicMock()
+        monkeypatch.setattr("reflexio.server.operational_metrics._sink", sink)
         client = LiteLLMClient(
             LiteLLMConfig(model="minimax/MiniMax-M3", fallback_models=["gpt-5.4-mini"])
         )
@@ -3690,6 +3692,23 @@ class TestLitellmIntegration:
         client.generate_chat_response(self._messages())
         assert [c["model"] for c in calls] == ["minimax/MiniMax-M3", "gpt-5.4-mini"]
         assert all("fallbacks" not in c for c in calls)
+        logical = [
+            call
+            for call in sink.record.call_args_list
+            if call.args[0] == "llm.requests"
+        ]
+        assert len(logical) == 1
+        assert logical[0].kwargs["attributes"] == {"outcome": "success"}
+        assert (
+            len(
+                [
+                    call
+                    for call in sink.record.call_args_list
+                    if call.args[0] == "llm.fallback"
+                ]
+            )
+            == 1
+        )
 
     def test_no_fallbacks_when_env_var_unset(self, monkeypatch):
         """Local reflexio / claude-smart safety check: with no env var and no
@@ -4419,6 +4438,55 @@ class TestFallbackObservability:
         client.generate_chat_response([{"role": "user", "content": "hi"}])
 
         assert "llm.fallback_used" not in tags
+
+    def test_three_rung_recovery_reports_primary_failure_reason(self, monkeypatch):
+        from contextlib import contextmanager
+        from unittest.mock import Mock
+
+        from reflexio.server.llm._provider_concurrency import ProviderCapSaturatedError
+
+        tags = self._install_recording_reporter(monkeypatch)
+        sink = Mock()
+        monkeypatch.setattr("reflexio.server.operational_metrics._sink", sink)
+        client = LiteLLMClient(
+            LiteLLMConfig(
+                model="minimax/MiniMax-M3",
+                fallback_models=["zai/glm-5.2", "gpt-5.4-mini"],
+            )
+        )
+        visited = []
+
+        @contextmanager
+        def slot(model):
+            visited.append(model)
+            if model == "minimax/MiniMax-M3":
+                raise ProviderCapSaturatedError("primary saturated")
+            yield
+
+        def complete(**params):
+            if params["model"] == "zai/glm-5.2":
+                raise APIConnectionError(
+                    message="offline", llm_provider="zai", model="m"
+                )
+            return _make_completion_response("recovered")
+
+        monkeypatch.setattr(
+            "reflexio.server.llm._litellm_text_generation.provider_slot", slot
+        )
+        monkeypatch.setattr("litellm.completion", complete)
+        assert (
+            client.generate_chat_response([{"role": "user", "content": "hi"}])
+            == "recovered"
+        )
+        assert visited == ["minimax/MiniMax-M3", "zai/glm-5.2", "gpt-5.4-mini"]
+        assert tags["llm.fallback_reason"] == "cap_saturated"
+        fallback = [
+            call
+            for call in sink.record.call_args_list
+            if call.args[0] == "llm.fallback"
+        ]
+        assert len(fallback) == 1
+        assert fallback[0].kwargs["attributes"] == {"reason": "cap_saturated"}
 
     def test_error_reason_tag_reflects_failure_class(self, monkeypatch):
         """The new ``llm.fallback_reason`` tag distinguishes an outage from a

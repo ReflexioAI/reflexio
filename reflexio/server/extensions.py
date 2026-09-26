@@ -17,6 +17,10 @@ from typing import ClassVar
 from fastapi import APIRouter
 
 from reflexio.server.error_reporting import ErrorReporter, configure_error_reporter
+from reflexio.server.operational_metrics import (
+    OperationalMetrics,
+    configure_operational_metrics,
+)
 from reflexio.server.tracing import Tracer, configure_tracer
 from reflexio.server.usage_metrics import (
     UsageEventRecorder,
@@ -93,6 +97,10 @@ def reset_services() -> None:
 
 class HookRegistry:
     """Facade over OSS process-global hook setters; capabilities install through it."""
+
+    def set_operational_metrics(self, sink: OperationalMetrics | None) -> None:
+        """Install or clear health measurements independently of billing."""
+        configure_operational_metrics(sink)
 
     def set_tracer(self, tracer: Tracer | None) -> None:
         """Install (or clear) the process-global request tracer.

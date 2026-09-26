@@ -319,3 +319,17 @@ live set of `(org_id, project_id)` tuples for pruning retry and repair state.
 An unavailable inventory returns `None` or raises; an empty inventory means
 there are no live scopes. Failed or interrupted scans never prune. Existing
 full-sweep providers need no changes. Claims and execution are unchanged.
+
+## Operational health measurements
+
+`reflexio.server.operational_metrics` is an optional, vendor-neutral health sink.
+Deployments register it with `HookRegistry.set_operational_metrics`; without a
+sink, emission is a no-op. Sink errors never change application behavior.
+This is separate from billable usage events and trace sampling.
+
+The durable worker records claimed non-idle attempt outcomes and duration,
+explicit retries, and successful durable commits after the transaction exits.
+Window attempts and side-effect delivery attempts are separate. LLM measurements
+cover the whole fallback ladder: recovered fallback is success; exhausted calls
+are failure; guard cancellation is separate. Call sites emit no user, tenant,
+prompt, model endpoint, or request identifiers.

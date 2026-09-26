@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
+import time
 import uuid
 from collections.abc import Callable
 from pathlib import Path
@@ -12,6 +13,7 @@ from pathlib import Path
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.env_utils import env_str
 from reflexio.server.operation_limiter import operation_limit_value
+from reflexio.server.operational_metrics import record_health
 from reflexio.server.services.durable_learning.window_executor import (
     WindowExecutor,
     WindowInputsDeletedError,
@@ -195,6 +197,9 @@ class DurableLearningWorker:
         if claim is None:
             return 0
         user_id, token = claim
+        started = time.monotonic()
+        outcome = "setup_failure"
+        phase = "prepare"
         stop = threading.Event()
 
         def heartbeat() -> None:
@@ -214,6 +219,8 @@ class DurableLearningWorker:
             for effect_window, effects in storage.pending_extraction_effects(
                 user_id=user_id, token=token
             ):
+                phase = "effects"
+                outcome = "failure"
                 with bind_work_scope(
                     WorkScope(
                         org_id=org_id, project_id=effect_window.project_id or None
@@ -223,8 +230,15 @@ class DurableLearningWorker:
                         WindowExecutor(
                             context, create_generation_litellm_client(context)
                         ).deliver(effect_window, effects, token=token)
+                        outcome = "success"
                     except Exception as exc:
+                        outcome = (
+                            "lease_lost"
+                            if isinstance(exc, LeaseLostError)
+                            else "failure"
+                        )
                         storage.retry_extraction_effects(effect_window)
+                        record_health("worker.retries", phase=phase)
                         # Log-only, unlike the window handler below: the effects
                         # retry has no error column to widen -
                         # ``retry_extraction_effects`` stores only a due time.
@@ -237,7 +251,10 @@ class DurableLearningWorker:
                 return 1
             window = storage.prepare_extraction(user_id, token)
             if window is None:
+                outcome = "idle"
                 return 0
+            phase = "window"
+            outcome = "failure"
             with bind_work_scope(
                 WorkScope(org_id=org_id, project_id=window.project_id or None)
             ):
@@ -246,9 +263,12 @@ class DurableLearningWorker:
                 )
                 try:
                     executor.execute(window, token)
+                    outcome = "success"
                 except WindowInputsDeletedError:
                     storage.invalidate_extraction(window, token)
+                    outcome = "invalidated"
                 except LeaseLostError:
+                    outcome = "lease_lost"
                     return 0
                 except Exception as exc:
                     where = exception_locator(exc)
@@ -270,8 +290,15 @@ class DurableLearningWorker:
                         )
                     except LeaseLostError:
                         storage.retry_extraction_effects(window)
+                        record_health("worker.retries", phase="effects")
+                    else:
+                        record_health("worker.retries", phase="window")
                     return 0
             return 1
+        except LeaseLostError:
+            # A stale claim cannot schedule setup work; its new owner proceeds.
+            outcome = "lease_lost"
+            return 0
         except WorkScopeError:
             from reflexio.server.error_reporting import capture_anomaly
 
@@ -283,6 +310,7 @@ class DurableLearningWorker:
                 user_id=user_id,
             )
             storage.defer_extraction_setup(user_id, token)
+            record_health("worker.retries", phase="prepare")
             return 0
         except Exception as exc:
             logger.warning(
@@ -292,8 +320,19 @@ class DurableLearningWorker:
                 exception_locator(exc),
             )
             storage.defer_extraction_setup(user_id, token)
+            record_health("worker.retries", phase="prepare")
             return 0
         finally:
+            if outcome != "idle":
+                record_health("worker.attempts", phase=phase, outcome=outcome)
+                record_health(
+                    "worker.duration",
+                    time.monotonic() - started,
+                    kind="distribution",
+                    unit="second",
+                    phase=phase,
+                    outcome=outcome,
+                )
             try:
                 storage.release_user_extraction(user_id, token)
             finally:
