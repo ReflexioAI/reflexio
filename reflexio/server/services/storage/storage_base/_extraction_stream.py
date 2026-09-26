@@ -37,6 +37,17 @@ def decoded(value: Any) -> Any:
 
 
 @dataclass(frozen=True)
+class CoverageSnapshot:
+    """Inputs to reporting; remote backends can load them in one statement."""
+
+    admission: dict[str, Any] | None
+    surviving: int | None
+    cursors: list[dict[str, Any]]
+    now: float
+    lease_until: float
+
+
+@dataclass(frozen=True)
 class Window:
     window_id: str
     user_id: str
@@ -146,12 +157,15 @@ class ExtractionStreamStore:
                 f"SELECT highwater FROM {work} WHERE org_id=? AND user_id=?{db.lock()}",
                 (self.org_id, user_id),
             )
-            for kind in KINDS:
-                db.query(
-                    f"INSERT INTO {db.table('extraction_cursors')} (user_id,kind,project_id) "
-                    "VALUES (?,?,?) ON CONFLICT (user_id,kind,project_id) DO NOTHING",
-                    (user_id, kind, current_project_id() or ""),
-                )
+            db.query(
+                f"INSERT INTO {db.table('extraction_cursors')} (user_id,kind,project_id) "
+                "VALUES (?,?,?),(?,?,?) ON CONFLICT (user_id,kind,project_id) DO NOTHING",
+                tuple(
+                    value
+                    for kind in KINDS
+                    for value in (user_id, kind, current_project_id() or "")
+                ),
+            )
 
     def claim_extraction(
         self, owner: str, lease_seconds: int
@@ -440,10 +454,10 @@ class ExtractionStreamStore:
         repeatable-read snapshot: extraction can advance between statements.
         """
         with self._stream_sql(read_only=True) as db:
-            admission = self._request_admission(db, user_id, request_id)
+            snapshot = self._coverage_snapshot(db, user_id, request_id)
             return (
-                self._extraction_status(db, user_id, request_id, admission),
-                self._extraction_counts(db, user_id, request_id, admission),
+                self._extraction_status(db, user_id, snapshot),
+                self._extraction_counts(db, user_id, request_id, snapshot.admission),
             )
 
     def extraction_status(self, user_id: str, request_id: str) -> dict[str, Any]:
@@ -451,23 +465,43 @@ class ExtractionStreamStore:
             return self._extraction_status(
                 db,
                 user_id,
-                request_id,
-                self._request_admission(db, user_id, request_id),
+                self._coverage_snapshot(db, user_id, request_id),
             )
 
-    def _extraction_status(
-        self,
-        db: StreamSQL,
-        user_id: str,
-        request_id: str,
-        admission: dict[str, Any] | None,
-    ) -> dict[str, Any]:
+    def _coverage_snapshot(
+        self, db: StreamSQL, user_id: str, request_id: str
+    ) -> CoverageSnapshot:
+        admission = self._request_admission(db, user_id, request_id)
         if admission is None:
-            return {"status": "not_tracked", "reason": "before_cutover"}
+            return CoverageSnapshot(None, None, [], 0, 0)
         surviving = db.query(
             f"SELECT MAX(ingestion_seq) AS end_seq FROM {db.table('interactions')} WHERE user_id=? AND request_id=?",
             (user_id, request_id),
         )[0]["end_seq"]
+        cursors = db.query(
+            f"SELECT kind,completed_seq,retry_at,window_id,project_id,started FROM {db.table('extraction_cursors')} WHERE user_id=? AND project_id=?",
+            (user_id, current_project_id() or ""),
+        )
+        now = db.now()
+        work = db.query(
+            f"SELECT lease_until FROM {db.table('learning_work')} WHERE org_id=? AND user_id=?",
+            (self.org_id, user_id),
+        )
+        return CoverageSnapshot(
+            admission, surviving, cursors, now, work[0]["lease_until"] if work else 0
+        )
+
+    def _coverage_ready(
+        self, db: StreamSQL, user_id: str, cursor: dict[str, Any]
+    ) -> bool:
+        return self._select(db, user_id, cursor["kind"], cursor)[0] is not None
+
+    def _extraction_status(
+        self, db: StreamSQL, user_id: str, snapshot: CoverageSnapshot
+    ) -> dict[str, Any]:
+        admission, surviving = snapshot.admission, snapshot.surviving
+        if admission is None:
+            return {"status": "not_tracked", "reason": "before_cutover"}
         if surviving is None:
             return {
                 "status": "done",
@@ -475,11 +509,7 @@ class ExtractionStreamStore:
                 if admission["max_seq"] >= admission["min_seq"]
                 else "not_applicable",
             }
-        cursors = db.query(
-            f"SELECT kind,completed_seq,retry_at,window_id,project_id,started FROM {db.table('extraction_cursors')} WHERE user_id=? AND project_id=?",
-            (user_id, current_project_id() or ""),
-        )
-        by_kind = {c["kind"]: c for c in cursors}
+        by_kind = {c["kind"]: c for c in snapshot.cursors}
         required = [kind for kind in KINDS if admission.get(kind, {}).get("eligible")]
         missing = [kind for kind in required if kind not in by_kind]
         if missing:
@@ -494,23 +524,12 @@ class ExtractionStreamStore:
                 "status": "done",
                 "reason": "covered" if required else "not_applicable",
             }
-        now = db.now()
+        now = snapshot.now
         if any(c["retry_at"] > now for c in pending):
             return {"status": "pending", "reason": "retrying"}
-        work = db.query(
-            f"SELECT lease_until FROM {db.table('learning_work')} WHERE org_id=? AND user_id=?",
-            (self.org_id, user_id),
-        )
-        if (
-            any(c["window_id"] for c in pending)
-            and work
-            and work[0]["lease_until"] > now
-        ):
+        if any(c["window_id"] for c in pending) and snapshot.lease_until > now:
             return {"status": "processing", "reason": "extracting"}
-        if any(
-            c["window_id"] or self._select(db, user_id, c["kind"], c)[0] is not None
-            for c in pending
-        ):
+        if any(c["window_id"] or self._coverage_ready(db, user_id, c) for c in pending):
             return {"status": "pending", "reason": "queued"}
         return {"status": "pending", "reason": "waiting_for_window"}
 
