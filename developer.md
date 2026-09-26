@@ -265,3 +265,21 @@ with custom coverage implementations should override this operation too.
 Standalone `extraction_status` and `extraction_counts` remain available. Publish
 omits reporting fields on a post-commit reporting failure while preserving
 `success=True` for the durable write. HTTP and client schemas are unchanged.
+
+### Publish and retention ownership
+
+HTTP publishing runs inside `scheduler_managed_retention()` in the server
+adapter. The library's inline retention helper skips that context without
+advancing its per-org throttle. Direct embedded calls still sweep at most once
+every 300 seconds, including calls with `defer_learning=True`. Context ownership
+is reset on exit and does not suppress independent embedded calls in other threads.
+`retention_ms` records time in that helper (normally zero for HTTP).
+
+Server row caps are enforced by `LineageGCScheduler` under each project's scope
+and application credential. Positive caps start the scheduler independently of
+other GC feature flags. It attempts a tick at startup when elected leader, then
+waits `lineage_gc.poll_interval_seconds` after a successful tick (default 86400,
+24 hours). Failed ticks receive bounded retries at up to 300-second intervals.
+The sweep still protects unfinished extraction inputs, overlap context and
+retention holds; caps may be exceeded between sweeps. Publishing acknowledges
+the durable admission transaction and does not wait for this housekeeping.

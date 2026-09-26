@@ -118,12 +118,17 @@ def add_user_interaction(
         # slow one is attributable instead of landing in the unnamed remainder.
         with publish_timing.phase("context_acquire"):
             reflexio = get_reflexio(org_id=org_id)
-        return reflexio.publish_interaction(
-            request=request,
-            use_publish_limiter=use_publish_limiter,
-            publish_limiter_wait_forever=publish_limiter_wait_forever,
-            defer_learning=defer_learning,
+        from reflexio.server.services.storage.retention_sweep import (
+            scheduler_managed_retention,
         )
+
+        with scheduler_managed_retention():
+            return reflexio.publish_interaction(
+                request=request,
+                use_publish_limiter=use_publish_limiter,
+                publish_limiter_wait_forever=publish_limiter_wait_forever,
+                defer_learning=defer_learning,
+            )
     finally:
         publish_timing.emit(
             org_id=org_id,
