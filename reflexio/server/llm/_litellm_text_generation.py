@@ -71,6 +71,7 @@ from reflexio.server.llm.model_defaults import (
     resolve_model_name,
 )
 from reflexio.server.llm.token_accounting import run_token_capture
+from reflexio.server.operational_metrics import record_health
 
 if TYPE_CHECKING:
     from reflexio.server.llm._litellm_types import LiteLLMConfig
@@ -1298,6 +1299,7 @@ class TextGenerationMixin:
             served_model: The fallback rung that actually served the request.
             reason: Why the ladder advanced past the primary (see ``_rung_reason``).
         """
+        record_health("llm.fallback", reason=reason)
         self.logger.info(
             "event=llm_fallback_used primary_model=%s served_model=%s reason=%s",
             primary_model,
@@ -1313,7 +1315,35 @@ class TextGenerationMixin:
             }
         )
 
-    def _make_request(  # noqa: C901
+    def _make_request(
+        self, messages: list[dict[str, Any]], **kwargs: Any
+    ) -> CompletionResult[str | BaseModel | ToolCallingChatResponse]:
+        """Measure the complete fallback walk, not individual provider rungs."""
+        started = time.monotonic()
+        outcome = "success"
+        try:
+            return self._make_request_inner(messages, **kwargs)
+        except ProviderRequestGuardError:
+            outcome = "cancelled"
+            raise
+        except LiteLLMClientError:
+            outcome = "failure"
+            record_health("llm.failures")
+            raise
+        except BaseException:
+            outcome = "aborted"
+            raise
+        finally:
+            record_health("llm.requests", outcome=outcome)
+            record_health(
+                "llm.duration",
+                time.monotonic() - started,
+                kind="distribution",
+                unit="second",
+                outcome=outcome,
+            )
+
+    def _make_request_inner(  # noqa: C901
         self, messages: list[dict[str, Any]], **kwargs: Any
     ) -> CompletionResult[str | BaseModel | ToolCallingChatResponse]:
         """

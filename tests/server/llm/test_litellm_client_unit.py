@@ -3675,6 +3675,8 @@ class TestLitellmIntegration:
         """Config-explicit fallback (opt-in at construction): the owned walk
         advances to it when the primary fails, and NEVER hands ``fallbacks`` to
         litellm."""
+        sink = MagicMock()
+        monkeypatch.setattr("reflexio.server.operational_metrics._sink", sink)
         client = LiteLLMClient(
             LiteLLMConfig(model="minimax/MiniMax-M3", fallback_models=["gpt-5.4-mini"])
         )
@@ -3690,6 +3692,23 @@ class TestLitellmIntegration:
         client.generate_chat_response(self._messages())
         assert [c["model"] for c in calls] == ["minimax/MiniMax-M3", "gpt-5.4-mini"]
         assert all("fallbacks" not in c for c in calls)
+        logical = [
+            call
+            for call in sink.record.call_args_list
+            if call.args[0] == "llm.requests"
+        ]
+        assert len(logical) == 1
+        assert logical[0].kwargs["attributes"] == {"outcome": "success"}
+        assert (
+            len(
+                [
+                    call
+                    for call in sink.record.call_args_list
+                    if call.args[0] == "llm.fallback"
+                ]
+            )
+            == 1
+        )
 
     def test_no_fallbacks_when_env_var_unset(self, monkeypatch):
         """Local reflexio / claude-smart safety check: with no env var and no

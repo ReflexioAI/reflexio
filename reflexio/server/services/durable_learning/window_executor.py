@@ -13,6 +13,7 @@ from reflexio.models.config_schema import (
 )
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm.litellm_client import LiteLLMClient
+from reflexio.server.operational_metrics import record_health
 from reflexio.server.services.durable_learning.window_codec import (
     decode_plan,
     encode_plan,
@@ -135,6 +136,7 @@ class WindowExecutor:
             effects = encode_plan(plan, service)
             effects["billing"] = self._billing_snapshot(window, service, plan)
             self.storage.complete_extraction(window, token, effects)
+        record_health("worker.commits")
 
     def deliver(
         self,
