@@ -43,8 +43,8 @@ class CoverageSnapshot:
     admission: dict[str, Any] | None
     surviving: int | None
     cursors: list[dict[str, Any]]
-    now: float
-    lease_until: float
+    now: float | None
+    lease_until: float | None
 
 
 @dataclass(frozen=True)
@@ -473,23 +473,20 @@ class ExtractionStreamStore:
     ) -> CoverageSnapshot:
         admission = self._request_admission(db, user_id, request_id)
         if admission is None:
-            return CoverageSnapshot(None, None, [], 0, 0)
+            return CoverageSnapshot(None, None, [], None, None)
         surviving = db.query(
             f"SELECT MAX(ingestion_seq) AS end_seq FROM {db.table('interactions')} WHERE user_id=? AND request_id=?",
             (user_id, request_id),
         )[0]["end_seq"]
+        if surviving is None:
+            return CoverageSnapshot(admission, None, [], None, None)
         cursors = db.query(
             f"SELECT kind,completed_seq,retry_at,window_id,project_id,started FROM {db.table('extraction_cursors')} WHERE user_id=? AND project_id=?",
             (user_id, current_project_id() or ""),
         )
-        now = db.now()
-        work = db.query(
-            f"SELECT lease_until FROM {db.table('learning_work')} WHERE org_id=? AND user_id=?",
-            (self.org_id, user_id),
-        )
-        return CoverageSnapshot(
-            admission, surviving, cursors, now, work[0]["lease_until"] if work else 0
-        )
+        # Portable backends retain lazy clock/lease reads. Remote overrides can
+        # supply both values with their consolidated snapshot statement.
+        return CoverageSnapshot(admission, surviving, cursors, None, None)
 
     def _coverage_ready(
         self, db: StreamSQL, user_id: str, cursor: dict[str, Any]
@@ -524,10 +521,17 @@ class ExtractionStreamStore:
                 "status": "done",
                 "reason": "covered" if required else "not_applicable",
             }
-        now = snapshot.now
+        now = snapshot.now if snapshot.now is not None else db.now()
         if any(c["retry_at"] > now for c in pending):
             return {"status": "pending", "reason": "retrying"}
-        if any(c["window_id"] for c in pending) and snapshot.lease_until > now:
+        lease_until = snapshot.lease_until
+        if lease_until is None:
+            work = db.query(
+                f"SELECT lease_until FROM {db.table('learning_work')} WHERE org_id=? AND user_id=?",
+                (self.org_id, user_id),
+            )
+            lease_until = work[0]["lease_until"] if work else 0
+        if any(c["window_id"] for c in pending) and lease_until > now:
             return {"status": "processing", "reason": "extracting"}
         if any(c["window_id"] or self._coverage_ready(db, user_id, c) for c in pending):
             return {"status": "pending", "reason": "queued"}

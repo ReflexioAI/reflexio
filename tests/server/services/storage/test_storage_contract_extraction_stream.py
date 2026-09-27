@@ -416,7 +416,11 @@ def test_combined_report_preserves_status_and_shares_admission(
     assert storage.extraction_report("u", "r") == expected
     assert len(scopes) == 1
     assert sum(q.startswith("SELECT learning_admission FROM") for q in queries) == 1
-    assert len(clocks) <= 1
+    needs_clock = reason in {"waiting_for_window", "queued", "extracting", "retrying"}
+    assert len(clocks) == int(needs_clock)
+    assert sum(q.startswith("SELECT lease_until FROM") for q in queries) == int(
+        needs_clock and reason != "retrying"
+    )
 
 
 def test_combined_report_counts_more_than_one_receipt_page(storage):
