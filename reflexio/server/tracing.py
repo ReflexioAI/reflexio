@@ -63,8 +63,21 @@ def capture_trace_context() -> dict[str, str]:
         return {}
 
 
+def capture_trace_id() -> str | None:
+    """Return an optional correlation identifier without interpreting vendor headers."""
+    capture = getattr(_tracer, "trace_id", None)
+    if capture is None:
+        return None
+    try:
+        value = capture()
+        return value if isinstance(value, str) else None
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Tracer failed to capture trace identifier: %s", exc)
+        return None
+
+
 @contextmanager
-def profile_step(name: str, **data: Any) -> Iterator[TraceSpan]:
+def _trace_step(name: str, **data: Any) -> Iterator[TraceSpan]:
     """Profile a named step if tracing is configured.
 
     Tracing must never make product requests fail. Errors from creating,
@@ -151,3 +164,12 @@ def set_span_data(span: TraceSpan, values: Mapping[str, Any]) -> None:
             span.set_data(key, value)
         except Exception as exc:  # noqa: BLE001
             logger.warning("Tracer failed to set span data %s: %s", key, exc)
+
+
+@contextmanager
+def profile_step(name: str, **data: Any) -> Iterator[TraceSpan]:
+    """Collect request timings even when the optional tracer is absent."""
+    from reflexio.server.search_runtime import phase
+
+    with phase(name), _trace_step(name, **data) as span:
+        yield span

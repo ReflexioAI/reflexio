@@ -4808,3 +4808,42 @@ class TestSafeValidationErrors:
 
         assert errors == ("count: int_parsing",)
         assert all("customer data" not in error for error in errors)
+
+
+@patch("reflexio.server.llm.litellm_client.litellm.embedding")
+def test_search_embedding_disables_internal_retries(mock_embedding, monkeypatch):
+    from reflexio.server import search_runtime
+
+    _force_litellm_embedding_route(monkeypatch)
+    mock_embedding.return_value = _make_embedding_response([0.1, 0.2])
+    client = _build_client()
+    scope = search_runtime.SearchScope(deadline=time.monotonic() + 1)
+    token = search_runtime._scope.set(scope)
+    try:
+        client.get_embedding("text", model="text-embedding-3-small")
+        assert mock_embedding.call_args.kwargs["num_retries"] == 0
+        assert 0 < mock_embedding.call_args.kwargs["timeout"] <= 1
+    finally:
+        search_runtime._scope.reset(token)
+    client.get_embedding("text", model="text-embedding-3-small")
+    assert mock_embedding.call_args.kwargs["num_retries"] == client.config.max_retries
+    assert mock_embedding.call_args.kwargs["timeout"] == client.config.timeout
+
+
+def test_expired_search_cannot_start_another_completion(monkeypatch):
+    from reflexio.server import search_runtime
+
+    def forbidden(**_params):
+        pytest.fail("completion issued after search deadline")
+
+    monkeypatch.setattr("litellm.completion", forbidden)
+    client = _build_client()
+    scope = search_runtime.SearchScope(deadline=time.monotonic() - 1)
+    token = search_runtime._scope.set(scope)
+    try:
+        with pytest.raises(search_runtime.SearchDeadlineError):
+            client._completion_with_hard_timeout(
+                {"model": "x", "timeout": 30}, hard_timeout=35
+            )
+    finally:
+        search_runtime._scope.reset(token)

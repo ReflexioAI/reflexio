@@ -1038,6 +1038,16 @@ class TextGenerationMixin:
         then starts the next rung fresh — preserving the timeout-regression
         property (a hung primary must not block the fallback) per rung.
         """
+        from reflexio.server import search_runtime
+
+        if search_runtime.current() is not None:
+            hard_timeout = search_runtime.remaining(hard_timeout)
+            params = {
+                **params,
+                "timeout": search_runtime.remaining(
+                    self._coerce_timeout_seconds(params)
+                ),
+            }
         provider_timeout = params.get("timeout", self.config.timeout)
         # timeout_seconds + grace_seconds below only classify test doubles in
         # _should_process_isolate_completion (real litellm vs a monkeypatched

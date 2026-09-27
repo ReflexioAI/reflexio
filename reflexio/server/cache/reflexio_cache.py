@@ -100,8 +100,19 @@ def _probe_version_safe(reflexio: Reflexio) -> _ProbeResult:
         intentionally doesn't expose a version (permanent), or the
         ``_PROBE_FAILED`` sentinel when the call raised (transient).
     """
+    from reflexio.server.search_runtime import current
+
+    scope = current()
+    if scope is not None:
+        with scope.lock:
+            if id(reflexio) in scope.config_versions:
+                return scope.config_versions[id(reflexio)][1]
     try:
-        return reflexio.current_config_version()
+        version = reflexio.current_config_version()
+        if scope is not None and version is not None:
+            with scope.lock:
+                scope.config_versions[id(reflexio)] = (reflexio, version)
+        return version
     except Exception as exc:  # noqa: BLE001 - intentional broad catch
         logger.warning(
             "Failed to probe config version for org %s: %s — keeping entry warm",

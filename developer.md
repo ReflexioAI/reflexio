@@ -342,3 +342,15 @@ requeue. This preserves draining cadence when many items share one scope.
 Sparse providers can retain failed scopes with `on_scope_deferred(context, delay)`;
 the scheduler emits it on pre-claim failures and when skipping existing backoff.
 The provider should retain the scope until that remaining delay expires.
+
+
+### Search request deadlines
+
+The HTTP `/api/search` path has a five-second server-arrival deadline and returns
+504 with `reason=search_deadline` on expiry (no partial results). Set
+`REFLEXIO_SEARCH_DEADLINE_ENABLED=false` to disable enforcement while retaining
+request timing. Embedded calls have no newly imposed deadline. Timeout responses
+do not imply a worker thread has stopped: request admission remains held until
+its application and queued/running retrieval work settles. Slow/error timing logs
+and application outcome metrics are independent of sampled tracing. See the
+enterprise managed-cloud health guide for rollout and phase interpretation.

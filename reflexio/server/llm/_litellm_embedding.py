@@ -25,11 +25,12 @@ foreign members, Tier-1b idiom) is added.
 
 import logging
 from functools import lru_cache
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 import litellm
 import tiktoken
 
+from reflexio.server import search_runtime
 from reflexio.server.llm._litellm_types import LiteLLMClientError
 from reflexio.server.llm._provider_concurrency import provider_slot
 from reflexio.server.llm.model_defaults import ModelRole, resolve_model_name
@@ -373,8 +374,12 @@ class EmbeddingMixin:
             with provider_slot(params["model"]):
                 response = litellm.embedding(
                     **params,
-                    timeout=self.config.timeout,
-                    num_retries=self.config.max_retries,
+                    # LiteLLM's overload says int; its implementation forwards
+                    # fractional seconds unchanged to the provider HTTP client.
+                    timeout=cast(Any, search_runtime.remaining(self.config.timeout)),
+                    num_retries=0
+                    if search_runtime.current()
+                    else self.config.max_retries,
                 )
             # Response data may not be in order, sort by index to ensure correct ordering
             sorted_data = sorted(response.data, key=lambda x: x["index"])

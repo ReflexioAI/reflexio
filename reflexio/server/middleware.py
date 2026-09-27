@@ -315,7 +315,10 @@ class CorrelationIdMiddleware(BaseHTTPMiddleware):
     async def dispatch(
         self, request: Request, call_next: RequestResponseEndpoint
     ) -> Response:
-        cid = generate_correlation_id()
+        from reflexio.server.search_runtime import current
+
+        search_scope = current()
+        cid = search_scope.timing_id if search_scope else generate_correlation_id()
         correlation_id_var.set(cid)
         try:
             stats = current_default_thread_limiter().statistics()

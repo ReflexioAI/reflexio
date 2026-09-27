@@ -40,6 +40,7 @@ from reflexio.models.config_schema import (
     SearchMode,
     SearchOptions,
 )
+from reflexio.server import search_runtime
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.llm.rerank.common import reranker_enabled
 from reflexio.server.prompt.prompt_manager import PromptManager
@@ -613,14 +614,14 @@ def _run_phase_b(
             # FAILED ([] covers "no user_id" and "no matches"), and the caller
             # needs that apart from an empty answer. See this function's
             # Returns section for how the two failure modes are told apart.
-            profiles = profiles_future.result(timeout=30) if profiles_future else []
+            profiles = search_runtime.result(profiles_future) if profiles_future else []
             agent_playbooks = (
-                agent_playbooks_future.result(timeout=30)
+                search_runtime.result(agent_playbooks_future)
                 if agent_playbooks_future
                 else []
             )
             user_playbooks = (
-                user_playbooks_future.result(timeout=30)
+                search_runtime.result(user_playbooks_future)
                 if user_playbooks_future
                 else []
             )
@@ -720,10 +721,12 @@ def _run_phase_b_single_rpc(
         include_user_playbooks="user_playbooks" in entity_types,
     )
     try:
-        profiles, agent_playbooks, user_playbooks = future.result(timeout=30)
+        profiles, agent_playbooks, user_playbooks = search_runtime.result(future)
     except FuturesTimeoutError:
         raise
-    except Exception:
+    except Exception as exc:
+        if search_runtime.current() is not None and not _combined_rpc_unavailable(exc):
+            raise
         logger.warning(
             "Unified single-RPC search failed; falling back to per-arm fan-out",
             exc_info=True,
@@ -1120,8 +1123,32 @@ def _submit_with_current_context(
     *args: object,
     **kwargs: object,
 ) -> Future[Any]:
+    search_runtime.checkpoint()
     context = contextvars.copy_context()
-    return executor.submit(context.run, fn, *args, **kwargs)
+    submitted = time.monotonic()
+    scope = search_runtime.current()
+    queue_key = object()
+    if scope is not None:
+        with scope.lock:
+            scope.active[queue_key] = ("search.worker_queue", submitted)
+
+    def run() -> object:
+        scope = search_runtime.current()
+        if scope is not None:
+            with scope.lock:
+                scope.active.pop(queue_key, None)
+                scope.intervals.append(
+                    ("search.worker_queue", submitted, time.monotonic())
+                )
+        search_runtime.checkpoint()
+        return fn(*args, **kwargs)
+
+    future = executor.submit(context.run, run)
+    # Future.cancel() leaves its WorkItem in ThreadPoolExecutor's queue.
+    # Keep ownership until this wrapper is dequeued; checkpoint skips expired
+    # work without running a query, and admission remains bounded meanwhile.
+    search_runtime.track(future, cancel_queued=False)
+    return future
 
 
 def _storage_backend_name(storage: BaseStorage) -> str:
@@ -1152,3 +1179,22 @@ class UnifiedSearchService:
     ) -> None:
         self.llm_client = llm_client
         self.request_context = request_context
+
+
+def _combined_rpc_unavailable(exc: BaseException) -> bool:
+    """Only missing SQL capability may start compatibility fan-out on HTTP search."""
+    seen: set[int] = set()
+    while id(exc) not in seen:
+        seen.add(id(exc))
+        if (
+            isinstance(exc, NotImplementedError)
+            or getattr(exc, "pgcode", None) == "42883"
+        ):
+            return True
+        if getattr(exc, "code", None) == "PGRST202":
+            return True
+        cause = exc.__cause__ or exc.__context__
+        if cause is None:
+            break
+        exc = cause
+    return False

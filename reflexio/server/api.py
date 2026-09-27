@@ -703,6 +703,9 @@ def create_app(  # noqa: C901
 
     # Added last so timing includes the entire application middleware stack.
     app.add_middleware(PublishHttpTimingMiddleware)
+    from reflexio.server.search_runtime import SearchRuntimeMiddleware
+
+    app.add_middleware(SearchRuntimeMiddleware)
 
     return app
 

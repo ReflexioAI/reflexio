@@ -35,6 +35,7 @@ from reflexio.models.api_schema.ui.converters import (
     to_profile_view,
     to_user_playbook_view,
 )
+from reflexio.server import search_runtime
 from reflexio.server.auth import (
     default_billing_gate,
     default_get_caller_type,
@@ -378,6 +379,7 @@ def unified_search_endpoint(
         org_id=org_id, caller_type=caller_type, user_id=payload.user_id
     )
     if assignment is not None and assignment.arm == "holdout":
+        search_runtime.set_outcome(True)
         resp = UnifiedSearchViewResponse(
             success=True,
             profiles=[],
@@ -386,6 +388,7 @@ def unified_search_endpoint(
             msg="Retrieval withheld by experiment assignment",
             experiment=assignment,
         )
+        search_runtime.checkpoint()
         enqueue_search_metering(
             org_id=org_id,
             caller_type=caller_type,
@@ -442,6 +445,8 @@ def unified_search_endpoint(
                 search_mode_effective=response.search_mode_effective,
                 experiment=assignment,
             )
+        search_runtime.checkpoint()
+        search_runtime.set_outcome(resp.success)
         if caller_type == "production_agent":
             # Outcome deliberately ignored: an unregistered recorder is a
             # supported OSS/no-auth configuration, and this route cannot
@@ -457,6 +462,7 @@ def unified_search_endpoint(
                     user_playbooks=tuple(response.user_playbooks),
                 )
             )
+        search_runtime.checkpoint()
         enqueue_search_metering(
             org_id=org_id,
             caller_type=caller_type,
@@ -467,6 +473,7 @@ def unified_search_endpoint(
             request_id=getattr(payload, "request_id", None),
             session_id=getattr(payload, "session_id", None),
         )
+    search_runtime.checkpoint()
     if resp.success:
         observe_completed_search(
             CompletedSearch(
