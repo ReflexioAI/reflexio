@@ -4810,19 +4810,29 @@ class TestSafeValidationErrors:
         assert all("customer data" not in error for error in errors)
 
 
+@pytest.mark.parametrize("deadline_enabled", [True, False])
 @patch("reflexio.server.llm.litellm_client.litellm.embedding")
-def test_search_embedding_disables_internal_retries(mock_embedding, monkeypatch):
+def test_search_embedding_retries_follow_deadline_switch(
+    mock_embedding, monkeypatch, deadline_enabled
+):
     from reflexio.server import search_runtime
 
     _force_litellm_embedding_route(monkeypatch)
     mock_embedding.return_value = _make_embedding_response([0.1, 0.2])
     client = _build_client()
-    scope = search_runtime.SearchScope(deadline=time.monotonic() + 1)
+    scope = search_runtime.SearchScope(
+        deadline=time.monotonic() + 1 if deadline_enabled else None
+    )
     token = search_runtime._scope.set(scope)
     try:
         client.get_embedding("text", model="text-embedding-3-small")
-        assert mock_embedding.call_args.kwargs["num_retries"] == 0
-        assert 0 < mock_embedding.call_args.kwargs["timeout"] <= 1
+        assert mock_embedding.call_args.kwargs["num_retries"] == (
+            0 if deadline_enabled else client.config.max_retries
+        )
+        if deadline_enabled:
+            assert 0 < mock_embedding.call_args.kwargs["timeout"] <= 1
+        else:
+            assert mock_embedding.call_args.kwargs["timeout"] == client.config.timeout
     finally:
         search_runtime._scope.reset(token)
     client.get_embedding("text", model="text-embedding-3-small")

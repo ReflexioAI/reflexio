@@ -371,6 +371,7 @@ class EmbeddingMixin:
             if api_version:
                 params["api_version"] = api_version
 
+            search_scope = search_runtime.current()
             with provider_slot(params["model"]):
                 response = litellm.embedding(
                     **params,
@@ -378,7 +379,7 @@ class EmbeddingMixin:
                     # fractional seconds unchanged to the provider HTTP client.
                     timeout=cast(Any, search_runtime.remaining(self.config.timeout)),
                     num_retries=0
-                    if search_runtime.current()
+                    if search_scope is not None and search_scope.deadline is not None
                     else self.config.max_retries,
                 )
             # Response data may not be in order, sort by index to ensure correct ordering

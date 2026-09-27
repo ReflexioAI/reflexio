@@ -440,7 +440,12 @@ class SearchRuntimeMiddleware:
             from anyio.to_thread import current_default_thread_limiter
 
             worker_capacity = max(
-                1, int(current_default_thread_limiter().total_tokens) // 2
+                1,
+                int(
+                    min(
+                        self.capacity, current_default_thread_limiter().total_tokens / 2
+                    )
+                ),
             )
             if len(self.tasks) >= min(self.capacity, worker_capacity):
                 state.cancel("capacity")

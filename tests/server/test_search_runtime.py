@@ -623,13 +623,16 @@ async def test_factory_deadline_and_capacity_responses_keep_browser_headers():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("enabled", ["true", "false"])
-async def test_one_worker_host_still_admits_search(monkeypatch, enabled):
+@pytest.mark.parametrize("worker_tokens", [1, float("inf")])
+async def test_host_worker_configuration_still_admits_search(
+    monkeypatch, enabled, worker_tokens
+):
     from anyio.to_thread import current_default_thread_limiter
 
     monkeypatch.setenv("REFLEXIO_SEARCH_DEADLINE_ENABLED", enabled)
     limiter = current_default_thread_limiter()
     original_tokens = limiter.total_tokens
-    limiter.total_tokens = 1
+    limiter.total_tokens = worker_tokens
     app = FastAPI()
 
     @app.post("/api/search")
