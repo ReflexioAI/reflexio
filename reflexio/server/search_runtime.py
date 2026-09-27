@@ -434,12 +434,14 @@ class SearchRuntimeMiddleware:
 
         receiver: asyncio.Task[None] | None = None
         try:
-            # Keep at least half of AnyIO's shared worker tokens available to
-            # non-search routes, including when an embedding host lowers its
-            # limiter. Timed-out search tasks retain these admission slots.
+            # Reserve worker tokens for non-search routes when the host has
+            # more than one token. A one-worker host must still admit a search.
+            # Timed-out search tasks retain these admission slots.
             from anyio.to_thread import current_default_thread_limiter
 
-            worker_capacity = int(current_default_thread_limiter().total_tokens) // 2
+            worker_capacity = max(
+                1, int(current_default_thread_limiter().total_tokens) // 2
+            )
             if len(self.tasks) >= min(self.capacity, worker_capacity):
                 state.cancel("capacity")
                 status = 503

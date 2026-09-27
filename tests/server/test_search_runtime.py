@@ -619,3 +619,27 @@ async def test_factory_deadline_and_capacity_responses_keep_browser_headers():
             middleware = getattr(middleware, "app", None)
         assert middleware is not None
         await asyncio.gather(*middleware.tasks, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enabled", ["true", "false"])
+async def test_one_worker_host_still_admits_search(monkeypatch, enabled):
+    from anyio.to_thread import current_default_thread_limiter
+
+    monkeypatch.setenv("REFLEXIO_SEARCH_DEADLINE_ENABLED", enabled)
+    limiter = current_default_thread_limiter()
+    original_tokens = limiter.total_tokens
+    limiter.total_tokens = 1
+    app = FastAPI()
+
+    @app.post("/api/search")
+    def search():
+        return {"ok": True}
+
+    middleware = runtime.SearchRuntimeMiddleware(app)
+    try:
+        response = await call(middleware)
+        assert response[0]["status"] == 200
+    finally:
+        await asyncio.gather(*middleware.tasks, return_exceptions=True)
+        limiter.total_tokens = original_tokens
