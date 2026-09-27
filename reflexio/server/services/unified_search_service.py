@@ -272,7 +272,7 @@ def run_unified_search(
 
     # PARTIAL failure: the profiles arm failed while a requested playbook arm
     # answered. Serve what we have, but say so, rather than letting a storage
-    # outage read as "this user has no profile" (Sentry PYTHON-FASTAPI-Z0).
+    # outage read as "this user has no profile" (the pooled-connection incident).
     profiles_degraded = profiles is None
     if profiles_degraded:
         logger.warning(
@@ -1062,7 +1062,7 @@ def _search_profiles_via_storage(
     Returns ``None`` -- not ``[]`` -- when the search FAILED, so a storage
     outage is distinguishable from "this user genuinely has no matching
     profile". Collapsing the two is what let a dead pooled connection surface
-    to an agent as an empty, successful answer (Sentry PYTHON-FASTAPI-Z0).
+    to an agent as an empty, successful answer (the pooled-connection incident).
 
     Args:
         storage (BaseStorage): Storage instance

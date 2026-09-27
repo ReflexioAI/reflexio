@@ -361,17 +361,18 @@ class _RequestInput:
 class SearchRuntimeMiddleware:
     """Buffer the small search JSON response; enforce one ingress deadline.
 
-    At most 40 application tasks can remain alive per middleware instance.
+    At most 20 application tasks can remain alive per middleware instance.
     Expired tasks retain their slots until actual completion, even when their
     synchronous workers cannot immediately be interrupted.
     """
 
     def __init__(
-        self, app: ASGIApp, *, timeout: float | None = None, capacity: int = 40
+        self, app: ASGIApp, *, timeout: float | None = None, capacity: int = 20
     ) -> None:
         self.app = app
         self.timeout = timeout
         self.capacity = capacity
+        self.enabled = env_bool("REFLEXIO_SEARCH_DEADLINE_ENABLED", default=True)
         self.tasks: set[asyncio.Task[None]] = set()
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
@@ -385,8 +386,11 @@ class SearchRuntimeMiddleware:
         ):
             await self.app(scope, receive, send)
             return
+        from reflexio.server.correlation import correlation_id_var
+
         state = SearchScope()
-        enabled = env_bool("REFLEXIO_SEARCH_DEADLINE_ENABLED", default=True)
+        state.timing_id = correlation_id_var.get() or state.timing_id
+        enabled = self.enabled
         if enabled:
             state.deadline = state.started + (
                 self.timeout if self.timeout is not None else 5.0
@@ -430,7 +434,13 @@ class SearchRuntimeMiddleware:
 
         receiver: asyncio.Task[None] | None = None
         try:
-            if len(self.tasks) >= self.capacity:
+            # Keep at least half of AnyIO's shared worker tokens available to
+            # non-search routes, including when an embedding host lowers its
+            # limiter. Timed-out search tasks retain these admission slots.
+            from anyio.to_thread import current_default_thread_limiter
+
+            worker_capacity = int(current_default_thread_limiter().total_tokens) // 2
+            if len(self.tasks) >= min(self.capacity, worker_capacity):
                 state.cancel("capacity")
                 status = 503
                 await JSONResponse(

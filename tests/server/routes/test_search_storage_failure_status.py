@@ -1,6 +1,6 @@
 """``/api/search`` must not answer 200 when storage failed outright.
 
-Sentry PYTHON-FASTAPI-Z0: one dead pooled connection made every storage arm
+Pooled-connection incident: one dead pooled connection made every storage arm
 fail, and the route still answered **HTTP 200** with empty result lists and
 ``success=False`` in the body alone. A caller that checked the status code -- or
 simply read ``profiles``/``user_playbooks`` -- could not tell a backend outage

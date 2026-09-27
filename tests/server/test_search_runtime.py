@@ -534,3 +534,88 @@ def test_search_openapi_describes_deadline_and_unavailable_responses():
     schema = responses["504"]["content"]["application/json"]["schema"]
     assert set(schema["required"]) == {"detail", "reason", "correlation_id"}
     assert schema["properties"]["reason"]["enum"] == ["search_deadline"]
+
+
+@pytest.mark.asyncio
+async def test_expired_searches_leave_workers_for_unrelated_routes():
+    from anyio.to_thread import current_default_thread_limiter
+    from httpx import ASGITransport, AsyncClient
+
+    limiter = current_default_thread_limiter()
+    original_tokens = limiter.total_tokens
+    limiter.total_tokens = 4
+    release = threading.Event()
+    app = FastAPI()
+
+    @app.post("/api/search")
+    def search():
+        release.wait(3)
+        return {"ok": True}
+
+    @app.get("/unrelated")
+    def unrelated():
+        return {"ok": True}
+
+    middleware = runtime.SearchRuntimeMiddleware(app, timeout=0.04)
+    try:
+        async with AsyncClient(
+            transport=ASGITransport(app=middleware), base_url="http://test"
+        ) as client:
+            responses = await asyncio.gather(
+                *(client.post("/api/search") for _ in range(4))
+            )
+            assert sorted(r.status_code for r in responses) == [503, 503, 504, 504]
+            assert limiter.borrowed_tokens == 2
+            response = await asyncio.wait_for(client.get("/unrelated"), timeout=0.5)
+            assert response.status_code == 200
+    finally:
+        release.set()
+        await asyncio.gather(*middleware.tasks, return_exceptions=True)
+        limiter.total_tokens = original_tokens
+
+
+@pytest.mark.asyncio
+async def test_factory_deadline_and_capacity_responses_keep_browser_headers():
+    from httpx import ASGITransport, AsyncClient
+
+    from reflexio.server.api import create_app
+
+    app = create_app(mount_data_plane=False)
+    release = threading.Event()
+    for middleware in app.user_middleware:
+        if middleware.cls is runtime.SearchRuntimeMiddleware:
+            middleware.kwargs.update(timeout=0.04, capacity=1)
+
+    @app.post("/api/search")
+    def search():
+        release.wait(3)
+        return {"ok": True}
+
+    try:
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="https://test",
+            headers={"Origin": "https://browser.test"},
+        ) as client:
+            timed_out = await client.post("/api/search")
+            rejected = await client.post("/api/search")
+            assert timed_out.status_code == 504
+            assert rejected.status_code == 503
+            for response in (timed_out, rejected):
+                assert response.headers["access-control-allow-origin"] == "*"
+                assert response.headers["x-content-type-options"] == "nosniff"
+                assert response.headers["x-frame-options"] == "DENY"
+                assert response.headers["x-correlation-id"]
+            assert (
+                timed_out.json()["correlation_id"]
+                == timed_out.headers["x-correlation-id"]
+            )
+    finally:
+        release.set()
+        middleware = app.middleware_stack
+        while middleware is not None and not isinstance(
+            middleware, runtime.SearchRuntimeMiddleware
+        ):
+            middleware = getattr(middleware, "app", None)
+        assert middleware is not None
+        await asyncio.gather(*middleware.tasks, return_exceptions=True)

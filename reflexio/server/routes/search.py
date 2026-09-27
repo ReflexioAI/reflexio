@@ -517,7 +517,7 @@ def unified_search_endpoint(
         # ``success=False`` only in the body, so a caller checking the status
         # code -- or just reading the result lists -- saw a backend outage as
         # "this user has no profile and no playbooks" and could not retry
-        # (Sentry PYTHON-FASTAPI-Z0). ``success=False`` has exactly one
+        # (the pooled-connection incident). ``success=False`` has exactly one
         # producer, the total-failure branch in ``unified_search_service``, so
         # this cannot fire on an ordinary empty result.
         #

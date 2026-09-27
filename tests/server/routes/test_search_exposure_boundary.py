@@ -596,7 +596,7 @@ def test_failed_unified_search_is_not_observed() -> None:
             "/api/search", json={"query": "answer", "user_id": "user-1"}
         )
     # A total storage failure is a 503 rather than an empty 200 -- see
-    # ``test_search_storage_failure_status.py`` (Sentry PYTHON-FASTAPI-Z0). The
+    # ``test_search_storage_failure_status.py`` (the pooled-connection incident). The
     # body is not asserted on here: this harness flips ``success`` while leaving
     # ``msg="OK"``, whereas production has exactly one producer of
     # ``success=False`` and it always sets "Search failed". The subject of THIS
