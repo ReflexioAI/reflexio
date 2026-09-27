@@ -417,6 +417,14 @@ def operation_limit(
         if wait_forever
         else (_timeout_for(operation) if timeout_seconds is None else timeout_seconds)
     )
+    from reflexio.server import search_runtime
+
+    search_scope = search_runtime.current() if operation == "search" else None
+    if search_scope is not None:
+        search_runtime.checkpoint()
+        if search_scope.deadline is not None:
+            budget = search_scope.remaining(3600)
+            timeout = budget if timeout is None else min(timeout, budget)
     start = time.perf_counter()
     with _limiters_lock:
         state.waiting += 1
@@ -495,6 +503,10 @@ def operation_limit(
             limit=state.limit,
             active=active,
         )
+        if search_scope is not None:
+            # Admission can race expiry: do not start retrieval after a 504.
+            # The finally block still returns a successfully acquired permit.
+            search_runtime.checkpoint()
         yield
     finally:
         if acquired:

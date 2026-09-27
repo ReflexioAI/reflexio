@@ -354,3 +354,57 @@ def test_limiter_http_exception_maps_search_to_429():
 
     assert exc.status_code == status.HTTP_429_TOO_MANY_REQUESTS
     assert exc.headers == {"Retry-After": "2"}
+
+
+def test_search_limiter_wait_uses_remaining_http_deadline(monkeypatch):
+    import time
+
+    from reflexio.server import search_runtime
+    from reflexio.server.routes._common import _run_limited_api
+
+    monkeypatch.setenv("REFLEXIO_SEARCH_CONCURRENCY_LIMIT", "1")
+    monkeypatch.setenv("REFLEXIO_SEARCH_CONCURRENCY_TIMEOUT_SECONDS", "10")
+    state = operation_limiter_module._state_for("deadline-org", "search")
+    state.semaphore.acquire()
+    scope = search_runtime.SearchScope(deadline=time.monotonic() + 0.03)
+    token = search_runtime._scope.set(scope)
+    called = []
+    start = time.monotonic()
+    try:
+        with pytest.raises(search_runtime.SearchDeadlineError):
+            _run_limited_api("deadline-org", "search", lambda: called.append(True))
+        assert time.monotonic() - start < 0.5
+        assert not called
+        assert state.waiting == 0
+    finally:
+        search_runtime._scope.reset(token)
+        state.semaphore.release()
+
+
+def test_search_limiter_expiry_after_acquire_releases_without_retrieval(monkeypatch):
+    import time
+
+    from reflexio.server import search_runtime
+    from reflexio.server.routes._common import _run_limited_api
+
+    scope = search_runtime.SearchScope(deadline=time.monotonic() + 10)
+    state = operation_limiter_module._state_for("deadline-org", "search")
+    real_acquire = state.semaphore.acquire
+
+    def expire_after_acquire(*args, **kwargs):
+        acquired = real_acquire(*args, **kwargs)
+        scope.cancel("timeout")
+        return acquired
+
+    monkeypatch.setattr(state.semaphore, "acquire", expire_after_acquire)
+    token = search_runtime._scope.set(scope)
+    called = []
+    try:
+        with pytest.raises(search_runtime.SearchDeadlineError):
+            _run_limited_api("deadline-org", "search", lambda: called.append(True))
+        assert not called
+        assert state.active == state.waiting == 0
+        assert real_acquire(blocking=False)
+        state.semaphore.release()
+    finally:
+        search_runtime._scope.reset(token)
