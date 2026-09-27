@@ -146,6 +146,10 @@ def run_unified_search(
     Returns:
         UnifiedSearchResponse: Combined results from all entity types
     """
+    scope = search_runtime.current()
+    if scope is not None:
+        with scope.lock:
+            scope.requested_search_mode = request.search_mode.value
     if not request.query:
         return UnifiedSearchResponse(success=True, msg="No query provided")
 
@@ -490,6 +494,10 @@ def _run_phase_b(
             swallow of its own -- their failures propagate to the outer handler
             and become the all-three case.
     """
+    scope = search_runtime.current()
+    if scope is not None:
+        with scope.lock:
+            scope.search_mode = search_mode.value
     options = SearchOptions(query_embedding=embedding, search_mode=search_mode)
 
     entity_types = set(request.entity_types or _DEFAULT_ENTITY_TYPES)
@@ -521,6 +529,7 @@ def _run_phase_b(
                     or wants_scored_single_rpc
                 )
             ):
+                search_runtime.increment("retrieval.combined_attempts")
                 combined = _run_phase_b_single_rpc(
                     request=request,
                     storage=storage,
@@ -546,6 +555,7 @@ def _run_phase_b(
                     )
                     return profiles, agent_playbooks, user_playbooks
                 span.set_data("single_rpc_fallback", True)
+            search_runtime.increment("retrieval.fanout_attempts")
             profiles_future = (
                 _submit_with_current_context(
                     _SEARCH_FANOUT_EXECUTOR,
@@ -700,6 +710,7 @@ def _run_phase_b_single_rpc(
                 "event=search_recency_missing_scores source=single_rpc method=%s",
                 method_name,
             )
+        search_runtime.increment("retrieval.compatibility_fallbacks")
         return None
 
     future = _submit_with_current_context(
@@ -727,6 +738,7 @@ def _run_phase_b_single_rpc(
     except Exception as exc:
         if search_runtime.current() is not None and not _combined_rpc_unavailable(exc):
             raise
+        search_runtime.increment("retrieval.compatibility_fallbacks")
         logger.warning(
             "Unified single-RPC search failed; falling back to per-arm fan-out",
             exc_info=True,
@@ -1131,6 +1143,9 @@ def _submit_with_current_context(
     if scope is not None:
         with scope.lock:
             scope.active[queue_key] = ("search.worker_queue", submitted)
+            scope.phase_counts["search.worker_queue"] = (
+                scope.phase_counts.get("search.worker_queue", 0) + 1
+            )
 
     def run() -> object:
         scope = search_runtime.current()
@@ -1143,7 +1158,16 @@ def _submit_with_current_context(
         search_runtime.checkpoint()
         return fn(*args, **kwargs)
 
-    future = executor.submit(context.run, run)
+    try:
+        future = executor.submit(context.run, run)
+    except BaseException:
+        if scope is not None:
+            with scope.lock:
+                scope.active.pop(queue_key, None)
+                scope.intervals.append(
+                    ("search.worker_queue", submitted, time.monotonic())
+                )
+        raise
     # Future.cancel() leaves its WorkItem in ThreadPoolExecutor's queue.
     # Keep ownership until this wrapper is dequeued; checkpoint skips expired
     # work without running a query, and admission remains bounded meanwhile.

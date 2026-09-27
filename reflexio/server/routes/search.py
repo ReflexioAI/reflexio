@@ -350,6 +350,25 @@ def search_agent_playbooks_endpoint(
     "/api/search",
     response_model=UnifiedSearchViewResponse,
     response_model_exclude_none=True,
+    responses={
+        503: {"description": "Search capacity exhausted or storage unavailable"},
+        504: {
+            "description": "The shared search request deadline expired",
+            "content": {
+                "application/json": {
+                    "schema": {
+                        "type": "object",
+                        "required": ["detail", "reason", "correlation_id"],
+                        "properties": {
+                            "detail": {"type": "string"},
+                            "reason": {"type": "string", "enum": ["search_deadline"]},
+                            "correlation_id": {"type": "string"},
+                        },
+                    }
+                }
+            },
+        },
+    },
 )
 @limiter.limit("120/minute")
 def unified_search_endpoint(
@@ -362,8 +381,8 @@ def unified_search_endpoint(
 ) -> UnifiedSearchViewResponse:
     """Search across all entity types (profiles, agent playbooks, user playbooks).
 
-    Runs query rewriting and embedding generation in parallel, then searches
-    all entity types in parallel. Query rewriting is gated behind the
+    Runs query rewriting followed by embedding generation, then retrieves the
+    requested entity types. Query rewriting is gated behind the
     enable_reformulation request param.
 
     Args:
@@ -375,6 +394,10 @@ def unified_search_endpoint(
     Returns:
         UnifiedSearchViewResponse: Combined search results
     """
+    scope = search_runtime.current()
+    if scope is not None:
+        with scope.lock:
+            scope.requested_search_mode = payload.search_mode.value
     assignment = _retrieval_experiment_assignment(
         org_id=org_id, caller_type=caller_type, user_id=payload.user_id
     )
@@ -452,16 +475,17 @@ def unified_search_endpoint(
             # supported OSS/no-auth configuration, and this route cannot
             # tell that apart from an enterprise misconfiguration. Asserting
             # here would turn a supported deployment's search into a 500.
-            record_search_exposures(
-                SearchExposureBatch(
-                    org_id=org_id,
-                    request_id=payload.request_id,
-                    session_id=payload.session_id,
-                    interaction_id=payload.interaction_id,
-                    user_id=payload.user_id,
-                    user_playbooks=tuple(response.user_playbooks),
+            with profile_step("search.exposure"):
+                record_search_exposures(
+                    SearchExposureBatch(
+                        org_id=org_id,
+                        request_id=payload.request_id,
+                        session_id=payload.session_id,
+                        interaction_id=payload.interaction_id,
+                        user_id=payload.user_id,
+                        user_playbooks=tuple(response.user_playbooks),
+                    )
                 )
-            )
         search_runtime.checkpoint()
         enqueue_search_metering(
             org_id=org_id,

@@ -2,6 +2,8 @@
 
 from typing import Any, cast
 
+import pytest
+
 from reflexio.models.api_schema.retriever_schema import UnifiedSearchRequest
 from reflexio.models.api_schema.service_schemas import (
     AgentPlaybook,
@@ -276,7 +278,8 @@ def test_http_search_pool_failure_does_not_fan_out(monkeypatch):
         search_runtime._scope.reset(token)
 
 
-def test_http_search_missing_capability_can_fall_back(monkeypatch):
+@pytest.mark.parametrize("missing_callable", [False, True])
+def test_http_search_missing_capability_can_fall_back(monkeypatch, missing_callable):
     from reflexio.server import search_runtime
 
     storage = _CombinedStorage()
@@ -284,8 +287,11 @@ def test_http_search_missing_capability_can_fall_back(monkeypatch):
     def fail(**_kwargs):
         raise NotImplementedError("combined search unsupported")
 
-    monkeypatch.setattr(storage, "unified_hybrid_search", fail)
-    token = search_runtime._scope.set(search_runtime.SearchScope())
+    monkeypatch.setattr(
+        storage, "unified_hybrid_search", None if missing_callable else fail
+    )
+    state = search_runtime.SearchScope()
+    token = search_runtime._scope.set(state)
     try:
         assert _run_phase_b(storage) == ([], [], [])
         assert sorted(storage.fanout_calls) == [
@@ -293,5 +299,8 @@ def test_http_search_missing_capability_can_fall_back(monkeypatch):
             "profiles",
             "user_playbooks",
         ]
+        assert state.counters["retrieval.combined_attempts"] == 1
+        assert state.counters["retrieval.compatibility_fallbacks"] == 1
+        assert state.counters["retrieval.fanout_attempts"] == 1
     finally:
         search_runtime._scope.reset(token)

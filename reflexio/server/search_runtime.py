@@ -27,6 +27,10 @@ from reflexio.server.env_utils import env_bool
 from reflexio.server.operational_metrics import record_health
 
 logger = logging.getLogger(__name__)
+# Production defaults first-party logs to WARNING. Opt in only this compact,
+# content-free request record, rather than enabling all application INFO logs.
+timing_logger = logging.getLogger(__name__ + ".timing")
+timing_logger.setLevel(logging.INFO)
 _cancel_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="search-cancel")
 _cancel_slots = threading.BoundedSemaphore(2)
 
@@ -78,12 +82,19 @@ class SearchScope:
     started: float = field(default_factory=time.monotonic)
     deadline: float | None = None
     trace_id: str | None = None
+    search_mode: str | None = None
+    requested_search_mode: str | None = None
     timing_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     lock: Any = field(default_factory=threading.RLock)
     cancelled: bool = False
     outcome: str = "unknown"
     retries: int = 0
-    config_versions: dict[int, tuple[Any, Any]] = field(default_factory=dict)
+    config_versions: dict[tuple[str, int, object], tuple[Any, Any]] = field(
+        default_factory=dict
+    )
+    config_locks: dict[tuple[str, int, object], Any] = field(default_factory=dict)
+    counters: dict[str, int] = field(default_factory=dict)
+    phase_counts: dict[str, int] = field(default_factory=dict)
     intervals: list[tuple[str, float, float]] = field(default_factory=list)
     active: dict[object, tuple[str, float]] = field(default_factory=dict)
     futures: dict[Future[Any], bool] = field(default_factory=dict)
@@ -130,6 +141,7 @@ class SearchScope:
                 *((name, start, end) for name, start in self.active.values()),
             ]
             outcome, retries = self.outcome, self.retries
+            counters, counts = dict(self.counters), dict(self.phase_counts)
             active_phases = sorted({name for name, _ in self.active.values()})
         phases: dict[str, list[tuple[float, float]]] = {}
         work: dict[str, float] = {}
@@ -141,16 +153,25 @@ class SearchScope:
             phases.setdefault(name, []).append((start, stop))
             work[name] = work.get(name, 0) + (stop - start) * 1000
             # Container spans are useful diagnostics, not attribution.
-            if name not in {"search.endpoint", "search.phase_b", "search.storage.db"}:
+            if name not in {
+                "search.endpoint",
+                "search.phase_b",
+                "search.storage.db",
+                "storage.pool.hold",
+            }:
                 covered.append((start, stop))
         union = _interval_union(covered)
         return {
             "timing_id": self.timing_id,
             "trace_id": self.trace_id,
+            "search_mode": self.search_mode,
+            "requested_search_mode": self.requested_search_mode,
             "total_ms": round((end - self.started) * 1000, 3),
             "unattributed_ms": round(max(0, end - self.started - union) * 1000, 3),
             "outcome": outcome,
             "retry_count": retries,
+            "counters": counters,
+            "phase_counts": counts,
             "active_phases": active_phases,
             "phases_ms": {
                 name: round(_interval_union(intervals) * 1000, 3)
@@ -173,6 +194,52 @@ _scope: ContextVar[SearchScope | None] = ContextVar("search_runtime", default=No
 
 def current() -> SearchScope | None:
     return _scope.get()
+
+
+def increment(name: str, value: int = 1, *, maximum: bool = False) -> None:
+    """Record bounded internal operation names, never customer data."""
+    scope = current()
+    if scope is not None:
+        with scope.lock:
+            previous = scope.counters.get(name, 0)
+            scope.counters[name] = max(previous, value) if maximum else previous + value
+
+
+def config_version(
+    namespace: str, owner: object, key: object, load: Callable[[], Any]
+) -> Any:
+    """Reuse successful version reads within one request and authority only.
+
+    Keep the owner alive to prevent identity reuse. Per-key locks coalesce worker
+    reads without holding the request-state lock during remote I/O. None and
+    exceptions are never cached; later consumers retain their normal retry policy.
+    """
+    scope = current()
+    if scope is None:
+        return load()
+    cache_key = (namespace, id(owner), key)
+    with scope.lock:
+        lock = scope.config_locks.setdefault(cache_key, threading.Lock())
+    with phase(f"search.config.{namespace}.wait"):
+        acquired = lock.acquire(timeout=remaining())
+    if not acquired:
+        raise SearchDeadlineError()
+    try:
+        checkpoint()
+        with scope.lock:
+            cached = scope.config_versions.get(cache_key)
+        if cached is not None:
+            increment(f"config.{namespace}.reuse")
+            return cached[1]
+        increment(f"config.{namespace}.reads")
+        with phase(f"search.config.{namespace}.read"):
+            value = load()
+        if value is not None:
+            with scope.lock:
+                scope.config_versions[cache_key] = (owner, value)
+        return value
+    finally:
+        lock.release()
 
 
 def remaining(default: float = 30) -> float:
@@ -243,6 +310,7 @@ def phase(name: str, *, cleanup: bool = False) -> Iterator[None]:
     key, start = object(), time.monotonic()
     with scope.lock:
         scope.active[key] = (name, start)
+        scope.phase_counts[name] = scope.phase_counts.get(name, 0) + 1
     try:
         yield
     finally:
@@ -440,11 +508,10 @@ def _emit(state: SearchScope, response_at: float, status: int) -> None:
             phase=name,
             outcome=state.outcome,
         )
-    if fields["total_ms"] >= 2000 or state.outcome != "success":
-        logger.info(
-            "event=search_timing %s",
-            json.dumps({**fields, "status_code": status}),
-        )
+    timing_logger.info(
+        "event=search_timing %s",
+        json.dumps({**fields, "status_code": status}),
+    )
 
 
 async def _drain_workers(

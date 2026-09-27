@@ -390,3 +390,147 @@ def test_cancellation_does_not_skip_transaction_cleanup():
         runtime._scope.reset(token)
     assert cleaned == [True]
     assert "storage.rollback" in state.snapshot(time.monotonic())["phases_ms"]
+
+
+def test_concurrent_version_reads_coalesce_and_failures_are_not_cached():
+    from unittest.mock import Mock
+
+    scope = runtime.SearchScope()
+    owner = object()
+    entered, release = threading.Event(), threading.Event()
+
+    def load():
+        entered.set()
+        assert release.wait(2)
+        return 7
+
+    loader = Mock(side_effect=load)
+    second_attempt = threading.Event()
+
+    class ObservedLock:
+        def __init__(self):
+            self.inner = threading.Lock()
+            self.attempts = 0
+
+        def acquire(self, *, timeout):
+            self.attempts += 1
+            if self.attempts == 2:
+                second_attempt.set()
+            return self.inner.acquire(timeout=timeout)
+
+        def release(self):
+            self.inner.release()
+
+    scope.config_locks[("organization", id(owner), 1)] = ObservedLock()
+
+    def read():
+        token = runtime._scope.set(scope)
+        try:
+            return runtime.config_version("organization", owner, 1, loader)
+        finally:
+            runtime._scope.reset(token)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(read)
+        assert entered.wait(1)
+        second = executor.submit(read)
+        assert second_attempt.wait(1)
+        assert loader.call_count == 1
+        release.set()
+        assert first.result(timeout=2) == second.result(timeout=2) == 7
+    assert loader.call_count == 1
+    assert scope.counters["config.organization.reuse"] == 1
+    token = runtime._scope.set(scope)
+    try:
+        assert runtime.config_version("organization", owner, 2, lambda: 8) == 8
+        assert runtime.config_version("organization", object(), 1, lambda: 9) == 9
+        failing = Mock(side_effect=[RuntimeError("unavailable"), None, 10])
+        with pytest.raises(RuntimeError):
+            runtime.config_version("organization", owner, 3, failing)
+        assert runtime.config_version("organization", owner, 3, failing) is None
+        assert runtime.config_version("organization", owner, 3, failing) == 10
+        assert failing.call_count == 3
+    finally:
+        runtime._scope.reset(token)
+
+
+def test_fast_search_logs_complete_counts_without_trace_sampling(caplog):
+    scope = runtime.SearchScope()
+    token = runtime._scope.set(scope)
+    try:
+        with runtime.phase("storage.pool.hold", cleanup=True):
+            with runtime.phase("storage.query"):
+                pass
+            with runtime.phase("storage.query"):
+                pass
+        runtime.set_outcome(True)
+        with caplog.at_level("INFO"):
+            previous = runtime.logger.level
+            runtime.logger.setLevel("WARNING")
+            try:
+                runtime._emit(scope, time.monotonic(), 200)
+            finally:
+                runtime.logger.setLevel(previous)
+    finally:
+        runtime._scope.reset(token)
+    records = [r for r in caplog.records if "event=search_timing " in r.message]
+    assert len(records) == 1
+    fields = json.loads(records[0].message.split("event=search_timing ")[1])
+    assert fields["total_ms"] < 2000
+    assert fields["phase_counts"]["storage.query"] == 2
+    assert fields["outcome"] == "success"
+    assert fields["trace_id"] is None
+
+
+def test_config_waiter_obeys_original_deadline_without_releasing_owner_lock():
+    from unittest.mock import Mock
+
+    scope = runtime.SearchScope(deadline=time.monotonic() + 0.03)
+    owner = object()
+    lock = threading.Lock()
+    lock.acquire()
+    scope.config_locks[("organization", id(owner), 1)] = lock
+    loader = Mock(return_value=1)
+    token = runtime._scope.set(scope)
+    try:
+        started = time.monotonic()
+        with pytest.raises(runtime.SearchDeadlineError):
+            runtime.config_version("organization", owner, 1, loader)
+        assert time.monotonic() - started < 0.5
+        loader.assert_not_called()
+        assert lock.locked()
+    finally:
+        lock.release()
+        runtime._scope.reset(token)
+    assert runtime.config_version("organization", owner, 1, loader) == 1
+
+
+def test_failed_worker_submission_closes_queue_interval():
+    from reflexio.server.services.unified_search_service import (
+        _submit_with_current_context,
+    )
+
+    executor = ThreadPoolExecutor(max_workers=1)
+    executor.shutdown()
+    scope = runtime.SearchScope()
+    token = runtime._scope.set(scope)
+    try:
+        with pytest.raises(RuntimeError):
+            _submit_with_current_context(executor, lambda: None)
+    finally:
+        runtime._scope.reset(token)
+    assert not scope.active
+    assert scope.phase_counts["search.worker_queue"] == 1
+    assert scope.snapshot(time.monotonic())["phases_ms"]["search.worker_queue"] >= 0
+
+
+def test_search_openapi_describes_deadline_and_unavailable_responses():
+    from reflexio.server.routes.search import router
+
+    app = FastAPI()
+    app.include_router(router)
+    responses = app.openapi()["paths"]["/api/search"]["post"]["responses"]
+    assert "503" in responses
+    schema = responses["504"]["content"]["application/json"]["schema"]
+    assert set(schema["required"]) == {"detail", "reason", "correlation_id"}
+    assert schema["properties"]["reason"]["enum"] == ["search_deadline"]
