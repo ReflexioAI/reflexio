@@ -100,7 +100,7 @@ class SearchExposureOutcome(StrEnum):
 
     RECORDED = "recorded"
     NO_RECORDER = "no_recorder"
-    UNCORRELATED = "uncorrelated"
+    RECORDED_UNCORRELATED = "recorded_uncorrelated"
 
 
 def _normalize_correlation_id(value: str | None) -> str | None:
@@ -166,17 +166,18 @@ def _report_uncorrelated_batch(batch: SearchExposureBatch) -> None:
         _uncorrelated_last_report = now
     # Emitted outside the lock: a reporter is caller code and may be slow.
     logger.warning(
-        "event=search_exposure_uncorrelated_refused org_id=%s refused=%d first=%s"
-        " -- the caller sent neither request_id nor session_id, so nothing was"
-        " recorded and the serve can never be attributed",
+        "event=search_exposure_uncorrelated org_id=%s uncorrelated=%d first=%s"
+        " -- the caller sent neither request_id nor session_id, so the exposure"
+        " is recorded but flagged integrity_state=incomplete"
+        " (missing_correlation) and can never be reconstructed to a session",
         batch.org_id,
         refused,
         first,
     )
     capture_anomaly(
-        "search_exposure.uncorrelated_refused",
+        "search_exposure.uncorrelated",
         org_id=batch.org_id,
-        refused_since_last_report=refused,
+        uncorrelated_since_last_report=refused,
         first_report=first,
     )
 
@@ -192,15 +193,38 @@ def reset_uncorrelated_reporting_state() -> None:
 def record_search_exposures(batch: SearchExposureBatch) -> SearchExposureOutcome:
     """Synchronously invoke the optional enterprise exposure recorder.
 
-    A batch with neither ``request_id`` nor ``session_id`` is refused before any
-    recorder is consulted. Such a row can never bind a served playbook to a
-    session -- ``request_id`` is the only key the evidence loader can resolve a
-    session and user from, and there is no reverse lookup from a session -- so
-    no reader can ever draw value from it. It is not inert, though: every
-    reconstructability gate counts it in the denominator and never in the
-    numerator, so a single uncorrelated retrieval permanently lowers the org's
-    ratio, and exposure is append-only (``reject_exposure_event_mutation``
-    blocks DELETE), so it can never be taken back.
+    A batch with neither ``request_id`` nor ``session_id`` is RECORDED and
+    flagged, not refused. It is reported as an anomaly (bounded -- see
+    ``_report_uncorrelated_batch``) and the stored row labels itself: the
+    schema's ``integrity_state`` generated column reads ``incomplete`` with
+    ``missing_correlation`` in ``integrity_reasons``.
+
+    This reverses the refusal that shipped in #488, and the reason is a
+    measurement rather than an argument. #488 reasoned that such a row is
+    worthless to a reader and lowers the org's reconstructability ratio without
+    ever raising it, so refusing it protects the ratio. That is true for an org
+    that correlates. Measured against production on 2026-09-27, no org does:
+    across all 93 tenant schemas on the shared data plane, rows carrying a
+    ``request_id`` numbered **zero**, and every one of the 95,481 stored rows
+    had BOTH correlation columns NULL. So #488's predicate matched 100% of live
+    traffic, the refusal protected no ratio that existed, and exposure intake
+    went to zero fleet-wide two days after it deployed -- three unrelated orgs
+    stopped on the same day and nothing was written for the following 16 days.
+
+    The trade being made, stated plainly because it is real: an org that DOES
+    correlate and occasionally omits an id will take a proportional dent in its
+    ratio that it can never undo, exposure being append-only
+    (``reject_exposure_event_mutation`` blocks DELETE). That is strictly better
+    than the alternative this replaces, which was losing the entire audit trail
+    -- which playbooks were served, under which fingerprints -- for every
+    uncorrelated search. A proportional dent beats total loss.
+
+    What must NOT be done in response is filter these rows out of the coverage
+    denominator. ``coverage_for_reasons`` keeps every entry on purpose, "so an
+    evidence pipeline that has stopped joining sessions reads as poor coverage
+    instead of disappearing". Excluding them would let one correlated row beside
+    a thousand uncorrelated ones compute as 100% coverage and pass a 75%
+    publication gate.
 
     An absent recorder is likewise a supported configuration -- shared
     ``create_app()`` installs no default, so local/no-auth OSS deployments
@@ -212,30 +236,35 @@ def record_search_exposures(batch: SearchExposureBatch) -> SearchExposureOutcome
     A registered recorder that raises still propagates unchanged: enterprise
     search routes fail closed on recorder failure.
 
-    A refusal is reported (bounded) when a recorder IS registered -- see
-    ``_report_uncorrelated_batch``. The refusal itself is correct and stays;
-    what it lacked was anyone being told. A deployment can lose exposure intake
-    entirely, and therefore tuning eligibility, with no operator-visible signal
-    at all: that is how this deployment's intake went to zero on 2026-09-11 and
-    stayed there unnoticed.
+    The anomaly report stays exactly as it was, and is now the only mechanism
+    telling an operator that a caller is not correlating -- the condition is no
+    longer visible as an absence of rows, because the rows are there. The signal
+    is what made this diagnosable at all: intake went to zero on 2026-09-11 and
+    stayed there for 16 days, and the bounded report is what eventually named
+    it. Do not remove it on the grounds that the rows now land.
 
     Args:
         batch (SearchExposureBatch): The final served user-playbook set.
 
     Returns:
         SearchExposureOutcome: ``RECORDED`` when a registered recorder accepted
-        the batch, ``UNCORRELATED`` when the batch carried no correlation and
-        was refused, and ``NO_RECORDER`` when none was registered and nothing
-        was persisted.
+        a correlated batch, ``RECORDED_UNCORRELATED`` when it accepted one
+        carrying no correlation (persisted, and flagged ``incomplete`` by the
+        schema), and ``NO_RECORDER`` when none was registered and nothing was
+        persisted.
     """
-    if batch_is_uncorrelated(batch):
+    uncorrelated = batch_is_uncorrelated(batch)
+    if uncorrelated:
         _report_uncorrelated_batch(batch)
-        return SearchExposureOutcome.UNCORRELATED
     recorder = get_service(SEARCH_EXPOSURE_RECORDER)
     if recorder is None:
         return SearchExposureOutcome.NO_RECORDER
     recorder.record(batch)
-    return SearchExposureOutcome.RECORDED
+    return (
+        SearchExposureOutcome.RECORDED_UNCORRELATED
+        if uncorrelated
+        else SearchExposureOutcome.RECORDED
+    )
 
 
 def validate_exposure_batch_size(events: Sized) -> None:

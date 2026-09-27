@@ -410,16 +410,20 @@ def test_unified_search_accepts_exact_workload_and_identifier_limits() -> None:
 
 
 @pytest.mark.parametrize("path", ["/api/search", "/api/search_user_playbooks"])
-def test_uncorrelated_retrieval_records_nothing_but_correlated_retrieval_still_does(
+def test_both_correlated_and_uncorrelated_retrievals_reach_the_ledger(
     path: str,
 ) -> None:
     """Both directions, deliberately in one test.
 
-    Exposure is append-only, so an uncorrelated row is unremovable and drags the
-    org's reconstructability ratio down forever. Refusing to write it is the
-    fix -- but a change that stopped writing *everything* would satisfy a
-    one-sided "nothing was recorded" assertion while destroying the ledger, so
-    the correlated direction is pinned in the same test.
+    This previously asserted the uncorrelated retrieval recorded NOTHING. That
+    contract is inverted: refusing the write protected a reconstructability
+    ratio that no org in the fleet actually had, and instead took exposure
+    intake to zero for 16 days. Both retrievals must now land, the uncorrelated
+    one flagged ``missing_correlation`` by the schema.
+
+    The correlated direction stays pinned in the same test for the original
+    reason: a change that stopped writing *everything* would satisfy a one-sided
+    assertion while destroying the ledger.
     """
     recorder = _Recorder()
     register_service(SEARCH_EXPOSURE_RECORDER, recorder)
@@ -440,7 +444,9 @@ def test_uncorrelated_retrieval_records_nothing_but_correlated_retrieval_still_d
 
     assert uncorrelated.status_code == 200, uncorrelated.text
     assert correlated.status_code == 200, correlated.text
-    assert [batch.request_id for batch in recorder.batches] == ["request-1"]
+    assert [batch.request_id for batch in recorder.batches] == [None, "request-1"], (
+        "both retrievals must reach the ledger, in order, the first uncorrelated"
+    )
 
 
 @pytest.mark.parametrize("correlation", [{"session_id": "session-only-1"}, {}])
@@ -451,8 +457,10 @@ def test_session_only_and_bare_retrieval_agree_with_the_stored_correlation_colum
 
     ``request_id`` and ``session_id`` are the only correlation columns the
     ledger persists, and the schema's own ``missing_correlation`` reason fires
-    only when *both* are blank. The guard is that same predicate, so a
-    session-only retrieval must still be recorded.
+    only when *both* are blank. Both shapes are now recorded; what differs is
+    whether the stored row is flagged, which is the schema's call, not the
+    route's. The distinction still matters because it is what the anomaly
+    signal keys on.
     """
     recorder = _Recorder()
     register_service(SEARCH_EXPOSURE_RECORDER, recorder)
@@ -464,15 +472,18 @@ def test_session_only_and_bare_retrieval_agree_with_the_stored_correlation_colum
         )
 
     assert response.status_code == 200, response.text
-    assert len(recorder.batches) == (1 if correlation else 0)
+    assert len(recorder.batches) == 1, "both shapes reach the ledger"
+    assert recorder.batches[0].session_id == correlation.get("session_id")
 
 
-def test_interaction_id_alone_is_not_correlation_and_records_nothing() -> None:
+def test_interaction_id_alone_is_not_correlation_but_is_still_recorded() -> None:
     """``interaction_id`` is not a ledger column -- it only seasons the event id.
 
-    A batch carrying nothing but an ``interaction_id`` still lands on disk with
-    both correlation columns NULL, so it is exactly the unremovable row this
-    guard exists to prevent.
+    So a batch carrying nothing but an ``interaction_id`` lands with both
+    correlation columns NULL and is flagged ``missing_correlation``. It is
+    recorded rather than refused: the row still names which playbooks were
+    served under which fingerprints, which is worth keeping even when no reader
+    can resolve it back to a session.
     """
     recorder = _Recorder()
     register_service(SEARCH_EXPOSURE_RECORDER, recorder)
@@ -484,7 +495,10 @@ def test_interaction_id_alone_is_not_correlation_and_records_nothing() -> None:
         )
 
     assert response.status_code == 200, response.text
-    assert recorder.batches == []
+    assert len(recorder.batches) == 1
+    assert recorder.batches[0].request_id is None
+    assert recorder.batches[0].session_id is None
+    assert recorder.batches[0].interaction_id == 41
 
 
 def test_optional_completed_search_observer_receives_only_final_identifiers() -> None:
