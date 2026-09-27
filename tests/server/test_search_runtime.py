@@ -13,7 +13,7 @@ from reflexio.server import search_runtime as runtime
 from reflexio.server.tracing import profile_step
 
 
-async def call(app, *, disconnect=None):
+async def call(app, *, disconnect=None, receive_input=None):
     messages = []
     delivered = False
 
@@ -43,7 +43,7 @@ async def call(app, *, disconnect=None):
             "client": ("test", 1),
             "http_version": "1.1",
         },
-        receive,
+        receive_input or receive,
         send,
     )
     return messages
@@ -533,7 +533,10 @@ def test_search_openapi_describes_deadline_and_unavailable_responses():
     assert "503" in responses
     schema = responses["504"]["content"]["application/json"]["schema"]
     assert set(schema["required"]) == {"detail", "reason", "correlation_id"}
-    assert schema["properties"]["reason"]["enum"] == ["search_deadline"]
+    assert schema["properties"]["reason"]["enum"] == [
+        "search_deadline",
+        "backstop_timeout",
+    ]
 
 
 @pytest.mark.asyncio
@@ -646,3 +649,132 @@ async def test_host_worker_configuration_still_admits_search(
     finally:
         await asyncio.gather(*middleware.tasks, return_exceptions=True)
         limiter.total_tokens = original_tokens
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enabled", ["true", "false"])
+async def test_slow_unauthenticated_body_does_not_take_search_worker_slot(
+    monkeypatch, enabled
+):
+    from fastapi import Depends, HTTPException, Request
+    from httpx import ASGITransport, AsyncClient
+
+    from reflexio.server import middleware as middleware_module
+
+    monkeypatch.setenv("REFLEXIO_SEARCH_DEADLINE_ENABLED", enabled)
+    monkeypatch.setattr(middleware_module, "REQUEST_TIMEOUT_SECONDS", 0.1)
+    app = FastAPI()
+    authenticating = []
+
+    def authenticate(request: Request):
+        authenticating.append(request.headers.get("authorization"))
+        if request.headers.get("authorization") != "Bearer valid":
+            raise HTTPException(401)
+
+    @app.post("/api/search", dependencies=[Depends(authenticate)])
+    def search(payload: dict):
+        return payload
+
+    middleware = runtime.SearchRuntimeMiddleware(app, timeout=0.1, capacity=1)
+    waiting, release = asyncio.Event(), asyncio.Event()
+
+    async def slow_body():
+        waiting.set()
+        await release.wait()
+        yield b"{}"
+
+    async with AsyncClient(
+        transport=ASGITransport(app=middleware), base_url="http://test"
+    ) as client:
+        slow = asyncio.create_task(client.post("/api/search", content=slow_body()))
+        try:
+            await asyncio.wait_for(waiting.wait(), 0.5)
+            assert not middleware.tasks
+            assert not authenticating
+            valid = await client.post(
+                "/api/search",
+                json={"ok": True},
+                headers={"Authorization": "Bearer valid"},
+            )
+            assert valid.status_code == 200
+            assert valid.json() == {"ok": True}
+            rejected = await asyncio.wait_for(slow, 0.5)
+            assert rejected.status_code == 504
+            assert rejected.json()["reason"] == (
+                "search_deadline" if enabled == "true" else "backstop_timeout"
+            )
+            assert authenticating == ["Bearer valid"]
+        finally:
+            release.set()
+            await asyncio.gather(slow, *middleware.tasks, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("declared", [True, False])
+async def test_search_ingress_rejects_oversize_before_starting_auth(
+    monkeypatch, declared
+):
+    from httpx import ASGITransport, AsyncClient
+
+    monkeypatch.setenv("REFLEXIO_MAX_BODY_BYTES", "4")
+    called = []
+
+    async def app(scope, receive, send):
+        called.append(True)
+
+    async def body():
+        yield b"12"
+        yield b"345"
+
+    middleware = runtime.SearchRuntimeMiddleware(app)
+    async with AsyncClient(
+        transport=ASGITransport(app=middleware), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/api/search",
+            content=body(),
+            headers={"Content-Length": "5"} if declared else {},
+        )
+    assert response.status_code == 413
+    assert not called
+    assert not middleware.tasks
+
+
+@pytest.mark.asyncio
+async def test_disconnect_during_body_does_not_start_application():
+    called = []
+
+    async def app(scope, receive, send):
+        called.append(True)
+
+    async def disconnected():
+        return {"type": "http.disconnect"}
+
+    middleware = runtime.SearchRuntimeMiddleware(app)
+    assert await call(middleware, receive_input=disconnected) == []
+    assert not called
+    assert not middleware.tasks
+
+
+@pytest.mark.asyncio
+async def test_expiry_between_body_and_application_start_skips_auth(monkeypatch):
+    called = []
+    create_task = asyncio.create_task
+
+    def expire_application(coro, **kwargs):
+        if coro.cr_code.co_name == "run":
+            scope = runtime.current()
+            assert scope is not None
+            scope.cancel("timeout")
+        return create_task(coro, **kwargs)
+
+    monkeypatch.setattr(asyncio, "create_task", expire_application)
+
+    async def app(scope, receive, send):
+        called.append(True)
+
+    middleware = runtime.SearchRuntimeMiddleware(app)
+    response = await call(middleware)
+    await asyncio.gather(*middleware.tasks, return_exceptions=True)
+    assert response[0]["status"] == 504
+    assert not called

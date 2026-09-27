@@ -20,6 +20,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any
 
+from starlette.datastructures import QueryParams
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
@@ -335,6 +336,35 @@ class _RequestInput:
     ) -> None:
         self.receive, self.state, self.finished = receive, state, finished
         self.queue: asyncio.Queue[Message] = asyncio.Queue(maxsize=1)
+        self.body: bytes | None = None
+
+    async def read_body(self, scope: Scope) -> bool:
+        from reflexio.server.middleware import (
+            _max_body_bytes_from_env,
+            _RequestBodyTooLargeError,
+        )
+
+        max_bytes = _max_body_bytes_from_env()
+        for name, value in scope.get("headers", []):
+            if name.lower() == b"content-length":
+                try:
+                    declared_size = int(value)
+                except ValueError:
+                    declared_size = 0
+                if declared_size > max_bytes:
+                    raise _RequestBodyTooLargeError
+        body = bytearray()
+        while True:
+            message = await self.get()
+            if message["type"] == "http.disconnect":
+                return False
+            chunk = message.get("body", b"")
+            if len(body) + len(chunk) > max_bytes:
+                raise _RequestBodyTooLargeError
+            body.extend(chunk)
+            if not message.get("more_body", False):
+                self.body = bytes(body)
+                return True
 
     async def pump(self) -> None:
         while True:
@@ -349,6 +379,9 @@ class _RequestInput:
     async def get(self) -> Message:
         if self.state.cancelled:
             return {"type": "http.disconnect"}
+        if self.body is not None:
+            body, self.body = self.body, None
+            return {"type": "http.request", "body": body, "more_body": False}
         return await self.queue.get()
 
     def wake(self) -> None:
@@ -375,8 +408,17 @@ class SearchRuntimeMiddleware:
         self.enabled = env_bool("REFLEXIO_SEARCH_DEADLINE_ENABLED", default=True)
         self.tasks: set[asyncio.Task[None]] = set()
 
+    def _task_done(self, task: asyncio.Task[None]) -> None:
+        self.tasks.discard(task)
+        if not task.cancelled():
+            task.exception()  # retrieve errors from work finishing after the response
+
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        from reflexio.server.middleware import route_relative_path
+        from reflexio.server.middleware import (
+            _RequestBodyTooLargeError,
+            backstop_for,
+            route_relative_path,
+        )
 
         if (
             scope["type"] != "http"
@@ -391,6 +433,15 @@ class SearchRuntimeMiddleware:
         state = SearchScope()
         state.timing_id = correlation_id_var.get() or state.timing_id
         enabled = self.enabled
+        wait_for_response = (
+            QueryParams(scope.get("query_string", b""))
+            .get("wait_for_response", "")
+            .lower()
+            == "true"
+        )
+        ingress_backstop = state.started + backstop_for(
+            "/api/search", wait_for_response
+        )
         if enabled:
             state.deadline = state.started + (
                 self.timeout if self.timeout is not None else 5.0
@@ -419,6 +470,7 @@ class SearchRuntimeMiddleware:
         async def run() -> None:
             nonlocal app_error
             try:
+                checkpoint()
                 await self.app(scope, incoming.get, buffered_send)
             except BaseException as exc:
                 app_error = exc
@@ -427,41 +479,52 @@ class SearchRuntimeMiddleware:
                 finished.set()
                 await _drain_workers(state, lambda: response_at)
 
-        def done(task: asyncio.Task[None]) -> None:
-            self.tasks.discard(task)
-            if not task.cancelled():
-                task.exception()  # retrieve errors from workers finishing after the response
-
         receiver: asyncio.Task[None] | None = None
         try:
-            # Reserve worker tokens for non-search routes when the host has
-            # more than one token. A one-worker host must still admit a search.
-            # Timed-out search tasks retain these admission slots.
-            from anyio.to_thread import current_default_thread_limiter
-
-            worker_capacity = max(
-                1,
-                int(
-                    min(
-                        self.capacity, current_default_thread_limiter().total_tokens / 2
-                    )
-                ),
-            )
-            if len(self.tasks) >= min(self.capacity, worker_capacity):
-                state.cancel("capacity")
-                status = 503
-                await JSONResponse(
-                    {"detail": "Search capacity exhausted"}, status_code=status
-                )(scope, receive, send)
-                return
-            receiver = asyncio.create_task(incoming.pump())
-            task = asyncio.create_task(run())
-            self.tasks.add(task)
-            task.add_done_callback(done)
             try:
-                await asyncio.wait_for(
-                    finished.wait(), timeout=remaining(3600) if enabled else None
+                # Slow clients must not reserve the worker slots that protect
+                # authentication and retrieval. Buffer only the existing body
+                # size limit, under the same ingress deadline, then replay it.
+                receiver = asyncio.create_task(incoming.pump())
+                with phase("search.body"):
+                    body_timeout = remaining(
+                        max(0, ingress_backstop - time.monotonic())
+                    )
+                    body_ready = await asyncio.wait_for(
+                        incoming.read_body(scope), timeout=body_timeout
+                    )
+                if not body_ready or state.outcome == "disconnected":
+                    return
+                # Reserve worker tokens for non-search routes when the host has
+                # more than one token. A one-worker host must still admit a search.
+                # Timed-out search tasks retain these admission slots.
+                from anyio.to_thread import current_default_thread_limiter
+
+                worker_capacity = max(
+                    1,
+                    int(
+                        min(
+                            self.capacity,
+                            current_default_thread_limiter().total_tokens / 2,
+                        )
+                    ),
                 )
+                if len(self.tasks) >= min(self.capacity, worker_capacity):
+                    state.cancel("capacity")
+                    status = 503
+                    await JSONResponse(
+                        {"detail": "Search capacity exhausted"}, status_code=status
+                    )(scope, receive, send)
+                    return
+                task = asyncio.create_task(run())
+                self.tasks.add(task)
+                task.add_done_callback(self._task_done)
+                app_timeout = (
+                    remaining(3600)
+                    if enabled
+                    else max(0, ingress_backstop - time.monotonic())
+                )
+                await asyncio.wait_for(finished.wait(), timeout=app_timeout)
                 if state.outcome == "disconnected":
                     return
                 checkpoint()
@@ -471,13 +534,18 @@ class SearchRuntimeMiddleware:
                     task.result()
                 for message in messages:
                     await send(message)
+            except _RequestBodyTooLargeError:
+                status = 413
+                await JSONResponse(
+                    {"detail": "Request body too large"}, status_code=status
+                )(scope, receive, send)
             except (TimeoutError, SearchDeadlineError):
                 state.cancel("timeout")
                 status = 504
                 await JSONResponse(
                     {
                         "detail": "Request timeout",
-                        "reason": "search_deadline",
+                        "reason": "search_deadline" if enabled else "backstop_timeout",
                         "correlation_id": state.timing_id,
                     },
                     status_code=504,

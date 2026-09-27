@@ -361,7 +361,10 @@ def search_agent_playbooks_endpoint(
                         "required": ["detail", "reason", "correlation_id"],
                         "properties": {
                             "detail": {"type": "string"},
-                            "reason": {"type": "string", "enum": ["search_deadline"]},
+                            "reason": {
+                                "type": "string",
+                                "enum": ["search_deadline", "backstop_timeout"],
+                            },
                             "correlation_id": {"type": "string"},
                         },
                     }
