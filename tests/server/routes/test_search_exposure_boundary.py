@@ -146,7 +146,38 @@ def test_unified_search_records_the_final_user_playbook_set_before_return() -> N
     assert batch.user_playbooks == tuple(playbooks)
 
 
-def test_recorder_failure_prevents_a_successful_search_response() -> None:
+@pytest.mark.parametrize("path", ["/api/search", "/api/search_user_playbooks"])
+@pytest.mark.parametrize(
+    "correlation",
+    [
+        pytest.param({"request_id": "request-1"}, id="correlated"),
+        pytest.param({}, id="uncorrelated"),
+    ],
+)
+def test_recorder_failure_still_serves_the_search_results(
+    path: str, correlation: dict[str, str]
+) -> None:
+    """INVERTED: this asserted ``500``, and the 500 was the bug.
+
+    The recorder writes synchronously inside the request and neither route
+    guards the call, so a raising ledger unwound into FastAPI and threw away a
+    result set the route had ALREADY built (``search.py`` assembles the view
+    model before recording). An append-only audit row with no live reader until
+    the offline tuner launches must not outrank the customer's answer -- the
+    adjacent ``enqueue_search_metering`` queues BILLING off the hot path
+    precisely so money cannot do this either.
+
+    The status code alone is not the assertion. A route that returned 200 with
+    an empty body would satisfy it while still having lost the answer, so this
+    pins the PAYLOAD.
+
+    Both correlation shapes are covered because they took different paths
+    before this branch: an uncorrelated caller was accidentally immune, the
+    refusal short-circuiting ahead of the recorder. Recording uncorrelated
+    batches removes that accident, which is what made this fragility reachable
+    for the orgs that send no ids -- i.e. all of them.
+    """
+
     class _FailingRecorder:
         def record(self, _batch: Any) -> None:
             raise RuntimeError("ledger unavailable")
@@ -155,15 +186,16 @@ def test_recorder_failure_prevents_a_successful_search_response() -> None:
 
     with _search_results([_playbook(11, "First")]):
         response = _client().post(
-            "/api/search",
-            json={
-                "query": "answer",
-                "user_id": "user-1",
-                "request_id": "request-1",
-            },
+            path,
+            json={"query": "answer", "user_id": "user-1", **correlation},
         )
 
-    assert response.status_code == 500
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["success"] is True
+    assert [p["content"] for p in body["user_playbooks"]] == ["First"], (
+        "the answer the route had already built must survive a failed audit write"
+    )
 
 
 def test_no_user_playbook_results_record_one_empty_synchronous_batch() -> None:
@@ -221,7 +253,23 @@ def test_direct_user_playbook_search_records_final_results_before_metering() -> 
     assert batch.user_playbooks == tuple(playbooks)
 
 
-def test_direct_user_playbook_recorder_failure_prevents_metering_and_success() -> None:
+def test_a_recorder_failure_still_meters_the_search_it_served() -> None:
+    """INVERTED, and the billing consequence is the point.
+
+    This asserted ``500`` with metering skipped. Skipping was right *then*: the
+    exception unwound before ``enqueue_search_metering``, so the customer got no
+    answer and billing for one would have been wrong.
+
+    Now the failure is contained and the answer is served, so the search MUST be
+    metered -- the customer received exactly the value the meter exists to
+    count. Suppressing usage because an internal audit row failed to persist
+    would hand out free searches whenever the ledger was down, which is the
+    mirror image of the defect this replaces.
+
+    The ordering assertion is kept, not weakened: recording is still attempted
+    before metering, so a future outbox can make the write durable without
+    moving the boundary.
+    """
     order: list[str] = []
 
     class _FailingRecorder:
@@ -247,8 +295,9 @@ def test_direct_user_playbook_recorder_failure_prevents_metering_and_success() -
             },
         )
 
-    assert response.status_code == 500
-    assert order == ["record"]
+    assert response.status_code == 200, response.text
+    assert [p["content"] for p in response.json()["user_playbooks"]] == ["Direct first"]
+    assert order == ["record", "meter_enqueue"]
 
 
 def test_direct_user_playbook_search_does_not_record_empty_results() -> None:
@@ -410,16 +459,20 @@ def test_unified_search_accepts_exact_workload_and_identifier_limits() -> None:
 
 
 @pytest.mark.parametrize("path", ["/api/search", "/api/search_user_playbooks"])
-def test_uncorrelated_retrieval_records_nothing_but_correlated_retrieval_still_does(
+def test_both_correlated_and_uncorrelated_retrievals_reach_the_ledger(
     path: str,
 ) -> None:
     """Both directions, deliberately in one test.
 
-    Exposure is append-only, so an uncorrelated row is unremovable and drags the
-    org's reconstructability ratio down forever. Refusing to write it is the
-    fix -- but a change that stopped writing *everything* would satisfy a
-    one-sided "nothing was recorded" assertion while destroying the ledger, so
-    the correlated direction is pinned in the same test.
+    This previously asserted the uncorrelated retrieval recorded NOTHING. That
+    contract is inverted: refusing the write protected a reconstructability
+    ratio that no org in the fleet actually had, and instead took exposure
+    intake to zero for 16 days. Both retrievals must now land, the uncorrelated
+    one flagged ``missing_correlation`` by the schema.
+
+    The correlated direction stays pinned in the same test for the original
+    reason: a change that stopped writing *everything* would satisfy a one-sided
+    assertion while destroying the ledger.
     """
     recorder = _Recorder()
     register_service(SEARCH_EXPOSURE_RECORDER, recorder)
@@ -440,7 +493,9 @@ def test_uncorrelated_retrieval_records_nothing_but_correlated_retrieval_still_d
 
     assert uncorrelated.status_code == 200, uncorrelated.text
     assert correlated.status_code == 200, correlated.text
-    assert [batch.request_id for batch in recorder.batches] == ["request-1"]
+    assert [batch.request_id for batch in recorder.batches] == [None, "request-1"], (
+        "both retrievals must reach the ledger, in order, the first uncorrelated"
+    )
 
 
 @pytest.mark.parametrize("correlation", [{"session_id": "session-only-1"}, {}])
@@ -451,8 +506,10 @@ def test_session_only_and_bare_retrieval_agree_with_the_stored_correlation_colum
 
     ``request_id`` and ``session_id`` are the only correlation columns the
     ledger persists, and the schema's own ``missing_correlation`` reason fires
-    only when *both* are blank. The guard is that same predicate, so a
-    session-only retrieval must still be recorded.
+    only when *both* are blank. Both shapes are now recorded; what differs is
+    whether the stored row is flagged, which is the schema's call, not the
+    route's. The distinction still matters because it is what the anomaly
+    signal keys on.
     """
     recorder = _Recorder()
     register_service(SEARCH_EXPOSURE_RECORDER, recorder)
@@ -464,15 +521,18 @@ def test_session_only_and_bare_retrieval_agree_with_the_stored_correlation_colum
         )
 
     assert response.status_code == 200, response.text
-    assert len(recorder.batches) == (1 if correlation else 0)
+    assert len(recorder.batches) == 1, "both shapes reach the ledger"
+    assert recorder.batches[0].session_id == correlation.get("session_id")
 
 
-def test_interaction_id_alone_is_not_correlation_and_records_nothing() -> None:
+def test_interaction_id_alone_is_not_correlation_but_is_still_recorded() -> None:
     """``interaction_id`` is not a ledger column -- it only seasons the event id.
 
-    A batch carrying nothing but an ``interaction_id`` still lands on disk with
-    both correlation columns NULL, so it is exactly the unremovable row this
-    guard exists to prevent.
+    So a batch carrying nothing but an ``interaction_id`` lands with both
+    correlation columns NULL and is flagged ``missing_correlation``. It is
+    recorded rather than refused: the row still names which playbooks were
+    served under which fingerprints, which is worth keeping even when no reader
+    can resolve it back to a session.
     """
     recorder = _Recorder()
     register_service(SEARCH_EXPOSURE_RECORDER, recorder)
@@ -484,7 +544,10 @@ def test_interaction_id_alone_is_not_correlation_and_records_nothing() -> None:
         )
 
     assert response.status_code == 200, response.text
-    assert recorder.batches == []
+    assert len(recorder.batches) == 1
+    assert recorder.batches[0].request_id is None
+    assert recorder.batches[0].session_id is None
+    assert recorder.batches[0].interaction_id == 41
 
 
 def test_optional_completed_search_observer_receives_only_final_identifiers() -> None:

@@ -2,7 +2,8 @@
 
 Reflexio records a user-playbook exposure for every search that serves one, and
 joins those rows to interactions by ``session_id`` (or ``request_id``). A search
-sent with neither is refused outright, so it records nothing.
+sent with neither is still recorded, but flagged ``integrity_state=incomplete``
+and never joinable to a session.
 
 That makes passing a session id look like a free win, and ``_prepare_publish``
 already derives exactly such an id from the mem0 identities. It is not free. On

@@ -320,7 +320,7 @@ class _CollectingRecorder:
 
 
 class _FailingRecorder:
-    """Recorder that refuses the write, to pin the fail-closed contract."""
+    """Recorder that fails the write, to pin that the failure is CONTAINED."""
 
     def record(self, batch: SearchExposureBatch) -> None:
         raise RuntimeError("ledger unavailable")
@@ -350,22 +350,45 @@ def test_registered_recorder_reports_that_the_batch_was_recorded() -> None:
     assert recorder.batches == [batch]
 
 
-def test_recorder_failure_still_propagates_rather_than_reporting_absence() -> None:
-    """Reporting the outcome must not soften recorder failures into a value."""
+def test_recorder_failure_is_contained_and_named_not_propagated() -> None:
+    """INVERTED: a failed audit write must not fail the search.
+
+    This pinned the opposite -- the exception propagating -- and that was the
+    defect. The recorder writes synchronously inside the request and neither
+    search route guards the call, so the exception unwound into FastAPI as a
+    bare 500 and discarded search results the route had already built. An
+    append-only audit row with no live reader must not outrank the customer's
+    answer; the adjacent ``enqueue_search_metering`` queues BILLING off the hot
+    path.
+
+    It is still not softened into ``RECORDED``. ``RECORDER_FAILED`` is a
+    distinct outcome precisely so a caller that depends on the ledger can tell
+    a lost write from a durable one -- exposure cannot be backfilled.
+    """
     register_service(SEARCH_EXPOSURE_RECORDER, _FailingRecorder())
 
-    with pytest.raises(RuntimeError, match="ledger unavailable"):
-        record_search_exposures(_batch(_playbook()))
+    outcome = record_search_exposures(_batch(_playbook()))
+
+    assert outcome is SearchExposureOutcome.RECORDER_FAILED
+    assert outcome is not SearchExposureOutcome.RECORDED, (
+        "a lost write must never read as a durable one"
+    )
 
 
-def test_uncorrelated_batch_is_refused_before_any_recorder_is_consulted() -> None:
-    """The unremovable row is never handed to the ledger in the first place.
+def test_uncorrelated_batch_is_recorded_and_flagged_not_refused() -> None:
+    """The row reaches the ledger, where the schema labels it.
 
-    ``request_id`` is the only key the evidence loader can resolve a session and
-    a user from, and there is no reverse lookup from a session, so a batch with
-    neither can never bind a served playbook to anything. It is not harmless:
-    every reconstructability gate counts it in the denominator and never in the
-    numerator, and exposure is append-only, so the damage cannot be undone.
+    This INVERTS the previous contract deliberately. Refusing the write was
+    intended to protect the org's reconstructability ratio, which a row with no
+    correlation can only ever lower. Measured against production on 2026-09-27,
+    that protected nothing: no org in the fleet carried a single ``request_id``,
+    so the predicate matched 100% of live traffic and exposure intake went to
+    zero fleet-wide for 16 days. A proportional dent in a ratio beats losing the
+    whole audit trail -- which playbooks were served, under which fingerprints.
+
+    The row is not passed off as healthy: ``integrity_state`` reads
+    ``incomplete`` with ``missing_correlation``, and the anomaly is still
+    reported.
     """
     recorder = _CollectingRecorder()
     register_service(SEARCH_EXPOSURE_RECORDER, recorder)
@@ -374,12 +397,19 @@ def test_uncorrelated_batch_is_refused_before_any_recorder_is_consulted() -> Non
         _batch(_playbook(), request_id=None, session_id=None, interaction_id=41)
     )
 
-    assert outcome is SearchExposureOutcome.UNCORRELATED
-    assert recorder.batches == []
+    assert outcome is SearchExposureOutcome.RECORDED_UNCORRELATED
+    assert len(recorder.batches) == 1, "the audit trail must survive"
+    assert recorder.batches[0].request_id is None
+    assert recorder.batches[0].session_id is None
 
 
-def test_blank_correlation_strings_are_refused_like_absent_ones() -> None:
-    """Normalization already collapses blanks to ``None``; the guard follows it."""
+def test_blank_correlation_strings_are_flagged_like_absent_ones() -> None:
+    """Normalization collapses blanks to ``None``; the classification follows it.
+
+    A whitespace-only ``request_id`` must not read as correlation just because it
+    is a non-empty string -- the schema's own ``btrim`` check would call it
+    ``missing_correlation`` either way, so the two layers have to agree.
+    """
     recorder = _CollectingRecorder()
     register_service(SEARCH_EXPOSURE_RECORDER, recorder)
 
@@ -387,8 +417,8 @@ def test_blank_correlation_strings_are_refused_like_absent_ones() -> None:
         _batch(_playbook(), request_id="   ", session_id="")
     )
 
-    assert outcome is SearchExposureOutcome.UNCORRELATED
-    assert recorder.batches == []
+    assert outcome is SearchExposureOutcome.RECORDED_UNCORRELATED
+    assert len(recorder.batches) == 1
 
 
 @pytest.mark.parametrize(
@@ -442,24 +472,26 @@ def _uncorrelated_batch() -> SearchExposureBatch:
     return _batch(_playbook(), request_id=None, session_id=None)
 
 
-def test_a_refused_batch_is_reported_when_a_recorder_is_registered(
+def test_an_uncorrelated_batch_is_reported_when_a_recorder_is_registered(
     anomalies: _AnomalySpy,
 ) -> None:
-    """The gap this closes: refusal was correct, and completely silent.
+    """The row now lands, so this report is the ONLY signal of the gap.
 
-    A deployment can lose exposure intake -- and with it tuning eligibility --
-    with no operator-visible signal at all. That is how one deployment's intake
-    went to zero and stayed there for thirteen days before anyone looked.
+    While the write was refused, an operator could in principle have noticed the
+    absence of rows -- nobody did, for 16 days. Now the rows are present and
+    merely flagged, so nothing about the table's size reveals the problem and
+    this anomaly is the whole detector. It must not be removed on the grounds
+    that the data is no longer being lost.
     """
     register_service(SEARCH_EXPOSURE_RECORDER, _CollectingRecorder())
 
     outcome = record_search_exposures(_uncorrelated_batch())
 
-    assert outcome is SearchExposureOutcome.UNCORRELATED
+    assert outcome is SearchExposureOutcome.RECORDED_UNCORRELATED
     assert len(anomalies.calls) == 1
     message, tags = anomalies.calls[0]
-    assert message == "search_exposure.uncorrelated_refused"
-    assert tags["refused_since_last_report"] == 1
+    assert message == "search_exposure.uncorrelated"
+    assert tags["uncorrelated_since_last_report"] == 1
     assert tags["first_report"] is True
 
 
@@ -475,9 +507,10 @@ def test_a_recorderless_deployment_is_not_told_about_a_non_problem(
     """
     outcome = record_search_exposures(_uncorrelated_batch())
 
-    # Still UNCORRELATED, not NO_RECORDER: the refusal is decided before the
-    # recorder is consulted, and adding this signal did not reorder that.
-    assert outcome is SearchExposureOutcome.UNCORRELATED
+    # NO_RECORDER, because there is genuinely nowhere to put the row. The
+    # anomaly stays silent: a recorderless deployment persists nothing by
+    # design, so telling it its exposures are uncorrelated is noise.
+    assert outcome is SearchExposureOutcome.NO_RECORDER
     assert anomalies.calls == []
 
 
@@ -490,20 +523,28 @@ def test_a_correlated_batch_reports_nothing(anomalies: _AnomalySpy) -> None:
     assert anomalies.calls == []
 
 
-def test_a_storm_of_refusals_reports_once_and_counts_the_rest(
+def test_a_storm_of_uncorrelated_serves_reports_once_and_counts_the_rest(
     anomalies: _AnomalySpy,
 ) -> None:
-    """Bounded by construction: the motivating deployment refused ~95k."""
-    register_service(SEARCH_EXPOSURE_RECORDER, _CollectingRecorder())
+    """Bounded by construction: the motivating deployment stored ~95k of these.
+
+    Now that every one of them also WRITES a row, an unthrottled report would be
+    one Sentry event per search on top of the write.
+    """
+    recorder = _CollectingRecorder()
+    register_service(SEARCH_EXPOSURE_RECORDER, recorder)
 
     for _ in range(250):
         record_search_exposures(_uncorrelated_batch())
 
     assert len(anomalies.calls) == 1
-    assert anomalies.calls[0][1]["refused_since_last_report"] == 1
+    assert anomalies.calls[0][1]["uncorrelated_since_last_report"] == 1
+    assert len(recorder.batches) == 250, (
+        "throttling the SIGNAL must not throttle writes"
+    )
 
 
-def test_the_next_window_reports_the_refusals_it_accumulated(
+def test_the_next_window_reports_the_serves_it_accumulated(
     anomalies: _AnomalySpy, monkeypatch
 ) -> None:
     """A throttle that only ever reports once would hide an ongoing outage."""
@@ -522,22 +563,159 @@ def test_the_next_window_reports_the_refusals_it_accumulated(
 
     assert len(anomalies.calls) == 2
     second = anomalies.calls[1][1]
-    # The four suppressed refusals plus this one: a count, not a resampling.
-    assert second["refused_since_last_report"] == 5
+    # The four suppressed serves plus this one: a count, not a resampling.
+    assert second["uncorrelated_since_last_report"] == 5
     assert second["first_report"] is False
 
 
-def test_reporting_never_changes_the_outcome_or_reaches_the_recorder(
+def test_reporting_does_not_suppress_the_write(
     anomalies: _AnomalySpy,
 ) -> None:
-    """Observability must not become a behaviour change."""
+    """Observability must not become a behaviour change -- in either direction.
+
+    The anomaly report and the write are independent: reporting must not stop
+    the row reaching the ledger, which is exactly the coupling that turned a
+    diagnostic into 16 days of lost intake.
+    """
     recorder = _CollectingRecorder()
     register_service(SEARCH_EXPOSURE_RECORDER, recorder)
 
     outcome = record_search_exposures(_uncorrelated_batch())
 
-    assert outcome is SearchExposureOutcome.UNCORRELATED
-    assert recorder.batches == []
+    assert outcome is SearchExposureOutcome.RECORDED_UNCORRELATED
+    assert len(recorder.batches) == 1
+    assert len(anomalies.calls) == 1, "the signal must survive alongside the write"
+
+
+def test_a_failed_write_is_neither_counted_nor_reported(
+    anomalies: _AnomalySpy,
+) -> None:
+    """The report asserts the row LANDED, so it must follow the write.
+
+    Two things break if the anomaly is emitted before ``recorder.record``. The
+    message says the exposure "is recorded but flagged", which is false for a
+    batch the recorder then refused. Worse, the emission burns the hour-long
+    throttle window: the next 3600s of genuinely-stored uncorrelated serves go
+    unreported, which is precisely the blindness this signal exists to remove.
+    """
+    register_service(SEARCH_EXPOSURE_RECORDER, _FailingRecorder())
+
+    assert record_search_exposures(_uncorrelated_batch()) is (
+        SearchExposureOutcome.RECORDER_FAILED
+    )
+
+    uncorrelated_reports = [
+        c for c in anomalies.calls if c[0] == "search_exposure.uncorrelated"
+    ]
+    assert uncorrelated_reports == [], (
+        "a write that never landed must not be counted as an uncorrelated row"
+    )
+
+    # And the throttle is untouched, so the next real miss still reports.
+    register_service(SEARCH_EXPOSURE_RECORDER, _CollectingRecorder(), override=True)
+    assert record_search_exposures(_uncorrelated_batch()) is (
+        SearchExposureOutcome.RECORDED_UNCORRELATED
+    )
+    uncorrelated_reports = [
+        c for c in anomalies.calls if c[0] == "search_exposure.uncorrelated"
+    ]
+    assert len(uncorrelated_reports) == 1
+    assert uncorrelated_reports[0][1]["first_report"] is True
+    assert uncorrelated_reports[0][1]["uncorrelated_since_last_report"] == 1, (
+        "the failed write must not be counted either"
+    )
+
+
+def test_an_empty_uncorrelated_batch_persists_no_row_so_reports_nothing(
+    anomalies: _AnomalySpy,
+) -> None:
+    """The unified ``/api/search`` hands over an empty batch on purpose.
+
+    When a production agent's search surfaces no user playbooks,
+    ``unified_search_endpoint`` still records one empty batch (pinned by
+    ``test_no_user_playbook_results_record_one_empty_synchronous_batch``). An
+    empty batch writes no exposure event, so there is no row for
+    ``missing_correlation`` to be true of, and an anomaly claiming one landed
+    would be false.
+
+    The throttle is what makes this matter rather than merely untidy. No org in
+    the fleet sends a correlation id, so every empty search would qualify --
+    these would be the COMMON case, and each one would consume the hour-long
+    window, crowding out the report for a serve that really did store an
+    uncorrelated row. This anomaly is the only detector there is.
+    """
+    recorder = _CollectingRecorder()
+    register_service(SEARCH_EXPOSURE_RECORDER, recorder)
+
+    empty = SearchExposureBatch(
+        org_id="org-1",
+        request_id=None,
+        session_id=None,
+        interaction_id=None,
+        user_id="user-1",
+        user_playbooks=(),
+    )
+
+    outcome = record_search_exposures(empty)
+
+    # Still RECORDED_UNCORRELATED: the recorder did accept the batch, and the
+    # caller must not be told a write was skipped when it was not.
+    assert outcome is SearchExposureOutcome.RECORDED_UNCORRELATED
+    assert len(recorder.batches) == 1
+    assert recorder.batches[0].user_playbooks == ()
+    assert anomalies.calls == [], "no row landed, so there is nothing to report"
+
+    # The window was never opened, so a real uncorrelated serve still reports.
+    assert record_search_exposures(_uncorrelated_batch()) is (
+        SearchExposureOutcome.RECORDED_UNCORRELATED
+    )
+    assert len(anomalies.calls) == 1
+    assert anomalies.calls[0][1]["first_report"] is True
+    assert anomalies.calls[0][1]["uncorrelated_since_last_report"] == 1, (
+        "the empty batch must not be counted either"
+    )
+
+
+def test_a_contained_recorder_failure_is_still_reported(
+    anomalies: _AnomalySpy,
+) -> None:
+    """Containing the failure must not make it silent.
+
+    Swallowing a lost append-only write with no signal would be strictly worse
+    than the 500 it replaces: the 500 at least told somebody. Unlike the
+    uncorrelated report this one is NOT throttled -- that condition is normal
+    traffic and would fire forever, whereas a recorder failure is a fault,
+    bounded by the outage causing it and worth paging on.
+    """
+    register_service(SEARCH_EXPOSURE_RECORDER, _FailingRecorder())
+
+    outcome = record_search_exposures(_batch(_playbook()))
+
+    assert outcome is SearchExposureOutcome.RECORDER_FAILED
+    assert len(anomalies.calls) == 1
+    message, tags = anomalies.calls[0]
+    assert message == "search_exposure.recorder_failed"
+    assert tags["playbooks"] == 1
+    assert tags["uncorrelated"] is False
+    assert tags["level"] == "error"
+
+
+def test_a_recorder_raising_a_base_exception_still_unwinds() -> None:
+    """``Exception`` only. Interpreter-level control flow is not ours to eat.
+
+    Catching ``BaseException`` here would swallow ``KeyboardInterrupt``,
+    ``SystemExit`` and ``GeneratorExit``, turning a shutdown signal into a
+    logged anomaly and a served response.
+    """
+
+    class _Exiting:
+        def record(self, _batch: SearchExposureBatch) -> None:
+            raise KeyboardInterrupt
+
+    register_service(SEARCH_EXPOSURE_RECORDER, _Exiting())
+
+    with pytest.raises(KeyboardInterrupt):
+        record_search_exposures(_batch(_playbook()))
 
 
 def test_a_failing_reporter_does_not_break_the_search_path(monkeypatch) -> None:

@@ -24,11 +24,11 @@ logger = logging.getLogger(__name__)
 
 MAX_EXPOSURE_EVENTS_PER_BATCH = 100
 
-# An uncorrelated refusal is per-search, so at fleet scale it is a firehose:
-# the deployment that motivated this signal refused roughly 95k of them. The
-# actionable fact is "this deployment is refusing exposures at all", not each
-# individual refusal, so refusals are counted and reported on a throttle that
-# carries the count since the last report. The FIRST refusal always reports,
+# An uncorrelated exposure is per-search, so at fleet scale it is a firehose:
+# the deployment that motivated this signal stored roughly 95k of them. The
+# actionable fact is "this deployment is not correlating its exposures at all",
+# not each individual serve, so they are counted and reported on a throttle
+# that carries the count since the last report. The FIRST one always reports,
 # because the whole point is to find out on day one rather than day thirteen.
 _UNCORRELATED_ANOMALY_THROTTLE_SECONDS = 3600.0
 
@@ -100,7 +100,8 @@ class SearchExposureOutcome(StrEnum):
 
     RECORDED = "recorded"
     NO_RECORDER = "no_recorder"
-    UNCORRELATED = "uncorrelated"
+    RECORDED_UNCORRELATED = "recorded_uncorrelated"
+    RECORDER_FAILED = "recorder_failed"
 
 
 def _normalize_correlation_id(value: str | None) -> str | None:
@@ -129,16 +130,23 @@ _uncorrelated_last_report: float | None = None
 
 
 def _report_uncorrelated_batch(batch: SearchExposureBatch) -> None:
-    """Make an uncorrelated refusal visible, at a bounded rate.
+    """Make an uncorrelated exposure visible, at a bounded rate.
 
-    Only fires when a recorder IS registered. That condition is what makes the
-    signal actionable rather than noise: a deployment with no recorder is a
-    supported configuration (shared ``create_app()`` installs none, so local
-    and no-auth OSS persist nothing by design), and telling it that its
-    exposures are uncorrelated would be reporting a non-problem on every
-    search. A deployment that went to the trouble of registering a recorder and
-    is still refusing every batch is, unambiguously, not recording the thing it
-    asked to record.
+    Called only once a registered recorder has ACCEPTED a NON-EMPTY batch. The
+    caller enforces all three conditions -- it returns ``NO_RECORDER`` before
+    reaching here, calls ``recorder.record`` first, and checks
+    ``batch.user_playbooks`` -- so this function performs no lookup or guard of
+    its own; one invariant, one place.
+
+    Each condition matters. A deployment with no recorder is a supported
+    configuration (shared ``create_app()`` installs none, so local and no-auth
+    OSS persist nothing by design), and telling it that its exposures are
+    uncorrelated would be reporting a non-problem on every search. Reporting
+    before the write would count a row that a raising recorder never stored.
+    And an empty batch persists no row at all, so it has nothing to be
+    uncorrelated about. In every one of those cases the report would be false
+    AND would burn the throttle window that the next hour of genuine misses
+    needed.
 
     This is deliberately NOT raised, and deliberately not returned as a new
     outcome. The routes ignore the outcome on purpose -- they cannot distinguish
@@ -148,8 +156,6 @@ def _report_uncorrelated_batch(batch: SearchExposureBatch) -> None:
     anything at all. So the signal goes here, where the distinction IS
     available, and stays out of the response path entirely.
     """
-    if get_service(SEARCH_EXPOSURE_RECORDER) is None:
-        return
     global _uncorrelated_since_report, _uncorrelated_last_report
     now = time.monotonic()
     with _uncorrelated_lock:
@@ -160,23 +166,24 @@ def _report_uncorrelated_batch(batch: SearchExposureBatch) -> None:
         )
         if not due:
             return
-        refused = _uncorrelated_since_report
+        uncorrelated = _uncorrelated_since_report
         first = _uncorrelated_last_report is None
         _uncorrelated_since_report = 0
         _uncorrelated_last_report = now
     # Emitted outside the lock: a reporter is caller code and may be slow.
     logger.warning(
-        "event=search_exposure_uncorrelated_refused org_id=%s refused=%d first=%s"
-        " -- the caller sent neither request_id nor session_id, so nothing was"
-        " recorded and the serve can never be attributed",
+        "event=search_exposure_uncorrelated org_id=%s uncorrelated=%d first=%s"
+        " -- the caller sent neither request_id nor session_id, so the exposure"
+        " is recorded but flagged integrity_state=incomplete"
+        " (missing_correlation) and can never be reconstructed to a session",
         batch.org_id,
-        refused,
+        uncorrelated,
         first,
     )
     capture_anomaly(
-        "search_exposure.uncorrelated_refused",
+        "search_exposure.uncorrelated",
         org_id=batch.org_id,
-        refused_since_last_report=refused,
+        uncorrelated_since_last_report=uncorrelated,
         first_report=first,
     )
 
@@ -192,15 +199,41 @@ def reset_uncorrelated_reporting_state() -> None:
 def record_search_exposures(batch: SearchExposureBatch) -> SearchExposureOutcome:
     """Synchronously invoke the optional enterprise exposure recorder.
 
-    A batch with neither ``request_id`` nor ``session_id`` is refused before any
-    recorder is consulted. Such a row can never bind a served playbook to a
-    session -- ``request_id`` is the only key the evidence loader can resolve a
-    session and user from, and there is no reverse lookup from a session -- so
-    no reader can ever draw value from it. It is not inert, though: every
-    reconstructability gate counts it in the denominator and never in the
-    numerator, so a single uncorrelated retrieval permanently lowers the org's
-    ratio, and exposure is append-only (``reject_exposure_event_mutation``
-    blocks DELETE), so it can never be taken back.
+    A batch with neither ``request_id`` nor ``session_id`` is RECORDED and
+    flagged, not refused. It is reported as an anomaly once the recorder has
+    accepted a batch that actually carries playbooks (bounded -- see
+    ``_report_uncorrelated_batch``) and the stored row labels itself: the
+    schema's ``integrity_state`` generated column reads ``incomplete`` with
+    ``missing_correlation`` in ``integrity_reasons``. An empty batch still
+    reports ``RECORDED_UNCORRELATED`` -- the recorder did accept it -- but
+    raises no anomaly, because it persisted no row to be uncorrelated about.
+
+    This reverses the refusal that shipped in #488, and the reason is a
+    measurement rather than an argument. #488 reasoned that such a row is
+    worthless to a reader and lowers the org's reconstructability ratio without
+    ever raising it, so refusing it protects the ratio. That is true for an org
+    that correlates. Measured against production on 2026-09-27, no org does:
+    across all 93 tenant schemas on the shared data plane, rows carrying a
+    ``request_id`` numbered **zero**, and every one of the 95,481 stored rows
+    had BOTH correlation columns NULL. So #488's predicate matched 100% of live
+    traffic, the refusal protected no ratio that existed, and exposure intake
+    went to zero fleet-wide two days after it deployed -- three unrelated orgs
+    stopped on the same day and nothing was written for the following 16 days.
+
+    The trade being made, stated plainly because it is real: an org that DOES
+    correlate and occasionally omits an id will take a proportional dent in its
+    ratio that it can never undo, exposure being append-only
+    (``reject_exposure_event_mutation`` blocks DELETE). That is strictly better
+    than the alternative this replaces, which was losing the entire audit trail
+    -- which playbooks were served, under which fingerprints -- for every
+    uncorrelated search. A proportional dent beats total loss.
+
+    What must NOT be done in response is filter these rows out of the coverage
+    denominator. ``coverage_for_reasons`` keeps every entry on purpose, "so an
+    evidence pipeline that has stopped joining sessions reads as poor coverage
+    instead of disappearing". Excluding them would let one correlated row beside
+    a thousand uncorrelated ones compute as 100% coverage and pass a 75%
+    publication gate.
 
     An absent recorder is likewise a supported configuration -- shared
     ``create_app()`` installs no default, so local/no-auth OSS deployments
@@ -209,32 +242,99 @@ def record_search_exposures(batch: SearchExposureBatch) -> SearchExposureOutcome
     replay tooling) must inspect the outcome; exposure is append-only, so a
     batch dropped here can never be backfilled.
 
-    A registered recorder that raises still propagates unchanged: enterprise
-    search routes fail closed on recorder failure.
+    A registered recorder that raises is CONTAINED here: the failure is logged
+    with a traceback, reported through ``capture_anomaly``, and returned as
+    ``RECORDER_FAILED``. It does not propagate.
 
-    A refusal is reported (bounded) when a recorder IS registered -- see
-    ``_report_uncorrelated_batch``. The refusal itself is correct and stays;
-    what it lacked was anyone being told. A deployment can lose exposure intake
-    entirely, and therefore tuning eligibility, with no operator-visible signal
-    at all: that is how this deployment's intake went to zero on 2026-09-11 and
-    stayed there unnoticed.
+    That reverses the previous fail-closed posture, deliberately. The recorder
+    writes synchronously inside the request, and neither search route guards the
+    call, so an exception unwound into FastAPI and became a bare
+    ``500 Internal Server Error`` -- discarding search results the route had
+    ALREADY finished building. Fail-closed was therefore protecting the exposure
+    row at the cost of the customer's answer, and the row has no live reader
+    until the offline tuner launches. The adjacent line settles the priority:
+    ``enqueue_search_metering`` queues BILLING off the hot path, "without
+    performing database work in the request". An audit write with no reader has
+    no business being more fatal to a search than money is.
+
+    Containment is not the end state -- it converts a 500 into a silently
+    missing append-only row, and exposure cannot be backfilled. The right shape
+    is metering's: an outbox that survives the request. That is a separate
+    change. Until then a caller that depends on the ledger must inspect the
+    outcome, which is exactly why this returns a distinct ``RECORDER_FAILED``
+    rather than passing a lost write off as ``RECORDED``.
+
+    The failure report is deliberately NOT throttled, unlike the uncorrelated
+    one. The uncorrelated condition is normal traffic -- it would fire on every
+    search forever, so it must be bounded. A recorder failure is a fault: it is
+    bounded in time by the outage that causes it, and it is precisely what an
+    operator should be paged about.
+
+    The anomaly report stays exactly as it was, and is now the only mechanism
+    telling an operator that a caller is not correlating -- the condition is no
+    longer visible as an absence of rows, because the rows are there. The signal
+    is what made this diagnosable at all: intake went to zero on 2026-09-11 and
+    stayed there for 16 days, and the bounded report is what eventually named
+    it. Do not remove it on the grounds that the rows now land.
 
     Args:
         batch (SearchExposureBatch): The final served user-playbook set.
 
     Returns:
         SearchExposureOutcome: ``RECORDED`` when a registered recorder accepted
-        the batch, ``UNCORRELATED`` when the batch carried no correlation and
-        was refused, and ``NO_RECORDER`` when none was registered and nothing
-        was persisted.
+        a correlated batch, ``RECORDED_UNCORRELATED`` when it accepted one
+        carrying no correlation (persisted, and flagged ``incomplete`` by the
+        schema), ``RECORDER_FAILED`` when a registered recorder raised and
+        nothing was persisted, and ``NO_RECORDER`` when none was registered and
+        nothing was persisted. Only the first two mean the batch is durable.
     """
-    if batch_is_uncorrelated(batch):
-        _report_uncorrelated_batch(batch)
-        return SearchExposureOutcome.UNCORRELATED
+    uncorrelated = batch_is_uncorrelated(batch)
     recorder = get_service(SEARCH_EXPOSURE_RECORDER)
     if recorder is None:
         return SearchExposureOutcome.NO_RECORDER
-    recorder.record(batch)
+    try:
+        recorder.record(batch)
+    except Exception:
+        # ``Exception``, never ``BaseException``: ``GeneratorExit``,
+        # ``KeyboardInterrupt`` and ``SystemExit`` must still unwind.
+        #
+        # Contained rather than propagated because this call is synchronous
+        # inside the request and neither route guards it, so raising here
+        # returned a bare 500 and threw away search results the route had
+        # already built. See this function's docstring for why an audit row
+        # with no live reader must not outrank the customer's answer, and for
+        # why the durable fix is an outbox rather than this except block.
+        logger.exception(
+            "event=search_exposure_recorder_failed org_id=%s playbooks=%d"
+            " uncorrelated=%s -- the exposure was NOT persisted and cannot be"
+            " backfilled (exposure is append-only); the search response is"
+            " served anyway",
+            batch.org_id,
+            len(batch.user_playbooks),
+            uncorrelated,
+        )
+        capture_anomaly(
+            "search_exposure.recorder_failed",
+            org_id=batch.org_id,
+            playbooks=len(batch.user_playbooks),
+            uncorrelated=uncorrelated,
+            level="error",
+        )
+        return SearchExposureOutcome.RECORDER_FAILED
+    if uncorrelated:
+        # Reported only once a row has actually LANDED. Two things can mean
+        # it did not: a recorder that raised (handled above, and it returns
+        # before reaching here) and an EMPTY batch, which stores nothing --
+        # the unified ``/api/search`` hands one over whenever a production
+        # agent's search surfaces no user playbooks, by design. Either way the
+        # serve would be counted against a row that does not exist and would
+        # burn the hour-long throttle window the next genuine miss needs.
+        # Since the anomaly is now the ONLY detector, and no org in the fleet
+        # sends a correlation id, empty uncorrelated batches would otherwise
+        # be the common case and would crowd the real signal out entirely.
+        if batch.user_playbooks:
+            _report_uncorrelated_batch(batch)
+        return SearchExposureOutcome.RECORDED_UNCORRELATED
     return SearchExposureOutcome.RECORDED
 
 
