@@ -23,6 +23,7 @@ from typing import cast
 from reflexio.models.api_schema.domain.entities import UserPlaybook
 from reflexio.models.api_schema.retriever_schema import (
     ReformulationResult,
+    UnifiedSearchEntityType,
     UnifiedSearchRequest,
 )
 from reflexio.server.llm.litellm_client import LiteLLMClient
@@ -40,15 +41,25 @@ def _playbook(content: str) -> UserPlaybook:
     return UserPlaybook(agent_version="v1", request_id="r1", content=content)
 
 
-def _run(monkeypatch, phase_b_result):
+def _stub_phase_a(monkeypatch) -> None:
     monkeypatch.setattr(
         uss,
         "_run_phase_a",
         lambda **_kw: (ReformulationResult(standalone_query="q"), None, False),
     )
+
+
+def _run(
+    monkeypatch,
+    phase_b_result,
+    entity_types: list[UnifiedSearchEntityType] | None = None,
+):
+    _stub_phase_a(monkeypatch)
     monkeypatch.setattr(uss, "_run_phase_b", lambda **_kw: phase_b_result)
     return uss.run_unified_search(
-        request=UnifiedSearchRequest(query="q", user_id="u", top_k=5),
+        request=UnifiedSearchRequest(
+            query="q", user_id="u", top_k=5, entity_types=entity_types
+        ),
         org_id="o",
         storage=cast(BaseStorage, _FakeStorage()),
         llm_client=cast(LiteLLMClient, object()),
@@ -139,3 +150,72 @@ def test_the_real_phase_b_preserves_a_partial_failure(monkeypatch) -> None:
     assert resp.degraded is True
     assert [p.content for p in resp.user_playbooks] == ["kept"]
     assert resp.profiles == []
+
+
+def test_a_profiles_only_search_whose_only_arm_failed_is_a_total_failure(
+    monkeypatch,
+) -> None:
+    """Partial vs total is about what the caller ASKED for, not tuple arity.
+
+    An arm that was not requested reports ``[]``, so for
+    ``entity_types=["profiles"]`` the tuple is ``(None, [], [])`` -- the exact
+    shape of a genuine partial failure. Reading arity alone classified this as
+    partial and answered a 200 with an empty, apparently successful result,
+    although the only arm asked for had failed. That is the bug this whole file
+    exists to prevent, reachable through a request field.
+    """
+    resp = _run(monkeypatch, (None, [], []), entity_types=["profiles"])
+
+    assert resp.success is False, (
+        "no requested arm answered, so there is nothing to serve and nothing "
+        "for the caller to retry on unless this is a failure"
+    )
+    assert resp.msg == "Search failed"
+
+
+def test_a_profiles_only_search_that_found_nothing_is_a_success(monkeypatch) -> None:
+    """The control for the test above.
+
+    Without it, the same assertions would pass against an implementation that
+    failed every profiles-only search.
+    """
+    resp = _run(monkeypatch, ([], [], []), entity_types=["profiles"])
+
+    assert resp.success is True
+    assert resp.degraded is False
+
+
+def test_an_unrequested_arm_does_not_make_a_failed_profiles_arm_survivable(
+    monkeypatch,
+) -> None:
+    """Only a REQUESTED playbook arm counts as having answered.
+
+    ``entity_types=["profiles", "agent_playbooks"]`` with both the profiles arm
+    failed and the agent arm answering is a real partial; the unrequested
+    ``user_playbooks`` ``[]`` must not be what rescues it.
+    """
+    resp = _run(
+        monkeypatch,
+        (None, [], []),
+        entity_types=["profiles", "agent_playbooks"],
+    )
+
+    assert resp.success is True, "the requested agent_playbooks arm did answer"
+    assert resp.degraded is True
+
+
+def test_the_real_phase_b_fails_a_profiles_only_search_outright(monkeypatch) -> None:
+    """The same case, driven through the real fan-out rather than a stub tuple."""
+    _stub_phase_a(monkeypatch)
+    resp = uss.run_unified_search(
+        request=UnifiedSearchRequest(
+            query="q", user_id="u", top_k=5, entity_types=["profiles"]
+        ),
+        org_id="o",
+        storage=cast(BaseStorage, _ProfilesDownStorage()),
+        llm_client=cast(LiteLLMClient, object()),
+        prompt_manager=cast(PromptManager, object()),
+    )
+
+    assert resp.success is False
+    assert resp.msg == "Search failed"

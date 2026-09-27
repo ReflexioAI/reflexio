@@ -245,18 +245,35 @@ def run_unified_search(
         search_mode=effective_search_mode,
     )
 
-    if profiles is None and agent_playbooks is None and user_playbooks is None:
-        # TOTAL failure -- the route turns this into a 503.
+    # A failure is TOTAL when nothing the caller ASKED FOR answered, and PARTIAL
+    # when something did. An arm that was not requested reports ``[]`` rather
+    # than None, so "did every arm return None?" is the wrong question: for
+    # ``entity_types=["profiles"]`` the two unrequested playbook arms report
+    # ``[]``, and a failed profiles arm -- the only one asked -- then read as a
+    # PARTIAL failure and answered 200 with an empty, apparently successful
+    # result. That is the original bug in a caller-selectable configuration, so
+    # membership of ``arms_requested`` decides it. ``request`` is the
+    # model_copy'd one, so this is the EFFECTIVE set, after any
+    # user-context suppression.
+    arms_requested = set(request.entity_types or _DEFAULT_ENTITY_TYPES)
+    playbooks_answered = (
+        "agent_playbooks" in arms_requested and agent_playbooks is not None
+    ) or ("user_playbooks" in arms_requested and user_playbooks is not None)
+    if profiles is None and not playbooks_answered:
+        # TOTAL failure -- the route turns this into a 503. Covers the
+        # all-three-None timeout as well, since a None playbook arm cannot be
+        # an answer.
         return UnifiedSearchResponse(success=False, msg="Search failed")
 
-    # PARTIAL failure: the profiles arm failed while the playbook arms answered.
-    # Serve what we have, but say so, rather than letting a storage outage read
-    # as "this user has no profile" (Sentry PYTHON-FASTAPI-Z0).
+    # PARTIAL failure: the profiles arm failed while a requested playbook arm
+    # answered. Serve what we have, but say so, rather than letting a storage
+    # outage read as "this user has no profile" (Sentry PYTHON-FASTAPI-Z0).
     profiles_degraded = profiles is None
     if profiles_degraded:
         logger.warning(
             "event=search_degraded_profiles_arm_failed org_id=%s"
-            " -- playbooks answered, profiles did not; serving a degraded result",
+            " -- a requested playbook arm answered, profiles did not;"
+            " serving a degraded result",
             org_id,
         )
         profiles = []

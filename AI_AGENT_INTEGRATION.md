@@ -596,17 +596,31 @@ These are the fields you need to render context and build the retrieval registry
 | `user_playbooks` (`UserPlaybookView`) | `user_playbook_id` | `"user_playbook"` | `playbook_name` |
 | `agent_playbooks` (`AgentPlaybookView`) | `agent_playbook_id` | `"agent_playbook"` | `playbook_name` |
 
-**Check `degraded` before treating an empty list as a fact.** It is always
-present. `false` means every arm answered, so an empty `profiles` really does
-mean this user has nothing stored. `true` means results were served but at least
-one arm did not answer — a storage failure, or a fall back from vector/hybrid to
-full-text search when query embedding generation failed (`search_mode_effective`
-names the mode actually used, and is omitted when the requested one was
-honored). On a `true`, render what you got but do not record "the user has no
-preference" as something you learned; retry later instead.
+**An empty list is not by itself evidence that the user has nothing stored.**
+Three different things produce one, and only the first is a fact about the user.
+Check them in this order before you record "the user has no preference" as
+something you learned:
+
+1. **`experiment.arm == "holdout"`** — retrieval was deliberately withheld and
+   no search ran. Every list is empty and `degraded` is `false`, because nothing
+   degraded. Draw no conclusion at all from this response.
+2. **`degraded == true`** — results were served but at least one arm did not
+   answer: a storage failure, or a fall back from vector/hybrid to full-text
+   search when query embedding generation failed. `search_mode_effective` names
+   the mode actually used, and is omitted when the requested one was honored.
+   Render what you got, conclude nothing from what is missing, and retry later.
+   The field is always present, so `false` is safe to read.
+3. **The arm was never requested.** `entity_types` limits which arms run, and an
+   arm you did not ask for comes back empty rather than absent. Only conclude
+   something about `profiles` if `profiles` was among the entity types you sent.
+
+With all three excluded — a live response, `degraded` `false`, and the arm
+requested — an empty list does mean this user has nothing stored.
 
 A `/api/search` that fails outright answers **HTTP 503**, not an empty `200`, so
-a transport-level error is worth retrying.
+a transport-level error is worth retrying. "Outright" means nothing you asked for
+answered: a `profiles`-only search whose profiles arm failed is a 503, not a
+degraded 200, because there is no partial result to serve.
 
 Publish every injected identity back as `retrieved_learnings` using its canonical
 kind and stable ID. When you assign a short tag (`[p1]`, `[r1]`, `[s1]`) to an
