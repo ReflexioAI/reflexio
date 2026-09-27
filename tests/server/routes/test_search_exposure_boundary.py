@@ -48,6 +48,13 @@ def _search_results(playbooks: list[UserPlaybook]) -> Iterator[MagicMock]:
         msg="OK",
         agent_trace=None,
         rehydrated_text=None,
+        # Set explicitly because the route copies both into the view model, and
+        # an unset attribute on a MagicMock is another MagicMock -- which
+        # pydantic rejects for a ``bool``, turning every test in this file into
+        # a 500. These are the ``UnifiedSearchResponse`` defaults: this harness
+        # stands in for a healthy search, so it must claim to be one.
+        degraded=False,
+        search_mode_effective=None,
     )
     reflexio.unified_search.return_value = result
     reflexio.search_user_playbooks.return_value = result

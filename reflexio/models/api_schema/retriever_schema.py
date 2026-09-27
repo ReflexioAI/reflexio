@@ -958,7 +958,26 @@ class GetRequestsViewResponse(BaseModel):
 
 
 class UnifiedSearchViewResponse(BaseModel):
-    """API response for unified search — uses View types."""
+    """API response for unified search — uses View types.
+
+    ``degraded`` and ``search_mode_effective`` mirror the same fields on
+    :class:`UnifiedSearchResponse`. They are on the VIEW model because a
+    degradation the caller cannot see is not a signal: the service computed
+    both for the degrade-to-FTS path and this view dropped them, so over HTTP a
+    partial storage failure was indistinguishable from "nothing matched" --
+    the bug the 503/degraded split exists to fix (Sentry PYTHON-FASTAPI-Z0).
+
+    Attributes:
+        degraded (bool): True when the search returned results but one of its
+            arms did not answer -- a failed profiles arm, or a fall back from
+            vector/hybrid to FTS because query embedding generation failed.
+            Results are still usable; an EMPTY arm is not a fact. Always
+            present in the body (``False`` survives
+            ``response_model_exclude_none``) so a caller may rely on the key.
+        search_mode_effective (str, optional): The search mode actually used
+            when it differs from the one requested. None -- and so omitted from
+            the body -- when the requested mode was honored.
+    """
 
     success: bool
     profiles: list[ProfileView] = []
@@ -968,6 +987,8 @@ class UnifiedSearchViewResponse(BaseModel):
     msg: str | None = None
     agent_trace: str | None = None
     rehydrated_text: str | None = None
+    degraded: bool = False
+    search_mode_effective: str | None = None
     experiment: RetrievalExperimentAssignment | None = None
 
 

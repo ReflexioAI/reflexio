@@ -610,7 +610,16 @@ def _run_phase_b(
             set_span_data(
                 span,
                 {
-                    "profiles_count": len(profiles),
+                    # ``len(profiles)`` would raise TypeError on the PARTIAL
+                    # failure this function's contract exists to express, and
+                    # the broad ``except Exception`` below would then convert
+                    # it to the all-three-None TOTAL failure -- silently making
+                    # the partial path unreachable. ``set_span_data`` cannot
+                    # save it either: the dict is built before the call, so the
+                    # ``len`` runs outside its try. Report the failed arm as a
+                    # None count instead of pretending it returned zero rows.
+                    "profiles_count": (len(profiles) if profiles is not None else None),
+                    "profiles_arm_failed": profiles is None,
                     "agent_playbooks_count": len(agent_playbooks),
                     "user_playbooks_count": len(user_playbooks),
                 },

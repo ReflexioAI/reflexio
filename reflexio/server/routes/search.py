@@ -433,6 +433,13 @@ def unified_search_endpoint(
                 msg=response.msg,
                 agent_trace=response.agent_trace,
                 rehydrated_text=response.rehydrated_text,
+                # Copied through, because a PARTIAL failure's whole contract is
+                # that the caller is told. The service has computed these since
+                # the degrade-to-FTS path shipped and this view dropped both,
+                # so an empty profile list read as a fact rather than as an arm
+                # that never answered.
+                degraded=response.degraded,
+                search_mode_effective=response.search_mode_effective,
                 experiment=assignment,
             )
         if caller_type == "production_agent":

@@ -87,3 +87,55 @@ def test_an_empty_result_is_not_degraded(monkeypatch) -> None:
 
     assert resp.success is True
     assert resp.degraded is False, "an honest empty answer must not be marked degraded"
+
+
+class _ProfilesDownStorage:
+    """Only the profiles arm fails; both playbook arms answer normally."""
+
+    supports_embedding = False
+    supports_unified_hybrid_search = False
+    embedding_model_name = "local/minilm-l6-v2"
+
+    def search_user_profile(self, *_args, **_kwargs):
+        raise RuntimeError("dead pooled connection")
+
+    def search_agent_playbooks(self, *_args, **_kwargs):
+        return []
+
+    def search_user_playbooks(self, *_args, **_kwargs):
+        return [_playbook("kept")]
+
+
+def test_the_real_phase_b_preserves_a_partial_failure(monkeypatch) -> None:
+    """Drive the REAL ``_run_phase_b``, not a stub that returns the answer.
+
+    Every other test here monkeypatches ``_run_phase_b`` and asserts on what
+    ``run_unified_search`` does with a hand-written tuple, so all three passed
+    while the partial path was unreachable in production: the fan-out's span
+    dict called ``len(profiles)``, which raises ``TypeError`` on the very None
+    the contract exists to carry, and the broad ``except Exception`` converted
+    that into the all-three-None TOTAL failure -- a 503 for a search that had
+    playbooks to serve.
+
+    This is the only test in the file that would have caught it.
+    """
+    monkeypatch.setattr(
+        uss,
+        "_run_phase_a",
+        lambda **_kw: (ReformulationResult(standalone_query="q"), None, False),
+    )
+    resp = uss.run_unified_search(
+        request=UnifiedSearchRequest(query="q", user_id="u", top_k=5),
+        org_id="o",
+        storage=cast(BaseStorage, _ProfilesDownStorage()),
+        llm_client=cast(LiteLLMClient, object()),
+        prompt_manager=cast(PromptManager, object()),
+    )
+
+    assert resp.success is True, (
+        "a failed profiles arm collapsed to a TOTAL failure, so the route "
+        "answered 503 and threw away the playbooks that did answer"
+    )
+    assert resp.degraded is True
+    assert [p.content for p in resp.user_playbooks] == ["kept"]
+    assert resp.profiles == []

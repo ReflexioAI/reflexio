@@ -39,7 +39,13 @@ def _search_returning(result: MagicMock) -> Iterator[MagicMock]:
         yield reflexio
 
 
-def _result(*, success: bool, msg: str, degraded: bool = False) -> MagicMock:
+def _result(
+    *,
+    success: bool,
+    msg: str,
+    degraded: bool = False,
+    search_mode_effective: str | None = None,
+) -> MagicMock:
     return MagicMock(
         success=success,
         profiles=[],
@@ -50,7 +56,7 @@ def _result(*, success: bool, msg: str, degraded: bool = False) -> MagicMock:
         agent_trace=None,
         rehydrated_text=None,
         degraded=degraded,
-        search_mode_effective=None,
+        search_mode_effective=search_mode_effective,
     )
 
 
@@ -89,11 +95,47 @@ def test_an_empty_but_successful_search_is_still_200() -> None:
 
 
 def test_a_degraded_search_is_200_so_partial_results_still_reach_the_caller() -> None:
-    """A PARTIAL failure is deliberately not a 503 -- it is a marked 200."""
-    with _search_returning(_result(success=True, msg="OK", degraded=True)):
+    """A PARTIAL failure is deliberately not a 503 -- it is a marked 200.
+
+    The status alone is not the contract. Asserting only on it is what let the
+    view model drop ``degraded`` entirely: the service set the flag, the route
+    built a ``UnifiedSearchViewResponse`` that had no such field, and the
+    caller got a plain 200 with empty profiles -- exactly the "an outage looks
+    like an empty corpus" bug, one layer further out. So the body is asserted
+    on here, not just the code.
+    """
+    with _search_returning(
+        _result(success=True, msg="OK", degraded=True, search_mode_effective="fts")
+    ):
         response = _client().post(
             "/api/search", json={"query": "q", "user_id": "user-1"}
         )
 
     assert response.status_code == 200, "a degraded answer must still be served"
-    assert response.json()["success"] is True
+    body = response.json()
+    assert body["success"] is True
+    assert body["degraded"] is True, (
+        "the degradation marker must reach the caller -- a degradation nobody "
+        "can see is not a signal"
+    )
+    assert body["search_mode_effective"] == "fts"
+
+
+def test_a_healthy_search_reports_degraded_false_rather_than_omitting_it() -> None:
+    """The control, and the reason ``degraded`` is a bool rather than optional.
+
+    ``response_model_exclude_none=True`` drops None fields, so an OPTIONAL
+    ``degraded`` would vanish on the healthy path and a caller could not tell
+    "not degraded" from "this server is too old to say". ``False`` is not None,
+    so the key is always present and always safe to read.
+    """
+    with _search_returning(_result(success=True, msg="OK")):
+        response = _client().post(
+            "/api/search", json={"query": "q", "user_id": "user-1"}
+        )
+
+    body = response.json()
+    assert body["degraded"] is False
+    assert "search_mode_effective" not in body, (
+        "an unset effective mode is omitted, not null -- the requested mode was honored"
+    )

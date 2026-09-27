@@ -596,6 +596,18 @@ These are the fields you need to render context and build the retrieval registry
 | `user_playbooks` (`UserPlaybookView`) | `user_playbook_id` | `"user_playbook"` | `playbook_name` |
 | `agent_playbooks` (`AgentPlaybookView`) | `agent_playbook_id` | `"agent_playbook"` | `playbook_name` |
 
+**Check `degraded` before treating an empty list as a fact.** It is always
+present. `false` means every arm answered, so an empty `profiles` really does
+mean this user has nothing stored. `true` means results were served but at least
+one arm did not answer — a storage failure, or a fall back from vector/hybrid to
+full-text search when query embedding generation failed (`search_mode_effective`
+names the mode actually used, and is omitted when the requested one was
+honored). On a `true`, render what you got but do not record "the user has no
+preference" as something you learned; retry later instead.
+
+A `/api/search` that fails outright answers **HTTP 503**, not an empty `200`, so
+a transport-level error is worth retrying.
+
 Publish every injected identity back as `retrieved_learnings` using its canonical
 kind and stable ID. When you assign a short tag (`[p1]`, `[r1]`, `[s1]`) to an
 injected item, you may also store `tag -> (kind, real_id, title)` for a `citation`
