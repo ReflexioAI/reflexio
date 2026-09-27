@@ -245,8 +245,21 @@ def run_unified_search(
         search_mode=effective_search_mode,
     )
 
-    if profiles is None:
+    if profiles is None and agent_playbooks is None and user_playbooks is None:
+        # TOTAL failure -- the route turns this into a 503.
         return UnifiedSearchResponse(success=False, msg="Search failed")
+
+    # PARTIAL failure: the profiles arm failed while the playbook arms answered.
+    # Serve what we have, but say so, rather than letting a storage outage read
+    # as "this user has no profile" (Sentry PYTHON-FASTAPI-Z0).
+    profiles_degraded = profiles is None
+    if profiles_degraded:
+        logger.warning(
+            "event=search_degraded_profiles_arm_failed org_id=%s"
+            " -- playbooks answered, profiles did not; serving a degraded result",
+            org_id,
+        )
+        profiles = []
 
     if seen_keys:
         # Drop before the floors so seen items spend no cross-encoder budget.
@@ -314,7 +327,7 @@ def run_unified_search(
         reformulated_query=reformulated_query
         if reformulated_query != request.query
         else None,
-        degraded=embedding_failed,
+        degraded=embedding_failed or profiles_degraded,
         search_mode_effective=effective_search_mode.value if embedding_failed else None,
     )
     if session_id:
@@ -444,7 +457,20 @@ def _run_phase_b(
             into every arm so storage never re-embeds a failed query.
 
     Returns:
-        tuple: (profiles, agent_playbooks, user_playbooks) — all None on timeout/failure
+        tuple: (profiles, agent_playbooks, user_playbooks).
+
+            ``None`` means "this did not answer", and the ARITY of the Nones is
+            what distinguishes the two failure modes:
+
+            * ALL THREE None  -> a TOTAL failure (timeout, or an arm that does
+              not swallow). The caller turns this into a 503.
+            * ``profiles`` None, the playbook arms lists -> a PARTIAL failure:
+              the profiles arm failed while the rest answered. The caller turns
+              this into a 200 marked ``degraded``.
+
+            The playbook arms are never individually None because neither has a
+            swallow of its own -- their failures propagate to the outer handler
+            and become the all-three case.
     """
     options = SearchOptions(query_embedding=embedding, search_mode=search_mode)
 
@@ -566,6 +592,10 @@ def _run_phase_b(
             else:
                 user_playbooks_future = None
 
+            # Passed through UNCONVERTED: the arm returns None only when it
+            # FAILED ([] covers "no user_id" and "no matches"), and the caller
+            # needs that apart from an empty answer. See this function's
+            # Returns section for how the two failure modes are told apart.
             profiles = profiles_future.result(timeout=30) if profiles_future else []
             agent_playbooks = (
                 agent_playbooks_future.result(timeout=30)
@@ -985,8 +1015,13 @@ def _search_profiles_via_storage(
     end_time: datetime | None = None,
     tags: list[str] | None = None,
     source: str | None = None,
-) -> list[UserProfile]:
-    """Search profiles via storage.search_user_profile, returning [] on error or missing user_id.
+) -> list[UserProfile] | None:
+    """Search profiles via storage.search_user_profile.
+
+    Returns ``None`` -- not ``[]`` -- when the search FAILED, so a storage
+    outage is distinguishable from "this user genuinely has no matching
+    profile". Collapsing the two is what let a dead pooled connection surface
+    to an agent as an empty, successful answer (Sentry PYTHON-FASTAPI-Z0).
 
     Args:
         storage (BaseStorage): Storage instance
@@ -1003,7 +1038,8 @@ def _search_profiles_via_storage(
         end_time (Optional[datetime]): Upper bound on last_modified_timestamp
 
     Returns:
-        list[UserProfile]: Matching profiles, or [] on error/missing user_id
+        list[UserProfile] | None: Matching profiles ([] when none match or no
+            ``user_id`` was given), or None when the search itself failed.
     """
     with profile_step(
         "search.branch.profiles",
@@ -1034,7 +1070,7 @@ def _search_profiles_via_storage(
         except Exception as e:
             span.set_data("result_count", 0)
             logger.error("Profile search failed: %s", e)
-            return []
+            return None
 
 
 def _search_user_playbooks_via_storage(

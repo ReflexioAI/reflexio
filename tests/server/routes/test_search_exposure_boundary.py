@@ -525,8 +525,14 @@ def test_failed_unified_search_is_not_observed() -> None:
         response = _client().post(
             "/api/search", json={"query": "answer", "user_id": "user-1"}
         )
-    assert response.status_code == 200
-    assert response.json()["success"] is False
+    # A total storage failure is a 503 rather than an empty 200 -- see
+    # ``test_search_storage_failure_status.py`` (Sentry PYTHON-FASTAPI-Z0). The
+    # body is not asserted on here: this harness flips ``success`` while leaving
+    # ``msg="OK"``, whereas production has exactly one producer of
+    # ``success=False`` and it always sets "Search failed". The subject of THIS
+    # test is unchanged and sits on the last line: a failed search must not
+    # reach the completed-search observer.
+    assert response.status_code == 503
     observer.observe.assert_not_called()
 
 
