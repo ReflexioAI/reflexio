@@ -8,6 +8,7 @@ combined single RPC).
 """
 
 import os
+import time
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -17,6 +18,7 @@ from reflexio.models.api_schema.domain.entities import (
     UserProfile,
 )
 from reflexio.models.api_schema.retriever_schema import UnifiedSearchRequest
+from reflexio.server import search_runtime
 from reflexio.server.services.pre_retrieval import ReformulationResult
 from reflexio.server.services.retrieval.session_dedup import session_seen_cache
 from reflexio.server.services.unified_search_service import (
@@ -144,6 +146,41 @@ class TestUnifiedSearchSessionDedup(unittest.TestCase):
         storage = _mock_storage(single_rpc=True)
         self._assert_dedup_behavior(reformulator_cls, storage)
         storage.unified_hybrid_search.assert_called()
+
+    def test_expired_post_processing_does_not_hide_results_from_retry(
+        self, reformulator_cls
+    ):
+        self._prep(reformulator_cls)
+        for single_rpc in (False, True):
+            with (
+                self.subTest(single_rpc=single_rpc),
+                patch.dict(
+                    os.environ,
+                    {"REFLEXIO_UNIFIED_SEARCH_SINGLE_RPC": str(int(single_rpc))},
+                ),
+            ):
+                session_seen_cache.clear()
+                storage = _mock_storage(single_rpc=single_rpc)
+                scope = search_runtime.SearchScope(deadline=time.monotonic() + 30)
+
+                def expire_during_lookup(*args, request_scope=scope, **kwargs):
+                    request_scope.deadline = time.monotonic() - 1
+                    return {}
+
+                lookup = storage.get_source_user_playbook_ids_for_agent_playbooks
+                lookup.side_effect = expire_during_lookup
+                token = search_runtime._scope.set(scope)
+                try:
+                    with self.assertRaises(search_runtime.SearchDeadlineError):
+                        _search(storage, "s1")
+                finally:
+                    search_runtime._scope.reset(token)
+                lookup.assert_called_once()
+                self.assertEqual(session_seen_cache.seen(_ORG, "s1"), frozenset())
+                lookup.side_effect = None
+                self.assertEqual(
+                    _search(storage, "s1"), (["p1", "p2"], [1, 2], [11, 12])
+                )
 
     @patch.dict(os.environ, {"REFLEXIO_UNIFIED_SEARCH_SINGLE_RPC": "0"})
     def test_no_session_id_is_unaffected_and_records_nothing(self, reformulator_cls):

@@ -352,6 +352,9 @@ def run_unified_search(
         degraded=embedding_failed or profiles_degraded,
         search_mode_effective=effective_search_mode.value if embedding_failed else None,
     )
+    # Post-processing may perform a remote lookup. Expired results were never
+    # served and must remain available to a retry in the same session.
+    search_runtime.checkpoint()
     if session_id:
         session_seen_cache.record(org_id, session_id, _served_entity_keys(response))
     return response

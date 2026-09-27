@@ -44,16 +44,17 @@ from fastapi.routing import APIRoute
 from reflexio.server.api import create_app
 
 # ── Golden: create_app() (full, data-plane mounted) ─────────────────────
+# Response headers must also wrap search admission and deadline responses.
 FULL_MIDDLEWARE = [
-    "SearchRuntimeMiddleware",
     "PublishHttpTimingMiddleware",
-    "BaseHTTPMiddleware",
     "CorrelationIdMiddleware",
+    "SecurityHeadersMiddleware",
+    "CORSMiddleware",
+    "SearchRuntimeMiddleware",
+    "BaseHTTPMiddleware",
     "BotProtectionMiddleware",
     "TimeoutMiddleware",
-    "SecurityHeadersMiddleware",
     "BodySizeLimitMiddleware",
-    "CORSMiddleware",
 ]
 FULL_EXC = [
     "<class 'fastapi.exceptions.RequestValidationError'>",

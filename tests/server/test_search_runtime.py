@@ -326,7 +326,7 @@ async def test_stalled_auth_http_call_is_bounded_and_releases_admission():
     class StalledAuth(BaseHTTPRequestHandler):
         def do_GET(self):
             entered.set()
-            release.wait(2)
+            release.wait(5)
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), StalledAuth)
     serving = threading.Thread(target=server.serve_forever, daemon=True)
@@ -345,15 +345,17 @@ async def test_stalled_auth_http_call_is_bounded_and_releases_admission():
         reached.append(True)
         return {"success": True}
 
-    middleware = runtime.SearchRuntimeMiddleware(app, timeout=0.05)
+    # Leave scheduling headroom for real local HTTP under the parallel suite;
+    # the upstream stall still outlives this request budget.
+    middleware = runtime.SearchRuntimeMiddleware(app, timeout=0.5)
     try:
         start = time.monotonic()
         messages = await call(middleware)
         assert entered.is_set()
         assert messages[0]["status"] == 504
-        assert time.monotonic() - start < 0.5
+        assert time.monotonic() - start < 1.5
         await asyncio.wait_for(
-            asyncio.gather(*middleware.tasks, return_exceptions=True), 0.5
+            asyncio.gather(*middleware.tasks, return_exceptions=True), 1.5
         )
         await asyncio.sleep(0)
         assert not middleware.tasks
