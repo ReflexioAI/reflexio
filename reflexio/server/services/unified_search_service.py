@@ -356,7 +356,11 @@ def run_unified_search(
     # served and must remain available to a retry in the same session.
     search_runtime.checkpoint()
     if session_id:
-        session_seen_cache.record(org_id, session_id, _served_entity_keys(response))
+        keys = _served_entity_keys(response)
+        search_runtime.on_response_accepted(
+            "session_dedup",
+            lambda: session_seen_cache.record(org_id, session_id, keys),
+        )
     return response
 
 

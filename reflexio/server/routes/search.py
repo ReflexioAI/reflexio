@@ -2,6 +2,7 @@
 
 import logging
 import time
+from functools import partial
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -415,13 +416,18 @@ def unified_search_endpoint(
             experiment=assignment,
         )
         search_runtime.checkpoint()
-        enqueue_search_metering(
-            org_id=org_id,
-            caller_type=caller_type,
-            surfaced_count=0,
-            record_search_request=True,
-            request_id=payload.request_id,
-            session_id=payload.session_id,
+        search_runtime.on_response_accepted(
+            "metering",
+            partial(
+                enqueue_search_metering,
+                org_id=org_id,
+                caller_type=caller_type,
+                surfaced_count=0,
+                record_search_request=True,
+                request_id=payload.request_id,
+                session_id=payload.session_id,
+            ),
+            order=20,
         )
         return resp
 
@@ -478,19 +484,23 @@ def unified_search_endpoint(
             # supported OSS/no-auth configuration, and this route cannot
             # tell that apart from an enterprise misconfiguration. Asserting
             # here would turn a supported deployment's search into a 500.
-            with profile_step("search.exposure"):
-                record_search_exposures(
-                    SearchExposureBatch(
-                        org_id=org_id,
-                        request_id=payload.request_id,
-                        session_id=payload.session_id,
-                        interaction_id=payload.interaction_id,
-                        user_id=payload.user_id,
-                        user_playbooks=tuple(response.user_playbooks),
+            def record_exposures() -> None:
+                with profile_step("search.exposure"):
+                    record_search_exposures(
+                        SearchExposureBatch(
+                            org_id=org_id,
+                            request_id=payload.request_id,
+                            session_id=payload.session_id,
+                            interaction_id=payload.interaction_id,
+                            user_id=payload.user_id,
+                            user_playbooks=tuple(response.user_playbooks),
+                        )
                     )
-                )
+
+            search_runtime.on_response_accepted("exposure", record_exposures, order=0)
         search_runtime.checkpoint()
-        enqueue_search_metering(
+        meter = partial(
+            enqueue_search_metering,
             org_id=org_id,
             caller_type=caller_type,
             surfaced_count=len(resp.profiles)
@@ -500,20 +510,30 @@ def unified_search_endpoint(
             request_id=getattr(payload, "request_id", None),
             session_id=getattr(payload, "session_id", None),
         )
+        if resp.success:
+            search_runtime.on_response_accepted("metering", meter, order=20)
+        else:
+            # Failed searches still count as requests, with no applied results.
+            meter()
     search_runtime.checkpoint()
     if resp.success:
-        observe_completed_search(
-            CompletedSearch(
-                org_id=org_id,
-                caller_type=caller_type,
-                user_id=payload.user_id,
-                session_id=payload.session_id,
-                request_id=payload.request_id,
-                profile_ids=tuple(p.profile_id for p in resp.profiles),
-                user_playbook_ids=tuple(
-                    str(p.user_playbook_id) for p in resp.user_playbooks
+        search_runtime.on_response_accepted(
+            "completed_search",
+            partial(
+                observe_completed_search,
+                CompletedSearch(
+                    org_id=org_id,
+                    caller_type=caller_type,
+                    user_id=payload.user_id,
+                    session_id=payload.session_id,
+                    request_id=payload.request_id,
+                    profile_ids=tuple(p.profile_id for p in resp.profiles),
+                    user_playbook_ids=tuple(
+                        str(p.user_playbook_id) for p in resp.user_playbooks
+                    ),
                 ),
-            )
+            ),
+            order=30,
         )
     if not resp.success:
         # A TOTAL storage failure used to answer 200 with empty lists and
@@ -527,7 +547,7 @@ def unified_search_endpoint(
         # A PARTIAL failure is deliberately NOT a 503: it returns 200 with
         # ``degraded=True``, matching the existing degrade-to-FTS contract.
         #
-        # Raised AFTER metering and exposure recording on purpose, so this
-        # changes the response status and nothing about billing.
+        # Failed requests retain their existing zero-result request metering.
+        # Successful served-state callbacks are discarded for this 503.
         raise HTTPException(status_code=503, detail=resp.msg or "Search failed")
     return resp

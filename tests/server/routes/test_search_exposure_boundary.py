@@ -682,3 +682,82 @@ def test_observer_rebinds_captured_project_scope_on_the_worker() -> None:
     assert drain_callbacks()
     assert {scope.project_id for scope in observed} == {"project-a", "project-b"}
     assert scope_var.get() is None
+
+
+def test_durable_exposure_cannot_be_followed_by_deadline_response() -> None:
+    """A committed exposure must retain the already accepted result response."""
+    import time
+
+    from reflexio.server import search_runtime
+
+    class DeadlineCrossingRecorder(_Recorder):
+        def record(self, batch: Any) -> None:
+            super().record(batch)
+            scope = search_runtime.current()
+            assert scope is not None
+            scope.deadline = time.monotonic() - 1
+
+    recorder = DeadlineCrossingRecorder()
+    register_service(SEARCH_EXPOSURE_RECORDER, recorder)
+    with _search_results([_playbook(11, "First")]):
+        response = _client().post(
+            "/api/search",
+            json={"query": "answer", "user_id": "user-1", "session_id": "s1"},
+        )
+    assert recorder.completed
+    assert response.status_code == 200, response.text
+    assert [p["content"] for p in response.json()["user_playbooks"]] == ["First"]
+
+
+def test_deadline_after_route_completion_discards_all_served_state() -> None:
+    import time
+
+    from fastapi import FastAPI
+    from starlette.middleware import Middleware
+
+    from reflexio.server import search_runtime
+
+    effects = []
+
+    class ExpireAfterApp:
+        def __init__(self, app):
+            self.app = app
+
+        async def __call__(self, scope, receive, send):
+            await self.app(scope, receive, send)
+            request_scope = search_runtime.current()
+            assert request_scope is not None
+            request_scope.deadline = time.monotonic() - 1
+
+    recorder = _Recorder()
+    register_service(SEARCH_EXPOSURE_RECORDER, recorder)
+    client = _client()
+    assert isinstance(client.app, FastAPI)
+    middleware = client.app.user_middleware
+    position = next(
+        i
+        for i, item in enumerate(middleware)
+        if item.cls is search_runtime.SearchRuntimeMiddleware
+    )
+    middleware.insert(position + 1, Middleware(ExpireAfterApp))
+    with (
+        _search_results([_playbook(11, "First")]) as reflexio,
+        patch("reflexio.server.routes.search.enqueue_search_metering") as meter,
+        patch("reflexio.server.routes.search.observe_completed_search") as observer,
+    ):
+        result = reflexio.unified_search.return_value
+
+        def retrieve(*_args, **_kwargs):
+            search_runtime.on_response_accepted("dedup", lambda: effects.append("seen"))
+            return result
+
+        reflexio.unified_search.side_effect = retrieve
+        response = client.post(
+            "/api/search",
+            json={"query": "answer", "user_id": "user-1", "session_id": "s1"},
+        )
+    assert response.status_code == 504, response.text
+    assert effects == []
+    assert recorder.batches == []
+    meter.assert_not_called()
+    observer.assert_not_called()

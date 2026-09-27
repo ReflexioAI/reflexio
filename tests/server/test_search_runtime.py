@@ -780,3 +780,222 @@ async def test_expiry_between_body_and_application_start_skips_auth(monkeypatch)
     await asyncio.gather(*middleware.tasks, return_exceptions=True)
     assert response[0]["status"] == 504
     assert not called
+
+
+@pytest.mark.asyncio
+async def test_accepted_response_finishes_durable_exposure_before_release():
+    from contextvars import ContextVar
+
+    tenant = ContextVar("finalization_test_tenant", default="outside")
+    entered, release = threading.Event(), threading.Event()
+    events = []
+
+    def exposure():
+        entered.set()
+        release.wait(2)
+        events.append(("exposure", tenant.get()))
+
+    async def app(scope, receive, send):
+        token = tenant.set("tenant-a")
+        try:
+            # Register out of order: durable exposure must precede dedup.
+            runtime.on_response_accepted(
+                "dedup", lambda: events.append(("dedup", tenant.get()))
+            )
+            runtime.on_response_accepted("exposure", exposure, order=0)
+        finally:
+            tenant.reset(token)
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"{}"})
+
+    middleware = runtime.SearchRuntimeMiddleware(app, timeout=0.1, capacity=1)
+    request = asyncio.create_task(call(middleware))
+    try:
+        assert await asyncio.to_thread(entered.wait, 1)
+        await asyncio.sleep(0.15)
+        assert not request.done()
+        assert len(middleware.tasks) == 1
+        assert (await call(middleware))[0]["status"] == 503
+        release.set()
+        messages = await asyncio.wait_for(request, 1)
+        assert messages[0]["status"] == 200
+        assert events == [("exposure", "tenant-a"), ("dedup", "tenant-a")]
+        assert tenant.get() == "outside"
+    finally:
+        release.set()
+        await asyncio.gather(request, *middleware.tasks, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_timeout_before_response_acceptance_discards_served_state():
+    effects = []
+    release = asyncio.Event()
+
+    async def app(scope, receive, send):
+        runtime.on_response_accepted("exposure", lambda: effects.append("exposure"))
+        runtime.on_response_accepted("dedup", lambda: effects.append("dedup"))
+        await release.wait()
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"{}"})
+
+    middleware = runtime.SearchRuntimeMiddleware(app, timeout=0.04)
+    try:
+        assert (await call(middleware))[0]["status"] == 504
+        assert effects == []
+    finally:
+        release.set()
+        await asyncio.gather(*middleware.tasks, return_exceptions=True)
+    assert effects == []
+
+
+@pytest.mark.asyncio
+async def test_response_validation_failure_discards_served_state():
+    from fastapi.exceptions import ResponseValidationError
+
+    effects = []
+    app = FastAPI()
+
+    @app.post("/api/search", response_model=dict[str, int])
+    def search():
+        runtime.on_response_accepted("exposure", lambda: effects.append("exposure"))
+        return {"invalid": object()}
+
+    middleware = runtime.SearchRuntimeMiddleware(app, timeout=1)
+    with pytest.raises(ResponseValidationError):
+        await call(middleware)
+    await asyncio.gather(*middleware.tasks, return_exceptions=True)
+    assert effects == []
+
+
+def test_unscoped_served_state_callbacks_remain_synchronous():
+    effects = []
+    runtime.on_response_accepted("embedded", lambda: effects.append("recorded"))
+    assert effects == ["recorded"]
+
+
+@pytest.mark.asyncio
+async def test_repeated_cancellation_retains_finalization_worker_admission():
+    entered, release = threading.Event(), threading.Event()
+
+    def exposure():
+        entered.set()
+        release.wait(2)
+
+    async def app(scope, receive, send):
+        runtime.on_response_accepted("exposure", exposure, order=0)
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"{}"})
+
+    middleware = runtime.SearchRuntimeMiddleware(app, timeout=1, capacity=1)
+    request = asyncio.create_task(call(middleware))
+    try:
+        assert await asyncio.to_thread(entered.wait, 1)
+        for _ in range(2):
+            request.cancel()
+            await asyncio.sleep(0)
+        assert not request.done()
+        assert len(middleware.tasks) == 1
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await request
+    finally:
+        release.set()
+        await asyncio.gather(request, *middleware.tasks, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_app_cleanup_completes_before_acceptance_and_finalization():
+    cleanup_started = asyncio.Event()
+    cleanup_release = asyncio.Event()
+    effects = []
+
+    async def app(scope, receive, send):
+        runtime.on_response_accepted("exposure", lambda: effects.append("recorded"))
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"{}"})
+        cleanup_started.set()
+        await cleanup_release.wait()
+
+    middleware = runtime.SearchRuntimeMiddleware(app, timeout=0.04)
+    try:
+        result = await call(middleware)
+        assert cleanup_started.is_set()
+        assert result[0]["status"] == 504
+        assert effects == []
+        assert len(middleware.tasks) == 1
+    finally:
+        cleanup_release.set()
+        await asyncio.gather(*middleware.tasks, return_exceptions=True)
+    assert effects == []
+
+
+@pytest.mark.asyncio
+async def test_disabled_deadline_finalization_uses_remaining_http_backstop(monkeypatch):
+    from reflexio.server import middleware as http_middleware
+
+    monkeypatch.setenv("REFLEXIO_SEARCH_DEADLINE_ENABLED", "false")
+    monkeypatch.setattr(http_middleware, "backstop_for", lambda *_args: 19.0)
+    budgets = []
+
+    async def app(scope, receive, send):
+        runtime.on_response_accepted(
+            "exposure", lambda: budgets.append(runtime.remaining(30))
+        )
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"{}"})
+
+    result = await call(runtime.SearchRuntimeMiddleware(app))
+    assert result[0]["status"] == 200
+    assert len(budgets) == 1
+    assert 15 < budgets[0] <= 19
+
+
+@pytest.mark.asyncio
+async def test_finalization_preserves_phase_breakdown_and_peak_counters(monkeypatch):
+    snapshots = []
+    monkeypatch.setattr(
+        runtime,
+        "_emit",
+        lambda state, ended, _status: snapshots.append(state.snapshot(ended)),
+    )
+
+    def exposure():
+        with runtime.phase("search.exposure"):
+            runtime.increment("pool.checked_out_peak", 4, maximum=True)
+            runtime.increment("storage.reads", 2)
+
+    async def app(scope, receive, send):
+        runtime.increment("pool.checked_out_peak", 7, maximum=True)
+        runtime.increment("storage.reads", 3)
+        runtime.on_response_accepted("exposure", exposure, order=0)
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"{}"})
+
+    assert (await call(runtime.SearchRuntimeMiddleware(app)))[0]["status"] == 200
+    assert snapshots[0]["counters"]["pool.checked_out_peak"] == 7
+    assert snapshots[0]["counters"]["storage.reads"] == 5
+    assert "search.exposure" in snapshots[0]["phases_ms"]
+    assert "search.finalization" in snapshots[0]["phases_ms"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("finalizer_first", [True, False])
+async def test_finalization_and_remaining_retrieval_share_one_retry(finalizer_first):
+    claims = []
+
+    async def app(scope, receive, send):
+        original = runtime.current()
+        assert original is not None
+
+        def finalize():
+            current = runtime.current()
+            assert current is not None
+            scopes = (current, original) if finalizer_first else (original, current)
+            claims.extend(owner.claim_retry() for owner in scopes)
+
+        runtime.on_response_accepted("exposure", finalize)
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"{}"})
+
+    assert (await call(runtime.SearchRuntimeMiddleware(app)))[0]["status"] == 200
+    assert claims == [True, False]

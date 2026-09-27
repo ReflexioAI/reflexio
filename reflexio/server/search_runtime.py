@@ -16,7 +16,7 @@ import uuid
 from collections.abc import Callable, Iterator
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager
-from contextvars import ContextVar
+from contextvars import Context, ContextVar, copy_context
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -90,6 +90,7 @@ class SearchScope:
     cancelled: bool = False
     outcome: str = "unknown"
     retries: int = 0
+    retry_owner: SearchScope | None = field(default=None, repr=False)
     config_versions: dict[tuple[str, int, object], tuple[Any, Any]] = field(
         default_factory=dict
     )
@@ -100,6 +101,9 @@ class SearchScope:
     active: dict[object, tuple[str, float]] = field(default_factory=dict)
     futures: dict[Future[Any], bool] = field(default_factory=dict)
     leases: set[ConnectionLease] = field(default_factory=set)
+    success_callbacks: list[tuple[int, str, Context, Callable[[], Any]]] = field(
+        default_factory=list
+    )
 
     def remaining(self, default: float) -> float:
         with self.lock:
@@ -129,10 +133,11 @@ class SearchScope:
 
     def claim_retry(self) -> bool:
         self.remaining(30)
-        with self.lock:
-            if self.retries:
+        owner = self.retry_owner or self
+        with owner.lock:
+            if owner.retries:
                 return False
-            self.retries = 1
+            owner.retries = 1
             return True
 
     def snapshot(self, end: float) -> dict[str, Any]:
@@ -250,6 +255,100 @@ def remaining(default: float = 30) -> float:
 
 def checkpoint() -> None:
     remaining()
+
+
+def on_response_accepted(
+    name: str, callback: Callable[[], Any], *, order: int = 10
+) -> None:
+    """Defer served-state mutations until the HTTP response cannot time out.
+
+    Embedded callers have no HTTP acceptance boundary and remain synchronous.
+    Capture the registering worker's tenant/project context, not middleware's.
+    """
+    state = current()
+    if state is None:
+        callback()
+        return
+    with state.lock:
+        state.success_callbacks.append((order, name, copy_context(), callback))
+
+
+async def _finalize_response(state: SearchScope, status: int, deadline: float) -> None:
+    """Finish accepted-response writes before release; never substitute a 504.
+
+    One shared budget uses the original remaining time. Cancellation interrupts
+    registered connections, but admission stays owned until the worker exits.
+    """
+    from anyio.to_thread import run_sync
+
+    if not 200 <= status < 300:
+        return
+    with state.lock:
+        callbacks = sorted(state.success_callbacks, key=lambda item: item[0])
+        state.success_callbacks.clear()
+    if not callbacks:
+        return
+    finalization = SearchScope(
+        deadline=deadline,
+        timing_id=state.timing_id,
+        retry_owner=state,
+    )
+
+    def finalize() -> None:
+        for _, name, context, callback in callbacks:
+
+            def invoke(
+                name: str = name, callback: Callable[[], Any] = callback
+            ) -> None:
+                token = _scope.set(finalization)
+                try:
+                    callback()
+                except Exception:
+                    logger.exception("Search finalization failed: %s", name)
+                    record_health("search.finalization_failed", callback=name)
+                finally:
+                    _scope.reset(token)
+
+            context.run(invoke)
+
+    started = time.monotonic()
+    worker = asyncio.create_task(run_sync(finalize))
+    cancelled = False
+    try:
+        try:
+            await asyncio.wait_for(asyncio.shield(worker), max(0, deadline - started))
+        except TimeoutError:
+            finalization.cancel("finalization_timeout")
+        except asyncio.CancelledError:
+            cancelled = True
+            finalization.cancel("disconnected")
+        # Even repeated ASGI cancellation must not release admission while the
+        # actual worker still owns a database connection or durable write.
+        while not worker.done():
+            try:
+                await asyncio.shield(worker)
+            except asyncio.CancelledError:
+                cancelled = True
+                finalization.cancel("disconnected")
+        worker.result()
+        if cancelled:
+            raise asyncio.CancelledError
+    finally:
+        with state.lock, finalization.lock:
+            state.intervals.extend(finalization.intervals)
+            for name, count in finalization.phase_counts.items():
+                state.phase_counts[name] = state.phase_counts.get(name, 0) + count
+            for name, count in finalization.counters.items():
+                previous = state.counters.get(name, 0)
+                state.counters[name] = (
+                    max(previous, count) if name.endswith("_peak") else previous + count
+                )
+        record_health(
+            "search.finalization.duration",
+            time.monotonic() - started,
+            kind="distribution",
+            unit="second",
+        )
 
 
 def result(future: Future[Any]) -> Any:
@@ -449,6 +548,7 @@ class SearchRuntimeMiddleware:
         token = _scope.set(state)
         messages: list[Message] = []
         finished = asyncio.Event()
+        finalized = asyncio.Event()
         status = 500
         response_at: float | None = None
 
@@ -459,13 +559,10 @@ class SearchRuntimeMiddleware:
             if message["type"] == "http.response.start":
                 status = message["status"]
             messages.append(message)
-            if message["type"] == "http.response.body" and not message.get(
-                "more_body", False
-            ):
-                finished.set()
 
         incoming = _RequestInput(receive, state, finished)
         app_error: BaseException | None = None
+        response_accepted = False
 
         async def run() -> None:
             nonlocal app_error
@@ -477,6 +574,7 @@ class SearchRuntimeMiddleware:
                 raise
             finally:
                 finished.set()
+                await finalized.wait()
                 await _drain_workers(state, lambda: response_at)
 
         receiver: asyncio.Task[None] | None = None
@@ -530,8 +628,14 @@ class SearchRuntimeMiddleware:
                 checkpoint()
                 if app_error is not None:
                     raise app_error
-                if task.done():
-                    task.result()
+                response_accepted = 200 <= status < 300
+                # The complete serialized response is now accepted. Durable
+                # exposure writes precede release; finalization contains its own
+                # timeout so it cannot substitute a 504 after a durable write.
+                with phase("search.finalization", cleanup=True):
+                    await _finalize_response(
+                        state, status, state.deadline or ingress_backstop
+                    )
                 for message in messages:
                     await send(message)
             except _RequestBodyTooLargeError:
@@ -540,6 +644,10 @@ class SearchRuntimeMiddleware:
                     {"detail": "Request body too large"}, status_code=status
                 )(scope, receive, send)
             except (TimeoutError, SearchDeadlineError):
+                if response_accepted:
+                    # A transport send failure cannot become a new 504 after
+                    # accepted-response writes have already taken place.
+                    raise
                 state.cancel("timeout")
                 status = 504
                 await JSONResponse(
@@ -559,6 +667,7 @@ class SearchRuntimeMiddleware:
                 raise
         finally:
             response_at = time.monotonic()
+            finalized.set()
             if receiver is not None:
                 incoming.wake()
                 receiver.cancel()
