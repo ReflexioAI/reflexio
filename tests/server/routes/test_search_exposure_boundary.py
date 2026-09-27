@@ -146,7 +146,38 @@ def test_unified_search_records_the_final_user_playbook_set_before_return() -> N
     assert batch.user_playbooks == tuple(playbooks)
 
 
-def test_recorder_failure_prevents_a_successful_search_response() -> None:
+@pytest.mark.parametrize("path", ["/api/search", "/api/search_user_playbooks"])
+@pytest.mark.parametrize(
+    "correlation",
+    [
+        pytest.param({"request_id": "request-1"}, id="correlated"),
+        pytest.param({}, id="uncorrelated"),
+    ],
+)
+def test_recorder_failure_still_serves_the_search_results(
+    path: str, correlation: dict[str, str]
+) -> None:
+    """INVERTED: this asserted ``500``, and the 500 was the bug.
+
+    The recorder writes synchronously inside the request and neither route
+    guards the call, so a raising ledger unwound into FastAPI and threw away a
+    result set the route had ALREADY built (``search.py`` assembles the view
+    model before recording). An append-only audit row with no live reader until
+    the offline tuner launches must not outrank the customer's answer -- the
+    adjacent ``enqueue_search_metering`` queues BILLING off the hot path
+    precisely so money cannot do this either.
+
+    The status code alone is not the assertion. A route that returned 200 with
+    an empty body would satisfy it while still having lost the answer, so this
+    pins the PAYLOAD.
+
+    Both correlation shapes are covered because they took different paths
+    before this branch: an uncorrelated caller was accidentally immune, the
+    refusal short-circuiting ahead of the recorder. Recording uncorrelated
+    batches removes that accident, which is what made this fragility reachable
+    for the orgs that send no ids -- i.e. all of them.
+    """
+
     class _FailingRecorder:
         def record(self, _batch: Any) -> None:
             raise RuntimeError("ledger unavailable")
@@ -155,15 +186,16 @@ def test_recorder_failure_prevents_a_successful_search_response() -> None:
 
     with _search_results([_playbook(11, "First")]):
         response = _client().post(
-            "/api/search",
-            json={
-                "query": "answer",
-                "user_id": "user-1",
-                "request_id": "request-1",
-            },
+            path,
+            json={"query": "answer", "user_id": "user-1", **correlation},
         )
 
-    assert response.status_code == 500
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["success"] is True
+    assert [p["content"] for p in body["user_playbooks"]] == ["First"], (
+        "the answer the route had already built must survive a failed audit write"
+    )
 
 
 def test_no_user_playbook_results_record_one_empty_synchronous_batch() -> None:
@@ -221,7 +253,23 @@ def test_direct_user_playbook_search_records_final_results_before_metering() -> 
     assert batch.user_playbooks == tuple(playbooks)
 
 
-def test_direct_user_playbook_recorder_failure_prevents_metering_and_success() -> None:
+def test_a_recorder_failure_still_meters_the_search_it_served() -> None:
+    """INVERTED, and the billing consequence is the point.
+
+    This asserted ``500`` with metering skipped. Skipping was right *then*: the
+    exception unwound before ``enqueue_search_metering``, so the customer got no
+    answer and billing for one would have been wrong.
+
+    Now the failure is contained and the answer is served, so the search MUST be
+    metered -- the customer received exactly the value the meter exists to
+    count. Suppressing usage because an internal audit row failed to persist
+    would hand out free searches whenever the ledger was down, which is the
+    mirror image of the defect this replaces.
+
+    The ordering assertion is kept, not weakened: recording is still attempted
+    before metering, so a future outbox can make the write durable without
+    moving the boundary.
+    """
     order: list[str] = []
 
     class _FailingRecorder:
@@ -247,8 +295,9 @@ def test_direct_user_playbook_recorder_failure_prevents_metering_and_success() -
             },
         )
 
-    assert response.status_code == 500
-    assert order == ["record"]
+    assert response.status_code == 200, response.text
+    assert [p["content"] for p in response.json()["user_playbooks"]] == ["Direct first"]
+    assert order == ["record", "meter_enqueue"]
 
 
 def test_direct_user_playbook_search_does_not_record_empty_results() -> None:

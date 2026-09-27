@@ -101,6 +101,7 @@ class SearchExposureOutcome(StrEnum):
     RECORDED = "recorded"
     NO_RECORDER = "no_recorder"
     RECORDED_UNCORRELATED = "recorded_uncorrelated"
+    RECORDER_FAILED = "recorder_failed"
 
 
 def _normalize_correlation_id(value: str | None) -> str | None:
@@ -241,8 +242,33 @@ def record_search_exposures(batch: SearchExposureBatch) -> SearchExposureOutcome
     replay tooling) must inspect the outcome; exposure is append-only, so a
     batch dropped here can never be backfilled.
 
-    A registered recorder that raises still propagates unchanged: enterprise
-    search routes fail closed on recorder failure.
+    A registered recorder that raises is CONTAINED here: the failure is logged
+    with a traceback, reported through ``capture_anomaly``, and returned as
+    ``RECORDER_FAILED``. It does not propagate.
+
+    That reverses the previous fail-closed posture, deliberately. The recorder
+    writes synchronously inside the request, and neither search route guards the
+    call, so an exception unwound into FastAPI and became a bare
+    ``500 Internal Server Error`` -- discarding search results the route had
+    ALREADY finished building. Fail-closed was therefore protecting the exposure
+    row at the cost of the customer's answer, and the row has no live reader
+    until the offline tuner launches. The adjacent line settles the priority:
+    ``enqueue_search_metering`` queues BILLING off the hot path, "without
+    performing database work in the request". An audit write with no reader has
+    no business being more fatal to a search than money is.
+
+    Containment is not the end state -- it converts a 500 into a silently
+    missing append-only row, and exposure cannot be backfilled. The right shape
+    is metering's: an outbox that survives the request. That is a separate
+    change. Until then a caller that depends on the ledger must inspect the
+    outcome, which is exactly why this returns a distinct ``RECORDER_FAILED``
+    rather than passing a lost write off as ``RECORDED``.
+
+    The failure report is deliberately NOT throttled, unlike the uncorrelated
+    one. The uncorrelated condition is normal traffic -- it would fire on every
+    search forever, so it must be bounded. A recorder failure is a fault: it is
+    bounded in time by the outage that causes it, and it is precisely what an
+    operator should be paged about.
 
     The anomaly report stays exactly as it was, and is now the only mechanism
     telling an operator that a caller is not correlating -- the condition is no
@@ -258,18 +284,47 @@ def record_search_exposures(batch: SearchExposureBatch) -> SearchExposureOutcome
         SearchExposureOutcome: ``RECORDED`` when a registered recorder accepted
         a correlated batch, ``RECORDED_UNCORRELATED`` when it accepted one
         carrying no correlation (persisted, and flagged ``incomplete`` by the
-        schema), and ``NO_RECORDER`` when none was registered and nothing was
-        persisted.
+        schema), ``RECORDER_FAILED`` when a registered recorder raised and
+        nothing was persisted, and ``NO_RECORDER`` when none was registered and
+        nothing was persisted. Only the first two mean the batch is durable.
     """
     uncorrelated = batch_is_uncorrelated(batch)
     recorder = get_service(SEARCH_EXPOSURE_RECORDER)
     if recorder is None:
         return SearchExposureOutcome.NO_RECORDER
-    recorder.record(batch)
+    try:
+        recorder.record(batch)
+    except Exception:
+        # ``Exception``, never ``BaseException``: ``GeneratorExit``,
+        # ``KeyboardInterrupt`` and ``SystemExit`` must still unwind.
+        #
+        # Contained rather than propagated because this call is synchronous
+        # inside the request and neither route guards it, so raising here
+        # returned a bare 500 and threw away search results the route had
+        # already built. See this function's docstring for why an audit row
+        # with no live reader must not outrank the customer's answer, and for
+        # why the durable fix is an outbox rather than this except block.
+        logger.exception(
+            "event=search_exposure_recorder_failed org_id=%s playbooks=%d"
+            " uncorrelated=%s -- the exposure was NOT persisted and cannot be"
+            " backfilled (exposure is append-only); the search response is"
+            " served anyway",
+            batch.org_id,
+            len(batch.user_playbooks),
+            uncorrelated,
+        )
+        capture_anomaly(
+            "search_exposure.recorder_failed",
+            org_id=batch.org_id,
+            playbooks=len(batch.user_playbooks),
+            uncorrelated=uncorrelated,
+            level="error",
+        )
+        return SearchExposureOutcome.RECORDER_FAILED
     if uncorrelated:
-        # Reported only once a row has actually LANDED, which takes both
-        # conditions below. A recorder that raises propagates (fail-closed)
-        # having stored nothing, and an EMPTY batch stores nothing either --
+        # Reported only once a row has actually LANDED. Two things can mean
+        # it did not: a recorder that raised (handled above, and it returns
+        # before reaching here) and an EMPTY batch, which stores nothing --
         # the unified ``/api/search`` hands one over whenever a production
         # agent's search surfaces no user playbooks, by design. Either way the
         # serve would be counted against a row that does not exist and would

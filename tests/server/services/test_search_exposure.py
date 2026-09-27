@@ -320,7 +320,7 @@ class _CollectingRecorder:
 
 
 class _FailingRecorder:
-    """Recorder that refuses the write, to pin the fail-closed contract."""
+    """Recorder that fails the write, to pin that the failure is CONTAINED."""
 
     def record(self, batch: SearchExposureBatch) -> None:
         raise RuntimeError("ledger unavailable")
@@ -350,12 +350,29 @@ def test_registered_recorder_reports_that_the_batch_was_recorded() -> None:
     assert recorder.batches == [batch]
 
 
-def test_recorder_failure_still_propagates_rather_than_reporting_absence() -> None:
-    """Reporting the outcome must not soften recorder failures into a value."""
+def test_recorder_failure_is_contained_and_named_not_propagated() -> None:
+    """INVERTED: a failed audit write must not fail the search.
+
+    This pinned the opposite -- the exception propagating -- and that was the
+    defect. The recorder writes synchronously inside the request and neither
+    search route guards the call, so the exception unwound into FastAPI as a
+    bare 500 and discarded search results the route had already built. An
+    append-only audit row with no live reader must not outrank the customer's
+    answer; the adjacent ``enqueue_search_metering`` queues BILLING off the hot
+    path.
+
+    It is still not softened into ``RECORDED``. ``RECORDER_FAILED`` is a
+    distinct outcome precisely so a caller that depends on the ledger can tell
+    a lost write from a durable one -- exposure cannot be backfilled.
+    """
     register_service(SEARCH_EXPOSURE_RECORDER, _FailingRecorder())
 
-    with pytest.raises(RuntimeError, match="ledger unavailable"):
-        record_search_exposures(_batch(_playbook()))
+    outcome = record_search_exposures(_batch(_playbook()))
+
+    assert outcome is SearchExposureOutcome.RECORDER_FAILED
+    assert outcome is not SearchExposureOutcome.RECORDED, (
+        "a lost write must never read as a durable one"
+    )
 
 
 def test_uncorrelated_batch_is_recorded_and_flagged_not_refused() -> None:
@@ -583,18 +600,30 @@ def test_a_failed_write_is_neither_counted_nor_reported(
     """
     register_service(SEARCH_EXPOSURE_RECORDER, _FailingRecorder())
 
-    with pytest.raises(RuntimeError, match="ledger unavailable"):
-        record_search_exposures(_uncorrelated_batch())
+    assert record_search_exposures(_uncorrelated_batch()) is (
+        SearchExposureOutcome.RECORDER_FAILED
+    )
 
-    assert anomalies.calls == [], "a write that never landed must not be counted"
+    uncorrelated_reports = [
+        c for c in anomalies.calls if c[0] == "search_exposure.uncorrelated"
+    ]
+    assert uncorrelated_reports == [], (
+        "a write that never landed must not be counted as an uncorrelated row"
+    )
 
     # And the throttle is untouched, so the next real miss still reports.
     register_service(SEARCH_EXPOSURE_RECORDER, _CollectingRecorder(), override=True)
     assert record_search_exposures(_uncorrelated_batch()) is (
         SearchExposureOutcome.RECORDED_UNCORRELATED
     )
-    assert len(anomalies.calls) == 1
-    assert anomalies.calls[0][1]["first_report"] is True
+    uncorrelated_reports = [
+        c for c in anomalies.calls if c[0] == "search_exposure.uncorrelated"
+    ]
+    assert len(uncorrelated_reports) == 1
+    assert uncorrelated_reports[0][1]["first_report"] is True
+    assert uncorrelated_reports[0][1]["uncorrelated_since_last_report"] == 1, (
+        "the failed write must not be counted either"
+    )
 
 
 def test_an_empty_uncorrelated_batch_persists_no_row_so_reports_nothing(
@@ -645,6 +674,48 @@ def test_an_empty_uncorrelated_batch_persists_no_row_so_reports_nothing(
     assert anomalies.calls[0][1]["uncorrelated_since_last_report"] == 1, (
         "the empty batch must not be counted either"
     )
+
+
+def test_a_contained_recorder_failure_is_still_reported(
+    anomalies: _AnomalySpy,
+) -> None:
+    """Containing the failure must not make it silent.
+
+    Swallowing a lost append-only write with no signal would be strictly worse
+    than the 500 it replaces: the 500 at least told somebody. Unlike the
+    uncorrelated report this one is NOT throttled -- that condition is normal
+    traffic and would fire forever, whereas a recorder failure is a fault,
+    bounded by the outage causing it and worth paging on.
+    """
+    register_service(SEARCH_EXPOSURE_RECORDER, _FailingRecorder())
+
+    outcome = record_search_exposures(_batch(_playbook()))
+
+    assert outcome is SearchExposureOutcome.RECORDER_FAILED
+    assert len(anomalies.calls) == 1
+    message, tags = anomalies.calls[0]
+    assert message == "search_exposure.recorder_failed"
+    assert tags["playbooks"] == 1
+    assert tags["uncorrelated"] is False
+    assert tags["level"] == "error"
+
+
+def test_a_recorder_raising_a_base_exception_still_unwinds() -> None:
+    """``Exception`` only. Interpreter-level control flow is not ours to eat.
+
+    Catching ``BaseException`` here would swallow ``KeyboardInterrupt``,
+    ``SystemExit`` and ``GeneratorExit``, turning a shutdown signal into a
+    logged anomaly and a served response.
+    """
+
+    class _Exiting:
+        def record(self, _batch: SearchExposureBatch) -> None:
+            raise KeyboardInterrupt
+
+    register_service(SEARCH_EXPOSURE_RECORDER, _Exiting())
+
+    with pytest.raises(KeyboardInterrupt):
+        record_search_exposures(_batch(_playbook()))
 
 
 def test_a_failing_reporter_does_not_break_the_search_path(monkeypatch) -> None:
