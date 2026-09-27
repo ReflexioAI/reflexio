@@ -570,6 +570,33 @@ def test_reporting_does_not_suppress_the_write(
     assert len(anomalies.calls) == 1, "the signal must survive alongside the write"
 
 
+def test_a_failed_write_is_neither_counted_nor_reported(
+    anomalies: _AnomalySpy,
+) -> None:
+    """The report asserts the row LANDED, so it must follow the write.
+
+    Two things break if the anomaly is emitted before ``recorder.record``. The
+    message says the exposure "is recorded but flagged", which is false for a
+    batch the recorder then refused. Worse, the emission burns the hour-long
+    throttle window: the next 3600s of genuinely-stored uncorrelated serves go
+    unreported, which is precisely the blindness this signal exists to remove.
+    """
+    register_service(SEARCH_EXPOSURE_RECORDER, _FailingRecorder())
+
+    with pytest.raises(RuntimeError, match="ledger unavailable"):
+        record_search_exposures(_uncorrelated_batch())
+
+    assert anomalies.calls == [], "a write that never landed must not be counted"
+
+    # And the throttle is untouched, so the next real miss still reports.
+    register_service(SEARCH_EXPOSURE_RECORDER, _CollectingRecorder(), override=True)
+    assert record_search_exposures(_uncorrelated_batch()) is (
+        SearchExposureOutcome.RECORDED_UNCORRELATED
+    )
+    assert len(anomalies.calls) == 1
+    assert anomalies.calls[0][1]["first_report"] is True
+
+
 def test_a_failing_reporter_does_not_break_the_search_path(monkeypatch) -> None:
     """capture_anomaly is best-effort; a broken reporter must not 500 a search."""
 

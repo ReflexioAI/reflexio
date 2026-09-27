@@ -24,11 +24,11 @@ logger = logging.getLogger(__name__)
 
 MAX_EXPOSURE_EVENTS_PER_BATCH = 100
 
-# An uncorrelated refusal is per-search, so at fleet scale it is a firehose:
-# the deployment that motivated this signal refused roughly 95k of them. The
-# actionable fact is "this deployment is refusing exposures at all", not each
-# individual refusal, so refusals are counted and reported on a throttle that
-# carries the count since the last report. The FIRST refusal always reports,
+# An uncorrelated exposure is per-search, so at fleet scale it is a firehose:
+# the deployment that motivated this signal stored roughly 95k of them. The
+# actionable fact is "this deployment is not correlating its exposures at all",
+# not each individual serve, so they are counted and reported on a throttle
+# that carries the count since the last report. The FIRST one always reports,
 # because the whole point is to find out on day one rather than day thirteen.
 _UNCORRELATED_ANOMALY_THROTTLE_SECONDS = 3600.0
 
@@ -129,16 +129,20 @@ _uncorrelated_last_report: float | None = None
 
 
 def _report_uncorrelated_batch(batch: SearchExposureBatch) -> None:
-    """Make an uncorrelated refusal visible, at a bounded rate.
+    """Make an uncorrelated exposure visible, at a bounded rate.
 
-    Only fires when a recorder IS registered. That condition is what makes the
-    signal actionable rather than noise: a deployment with no recorder is a
-    supported configuration (shared ``create_app()`` installs none, so local
-    and no-auth OSS persist nothing by design), and telling it that its
-    exposures are uncorrelated would be reporting a non-problem on every
-    search. A deployment that went to the trouble of registering a recorder and
-    is still refusing every batch is, unambiguously, not recording the thing it
-    asked to record.
+    Called only once a registered recorder has ACCEPTED the batch. The caller
+    enforces both halves of that -- it returns ``NO_RECORDER`` before reaching
+    here and calls ``recorder.record`` first -- so this function performs no
+    recorder lookup of its own; one invariant, one place.
+
+    Both halves matter. A deployment with no recorder is a supported
+    configuration (shared ``create_app()`` installs none, so local and no-auth
+    OSS persist nothing by design), and telling it that its exposures are
+    uncorrelated would be reporting a non-problem on every search. And
+    reporting before the write would count a row that a raising recorder never
+    stored, while burning the throttle window that the next hour of genuine
+    misses needed.
 
     This is deliberately NOT raised, and deliberately not returned as a new
     outcome. The routes ignore the outcome on purpose -- they cannot distinguish
@@ -148,8 +152,6 @@ def _report_uncorrelated_batch(batch: SearchExposureBatch) -> None:
     anything at all. So the signal goes here, where the distinction IS
     available, and stays out of the response path entirely.
     """
-    if get_service(SEARCH_EXPOSURE_RECORDER) is None:
-        return
     global _uncorrelated_since_report, _uncorrelated_last_report
     now = time.monotonic()
     with _uncorrelated_lock:
@@ -160,7 +162,7 @@ def _report_uncorrelated_batch(batch: SearchExposureBatch) -> None:
         )
         if not due:
             return
-        refused = _uncorrelated_since_report
+        uncorrelated = _uncorrelated_since_report
         first = _uncorrelated_last_report is None
         _uncorrelated_since_report = 0
         _uncorrelated_last_report = now
@@ -171,13 +173,13 @@ def _report_uncorrelated_batch(batch: SearchExposureBatch) -> None:
         " is recorded but flagged integrity_state=incomplete"
         " (missing_correlation) and can never be reconstructed to a session",
         batch.org_id,
-        refused,
+        uncorrelated,
         first,
     )
     capture_anomaly(
         "search_exposure.uncorrelated",
         org_id=batch.org_id,
-        uncorrelated_since_last_report=refused,
+        uncorrelated_since_last_report=uncorrelated,
         first_report=first,
     )
 
@@ -194,10 +196,10 @@ def record_search_exposures(batch: SearchExposureBatch) -> SearchExposureOutcome
     """Synchronously invoke the optional enterprise exposure recorder.
 
     A batch with neither ``request_id`` nor ``session_id`` is RECORDED and
-    flagged, not refused. It is reported as an anomaly (bounded -- see
-    ``_report_uncorrelated_batch``) and the stored row labels itself: the
-    schema's ``integrity_state`` generated column reads ``incomplete`` with
-    ``missing_correlation`` in ``integrity_reasons``.
+    flagged, not refused. It is reported as an anomaly once the recorder has
+    accepted it (bounded -- see ``_report_uncorrelated_batch``) and the stored
+    row labels itself: the schema's ``integrity_state`` generated column reads
+    ``incomplete`` with ``missing_correlation`` in ``integrity_reasons``.
 
     This reverses the refusal that shipped in #488, and the reason is a
     measurement rather than an argument. #488 reasoned that such a row is
@@ -254,17 +256,18 @@ def record_search_exposures(batch: SearchExposureBatch) -> SearchExposureOutcome
         persisted.
     """
     uncorrelated = batch_is_uncorrelated(batch)
-    if uncorrelated:
-        _report_uncorrelated_batch(batch)
     recorder = get_service(SEARCH_EXPOSURE_RECORDER)
     if recorder is None:
         return SearchExposureOutcome.NO_RECORDER
     recorder.record(batch)
-    return (
-        SearchExposureOutcome.RECORDED_UNCORRELATED
-        if uncorrelated
-        else SearchExposureOutcome.RECORDED
-    )
+    if uncorrelated:
+        # Reported only now, because the report asserts the row LANDED. A
+        # recorder that raises propagates (fail-closed) having stored nothing,
+        # and counting that serve would both overstate the ledger and burn the
+        # hour-long throttle window the next genuine miss needs.
+        _report_uncorrelated_batch(batch)
+        return SearchExposureOutcome.RECORDED_UNCORRELATED
+    return SearchExposureOutcome.RECORDED
 
 
 def validate_exposure_batch_size(events: Sized) -> None:
