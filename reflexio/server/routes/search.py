@@ -433,6 +433,13 @@ def unified_search_endpoint(
                 msg=response.msg,
                 agent_trace=response.agent_trace,
                 rehydrated_text=response.rehydrated_text,
+                # Copied through, because a PARTIAL failure's whole contract is
+                # that the caller is told. The service has computed these since
+                # the degrade-to-FTS path shipped and this view dropped both,
+                # so an empty profile list read as a fact rather than as an arm
+                # that never answered.
+                degraded=response.degraded,
+                search_mode_effective=response.search_mode_effective,
                 experiment=assignment,
             )
         if caller_type == "production_agent":
@@ -474,4 +481,19 @@ def unified_search_endpoint(
                 ),
             )
         )
+    if not resp.success:
+        # A TOTAL storage failure used to answer 200 with empty lists and
+        # ``success=False`` only in the body, so a caller checking the status
+        # code -- or just reading the result lists -- saw a backend outage as
+        # "this user has no profile and no playbooks" and could not retry
+        # (Sentry PYTHON-FASTAPI-Z0). ``success=False`` has exactly one
+        # producer, the total-failure branch in ``unified_search_service``, so
+        # this cannot fire on an ordinary empty result.
+        #
+        # A PARTIAL failure is deliberately NOT a 503: it returns 200 with
+        # ``degraded=True``, matching the existing degrade-to-FTS contract.
+        #
+        # Raised AFTER metering and exposure recording on purpose, so this
+        # changes the response status and nothing about billing.
+        raise HTTPException(status_code=503, detail=resp.msg or "Search failed")
     return resp

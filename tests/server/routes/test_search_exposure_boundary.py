@@ -48,6 +48,13 @@ def _search_results(playbooks: list[UserPlaybook]) -> Iterator[MagicMock]:
         msg="OK",
         agent_trace=None,
         rehydrated_text=None,
+        # Set explicitly because the route copies both into the view model, and
+        # an unset attribute on a MagicMock is another MagicMock -- which
+        # pydantic rejects for a ``bool``, turning every test in this file into
+        # a 500. These are the ``UnifiedSearchResponse`` defaults: this harness
+        # stands in for a healthy search, so it must claim to be one.
+        degraded=False,
+        search_mode_effective=None,
     )
     reflexio.unified_search.return_value = result
     reflexio.search_user_playbooks.return_value = result
@@ -525,8 +532,14 @@ def test_failed_unified_search_is_not_observed() -> None:
         response = _client().post(
             "/api/search", json={"query": "answer", "user_id": "user-1"}
         )
-    assert response.status_code == 200
-    assert response.json()["success"] is False
+    # A total storage failure is a 503 rather than an empty 200 -- see
+    # ``test_search_storage_failure_status.py`` (Sentry PYTHON-FASTAPI-Z0). The
+    # body is not asserted on here: this harness flips ``success`` while leaving
+    # ``msg="OK"``, whereas production has exactly one producer of
+    # ``success=False`` and it always sets "Search failed". The subject of THIS
+    # test is unchanged and sits on the last line: a failed search must not
+    # reach the completed-search observer.
+    assert response.status_code == 503
     observer.observe.assert_not_called()
 
 

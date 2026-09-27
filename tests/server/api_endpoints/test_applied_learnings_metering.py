@@ -92,6 +92,12 @@ def _patch_unified_search(
     mock_response.profiles = profiles
     mock_response.agent_playbooks = agent_playbooks
     mock_response.user_playbooks = user_playbooks
+    # Set explicitly because the route copies both into the view model, and an
+    # unset attribute on a MagicMock is another MagicMock -- which pydantic
+    # rejects for a ``bool``, making the endpoint answer 500. These are the
+    # ``UnifiedSearchResponse`` defaults: this stub is a healthy search.
+    mock_response.degraded = False
+    mock_response.search_mode_effective = None
     mock_reflexio.unified_search.return_value = mock_response
     mock_reflexio.request_context.configurator.get_config.return_value = Config(
         storage_config=StorageConfigSQLite()
@@ -289,6 +295,10 @@ def test_metering_failure_does_not_break_search_response() -> None:
         mock_response.profiles = profiles
         mock_response.agent_playbooks = []
         mock_response.user_playbooks = []
+        # See _patch_unified_search: an unset MagicMock attribute is another
+        # MagicMock, which pydantic rejects for the view's ``bool``.
+        mock_response.degraded = False
+        mock_response.search_mode_effective = None
         mock_reflexio_search.unified_search.return_value = mock_response
         # Experiment gating reads config first; make the later metering read fail.
         mock_reflexio_search.request_context.configurator.get_config.side_effect = [
