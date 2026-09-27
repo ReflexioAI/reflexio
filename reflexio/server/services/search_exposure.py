@@ -131,18 +131,21 @@ _uncorrelated_last_report: float | None = None
 def _report_uncorrelated_batch(batch: SearchExposureBatch) -> None:
     """Make an uncorrelated exposure visible, at a bounded rate.
 
-    Called only once a registered recorder has ACCEPTED the batch. The caller
-    enforces both halves of that -- it returns ``NO_RECORDER`` before reaching
-    here and calls ``recorder.record`` first -- so this function performs no
-    recorder lookup of its own; one invariant, one place.
+    Called only once a registered recorder has ACCEPTED a NON-EMPTY batch. The
+    caller enforces all three conditions -- it returns ``NO_RECORDER`` before
+    reaching here, calls ``recorder.record`` first, and checks
+    ``batch.user_playbooks`` -- so this function performs no lookup or guard of
+    its own; one invariant, one place.
 
-    Both halves matter. A deployment with no recorder is a supported
+    Each condition matters. A deployment with no recorder is a supported
     configuration (shared ``create_app()`` installs none, so local and no-auth
     OSS persist nothing by design), and telling it that its exposures are
-    uncorrelated would be reporting a non-problem on every search. And
-    reporting before the write would count a row that a raising recorder never
-    stored, while burning the throttle window that the next hour of genuine
-    misses needed.
+    uncorrelated would be reporting a non-problem on every search. Reporting
+    before the write would count a row that a raising recorder never stored.
+    And an empty batch persists no row at all, so it has nothing to be
+    uncorrelated about. In every one of those cases the report would be false
+    AND would burn the throttle window that the next hour of genuine misses
+    needed.
 
     This is deliberately NOT raised, and deliberately not returned as a new
     outcome. The routes ignore the outcome on purpose -- they cannot distinguish
@@ -197,9 +200,12 @@ def record_search_exposures(batch: SearchExposureBatch) -> SearchExposureOutcome
 
     A batch with neither ``request_id`` nor ``session_id`` is RECORDED and
     flagged, not refused. It is reported as an anomaly once the recorder has
-    accepted it (bounded -- see ``_report_uncorrelated_batch``) and the stored
-    row labels itself: the schema's ``integrity_state`` generated column reads
-    ``incomplete`` with ``missing_correlation`` in ``integrity_reasons``.
+    accepted a batch that actually carries playbooks (bounded -- see
+    ``_report_uncorrelated_batch``) and the stored row labels itself: the
+    schema's ``integrity_state`` generated column reads ``incomplete`` with
+    ``missing_correlation`` in ``integrity_reasons``. An empty batch still
+    reports ``RECORDED_UNCORRELATED`` -- the recorder did accept it -- but
+    raises no anomaly, because it persisted no row to be uncorrelated about.
 
     This reverses the refusal that shipped in #488, and the reason is a
     measurement rather than an argument. #488 reasoned that such a row is
@@ -261,11 +267,18 @@ def record_search_exposures(batch: SearchExposureBatch) -> SearchExposureOutcome
         return SearchExposureOutcome.NO_RECORDER
     recorder.record(batch)
     if uncorrelated:
-        # Reported only now, because the report asserts the row LANDED. A
-        # recorder that raises propagates (fail-closed) having stored nothing,
-        # and counting that serve would both overstate the ledger and burn the
-        # hour-long throttle window the next genuine miss needs.
-        _report_uncorrelated_batch(batch)
+        # Reported only once a row has actually LANDED, which takes both
+        # conditions below. A recorder that raises propagates (fail-closed)
+        # having stored nothing, and an EMPTY batch stores nothing either --
+        # the unified ``/api/search`` hands one over whenever a production
+        # agent's search surfaces no user playbooks, by design. Either way the
+        # serve would be counted against a row that does not exist and would
+        # burn the hour-long throttle window the next genuine miss needs.
+        # Since the anomaly is now the ONLY detector, and no org in the fleet
+        # sends a correlation id, empty uncorrelated batches would otherwise
+        # be the common case and would crowd the real signal out entirely.
+        if batch.user_playbooks:
+            _report_uncorrelated_batch(batch)
         return SearchExposureOutcome.RECORDED_UNCORRELATED
     return SearchExposureOutcome.RECORDED
 

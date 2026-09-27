@@ -597,6 +597,56 @@ def test_a_failed_write_is_neither_counted_nor_reported(
     assert anomalies.calls[0][1]["first_report"] is True
 
 
+def test_an_empty_uncorrelated_batch_persists_no_row_so_reports_nothing(
+    anomalies: _AnomalySpy,
+) -> None:
+    """The unified ``/api/search`` hands over an empty batch on purpose.
+
+    When a production agent's search surfaces no user playbooks,
+    ``unified_search_endpoint`` still records one empty batch (pinned by
+    ``test_no_user_playbook_results_record_one_empty_synchronous_batch``). An
+    empty batch writes no exposure event, so there is no row for
+    ``missing_correlation`` to be true of, and an anomaly claiming one landed
+    would be false.
+
+    The throttle is what makes this matter rather than merely untidy. No org in
+    the fleet sends a correlation id, so every empty search would qualify --
+    these would be the COMMON case, and each one would consume the hour-long
+    window, crowding out the report for a serve that really did store an
+    uncorrelated row. This anomaly is the only detector there is.
+    """
+    recorder = _CollectingRecorder()
+    register_service(SEARCH_EXPOSURE_RECORDER, recorder)
+
+    empty = SearchExposureBatch(
+        org_id="org-1",
+        request_id=None,
+        session_id=None,
+        interaction_id=None,
+        user_id="user-1",
+        user_playbooks=(),
+    )
+
+    outcome = record_search_exposures(empty)
+
+    # Still RECORDED_UNCORRELATED: the recorder did accept the batch, and the
+    # caller must not be told a write was skipped when it was not.
+    assert outcome is SearchExposureOutcome.RECORDED_UNCORRELATED
+    assert len(recorder.batches) == 1
+    assert recorder.batches[0].user_playbooks == ()
+    assert anomalies.calls == [], "no row landed, so there is nothing to report"
+
+    # The window was never opened, so a real uncorrelated serve still reports.
+    assert record_search_exposures(_uncorrelated_batch()) is (
+        SearchExposureOutcome.RECORDED_UNCORRELATED
+    )
+    assert len(anomalies.calls) == 1
+    assert anomalies.calls[0][1]["first_report"] is True
+    assert anomalies.calls[0][1]["uncorrelated_since_last_report"] == 1, (
+        "the empty batch must not be counted either"
+    )
+
+
 def test_a_failing_reporter_does_not_break_the_search_path(monkeypatch) -> None:
     """capture_anomaly is best-effort; a broken reporter must not 500 a search."""
 
