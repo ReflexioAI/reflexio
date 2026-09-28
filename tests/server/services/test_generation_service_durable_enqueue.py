@@ -131,40 +131,56 @@ def test_public_publish_to_durable_worker_persists_profile_and_playbook(monkeypa
             configurator=configurator,
         )
 
-        response = reflexio.publish_interaction(
-            {
-                "request_id": "durable-public-request",
-                "user_id": "durable-public-user",
-                "session_id": "durable-public-session",
-                "agent_version": "v1",
-                "source": "durable-boundary-test",
-                "interaction_data_list": [
-                    {
-                        "content": (
-                            "I prefer concise answers. Next time, confirm the account "
-                            "number before suggesting a billing change."
-                        ),
-                        "created_at": int(datetime.datetime.now(UTC).timestamp()),
-                    }
-                ],
-            },
-            defer_learning=True,
-        )
+        try:
+            response = reflexio.publish_interaction(
+                {
+                    "request_id": "durable-public-request",
+                    "user_id": "durable-public-user",
+                    "session_id": "durable-public-session",
+                    "agent_version": "v1",
+                    "source": "durable-boundary-test",
+                    "interaction_data_list": [
+                        {
+                            "content": (
+                                "I prefer concise answers. Next time, confirm the account "
+                                "number before suggesting a billing change."
+                            ),
+                            "created_at": int(datetime.datetime.now(UTC).timestamp()),
+                        }
+                    ],
+                },
+                defer_learning=True,
+            )
 
-        assert response.success is True
-        storage = reflexio.get_storage()
-        assert storage.count_all_profiles() == 0
-        assert storage.count_user_playbooks() == 0
+            assert response.success is True
+            storage = reflexio.get_storage()
+            assert storage.count_all_profiles() == 0
+            assert storage.count_user_playbooks() == 0
 
-        worker = DurableLearningWorker(
-            lambda _requested_org_id: reflexio.request_context,
-            instance_id="durable-boundary-worker",
-        )
-        assert worker.drain_org(org_id, batch_size=4, lease_seconds=300) == 4
-        assert storage.count_all_profiles() > 0
-        assert storage.count_user_playbooks() > 0
+            worker = DurableLearningWorker(
+                lambda _requested_org_id: reflexio.request_context,
+                instance_id="durable-boundary-worker",
+            )
+            assert worker.drain_org(org_id, batch_size=4, lease_seconds=300) == 4
+            assert storage.count_all_profiles() > 0
+            assert storage.count_user_playbooks() > 0
+        finally:
+            # Extraction schedules real aggregation/tagging work. Settle it
+            # before deleting the SQLite/config directory it still references.
+            from reflexio.server.services.playbook import aggregation_scheduler
+            from reflexio.server.services.tagging.tagging_scheduler import (
+                TaggingScheduler,
+            )
 
-    clear_reflexio_cache()
+            with aggregation_scheduler._LOCAL_SCHEDULERS_LOCK:
+                scheduler = aggregation_scheduler._LOCAL_SCHEDULERS.get(org_id)
+            if scheduler is not None:
+                scheduler.stop(timeout_seconds=10)
+            tagging = TaggingScheduler._instance
+            if tagging is not None:
+                assert tagging.drain(timeout_seconds=10)
+            clear_reflexio_cache()
+            assert scheduler is None or not scheduler.is_running()
 
 
 def test_enqueue_failure_rolls_back_interactions(monkeypatch):
