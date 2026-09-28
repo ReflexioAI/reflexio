@@ -335,6 +335,9 @@ def run_unified_search(
         # from the wider pool can take the top slots.
         profiles, agent_playbooks, user_playbooks = (arm[:top_k] for arm in arms)
 
+    # Reranking can fail open after consuming the request budget. Do not enter
+    # a fresh storage lookup after that; transport guards are the final barrier.
+    search_runtime.checkpoint()
     user_playbooks = _suppress_source_user_playbooks(
         storage=storage,
         agent_playbooks=agent_playbooks or [],
