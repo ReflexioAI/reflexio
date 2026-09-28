@@ -181,6 +181,25 @@ _NOISY_FIRST_PARTY = (("reflexio.server.site_var.site_var_manager", logging.ERRO
 #: ``_NOISY_THIRD_PARTY`` are NOT the reason: they carry an explicit WARNING that
 #: outranks the root, so they are immune. An earlier version of this comment cited
 #: exactly those two (``litellm``, ``httpx``) and was wrong about its own example.
+#:
+#: ``reflexio_ext`` is named here deliberately, and is NOT a dependency on the
+#: enterprise package. It is a logger-namespace STRING: ``getLogger`` creates a
+#: logger object for any name, so on a machine where enterprise is not installed
+#: this entry is an unused object and nothing more. The installed application may
+#: span both namespaces, and this module is the only place that sets levels, so
+#: leaving the name out would silently fail to lower enterprise loggers -- which is
+#: how ``first_party_level`` came to be added in the first place.
+#:
+#: The alternative -- a ``first_party_roots`` parameter, or a setter beside
+#: ``configure_error_reporter`` in ``server/extensions.py`` -- was considered and
+#: rejected: it trades a harmless string for a knob with one caller whose
+#: forget-to-call mode is silent, and "accepted and does nothing" is the exact
+#: defect class this function was refactored to remove.
+#:
+#: What actually holds the OSS/enterprise boundary is
+#: ``tests/test_oss_imports_without_enterprise.py``, which imports this package's
+#: entry points in a child interpreter with ``reflexio_ext`` unimportable. A real
+#: import would fail there; this string does not.
 _FIRST_PARTY_ROOTS = ("reflexio", "reflexio_ext")
 
 
