@@ -174,9 +174,13 @@ _NOISY_THIRD_PARTY = ("litellm", "LiteLLM", "httpx", "httpcore", "openai", "urll
 #: thing being debugged.
 _NOISY_FIRST_PARTY = (("reflexio.server.site_var.site_var_manager", logging.ERROR),)
 
-#: The loggers a Sentry Logs floor is allowed to lower. Deliberately NOT the root:
-#: `sentry_logs_level=info` previously surfaced INFO from first-party code only,
-#: and widening it to the root would ship third-party INFO to a paid pipeline.
+#: The loggers ``first_party_level`` may lower. Deliberately NOT the root, because
+#: the root is shared with every library: dropping it to INFO surfaces INFO from
+#: the whole unpinned third-party tail -- measured, ``boto3``, ``starlette`` and
+#: ``psycopg2`` all start firing. Note that the six names in
+#: ``_NOISY_THIRD_PARTY`` are NOT the reason: they carry an explicit WARNING that
+#: outranks the root, so they are immune. An earlier version of this comment cited
+#: exactly those two (``litellm``, ``httpx``) and was wrong about its own example.
 _FIRST_PARTY_ROOTS = ("reflexio", "reflexio_ext")
 
 
@@ -384,8 +388,8 @@ def _build_production_handler(root: logging.Logger, level: int) -> None:
     load-bearing rather than defensive:
 
     * INFO is the FLOOR, below the root's own WARNING on purpose, so a logger
-      explicitly raised to INFO (``REFLEXIO_INFO_LOGGERS``, or a Sentry Logs
-      floor) still reaches the log driver.
+      explicitly raised to INFO (``REFLEXIO_INFO_LOGGERS``, or
+      ``first_party_level``) still reaches the log driver.
     * But a fixed INFO discards DEBUG records even when ``level`` lowered the root
       to DEBUG -- so ``REFLEXIO_LOG_LEVEL=debug`` was ACCEPTED and did nothing.
       A setting that silently has no effect is the exact class of defect this
@@ -413,7 +417,7 @@ def configure_logging(
     *,
     verbose: bool,
     level: int = logging.WARNING,
-    sentry_floor: int | None = None,
+    first_party_level: int | None = None,
     info_loggers: Sequence[str] = (),
 ) -> LoggingReport:
     """Configure application logging and report what was done.
@@ -421,24 +425,24 @@ def configure_logging(
     Idempotent: calling it twice attaches no second handler and leaves the same
     levels, so a test may drive it directly.
 
-    ``level`` and ``sentry_floor`` can only ever LOWER a threshold, never raise
-    one. That asymmetry is the whole rule, and it is not symmetric by accident:
+    ``level`` and ``first_party_level`` can only ever LOWER a threshold, never
+    raise one. That asymmetry is the whole rule, and it is not symmetric by
+    accident:
 
-    * Lowering is REQUIRED. ``SENTRY_LOGS_LEVEL=info`` forwards nothing if INFO
-      records never fire in the first place.
-    * Raising is pure harm, and used to ship. ``SENTRY_LOGS_LEVEL=error`` -- a
-      plausible "just send me errors" -- raised the first-party loggers to ERROR
-      and deleted every WARNING line from stdout, which for a self-host customer
-      is the only observability channel there is.
-    * Raising is also UNNECESSARY, because Sentry filters its Logs pipeline on its
-      own ``sentry_logs_level`` independently of the logger level: with a logger
-      left at WARNING and that floor at ERROR, the WARNING still reaches stdout
-      while only the error is forwarded.
+    * Lowering is REQUIRED. A caller that forwards records elsewhere -- to a log
+      aggregator, a file, an HTTP sink -- gets nothing if the records never fire
+      in the first place, however low it sets its own threshold.
+    * Raising is pure harm, and used to ship. A caller asking for ERROR raised the
+      first-party loggers to ERROR and deleted every WARNING line from stdout,
+      which for a self-hosted deployment is the only observability channel there
+      is.
+    * Raising is also UNNECESSARY. A downstream consumer filters on its OWN
+      threshold, independently of the logger level, so it loses nothing by these
+      loggers staying lower than it asked for.
 
     ``level`` applies to the ROOT logger, because it is the application's overall
-    verbosity. ``sentry_floor`` applies to the first-party loggers only, which is
-    the scope it already had -- widening it to the root would push third-party
-    INFO into a paid pipeline.
+    verbosity. ``first_party_level`` applies to :data:`_FIRST_PARTY_ROOTS` only --
+    see that constant for why the root is the wrong scope for it.
 
     A note on the default. ``level`` defaults to WARNING rather than INFO because
     app-wide INFO on a busy server drove ~3x log volume and grew memory to the
@@ -451,8 +455,9 @@ def configure_logging(
         verbose: Take the developer profile -- colored console plus rotating
             file handlers, root at DEBUG.
         level: Root logger level for the production profile. Lower-only.
-        sentry_floor: A Sentry Logs threshold to surface records for, or None.
-            Lower-only, and applied to first-party loggers only.
+        first_party_level: Level to surface first-party records at, for a caller
+            that needs them to fire before it can forward them. None leaves them
+            alone. Lower-only, and scoped to :data:`_FIRST_PARTY_ROOTS`.
         info_loggers: Logger-name prefixes to raise to INFO individually.
 
     Returns:
@@ -485,12 +490,12 @@ def configure_logging(
         logging.getLogger(name).setLevel(quiet_level)
         pinned[name] = quiet_level
 
-    if sentry_floor is not None:
+    if first_party_level is not None:
         for name in _FIRST_PARTY_ROOTS:
             first_party = logging.getLogger(name)
-            if sentry_floor < first_party.getEffectiveLevel():
-                first_party.setLevel(sentry_floor)
-                pinned[name] = sentry_floor
+            if first_party_level < first_party.getEffectiveLevel():
+                first_party.setLevel(first_party_level)
+                pinned[name] = first_party_level
 
     return LoggingReport(
         profile="verbose" if verbose else "production",
