@@ -89,6 +89,7 @@ class SearchScope:
     lock: Any = field(default_factory=threading.RLock)
     cancelled: bool = False
     response_accepted: bool = False
+    active_finalizer: str | None = None
     outcome: str = "unknown"
     retries: int = 0
     retry_owner: SearchScope | None = field(default=None, repr=False)
@@ -105,6 +106,14 @@ class SearchScope:
     success_callbacks: list[tuple[int, str, Context, Callable[[], Any]]] = field(
         default_factory=list
     )
+
+    def claim_finalizer(self, name: str) -> bool:
+        """Linearize callback start against disconnect without holding I/O locks."""
+        with self.lock:
+            if self.cancelled:
+                return False
+            self.active_finalizer = name
+            return True
 
     def remaining(self, default: float) -> float:
         with self.lock:
@@ -346,7 +355,7 @@ async def _finalize_response(
         finally:
             loop.call_soon_threadsafe(begun.set)
         for _, name, context, callback in callbacks:
-            if state.cancelled:
+            if not state.claim_finalizer(name):
                 break
 
             def invoke(
@@ -361,7 +370,11 @@ async def _finalize_response(
                 finally:
                     _scope.reset(token)
 
-            context.run(invoke)
+            try:
+                context.run(invoke)
+            finally:
+                with state.lock:
+                    state.active_finalizer = None
 
     started = time.monotonic()
     worker = asyncio.create_task(run_sync(finalize))

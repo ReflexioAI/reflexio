@@ -1116,6 +1116,54 @@ async def test_finalization_and_remaining_retrieval_share_one_retry(finalizer_fi
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("disconnect_first", [True, False])
+async def test_finalizer_claim_is_ordered_with_disconnect(
+    monkeypatch, disconnect_first
+):
+    entered, release = threading.Event(), threading.Event()
+    disconnected = asyncio.Event()
+    effects, scopes = [], []
+    original_claim = runtime.SearchScope.claim_finalizer
+
+    def paused_claim(state, name):
+        if disconnect_first:
+            entered.set()
+            release.wait(2)
+            return original_claim(state, name)
+        claimed = original_claim(state, name)
+        entered.set()
+        release.wait(2)
+        return claimed
+
+    monkeypatch.setattr(runtime.SearchScope, "claim_finalizer", paused_claim)
+
+    async def app(scope, receive, send):
+        scopes.append(runtime.current())
+        runtime.on_response_accepted("dedup", lambda: effects.append("dedup"))
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"{}"})
+
+    middleware = runtime.SearchRuntimeMiddleware(app, capacity=1)
+    request = asyncio.create_task(call(middleware, disconnect=disconnected))
+    try:
+        assert await asyncio.to_thread(entered.wait, 1)
+        assert scopes[0].active_finalizer == (None if disconnect_first else "dedup")
+        disconnected.set()
+        async with asyncio.timeout(1):
+            while not scopes[0].cancelled:
+                await asyncio.sleep(0)
+        assert not request.done()
+        assert len(middleware.tasks) == 1
+        release.set()
+        assert await asyncio.wait_for(request, 1) == []
+        assert effects == ([] if disconnect_first else ["dedup"])
+        assert scopes[0].active_finalizer is None
+    finally:
+        release.set()
+        await asyncio.gather(request, *middleware.tasks, return_exceptions=True)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("disconnect_kind", ["asgi_disconnect", "task_cancel"])
 async def test_disconnect_skips_pending_served_state_and_response(disconnect_kind):
     entered, release = threading.Event(), threading.Event()
