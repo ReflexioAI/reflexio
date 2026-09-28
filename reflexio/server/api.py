@@ -614,42 +614,14 @@ def create_app(  # noqa: C901
     app.state.limiter = limiter
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)  # type: ignore[reportArgumentType]
 
-    # CORS
-    # The locked-down, credentialed allowlist is an enterprise concern: only
-    # hosts that wire in auth (``require_auth=True``) restrict browser origins.
-    # OSS/local runs have no auth and bundle their own docs playground on a
-    # separate port, so they allow any origin (no credentials needed).
-    if auth_required:
-        app.add_middleware(
-            CORSMiddleware,
-            allow_origins=_resolve_cors_origins(),
-            allow_credentials=True,
-            allow_methods=["*"],
-            allow_headers=["*"],
-        )
-    else:
-        app.add_middleware(
-            CORSMiddleware,
-            allow_origins=["*"],
-            allow_credentials=False,
-            allow_methods=["*"],
-            allow_headers=["*"],
-        )
-
     # Reject oversized requests before they reach endpoint handlers.
     app.add_middleware(BodySizeLimitMiddleware)
-
-    # Security headers
-    app.add_middleware(SecurityHeadersMiddleware)
 
     # Timeout middleware
     app.add_middleware(TimeoutMiddleware)
 
     # Bot protection
     app.add_middleware(BotProtectionMiddleware)
-
-    # Correlation ID wraps the request-processing middleware above.
-    app.add_middleware(CorrelationIdMiddleware)
 
     # Override get_org_id dependency if custom one provided
     if get_org_id is not None:
@@ -701,7 +673,37 @@ def create_app(  # noqa: C901
     # Health/observability endpoint (per-worker metrics for recycling)
     health_api.install(app)
 
-    # Added last so timing includes the entire application middleware stack.
+    # Deadline responses must pass through CORS, security and correlation
+    # middleware, including capacity rejection before an endpoint runs.
+    from reflexio.server.search_runtime import SearchRuntimeMiddleware
+
+    app.add_middleware(SearchRuntimeMiddleware)
+
+    # CORS
+    # The locked-down, credentialed allowlist is an enterprise concern: only
+    # hosts that wire in auth (``require_auth=True``) restrict browser origins.
+    # OSS/local runs have no auth and bundle their own docs playground on a
+    # separate port, so they allow any origin (no credentials needed).
+    if auth_required:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=_resolve_cors_origins(),
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+    else:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=["*"],
+            allow_credentials=False,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+
+    app.add_middleware(SecurityHeadersMiddleware)
+    app.add_middleware(CorrelationIdMiddleware)
+    # Publish timing includes the entire application middleware stack.
     app.add_middleware(PublishHttpTimingMiddleware)
 
     return app

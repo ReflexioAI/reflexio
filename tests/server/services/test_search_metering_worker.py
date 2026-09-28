@@ -135,6 +135,9 @@ def test_partial_start_failure_stops_started_threads_and_allows_retry(
 
     def fail_second_start(thread: threading.Thread) -> None:
         nonlocal start_calls
+        if not thread.name.startswith("search-metering-worker-"):
+            original_start(thread)
+            return
         start_calls += 1
         if start_calls == 2:
             raise RuntimeError("thread start failed")

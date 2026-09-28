@@ -42,6 +42,7 @@ from typing import TYPE_CHECKING, Any
 import litellm
 from pydantic import BaseModel
 
+from reflexio.server import search_runtime
 from reflexio.server.error_reporting import set_error_tags
 from reflexio.server.llm._litellm_subprocess import _litellm_completion_worker
 from reflexio.server.llm._litellm_types import (
@@ -1038,6 +1039,17 @@ class TextGenerationMixin:
         then starts the next rung fresh — preserving the timeout-regression
         property (a hung primary must not block the fallback) per rung.
         """
+        from reflexio.server import search_runtime
+
+        search_scope = search_runtime.current()
+        if search_scope is not None:
+            hard_timeout = search_runtime.remaining(hard_timeout)
+            params = {
+                **params,
+                "timeout": search_runtime.remaining(
+                    self._coerce_timeout_seconds(params)
+                ),
+            }
         provider_timeout = params.get("timeout", self.config.timeout)
         # timeout_seconds + grace_seconds below only classify test doubles in
         # _should_process_isolate_completion (real litellm vs a monkeypatched
@@ -1069,6 +1081,8 @@ class TextGenerationMixin:
             # feeder so the child can exit. The read is bounded by the same
             # ``hard_timeout`` budget the join used to enforce.
             deadline = time.monotonic() + hard_timeout
+            if search_scope is not None and search_scope.deadline is not None:
+                deadline = min(deadline, search_scope.deadline)
             result: tuple[str, Any] | None = None
             while result is None:
                 remaining = deadline - time.monotonic()
@@ -1100,7 +1114,15 @@ class TextGenerationMixin:
                         # last read in case the feeder flushed the payload just
                         # before exit; otherwise it died without a result.
                         try:
-                            result = result_queue.get(timeout=1.0)
+                            queue_timeout = 1.0
+                            if (
+                                search_scope is not None
+                                and search_scope.deadline is not None
+                            ):
+                                queue_timeout = max(
+                                    0.0, min(queue_timeout, deadline - time.monotonic())
+                                )
+                            result = result_queue.get(timeout=queue_timeout)
                         except queue.Empty as exc2:
                             raise LiteLLMClientError(
                                 "LLM request process exited without returning a result "
@@ -1562,7 +1584,7 @@ class TextGenerationMixin:
                     model=str(turn_params.get("model")),
                     provenance=provenance,
                 )
-            except ProviderRequestGuardError:
+            except (ProviderRequestGuardError, search_runtime.SearchDeadlineError):
                 raise
             except (
                 StructuredOutputParseError,

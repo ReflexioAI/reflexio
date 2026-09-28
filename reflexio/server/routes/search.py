@@ -2,6 +2,7 @@
 
 import logging
 import time
+from functools import partial
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -35,6 +36,7 @@ from reflexio.models.api_schema.ui.converters import (
     to_profile_view,
     to_user_playbook_view,
 )
+from reflexio.server import search_runtime
 from reflexio.server.auth import (
     default_billing_gate,
     default_get_caller_type,
@@ -349,6 +351,28 @@ def search_agent_playbooks_endpoint(
     "/api/search",
     response_model=UnifiedSearchViewResponse,
     response_model_exclude_none=True,
+    responses={
+        503: {"description": "Search capacity exhausted or storage unavailable"},
+        504: {
+            "description": "The shared search request deadline expired",
+            "content": {
+                "application/json": {
+                    "schema": {
+                        "type": "object",
+                        "required": ["detail", "reason", "correlation_id"],
+                        "properties": {
+                            "detail": {"type": "string"},
+                            "reason": {
+                                "type": "string",
+                                "enum": ["search_deadline", "backstop_timeout"],
+                            },
+                            "correlation_id": {"type": "string"},
+                        },
+                    }
+                }
+            },
+        },
+    },
 )
 @limiter.limit("120/minute")
 def unified_search_endpoint(
@@ -361,8 +385,8 @@ def unified_search_endpoint(
 ) -> UnifiedSearchViewResponse:
     """Search across all entity types (profiles, agent playbooks, user playbooks).
 
-    Runs query rewriting and embedding generation in parallel, then searches
-    all entity types in parallel. Query rewriting is gated behind the
+    Runs query rewriting followed by embedding generation, then retrieves the
+    requested entity types. Query rewriting is gated behind the
     enable_reformulation request param.
 
     Args:
@@ -374,10 +398,15 @@ def unified_search_endpoint(
     Returns:
         UnifiedSearchViewResponse: Combined search results
     """
+    scope = search_runtime.current()
+    if scope is not None:
+        with scope.lock:
+            scope.requested_search_mode = payload.search_mode.value
     assignment = _retrieval_experiment_assignment(
         org_id=org_id, caller_type=caller_type, user_id=payload.user_id
     )
     if assignment is not None and assignment.arm == "holdout":
+        search_runtime.set_outcome(True)
         resp = UnifiedSearchViewResponse(
             success=True,
             profiles=[],
@@ -386,13 +415,19 @@ def unified_search_endpoint(
             msg="Retrieval withheld by experiment assignment",
             experiment=assignment,
         )
-        enqueue_search_metering(
-            org_id=org_id,
-            caller_type=caller_type,
-            surfaced_count=0,
-            record_search_request=True,
-            request_id=payload.request_id,
-            session_id=payload.session_id,
+        search_runtime.checkpoint()
+        search_runtime.on_response_accepted(
+            "metering",
+            partial(
+                enqueue_search_metering,
+                org_id=org_id,
+                caller_type=caller_type,
+                surfaced_count=0,
+                record_search_request=True,
+                request_id=payload.request_id,
+                session_id=payload.session_id,
+            ),
+            order=20,
         )
         return resp
 
@@ -442,22 +477,30 @@ def unified_search_endpoint(
                 search_mode_effective=response.search_mode_effective,
                 experiment=assignment,
             )
+        search_runtime.checkpoint()
+        search_runtime.set_outcome(resp.success)
         if caller_type == "production_agent":
             # Outcome deliberately ignored: an unregistered recorder is a
             # supported OSS/no-auth configuration, and this route cannot
             # tell that apart from an enterprise misconfiguration. Asserting
             # here would turn a supported deployment's search into a 500.
-            record_search_exposures(
-                SearchExposureBatch(
-                    org_id=org_id,
-                    request_id=payload.request_id,
-                    session_id=payload.session_id,
-                    interaction_id=payload.interaction_id,
-                    user_id=payload.user_id,
-                    user_playbooks=tuple(response.user_playbooks),
-                )
-            )
-        enqueue_search_metering(
+            def record_exposures() -> None:
+                with profile_step("search.exposure"):
+                    record_search_exposures(
+                        SearchExposureBatch(
+                            org_id=org_id,
+                            request_id=payload.request_id,
+                            session_id=payload.session_id,
+                            interaction_id=payload.interaction_id,
+                            user_id=payload.user_id,
+                            user_playbooks=tuple(response.user_playbooks),
+                        )
+                    )
+
+            search_runtime.on_response_accepted("exposure", record_exposures, order=0)
+        search_runtime.checkpoint()
+        meter = partial(
+            enqueue_search_metering,
             org_id=org_id,
             caller_type=caller_type,
             surfaced_count=len(resp.profiles)
@@ -467,33 +510,44 @@ def unified_search_endpoint(
             request_id=getattr(payload, "request_id", None),
             session_id=getattr(payload, "session_id", None),
         )
+        if resp.success:
+            search_runtime.on_response_accepted("metering", meter, order=20)
+        else:
+            # Failed searches still count as requests, with no applied results.
+            meter()
+    search_runtime.checkpoint()
     if resp.success:
-        observe_completed_search(
-            CompletedSearch(
-                org_id=org_id,
-                caller_type=caller_type,
-                user_id=payload.user_id,
-                session_id=payload.session_id,
-                request_id=payload.request_id,
-                profile_ids=tuple(p.profile_id for p in resp.profiles),
-                user_playbook_ids=tuple(
-                    str(p.user_playbook_id) for p in resp.user_playbooks
+        search_runtime.on_response_accepted(
+            "completed_search",
+            partial(
+                observe_completed_search,
+                CompletedSearch(
+                    org_id=org_id,
+                    caller_type=caller_type,
+                    user_id=payload.user_id,
+                    session_id=payload.session_id,
+                    request_id=payload.request_id,
+                    profile_ids=tuple(p.profile_id for p in resp.profiles),
+                    user_playbook_ids=tuple(
+                        str(p.user_playbook_id) for p in resp.user_playbooks
+                    ),
                 ),
-            )
+            ),
+            order=30,
         )
     if not resp.success:
         # A TOTAL storage failure used to answer 200 with empty lists and
         # ``success=False`` only in the body, so a caller checking the status
         # code -- or just reading the result lists -- saw a backend outage as
         # "this user has no profile and no playbooks" and could not retry
-        # (Sentry PYTHON-FASTAPI-Z0). ``success=False`` has exactly one
+        # (the pooled-connection incident). ``success=False`` has exactly one
         # producer, the total-failure branch in ``unified_search_service``, so
         # this cannot fire on an ordinary empty result.
         #
         # A PARTIAL failure is deliberately NOT a 503: it returns 200 with
         # ``degraded=True``, matching the existing degrade-to-FTS contract.
         #
-        # Raised AFTER metering and exposure recording on purpose, so this
-        # changes the response status and nothing about billing.
+        # Failed requests retain their existing zero-result request metering.
+        # Successful served-state callbacks are discarded for this 503.
         raise HTTPException(status_code=503, detail=resp.msg or "Search failed")
     return resp

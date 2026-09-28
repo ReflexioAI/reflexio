@@ -1,12 +1,16 @@
+import time
 from typing import cast
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
-from reflexio.models.api_schema.domain.entities import UserPlaybook
+import pytest
+
+from reflexio.models.api_schema.domain.entities import AgentPlaybook, UserPlaybook
 from reflexio.models.api_schema.retriever_schema import (
     ReformulationResult,
     UnifiedSearchRequest,
 )
 from reflexio.models.config_schema import RetrievalFloorConfig
+from reflexio.server import search_runtime
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.llm.rerank.cross_encoder_reranker import (
     CrossEncoderUnavailableError,
@@ -36,6 +40,56 @@ class _FakeStorage:
     # so the stub must expose it even though the phases are monkeypatched.
     supports_embedding = False
     embedding_model_name = "local/minilm-l6-v2"
+
+
+def test_expired_reranker_does_not_start_source_suppression_lookup(monkeypatch):
+    storage = MagicMock(spec=_FakeStorage)
+    storage.get_source_user_playbook_ids_for_agent_playbooks = MagicMock(
+        return_value={}
+    )
+    monkeypatch.setenv("REFLEXIO_RERANK_ENABLED", "true")
+    monkeypatch.setattr(
+        uss,
+        "_run_phase_a",
+        lambda **_kw: (ReformulationResult(standalone_query="q"), None, False),
+    )
+    monkeypatch.setattr(
+        uss,
+        "_run_phase_b",
+        lambda **_kw: (
+            [],
+            [AgentPlaybook(agent_playbook_id=1, agent_version="v1", content="a")],
+            [_fake_user_playbook("u")],
+        ),
+    )
+    scope = search_runtime.SearchScope(deadline=time.monotonic() + 30)
+
+    def expire_reranker(*_args, **_kwargs):
+        scope.deadline = time.monotonic() - 1
+        raise CrossEncoderUnavailableError("request deadline consumed")
+
+    token = search_runtime._scope.set(scope)
+    try:
+        with (
+            patch(
+                "reflexio.server.services.retrieval.relevance_floor.score_pairs_with_model",
+                side_effect=expire_reranker,
+            ) as score,
+            pytest.raises(search_runtime.SearchDeadlineError),
+        ):
+            uss.run_unified_search(
+                request=UnifiedSearchRequest(query="q", user_id="u", top_k=2),
+                org_id="o",
+                storage=storage,
+                llm_client=MagicMock(),
+                prompt_manager=MagicMock(),
+                retrieval_floor=RetrievalFloorConfig(enabled=True),
+            )
+        score.assert_called_once()
+        storage.get_source_user_playbook_ids_for_agent_playbooks.assert_not_called()
+        assert not scope.success_callbacks
+    finally:
+        search_runtime._scope.reset(token)
 
 
 def test_floor_applied_per_arm(monkeypatch):

@@ -965,7 +965,7 @@ class UnifiedSearchViewResponse(BaseModel):
     degradation the caller cannot see is not a signal: the service computed
     both for the degrade-to-FTS path and this view dropped them, so over HTTP a
     partial storage failure was indistinguishable from "nothing matched" --
-    the bug the 503/degraded split exists to fix (Sentry PYTHON-FASTAPI-Z0).
+    the bug the 503/degraded split exists to fix (the pooled-connection incident).
 
     Attributes:
         degraded (bool): True when the search returned results but one of its

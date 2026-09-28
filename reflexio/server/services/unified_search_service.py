@@ -40,6 +40,7 @@ from reflexio.models.config_schema import (
     SearchMode,
     SearchOptions,
 )
+from reflexio.server import search_runtime
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.llm.rerank.common import reranker_enabled
 from reflexio.server.prompt.prompt_manager import PromptManager
@@ -145,6 +146,10 @@ def run_unified_search(
     Returns:
         UnifiedSearchResponse: Combined results from all entity types
     """
+    scope = search_runtime.current()
+    if scope is not None:
+        with scope.lock:
+            scope.requested_search_mode = request.search_mode.value
     if not request.query:
         return UnifiedSearchResponse(success=True, msg="No query provided")
 
@@ -267,7 +272,7 @@ def run_unified_search(
 
     # PARTIAL failure: the profiles arm failed while a requested playbook arm
     # answered. Serve what we have, but say so, rather than letting a storage
-    # outage read as "this user has no profile" (Sentry PYTHON-FASTAPI-Z0).
+    # outage read as "this user has no profile" (the pooled-connection incident).
     profiles_degraded = profiles is None
     if profiles_degraded:
         logger.warning(
@@ -330,6 +335,9 @@ def run_unified_search(
         # from the wider pool can take the top slots.
         profiles, agent_playbooks, user_playbooks = (arm[:top_k] for arm in arms)
 
+    # Reranking can fail open after consuming the request budget. Do not enter
+    # a fresh storage lookup after that; transport guards are the final barrier.
+    search_runtime.checkpoint()
     user_playbooks = _suppress_source_user_playbooks(
         storage=storage,
         agent_playbooks=agent_playbooks or [],
@@ -347,8 +355,15 @@ def run_unified_search(
         degraded=embedding_failed or profiles_degraded,
         search_mode_effective=effective_search_mode.value if embedding_failed else None,
     )
+    # Post-processing may perform a remote lookup. Expired results were never
+    # served and must remain available to a retry in the same session.
+    search_runtime.checkpoint()
     if session_id:
-        session_seen_cache.record(org_id, session_id, _served_entity_keys(response))
+        keys = _served_entity_keys(response)
+        search_runtime.on_response_accepted(
+            "session_dedup",
+            lambda: session_seen_cache.record(org_id, session_id, keys),
+        )
     return response
 
 
@@ -489,6 +504,10 @@ def _run_phase_b(
             swallow of its own -- their failures propagate to the outer handler
             and become the all-three case.
     """
+    scope = search_runtime.current()
+    if scope is not None:
+        with scope.lock:
+            scope.search_mode = search_mode.value
     options = SearchOptions(query_embedding=embedding, search_mode=search_mode)
 
     entity_types = set(request.entity_types or _DEFAULT_ENTITY_TYPES)
@@ -520,6 +539,7 @@ def _run_phase_b(
                     or wants_scored_single_rpc
                 )
             ):
+                search_runtime.increment("retrieval.combined_attempts")
                 combined = _run_phase_b_single_rpc(
                     request=request,
                     storage=storage,
@@ -545,6 +565,7 @@ def _run_phase_b(
                     )
                     return profiles, agent_playbooks, user_playbooks
                 span.set_data("single_rpc_fallback", True)
+            search_runtime.increment("retrieval.fanout_attempts")
             profiles_future = (
                 _submit_with_current_context(
                     _SEARCH_FANOUT_EXECUTOR,
@@ -613,14 +634,14 @@ def _run_phase_b(
             # FAILED ([] covers "no user_id" and "no matches"), and the caller
             # needs that apart from an empty answer. See this function's
             # Returns section for how the two failure modes are told apart.
-            profiles = profiles_future.result(timeout=30) if profiles_future else []
+            profiles = search_runtime.result(profiles_future) if profiles_future else []
             agent_playbooks = (
-                agent_playbooks_future.result(timeout=30)
+                search_runtime.result(agent_playbooks_future)
                 if agent_playbooks_future
                 else []
             )
             user_playbooks = (
-                user_playbooks_future.result(timeout=30)
+                search_runtime.result(user_playbooks_future)
                 if user_playbooks_future
                 else []
             )
@@ -699,6 +720,7 @@ def _run_phase_b_single_rpc(
                 "event=search_recency_missing_scores source=single_rpc method=%s",
                 method_name,
             )
+        search_runtime.increment("retrieval.compatibility_fallbacks")
         return None
 
     future = _submit_with_current_context(
@@ -720,10 +742,13 @@ def _run_phase_b_single_rpc(
         include_user_playbooks="user_playbooks" in entity_types,
     )
     try:
-        profiles, agent_playbooks, user_playbooks = future.result(timeout=30)
+        profiles, agent_playbooks, user_playbooks = search_runtime.result(future)
     except FuturesTimeoutError:
         raise
-    except Exception:
+    except Exception as exc:
+        if search_runtime.current() is not None and not _combined_rpc_unavailable(exc):
+            raise
+        search_runtime.increment("retrieval.compatibility_fallbacks")
         logger.warning(
             "Unified single-RPC search failed; falling back to per-arm fan-out",
             exc_info=True,
@@ -1047,7 +1072,7 @@ def _search_profiles_via_storage(
     Returns ``None`` -- not ``[]`` -- when the search FAILED, so a storage
     outage is distinguishable from "this user genuinely has no matching
     profile". Collapsing the two is what let a dead pooled connection surface
-    to an agent as an empty, successful answer (Sentry PYTHON-FASTAPI-Z0).
+    to an agent as an empty, successful answer (the pooled-connection incident).
 
     Args:
         storage (BaseStorage): Storage instance
@@ -1120,8 +1145,44 @@ def _submit_with_current_context(
     *args: object,
     **kwargs: object,
 ) -> Future[Any]:
+    search_runtime.checkpoint()
     context = contextvars.copy_context()
-    return executor.submit(context.run, fn, *args, **kwargs)
+    submitted = time.monotonic()
+    scope = search_runtime.current()
+    queue_key = object()
+    if scope is not None:
+        with scope.lock:
+            scope.active[queue_key] = ("search.worker_queue", submitted)
+            scope.phase_counts["search.worker_queue"] = (
+                scope.phase_counts.get("search.worker_queue", 0) + 1
+            )
+
+    def run() -> object:
+        scope = search_runtime.current()
+        if scope is not None:
+            with scope.lock:
+                scope.active.pop(queue_key, None)
+                scope.intervals.append(
+                    ("search.worker_queue", submitted, time.monotonic())
+                )
+        search_runtime.checkpoint()
+        return fn(*args, **kwargs)
+
+    try:
+        future = executor.submit(context.run, run)
+    except BaseException:
+        if scope is not None:
+            with scope.lock:
+                scope.active.pop(queue_key, None)
+                scope.intervals.append(
+                    ("search.worker_queue", submitted, time.monotonic())
+                )
+        raise
+    # Future.cancel() leaves its WorkItem in ThreadPoolExecutor's queue.
+    # Keep ownership until this wrapper is dequeued; checkpoint skips expired
+    # work without running a query, and admission remains bounded meanwhile.
+    search_runtime.track(future, cancel_queued=False)
+    return future
 
 
 def _storage_backend_name(storage: BaseStorage) -> str:
@@ -1152,3 +1213,22 @@ class UnifiedSearchService:
     ) -> None:
         self.llm_client = llm_client
         self.request_context = request_context
+
+
+def _combined_rpc_unavailable(exc: BaseException) -> bool:
+    """Only missing SQL capability may start compatibility fan-out on HTTP search."""
+    seen: set[int] = set()
+    while id(exc) not in seen:
+        seen.add(id(exc))
+        if (
+            isinstance(exc, NotImplementedError)
+            or getattr(exc, "pgcode", None) == "42883"
+        ):
+            return True
+        if getattr(exc, "code", None) == "PGRST202":
+            return True
+        cause = exc.__cause__ or exc.__context__
+        if cause is None:
+            break
+        exc = cause
+    return False

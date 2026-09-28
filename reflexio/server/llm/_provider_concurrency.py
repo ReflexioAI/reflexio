@@ -117,13 +117,20 @@ def provider_slot(model: str) -> Iterator[None]:
     ``ProviderCapSaturatedError``) for providers in
     ``REFLEXIO_LLM_FAIL_CLOSED_PROVIDERS``.
     """
+    from reflexio.server import search_runtime
+
+    search_runtime.checkpoint()
     provider = _provider_key(model)
     if provider is None:
         yield  # unknown provider → do not cap
         return
     sem = _get_semaphore(provider)
-    acquired = sem.acquire(timeout=_ACQUIRE_TIMEOUT_SECONDS)
+    with search_runtime.phase("llm.provider_queue"):
+        acquired = sem.acquire(
+            timeout=search_runtime.remaining(_ACQUIRE_TIMEOUT_SECONDS)
+        )
     if not acquired:
+        search_runtime.checkpoint()
         cap = _max_concurrency_for_provider(provider)
         if provider in _fail_closed_providers:
             logger.warning(
@@ -146,6 +153,7 @@ def provider_slot(model: str) -> Iterator[None]:
         yield
         return
     try:
+        search_runtime.checkpoint()
         yield
     finally:
         sem.release()

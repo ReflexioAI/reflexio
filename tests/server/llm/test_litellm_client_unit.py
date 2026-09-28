@@ -4808,3 +4808,142 @@ class TestSafeValidationErrors:
 
         assert errors == ("count: int_parsing",)
         assert all("customer data" not in error for error in errors)
+
+
+@pytest.mark.parametrize("deadline_enabled", [True, False])
+@patch("reflexio.server.llm.litellm_client.litellm.embedding")
+def test_search_embedding_retries_follow_deadline_switch(
+    mock_embedding, monkeypatch, deadline_enabled
+):
+    from reflexio.server import search_runtime
+
+    _force_litellm_embedding_route(monkeypatch)
+    mock_embedding.return_value = _make_embedding_response([0.1, 0.2])
+    client = _build_client()
+    scope = search_runtime.SearchScope(
+        deadline=time.monotonic() + 1 if deadline_enabled else None
+    )
+    token = search_runtime._scope.set(scope)
+    try:
+        client.get_embedding("text", model="text-embedding-3-small")
+        assert mock_embedding.call_args.kwargs["num_retries"] == (
+            0 if deadline_enabled else client.config.max_retries
+        )
+        if deadline_enabled:
+            assert 0 < mock_embedding.call_args.kwargs["timeout"] <= 1
+        else:
+            assert mock_embedding.call_args.kwargs["timeout"] == client.config.timeout
+    finally:
+        search_runtime._scope.reset(token)
+    client.get_embedding("text", model="text-embedding-3-small")
+    assert mock_embedding.call_args.kwargs["num_retries"] == client.config.max_retries
+    assert mock_embedding.call_args.kwargs["timeout"] == client.config.timeout
+
+
+@pytest.mark.parametrize("operation", ["embedding", "batch_embedding", "generation"])
+def test_provider_deadline_propagates_without_embedding_or_model_fallback(
+    monkeypatch, operation
+):
+    from contextlib import contextmanager
+
+    from reflexio.server import search_runtime
+
+    _force_litellm_embedding_route(monkeypatch)
+    slots = []
+    error = search_runtime.SearchDeadlineError("provider admission expired")
+
+    @contextmanager
+    def expired_slot(model):
+        slots.append(model)
+        raise error
+        yield  # pragma: no cover
+
+    module = (
+        "_litellm_text_generation"
+        if operation == "generation"
+        else "_litellm_embedding"
+    )
+    monkeypatch.setattr(f"reflexio.server.llm.{module}.provider_slot", expired_slot)
+    provider = MagicMock(side_effect=AssertionError("provider must not be called"))
+    monkeypatch.setattr("litellm.embedding", provider)
+    monkeypatch.setattr("litellm.completion", provider)
+    client = LiteLLMClient(
+        LiteLLMConfig(model="minimax/MiniMax-M3", fallback_models=["zai/glm-5.2"])
+    )
+    with pytest.raises(search_runtime.SearchDeadlineError) as caught:
+        if operation == "generation":
+            client.generate_chat_response([{"role": "user", "content": "hi"}])
+        elif operation == "batch_embedding":
+            client.get_embeddings(["text"], model="text-embedding-3-small")
+        else:
+            client.get_embedding("text", model="text-embedding-3-small")
+    assert caught.value is error
+    assert len(slots) == 1
+    provider.assert_not_called()
+
+
+def test_expired_search_cannot_start_another_completion(monkeypatch):
+    from reflexio.server import search_runtime
+
+    def forbidden(**_params):
+        pytest.fail("completion issued after search deadline")
+
+    monkeypatch.setattr("litellm.completion", forbidden)
+    client = _build_client()
+    scope = search_runtime.SearchScope(deadline=time.monotonic() - 1)
+    token = search_runtime._scope.set(scope)
+    try:
+        with pytest.raises(search_runtime.SearchDeadlineError):
+            client._completion_with_hard_timeout(
+                {"model": "x", "timeout": 30}, hard_timeout=35
+            )
+    finally:
+        search_runtime._scope.reset(token)
+
+
+@pytest.mark.parametrize("scope_kind", ["enabled", "disabled", "unscoped"])
+def test_completion_startup_and_final_queue_read_share_absolute_budget(
+    monkeypatch, scope_kind
+):
+    import queue
+
+    from reflexio.server import search_runtime
+
+    client = _build_client()
+    clock = [100.0]
+    waits = []
+    monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+    context = MagicMock()
+    process = context.Process.return_value
+    process.start.side_effect = lambda: clock.__setitem__(0, clock[0] + 0.45)
+    process.is_alive.return_value = False
+
+    def empty_result(*, timeout):
+        waits.append(timeout)
+        clock[0] += timeout
+        raise queue.Empty
+
+    context.Queue.return_value.get.side_effect = empty_result
+    monkeypatch.setattr(multiprocessing, "get_context", lambda: context)
+    monkeypatch.setattr(
+        client, "_should_process_isolate_completion", lambda *_args: True
+    )
+    scope = (
+        None
+        if scope_kind == "unscoped"
+        else search_runtime.SearchScope(
+            deadline=100.5 if scope_kind == "enabled" else None
+        )
+    )
+    token = search_runtime._scope.set(scope)
+    try:
+        with pytest.raises(LiteLLMClientError, match="without returning a result"):
+            client._completion_with_hard_timeout({"model": "x", "timeout": 2}, 2)
+        if scope_kind == "enabled":
+            assert sum(waits) == pytest.approx(0.05)
+        else:
+            assert waits == [0.1, 1.0]
+        context.Queue.return_value.close.assert_called_once()
+        context.Queue.return_value.join_thread.assert_called_once()
+    finally:
+        search_runtime._scope.reset(token)

@@ -21,6 +21,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from reflexio.server.env_utils import env_truthy
+from reflexio.server.search_runtime import checkpoint, http_request_deadline, remaining
 from reflexio.server.tracing import profile_step
 
 _LOGGER = logging.getLogger(__name__)
@@ -255,7 +256,8 @@ def _http_client() -> httpx.Client:
                         "Failed to close stale embedding HTTP client", exc_info=True
                     )
             _http_client_instance = httpx.Client(
-                limits=httpx.Limits(keepalive_expiry=_HTTP_KEEPALIVE_EXPIRY_SECONDS)
+                limits=httpx.Limits(keepalive_expiry=_HTTP_KEEPALIVE_EXPIRY_SECONDS),
+                event_hooks={"request": [http_request_deadline]},
             )
             _http_client_pid = pid
         return _http_client_instance
@@ -445,7 +447,8 @@ def _post_embedding_batch(
                     attempt=attempt + 1,
                     max_attempts=2,
                 ):
-                    time.sleep(_EMBEDDING_RETRY_BACKOFF_SECONDS)
+                    time.sleep(remaining(_EMBEDDING_RETRY_BACKOFF_SECONDS))
+                    checkpoint()
         except (httpx.HTTPError, json.JSONDecodeError, ValueError) as exc:
             # The server already received the request: a read timeout means it
             # is still encoding, and retrying would queue a second identical

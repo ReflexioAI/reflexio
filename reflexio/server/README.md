@@ -36,6 +36,7 @@ Description: FastAPI backend server that processes user interactions to generate
 
 
 - **API composer**: `api.py` - `create_app()` factory, middleware/capability wiring, OpenAPI auth decoration, and `core_router` aggregation
+- **Search request runtime**: `search_runtime.py` - HTTP deadline, unsampled phase timing, bounded worker ownership and connection cancellation; embedded calls have no request scope
 - **Domain routes**: `routes/` - FastAPI route modules; add new public API surfaces here and include their routers in `api.py`
 - **Endpoint Helpers**: `api_endpoints/` - Shared handlers/helpers plus `RequestContext` used by route modules
 - **Extension Registry**: `extensions.py` - Capability and service registry for optional OSS/enterprise integrations

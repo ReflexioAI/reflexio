@@ -529,7 +529,7 @@ def test_a_storm_of_uncorrelated_serves_reports_once_and_counts_the_rest(
     """Bounded by construction: the motivating deployment stored ~95k of these.
 
     Now that every one of them also WRITES a row, an unthrottled report would be
-    one Sentry event per search on top of the write.
+    one error-reporting event per search on top of the write.
     """
     recorder = _CollectingRecorder()
     register_service(SEARCH_EXPOSURE_RECORDER, recorder)
