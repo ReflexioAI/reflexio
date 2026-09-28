@@ -23,7 +23,10 @@ added: three handlers became five, then seven.
 from __future__ import annotations
 
 import logging
+import logging.handlers
+import tempfile
 from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 
@@ -500,3 +503,49 @@ def test_a_handler_this_module_did_not_attach_is_left_alone() -> None:
     assert foreign.level == logging.CRITICAL, (
         "configure_logging re-levelled a handler it did not attach"
     )
+
+
+def test_a_foreign_rotating_handler_does_not_suppress_the_verbose_profile() -> None:
+    """The verbose profile must still get its console and both log files.
+
+    ``RotatingFileHandler`` is a ``StreamHandler`` subclass via ``FileHandler``, so
+    a class-based guard treated one unrelated rotating handler -- an embedding
+    application's own -- as proof that both Reflexio file handlers AND the console
+    already existed. The result was a verbose profile with no colored console, no
+    ``dev.log`` and no ``llm_io.log``. Raised by Codex on reflexio#551.
+    """
+    root = _blank_root()
+    foreign = logging.handlers.RotatingFileHandler(
+        Path(tempfile.gettempdir()) / "foreign_probe.log", maxBytes=1024, backupCount=0
+    )
+    root.addHandler(foreign)
+    try:
+        report = configure_logging(verbose=True)
+
+        roles = {
+            getattr(h, "_reflexio_managed_handler_role", None) for h in root.handlers
+        }
+        assert {"console", "devlog", "llmio"} <= roles, (
+            f"the verbose profile skipped its own handlers; roles present: {roles}"
+        )
+        assert report.handlers.count("RotatingFileHandler:DEBUG") == 2
+    finally:
+        foreign.close()
+        root.removeHandler(foreign)
+
+
+def test_a_foreign_console_still_suppresses_ours() -> None:
+    """The control: the foreign-console check must keep working.
+
+    Excluding ``FileHandler`` narrowed that check; it did not remove it. A real
+    console attached by an embedding application must still win, or two handlers
+    write every record to the same stream.
+    """
+    root = _blank_root()
+    foreign = logging.StreamHandler()
+    root.addHandler(foreign)
+
+    configure_logging(verbose=False)
+
+    roles = {getattr(h, "_reflexio_managed_handler_role", None) for h in root.handlers}
+    assert "stdout" not in roles, "a genuine foreign console must still suppress ours"

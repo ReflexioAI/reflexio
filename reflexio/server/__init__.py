@@ -273,7 +273,7 @@ def _build_verbose_handlers(root: logging.Logger) -> None:
 
     cid_filter = CorrelationIdFilter()
 
-    if not any(isinstance(h, logging.StreamHandler) for h in root.handlers):
+    if _managed_handler(root, "console") is None and not _has_foreign_console(root):
         console_handler = logging.StreamHandler(sys.stdout)
         console_handler.setLevel(logging.INFO)  # Excludes LLM_PROMPT (level 15)
         console_handler.setFormatter(
@@ -294,6 +294,7 @@ def _build_verbose_handlers(root: logging.Logger) -> None:
 
         console_handler.addFilter(DuplicateFilter(window_seconds=5))
         console_handler.addFilter(cid_filter)
+        setattr(console_handler, _MANAGED_HANDLER_ATTR, "console")
         root.addHandler(console_handler)
 
     from reflexio.cli.log_format import DEV_LOG_FILE, LLM_IO_LOG_FILE, LOG_DIR
@@ -303,7 +304,9 @@ def _build_verbose_handlers(root: logging.Logger) -> None:
     # omission was invisible; as a callable function a second call stacked two
     # more RotatingFileHandlers onto the root, so every record was written to the
     # same file twice.
-    if any(isinstance(h, logging.handlers.RotatingFileHandler) for h in root.handlers):
+    # Guarded on OUR markers rather than on the class: an unrelated
+    # RotatingFileHandler is not evidence that ours exist.
+    if _managed_handler(root, "devlog") and _managed_handler(root, "llmio"):
         return
 
     # LOG_DIR honors REFLEXIO_LOG_DIR; mkdir here so RotatingFileHandler doesn't
@@ -322,6 +325,7 @@ def _build_verbose_handlers(root: logging.Logger) -> None:
     )
     file_handler.addFilter(_ExcludeLLMPrompt())
     file_handler.addFilter(cid_filter)
+    setattr(file_handler, _MANAGED_HANDLER_ATTR, "devlog")
     root.addHandler(file_handler)
 
     # LLM I/O log file -- only LLM_PROMPT level, with structured delimiters
@@ -331,14 +335,46 @@ def _build_verbose_handlers(root: logging.Logger) -> None:
     llm_io_handler.setLevel(logging.DEBUG)
     llm_io_handler.setFormatter(_LLMIOFormatter())
     llm_io_handler.addFilter(_LLMPromptOnly())
+    setattr(llm_io_handler, _MANAGED_HANDLER_ATTR, "llmio")
     root.addHandler(llm_io_handler)
 
 
-#: Marks the stdout handler this module owns, so a second call can adjust ITS level
-#: without touching a handler somebody else attached -- pytest's
-#: ``LogCaptureHandler`` is a ``StreamHandler`` subclass, so "is there a
-#: StreamHandler?" cannot answer "is there MINE?".
-_MANAGED_HANDLER_ATTR = "_reflexio_managed_stdout_handler"
+#: Names the ROLE of a handler this module attached, so a later call finds its own
+#: without pattern-matching on class. Class matching cannot answer "is this mine?"
+#: and gets it wrong in both directions:
+#:
+#: * pytest's ``LogCaptureHandler`` is a ``StreamHandler`` subclass, so a class
+#:   check adopts the test framework's handler as the console.
+#: * ``RotatingFileHandler`` is ALSO a ``StreamHandler`` subclass (via
+#:   ``FileHandler``), so one unrelated rotating handler on the root made the
+#:   verbose profile skip its console AND both log files -- no ``dev.log``, no
+#:   ``llm_io.log``, no console. Raised by Codex on reflexio#551, after the same
+#:   defect had been fixed for the stdout handler alone: marking one of four
+#:   handlers was fixing the line, not the class.
+_MANAGED_HANDLER_ATTR = "_reflexio_managed_handler_role"
+
+
+def _managed_handler(root: logging.Logger, role: str) -> logging.Handler | None:
+    """Return the handler this module attached for ``role``, if still present."""
+    for handler in root.handlers:
+        if getattr(handler, _MANAGED_HANDLER_ATTR, None) == role:
+            return handler
+    return None
+
+
+def _has_foreign_console(root: logging.Logger) -> bool:
+    """Return whether something else already writes records to a console.
+
+    ``FileHandler`` and its subclasses are excluded deliberately: a file handler
+    is not a console, and counting one as such is what suppressed the verbose
+    profile's own handlers.
+    """
+    return any(
+        isinstance(handler, logging.StreamHandler)
+        and not isinstance(handler, logging.FileHandler)
+        and not getattr(handler, _MANAGED_HANDLER_ATTR, None)
+        for handler in root.handlers
+    )
 
 
 def _build_production_handler(root: logging.Logger, level: int) -> None:
@@ -357,11 +393,11 @@ def _build_production_handler(root: logging.Logger, level: int) -> None:
     """
     handler_level = min(logging.INFO, level)
 
-    for existing in root.handlers:
-        if getattr(existing, _MANAGED_HANDLER_ATTR, False):
-            existing.setLevel(handler_level)
-            return
-    if any(isinstance(h, logging.StreamHandler) for h in root.handlers):
+    existing = _managed_handler(root, "stdout")
+    if existing is not None:
+        existing.setLevel(handler_level)
+        return
+    if _has_foreign_console(root):
         return
 
     handler = logging.StreamHandler(sys.stdout)
@@ -369,7 +405,7 @@ def _build_production_handler(root: logging.Logger, level: int) -> None:
     handler.setFormatter(
         logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s")
     )
-    setattr(handler, _MANAGED_HANDLER_ATTR, True)
+    setattr(handler, _MANAGED_HANDLER_ATTR, "stdout")
     root.addHandler(handler)
 
 
