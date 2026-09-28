@@ -42,6 +42,7 @@ from __future__ import annotations
 import subprocess
 import sys
 import textwrap
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -60,6 +61,22 @@ _ENTRY_POINTS = (
     "reflexio.cli.app",
     "reflexio.models.config_schema",
 )
+
+
+def _console_script_modules() -> tuple[str, ...]:
+    """The module behind each `[project.scripts]` entry, read from pyproject.toml.
+
+    DERIVED rather than listed, so a console script added later is covered without
+    anyone remembering this file. That matters here: the installed entry point is
+    `reflexio.cli.__main__:main`, and importing `reflexio.cli.app` does NOT load
+    `reflexio.cli.__main__` -- measured. So a leak in the real entry module would
+    have left every check in this file green while `reflexio --help` died on an OSS
+    install. Raised by Codex on ReflexioAI/reflexio#554.
+    """
+    config = tomllib.loads((_REPO_ROOT / "pyproject.toml").read_text())
+    targets = config["project"]["scripts"]
+    assert targets, "pyproject.toml declares no console scripts -- path or key moved"
+    return tuple(sorted({target.split(":", 1)[0] for target in targets.values()}))
 
 
 def _blocker_for(blocked: str) -> str:
@@ -139,6 +156,23 @@ def test_each_entry_point_imports_without_enterprise(entry_point: str) -> None:
         f"a PyPI install.\n\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
     )
     assert "IMPORTS_OK" in result.stdout
+
+
+@pytest.mark.parametrize("module", _console_script_modules())
+def test_each_installed_console_script_imports_without_enterprise(module: str) -> None:
+    """The INSTALLED entry points, which are not the same modules as above.
+
+    `_ENTRY_POINTS` is what a library consumer imports; this is what `pip install`
+    puts on the PATH. A leak in one of these breaks the command outright, and the
+    module list is read from `pyproject.toml` rather than restated here.
+    """
+    result = _import_in_child(module)
+
+    assert result.returncode == 0, (
+        f"the installed console script module {module!r} cannot be imported with "
+        f"reflexio_ext absent, so `reflexio` is broken on an OSS install:\n"
+        f"{result.stderr}"
+    )
 
 
 def test_the_blocker_and_not_the_venv_is_what_stops_the_import() -> None:
