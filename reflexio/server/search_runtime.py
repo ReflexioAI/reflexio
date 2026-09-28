@@ -274,7 +274,39 @@ def on_response_accepted(
         state.success_callbacks.append((order, name, copy_context(), callback))
 
 
-async def _finalize_response(state: SearchScope, status: int, deadline: float) -> None:
+def _disconnect_finalizer(
+    state: SearchScope, finalization: SearchScope, worker: asyncio.Task[None]
+) -> None:
+    with state.lock:
+        state.cancel("disconnected")
+        if not state.response_accepted:
+            worker.cancel()
+    finalization.cancel("disconnected")
+
+
+def _record_finalization(
+    state: SearchScope, finalization: SearchScope, started: float
+) -> None:
+    with state.lock, finalization.lock:
+        state.intervals.extend(finalization.intervals)
+        for name, count in finalization.phase_counts.items():
+            state.phase_counts[name] = state.phase_counts.get(name, 0) + count
+        for name, count in finalization.counters.items():
+            previous = state.counters.get(name, 0)
+            state.counters[name] = (
+                max(previous, count) if name.endswith("_peak") else previous + count
+            )
+    record_health(
+        "search.finalization.duration",
+        time.monotonic() - started,
+        kind="distribution",
+        unit="second",
+    )
+
+
+async def _finalize_response(
+    state: SearchScope, status: int, deadline: float, incoming: _RequestInput
+) -> None:
     """Finish accepted-response writes before release; never substitute a 504.
 
     Queueing uses the original deadline. Acceptance happens inside the worker;
@@ -333,6 +365,10 @@ async def _finalize_response(state: SearchScope, status: int, deadline: float) -
 
     started = time.monotonic()
     worker = asyncio.create_task(run_sync(finalize))
+    worker.add_done_callback(lambda _: begun.set())
+    incoming.cancel_finalizer = lambda: _disconnect_finalizer(
+        state, finalization, worker
+    )
     cancelled = False
     try:
         try:
@@ -350,13 +386,14 @@ async def _finalize_response(state: SearchScope, status: int, deadline: float) -
             )
         except SearchDeadlineError:
             await asyncio.gather(worker, return_exceptions=True)
+            if incoming.disconnected:
+                return
             raise
         except TimeoutError:
             finalization.cancel("finalization_timeout")
         except asyncio.CancelledError:
             cancelled = True
-            state.cancel("disconnected")
-            finalization.cancel("disconnected")
+            _disconnect_finalizer(state, finalization, worker)
         # Even repeated ASGI cancellation must not release admission while the
         # actual worker still owns a database connection or durable write.
         while not worker.done():
@@ -364,27 +401,16 @@ async def _finalize_response(state: SearchScope, status: int, deadline: float) -
                 await asyncio.shield(worker)
             except asyncio.CancelledError:
                 cancelled = True
-                state.cancel("disconnected")
-                finalization.cancel("disconnected")
-        worker.result()
+                _disconnect_finalizer(state, finalization, worker)
         if cancelled:
+            await asyncio.gather(worker, return_exceptions=True)
+            if incoming.disconnected:
+                return
             raise asyncio.CancelledError
+        worker.result()
     finally:
-        with state.lock, finalization.lock:
-            state.intervals.extend(finalization.intervals)
-            for name, count in finalization.phase_counts.items():
-                state.phase_counts[name] = state.phase_counts.get(name, 0) + count
-            for name, count in finalization.counters.items():
-                previous = state.counters.get(name, 0)
-                state.counters[name] = (
-                    max(previous, count) if name.endswith("_peak") else previous + count
-                )
-        record_health(
-            "search.finalization.duration",
-            time.monotonic() - started,
-            kind="distribution",
-            unit="second",
-        )
+        incoming.cancel_finalizer = None
+        _record_finalization(state, finalization, started)
 
 
 def result(future: Future[Any]) -> Any:
@@ -472,6 +498,8 @@ class _RequestInput:
         self.receive, self.state, self.finished = receive, state, finished
         self.queue: asyncio.Queue[Message] = asyncio.Queue(maxsize=1)
         self.body: bytes | None = None
+        self.disconnected = False
+        self.cancel_finalizer: Callable[[], None] | None = None
 
     async def read_body(self, scope: Scope) -> bool:
         from reflexio.server.middleware import (
@@ -505,7 +533,10 @@ class _RequestInput:
         while True:
             message = await self.receive()
             if message["type"] == "http.disconnect":
+                self.disconnected = True
                 self.state.cancel("disconnected")
+                if self.cancel_finalizer is not None:
+                    self.cancel_finalizer()
                 self.finished.set()
                 self.wake()
                 return
@@ -668,7 +699,7 @@ class SearchRuntimeMiddleware:
                 # and a later timeout cannot replace committed success with 504.
                 with phase("search.finalization", cleanup=True):
                     await _finalize_response(
-                        state, status, state.deadline or ingress_backstop
+                        state, status, state.deadline or ingress_backstop, incoming
                     )
                 if state.cancelled:
                     return

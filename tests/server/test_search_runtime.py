@@ -13,8 +13,8 @@ from reflexio.server import search_runtime as runtime
 from reflexio.server.tracing import profile_step
 
 
-async def call(app, *, disconnect=None, receive_input=None):
-    messages = []
+async def call(app, *, disconnect=None, receive_input=None, messages=None):
+    messages = [] if messages is None else messages
     delivered = False
 
     async def receive():
@@ -858,6 +858,62 @@ async def test_finalizer_queue_expiry_returns_504_without_served_state():
     finally:
         release.set()
         await blocker
+        limiter.total_tokens = previous_tokens
+    assert not effects
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("disconnect_kind", ["asgi_disconnect", "task_cancel"])
+async def test_cancellation_while_finalizer_queued_preserves_disconnect(
+    disconnect_kind,
+):
+    import anyio.to_thread
+
+    entered, release = threading.Event(), threading.Event()
+    disconnected = asyncio.Event()
+    effects, sent = [], []
+    limiter = anyio.to_thread.current_default_thread_limiter()
+    previous_tokens = limiter.total_tokens
+    limiter.total_tokens = 1
+
+    def occupy_worker():
+        entered.set()
+        release.wait(2)
+
+    async def app(scope, receive, send):
+        runtime.on_response_accepted("exposure", lambda: effects.append("recorded"))
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"{}"})
+
+    middleware = runtime.SearchRuntimeMiddleware(app, timeout=5, capacity=1)
+    blocker = asyncio.create_task(anyio.to_thread.run_sync(occupy_worker))
+    request = None
+    try:
+        assert await asyncio.to_thread(entered.wait, 1)
+        request = asyncio.create_task(
+            call(middleware, messages=sent, disconnect=disconnected)
+        )
+        async with asyncio.timeout(1):
+            while limiter.statistics().tasks_waiting != 1:
+                await asyncio.sleep(0)
+        if disconnect_kind == "task_cancel":
+            request.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(request, 0.5)
+        else:
+            disconnected.set()
+            assert await asyncio.wait_for(request, 0.5) == []
+        await asyncio.gather(*middleware.tasks, return_exceptions=True)
+        await asyncio.sleep(0)  # Run task-done callbacks that remove admission.
+        assert not effects
+        assert not sent
+        assert not middleware.tasks
+        assert limiter.borrowed_tokens == 1
+    finally:
+        release.set()
+        await blocker
+        if request is not None:
+            await asyncio.gather(request, return_exceptions=True)
         limiter.total_tokens = previous_tokens
     assert not effects
 
