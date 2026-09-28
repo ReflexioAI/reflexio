@@ -182,25 +182,20 @@ _NOISY_FIRST_PARTY = (("reflexio.server.site_var.site_var_manager", logging.ERRO
 #: outranks the root, so they are immune. An earlier version of this comment cited
 #: exactly those two (``litellm``, ``httpx``) and was wrong about its own example.
 #:
-#: ``reflexio_ext`` is named here deliberately, and is NOT a dependency on the
-#: enterprise package. It is a logger-namespace STRING: ``getLogger`` creates a
-#: logger object for any name, so on a machine where enterprise is not installed
-#: this entry is an unused object and nothing more. The installed application may
-#: span both namespaces, and this module is the only place that sets levels, so
-#: leaving the name out would silently fail to lower enterprise loggers -- which is
-#: how ``first_party_level`` came to be added in the first place.
+#: THIS PACKAGE'S OWN namespace only. A downstream distribution whose code lives
+#: under a different root passes it as ``extra_first_party_roots``; nothing here
+#: names it.
 #:
-#: The alternative -- a ``first_party_roots`` parameter, or a setter beside
-#: ``configure_error_reporter`` in ``server/extensions.py`` -- was considered and
-#: rejected: it trades a harmless string for a knob with one caller whose
-#: forget-to-call mode is silent, and "accepted and does nothing" is the exact
-#: defect class this function was refactored to remove.
-#:
-#: What actually holds the OSS/enterprise boundary is
-#: ``tests/test_oss_imports_without_enterprise.py``, which imports this package's
-#: entry points in a child interpreter with ``reflexio_ext`` unimportable. A real
-#: import would fail there; this string does not.
-_FIRST_PARTY_ROOTS = ("reflexio", "reflexio_ext")
+#: An earlier version of this tuple carried a second, downstream root as a bare
+#: string, on the reasoning that a logger name is not an import -- ``getLogger``
+#: creates an object for any name, so on a machine without that package the entry
+#: is inert. The reasoning was not wrong; it was not mine to make. The enterprise
+#: guard added in reflexio-enterprise#474,
+#: ``test_oss_never_imports_enterprise``, walks the AST of every file here and
+#: rejects a string constant naming that package as well as a real import, with no
+#: allowlist and no rationale field -- an absolute invariant, already decided. It
+#: had been red on the superproject's ``main`` for two commits before anyone looked.
+_FIRST_PARTY_ROOTS = ("reflexio",)
 
 
 @dataclass(frozen=True)
@@ -437,6 +432,7 @@ def configure_logging(
     verbose: bool,
     level: int = logging.WARNING,
     first_party_level: int | None = None,
+    extra_first_party_roots: Sequence[str] = (),
     info_loggers: Sequence[str] = (),
 ) -> LoggingReport:
     """Configure application logging and report what was done.
@@ -476,7 +472,13 @@ def configure_logging(
         level: Root logger level for the production profile. Lower-only.
         first_party_level: Level to surface first-party records at, for a caller
             that needs them to fire before it can forward them. None leaves them
-            alone. Lower-only, and scoped to :data:`_FIRST_PARTY_ROOTS`.
+            alone. Lower-only, and scoped to :data:`_FIRST_PARTY_ROOTS` plus
+            ``extra_first_party_roots``.
+        extra_first_party_roots: Further logger roots to treat as first-party,
+            ADDED to :data:`_FIRST_PARTY_ROOTS` rather than replacing it -- so a
+            caller that forgets them loses only its own namespace and can never
+            silently stop lowering this package's. Ignored when
+            ``first_party_level`` is None.
         info_loggers: Logger-name prefixes to raise to INFO individually.
 
     Returns:
@@ -510,7 +512,7 @@ def configure_logging(
         pinned[name] = quiet_level
 
     if first_party_level is not None:
-        for name in _FIRST_PARTY_ROOTS:
+        for name in (*_FIRST_PARTY_ROOTS, *extra_first_party_roots):
             first_party = logging.getLogger(name)
             if first_party_level < first_party.getEffectiveLevel():
                 first_party.setLevel(first_party_level)
