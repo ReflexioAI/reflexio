@@ -7,7 +7,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 
 from reflexio.server import search_runtime as runtime
 from reflexio.server.tracing import profile_step
@@ -88,7 +88,8 @@ async def test_timeout_does_not_release_worker_capacity_or_send_late_success():
 
 
 @pytest.mark.asyncio
-async def test_success_and_business_failure_are_distinct_metrics(monkeypatch):
+@pytest.mark.parametrize("status", [200, 503])
+async def test_business_failure_is_preserved_in_metrics(monkeypatch, caplog, status):
     events = []
     monkeypatch.setattr(
         runtime, "record_health", lambda name, *_args, **kw: events.append((name, kw))
@@ -99,13 +100,47 @@ async def test_success_and_business_failure_are_distinct_metrics(monkeypatch):
     def search():
         with profile_step("search.embedding"):
             runtime.set_outcome(False)
+        if status == 503:
+            raise HTTPException(status_code=503, detail="Search storage unavailable")
         return {"success": False}
 
     messages = await call(runtime.SearchRuntimeMiddleware(app))
-    assert messages[0]["status"] == 200
+    assert messages[0]["status"] == status
     assert (
         "search.requests",
-        {"outcome": "application_failure", "status": "200"},
+        {"outcome": "application_failure", "status": str(status)},
+    ) in events
+    timing = next(
+        record.message
+        for record in caplog.records
+        if "event=search_timing " in record.message
+    )
+    assert json.loads(timing.split("event=search_timing ", 1)[1])["outcome"] == (
+        "application_failure"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [403, 500])
+@pytest.mark.parametrize("declared_success", [False, True])
+async def test_http_error_infers_failure_without_application_failure(
+    monkeypatch, status, declared_success
+):
+    events = []
+    monkeypatch.setattr(
+        runtime, "record_health", lambda name, *_args, **kw: events.append((name, kw))
+    )
+
+    async def app(scope, receive, send):
+        if declared_success:
+            runtime.set_outcome(True)
+        await send({"type": "http.response.start", "status": status, "headers": []})
+        await send({"type": "http.response.body", "body": b"{}"})
+
+    assert (await call(runtime.SearchRuntimeMiddleware(app)))[0]["status"] == status
+    assert (
+        "search.requests",
+        {"outcome": "http_failure", "status": str(status)},
     ) in events
 
 

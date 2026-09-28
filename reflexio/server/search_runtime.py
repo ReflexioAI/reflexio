@@ -762,6 +762,7 @@ def _emit(state: SearchScope, response_at: float, status: int) -> None:
         "timeout",
         "disconnected",
         "capacity",
+        "application_failure",
     }:
         state.outcome = "http_failure"
     fields = state.snapshot(response_at)
