@@ -999,3 +999,55 @@ async def test_finalization_and_remaining_retrieval_share_one_retry(finalizer_fi
 
     assert (await call(runtime.SearchRuntimeMiddleware(app)))[0]["status"] == 200
     assert claims == [True, False]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("disconnect_kind", ["asgi_disconnect", "task_cancel"])
+async def test_disconnect_skips_pending_served_state_and_response(disconnect_kind):
+    entered, release = threading.Event(), threading.Event()
+    disconnected = asyncio.Event()
+    effects = []
+    scopes = []
+
+    def exposure():
+        effects.append("durable_exposure")
+        entered.set()
+        release.wait(2)
+
+    async def app(scope, receive, send):
+        state = runtime.current()
+        assert state is not None
+        scopes.append(state)
+        runtime.on_response_accepted("exposure", exposure, order=0)
+        for name in ("dedup", "metering", "observer"):
+            runtime.on_response_accepted(name, lambda name=name: effects.append(name))
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"{}"})
+
+    middleware = runtime.SearchRuntimeMiddleware(app, timeout=1, capacity=1)
+    request = asyncio.create_task(call(middleware, disconnect=disconnected))
+    try:
+        assert await asyncio.to_thread(entered.wait, 1)
+        if disconnect_kind == "asgi_disconnect":
+            disconnected.set()
+        else:
+            request.cancel()
+
+        async def cancellation_observed():
+            while not scopes[0].cancelled:
+                await asyncio.sleep(0)
+
+        await asyncio.wait_for(cancellation_observed(), 1)
+        assert not request.done()
+        assert len(middleware.tasks) == 1
+        assert (await call(middleware))[0]["status"] == 503
+        release.set()
+        if disconnect_kind == "asgi_disconnect":
+            assert await asyncio.wait_for(request, 1) == []
+        else:
+            with pytest.raises(asyncio.CancelledError):
+                await request
+        assert effects == ["durable_exposure"]
+    finally:
+        release.set()
+        await asyncio.gather(request, *middleware.tasks, return_exceptions=True)

@@ -296,6 +296,8 @@ async def _finalize_response(state: SearchScope, status: int, deadline: float) -
 
     def finalize() -> None:
         for _, name, context, callback in callbacks:
+            if state.cancelled:
+                break
 
             def invoke(
                 name: str = name, callback: Callable[[], Any] = callback
@@ -321,6 +323,7 @@ async def _finalize_response(state: SearchScope, status: int, deadline: float) -
             finalization.cancel("finalization_timeout")
         except asyncio.CancelledError:
             cancelled = True
+            state.cancel("disconnected")
             finalization.cancel("disconnected")
         # Even repeated ASGI cancellation must not release admission while the
         # actual worker still owns a database connection or durable write.
@@ -329,6 +332,7 @@ async def _finalize_response(state: SearchScope, status: int, deadline: float) -
                 await asyncio.shield(worker)
             except asyncio.CancelledError:
                 cancelled = True
+                state.cancel("disconnected")
                 finalization.cancel("disconnected")
         worker.result()
         if cancelled:
@@ -636,6 +640,8 @@ class SearchRuntimeMiddleware:
                     await _finalize_response(
                         state, status, state.deadline or ingress_backstop
                     )
+                if state.cancelled:
+                    return
                 for message in messages:
                     await send(message)
             except _RequestBodyTooLargeError:
