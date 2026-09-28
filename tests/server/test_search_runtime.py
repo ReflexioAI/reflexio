@@ -827,6 +827,64 @@ async def test_accepted_response_finishes_durable_exposure_before_release():
 
 
 @pytest.mark.asyncio
+async def test_finalizer_queue_expiry_returns_504_without_served_state():
+    import anyio.to_thread
+
+    entered, release = threading.Event(), threading.Event()
+    effects = []
+    limiter = anyio.to_thread.current_default_thread_limiter()
+    previous_tokens = limiter.total_tokens
+    limiter.total_tokens = 1
+
+    def occupy_worker():
+        entered.set()
+        release.wait(2)
+
+    async def app(scope, receive, send):
+        runtime.on_response_accepted("exposure", lambda: effects.append("recorded"))
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"{}"})
+
+    middleware = runtime.SearchRuntimeMiddleware(app, timeout=0.1, capacity=1)
+    blocker = asyncio.create_task(anyio.to_thread.run_sync(occupy_worker))
+    try:
+        assert await asyncio.to_thread(entered.wait, 1)
+        result = await asyncio.wait_for(call(middleware), 1)
+        await asyncio.gather(*middleware.tasks, return_exceptions=True)
+        assert result[0]["status"] == 504
+        assert not effects
+        assert not middleware.tasks
+        assert limiter.borrowed_tokens == 1
+    finally:
+        release.set()
+        await blocker
+        limiter.total_tokens = previous_tokens
+    assert not effects
+
+
+@pytest.mark.asyncio
+async def test_accepted_exposure_has_commit_budget_after_original_expiry():
+    effects = []
+    budgets = []
+
+    def exposure():
+        time.sleep(0.15)
+        with runtime.phase("search.exposure"):
+            budgets.append(runtime.remaining(30))
+            effects.append("recorded")
+
+    async def app(scope, receive, send):
+        runtime.on_response_accepted("exposure", exposure, order=0)
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"{}"})
+
+    result = await call(runtime.SearchRuntimeMiddleware(app, timeout=0.1))
+    assert result[0]["status"] == 200
+    assert effects == ["recorded"]
+    assert 4 < budgets[0] <= 5
+
+
+@pytest.mark.asyncio
 async def test_timeout_before_response_acceptance_discards_served_state():
     effects = []
     release = asyncio.Event()

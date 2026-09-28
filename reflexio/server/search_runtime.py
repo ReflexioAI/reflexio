@@ -88,6 +88,7 @@ class SearchScope:
     timing_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     lock: Any = field(default_factory=threading.RLock)
     cancelled: bool = False
+    response_accepted: bool = False
     outcome: str = "unknown"
     retries: int = 0
     retry_owner: SearchScope | None = field(default=None, repr=False)
@@ -276,8 +277,8 @@ def on_response_accepted(
 async def _finalize_response(state: SearchScope, status: int, deadline: float) -> None:
     """Finish accepted-response writes before release; never substitute a 504.
 
-    One shared budget uses the original remaining time. Cancellation interrupts
-    registered connections, but admission stays owned until the worker exits.
+    Queueing uses the original deadline. Acceptance happens inside the worker;
+    writes then share one five-second budget, with admission retained to exit.
     """
     from anyio.to_thread import run_sync
 
@@ -287,14 +288,31 @@ async def _finalize_response(state: SearchScope, status: int, deadline: float) -
         callbacks = sorted(state.success_callbacks, key=lambda item: item[0])
         state.success_callbacks.clear()
     if not callbacks:
+        state.remaining(30)
+        if time.monotonic() >= deadline:
+            raise SearchDeadlineError()
+        state.response_accepted = True
         return
     finalization = SearchScope(
         deadline=deadline,
         timing_id=state.timing_id,
         retry_owner=state,
     )
+    begun = asyncio.Event()
+    loop = asyncio.get_running_loop()
 
     def finalize() -> None:
+        try:
+            with state.lock:
+                state.remaining(30)
+                if time.monotonic() >= deadline:
+                    raise SearchDeadlineError()
+                finalization.deadline = (
+                    time.monotonic() + 5 if state.deadline is not None else deadline
+                )
+                state.response_accepted = True
+        finally:
+            loop.call_soon_threadsafe(begun.set)
         for _, name, context, callback in callbacks:
             if state.cancelled:
                 break
@@ -318,7 +336,21 @@ async def _finalize_response(state: SearchScope, status: int, deadline: float) -
     cancelled = False
     try:
         try:
-            await asyncio.wait_for(asyncio.shield(worker), max(0, deadline - started))
+            try:
+                await asyncio.wait_for(begun.wait(), max(0, deadline - started))
+            except TimeoutError:
+                with state.lock:
+                    if not state.response_accepted:
+                        state.cancel("timeout")
+                        worker.cancel()
+                        raise SearchDeadlineError() from None
+            await asyncio.wait_for(
+                asyncio.shield(worker),
+                max(0, (finalization.deadline or deadline) - time.monotonic()),
+            )
+        except SearchDeadlineError:
+            await asyncio.gather(worker, return_exceptions=True)
+            raise
         except TimeoutError:
             finalization.cancel("finalization_timeout")
         except asyncio.CancelledError:
@@ -566,7 +598,6 @@ class SearchRuntimeMiddleware:
 
         incoming = _RequestInput(receive, state, finished)
         app_error: BaseException | None = None
-        response_accepted = False
 
         async def run() -> None:
             nonlocal app_error
@@ -632,10 +663,9 @@ class SearchRuntimeMiddleware:
                 checkpoint()
                 if app_error is not None:
                     raise app_error
-                response_accepted = 200 <= status < 300
-                # The complete serialized response is now accepted. Durable
-                # exposure writes precede release; finalization contains its own
-                # timeout so it cannot substitute a 504 after a durable write.
+                # The worker accepts the complete response immediately before
+                # durable writes, so expired queueing cannot skip the recorder
+                # and a later timeout cannot replace committed success with 504.
                 with phase("search.finalization", cleanup=True):
                     await _finalize_response(
                         state, status, state.deadline or ingress_backstop
@@ -650,7 +680,7 @@ class SearchRuntimeMiddleware:
                     {"detail": "Request body too large"}, status_code=status
                 )(scope, receive, send)
             except (TimeoutError, SearchDeadlineError):
-                if response_accepted:
+                if state.response_accepted:
                     # A transport send failure cannot become a new 504 after
                     # accepted-response writes have already taken place.
                     raise

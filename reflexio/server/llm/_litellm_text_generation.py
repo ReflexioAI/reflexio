@@ -42,6 +42,7 @@ from typing import TYPE_CHECKING, Any
 import litellm
 from pydantic import BaseModel
 
+from reflexio.server import search_runtime
 from reflexio.server.error_reporting import set_error_tags
 from reflexio.server.llm._litellm_subprocess import _litellm_completion_worker
 from reflexio.server.llm._litellm_types import (
@@ -1583,7 +1584,7 @@ class TextGenerationMixin:
                     model=str(turn_params.get("model")),
                     provenance=provenance,
                 )
-            except ProviderRequestGuardError:
+            except (ProviderRequestGuardError, search_runtime.SearchDeadlineError):
                 raise
             except (
                 StructuredOutputParseError,

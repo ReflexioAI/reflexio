@@ -4840,6 +4840,48 @@ def test_search_embedding_retries_follow_deadline_switch(
     assert mock_embedding.call_args.kwargs["timeout"] == client.config.timeout
 
 
+@pytest.mark.parametrize("operation", ["embedding", "batch_embedding", "generation"])
+def test_provider_deadline_propagates_without_embedding_or_model_fallback(
+    monkeypatch, operation
+):
+    from contextlib import contextmanager
+
+    from reflexio.server import search_runtime
+
+    _force_litellm_embedding_route(monkeypatch)
+    slots = []
+    error = search_runtime.SearchDeadlineError("provider admission expired")
+
+    @contextmanager
+    def expired_slot(model):
+        slots.append(model)
+        raise error
+        yield  # pragma: no cover
+
+    module = (
+        "_litellm_text_generation"
+        if operation == "generation"
+        else "_litellm_embedding"
+    )
+    monkeypatch.setattr(f"reflexio.server.llm.{module}.provider_slot", expired_slot)
+    provider = MagicMock(side_effect=AssertionError("provider must not be called"))
+    monkeypatch.setattr("litellm.embedding", provider)
+    monkeypatch.setattr("litellm.completion", provider)
+    client = LiteLLMClient(
+        LiteLLMConfig(model="minimax/MiniMax-M3", fallback_models=["zai/glm-5.2"])
+    )
+    with pytest.raises(search_runtime.SearchDeadlineError) as caught:
+        if operation == "generation":
+            client.generate_chat_response([{"role": "user", "content": "hi"}])
+        elif operation == "batch_embedding":
+            client.get_embeddings(["text"], model="text-embedding-3-small")
+        else:
+            client.get_embedding("text", model="text-embedding-3-small")
+    assert caught.value is error
+    assert len(slots) == 1
+    provider.assert_not_called()
+
+
 def test_expired_search_cannot_start_another_completion(monkeypatch):
     from reflexio.server import search_runtime
 

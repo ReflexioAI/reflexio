@@ -385,6 +385,8 @@ class EmbeddingMixin:
             # Response data may not be in order, sort by index to ensure correct ordering
             sorted_data = sorted(response.data, key=lambda x: x["index"])
             return [item["embedding"] for item in sorted_data]
+        except search_runtime.SearchDeadlineError:
+            raise
         except Exception as e:
             raise _embedding_error(
                 f"{'Batch embedding' if batch else 'Embedding'} generation "
