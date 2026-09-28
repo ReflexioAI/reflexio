@@ -729,3 +729,29 @@ def test_a_failing_reporter_does_not_break_the_search_path(monkeypatch) -> None:
 
     with pytest.raises(RuntimeError, match="reporter down"):
         record_search_exposures(_uncorrelated_batch())
+
+
+def test_invalid_owner_is_rejected_even_without_recorder(monkeypatch) -> None:
+    monkeypatch.setattr(search_exposure_module, "get_service", lambda *_: None)
+    batch = replace(_batch(_playbook()), user_id="another-user")
+    with pytest.raises(ValueError):
+        record_search_exposures(batch)
+
+
+def test_oversized_batch_is_rejected_before_recorder_lookup(monkeypatch) -> None:
+    def unexpected_lookup(*_):
+        pytest.fail("Invalid batches must not reach recorder lookup")
+
+    monkeypatch.setattr(search_exposure_module, "get_service", unexpected_lookup)
+    batch = replace(_batch(_playbook()), user_playbooks=(_playbook(),) * 101)
+    with pytest.raises(ValueError, match="at most"):
+        record_search_exposures(batch)
+
+
+def test_unscoped_mixed_owners_remain_valid() -> None:
+    first = _playbook()
+    second = first.model_copy(
+        update={"user_id": "another-user", "user_playbook_id": 102}
+    )
+    batch = replace(_batch(first), user_id=None, user_playbooks=(first, second))
+    search_exposure_module.validate_search_exposure_batch(batch)

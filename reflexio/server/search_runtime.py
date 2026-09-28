@@ -328,6 +328,9 @@ async def _finalize_response(
     with state.lock:
         callbacks = sorted(state.success_callbacks, key=lambda item: item[0])
         state.success_callbacks.clear()
+        # Finalization is part of this request, not a new configuration read.
+        # Copy completed successes only; keep its own deadline, locks and leases.
+        config_versions = dict(state.config_versions)
     if not callbacks:
         state.remaining(30)
         if time.monotonic() >= deadline:
@@ -338,6 +341,7 @@ async def _finalize_response(
         deadline=deadline,
         timing_id=state.timing_id,
         retry_owner=state,
+        config_versions=config_versions,
     )
     begun = asyncio.Event()
     loop = asyncio.get_running_loop()

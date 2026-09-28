@@ -5,6 +5,7 @@ import json
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import suppress
 
 import pytest
 from fastapi import FastAPI, HTTPException
@@ -1148,6 +1149,74 @@ async def test_finalization_and_remaining_retrieval_share_one_retry(finalizer_fi
 
     assert (await call(runtime.SearchRuntimeMiddleware(app)))[0]["status"] == 200
     assert claims == [True, False]
+
+
+@pytest.mark.asyncio
+async def test_finalization_reuses_only_own_request_configuration():
+    owner = object()
+    other_owner = object()
+    reads = []
+    observed = []
+
+    def load(key):
+        reads.append(key)
+        return len(reads)
+
+    async def app(scope, receive, send):
+        version = runtime.config_version(
+            "organization", owner, "org-a", lambda: load("org-a")
+        )
+
+        def exposure():
+            observed.append(
+                runtime.config_version(
+                    "organization", owner, "org-a", lambda: load("org-a")
+                )
+            )
+            # A different organization still needs its own validated lookup.
+            runtime.config_version(
+                "organization", owner, "org-b", lambda: load("org-b")
+            )
+            runtime.config_version(
+                "organization", other_owner, "org-a", lambda: load("other-authority")
+            )
+
+        runtime.on_response_accepted("exposure", exposure)
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": str(version).encode()})
+
+    middleware = runtime.SearchRuntimeMiddleware(app)
+    await call(middleware)
+    await call(middleware)
+    assert reads == ["org-a", "org-b", "other-authority"] * 2
+    assert observed == [1, 4]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failed", [False, True])
+async def test_finalization_reloads_missing_or_failed_configuration(failed):
+    owner = object()
+    observed = []
+
+    def unavailable():
+        if failed:
+            raise RuntimeError("unavailable")
+
+    async def app(scope, receive, send):
+        with suppress(RuntimeError):
+            runtime.config_version("organization", owner, "org-a", unavailable)
+
+        def exposure():
+            observed.append(
+                runtime.config_version("organization", owner, "org-a", lambda: 42)
+            )
+
+        runtime.on_response_accepted("exposure", exposure)
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"{}"})
+
+    await call(runtime.SearchRuntimeMiddleware(app))
+    assert observed == [42]
 
 
 @pytest.mark.asyncio
