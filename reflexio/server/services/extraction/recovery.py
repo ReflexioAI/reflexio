@@ -77,6 +77,29 @@ def payload_fingerprint(run: AgentRunRecord) -> str:
     )
 
 
+def _validate_saved_output(model: type[BaseModel], output: dict[str, Any]) -> None:
+    collection = "profiles" if model is StructuredProfilesOutput else "playbooks"
+    if not isinstance(output.get(collection), list):
+        raise ValueError("Saved output must explicitly contain its collection")
+    _require_preserved_output_fields(output, model.model_validate(output))
+
+
+def _require_preserved_output_fields(raw: Any, parsed: Any) -> None:
+    """Refuse fields/candidates a permissive historical schema would discard."""
+    if isinstance(parsed, BaseModel):
+        parsed = {name: getattr(parsed, name) for name in type(parsed).model_fields}
+    if isinstance(raw, dict):
+        if not isinstance(parsed, dict) or not raw.keys() <= parsed.keys():
+            raise ValueError("Unrecognized saved output fields")
+        for key, value in raw.items():
+            _require_preserved_output_fields(value, parsed[key])
+    elif isinstance(raw, list):
+        if not isinstance(parsed, list) or len(raw) != len(parsed):
+            raise ValueError("Saved output candidates were discarded")
+        for value, item in zip(raw, parsed, strict=True):
+            _require_preserved_output_fields(value, item)
+
+
 def inspect_run(
     context: RequestContext,
     run: AgentRunRecord,
@@ -160,7 +183,7 @@ def inspect_run(
     elif run.committed_output is not None:
         try:
             output, _ = decode_committed_output(run.committed_output)
-            model.model_validate(output)
+            _validate_saved_output(model, output)
         except (ValueError, TypeError, ValidationError):
             blockers.append("invalid_saved_output")
     if run.committed_output is None:

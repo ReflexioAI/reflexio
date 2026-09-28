@@ -1901,12 +1901,15 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             )
             logger.info("Added max_steps_remaining column to _agent_runs")
         for name, definition in (
-            ("progress_stage", "TEXT"), ("last_progress_at", "TEXT"),
+            ("progress_stage", "TEXT"),
+            ("last_progress_at", "TEXT"),
             ("recovery_operation_id", "TEXT"),
             ("recovery_history", "TEXT NOT NULL DEFAULT '[]'"),
         ):
             if name not in cols:
-                self.conn.execute(f"ALTER TABLE _agent_runs ADD COLUMN {name} {definition}")
+                self.conn.execute(
+                    f"ALTER TABLE _agent_runs ADD COLUMN {name} {definition}"
+                )
         # Triggers cover every writer, including legacy callers and SQL claims.
         # They never backfill old rows and never treat generic updated_at as progress.
         stage = """CASE NEW.status WHEN 'running' THEN 'generation_started'
@@ -1915,8 +1918,10 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
           ELSE NEW.status END"""
         for event, condition in (
             ("INSERT", "1"),
-            ("UPDATE OF status, recovery_operation_id",
-             "NEW.status IS NOT OLD.status OR NEW.recovery_operation_id IS NOT OLD.recovery_operation_id"),
+            (
+                "UPDATE OF status, recovery_operation_id",
+                "NEW.status IS NOT OLD.status OR NEW.recovery_operation_id IS NOT OLD.recovery_operation_id",
+            ),
         ):
             suffix = "insert" if event == "INSERT" else "update"
             self.conn.execute(f"""CREATE TRIGGER IF NOT EXISTS agent_run_progress_{suffix}

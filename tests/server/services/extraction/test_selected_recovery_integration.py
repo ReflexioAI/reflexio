@@ -16,10 +16,14 @@ from reflexio.models.config_schema import (
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.services.extraction.recovery import (
     RecoveryRefusedError,
+    _require_preserved_output_fields,
     inspect_run,
     selection_from_report,
 )
 from reflexio.server.services.extraction.resume_worker import ExtractionResumeWorker
+from reflexio.server.services.playbook.playbook_service_utils import (
+    StructuredReferencedExtractedPlaybookList,
+)
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 from reflexio.server.services.storage.storage_base import (
     AgentBinding,
@@ -230,3 +234,47 @@ def test_generic_timestamp_is_not_progress(context):
     assert (
         context.storage.get_agent_run(run.id).last_progress_at == run.last_progress_at
     )
+
+
+@pytest.mark.parametrize("pinned", [True, False])
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {},
+        {"add": [{"content": "legacy operation"}]},
+        {"profiles": None},
+        {"profiles": [], "delete": ["legacy operation"]},
+        {
+            "profiles": [
+                {"content": "example", "time_to_live": "infinity", "delete": True}
+            ]
+        },
+    ],
+)
+def test_ambiguous_profile_output_is_preserved_without_claim(context, pinned, payload):
+    stored = seed(context)
+    run = replace(
+        stored,
+        committed_output=payload,
+        generation_request_snapshot=stored.generation_request_snapshot
+        if pinned
+        else {},
+    )
+    report = inspect_run(context, run)
+    assert "invalid_saved_output" in report["blockers"]
+    with pytest.raises(RecoveryRefusedError, match="preview_has_blockers"):
+        selection_from_report(report)
+    assert context.storage.get_agent_run(run.id) == stored
+
+
+def test_legacy_explicit_empty_profile_output_is_eligible(context):
+    run = replace(seed(context), generation_request_snapshot={})
+    assert inspect_run(context, run)["eligible"]
+
+
+def test_playbook_validator_cannot_discard_saved_candidates():
+    payload = {"playbooks": [{"evidence_ref": "T1"}]}
+    parsed = StructuredReferencedExtractedPlaybookList.model_validate(payload)
+    assert parsed.playbooks == []  # Ordinary generation tolerates this shape.
+    with pytest.raises(ValueError, match="candidates were discarded"):
+        _require_preserved_output_fields(payload, parsed)
