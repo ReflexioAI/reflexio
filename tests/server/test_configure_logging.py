@@ -34,15 +34,26 @@ _FIRST_PARTY = ("reflexio", "reflexio_ext")
 
 @pytest.fixture(autouse=True)
 def isolated_logging() -> Iterator[None]:
-    """Give each test the root logger back, handlers and levels included.
+    """Give each test the root logger back, handlers and every pinned level.
 
     ``reflexio.server`` configured the root at import, and pytest attaches its
     own handlers, so without this every test would inherit whichever profile ran
     last -- and the order-dependent failures would look like real ones.
+
+    EVERY existing logger's level is snapshotted, not just the two first-party
+    roots. ``configure_logging`` also pins ``litellm``, ``httpx``,
+    ``site_var_manager`` and whatever ``info_loggers`` names, so a narrower
+    fixture left ``reflexio_ext.billing`` at INFO and leaked it into later tests.
+    Raised by CodeRabbit on reflexio#551, and the same order-dependence class that
+    made a sibling test in this file pass alone and fail in the full suite.
     """
     root = logging.getLogger()
     saved_root = (root.level, list(root.handlers))
-    saved = {name: logging.getLogger(name).level for name in _FIRST_PARTY}
+    saved = {
+        name: existing.level
+        for name, existing in root.manager.loggerDict.items()
+        if isinstance(existing, logging.Logger)
+    }
     try:
         yield
     finally:
@@ -50,6 +61,12 @@ def isolated_logging() -> Iterator[None]:
         root.handlers[:] = saved_root[1]
         for name, level in saved.items():
             logging.getLogger(name).setLevel(level)
+        # Loggers CREATED by a test did not exist at snapshot time, so restoring
+        # the snapshot cannot reset them. NOTSET is what they would have had.
+        for name in set(root.manager.loggerDict) - set(saved):
+            candidate = root.manager.loggerDict[name]
+            if isinstance(candidate, logging.Logger):
+                candidate.setLevel(logging.NOTSET)
 
 
 def _blank_root() -> logging.Logger:
@@ -381,3 +398,105 @@ def test_the_log_level_and_info_loggers_are_resolved(
 
     assert resolved["level"] == logging.DEBUG
     assert resolved["info_loggers"] == ("reflexio_ext.billing", "reflexio.search")
+
+
+# --------------------------------------------------------------------------
+# The two defects Codex found on reflexio#551, each with its control.
+# --------------------------------------------------------------------------
+
+
+def test_a_debug_level_actually_reaches_the_stdout_handler() -> None:
+    """An accepted value that does nothing is worse than a rejected one.
+
+    ``REFLEXIO_LOG_LEVEL=debug`` lowered the root to DEBUG while the production
+    handler stayed pinned at INFO, so every DEBUG record was discarded on its way
+    out. The setting was accepted and inert -- the exact class of defect this
+    module was rewritten to remove.
+    """
+    _blank_root()
+
+    report = configure_logging(verbose=False, level=logging.DEBUG)
+
+    assert report.handlers == ("StreamHandler:DEBUG",), (
+        "the stdout handler must drop to the resolved root level, or a DEBUG "
+        "record never leaves the process"
+    )
+    handler = logging.getLogger().handlers[0]
+    assert handler.level <= logging.DEBUG
+
+
+def test_the_handler_floor_stays_at_info_by_default() -> None:
+    """The control, and the reason the handler is not simply set to the root level.
+
+    INFO is BELOW the production root of WARNING on purpose: a single logger
+    raised to INFO must still reach the log driver. A handler pinned to the root's
+    WARNING would silence exactly the per-subsystem opt-in that
+    ``REFLEXIO_INFO_LOGGERS`` exists to provide.
+    """
+    _blank_root()
+
+    report = configure_logging(verbose=False)
+
+    assert report.handlers == ("StreamHandler:INFO",)
+
+
+def test_a_second_call_updates_the_handler_level_rather_than_stacking() -> None:
+    """The handler is reused, so its level has to be re-applied, not just set once."""
+    _blank_root()
+
+    configure_logging(verbose=False)
+    report = configure_logging(verbose=False, level=logging.DEBUG)
+
+    assert report.handlers == ("StreamHandler:DEBUG",)
+
+
+def test_a_noisy_logger_named_in_info_loggers_stays_suppressed() -> None:
+    """Suppression must win over a per-subsystem override, as it did before.
+
+    ``REFLEXIO_INFO_LOGGERS=litellm`` overwrote litellm's WARNING pin and turned
+    its INFO traffic on in production -- a volume regression nothing else would
+    have caught, and one the ordering in the original module body prevented.
+    """
+    _blank_root()
+    logging.getLogger("litellm").setLevel(logging.NOTSET)
+
+    report = configure_logging(verbose=False, info_loggers=("litellm",))
+
+    assert not logging.getLogger("litellm").isEnabledFor(logging.INFO)
+    assert ("litellm", logging.WARNING) in report.pinned, (
+        "the report must show the level that actually won, not the one requested"
+    )
+
+
+def test_a_non_noisy_logger_named_in_info_loggers_is_still_raised() -> None:
+    """The control. Suppression winning must not mean the override never works."""
+    _blank_root()
+
+    configure_logging(verbose=False, info_loggers=("reflexio_ext.billing",))
+
+    assert logging.getLogger("reflexio_ext.billing").isEnabledFor(logging.INFO)
+
+
+def test_a_handler_this_module_did_not_attach_is_left_alone() -> None:
+    """Only OUR stdout handler may have its level adjusted.
+
+    ``_MANAGED_HANDLER_ATTR`` exists for this, and without this test the marker
+    could be deleted with nothing failing -- found by mutation: rewriting the reuse
+    branch to adjust any ``StreamHandler`` left all 34 other tests green.
+
+    The hazard is concrete rather than theoretical. pytest's own
+    ``LogCaptureHandler`` is a ``StreamHandler`` subclass, so a module that
+    "reuses the StreamHandler it finds" would silently re-level the test
+    framework's capture handler -- and in a deployed process, any library handler
+    attached before ours.
+    """
+    root = _blank_root()
+    foreign = logging.StreamHandler()
+    foreign.setLevel(logging.CRITICAL)
+    root.addHandler(foreign)
+
+    configure_logging(verbose=False, level=logging.DEBUG)
+
+    assert foreign.level == logging.CRITICAL, (
+        "configure_logging re-levelled a handler it did not attach"
+    )

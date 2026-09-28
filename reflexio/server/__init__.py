@@ -334,18 +334,42 @@ def _build_verbose_handlers(root: logging.Logger) -> None:
     root.addHandler(llm_io_handler)
 
 
-def _build_production_handler(root: logging.Logger) -> None:
-    """Attach the one stdout handler a container's log driver reads, at most once."""
+#: Marks the stdout handler this module owns, so a second call can adjust ITS level
+#: without touching a handler somebody else attached -- pytest's
+#: ``LogCaptureHandler`` is a ``StreamHandler`` subclass, so "is there a
+#: StreamHandler?" cannot answer "is there MINE?".
+_MANAGED_HANDLER_ATTR = "_reflexio_managed_stdout_handler"
+
+
+def _build_production_handler(root: logging.Logger, level: int) -> None:
+    """Attach the one stdout handler a container's log driver reads, at most once.
+
+    The handler sits at ``min(INFO, level)``, not a fixed INFO, and that ``min`` is
+    load-bearing rather than defensive:
+
+    * INFO is the FLOOR, below the root's own WARNING on purpose, so a logger
+      explicitly raised to INFO (``REFLEXIO_INFO_LOGGERS``, or a Sentry Logs
+      floor) still reaches the log driver.
+    * But a fixed INFO discards DEBUG records even when ``level`` lowered the root
+      to DEBUG -- so ``REFLEXIO_LOG_LEVEL=debug`` was ACCEPTED and did nothing.
+      A setting that silently has no effect is the exact class of defect this
+      module was rewritten to remove. Raised by Codex on reflexio#551.
+    """
+    handler_level = min(logging.INFO, level)
+
+    for existing in root.handlers:
+        if getattr(existing, _MANAGED_HANDLER_ATTR, False):
+            existing.setLevel(handler_level)
+            return
     if any(isinstance(h, logging.StreamHandler) for h in root.handlers):
         return
+
     handler = logging.StreamHandler(sys.stdout)
-    # INFO, below the root's own level on purpose: a logger explicitly raised to
-    # INFO (REFLEXIO_INFO_LOGGERS, or a Sentry Logs floor) must still reach the
-    # container log driver. The root level is what keeps everything else cheap.
-    handler.setLevel(logging.INFO)
+    handler.setLevel(handler_level)
     handler.setFormatter(
         logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s")
     )
+    setattr(handler, _MANAGED_HANDLER_ATTR, True)
     root.addHandler(handler)
 
 
@@ -406,8 +430,17 @@ def configure_logging(
         _build_verbose_handlers(root)
         root.setLevel(logging.DEBUG)  # Allow all levels; handlers filter
     else:
-        _build_production_handler(root)
+        _build_production_handler(root, level)
         root.setLevel(min(level, logging.WARNING))
+
+    # Per-subsystem overrides FIRST, noisy suppression second, so suppression
+    # wins -- the order the module body used, and not interchangeable with it:
+    # `REFLEXIO_INFO_LOGGERS=litellm` would otherwise overwrite litellm's WARNING
+    # pin and turn its INFO traffic on in production, which is a volume
+    # regression nothing else would have caught. Raised by Codex on reflexio#551.
+    for name in info_loggers:
+        logging.getLogger(name).setLevel(logging.INFO)
+        pinned[name] = logging.INFO
 
     for name in _NOISY_THIRD_PARTY:
         logging.getLogger(name).setLevel(logging.WARNING)
@@ -415,10 +448,6 @@ def configure_logging(
     for name, quiet_level in _NOISY_FIRST_PARTY:
         logging.getLogger(name).setLevel(quiet_level)
         pinned[name] = quiet_level
-
-    for name in info_loggers:
-        logging.getLogger(name).setLevel(logging.INFO)
-        pinned[name] = logging.INFO
 
     if sentry_floor is not None:
         for name in _FIRST_PARTY_ROOTS:
