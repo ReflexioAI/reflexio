@@ -53,6 +53,7 @@ from reflexio.server.services.retrieval_experiment import (
 from reflexio.server.services.search_exposure import (
     SearchExposureBatch,
     record_search_exposures,
+    validate_search_exposure_batch,
 )
 from reflexio.server.services.search_metering_worker import enqueue_search_metering
 from reflexio.server.services.search_observer import (
@@ -480,22 +481,24 @@ def unified_search_endpoint(
         search_runtime.checkpoint()
         search_runtime.set_outcome(resp.success)
         if caller_type == "production_agent":
+            exposure_batch = SearchExposureBatch(
+                org_id=org_id,
+                request_id=payload.request_id,
+                session_id=payload.session_id,
+                interaction_id=payload.interaction_id,
+                user_id=payload.user_id,
+                user_playbooks=tuple(response.user_playbooks),
+            )
+            # Ownership is response validation, not fallible bookkeeping.
+            validate_search_exposure_batch(exposure_batch)
+
             # Outcome deliberately ignored: an unregistered recorder is a
             # supported OSS/no-auth configuration, and this route cannot
             # tell that apart from an enterprise misconfiguration. Asserting
             # here would turn a supported deployment's search into a 500.
             def record_exposures() -> None:
                 with profile_step("search.exposure"):
-                    record_search_exposures(
-                        SearchExposureBatch(
-                            org_id=org_id,
-                            request_id=payload.request_id,
-                            session_id=payload.session_id,
-                            interaction_id=payload.interaction_id,
-                            user_id=payload.user_id,
-                            user_playbooks=tuple(response.user_playbooks),
-                        )
-                    )
+                    record_search_exposures(exposure_batch)
 
             search_runtime.on_response_accepted("exposure", record_exposures, order=0)
         search_runtime.checkpoint()

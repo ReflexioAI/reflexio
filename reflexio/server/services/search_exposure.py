@@ -196,6 +196,23 @@ def reset_uncorrelated_reporting_state() -> None:
         _uncorrelated_last_report = None
 
 
+def _validate_playbook_owner(
+    batch: SearchExposureBatch, playbook: UserPlaybook
+) -> None:
+    if batch.user_id is not None and playbook.user_id != batch.user_id:
+        raise ValueError(
+            "served playbook owner does not match retrieval subject: "
+            f"user_playbook_id={playbook.user_playbook_id}"
+        )
+
+
+def validate_search_exposure_batch(batch: SearchExposureBatch) -> None:
+    """Reject invalid served results before response acceptance or recorder I/O."""
+    validate_exposure_batch_size(batch.user_playbooks)
+    for playbook in batch.user_playbooks:
+        _validate_playbook_owner(batch, playbook)
+
+
 def record_search_exposures(batch: SearchExposureBatch) -> SearchExposureOutcome:
     """Synchronously invoke the optional enterprise exposure recorder.
 
@@ -288,6 +305,7 @@ def record_search_exposures(batch: SearchExposureBatch) -> SearchExposureOutcome
         nothing was persisted, and ``NO_RECORDER`` when none was registered and
         nothing was persisted. Only the first two mean the batch is durable.
     """
+    validate_search_exposure_batch(batch)
     uncorrelated = batch_is_uncorrelated(batch)
     recorder = get_service(SEARCH_EXPOSURE_RECORDER)
     if recorder is None:
@@ -374,11 +392,7 @@ def build_user_playbook_exposure_event(
     playbook_owner_governance_subject_ref: str | None,
 ) -> UserPlaybookExposureEvent:
     """Build one deterministic event identity from retrieval-owned correlation."""
-    if batch.user_id is not None and playbook.user_id != batch.user_id:
-        raise ValueError(
-            "served playbook owner does not match retrieval subject: "
-            f"user_playbook_id={playbook.user_playbook_id}"
-        )
+    _validate_playbook_owner(batch, playbook)
     identity: dict[str, object] = {
         "schema_version": "user-playbook-exposure-event-v1",
         "org_id": batch.org_id,
@@ -427,6 +441,7 @@ __all__ = [
     "reset_uncorrelated_reporting_state",
     "build_user_playbook_exposure_event",
     "record_search_exposures",
+    "validate_search_exposure_batch",
     "user_playbook_full_version_fingerprint",
     "validate_exposure_batch_size",
 ]
