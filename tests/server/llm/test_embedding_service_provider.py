@@ -260,3 +260,58 @@ def test_capability_discovery_honours_off_mode(monkeypatch) -> None:
 
     with pytest.raises(provider.EmbeddingUnavailableError, match="disabled"):
         provider.resolve_inference_service_capabilities()
+
+
+@pytest.mark.parametrize("scope_kind", ["enabled", "disabled", "unscoped"])
+def test_embedding_retry_backoff_uses_shared_search_budget(monkeypatch, scope_kind):
+    from reflexio.server import search_runtime
+
+    clock = [100.0]
+    sleeps = []
+    calls = []
+    monkeypatch.setattr(provider.time, "monotonic", lambda: clock[0])
+
+    def sleep(seconds):
+        sleeps.append(seconds)
+        clock[0] += seconds + 0.001
+
+    class Client:
+        def post(self, *_args, **_kwargs):
+            calls.append(True)
+            if len(calls) == 1:
+                raise httpx.ConnectError("stale connection")
+            return _Response({"data": [{"index": 0, "embedding": [0.1]}]})
+
+    monkeypatch.setattr(provider.time, "sleep", sleep)
+    monkeypatch.setattr(provider, "_http_client", lambda: Client())
+    scope = (
+        None
+        if scope_kind == "unscoped"
+        else search_runtime.SearchScope(
+            deadline=100.02 if scope_kind == "enabled" else None
+        )
+    )
+    token = search_runtime._scope.set(scope)
+    try:
+
+        def request():
+            return provider._post_embedding_batch(
+                "http://test/v1/embeddings",
+                model="local/test",
+                texts=["text"],
+                dimensions=None,
+                timeout=2,
+                mode="local_service",
+            )
+
+        if scope_kind == "enabled":
+            with pytest.raises(search_runtime.SearchDeadlineError):
+                request()
+            assert len(calls) == 1
+            assert sleeps == [pytest.approx(0.02)]
+        else:
+            assert request() == [[0.1]]
+            assert len(calls) == 2
+            assert sleeps == [provider._EMBEDDING_RETRY_BACKOFF_SECONDS]
+    finally:
+        search_runtime._scope.reset(token)

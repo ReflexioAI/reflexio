@@ -1040,7 +1040,8 @@ class TextGenerationMixin:
         """
         from reflexio.server import search_runtime
 
-        if search_runtime.current() is not None:
+        search_scope = search_runtime.current()
+        if search_scope is not None:
             hard_timeout = search_runtime.remaining(hard_timeout)
             params = {
                 **params,
@@ -1079,6 +1080,8 @@ class TextGenerationMixin:
             # feeder so the child can exit. The read is bounded by the same
             # ``hard_timeout`` budget the join used to enforce.
             deadline = time.monotonic() + hard_timeout
+            if search_scope is not None and search_scope.deadline is not None:
+                deadline = min(deadline, search_scope.deadline)
             result: tuple[str, Any] | None = None
             while result is None:
                 remaining = deadline - time.monotonic()
@@ -1110,7 +1113,15 @@ class TextGenerationMixin:
                         # last read in case the feeder flushed the payload just
                         # before exit; otherwise it died without a result.
                         try:
-                            result = result_queue.get(timeout=1.0)
+                            queue_timeout = 1.0
+                            if (
+                                search_scope is not None
+                                and search_scope.deadline is not None
+                            ):
+                                queue_timeout = max(
+                                    0.0, min(queue_timeout, deadline - time.monotonic())
+                                )
+                            result = result_queue.get(timeout=queue_timeout)
                         except queue.Empty as exc2:
                             raise LiteLLMClientError(
                                 "LLM request process exited without returning a result "

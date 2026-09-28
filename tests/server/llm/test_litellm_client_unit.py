@@ -4857,3 +4857,51 @@ def test_expired_search_cannot_start_another_completion(monkeypatch):
             )
     finally:
         search_runtime._scope.reset(token)
+
+
+@pytest.mark.parametrize("scope_kind", ["enabled", "disabled", "unscoped"])
+def test_completion_startup_and_final_queue_read_share_absolute_budget(
+    monkeypatch, scope_kind
+):
+    import queue
+
+    from reflexio.server import search_runtime
+
+    client = _build_client()
+    clock = [100.0]
+    waits = []
+    monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+    context = MagicMock()
+    process = context.Process.return_value
+    process.start.side_effect = lambda: clock.__setitem__(0, clock[0] + 0.45)
+    process.is_alive.return_value = False
+
+    def empty_result(*, timeout):
+        waits.append(timeout)
+        clock[0] += timeout
+        raise queue.Empty
+
+    context.Queue.return_value.get.side_effect = empty_result
+    monkeypatch.setattr(multiprocessing, "get_context", lambda: context)
+    monkeypatch.setattr(
+        client, "_should_process_isolate_completion", lambda *_args: True
+    )
+    scope = (
+        None
+        if scope_kind == "unscoped"
+        else search_runtime.SearchScope(
+            deadline=100.5 if scope_kind == "enabled" else None
+        )
+    )
+    token = search_runtime._scope.set(scope)
+    try:
+        with pytest.raises(LiteLLMClientError, match="without returning a result"):
+            client._completion_with_hard_timeout({"model": "x", "timeout": 2}, 2)
+        if scope_kind == "enabled":
+            assert sum(waits) == pytest.approx(0.05)
+        else:
+            assert waits == [0.1, 1.0]
+        context.Queue.return_value.close.assert_called_once()
+        context.Queue.return_value.join_thread.assert_called_once()
+    finally:
+        search_runtime._scope.reset(token)
