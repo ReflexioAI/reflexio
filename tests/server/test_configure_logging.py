@@ -9,10 +9,10 @@ observe it instead rebuilt the configuration and asserted against its own work.
 
 Two properties carry real weight here:
 
-**Lower-only.** ``level`` and ``sentry_floor`` may lower a threshold and never
-raise one. ``SENTRY_LOGS_LEVEL=error`` -- a plausible "just send me errors" --
-used to raise the first-party loggers to ERROR and delete every WARNING line from
-stdout, which for a self-host customer is the only channel there is.
+**Lower-only.** ``level`` and ``first_party_level`` may lower a threshold and never
+raise one. A caller asking for ERROR used to raise the first-party loggers to
+ERROR and delete every WARNING line from stdout, which for a self-hosted
+deployment is the only channel there is.
 
 **Idempotent.** The old body guarded its console handler against a second
 attachment but NOT its two file handlers, which was invisible while it ran once
@@ -150,28 +150,28 @@ def test_calling_it_twice_attaches_no_second_handler(verbose: bool) -> None:
 # --------------------------------------------------------------------------
 
 
-def test_a_sentry_floor_below_the_effective_level_lowers_first_party() -> None:
-    """Required: SENTRY_LOGS_LEVEL=info forwards nothing if INFO never fires."""
+def test_a_first_party_level_below_the_effective_level_lowers_first_party() -> None:
+    """Required: a downstream forwarder gets nothing if INFO never fires."""
     _blank_root()
 
-    configure_logging(verbose=False, sentry_floor=logging.INFO)
+    configure_logging(verbose=False, first_party_level=logging.INFO)
 
     for name in _FIRST_PARTY:
         assert logging.getLogger(f"{name}.child").isEnabledFor(logging.INFO), (
-            f"{name} was not lowered, so Sentry Logs would receive nothing"
+            f"{name} was not lowered, so a downstream forwarder receives nothing"
         )
 
 
-def test_a_sentry_floor_above_the_effective_level_never_raises_it() -> None:
+def test_a_first_party_level_above_the_effective_level_never_raises_it() -> None:
     """The defect that shipped. A WARNING must survive a floor of ERROR.
 
-    Sentry filters its Logs pipeline on its own threshold independently of the
-    logger level, so raising here would buy nothing and cost every WARNING line
-    on the only channel a self-host operator has.
+    A downstream consumer filters on its own threshold independently of the logger
+    level, so raising here would buy nothing and would cost every WARNING line on
+    the only channel a self-hosted operator has.
     """
     _blank_root()
 
-    configure_logging(verbose=False, sentry_floor=logging.ERROR)
+    configure_logging(verbose=False, first_party_level=logging.ERROR)
 
     for name in _FIRST_PARTY:
         assert logging.getLogger(f"{name}.child").isEnabledFor(logging.WARNING), (
@@ -179,16 +179,18 @@ def test_a_sentry_floor_above_the_effective_level_never_raises_it() -> None:
         )
 
 
-def test_a_sentry_floor_does_not_touch_the_root() -> None:
+def test_a_first_party_level_does_not_touch_the_root() -> None:
     """Scope preservation: the floor applied to first-party loggers before, too.
 
-    Widening it to the root would push third-party INFO -- litellm, httpx -- into
-    a paid pipeline, which is a volume regression rather than a behaviour one and
-    would not show up as a failure anywhere else.
+    Widening it to the root would surface INFO from the whole unpinned third-party
+    tail -- boto3, starlette, psycopg2 -- which is a volume regression rather than
+    a behaviour one and would not show up as a failure anywhere else. Note the six
+    names in _NOISY_THIRD_PARTY are immune: they carry an explicit WARNING that
+    outranks the root.
     """
     _blank_root()
 
-    report = configure_logging(verbose=False, sentry_floor=logging.DEBUG)
+    report = configure_logging(verbose=False, first_party_level=logging.DEBUG)
 
     assert report.root_level == logging.WARNING
 
