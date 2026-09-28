@@ -19,6 +19,7 @@ information, and resumes outside the request path.
 | `prior_answer_search.py` | Finds and formats previous human answers for async extraction context. |
 | `agent_run_records.py` | Builds durable extraction-agent run records and source interaction identity. |
 | `resume_scheduler.py` | Discovers and schedules due paused/finalization work in a background singleton. |
+| `recovery.py` | Content-free inspection and strict preview manifests for explicitly selected saved-output recovery. Never opens the scheduler gate. |
 | `resume_worker.py` | Resumes paused runs, rebuilds request context, and records retry state. Finalization uses an immutable run-keyed receipt so learning writes and retry billing reuse the same persisted IDs. |
 | `outcome.py` | Provides the generic extraction outcome wrapper used by callers. |
 
@@ -59,3 +60,13 @@ from an earlier tick cannot block later discovery if it becomes stale. If the
 provider itself raises, the scheduler still attempts the last bootstrap org for
 that tick. Before draining each discovered org context, it expires pending tool
 calls on that context's storage ref; separate refs have separate queues.
+
+### Selected recovery and progress
+
+`ExtractionResumeWorker.recover_selected` uses an exact-ID storage claim, then
+revalidates the preview under the user lease before normal receipt-protected
+finalization. Claims and status updates are owner-fenced. `progress_stage` and
+`last_progress_at` change at lifecycle boundaries; an atomic receipt records
+`results_committed`. Legacy rows keep unknown progress. `recovery_history` holds
+operation/status metadata only. Do not treat a row timestamp as a heartbeat or
+call the private finalizers as an operator replay API.

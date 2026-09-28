@@ -348,6 +348,8 @@ class SQLiteAgentRunStoreMixin:
         last_error: str | None = None,
         increment_finalization_attempts: bool = False,
         expected_statuses: tuple[AgentRunStatus, ...] | None = None,
+        expected_claimed_by: str | None = None,
+        expected_claimed_at: datetime | None = None,
     ) -> AgentRunRecord | None:
         current_timestamp = self._current_timestamp()
         assignments = ["status = ?", "updated_at = ?"]
@@ -381,13 +383,21 @@ class SQLiteAgentRunStoreMixin:
             placeholders = ",".join("?" for _ in expected_statuses)
             status_filter = f" AND status IN ({placeholders})"
             params.extend(expected.value for expected in expected_statuses)
+        if expected_claimed_by is not None:
+            status_filter += " AND claimed_by = ? AND claimed_at = ?"
+            params.extend([expected_claimed_by, _dt_str(expected_claimed_at)])
         with self._lock:
-            self.conn.execute(
+            changed = self.conn.execute(
                 f"UPDATE _agent_runs SET {', '.join(assignments)} WHERE id = ?{status_filter}",
                 params,
-            )
-            self.conn.commit()
-        return self.get_agent_run(run_id)
+            ).rowcount
+            if self._own_transaction():
+                self.conn.commit()
+        return (
+            self.get_agent_run(run_id)
+            if changed or expected_claimed_by is None
+            else None
+        )
 
     @SQLiteStorageBase.handle_exceptions
     def fail_running_agent_runs_for_request(
@@ -580,6 +590,88 @@ class SQLiteAgentRunStoreMixin:
             )
             self.conn.commit()
         return self.get_agent_run(row["id"])
+
+    @SQLiteStorageBase.handle_exceptions
+    def get_agent_run_recovery_facts(self, run_id: str) -> dict[str, Any]:
+        row = self._fetchone(
+            """SELECT
+              (r.id NOT LIKE 'window:%' OR EXISTS (
+                SELECT 1 FROM extraction_windows w WHERE w.window_id=substr(r.id,8)
+                AND w.completed=1 AND w.invalidated=0)) AS window_ready,
+              (SELECT count(*) FROM _run_tool_dependencies d
+                WHERE d.run_id=r.id AND d.consumed_at IS NULL) AS dependencies,
+              EXISTS(SELECT 1 FROM _agent_run_finalization_receipts f
+                WHERE f.run_id=r.id) AS receipt_exists,
+              (SELECT json_array_length(f.learning_ids)
+                FROM _agent_run_finalization_receipts f WHERE f.run_id=r.id) AS receipt_count,
+              (SELECT count(*) FROM _agent_run_finalization_receipts f, json_each(f.learning_ids) ids
+                WHERE f.run_id=r.id AND NOT (
+                  (f.entity_type='profile' AND EXISTS(SELECT 1 FROM profiles p WHERE CAST(p.profile_id AS TEXT)=ids.value)) OR
+                  (f.entity_type='user_playbook' AND EXISTS(SELECT 1 FROM user_playbooks p WHERE CAST(p.user_playbook_id AS TEXT)=ids.value))
+                )) AS receipt_missing_results,
+              (SELECT count(DISTINCT i.interaction_id)
+                FROM json_each(r.source_interaction_ids) src
+                JOIN interactions i ON i.interaction_id=src.value
+                JOIN requests q ON q.request_id=i.request_id
+                WHERE i.user_id=r.user_id AND q.user_id=r.user_id
+                  AND q.source IS r.source AND q.agent_version IS r.agent_version
+              ) AS valid_source_count
+            FROM _agent_runs r WHERE r.id=? AND r.org_id=?""",
+            (run_id, self.org_id),
+        )
+        return dict(row) if row else {}
+
+    @SQLiteStorageBase.handle_exceptions
+    def claim_agent_run_for_recovery(
+        self,
+        *,
+        run_id: str,
+        org_id: str,
+        worker_id: str,
+        expected_updated_at: datetime,
+        operation_id: str,
+        now: datetime | None = None,
+        claim_ttl_seconds: int = 600,
+    ) -> AgentRunRecord | None:
+        if not operation_id or not worker_id or claim_ttl_seconds < 1:
+            raise ValueError("Recovery requires operation, worker and positive TTL")
+        current = now or datetime.now(UTC)
+        stale = _dt_str(current - timedelta(seconds=claim_ttl_seconds))
+        with self._lock:
+            changed = self.conn.execute(
+                """UPDATE _agent_runs SET status='finalizing', claimed_by=?,
+                  claimed_at=?, updated_at=?, recovery_operation_id=?
+                WHERE id=? AND org_id=? AND org_id=? AND updated_at=?
+                  AND (status='finalization_failed'
+                    OR (status='agent_completed' AND updated_at<?)
+                    OR (status='finalizing' AND claimed_at<?))
+                  AND (claimed_by IS NULL OR claimed_at<?)
+                  AND committed_output IS NOT NULL
+                  AND (next_resume_at IS NULL OR next_resume_at<=?)
+                  AND COALESCE(json_array_length(pending_tool_call_ids),0)=0
+                  AND NOT EXISTS(SELECT 1 FROM _run_tool_dependencies d
+                    WHERE d.run_id=_agent_runs.id AND d.consumed_at IS NULL)
+                  AND (id NOT LIKE 'window:%' OR EXISTS(
+                    SELECT 1 FROM extraction_windows w WHERE w.window_id=substr(_agent_runs.id,8)
+                    AND w.completed=1 AND w.invalidated=0))""",
+                (
+                    worker_id,
+                    _dt_str(current),
+                    _dt_str(current),
+                    operation_id,
+                    run_id,
+                    org_id,
+                    self.org_id,
+                    _dt_str(expected_updated_at),
+                    stale,
+                    stale,
+                    stale,
+                    _dt_str(current),
+                ),
+            ).rowcount
+            if self._own_transaction():
+                self.conn.commit()
+        return self.get_agent_run(run_id) if changed else None
 
     @SQLiteStorageBase.handle_exceptions
     def list_resumable_work_org_ids(

@@ -279,6 +279,7 @@ class ExtractionResumeWorker:
         self.storage = _storage(request_context)
         self.client = llm_client or _create_llm_client(request_context)
         self.worker_id = worker_id or f"resume_worker_{uuid.uuid4().hex}"
+        self._active_claim: AgentRunRecord | None = None
 
     def drain(self, *, max_runs: int = 10) -> int:
         """Inspect up to ``max_runs`` claims, including users currently busy."""
@@ -342,10 +343,6 @@ class ExtractionResumeWorker:
             worker_id=self.worker_id,
             claim_ttl_seconds=pending_config.resume_claim_ttl_seconds,
         )
-        from reflexio.server.services.durable_learning.user_lease import (
-            UserLeaseBusyError,
-            user_extraction_lease,
-        )
 
         run = finalization_retry or self.storage.claim_ready_agent_run(
             org_id=self.request_context.org_id,
@@ -354,6 +351,87 @@ class ExtractionResumeWorker:
         )
         if run is None:
             return None
+        return self._execute_claimed_run(
+            run, finalization_retry=finalization_retry is not None
+        )
+
+    def recover_selected(self, selection: Any, *, operation_id: str) -> AgentRunRecord:
+        """Recover one previewed run without opening the scheduler's resume gate."""
+        from reflexio.server.services.extraction.recovery import (
+            RecoveryRefusedError,
+            validate_selection,
+        )
+
+        if selection.org_id != self.request_context.org_id:
+            raise RecoveryRefusedError("organization_mismatch")
+        with bind_work_scope(WorkScope(selection.org_id, selection.project_id)):
+            run = self.storage.get_agent_run(selection.run_id)
+            if run is None:
+                raise RecoveryRefusedError("run_not_found")
+            validate_selection(self.request_context, run, selection)
+            config = (
+                self.request_context.configurator.get_config().pending_tool_call_config
+            )
+            claimed = self.storage.claim_agent_run_for_recovery(
+                run_id=run.id,
+                org_id=selection.org_id,
+                worker_id=self.worker_id,
+                expected_updated_at=selection.updated_at,
+                operation_id=operation_id,
+                claim_ttl_seconds=config.resume_claim_ttl_seconds,
+            )
+            if claimed is None:
+                raise RecoveryRefusedError("claim_conflict")
+            logger.info(
+                "event=extraction_recovery_claimed run_id=%s operation_id=%s",
+                run.id,
+                operation_id,
+            )
+            try:
+                result = self._execute_claimed_run(
+                    claimed, finalization_retry=True, selection=selection
+                )
+            except Exception:
+                # Status-only CAS: never overwrite a newer owner or an already
+                # finalized result when a downstream diagnostic fails.
+                self.storage.update_agent_run_status(
+                    claimed.id,
+                    AgentRunStatus.FINALIZATION_FAILED,
+                    last_error="selected_recovery_interrupted",
+                    expected_statuses=(AgentRunStatus.FINALIZING,),
+                    expected_claimed_by=claimed.claimed_by,
+                    expected_claimed_at=claimed.claimed_at,
+                )
+                raise
+            facts = self.storage.get_agent_run_recovery_facts(run.id)
+            if (
+                result.status != AgentRunStatus.FINALIZED
+                or not facts.get("receipt_exists")
+                or facts.get("receipt_missing_results") != 0
+            ):
+                raise RecoveryRefusedError("recovery_not_verified")
+            logger.info(
+                "event=extraction_recovery_verified run_id=%s operation_id=%s",
+                run.id,
+                operation_id,
+            )
+            return result
+
+    def _execute_claimed_run(
+        self,
+        run: AgentRunRecord,
+        *,
+        finalization_retry: bool,
+        selection: Any = None,
+    ) -> AgentRunRecord:
+        from reflexio.server.services.durable_learning.user_lease import (
+            UserLeaseBusyError,
+            user_extraction_lease,
+        )
+
+        pending_config = (
+            self.request_context.configurator.get_config().pending_tool_call_config
+        )
         expected_status = (
             AgentRunStatus.FINALIZING if finalization_retry else AgentRunStatus.RESUMING
         )
@@ -375,6 +453,15 @@ class ExtractionResumeWorker:
                         or latest.claimed_at != run.claimed_at
                     ):
                         return latest or run
+                    self._active_claim = latest
+                    if selection is not None:
+                        from reflexio.server.services.extraction.recovery import (
+                            validate_selection,
+                        )
+
+                        validate_selection(
+                            self.request_context, latest, selection, owned_claim=True
+                        )
                     source_ids = set(latest.binding.source_interaction_ids)
                     if source_ids and source_ids != {
                         interaction.interaction_id
@@ -427,7 +514,7 @@ class ExtractionResumeWorker:
 
         with self.storage.commit_scope():
             fence_explicit_extraction(self.storage)
-            return self.storage.update_agent_run_status(
+            updated = self.storage.update_agent_run_status(
                 run_id,
                 status,
                 expected_statuses=(
@@ -435,8 +522,24 @@ class ExtractionResumeWorker:
                     AgentRunStatus.AGENT_COMPLETED,
                     AgentRunStatus.FINALIZING,
                 ),
+                expected_claimed_by=self._active_claim.claimed_by
+                if self._active_claim
+                else None,
+                expected_claimed_at=self._active_claim.claimed_at
+                if self._active_claim
+                else None,
                 **kwargs,
             )
+        if updated is not None:
+            logger.info(
+                "event=extraction_run_transition run_id=%s org_id=%s project_id=%s status=%s operation_id=%s",
+                updated.id,
+                updated.binding.org_id,
+                updated.project_id,
+                updated.status,
+                updated.recovery_operation_id,
+            )
+        return updated
 
     def _process_claimed_run(
         self, run: AgentRunRecord, pending_config: Any
@@ -561,9 +664,10 @@ class ExtractionResumeWorker:
                 run_id=run.id,
                 error_type=type(exc).__name__,
             ):
-                logger.exception(
-                    "event=resumable_extraction_finalization_retry_failed run_id=%s",
+                logger.error(
+                    "event=resumable_extraction_finalization_retry_failed run_id=%s error_type=%s",
                     run.id,
+                    type(exc).__name__,
                 )
             next_attempt_count = run.finalization_attempts + 1
             failed_status = _finalization_failure_status(
@@ -575,7 +679,7 @@ class ExtractionResumeWorker:
                 run.id,
                 failed_status,
                 next_resume_at=_next_retry_at(next_attempt_count),
-                last_error=str(exc),
+                last_error=type(exc).__name__,
                 increment_finalization_attempts=True,
             )
 
