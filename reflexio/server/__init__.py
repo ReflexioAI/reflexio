@@ -181,7 +181,21 @@ _NOISY_FIRST_PARTY = (("reflexio.server.site_var.site_var_manager", logging.ERRO
 #: ``_NOISY_THIRD_PARTY`` are NOT the reason: they carry an explicit WARNING that
 #: outranks the root, so they are immune. An earlier version of this comment cited
 #: exactly those two (``litellm``, ``httpx``) and was wrong about its own example.
-_FIRST_PARTY_ROOTS = ("reflexio", "reflexio_ext")
+#:
+#: THIS PACKAGE'S OWN namespace only. A downstream distribution whose code lives
+#: under a different root passes it as ``extra_first_party_roots``; nothing here
+#: names it.
+#:
+#: An earlier version of this tuple carried a second, downstream root as a bare
+#: string, on the reasoning that a logger name is not an import -- ``getLogger``
+#: creates an object for any name, so on a machine without that package the entry
+#: is inert. The reasoning was not wrong; it was not mine to make. The enterprise
+#: guard added in reflexio-enterprise#474,
+#: ``test_oss_never_imports_enterprise``, walks the AST of every file here and
+#: rejects a string constant naming that package as well as a real import, with no
+#: allowlist and no rationale field -- an absolute invariant, already decided. It
+#: had been red on the superproject's ``main`` for two commits before anyone looked.
+_FIRST_PARTY_ROOTS = ("reflexio",)
 
 
 @dataclass(frozen=True)
@@ -418,6 +432,7 @@ def configure_logging(
     verbose: bool,
     level: int = logging.WARNING,
     first_party_level: int | None = None,
+    extra_first_party_roots: Sequence[str] = (),
     info_loggers: Sequence[str] = (),
 ) -> LoggingReport:
     """Configure application logging and report what was done.
@@ -457,7 +472,13 @@ def configure_logging(
         level: Root logger level for the production profile. Lower-only.
         first_party_level: Level to surface first-party records at, for a caller
             that needs them to fire before it can forward them. None leaves them
-            alone. Lower-only, and scoped to :data:`_FIRST_PARTY_ROOTS`.
+            alone. Lower-only, and scoped to :data:`_FIRST_PARTY_ROOTS` plus
+            ``extra_first_party_roots``.
+        extra_first_party_roots: Further logger roots to treat as first-party,
+            ADDED to :data:`_FIRST_PARTY_ROOTS` rather than replacing it -- so a
+            caller that forgets them loses only its own namespace and can never
+            silently stop lowering this package's. Ignored when
+            ``first_party_level`` is None.
         info_loggers: Logger-name prefixes to raise to INFO individually.
 
     Returns:
@@ -491,7 +512,7 @@ def configure_logging(
         pinned[name] = quiet_level
 
     if first_party_level is not None:
-        for name in _FIRST_PARTY_ROOTS:
+        for name in (*_FIRST_PARTY_ROOTS, *extra_first_party_roots):
             first_party = logging.getLogger(name)
             if first_party_level < first_party.getEffectiveLevel():
                 first_party.setLevel(first_party_level)

@@ -32,7 +32,12 @@ import pytest
 
 from reflexio.server import configure_logging, resolve_log_level
 
-_FIRST_PARTY = ("reflexio", "reflexio_ext")
+#: This package's own root, plus a stand-in for a downstream distribution's.
+#: The second name is deliberately NOT the real downstream package: what is under
+#: test is that `extra_first_party_roots` treats any caller-supplied root alike, and
+#: a real name here would read as this package knowing about that one.
+_DOWNSTREAM_ROOT = "downstream_dist"
+_FIRST_PARTY = ("reflexio", _DOWNSTREAM_ROOT)
 
 
 @pytest.fixture(autouse=True)
@@ -154,7 +159,11 @@ def test_a_first_party_level_below_the_effective_level_lowers_first_party() -> N
     """Required: a downstream forwarder gets nothing if INFO never fires."""
     _blank_root()
 
-    configure_logging(verbose=False, first_party_level=logging.INFO)
+    configure_logging(
+        verbose=False,
+        extra_first_party_roots=(_DOWNSTREAM_ROOT,),
+        first_party_level=logging.INFO,
+    )
 
     for name in _FIRST_PARTY:
         assert logging.getLogger(f"{name}.child").isEnabledFor(logging.INFO), (
@@ -171,7 +180,11 @@ def test_a_first_party_level_above_the_effective_level_never_raises_it() -> None
     """
     _blank_root()
 
-    configure_logging(verbose=False, first_party_level=logging.ERROR)
+    configure_logging(
+        verbose=False,
+        extra_first_party_roots=(_DOWNSTREAM_ROOT,),
+        first_party_level=logging.ERROR,
+    )
 
     for name in _FIRST_PARTY:
         assert logging.getLogger(f"{name}.child").isEnabledFor(logging.WARNING), (
