@@ -839,6 +839,12 @@ class LLMConfig(BaseModel):
     pre_retrieval_model_name: str | None = (
         None  # Model for pre-retrieval query reformulation
     )
+    # Wall-clock seconds allowed for one generation/evaluation LLM call. None
+    # takes the module default in reflexio.lib._base, which is deliberately
+    # higher than LiteLLMConfig.timeout: this client backs background
+    # generation, aggregation and session evaluation, and real evaluations were
+    # measured at 145-265s against a local-CLI bridge (claude-smart#162).
+    generation_timeout_seconds: int | None = Field(default=None, gt=0)
 
 
 class RetrievalExperimentConfig(BaseModel):

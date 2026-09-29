@@ -50,6 +50,10 @@ export interface LLMConfig {
   generation_model_name: string | null;
   embedding_model_name: string | null;
   pre_retrieval_model_name: string | null;
+  // Must stay listed in cleanLlm below: /api/set_config is a full replacement,
+  // so a field this serializer omits is silently wiped whenever the dashboard
+  // saves any unrelated setting.
+  generation_timeout_seconds: number | null;
 }
 
 export interface ProfileExtractorConfig {
@@ -248,6 +252,7 @@ export function serializeConfig(config: ReflexioConfig): unknown {
       generation_model_name: clean(llm.generation_model_name),
       embedding_model_name: clean(llm.embedding_model_name),
       pre_retrieval_model_name: clean(llm.pre_retrieval_model_name),
+      generation_timeout_seconds: clean(llm.generation_timeout_seconds),
     };
     return Object.values(out).some((v) => v !== null) ? out : null;
   };
