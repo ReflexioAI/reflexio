@@ -60,12 +60,13 @@ def record_extraction_tokens(
 
     No-op only when the event would carry NOTHING: no metered basis *and* no
     real provider tokens. Gating on ``billing_input_tokens <= 0`` alone silently
-    discarded real provider-token counts on exactly the runs that motivated
-    capturing them — a stage outside extraction, or a run where
-    ``_extraction_input_text`` raised and the caller swallowed it to ``""``
-    (``_usage_billing`` around the input-text call). ``count_value`` stays the
-    metered basis, so a zero-basis event still carries its provider tokens with
-    a basis of zero; the two are recorded independently.
+    discarded real provider-token counts in two situations. A stage with no
+    extraction input text of its own passes a zero basis alongside real
+    provider totals. And an extraction run whose input text is unavailable gets
+    ``""`` back from ``_extraction_input_text`` -- which handles its own
+    failures rather than raising -- so it too records a zero basis beside the
+    totals it captured. ``count_value`` stays the metered basis, so a zero-basis
+    event still carries its provider tokens; the two are recorded independently.
 
     Each call mints a fresh ``event_key=f"tok:{uuid4()}"`` so two token emits
     under the same ``request_id`` (e.g. profile + playbook extraction in one
