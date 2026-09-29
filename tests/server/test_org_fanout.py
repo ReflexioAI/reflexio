@@ -122,8 +122,8 @@ def test_starved_org_not_falsely_reported_as_timed_out() -> None:
     when its own wait window elapses must not be reported as timed out. Once
     a worker frees up, the queued org still gets to run and finish normally.
     """
-    budget = 0.2
-    stuck_duration = 0.5  # sits inside "fast"'s [2*budget, 3*budget) wait window
+    budget = 0.6
+    stuck_duration = 1.5  # sits inside "fast"'s [2*budget, 3*budget) wait window
     done: list[str] = []
     lock = threading.Lock()
 
