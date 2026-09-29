@@ -1,7 +1,6 @@
 import inspect
 import json
 import logging
-import os
 import sys
 from copy import deepcopy
 from typing import Any
@@ -9,37 +8,13 @@ from typing import Any
 from pydantic import BaseModel
 
 from reflexio.models.structured_output import find_schema_keyword
+from reflexio.server.env_utils import positive_int_env as positive_int_env
 
 logger = logging.getLogger(__name__)
 
 # JSON-Schema keywords that strict structured-output endpoints (OpenAI, minimax)
 # reject; see PYTHON-FASTAPI-9J.
 PROVIDER_UNSAFE_KEYWORDS = ("oneOf", "discriminator")
-
-
-def positive_int_env(name: str, default: int, logger: logging.Logger) -> int:
-    """Resolve a strictly-positive int from environment variable ``name``.
-
-    Falls back to ``default`` when the variable is unset/blank, not a valid
-    integer (logging a warning in that case), or not strictly positive.
-
-    Args:
-        name (str): Environment variable to read.
-        default (int): Value returned when the variable is missing or invalid.
-        logger (logging.Logger): Logger used to warn on a non-integer value.
-
-    Returns:
-        int: The parsed positive integer, or ``default``.
-    """
-    raw = os.environ.get(name)
-    if not raw:
-        return default
-    try:
-        value = int(raw)
-    except ValueError:
-        logger.warning("Invalid %s=%r; falling back to default %d", name, raw, default)
-        return default
-    return value if value > 0 else default
 
 
 _STRICT_SCHEMA_UNSUPPORTED_KEYWORDS = frozenset(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from collections.abc import Mapping
 
@@ -134,3 +135,28 @@ def env_truthy(value: str) -> bool:
     external caller's behaviour does not change silently.
     """
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def positive_int_env(name: str, default: int, logger: logging.Logger) -> int:
+    """Resolve a strictly-positive int from environment variable ``name``.
+
+    Falls back to ``default`` when the variable is unset/blank, not a valid
+    integer (logging a warning in that case), or not strictly positive.
+
+    Args:
+        name (str): Environment variable to read.
+        default (int): Value returned when the variable is missing or invalid.
+        logger (logging.Logger): Logger used to warn on a non-integer value.
+
+    Returns:
+        int: The parsed positive integer, or ``default``.
+    """
+    raw = os.environ.get(name)
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning("Invalid %s=%r; falling back to default %d", name, raw, default)
+        return default
+    return value if value > 0 else default

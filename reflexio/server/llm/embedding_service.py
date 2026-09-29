@@ -15,7 +15,7 @@ from typing import Any, Literal
 from fastapi import FastAPI, HTTPException, Response, status
 from pydantic import BaseModel, Field
 
-from reflexio.server.llm.llm_utils import positive_int_env
+from reflexio.server.env_utils import positive_int_env
 from reflexio.server.llm.providers.local_embedding_provider import LocalEmbedder
 from reflexio.server.llm.providers.nomic_embedding_provider import (
     NomicEmbedder,
