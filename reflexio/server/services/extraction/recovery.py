@@ -105,7 +105,8 @@ def _require_preserved_output_fields(raw: Any, parsed: Any) -> None:
 
 def _source_version_blockers(context: RequestContext, run: AgentRunRecord) -> list[str]:
     """Compare original witnesses with selected sources without reporting content."""
-    assert context.storage is not None  # inspect_run validates the storage boundary.
+    if context.storage is None:
+        raise RecoveryRefusedError("organization_mismatch")
     sources = set(run.binding.source_interaction_ids)
     expected = run.generation_request_snapshot.get("source_interaction_digests")
     if not isinstance(expected, dict) or set(expected) != {str(i) for i in sources}:
