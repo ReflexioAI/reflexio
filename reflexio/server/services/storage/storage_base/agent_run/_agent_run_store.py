@@ -70,6 +70,8 @@ class AgentRunStoreABC:
         last_error: str | None = None,
         increment_finalization_attempts: bool = False,
         expected_statuses: tuple[AgentRunStatus, ...] | None = None,
+        expected_claimed_by: str | None = None,
+        expected_claimed_at: datetime | None = None,
     ) -> AgentRunRecord | None:
         raise NotImplementedError(f"{type(self).__name__} does not support agent runs")
 
@@ -103,6 +105,28 @@ class AgentRunStoreABC:
         claim_ttl_seconds: int = 600,
     ) -> AgentRunRecord | None:
         raise NotImplementedError(f"{type(self).__name__} does not support agent runs")
+
+    def claim_agent_run_for_recovery(
+        self,
+        *,
+        run_id: str,
+        org_id: str,
+        worker_id: str,
+        expected_updated_at: datetime,
+        operation_id: str,
+        now: datetime | None = None,
+        claim_ttl_seconds: int = 600,
+    ) -> AgentRunRecord | None:
+        """Atomically claim exactly one reviewed finalization run, or nothing.
+
+        Unlike queue claims this never falls back to another run. The caller
+        must revalidate the preview under the user's lease before effects.
+        """
+        raise NotImplementedError("Selected recovery requires the recovery migration")
+
+    def get_agent_run_recovery_facts(self, run_id: str) -> dict[str, Any]:
+        """Read-only, scoped evidence; no content or locking receipt lookup."""
+        raise NotImplementedError("Run diagnostics require the recovery migration")
 
     def list_resumable_work_org_ids(
         self,

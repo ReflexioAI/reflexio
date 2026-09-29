@@ -1455,10 +1455,8 @@ def test_empty_playbook_receipt_retries_without_redispatch(storage):
 
         assert retried is not None
         assert retried.status == AgentRunStatus.FINALIZED
-        assert outcomes == [
-            FinalizationResult([], won_receipt=True),
-            FinalizationResult([], won_receipt=False),
-        ]
+        # Worker receipt replay no longer reconstructs items or calls finalizers.
+        assert outcomes == [FinalizationResult([], won_receipt=True)]
         assert type(wrapper_ids) is list
         assert wrapper_ids == []
         resolve.assert_called_once()

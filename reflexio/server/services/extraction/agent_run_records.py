@@ -9,6 +9,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from reflexio.models.api_schema.internal_schema import RequestInteractionDataModel
+from reflexio.models.api_schema.service_schemas import Interaction
 from reflexio.server.services.storage.storage_base import (
     AgentBinding,
     AgentRunRecord,
@@ -40,6 +41,13 @@ def extract_source_interaction_ids(
         for interaction in data_model.interactions
         if interaction.interaction_id is not None
     ]
+
+
+def source_interaction_digest(interaction: Interaction) -> str:
+    """Hash the captured source, excluding derived storage-only values."""
+    return build_scope_hash(
+        interaction.model_dump(mode="json", exclude={"embedding", "token_count"})
+    )
 
 
 def build_extractor_agent_run_record(
@@ -112,6 +120,12 @@ def build_extractor_agent_run_record(
             "request_id": generation_request_id,
             "source": source,
             "source_interaction_ids": source_interaction_ids,
+            "source_interaction_digests": {
+                str(interaction.interaction_id): source_interaction_digest(interaction)
+                for data_model in request_interaction_data_models
+                for interaction in data_model.interactions
+                if interaction.interaction_id is not None
+            },
             "session_count": len(request_interaction_data_models),
             "extractor_config": extractor_config_snapshot,
             # Resume/finalization must parse the committed payload with the

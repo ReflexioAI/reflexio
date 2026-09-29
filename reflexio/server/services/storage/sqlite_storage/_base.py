@@ -1900,6 +1900,44 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                 "ALTER TABLE _agent_runs ADD COLUMN max_steps_remaining INTEGER"
             )
             logger.info("Added max_steps_remaining column to _agent_runs")
+        for name, definition in (
+            ("progress_stage", "TEXT"),
+            ("last_progress_at", "TEXT"),
+            ("recovery_operation_id", "TEXT"),
+            ("recovery_history", "TEXT NOT NULL DEFAULT '[]'"),
+        ):
+            if name not in cols:
+                self.conn.execute(
+                    f"ALTER TABLE _agent_runs ADD COLUMN {name} {definition}"
+                )
+        # Triggers cover every writer, including legacy callers and SQL claims.
+        # They never backfill old rows and never treat generic updated_at as progress.
+        stage = """CASE NEW.status WHEN 'running' THEN 'generation_started'
+          WHEN 'agent_completed' THEN 'output_saved' WHEN 'finalizing' THEN 'finalization_started'
+          WHEN 'finalized' THEN 'completed' WHEN 'finalized_pending_tool' THEN 'completed'
+          ELSE NEW.status END"""
+        for event, condition in (
+            ("INSERT", "1"),
+            (
+                "UPDATE OF status, recovery_operation_id",
+                "NEW.status IS NOT OLD.status OR NEW.recovery_operation_id IS NOT OLD.recovery_operation_id",
+            ),
+        ):
+            suffix = "insert" if event == "INSERT" else "update"
+            self.conn.execute(f"""CREATE TRIGGER IF NOT EXISTS agent_run_progress_{suffix}
+              AFTER {event} ON _agent_runs WHEN {condition}
+              BEGIN UPDATE _agent_runs SET progress_stage={stage},
+                last_progress_at=strftime('%Y-%m-%dT%H:%M:%f+00:00','now'),
+                recovery_history=CASE WHEN NEW.recovery_operation_id IS NULL THEN recovery_history
+                  ELSE json_insert(recovery_history, '$[#]', json_object(
+                    'operation_id', NEW.recovery_operation_id, 'event', NEW.status,
+                    'at', strftime('%Y-%m-%dT%H:%M:%f+00:00','now'))) END
+                WHERE id=NEW.id; END""")
+        self.conn.execute("""CREATE TRIGGER IF NOT EXISTS agent_run_receipt_progress
+          AFTER INSERT ON _agent_run_finalization_receipts BEGIN
+          UPDATE _agent_runs SET progress_stage='results_committed',
+            last_progress_at=strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
+          WHERE id=NEW.run_id; END""")
         self.conn.commit()
 
     def _migrate_pending_tool_calls_schema(self) -> None:

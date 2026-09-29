@@ -103,6 +103,10 @@ class AgentRunRecord:
     #: write path shipped. Enterprise refuses to process the latter rather than
     #: guessing a project; they are fixed by backfill, not at run time.
     project_id: str | None = None
+    progress_stage: str | None = None
+    last_progress_at: datetime | None = None
+    recovery_operation_id: str | None = None
+    recovery_history: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

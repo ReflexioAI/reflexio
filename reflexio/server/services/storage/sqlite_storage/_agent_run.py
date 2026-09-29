@@ -84,6 +84,10 @@ def _row_to_agent_run(row: sqlite3.Row) -> AgentRunRecord:
         updated_at=_dt(data.get("updated_at")),
         expires_at=_dt(data.get("expires_at")),
         last_error=data.get("last_error"),
+        progress_stage=data.get("progress_stage"),
+        last_progress_at=_dt(data.get("last_progress_at")),
+        recovery_operation_id=data.get("recovery_operation_id"),
+        recovery_history=_json_loads(data.get("recovery_history")) or [],
     )
 
 
