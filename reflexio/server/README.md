@@ -156,7 +156,9 @@ Key files:
 - `_litellm_text_generation.py`, `_litellm_embedding.py`, `_litellm_structured_output.py`: Completion/tool-call, embedding, and structured-output mixins
 - `_litellm_json_extraction.py`, `_litellm_subprocess.py`, `_provider_concurrency.py`, `_litellm_types.py`: JSON parsing, hard-timeout subprocess snapshots/workers, per-provider concurrency caps (fail-open by default, fail-closed for configured providers), and shared public types/errors
 - `providers/`: Optional local/provider adapters (`claude-code/`, OpenClaw, local embedding, Nomic embedding, and GPU-only multilingual E5); registration is opt-in via environment/config
-- `llm_utils.py`: Helper functions for Pydantic model conversion
+- `llm_utils.py`: Helper functions for Pydantic model conversion; retains the compatibility export for `env_utils.positive_int_env`
+- `embedding_policy.py`: Schema-independent model prefixes, dimensions and retrieval/clustering thresholds; `services.embedding_text` re-exports its public names
+- `embedding_service.py`: Inference HTTP app. Package-root, LLM and rerank public exports load on demand, so importing this daemon does not pull in application clients, schemas or extraction code. Public `from reflexio import ...` and LLM/rerank imports retain their existing objects.
 
 **Features**:
 

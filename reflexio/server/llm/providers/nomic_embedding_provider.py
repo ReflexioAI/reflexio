@@ -34,8 +34,7 @@ import os
 import threading
 from typing import Any
 
-from reflexio.server.env_utils import env_truthy
-from reflexio.server.llm.llm_utils import positive_int_env
+from reflexio.server.env_utils import env_truthy, positive_int_env
 
 _LOGGER = logging.getLogger(__name__)
 
