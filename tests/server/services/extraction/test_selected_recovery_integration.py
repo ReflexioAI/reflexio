@@ -449,3 +449,59 @@ def test_nonempty_receipt_bills_without_erased_sources_or_output_reconstruction(
     assert context.storage.get_agent_run_finalization_receipt(
         run_id=run.id, entity_type=entity_type
     ) == ["durable-result-id"]
+
+
+def test_selected_committed_receipt_survives_source_erasure_after_claim(context):
+    from reflexio.models.api_schema.service_schemas import UserProfile
+    from reflexio.server.usage_metrics import UsageEventDeliveryStatus
+
+    run = seed(context)
+    profile = UserProfile(
+        profile_id="committed-result",
+        user_id="user",
+        content="Synthetic result",
+        last_modified_timestamp=1_700_000_000,
+        generated_from_request_id="request",
+        embedding=[0.0] * 512,
+    )
+    context.storage.add_user_profile("user", [profile], skip_embedding=True)
+    context.storage.save_agent_run_finalization_receipt(
+        run_id=run.id, entity_type="profile", learning_ids=[profile.profile_id]
+    )
+    selection = selection_from_report(
+        inspect_run(context, context.storage.get_agent_run(run.id))
+    )
+    claim = context.storage.claim_agent_run_for_recovery
+
+    def erase_after_claim(**kwargs):
+        claimed = claim(**kwargs)
+        context.storage.conn.execute("DELETE FROM interactions WHERE interaction_id=1")
+        context.storage.conn.commit()
+        return claimed
+
+    events = []
+
+    def record(event):
+        events.append(event)
+        return UsageEventDeliveryStatus.APPENDED
+
+    configure_usage_event_recorder(record)
+    worker = ExtractionResumeWorker(request_context=context, llm_client=MagicMock())
+    with (
+        patch.object(
+            context.storage,
+            "claim_agent_run_for_recovery",
+            side_effect=erase_after_claim,
+        ),
+        patch.object(
+            worker,
+            "_items_from_committed_output",
+            side_effect=AssertionError("source reconstruction"),
+        ),
+        patch.object(
+            worker, "_finalize_items", side_effect=AssertionError("result write")
+        ),
+    ):
+        result = worker.recover_selected(selection, operation_id="op")
+    assert result.status == AgentRunStatus.FINALIZED
+    assert len(events) == 1 and events[0].event_key == "learn:profile:committed-result"

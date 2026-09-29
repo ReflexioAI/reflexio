@@ -470,7 +470,7 @@ class ExtractionResumeWorker:
                         if finalization_retry
                         else None
                     )
-                    if selection is not None:
+                    if selection is not None and receipt is None:
                         from reflexio.server.services.extraction.recovery import (
                             validate_selection,
                         )
