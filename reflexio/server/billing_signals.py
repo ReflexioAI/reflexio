@@ -12,8 +12,9 @@ from typing import Any
 
 import tiktoken
 
-# One fixed canonical encoding for the whole platform. Changing this is a
-# price-book-affecting decision; do not make it model-dependent.
+# One fixed canonical encoding for the whole platform. Changing it changes every
+# recorded token count, so historical and new counts stop being comparable; do
+# not make it model-dependent.
 _CANONICAL_ENCODING_NAME = "cl100k_base"
 _encoding = tiktoken.get_encoding(_CANONICAL_ENCODING_NAME)
 

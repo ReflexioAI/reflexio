@@ -40,8 +40,9 @@ class UsageEvent:
     completion_tokens: int | None = None
     # Inclusive sub-buckets of `prompt_tokens`, NOT additional tokens: the
     # provider folds them in before we see them. They ride separately only
-    # because they are priced differently (cache read ~0.1x, cache write ~1.25x
-    # base input). Never add them to `prompt_tokens`, and never sum the four.
+    # because providers report and meter cache reads and cache writes separately
+    # from ordinary input. Never add them to `prompt_tokens`, and never sum the
+    # four.
     cache_read_input_tokens: int | None = None
     cache_write_input_tokens: int | None = None
     billing_input_tokens: int | None = None
