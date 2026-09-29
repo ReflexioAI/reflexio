@@ -398,6 +398,12 @@ function emptyLlm(): LLMConfig {
     generation_model_name: null,
     embedding_model_name: null,
     pre_retrieval_model_name: null,
+    // Deliberately absent from LLM_FIELDS: those render text inputs and hand
+    // the change handler a string, so a numeric field there would ship a
+    // broken control. It is carried here and through serializeConfig so an
+    // API/CLI-set value survives a dashboard save; editing it needs a numeric
+    // control, which is a separate change.
+    generation_timeout_seconds: null,
   };
 }
 
