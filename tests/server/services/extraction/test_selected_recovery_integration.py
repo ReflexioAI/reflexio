@@ -301,9 +301,104 @@ def test_same_id_source_replacement_invalidates_preview_before_claim(context):
     assert context.storage.get_agent_run(run.id).recovery_operation_id is None
 
 
+def test_source_replacement_after_claim_cannot_enter_ordinary_retry_queue(context):
+    run = seed(context)
+    selection = selection_from_report(inspect_run(context, run))
+    claim = context.storage.claim_agent_run_for_recovery
+
+    def replace_after_claim(**kwargs):
+        claimed = claim(**kwargs)
+        source = context.storage.get_interactions_by_ids([1])[0]
+        context.storage._insert_interaction(
+            source.model_copy(update={"content": "changed"})
+        )
+        return claimed
+
+    with (
+        patch.object(
+            context.storage,
+            "claim_agent_run_for_recovery",
+            side_effect=replace_after_claim,
+        ),
+        pytest.raises(RecoveryRefusedError),
+    ):
+        ExtractionResumeWorker(
+            request_context=context, llm_client=MagicMock()
+        ).recover_selected(selection, operation_id="op")
+    refused = context.storage.get_agent_run(run.id)
+    assert refused.status == AgentRunStatus.FAILED
+    assert refused.last_error == "selected_recovery_refused"
+    assert refused.committed_output == run.committed_output
+    assert not context.storage.get_agent_run_recovery_facts(run.id)["receipt_exists"]
+    assert (
+        context.storage.claim_finalization_failed_agent_run(
+            org_id="org", worker_id="ordinary", claim_ttl_seconds=1
+        )
+        is None
+    )
+
+
 def test_playbook_validator_cannot_discard_saved_candidates():
     payload = {"playbooks": [{"evidence_ref": "T1"}]}
     parsed = StructuredReferencedExtractedPlaybookList.model_validate(payload)
     assert parsed.playbooks == []  # Ordinary generation tolerates this shape.
     with pytest.raises(ValueError, match="candidates were discarded"):
         _require_preserved_output_fields(payload, parsed)
+
+
+def test_interrupted_selected_run_keeps_source_checks_in_ordinary_retry(context):
+    run = seed(context)
+    worker = ExtractionResumeWorker(request_context=context, llm_client=MagicMock())
+    selection = selection_from_report(inspect_run(context, run))
+    with (
+        patch.object(
+            worker, "_execute_claimed_run", side_effect=RuntimeError("interrupted")
+        ),
+        pytest.raises(RuntimeError),
+    ):
+        worker.recover_selected(selection, operation_id="op")
+    assert (
+        context.storage.get_agent_run(run.id).status
+        == AgentRunStatus.FINALIZATION_FAILED
+    )
+    source = context.storage.get_interactions_by_ids([1])[0]
+    context.storage._insert_interaction(
+        source.model_copy(update={"content": "changed"})
+    )
+    result = worker.run_once()
+    assert result is not None
+    assert result.status == AgentRunStatus.FAILED
+    assert result.last_error == "selected_recovery_refused"
+    assert result.committed_output == run.committed_output
+    assert not context.storage.get_agent_run_recovery_facts(run.id)["receipt_exists"]
+    assert worker.run_once() is None
+
+
+def test_selected_receipt_replay_survives_source_change_and_attempt_ceiling(context):
+    run = seed(context)
+    worker = ExtractionResumeWorker(request_context=context, llm_client=MagicMock())
+    selection = selection_from_report(inspect_run(context, run))
+    with (
+        patch.object(
+            worker, "_execute_claimed_run", side_effect=RuntimeError("interrupted")
+        ),
+        pytest.raises(RuntimeError),
+    ):
+        worker.recover_selected(selection, operation_id="op")
+    context.storage.save_agent_run_finalization_receipt(
+        run_id=run.id, entity_type="profile", learning_ids=[]
+    )
+    context.storage.conn.execute(
+        "UPDATE _agent_runs SET finalization_attempts=100 WHERE id=?", (run.id,)
+    )
+    context.storage.conn.commit()
+    source = context.storage.get_interactions_by_ids([1])[0]
+    context.storage._insert_interaction(
+        source.model_copy(update={"content": "changed"})
+    )
+    with patch(
+        "reflexio.server.services.profile.service.ProfileGenerationService._finalize_write_plan_with_outcome",
+        side_effect=AssertionError("duplicate commit"),
+    ):
+        result = worker.run_once()
+    assert result is not None and result.status == AgentRunStatus.FINALIZED

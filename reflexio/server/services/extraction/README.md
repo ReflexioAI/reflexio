@@ -77,3 +77,6 @@ Sources are compared before claim and under the worker lease, using batches of
 100 selected IDs. Reports contain neither source content nor digests. The check
 catches source replacement observed at revalidation; arbitrary external writers
 are not made participants in the worker lease by this feature.
+Under-lease safety refusals preserve output in terminal `failed` status. Ordinary
+retries of interrupted selected work retain these checks until an atomic receipt
+exists; committed receipts keep the normal billing-delivery replay path.

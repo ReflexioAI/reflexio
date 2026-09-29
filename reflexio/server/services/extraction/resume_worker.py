@@ -391,13 +391,19 @@ class ExtractionResumeWorker:
                 result = self._execute_claimed_run(
                     claimed, finalization_retry=True, selection=selection
                 )
-            except Exception:
+            except Exception as exc:
                 # Status-only CAS: never overwrite a newer owner or an already
                 # finalized result when a downstream diagnostic fails.
                 self.storage.update_agent_run_status(
                     claimed.id,
-                    AgentRunStatus.FINALIZATION_FAILED,
-                    last_error="selected_recovery_interrupted",
+                    # A safety refusal must never re-enter ordinary retries,
+                    # which do not carry the operator's selected-run witness.
+                    AgentRunStatus.FAILED
+                    if isinstance(exc, RecoveryRefusedError)
+                    else AgentRunStatus.FINALIZATION_FAILED,
+                    last_error="selected_recovery_refused"
+                    if isinstance(exc, RecoveryRefusedError)
+                    else "selected_recovery_interrupted",
                     expected_statuses=(AgentRunStatus.FINALIZING,),
                     expected_claimed_by=claimed.claimed_by,
                     expected_claimed_at=claimed.claimed_at,
@@ -462,6 +468,30 @@ class ExtractionResumeWorker:
                         validate_selection(
                             self.request_context, latest, selection, owned_claim=True
                         )
+                    elif finalization_retry and latest.recovery_operation_id:
+                        # Interrupted selected work can reach the ordinary
+                        # retry queue; retain its stronger safety contract.
+                        from reflexio.server.services.extraction.recovery import (
+                            inspect_run,
+                        )
+
+                        facts = self.storage.get_agent_run_recovery_facts(latest.id)
+                        # Receipt replay must deliver already-committed billing,
+                        # even if sources/config or retry limits changed later.
+                        if (
+                            not facts.get("receipt_exists")
+                            and not inspect_run(
+                                self.request_context, latest, owned_claim=True
+                            )["eligible"]
+                        ):
+                            return (
+                                self._update_claimed_status(
+                                    latest.id,
+                                    AgentRunStatus.FAILED,
+                                    last_error="selected_recovery_refused",
+                                )
+                                or latest
+                            )
                     source_ids = set(latest.binding.source_interaction_ids)
                     if source_ids and source_ids != {
                         interaction.interaction_id
