@@ -818,7 +818,7 @@ class BaseGenerationService(
         also reads ``self._last_token_totals`` / ``self._last_precheck_sessions``,
         and the ``generation_succeeded`` metadata reads ``self._last_extractor_run_stats``.
         These are NOT re-plumbed to the plan — the money helper lives in a
-        separate mixin behind a documented patch seam (``_usage_billing.py`` SINK-3)
+        separate mixin behind a documented patch seam (``_usage_metering.py`` SINK-3)
         and re-plumbing it would touch the money path for zero behavior change.
         It is safe under the **single-use-instance invariant**: every generation
         service instance runs exactly one compute→persist→emit for one job with

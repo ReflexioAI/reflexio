@@ -5,14 +5,14 @@ from __future__ import annotations
 import re
 from unittest.mock import patch
 
-from reflexio.server.billing_meter import (
+from reflexio.server.metering_events import (
     record_applied_learnings,
     record_extraction_tokens,
     record_learnings_generated,
     record_search_request,
 )
 
-HOOK = "reflexio.server.billing_meter.record_usage_event"
+HOOK = "reflexio.server.metering_events.record_usage_event"
 
 _BATCH_KEY_RE = re.compile(r"^learn-batch:[0-9a-f-]{36}$")
 _TOK_KEY_RE = re.compile(r"^tok:[0-9a-f-]{36}$")

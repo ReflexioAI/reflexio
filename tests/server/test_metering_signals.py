@@ -1,7 +1,10 @@
 """Unit tests for the OSS billing-signals helper."""
 
 from reflexio.models.config_schema import APIKeyConfig, Config, OpenAIConfig
-from reflexio.server.billing_signals import count_input_tokens, platform_llm_from_config
+from reflexio.server.metering_signals import (
+    count_input_tokens,
+    platform_llm_from_config,
+)
 
 
 def test_count_input_tokens_empty_string_is_zero():

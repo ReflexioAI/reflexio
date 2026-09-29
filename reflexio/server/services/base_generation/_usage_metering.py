@@ -11,9 +11,9 @@ never write them, so moving them introduces no ordering/race change. The billing
 emit-ordering (``record_learnings_generated`` BEFORE ``record_extraction_tokens``,
 success-path only) lives in ``_run_generation`` on the base and is unchanged.
 
-SINK-3 (money-critical): the ``billing_meter`` / ``billing_signals`` imports inside
+SINK-3 (money-critical): the ``metering_events`` / ``metering_signals`` imports inside
 ``_record_billing_learning_events`` stay FUNCTION-LOCAL — the Phase-A drain test
-patches the terminal emitters at their source module (``reflexio.server.billing_meter``),
+patches the terminal emitters at their source module (``reflexio.server.metering_events``),
 and hoisting the imports to module top would both break that patch seam and risk a
 circular import that the ``:392`` exception-swallow would hide silently. Both
 exception swallows (``_record_billing_learning_events`` and ``_extraction_input_text``)
@@ -209,11 +209,11 @@ class UsageBillingMixin(Generic[TExtractorConfig, TGenerationServiceConfig]):  #
             return
 
         try:
-            from reflexio.server.billing_meter import (
+            from reflexio.server.metering_events import (
                 record_extraction_tokens,
                 record_learnings_generated,
             )
-            from reflexio.server.billing_signals import (
+            from reflexio.server.metering_signals import (
                 count_input_tokens,
                 platform_llm_from_config,
             )

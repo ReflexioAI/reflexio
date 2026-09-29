@@ -9,7 +9,7 @@ Three concerns, one per top-level test:
 1. ``test_billing_drain_ordering_terminal_emitters_and_double_bill_guard``
    (SINK-1 / SINK-3 / F3) — drives ``run`` over a >=2-item FIFO queue and spies
    the TERMINAL money emitters (``record_learnings_generated`` /
-   ``record_extraction_tokens`` in ``reflexio.server.billing_meter``) plus
+   ``record_extraction_tokens`` in ``reflexio.server.metering_events``) plus
    ``_finalize_extraction_runs`` on ONE ordered call-recorder. Pins:
      (a) per item, ``record_extraction_tokens`` fires once, LAST, AFTER finalize;
      (b) the ``:820-821`` per-run reset is the double-bill guard — item 2 returns a
@@ -388,11 +388,11 @@ def test_billing_drain_ordering_terminal_emitters_and_double_bill_guard(
     caplog.set_level(logging.WARNING, logger=_MODULE_LOGGER)
     with (
         patch(
-            "reflexio.server.billing_meter.record_learnings_generated",
+            "reflexio.server.metering_events.record_learnings_generated",
             recorder.learnings,
         ),
         patch(
-            "reflexio.server.billing_meter.record_extraction_tokens",
+            "reflexio.server.metering_events.record_extraction_tokens",
             recorder.tokens,
         ),
     ):
@@ -471,11 +471,11 @@ def test_billing_drain_ordering_terminal_emitters_and_double_bill_guard(
     fail_recorder = Mock()
     with (
         patch(
-            "reflexio.server.billing_meter.record_learnings_generated",
+            "reflexio.server.metering_events.record_learnings_generated",
             fail_recorder.learnings,
         ),
         patch(
-            "reflexio.server.billing_meter.record_extraction_tokens",
+            "reflexio.server.metering_events.record_extraction_tokens",
             fail_recorder.tokens,
         ),
         pytest.raises(ExtractorExecutionError),

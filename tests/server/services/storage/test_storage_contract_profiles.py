@@ -15,7 +15,7 @@ from reflexio.models.api_schema.service_schemas import (
     UserActionType,
     UserProfile,
 )
-from reflexio.server.billing_signals import count_input_tokens
+from reflexio.server.metering_signals import count_input_tokens
 from reflexio.server.services.storage.error import StorageError
 from reflexio.server.services.storage.storage_base import BaseStorage
 

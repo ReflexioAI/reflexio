@@ -29,8 +29,8 @@ from reflexio.models.config_schema import (
     StorageConfigSQLite,
 )
 from reflexio.server.api_endpoints.request_context import RequestContext
-from reflexio.server.billing_signals import count_input_tokens
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
+from reflexio.server.metering_signals import count_input_tokens
 from reflexio.server.services.base_generation_service import (
     BaseGenerationService,
     PreparedGenerationRun,

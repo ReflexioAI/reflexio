@@ -197,11 +197,11 @@ class WindowExecutor:
     def _billing_snapshot(
         self, window: Window, service: Any, plan: Any
     ) -> dict[str, Any] | None:
-        from reflexio.server.billing_signals import (
+        from reflexio.server.llm.token_accounting import RunTokenTotals
+        from reflexio.server.metering_signals import (
             count_input_tokens,
             platform_llm_from_config,
         )
-        from reflexio.server.llm.token_accounting import RunTokenTotals
 
         if plan is None:
             return None
@@ -235,7 +235,7 @@ class WindowExecutor:
         }
 
     def _bill(self, window: Window, billing: dict[str, Any]) -> None:
-        from reflexio.server.billing_meter import (
+        from reflexio.server.metering_events import (
             record_extraction_tokens,
             record_learnings_generated_records_strict,
         )

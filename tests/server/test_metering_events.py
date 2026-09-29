@@ -2,8 +2,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from reflexio.server.billing_meter import (
-    ReceiptBillingDeliveryError,
+from reflexio.server.metering_events import (
+    ReceiptDeliveryError,
     emit_learnings_generated_records_strict,
     record_applied_learnings,
     record_extraction_tokens,
@@ -14,7 +14,7 @@ from reflexio.server.usage_metrics import (
     UsageEventDeliveryStatus,
 )
 
-HOOK = "reflexio.server.billing_meter.record_usage_event"
+HOOK = "reflexio.server.metering_events.record_usage_event"
 
 
 def test_record_extraction_tokens_emits_event_when_platform_llm():
@@ -177,10 +177,10 @@ def test_strict_receipt_billing_preserves_delivery_status(status):
 
     with (
         patch(
-            "reflexio.server.billing_meter.record_usage_event_strict",
+            "reflexio.server.metering_events.record_usage_event_strict",
             side_effect=UsageEventDeliveryError(status),
         ),
-        pytest.raises(ReceiptBillingDeliveryError) as exc_info,
+        pytest.raises(ReceiptDeliveryError) as exc_info,
     ):
         emit_learnings_generated_records_strict(
             org_id="org1",
