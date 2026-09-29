@@ -511,6 +511,17 @@ def _run_phase_b(
     options = SearchOptions(query_embedding=embedding, search_mode=search_mode)
 
     entity_types = set(request.entity_types or _DEFAULT_ENTITY_TYPES)
+    search_runtime.record_retrieval_shape(
+        query=query,
+        entity_types=entity_types,
+        top_k=top_k,
+        has_user_filter=bool(request.user_id),
+        has_agent_filter=bool(request.agent_version or request.playbook_name),
+        has_tags_filter=bool(request.tags),
+        has_source_filter=bool(request.source),
+        has_time_window=start_time is not None or end_time is not None,
+        recency_on=recency_on,
+    )
     allowed_agent_statuses = request.agent_playbook_status_filter
     try:
         with profile_step(
@@ -554,6 +565,11 @@ def _run_phase_b(
                 )
                 if combined is not None:
                     profiles, agent_playbooks, user_playbooks = combined
+                    search_runtime.record_retrieval_results(
+                        profiles=len(profiles),
+                        agent_playbooks=len(agent_playbooks),
+                        user_playbooks=len(user_playbooks),
+                    )
                     set_span_data(
                         span,
                         {
@@ -644,6 +660,11 @@ def _run_phase_b(
                 search_runtime.result(user_playbooks_future)
                 if user_playbooks_future
                 else []
+            )
+            search_runtime.record_retrieval_results(
+                profiles=len(profiles) if profiles is not None else None,
+                agent_playbooks=len(agent_playbooks),
+                user_playbooks=len(user_playbooks),
             )
             set_span_data(
                 span,
