@@ -402,3 +402,50 @@ def test_selected_receipt_replay_survives_source_change_and_attempt_ceiling(cont
     ):
         result = worker.run_once()
     assert result is not None and result.status == AgentRunStatus.FINALIZED
+
+
+@pytest.mark.parametrize("selected", [False, True])
+@pytest.mark.parametrize(
+    "kind,entity_type", [("profile", "profile"), ("playbook", "user_playbook")]
+)
+def test_nonempty_receipt_bills_without_erased_sources_or_output_reconstruction(
+    context, selected, kind, entity_type
+):
+    from reflexio.server.usage_metrics import UsageEventDeliveryStatus
+
+    run = seed(context)
+    context.storage.conn.execute(
+        "UPDATE _agent_runs SET status='finalization_failed', extractor_kind=?, recovery_operation_id=?, finalization_attempts=100 WHERE id=?",
+        (kind, "op" if selected else None, run.id),
+    )
+    context.storage.conn.commit()
+    context.storage.save_agent_run_finalization_receipt(
+        run_id=run.id, entity_type=entity_type, learning_ids=["durable-result-id"]
+    )
+    context.storage.conn.execute("DELETE FROM interactions WHERE interaction_id=1")
+    context.storage.conn.commit()
+    events = []
+
+    def record(event):
+        events.append(event)
+        return UsageEventDeliveryStatus.APPENDED
+
+    configure_usage_event_recorder(record)
+    worker = ExtractionResumeWorker(request_context=context, llm_client=MagicMock())
+    with (
+        patch.object(
+            worker,
+            "_items_from_committed_output",
+            side_effect=AssertionError("source reconstruction"),
+        ),
+        patch.object(
+            worker, "_finalize_items", side_effect=AssertionError("result write")
+        ),
+    ):
+        result = worker.run_once()
+    assert result is not None and result.status == AgentRunStatus.FINALIZED
+    assert len(events) == 1
+    assert events[0].event_key == f"learn:{entity_type}:durable-result-id"
+    assert context.storage.get_agent_run_finalization_receipt(
+        run_id=run.id, entity_type=entity_type
+    ) == ["durable-result-id"]

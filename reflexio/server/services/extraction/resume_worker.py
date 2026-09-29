@@ -460,6 +460,16 @@ class ExtractionResumeWorker:
                     ):
                         return latest or run
                     self._active_claim = latest
+                    receipt = (
+                        self.storage.get_agent_run_finalization_receipt(
+                            run_id=latest.id,
+                            entity_type="profile"
+                            if latest.binding.extractor_kind == "profile"
+                            else "user_playbook",
+                        )
+                        if finalization_retry
+                        else None
+                    )
                     if selection is not None:
                         from reflexio.server.services.extraction.recovery import (
                             validate_selection,
@@ -475,11 +485,10 @@ class ExtractionResumeWorker:
                             inspect_run,
                         )
 
-                        facts = self.storage.get_agent_run_recovery_facts(latest.id)
                         # Receipt replay must deliver already-committed billing,
                         # even if sources/config or retry limits changed later.
                         if (
-                            not facts.get("receipt_exists")
+                            receipt is None
                             and not inspect_run(
                                 self.request_context, latest, owned_claim=True
                             )["eligible"]
@@ -493,12 +502,17 @@ class ExtractionResumeWorker:
                                 or latest
                             )
                     source_ids = set(latest.binding.source_interaction_ids)
-                    if source_ids and source_ids != {
-                        interaction.interaction_id
-                        for interaction in self.storage.get_interactions_by_ids(
-                            list(source_ids)
-                        )
-                    }:
+                    if (
+                        receipt is None
+                        and source_ids
+                        and source_ids
+                        != {
+                            interaction.interaction_id
+                            for interaction in self.storage.get_interactions_by_ids(
+                                list(source_ids)
+                            )
+                        }
+                    ):
                         # Never revive saved output whose source was explicitly erased.
                         return (
                             self._update_claimed_status(
@@ -669,10 +683,27 @@ class ExtractionResumeWorker:
         pending_config = config.pending_tool_call_config
         try:
             run = self._with_resolved_playbook_user_id(run)
-            items, pending_tool_call_ids, model_provenance = (
-                self._items_from_committed_output(run)
+            entity_type = (
+                "profile"
+                if run.binding.extractor_kind == "profile"
+                else "user_playbook"
             )
-            result = self._finalize_items(run, items, model_provenance=model_provenance)
+            receipt = self.storage.get_agent_run_finalization_receipt(
+                run_id=run.id, entity_type=entity_type
+            )
+            if receipt is not None:
+                # Replay committed billing from durable IDs without rereading
+                # erased sources, parsing old output, or rebuilding a write plan.
+                self._record_finalized_learnings(run, receipt, entity_type=entity_type)
+                result = FinalizationResult(receipt, won_receipt=False)
+                pending_tool_call_ids = run.pending_tool_call_ids
+            else:
+                items, pending_tool_call_ids, model_provenance = (
+                    self._items_from_committed_output(run)
+                )
+                result = self._finalize_items(
+                    run, items, model_provenance=model_provenance
+                )
             if result.won_receipt:
                 self._schedule_finalized_tagging(run)
             self.storage.consume_run_tool_dependencies(run.id)

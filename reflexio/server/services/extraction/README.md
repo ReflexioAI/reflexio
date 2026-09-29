@@ -80,3 +80,6 @@ are not made participants in the worker lease by this feature.
 Under-lease safety refusals preserve output in terminal `failed` status. Ordinary
 retries of interrupted selected work retain these checks until an atomic receipt
 exists; committed receipts keep the normal billing-delivery replay path.
+All finalization retries with a receipt replay billing from stored result IDs,
+without source reconstruction or result generation, even after source deletion.
+Existing owner proof remains required for legacy playbook records.
