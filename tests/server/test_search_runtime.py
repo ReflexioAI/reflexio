@@ -175,6 +175,45 @@ def test_nested_timing_uses_union_without_tracing():
     assert result["phases_ms"] == {"search.endpoint": 10000, "a": 4000, "b": 4000}
 
 
+def test_retrieval_shape_never_records_query_or_identity():
+    scope = runtime.SearchScope()
+    token = runtime._scope.set(scope)
+    try:
+        runtime.record_retrieval_shape(
+            query="private user question 中文",
+            entity_types={"profiles", "user_playbooks", "unknown"},
+            top_k=12,
+            has_user_filter=True,
+            has_agent_filter=False,
+            has_tags_filter=True,
+            has_source_filter=False,
+            has_time_window=False,
+            recency_on=True,
+        )
+        runtime.record_retrieval_results(
+            profiles=2, agent_playbooks=0, user_playbooks=1
+        )
+        shape = scope.snapshot(time.monotonic())["retrieval_shape"]
+    finally:
+        runtime._scope.reset(token)
+    assert shape == {
+        "entity_types": ["profiles", "user_playbooks"],
+        "query_length_bucket": "1-32",
+        "query_non_ascii": True,
+        "top_k_bucket": "11-30",
+        "has_user_filter": True,
+        "has_agent_filter": False,
+        "has_tags_filter": True,
+        "has_source_filter": False,
+        "has_time_window": False,
+        "recency_on": True,
+        "profiles_count": 2,
+        "agent_playbooks_count": 0,
+        "user_playbooks_count": 1,
+    }
+    assert "private" not in str(shape)
+
+
 def test_queue_cancellation_does_not_run_queued_job():
     scope = runtime.SearchScope()
     token = runtime._scope.set(scope)

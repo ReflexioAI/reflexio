@@ -98,6 +98,7 @@ class SearchScope:
     )
     config_locks: dict[tuple[str, int, object], Any] = field(default_factory=dict)
     counters: dict[str, int] = field(default_factory=dict)
+    retrieval_shape: dict[str, Any] = field(default_factory=dict)
     phase_counts: dict[str, int] = field(default_factory=dict)
     intervals: list[tuple[str, float, float]] = field(default_factory=list)
     active: dict[object, tuple[str, float]] = field(default_factory=dict)
@@ -158,6 +159,7 @@ class SearchScope:
             ]
             outcome, retries = self.outcome, self.retries
             counters, counts = dict(self.counters), dict(self.phase_counts)
+            retrieval_shape = dict(self.retrieval_shape)
             active_phases = sorted({name for name, _ in self.active.values()})
         phases: dict[str, list[tuple[float, float]]] = {}
         work: dict[str, float] = {}
@@ -187,6 +189,7 @@ class SearchScope:
             "outcome": outcome,
             "retry_count": retries,
             "counters": counters,
+            "retrieval_shape": retrieval_shape,
             "phase_counts": counts,
             "active_phases": active_phases,
             "phases_ms": {
@@ -219,6 +222,69 @@ def increment(name: str, value: int = 1, *, maximum: bool = False) -> None:
         with scope.lock:
             previous = scope.counters.get(name, 0)
             scope.counters[name] = max(previous, value) if maximum else previous + value
+
+
+def record_retrieval_shape(
+    *,
+    query: str,
+    entity_types: set[str],
+    top_k: int,
+    has_user_filter: bool,
+    has_agent_filter: bool,
+    has_tags_filter: bool,
+    has_source_filter: bool,
+    has_time_window: bool,
+    recency_on: bool,
+) -> None:
+    """Record bounded query shape without identifiers or search content."""
+    scope = current()
+    if scope is None:
+        return
+    length = len(query)
+    length_bucket = (
+        "empty"
+        if length == 0
+        else "1-32"
+        if length <= 32
+        else "33-128"
+        if length <= 128
+        else "129-512"
+        if length <= 512
+        else "513+"
+    )
+    with scope.lock:
+        scope.retrieval_shape = {
+            "entity_types": sorted(
+                entity_types & {"profiles", "agent_playbooks", "user_playbooks"}
+            ),
+            "query_length_bucket": length_bucket,
+            "query_non_ascii": not query.isascii(),
+            "top_k_bucket": "1-10"
+            if top_k <= 10
+            else "11-30"
+            if top_k <= 30
+            else "31+",
+            "has_user_filter": has_user_filter,
+            "has_agent_filter": has_agent_filter,
+            "has_tags_filter": has_tags_filter,
+            "has_source_filter": has_source_filter,
+            "has_time_window": has_time_window,
+            "recency_on": recency_on,
+        }
+
+
+def record_retrieval_results(
+    *, profiles: int | None, agent_playbooks: int, user_playbooks: int
+) -> None:
+    scope = current()
+    if scope is None:
+        return
+    with scope.lock:
+        scope.retrieval_shape.update(
+            profiles_count=profiles,
+            agent_playbooks_count=agent_playbooks,
+            user_playbooks_count=user_playbooks,
+        )
 
 
 def config_version(
