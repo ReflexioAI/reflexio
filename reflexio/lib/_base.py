@@ -14,6 +14,7 @@ if TYPE_CHECKING:
 from reflexio.models.config_schema import SearchMode
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
+from reflexio.server.llm.llm_utils import positive_int_env
 from reflexio.server.llm.model_defaults import ModelRole, resolve_model_name
 from reflexio.server.services.configurator.base_configurator import BaseConfigurator
 from reflexio.server.services.storage.storage_base import BaseStorage
@@ -25,6 +26,19 @@ logger = logging.getLogger(__name__)
 # Error message for when storage is not configured
 STORAGE_NOT_CONFIGURED_MSG = (
     "Storage not configured. Please configure storage in settings first."
+)
+
+# Wall-clock ceiling for one generation/evaluation call, deliberately above
+# LiteLLMConfig.timeout (120s). That default kills work that is about to
+# succeed: session evaluations against a local-CLI bridge were measured at
+# 145-265s, and relevance evaluations died at ~122s -- seconds short of
+# finishing (claude-smart#162). This client backs background generation,
+# aggregation and evaluation workers rather than a user-facing request, so
+# waiting longer is cheaper than discarding completed work. Per-tenant
+# override: LLMConfig.generation_timeout_seconds; process-wide:
+# REFLEXIO_GENERATION_TIMEOUT_SECONDS.
+GENERATION_TIMEOUT_SECONDS = positive_int_env(
+    "REFLEXIO_GENERATION_TIMEOUT_SECONDS", 300, logger
 )
 
 
@@ -45,10 +59,14 @@ def create_generation_litellm_client(
         ),
         api_key_config=api_key_config,
     )
+    configured_timeout = (
+        config_llm_config.generation_timeout_seconds if config_llm_config else None
+    )
     return LiteLLMClient(
         LiteLLMConfig(
             model=generation_model_name,
             api_key_config=api_key_config,
+            timeout=configured_timeout or GENERATION_TIMEOUT_SECONDS,
         )
     )
 

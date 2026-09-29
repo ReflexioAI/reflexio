@@ -9,10 +9,14 @@ from unittest.mock import MagicMock, patch
 from pydantic import BaseModel
 
 from reflexio.lib._base import (
+    GENERATION_TIMEOUT_SECONDS,
     STORAGE_NOT_CONFIGURED_MSG,
     ReflexioBase,
     _require_storage,
+    create_generation_litellm_client,
 )
+from reflexio.models.config_schema import LLMConfig
+from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 from reflexio.test_support.typing_helpers import as_mock
 
 # ---------------------------------------------------------------------------
@@ -371,3 +375,55 @@ class TestReflexioBaseInit:
         mock_ctx_cls.assert_called_once_with(
             org_id="org1", storage_base_dir=None, configurator=mock_configurator
         )
+
+
+# ---------------------------------------------------------------------------
+# Generation client timeout (claude-smart#162)
+# ---------------------------------------------------------------------------
+
+
+def _generation_client_with(llm_config: LLMConfig | None) -> LiteLLMClient:
+    """Build the generation client with a stubbed configurator + site var."""
+    context = MagicMock()
+    config = MagicMock()
+    config.api_key_config = None
+    config.llm_config = llm_config
+    context.configurator.get_config.return_value = config
+
+    with (
+        patch("reflexio.lib._base.SiteVarManager") as site_var_manager,
+        patch("reflexio.lib._base.resolve_model_name", return_value="test-model"),
+    ):
+        site_var_manager.return_value.get_site_var.return_value = {}
+        return create_generation_litellm_client(context)
+
+
+def test_generation_client_outlives_the_120s_default() -> None:
+    """The eval path must not inherit LiteLLMConfig's 120s default.
+
+    Regression for claude-smart#162: relevance evaluations died at ~122s,
+    seconds short of finishing, and agent-success evaluations legitimately ran
+    145-265s. 120s discards work that was about to succeed.
+    """
+    client = _generation_client_with(None)
+
+    assert client.config.timeout == GENERATION_TIMEOUT_SECONDS
+    assert client.config.timeout > LiteLLMConfig(model="x").timeout, (
+        "generation timeout must exceed the LiteLLMConfig default, or #162 recurs"
+    )
+
+
+def test_generation_client_honours_the_per_tenant_override() -> None:
+    """LLMConfig.generation_timeout_seconds wins over the module default."""
+    client = _generation_client_with(LLMConfig(generation_timeout_seconds=615))
+
+    assert client.config.timeout == 615
+
+
+def test_other_callers_keep_the_litellm_default() -> None:
+    """Only the generation client is raised; the shared default is untouched.
+
+    Raising LiteLLMConfig.timeout itself would lengthen every LLM call in the
+    product to fix one slow path.
+    """
+    assert LiteLLMConfig(model="x").timeout == 120
