@@ -46,8 +46,8 @@ def _meter_applied_learnings(
     if caller_type != "production_agent" or surfaced_count <= 0:
         return False
     try:
-        from reflexio.server.billing_meter import record_applied_learnings
-        from reflexio.server.billing_signals import platform_llm_from_config
+        from reflexio.server.metering_events import record_applied_learnings
+        from reflexio.server.metering_signals import platform_llm_from_config
 
         config = reflexio_cache.get_reflexio(
             org_id=org_id
@@ -100,7 +100,7 @@ def _meter_search_request(
     if caller_type != "production_agent":
         return False
     try:
-        from reflexio.server.billing_meter import record_search_request
+        from reflexio.server.metering_events import record_search_request
 
         record_search_request(
             org_id=org_id,

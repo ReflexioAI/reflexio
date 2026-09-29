@@ -25,7 +25,7 @@ from reflexio.models.config_schema import (
     StorageConfigSQLite,
 )
 from reflexio.server.api_endpoints.request_context import RequestContext
-from reflexio.server.billing_meter import ReceiptBillingDeliveryError
+from reflexio.server.metering_events import ReceiptDeliveryError
 from reflexio.server.services.deferred_learning_plan import FinalizationResult
 from reflexio.server.services.extraction.resume_worker import (
     ExtractionResumeWorker,
@@ -723,7 +723,7 @@ def test_resumable_finalization_bills_only_durable_ids_idempotently_on_retry(
             side_effect=AssertionError("billing must not re-read the run"),
         ),
         patch(
-            "reflexio.server.billing_meter.record_usage_event_strict",
+            "reflexio.server.metering_events.record_usage_event_strict",
             return_value=UsageEventDeliveryStatus.APPENDED,
         ) as record_event,
     ):
@@ -962,7 +962,7 @@ def test_receipt_delivery_failure_status_distinguishes_transient_and_permanent(
     next_attempt_count,
     expected_status,
 ):
-    error = ReceiptBillingDeliveryError(delivery_status)
+    error = ReceiptDeliveryError(delivery_status)
 
     assert (
         _finalization_failure_status(

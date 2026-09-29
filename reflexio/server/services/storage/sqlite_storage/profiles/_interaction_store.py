@@ -13,10 +13,10 @@ from reflexio.models.api_schema.service_schemas import (
     DeleteUserInteractionRequest,
     Interaction,
 )
-from reflexio.server.billing_signals import count_input_tokens
 from reflexio.server.llm.providers.embedding_service_provider import (
     EmbeddingUnavailableError,
 )
+from reflexio.server.metering_signals import count_input_tokens
 from reflexio.server.services.embedding_text import embedding_input
 
 from .._base import (

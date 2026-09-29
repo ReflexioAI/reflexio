@@ -16,14 +16,14 @@ from reflexio.models.api_schema.internal_schema import RequestInteractionDataMod
 from reflexio.models.api_schema.service_schemas import Interaction, Request
 from reflexio.models.config_schema import PlaybookConfig, ProfileExtractorConfig
 from reflexio.server.api_endpoints.request_context import RequestContext
-from reflexio.server.billing_meter import (
-    ReceiptBillingDeliveryError,
-    emit_learnings_generated_records_strict,
-)
 from reflexio.server.error_reporting import error_tags
 from reflexio.server.llm._litellm_types import ModelProvenance
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 from reflexio.server.llm.model_defaults import ModelRole, resolve_model_name
+from reflexio.server.metering_events import (
+    ReceiptDeliveryError,
+    emit_learnings_generated_records_strict,
+)
 from reflexio.server.services.deferred_learning_plan import FinalizationResult
 from reflexio.server.services.extraction.agent_run_records import build_scope_hash
 from reflexio.server.services.extraction.pending_tool_call_dispatch import (
@@ -107,11 +107,11 @@ def _finalization_failure_status(
     """Classify finalization failures under the receipt-delivery contract.
 
     Transient receipt delivery failures remain retryable beyond the ordinary
-    finalization-attempt ceiling because their committed billing obligation must
+    finalization-attempt ceiling because their committed receipt obligation must
     eventually be delivered. Permanent receipt rejection is terminal, as are
     ordinary finalization failures at or above the configured ceiling.
     """
-    if isinstance(exc, ReceiptBillingDeliveryError):
+    if isinstance(exc, ReceiptDeliveryError):
         if exc.status is UsageEventDeliveryStatus.REJECTED:
             return AgentRunStatus.FAILED
         return AgentRunStatus.FINALIZATION_FAILED
@@ -485,7 +485,7 @@ class ExtractionResumeWorker:
                             inspect_run,
                         )
 
-                        # Receipt replay must deliver already-committed billing,
+                        # Receipt replay must deliver already-committed receipts,
                         # even if sources/config or retry limits changed later.
                         if (
                             receipt is None
@@ -692,7 +692,7 @@ class ExtractionResumeWorker:
                 run_id=run.id, entity_type=entity_type
             )
             if receipt is not None:
-                # Replay committed billing from durable IDs without rereading
+                # Replay committed receipts from durable IDs without rereading
                 # erased sources, parsing old output, or rebuilding a write plan.
                 self._record_finalized_learnings(run, receipt, entity_type=entity_type)
                 result = FinalizationResult(receipt, won_receipt=False)
@@ -1281,11 +1281,11 @@ class ExtractionResumeWorker:
         """
         if not learning_ids:
             return
-        billing_timestamp = run.created_at or run.agent_completed_at
-        if billing_timestamp is None:
-            raise ReceiptBillingDeliveryError(
+        receipt_timestamp = run.created_at or run.agent_completed_at
+        if receipt_timestamp is None:
+            raise ReceiptDeliveryError(
                 UsageEventDeliveryStatus.UNKNOWN,
-                "receipt-backed learning billing timestamp is not durable",
+                "receipt-backed learning timestamp is not durable",
             )
         metadata = {
             "run_id": run.id,
@@ -1302,7 +1302,7 @@ class ExtractionResumeWorker:
             agent_version=run.binding.agent_version,
             entity_type=entity_type,
             metadata=metadata,
-            created_at=billing_timestamp.timestamp(),
+            created_at=receipt_timestamp.timestamp(),
         )
 
     def _schedule_finalized_tagging(self, run: AgentRunRecord) -> None:

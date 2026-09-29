@@ -27,7 +27,7 @@ _INTERNAL = (
 )
 
 
-class ReceiptBillingDeliveryError(RuntimeError):
+class ReceiptDeliveryError(RuntimeError):
     """A durable finalization receipt still has an undelivered billing event."""
 
     def __init__(
@@ -376,7 +376,7 @@ def emit_learnings_generated(
     if count <= 0:
         return
     try:
-        from reflexio.server.billing_signals import platform_llm_from_config
+        from reflexio.server.metering_signals import platform_llm_from_config
 
         config = configurator.get_config()
         record_learnings_generated(
@@ -445,7 +445,7 @@ def emit_learnings_generated_records(
     if not learning_ids:
         return
     try:
-        from reflexio.server.billing_signals import platform_llm_from_config
+        from reflexio.server.metering_signals import platform_llm_from_config
 
         config = configurator.get_config()
         record_learnings_generated_records(
@@ -490,7 +490,7 @@ def emit_learnings_generated_records_strict(
     """Strict receipt-backed counterpart to the ordinary fail-open emitter."""
     if not learning_ids:
         return
-    from reflexio.server.billing_signals import platform_llm_from_config
+    from reflexio.server.metering_signals import platform_llm_from_config
 
     try:
         config = configurator.get_config()
@@ -510,9 +510,9 @@ def emit_learnings_generated_records_strict(
             created_at=created_at,
         )
     except UsageEventDeliveryError as exc:
-        raise ReceiptBillingDeliveryError(exc.status) from exc
+        raise ReceiptDeliveryError(exc.status) from exc
     except Exception as exc:
-        raise ReceiptBillingDeliveryError(UsageEventDeliveryStatus.UNKNOWN) from exc
+        raise ReceiptDeliveryError(UsageEventDeliveryStatus.UNKNOWN) from exc
 
 
 def record_applied_learnings(

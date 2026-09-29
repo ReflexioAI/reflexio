@@ -23,7 +23,7 @@ from reflexio.server.services.base_generation._status_change import (
     StatusChangeMixin,
     StatusChangeOperation,
 )
-from reflexio.server.services.base_generation._usage_billing import (
+from reflexio.server.services.base_generation._usage_metering import (
     UsageBillingMixin,
 )
 
