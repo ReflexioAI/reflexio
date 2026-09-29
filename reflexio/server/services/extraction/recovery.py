@@ -15,6 +15,9 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from reflexio.server.api_endpoints.request_context import RequestContext
+from reflexio.server.services.extraction.agent_run_records import (
+    source_interaction_digest,
+)
 from reflexio.server.services.extraction.resumable_agent import (
     decode_committed_output,
     pending_tool_calls_disabled_reason,
@@ -100,6 +103,27 @@ def _require_preserved_output_fields(raw: Any, parsed: Any) -> None:
             _require_preserved_output_fields(value, item)
 
 
+def _source_version_blockers(context: RequestContext, run: AgentRunRecord) -> list[str]:
+    """Compare original witnesses with selected sources without reporting content."""
+    assert context.storage is not None  # inspect_run validates the storage boundary.
+    sources = set(run.binding.source_interaction_ids)
+    expected = run.generation_request_snapshot.get("source_interaction_digests")
+    if not isinstance(expected, dict) or set(expected) != {str(i) for i in sources}:
+        return ["source_version_unverifiable"]
+    current_digests = {}
+    source_ids = sorted(sources)
+    for start in range(0, len(source_ids), 100):
+        current_digests.update(
+            {
+                str(item.interaction_id): source_interaction_digest(item)
+                for item in context.storage.get_interactions_by_ids(
+                    source_ids[start : start + 100]
+                )
+            }
+        )
+    return [] if current_digests == expected else ["source_changed"]
+
+
 def inspect_run(
     context: RequestContext,
     run: AgentRunRecord,
@@ -153,6 +177,8 @@ def inspect_run(
     sources = set(run.binding.source_interaction_ids)
     if not sources or facts["valid_source_count"] != len(sources):
         blockers.append("source_missing_or_scope_mismatch")
+    else:
+        blockers.extend(_source_version_blockers(context, run))
     extractor = {
         "profile": config.profile_extractor_config,
         "playbook": config.user_playbook_extractor_config,

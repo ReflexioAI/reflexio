@@ -70,3 +70,10 @@ finalization. Claims and status updates are owner-fenced. `progress_stage` and
 `results_committed`. Legacy rows keep unknown progress. `recovery_history` holds
 operation/status metadata only. Do not treat a row timestamp as a heartbeat or
 call the private finalizers as an operator replay API.
+
+Selected recovery requires original per-source digests captured before generation.
+Missing historical witnesses stay blocked; never backfill them from current rows.
+Sources are compared before claim and under the worker lease, using batches of
+100 selected IDs. Reports contain neither source content nor digests. The check
+catches source replacement observed at revalidation; arbitrary external writers
+are not made participants in the worker lease by this feature.

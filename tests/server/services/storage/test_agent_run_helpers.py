@@ -5,6 +5,7 @@ from reflexio.models.api_schema.internal_schema import RequestInteractionDataMod
 from reflexio.models.api_schema.service_schemas import Interaction, Request
 from reflexio.server.services.extraction.agent_run_records import (
     build_extractor_agent_run_record,
+    source_interaction_digest,
 )
 from reflexio.server.services.storage.storage_base import (
     build_pending_tool_call_dedup_key,
@@ -104,6 +105,13 @@ def test_build_extractor_agent_run_record_maps_generation_request_id_to_legacy_b
     assert run.binding.request_id == "rerun_ab12cd34"
     assert run.generation_request_snapshot["request_id"] == "rerun_ab12cd34"
     assert run.id.startswith("ar_")
+    original = request_interaction_data_models[0].interactions[0]
+    witness = run.generation_request_snapshot["source_interaction_digests"]
+    assert witness == {
+        str(original.interaction_id): source_interaction_digest(original)
+    }
+    original.content = "changed after capture"
+    assert witness[str(original.interaction_id)] != source_interaction_digest(original)
 
 
 def test_build_extractor_agent_run_record_accepts_legacy_request_id_keyword():

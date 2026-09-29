@@ -14,6 +14,9 @@ from reflexio.models.config_schema import (
     StorageConfigSQLite,
 )
 from reflexio.server.api_endpoints.request_context import RequestContext
+from reflexio.server.services.extraction.agent_run_records import (
+    source_interaction_digest,
+)
 from reflexio.server.services.extraction.recovery import (
     RecoveryRefusedError,
     _require_preserved_output_fields,
@@ -96,7 +99,14 @@ def seed(ctx, identifier="selected"):
             extractor_config_hash=build_scope_hash(config.model_dump(mode="json")),
         ),
         status=AgentRunStatus.AGENT_COMPLETED,
-        generation_request_snapshot={"output_schema_name": "StructuredProfilesOutput"},
+        generation_request_snapshot={
+            "output_schema_name": "StructuredProfilesOutput",
+            "source_interaction_digests": {
+                "1": source_interaction_digest(
+                    ctx.storage.get_interactions_by_ids([1])[0]
+                )
+            },
+        },
         committed_output={"profiles": []},
     )
     ctx.storage.create_agent_run(run)
@@ -267,9 +277,28 @@ def test_ambiguous_profile_output_is_preserved_without_claim(context, pinned, pa
     assert context.storage.get_agent_run(run.id) == stored
 
 
-def test_legacy_explicit_empty_profile_output_is_eligible(context):
+def test_legacy_output_requires_original_source_evidence(context):
     run = replace(seed(context), generation_request_snapshot={})
-    assert inspect_run(context, run)["eligible"]
+    report = inspect_run(context, run)
+    assert report["blockers"] == ["source_version_unverifiable"]
+    assert not report["eligible"]
+
+
+def test_same_id_source_replacement_invalidates_preview_before_claim(context):
+    run = seed(context)
+    selection = selection_from_report(inspect_run(context, run))
+    interaction = context.storage.get_interactions_by_ids([1])[0]
+    context.storage._insert_interaction(
+        interaction.model_copy(update={"content": "REPLACED PRIVATE SOURCE"})
+    )
+    report = inspect_run(context, run)
+    assert report["blockers"] == ["source_changed"]
+    assert "PRIVATE" not in str(report)
+    with pytest.raises(RecoveryRefusedError):
+        ExtractionResumeWorker(
+            request_context=context, llm_client=MagicMock()
+        ).recover_selected(selection, operation_id="op")
+    assert context.storage.get_agent_run(run.id).recovery_operation_id is None
 
 
 def test_playbook_validator_cannot_discard_saved_candidates():
