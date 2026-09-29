@@ -92,12 +92,43 @@ _semaphores: dict[str, threading.BoundedSemaphore] = {}
 _registry_lock = threading.Lock()
 
 
+def _registered_custom_provider(model: str) -> str | None:
+    """Resolve a REGISTERED custom provider from ``model``'s prefix.
+
+    ``litellm.get_llm_provider`` raises for a custom provider even after the
+    provider has registered itself into ``litellm.custom_provider_map`` --
+    verified against a registered handler, not assumed. So the cap silently
+    skipped every custom provider, and both of ours are CLI bridges that shell
+    out to a local binary: ``claude-code`` and ``openclaw``. The providers least
+    able to tolerate concurrency were the only ones the gate could not see
+    (claude-smart#162).
+
+    Only a provider present in ``custom_provider_map`` is accepted, so an
+    arbitrary ``foo/bar`` model name still resolves to None and stays uncapped.
+
+    Args:
+        model (str): Model name, possibly ``"<provider>/<model>"``.
+
+    Returns:
+        str | None: The provider key when it names a registered custom
+            provider, else None.
+    """
+    prefix, separator, _ = model.partition("/")
+    if not separator or not prefix:
+        return None
+    registered = {
+        entry.get("provider")
+        for entry in (getattr(litellm, "custom_provider_map", None) or [])
+    }
+    return prefix if prefix in registered else None
+
+
 def _provider_key(model: str) -> str | None:
     """Resolve the litellm provider for ``model``; None if unresolvable."""
     try:
         return litellm.get_llm_provider(model)[1]
     except Exception:  # noqa: BLE001 — unknown model must not be capped or raise
-        return None
+        return _registered_custom_provider(model)
 
 
 def _get_semaphore(provider: str) -> threading.BoundedSemaphore:
