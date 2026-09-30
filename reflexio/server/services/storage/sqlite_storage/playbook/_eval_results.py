@@ -234,14 +234,14 @@ class AgentEvaluationResultStoreMixin:
         self,
         user_id: str,
         session_id: str,
-        evaluation_name: str,
+        evaluation_name: str | None,
         agent_version: str,
     ) -> list[int]:
         rows = self._fetchall(
             """SELECT result_id FROM agent_success_evaluation_result
                WHERE user_id = ?
                  AND session_id = ?
-                 AND evaluation_name = ?
+                 AND evaluation_name IS ?
                  AND agent_version = ?
                ORDER BY created_at DESC""",
             (user_id, session_id, evaluation_name, agent_version),

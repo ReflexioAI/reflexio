@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 
 class SessionOutcomeMixin(ReflexioBase):
-    @_require_storage(SetSessionOutcomeResponse)
+    @_require_storage(SetSessionOutcomeResponse, raise_programming_errors=True)
     def mark_session_outcome(
         self,
         request: SetSessionOutcomeRequest | dict,
@@ -179,6 +179,8 @@ class SessionOutcomeMixin(ReflexioBase):
                     outcome_contract_digest=result.outcome_contract_digest,
                     finalized_trajectory_digest=result.finalized_trajectory_digest,
                 )
+        except (TypeError, AttributeError):
+            raise
         except Exception:
             logger.exception("Failed to record session outcome")
             return SetSessionOutcomeResponse(
