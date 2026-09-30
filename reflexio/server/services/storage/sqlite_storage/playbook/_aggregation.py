@@ -20,6 +20,11 @@ from reflexio.server.services.storage.storage_base.playbook import (
     PlaybookAggregationRerunSnapshot,
 )
 
+from ._aggregation_operations import (
+    AGGREGATION_OPERATIONS_DDL,
+    AggregationOperationsMixin,
+)
+
 AGGREGATION_DDL = """
 CREATE TABLE IF NOT EXISTS playbook_aggregation_state (
     agent_version TEXT PRIMARY KEY,
@@ -199,7 +204,7 @@ COMMIT;
 
 
 def init_playbook_aggregation_tables(conn: sqlite3.Connection) -> None:
-    conn.executescript(AGGREGATION_DDL)
+    conn.executescript(AGGREGATION_DDL + AGGREGATION_OPERATIONS_DDL)
     try:
         conn.executescript(AGGREGATION_TRIGGER_DDL)
     except Exception:
@@ -235,7 +240,7 @@ def init_playbook_aggregation_tables(conn: sqlite3.Connection) -> None:
     )
 
 
-class PlaybookAggregationStoreMixin:
+class PlaybookAggregationStoreMixin(AggregationOperationsMixin):
     conn: sqlite3.Connection
     _lock: threading.RLock
     _own_transaction: Any
