@@ -488,10 +488,16 @@ def _warn_if_fallback_cannot_run(fallbacks: list[str]) -> None:
     from reflexio.server.llm._litellm_text_generation import (
         _LADDER_MIN_TURN_SECONDS,
         _LADDER_WALL_CLOCK_BUDGET_SECONDS,
+        _parse_grace_seconds,
     )
 
+    # A stalled primary is killed at its timeout PLUS the hard-timeout grace, so
+    # the grace is part of what it consumes.
+    grace = _parse_grace_seconds(
+        os.environ.get("REFLEXIO_LLM_HARD_TIMEOUT_GRACE_SECONDS", "5") or "5"
+    )
     if (
-        GENERATION_TIMEOUT_SECONDS + _LADDER_MIN_TURN_SECONDS
+        GENERATION_TIMEOUT_SECONDS + grace + _LADDER_MIN_TURN_SECONDS
         > _LADDER_WALL_CLOCK_BUDGET_SECONDS
     ):
         logger.warning(

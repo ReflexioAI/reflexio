@@ -137,7 +137,9 @@ def test_a_long_configuration_is_not_re_warned_on_every_call(
     assert "llm_ladder_budget" not in caplog.text
 
 
-@pytest.mark.parametrize(("generation_timeout", "warns"), [(300, False), (595, True)])
+@pytest.mark.parametrize(
+    ("generation_timeout", "warns"), [(300, False), (585, False), (590, True)]
+)
 def test_boot_check_flags_a_timeout_that_leaves_no_fallback_time(
     monkeypatch, caplog, generation_timeout: int, warns: bool
 ) -> None:
@@ -147,6 +149,8 @@ def test_boot_check_flags_a_timeout_that_leaves_no_fallback_time(
     from reflexio.server.llm.model_defaults import _warn_if_fallback_cannot_run
 
     monkeypatch.setattr(lib_base, "GENERATION_TIMEOUT_SECONDS", generation_timeout)
+    # 585 + 5 grace + 10 minimum turn = 600 exactly fits; 590 + 5 leaves 5 s.
+    monkeypatch.setenv("REFLEXIO_LLM_HARD_TIMEOUT_GRACE_SECONDS", "5")
     with caplog.at_level(logging.WARNING):
         _warn_if_fallback_cannot_run(["zai/glm-5.2"])
     assert ("event=llm_fallback_unreachable" in caplog.text) is warns
