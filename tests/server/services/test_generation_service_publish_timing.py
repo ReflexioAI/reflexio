@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import asyncio
 import datetime
-import logging
 import tempfile
 import time
 from collections.abc import Iterator
