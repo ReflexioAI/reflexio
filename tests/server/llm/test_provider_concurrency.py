@@ -205,3 +205,83 @@ def test_provider_wait_preserves_unscoped_and_disabled_behavior(monkeypatch, sco
         assert waits == [pc._ACQUIRE_TIMEOUT_SECONDS]
     finally:
         search_runtime._scope.reset(token)
+
+
+# ---------------------------------------------------------------------------
+# Custom providers must be visible to the cap (claude-smart#162)
+# ---------------------------------------------------------------------------
+
+
+def _declared_custom_provider_keys() -> set[str]:
+    """Derive every PROVIDER_KEY declared by a custom-provider module.
+
+    Derived rather than hand-listed so a third CLI bridge is covered the day it
+    lands -- a list here would be silent about provider N+1, which is the exact
+    failure this guard exists to stop.
+    """
+    import ast
+    import pathlib
+
+    providers_dir = pathlib.Path(pc.__file__).resolve().parent / "providers"
+    keys: set[str] = set()
+    for path in sorted(providers_dir.glob("*.py")):
+        source = path.read_text()
+        # Only modules that actually register into litellm carry a cap-relevant key.
+        if "custom_provider_map" not in source:
+            continue
+        for node in ast.parse(source).body:
+            if not isinstance(node, ast.Assign):
+                continue
+            for target in node.targets:
+                if (
+                    isinstance(target, ast.Name)
+                    and target.id == "PROVIDER_KEY"
+                    and isinstance(node.value, ast.Constant)
+                    and isinstance(node.value.value, str)
+                ):
+                    keys.add(node.value.value)
+    return keys
+
+
+def test_declared_custom_providers_are_discoverable() -> None:
+    """The scan must find something, or the guard below proves nothing."""
+    keys = _declared_custom_provider_keys()
+    assert keys, "found no custom-provider PROVIDER_KEY; the guard is measuring nothing"
+    assert "claude-code" in keys
+
+
+def test_registered_custom_provider_is_visible_to_the_cap(monkeypatch) -> None:
+    """Every registered custom provider must resolve to a cap key.
+
+    Regression for claude-smart#162: litellm.get_llm_provider RAISES for a
+    custom provider even once it is in custom_provider_map, so _provider_key
+    returned None and provider_slot yielded UNCAPPED. The providers affected are
+    both CLI bridges -- the ones least able to tolerate concurrency.
+    """
+    import litellm
+
+    for key in sorted(_declared_custom_provider_keys()):
+        monkeypatch.setattr(
+            litellm,
+            "custom_provider_map",
+            [{"provider": key, "custom_handler": object()}],
+        )
+        resolved = pc._provider_key(f"{key}/some-model")
+        assert resolved == key, (
+            f"registered custom provider {key!r} is invisible to the concurrency "
+            f"cap (_provider_key returned {resolved!r}); provider_slot would yield "
+            f"uncapped -- claude-smart#162"
+        )
+
+
+def test_unregistered_prefix_stays_uncapped(monkeypatch) -> None:
+    """A slash in a model name must not invent a provider.
+
+    The fallback accepts only prefixes present in custom_provider_map, so an
+    unknown vendor-style name still returns None and is left uncapped, matching
+    the documented 'unknown provider must not be capped or raise' contract.
+    """
+    import litellm
+
+    monkeypatch.setattr(litellm, "custom_provider_map", [])
+    assert pc._provider_key("not-a-provider/whatever") is None
