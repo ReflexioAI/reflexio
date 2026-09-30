@@ -3,8 +3,9 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import vm from "node:vm";
+import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
-import ts from "typescript";
+const ts = createRequire(import.meta.url)("typescript");
 
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 
