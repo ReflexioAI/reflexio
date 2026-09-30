@@ -8,6 +8,7 @@ from reflexio.server.correlation import correlation_id_var
 from reflexio.server.middleware import (
     REQUEST_TIMEOUT_SECONDS,
     ROUTE_BACKSTOP_SECONDS,
+    SYNC_REQUEST_PATHS,
     SYNC_REQUEST_TIMEOUT_SECONDS,
     BodySizeLimitMiddleware,
     TimeoutMiddleware,
@@ -457,3 +458,60 @@ def test_backstop_timeout_body_carries_a_correlation_id():
     # this worker's context and, under work stealing, a later test reads it
     # instead of the declared "" default. Drop the reset and this line fails.
     assert correlation_id_var.get() == ""
+
+
+def test_grade_on_demand_dispatch_uses_the_synchronous_budget(monkeypatch):
+    """grade_on_demand must not get the 60s default.
+
+    Regression for claude-smart#162: the route runs the LLM judge inline, a
+    large session takes 2+ minutes, and every attempt 504'd at exactly 60.0s
+    with ``reason: backstop_timeout``. Drives the real ``dispatch`` and reads the
+    timeout ``asyncio.wait_for`` was actually handed, like the sibling tests.
+    """
+    observed: dict[str, float | None] = {}
+
+    async def fake_wait_for(awaitable, *, timeout=None):
+        observed["timeout"] = timeout
+        return await awaitable
+
+    async def call_next(_request):
+        from starlette.responses import Response
+
+        return Response()
+
+    monkeypatch.setattr(asyncio, "wait_for", fake_wait_for)
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "scheme": "http",
+            "path": "/api/evaluations/grade_on_demand",
+            "raw_path": b"/api/evaluations/grade_on_demand",
+            "query_string": b"",
+            "headers": [],
+            "client": ("testclient", 50000),
+            "server": ("testserver", 80),
+        }
+    )
+
+    asyncio.run(TimeoutMiddleware(FastAPI()).dispatch(request, call_next))
+
+    assert observed["timeout"] == SYNC_REQUEST_TIMEOUT_SECONDS
+    assert observed["timeout"] > REQUEST_TIMEOUT_SECONDS
+
+
+def test_every_timeout_exemption_names_a_real_route():
+    """A budget keyed by a path no route declares is silently inert.
+
+    Both tables match on the exact route path, so a renamed or mistyped key
+    does not fail -- the request just falls back to the 60s default, which is
+    the claude-smart#162 failure again. Derive the valid set from the app
+    rather than trusting the keys.
+    """
+    from fastapi.routing import APIRoute
+
+    declared = {r.path for r in create_app().routes if isinstance(r, APIRoute)}
+    exempt = set(SYNC_REQUEST_PATHS) | set(ROUTE_BACKSTOP_SECONDS)
+    assert declared, "create_app() exposed no routes; this guard would prove nothing"
+    missing = sorted(exempt - declared)
+    assert not missing, f"timeout exemptions naming no declared route: {missing}"
