@@ -28,6 +28,7 @@ Bodies moved VERBATIM from the former monolithic ``litellm_client.py``.
 """
 
 import base64
+import functools
 import hashlib
 import logging
 import multiprocessing
@@ -151,15 +152,55 @@ STRUCTURED_OUTPUT_CORRECTION_PLACEHOLDER = "(previous response withheld)"
 STRUCTURED_OUTPUT_CORRECTION_PREFIX = "Your previous response did not satisfy schema "
 _MAX_CORRECTION_CHARS = 8000
 
-# Worst-case cumulative wall-clock budget for a full ladder walk. Each rung now
-# owns a per-single-attempt hard timeout, so the walk's worst case is the SUM of
-# the per-rung hard timeouts (a slow rung no longer shares one ladder-wide
-# budget). If that projected sum exceeds the upstream request budget the walk
-# logs a one-line warning so an over-long ladder is visible before it eats a
-# request slot. Advisory only — never fatal.
+# Wall-clock budget for a whole ladder walk, ENFORCED. The walk starts one
+# deadline and every turn -- each rung and each repair turn -- is clamped to what
+# remains (`_prepare_turn`), and a failed rung only advances when enough is left
+# for another (`_LADDER_MIN_TURN_SECONDS`). It matches the generation service's
+# outer 600 s guard (`base_generation_service.py`, FALLBACK_EXTRACTOR_TIMEOUT
+# "staying below the 600-second outer generation-service guard"): a walk that
+# outlives the guard is abandoned by its caller anyway, while still holding a
+# provider slot.
+#
+# This used to be advisory: the walk summed the per-rung hard timeouts on every
+# call and warned when the sum exceeded the budget, never enforcing it. With a
+# 300 s generation timeout on two rungs that sum was 610 s, so production logged
+# `llm_ladder_budget_exceeded` on every structured call (376 in 14 h) while the
+# real worst case -- repair turns get their own timeouts -- was higher still.
 _LADDER_WALL_CLOCK_BUDGET_SECONDS = 600.0
 
+# Below this much remaining budget a turn is not attempted: a call given a few
+# seconds cannot complete a generation, it only spends a provider slot to fail.
+_LADDER_MIN_TURN_SECONDS = 10.0
+
 StructuredOutputValidator = Callable[[BaseModel], Sequence[str]]
+
+
+# Config values read per call but only worth reporting once. The env is still
+# re-read every call (tests and operators change it at runtime); the PARSE is
+# cached by the raw string, so an invalid value warns once per distinct value
+# rather than on every LLM request.
+@functools.lru_cache(maxsize=16)
+def _parse_seed(raw: str, default: int) -> int:
+    try:
+        return int(raw)
+    except ValueError:
+        logging.getLogger(__name__).warning(
+            "REFLEXIO_LLM_SEED=%r is not an int; falling back to default seed=%d",
+            raw,
+            default,
+        )
+        return default
+
+
+@functools.lru_cache(maxsize=16)
+def _parse_grace_seconds(raw: str) -> float:
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        logging.getLogger(__name__).warning(
+            "Invalid REFLEXIO_LLM_HARD_TIMEOUT_GRACE_SECONDS=%r; using 5", raw
+        )
+        return 5.0
 
 
 def _bounded_repair_errors(errors: Sequence[str]) -> tuple[str, ...]:
@@ -790,15 +831,7 @@ class TextGenerationMixin:
         default_seed = 42
         seed_explicit = "REFLEXIO_LLM_SEED" in os.environ
         seed_raw = os.environ.get("REFLEXIO_LLM_SEED", str(default_seed))
-        try:
-            params["seed"] = int(seed_raw)
-        except ValueError:
-            self.logger.warning(
-                "REFLEXIO_LLM_SEED=%r is not an int; falling back to default seed=%d",
-                seed_raw,
-                default_seed,
-            )
-            params["seed"] = default_seed
+        params["seed"] = _parse_seed(seed_raw, default_seed)
         # Keep seed best-effort without mutating LiteLLM's process-wide
         # drop_params setting. Providers that do not support seed can ignore it.
         params["drop_params"] = True
@@ -1182,14 +1215,7 @@ class TextGenerationMixin:
 
     def _hard_timeout_grace_seconds(self) -> float:
         raw = os.environ.get("REFLEXIO_LLM_HARD_TIMEOUT_GRACE_SECONDS", "5") or "5"
-        try:
-            return max(0.0, float(raw))
-        except ValueError:
-            self.logger.warning(
-                "Invalid REFLEXIO_LLM_HARD_TIMEOUT_GRACE_SECONDS=%r; using 5",
-                raw,
-            )
-            return 5.0
+        return _parse_grace_seconds(raw)
 
     def _should_process_isolate_completion(
         self, timeout_seconds: float, grace_seconds: float
@@ -1433,6 +1459,10 @@ class TextGenerationMixin:
                 "parse_structured_output=True"
             )
 
+        # One deadline for the whole walk, shared by every turn below. Set when
+        # the walk starts; `_prepare_turn` reads it at call time.
+        walk_deadline = time.monotonic() + _LADDER_WALL_CLOCK_BUDGET_SECONDS
+
         def _prepare_turn(
             turn_messages: list[dict[str, Any]], turn_kwargs: dict[str, Any]
         ) -> tuple[dict[str, Any], Any, bool, float]:
@@ -1462,7 +1492,21 @@ class TextGenerationMixin:
             params["num_retries"] = 0
             params.pop("fallbacks", None)  # owned walk: never delegate to litellm
             per_attempt = self._coerce_timeout_seconds(params)
-            hard_timeout = per_attempt + self._hard_timeout_grace_seconds()
+            grace = self._hard_timeout_grace_seconds()
+            remaining = walk_deadline - time.monotonic()
+            if remaining < _LADDER_MIN_TURN_SECONDS:
+                # LiteLLMClientError propagates out of the rung to the walker,
+                # which treats it as that rung's final failure.
+                raise LiteLLMClientError(
+                    f"LLM ladder budget exhausted ({_LADDER_WALL_CLOCK_BUDGET_SECONDS:.0f}s): "
+                    f"{remaining:.1f}s left, not attempting {params.get('model')}"
+                )
+            if per_attempt + grace > remaining:
+                # Clamp the provider timeout and the kill bound together, so the
+                # provider gives up before the subprocess is killed.
+                per_attempt = max(1.0, remaining - grace)
+                params["timeout"] = per_attempt
+            hard_timeout = min(per_attempt + grace, remaining)
             return params, response_format, parse_structured_output, hard_timeout
 
         def _is_refusal(response: Any, message: Any) -> bool:
@@ -2003,19 +2047,6 @@ class TextGenerationMixin:
         # Reflexio-owned per-rung walk. Each rung is entered at most once; the
         # walk (never litellm) owns cross-rung advancement.
         ladder = self._resolve_ladder(**original_kwargs)
-        grace = self._hard_timeout_grace_seconds()
-        projected = sum(
-            self._effective_timeout_for_model(rung) + grace for rung in ladder
-        )
-        if projected > _LADDER_WALL_CLOCK_BUDGET_SECONDS:
-            self.logger.warning(
-                "event=llm_ladder_budget_exceeded projected_seconds=%.1f budget_seconds=%.1f "
-                "ladder=%s — cumulative per-rung hard timeouts may exceed the upstream "
-                "request budget",
-                projected,
-                _LADDER_WALL_CLOCK_BUDGET_SECONDS,
-                ladder,
-            )
 
         last_error: Exception | None = None
         primary_error: Exception | None = None
@@ -2051,7 +2082,19 @@ class TextGenerationMixin:
                 if index == 0:
                     primary_error = exc
                 if not is_last:
-                    continue
+                    left = walk_deadline - time.monotonic()
+                    if left >= _LADDER_MIN_TURN_SECONDS:
+                        continue
+                    # A real, per-occurrence event: this walk ran out of budget
+                    # with rungs left. Handled below as the final failure.
+                    self.logger.warning(
+                        "event=llm_ladder_budget_exhausted model=%s rungs_left=%d "
+                        "seconds_left=%.1f budget_seconds=%.0f",
+                        rung,
+                        len(ladder) - index - 1,
+                        left,
+                        _LADDER_WALL_CLOCK_BUDGET_SECONDS,
+                    )
                 # Final rung failed. Preserve the typed repair error (callers keep
                 # the latest parse) and already-wrapped client errors as-is; wrap a
                 # raw plain-path parse exhaustion (litellm saw a 200, so no turn
