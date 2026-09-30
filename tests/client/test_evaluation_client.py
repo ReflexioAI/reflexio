@@ -216,3 +216,34 @@ def test_evaluation_models_export_from_top_level_package() -> None:
 
     assert TopLevelGradeOnDemandRequest is GradeOnDemandRequest
     assert TopLevelRegenerateRequest is RegenerateRequest
+
+
+@patch("reflexio.client.client.requests.Session")
+def test_grade_on_demand_waits_as_long_as_the_server(mock_session_class) -> None:
+    """The default client must not give up before the server answers.
+
+    The server now allows grade_on_demand 600s (claude-smart#162); with the
+    client's 300s default, a 300-600s cache miss timed out client-side. Asserts
+    on the timeout requests actually receives, and that a longer caller timeout
+    is kept rather than shortened.
+    """
+    from reflexio.client.client import GRADE_ON_DEMAND_TIMEOUT_SECONDS
+
+    mock_session = MagicMock()
+    mock_session_class.return_value = mock_session
+    mock_session.request.return_value = _json_response(
+        {"session_id": "s", "result_id": 1, "cached": False, "skipped_reason": None}
+    )
+
+    ReflexioClient(api_key="k", url_endpoint="http://localhost:8000").grade_on_demand(
+        session_id="s", agent_version="v1"
+    )
+    assert (
+        mock_session.request.call_args.kwargs["timeout"]
+        == GRADE_ON_DEMAND_TIMEOUT_SECONDS
+    )
+
+    ReflexioClient(
+        api_key="k", url_endpoint="http://localhost:8000", timeout=900
+    ).grade_on_demand(session_id="s", agent_version="v1")
+    assert mock_session.request.call_args.kwargs["timeout"] == 900
