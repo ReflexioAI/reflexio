@@ -68,11 +68,20 @@ from reflexio.models.profile_id import new_profile_id
 IS_TEST_ENV = os.environ.get("IS_TEST_ENV", "false").strip() == "true"
 
 BACKEND_URL = "http://127.0.0.1:8000" if IS_TEST_ENV else "https://www.reflexio.ai/"
-REVIEW_USER_PLAYBOOKS_TIMEOUT_SECONDS = 600
-# Mirrors the server's SYNC_REQUEST_TIMEOUT_SECONDS for this route: a cache miss runs
-# the LLM judge inline and a large session takes minutes, so the default client
-# timeout would give up before the server answers (claude-smart#162).
-GRADE_ON_DEMAND_TIMEOUT_SECONDS = 600
+# Both routes run under the server's 600s SYNC_REQUEST_TIMEOUT_SECONDS. The client
+# waits LONGER than that, not equally: transmission and response delivery happen
+# outside the middleware's timer, so a response produced at 599s server-side
+# arrives after a 600s client has already given up.
+_SERVER_SYNC_BUDGET_SECONDS = 600
+_CLIENT_TRANSPORT_MARGIN_SECONDS = 30
+REVIEW_USER_PLAYBOOKS_TIMEOUT_SECONDS = (
+    _SERVER_SYNC_BUDGET_SECONDS + _CLIENT_TRANSPORT_MARGIN_SECONDS
+)
+# grade_on_demand runs the LLM judge inline on a cache miss; a large session takes
+# minutes, so the 300s client default gave up first (claude-smart#162).
+GRADE_ON_DEMAND_TIMEOUT_SECONDS = (
+    _SERVER_SYNC_BUDGET_SECONDS + _CLIENT_TRANSPORT_MARGIN_SECONDS
+)
 
 from reflexio.models.api_schema.domain.entities import (
     UpgradeProfilesRequest,

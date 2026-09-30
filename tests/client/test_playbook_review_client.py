@@ -67,4 +67,6 @@ def test_report_only_review_uses_extended_client_timeout(monkeypatch) -> None:
         end_time=datetime(2026, 1, 2, tzinfo=UTC),
     )
 
-    assert captured["timeout"] == 600
+    from reflexio.client.client import REVIEW_USER_PLAYBOOKS_TIMEOUT_SECONDS
+
+    assert captured["timeout"] == REVIEW_USER_PLAYBOOKS_TIMEOUT_SECONDS

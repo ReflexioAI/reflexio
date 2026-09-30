@@ -247,3 +247,19 @@ def test_grade_on_demand_waits_as_long_as_the_server(mock_session_class) -> None
         api_key="k", url_endpoint="http://localhost:8000", timeout=900
     ).grade_on_demand(session_id="s", agent_version="v1")
     assert mock_session.request.call_args.kwargs["timeout"] == 900
+
+
+def test_sync_route_client_timeouts_outlast_the_server_budget() -> None:
+    """A client timeout EQUAL to the server budget races the response home.
+
+    The server's 600s is measured inside the middleware; the request and the
+    response travel outside it. Pins that both sync routes wait strictly longer.
+    """
+    from reflexio.client.client import (
+        GRADE_ON_DEMAND_TIMEOUT_SECONDS,
+        REVIEW_USER_PLAYBOOKS_TIMEOUT_SECONDS,
+    )
+    from reflexio.server.middleware import SYNC_REQUEST_TIMEOUT_SECONDS
+
+    assert GRADE_ON_DEMAND_TIMEOUT_SECONDS > SYNC_REQUEST_TIMEOUT_SECONDS
+    assert REVIEW_USER_PLAYBOOKS_TIMEOUT_SECONDS > SYNC_REQUEST_TIMEOUT_SECONDS
