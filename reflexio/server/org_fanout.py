@@ -33,6 +33,8 @@ from collections.abc import Callable, Iterable
 from concurrent.futures import Future, ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 
+from reflexio.server.background_work import background_work
+
 logger = logging.getLogger(__name__)
 
 
@@ -78,6 +80,7 @@ def iterate_orgs_bounded(
     ends: dict[str, float] = {}
     record_lock = threading.Lock()
 
+    @background_work()
     def _tracked(org_id: str) -> None:
         with record_lock:
             starts[org_id] = time.monotonic()

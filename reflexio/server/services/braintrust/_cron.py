@@ -27,6 +27,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
+from reflexio.server.background_work import background_work
 from reflexio.server.env_utils import env_bool
 from reflexio.server.services.braintrust.client import (
     DEFAULT_BASE_URL,
@@ -114,6 +115,7 @@ class BraintrustSyncScheduler:
         """Signal the daemon to exit. Returns immediately; thread joins lazily."""
         self._stop.set()
 
+    @background_work()
     def _loop(self) -> None:
         """Main loop: every `interval_seconds`, sync every connected org."""
         while not self._stop.is_set():

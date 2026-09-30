@@ -6,6 +6,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 
+from reflexio.server.background_work import background_work
 from reflexio.server.services.durable_learning.worker import _release, _reserve
 from reflexio.server.services.storage.storage_base import BaseStorage
 from reflexio.server.services.storage.storage_base._extraction_stream import (
@@ -45,6 +46,7 @@ def user_extraction_lease(
     stop = threading.Event()
     lost = threading.Event()
 
+    @background_work()
     def heartbeat() -> None:
         while not stop.wait(60):
             try:

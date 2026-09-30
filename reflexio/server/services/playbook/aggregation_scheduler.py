@@ -11,6 +11,7 @@ from collections.abc import Callable, Iterable
 from typing import Any
 
 from reflexio.server.api_endpoints.request_context import RequestContext
+from reflexio.server.background_work import background_work
 from reflexio.server.env_utils import env_str
 from reflexio.server.extensions import get_service
 from reflexio.server.operation_limiter import run_with_operation_limit
@@ -64,6 +65,7 @@ class AggregationLeaseHeartbeat:
         )
         self._thread.start()
 
+    @background_work()
     def _run(self) -> None:
         while not self._stop.wait(AGGREGATION_LEASE_SECONDS / 3):
             try:

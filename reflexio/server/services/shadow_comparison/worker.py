@@ -8,6 +8,7 @@ import threading
 from dataclasses import dataclass
 
 from reflexio.models.api_schema.domain.entities import Interaction
+from reflexio.server.background_work import background_work
 from reflexio.server.error_reporting import capture_anomaly
 from reflexio.server.services.shadow_comparison.dispatcher import (
     dispatch_shadow_comparison_judge,
@@ -106,6 +107,7 @@ class ShadowComparisonWorker:
             return False
         return True
 
+    @background_work()
     def _worker_loop(self) -> None:
         # Imported lazily to break the import cycle generation_service ->
         # shadow_comparison.worker -> reflexio_cache -> reflexio_lib ->
