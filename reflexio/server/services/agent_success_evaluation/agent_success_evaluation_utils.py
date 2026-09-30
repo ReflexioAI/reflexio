@@ -13,7 +13,22 @@ from reflexio.server.services.service_utils import (
     construct_messages_from_interactions,
     extract_interactions_from_request_interaction_data_models,
     format_sessions_to_history_string,
+    slice_content_by_tokens,
 )
+
+# Whole-transcript ceiling for one agent-success evaluation prompt. Each
+# interaction is already capped (DEFAULT_MAX_INTERACTION_CONTENT_TOKENS) but the
+# SUM was not, and tool-call prefixes are not budgeted at all, so a long session
+# built a prompt the model rejected outright -- "Prompt is too long" on a
+# 41-interaction session (claude-smart#162). The sibling retrieved-learning judge
+# in this service is bounded the same way (TRANSCRIPT_TOKEN_LIMIT).
+#
+# slice_content_by_tokens keeps the first and last halves with a visible marker,
+# which suits a success judgement: the task is stated at the head and the
+# outcome lands at the tail. 64k sits well inside a 128k-200k context window
+# while leaving the template and reply room; a ~40 KB session that evaluates
+# fine today is ~10k tokens and is untouched.
+EVALUATION_TRANSCRIPT_TOKEN_LIMIT = 64_000
 
 
 class AgentSuccessEvaluationRequest(BaseModel):
@@ -56,8 +71,9 @@ def construct_agent_success_evaluation_messages_from_sessions(
             "agent_context_prompt": agent_context_prompt,
             "success_definition_prompt": success_definition_prompt,
             "tool_can_use": tool_can_use,
-            "interactions": format_sessions_to_history_string(
-                request_interaction_data_models
+            "interactions": slice_content_by_tokens(
+                format_sessions_to_history_string(request_interaction_data_models),
+                EVALUATION_TRANSCRIPT_TOKEN_LIMIT,
             ),
         },
     )
