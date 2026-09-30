@@ -109,6 +109,7 @@ export const unifiedSearchMethods: MethodDef[] = [
         name: "session_id",
         type: "string",
         required: false,
+        default: "example-session",
         description:
           "Agent session this search serves, at most 255 characters. When set, results already returned to the same session are skipped and next-best matches backfilled; searches without it neither read nor record session dedup state",
       },

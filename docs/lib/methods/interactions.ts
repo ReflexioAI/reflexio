@@ -162,6 +162,7 @@ export const interactionMethods: MethodDef[] = [
         name: "session_id",
         type: "string",
         required: false,
+        default: "example-session",
         description: "Session ID for grouping requests together",
       },
     ],
