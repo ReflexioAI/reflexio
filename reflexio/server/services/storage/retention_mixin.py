@@ -81,6 +81,23 @@ class RetentionMixin(ABC):
             return 0
         return self._retention_count_rows(target)
 
+    def estimate_retention_target_rows(self, target_name: str) -> int | None:
+        """Return a cheap upper-bound estimate of a target's rows, or ``None``.
+
+        The sweep uses it to skip the exact count for tables far below their
+        cap (an exact ``count(*)`` per table per org was most of a slow sweep).
+        It must never UNDER-estimate the rows the exact count would see, or a
+        table over its cap would go untrimmed; ``None`` means "no estimate",
+        and the sweep counts exactly.
+
+        Args:
+            target_name (str): Registered retention target name.
+
+        Returns:
+            int | None: An estimate no lower than the exact count, or ``None``.
+        """
+        return self._retention_estimate_rows(get_retention_target(target_name))
+
     def delete_oldest_retention_target_rows(self, target_name: str, count: int) -> int:
         """Delete up to ``count`` oldest rows for a retention target.
 
@@ -215,6 +232,17 @@ class RetentionMixin(ABC):
     def _retention_count_rows(self, target: RetentionTarget) -> int:
         """Return the live row count for ``target``'s table."""
         raise NotImplementedError
+
+    def _retention_estimate_rows(self, target: RetentionTarget) -> int | None:
+        """Backend hook for :meth:`estimate_retention_target_rows`.
+
+        Default: no estimate. A backend overriding it must return an upper
+        bound -- e.g. PostgreSQL's table-wide ``pg_class.reltuples``, which
+        spans every project and so never undercounts a project-scoped count --
+        and ``None`` when it has none (a table never analyzed).
+        """
+        del target
+        return None
 
     @abstractmethod
     def _retention_select_oldest_keys(

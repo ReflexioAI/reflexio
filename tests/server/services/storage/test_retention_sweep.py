@@ -21,7 +21,11 @@ _ORG = "org-1"
 
 @pytest.fixture
 def storage() -> MagicMock:
-    return MagicMock()
+    storage = MagicMock()
+    # No cheap estimate: every target is counted exactly, as before the
+    # estimate existed. Tests of the estimate gate set their own value.
+    storage.estimate_retention_target_rows.return_value = None
+    return storage
 
 
 @pytest.fixture
@@ -217,6 +221,40 @@ def test_a_slow_pass_reports_itself(storage, granted_lock, anomalies, monkeypatc
         sweep_retention_caps(_ORG, storage)
 
     assert [name for name, _ in anomalies] == ["retention.sweep.slow"]
+    # A slow pass names the table that made it slow.
+    assert anomalies[0][1]["slowest_target"] == "interactions"
+
+
+# ---------------------------------------------------------------------------
+# The cheap estimate settles tables far below their cap without count(*)
+# ---------------------------------------------------------------------------
+
+
+def test_an_estimate_well_under_the_cap_skips_the_exact_count(
+    storage, granted_lock, anomalies
+):
+    storage.estimate_retention_target_rows.return_value = 100
+
+    with _limits(interactions=500):
+        assert sweep_retention_caps(_ORG, storage).deleted == 0
+
+    storage.count_retention_target_rows.assert_not_called()
+    storage.delete_oldest_retention_target_rows.assert_not_called()
+
+
+@pytest.mark.parametrize("estimate", [400, 499, 5000])
+def test_an_estimate_near_or_over_the_cap_is_confirmed_exactly(
+    storage, granted_lock, anomalies, estimate
+):
+    """At >= 80% of the cap the exact count decides -- the estimate never deletes."""
+    storage.estimate_retention_target_rows.return_value = estimate
+    storage.count_retention_target_rows.return_value = 100
+
+    with _limits(interactions=500):
+        assert sweep_retention_caps(_ORG, storage).deleted == 0
+
+    storage.count_retention_target_rows.assert_called_once_with("interactions")
+    storage.delete_oldest_retention_target_rows.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

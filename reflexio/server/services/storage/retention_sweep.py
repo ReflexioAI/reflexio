@@ -56,6 +56,11 @@ CLEANUP_STALE_LOCK_SECONDS = 600
 #: has asked for it to be tunable.
 CAP_WARN_FRACTION = 0.90
 
+#: Below this fraction of the cap, by the backend's upper-bound estimate, a
+#: target is not counted exactly. Kept under CAP_WARN_FRACTION so the
+#: "approaching" warning and every delete still rest on the exact count.
+EXACT_COUNT_FROM_FRACTION = 0.80
+
 #: One project-pass slower than this is reported. One third of the scheduler's
 #: 60s per-org budget (``_ORG_SWEEP_TIMEOUT_SECONDS``), so a single slow pass
 #: already means retention alone is a third of the org's allowance.
@@ -181,6 +186,8 @@ def sweep_retention_caps(org_id: str, storage: BaseStorage) -> RetentionSweepRes
     project_id: str | None = None
     deleted_total = 0
     targets_failed = 0
+    # Per-target wall time, so a slow sweep names the table that made it slow.
+    target_seconds: dict[str, float] = {}
     try:
         project_id = current_project_id()
 
@@ -222,6 +229,7 @@ def sweep_retention_caps(org_id: str, storage: BaseStorage) -> RetentionSweepRes
             for target_name, limit in limits.items():
                 # Isolate per-target failures so one bad table does not
                 # short-circuit every subsequent target.
+                target_started = time.monotonic()
                 try:
                     deleted_total += _sweep_target(
                         org_id, project_id, storage, target_name, limit
@@ -238,6 +246,8 @@ def sweep_retention_caps(org_id: str, storage: BaseStorage) -> RetentionSweepRes
                         logger.exception(
                             "Failed to sweep retention target %s", target_name
                         )
+                finally:
+                    target_seconds[target_name] = time.monotonic() - target_started
         finally:
             mgr.release_simple_lock()
     except Exception as exc:  # noqa: BLE001
@@ -258,6 +268,10 @@ def sweep_retention_caps(org_id: str, storage: BaseStorage) -> RetentionSweepRes
             project_id=project_id,
             elapsed_seconds=round(elapsed, 1),
             targets=len(limits),
+            slowest_target=max(
+                target_seconds, key=target_seconds.__getitem__, default="-"
+            ),
+            slowest_target_seconds=round(max(target_seconds.values(), default=0.0), 1),
         )
     # EVERY target failing is a different animal from one failing: a single bad
     # table is isolated and usually permanent, but a backend-wide transient
@@ -304,6 +318,12 @@ def _sweep_target(
     # widening the parameter to a Protocol the call site would then have to cast
     # to. A backend that really lacks the hook raises `AttributeError`, which
     # the per-target isolation above absorbs.
+    # Cheap first: an upper-bound estimate well under the cap settles it without
+    # an exact count(*). A backend without one returns None and is counted.
+    estimate_rows = getattr(storage, "estimate_retention_target_rows", None)
+    estimate = estimate_rows(target_name) if estimate_rows is not None else None
+    if estimate is not None and estimate < limit * EXACT_COUNT_FROM_FRACTION:
+        return 0
     total_count = storage.count_retention_target_rows(target_name)  # type: ignore[reportAttributeAccessIssue]
     if total_count < limit:
         if total_count >= limit * CAP_WARN_FRACTION:
