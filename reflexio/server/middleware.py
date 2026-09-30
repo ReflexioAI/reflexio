@@ -26,7 +26,17 @@ SYNC_REQUEST_TIMEOUT_SECONDS = (
     600  # Longer timeout for synchronous long-running processing.
 )
 SYNC_REQUEST_PATHS = frozenset(
-    {"/api/review_user_playbooks", "/api/run_playbook_aggregation"}
+    {
+        "/api/review_user_playbooks",
+        "/api/run_playbook_aggregation",
+        # Runs the LLM judge inline on a cache miss; a large session legitimately
+        # takes 2+ minutes, so the 60s default 504'd it at exactly 60.0s on every
+        # attempt (claude-smart#162). Listed here rather than in
+        # ROUTE_BACKSTOP_SECONDS because that table pairs each row with a
+        # deadline the ROUTE itself enforces, and this route enforces none -- a
+        # paired constant would only satisfy the invariant test on paper.
+        "/api/evaluations/grade_on_demand",
+    }
 )
 
 # Routes that enforce their OWN deadline get a middleware budget strictly ABOVE
