@@ -220,3 +220,115 @@ def test_construct_agent_success_evaluation_messages_with_empty_sessions():
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+def _session_of(
+    n_interactions: int, filler_words: int
+) -> list[RequestInteractionDataModel]:
+    """Build one session whose interactions each stay inside the per-interaction cap."""
+    now = int(datetime.now(UTC).timestamp())
+    interactions = []
+    for i in range(n_interactions):
+        if i == 0:
+            marker = "FIRST-TASK-STATEMENT"
+        elif i == n_interactions - 1:
+            marker = "FINAL-OUTCOME-STATEMENT"
+        elif i == n_interactions // 2:
+            marker = "MIDDLE-OF-SESSION-STATEMENT"
+        else:
+            marker = f"step-{i}"
+        interactions.append(
+            Interaction(
+                interaction_id=i,
+                user_id="u",
+                request_id="req",
+                content=f"{marker} " + " ".join(["filler"] * filler_words),
+                role="user" if i % 2 == 0 else "assistant",
+                created_at=now,
+                user_action=UserActionType.NONE,
+                user_action_description="",
+            )
+        )
+    request = Request(
+        request_id="req",
+        user_id="u",
+        source="test",
+        agent_version="v1",
+        session_id="s",
+        created_at=now,
+    )
+    return [
+        RequestInteractionDataModel(
+            request=request, interactions=interactions, session_id="s"
+        )
+    ]
+
+
+def _rendered_text(messages: list[dict]) -> str:
+    parts = []
+    for message in messages:
+        content = message.get("content", "")
+        if isinstance(content, list):
+            parts.extend(
+                item.get("text", "")
+                for item in content
+                if isinstance(item, dict) and item.get("type") == "text"
+            )
+        else:
+            parts.append(str(content))
+    return "\n".join(parts)
+
+
+def _build(models: list[RequestInteractionDataModel]) -> str:
+    return _rendered_text(
+        construct_agent_success_evaluation_messages_from_sessions(
+            prompt_manager=PromptManager(),
+            request_interaction_data_models=models,
+            agent_context_prompt="agent",
+            success_definition_prompt="done",
+            tool_can_use="none",
+        )
+    )
+
+
+def test_long_session_transcript_is_bounded_keeping_task_and_outcome(monkeypatch):
+    """41 in-budget interactions must not build an unbounded prompt.
+
+    Regression for claude-smart#162: each interaction was capped, the SUM was
+    not, and a 41-interaction session was rejected with 'Prompt is too long'.
+    Every interaction here is far below the 512-token per-interaction cap, so
+    only the aggregate budget can be what bounds the result.
+    """
+    import reflexio.server.services.agent_success_evaluation.agent_success_evaluation_utils as utils
+    from reflexio.server.services.service_utils import (
+        _CONTENT_TRUNCATION_MARKER,
+        _get_content_token_encoding,
+    )
+
+    monkeypatch.setattr(utils, "EVALUATION_TRANSCRIPT_TOKEN_LIMIT", 1_000)
+    models = _session_of(41, filler_words=60)
+
+    rendered = _build(models)
+    unbounded = utils.format_sessions_to_history_string(models)
+    encoding = _get_content_token_encoding()
+    assert len(encoding.encode(unbounded)) > 1_000, "fixture must exceed the budget"
+
+    assert _CONTENT_TRUNCATION_MARKER.strip() in rendered
+    assert "FIRST-TASK-STATEMENT" in rendered, "the task at the head was dropped"
+    assert "FINAL-OUTCOME-STATEMENT" in rendered, "the outcome at the tail was dropped"
+    assert "MIDDLE-OF-SESSION-STATEMENT" not in rendered
+
+
+def test_session_within_budget_is_unchanged():
+    """A normal session must reach the judge verbatim, with no truncation marker."""
+    from reflexio.server.services.service_utils import _CONTENT_TRUNCATION_MARKER
+
+    rendered = _build(_session_of(4, filler_words=5))
+
+    assert _CONTENT_TRUNCATION_MARKER.strip() not in rendered
+    for marker in (
+        "FIRST-TASK-STATEMENT",
+        "MIDDLE-OF-SESSION-STATEMENT",
+        "FINAL-OUTCOME-STATEMENT",
+    ):
+        assert marker in rendered
