@@ -80,6 +80,7 @@ class ThreadedScheduler:
     ) -> None:
         self._thread_name = thread_name
         self._stop_event = threading.Event()
+        self._wake_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._leader_gate = leader_gate
 
@@ -110,6 +111,7 @@ class ThreadedScheduler:
             timeout_seconds (float): Max seconds to wait for the thread to exit.
         """
         self._stop_event.set()
+        self._wake_event.set()
         if self._thread is not None:
             self._thread.join(timeout=timeout_seconds)
             # Only drop the reference once the thread has actually exited. If the
@@ -119,6 +121,10 @@ class ThreadedScheduler:
             if not self._thread.is_alive():
                 self._thread = None
         self._on_stopped()
+
+    def wake(self) -> None:
+        """Request an immediate tick, including when a tick is already running."""
+        self._wake_event.set()
 
     def is_running(self) -> bool:
         """Return whether the background thread exists and is alive.
@@ -149,7 +155,7 @@ class ThreadedScheduler:
 
         Implementations MUST catch their own per-tick errors — a raise here would
         kill the daemon thread. The returned value is passed straight to
-        ``stop_event.wait`` as the inter-tick delay, so a subclass may compute a
+        ``wake_event.wait`` as the inter-tick delay, so a subclass may compute a
         fresh interval each tick (e.g. from config).
 
         Returns:
@@ -189,5 +195,11 @@ class ThreadedScheduler:
     def _run_loop(self) -> None:
         """Drive gated iterations until stopped, waiting each returned interval."""
         while not self._stop_event.is_set():
+            # Clear before work: a wake during work must survive until the wait.
+            self._wake_event.clear()
+            if self._stop_event.is_set():
+                break
             interval = self._elected_interval()
-            self._stop_event.wait(interval)
+            if self._stop_event.is_set():
+                break
+            self._wake_event.wait(interval)

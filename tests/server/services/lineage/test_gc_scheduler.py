@@ -673,7 +673,7 @@ def test_oss_dead_knob_warns_even_when_lineage_gc_disabled(monkeypatch, caplog):
 
 
 def test_run_loop_clamps_non_positive_poll_interval():
-    """_run_loop must pass at least _MIN_POLL_SECONDS to _stop_event.wait.
+    """_run_loop must pass at least _MIN_POLL_SECONDS to _wake_event.wait.
 
     Even though config validation now rejects non-positive values, the scheduler
     defends itself at runtime: if a zero or negative interval somehow reaches
@@ -681,18 +681,18 @@ def test_run_loop_clamps_non_positive_poll_interval():
     """
     wait_calls: list[float] = []
 
-    # Patch _stop_event.wait to capture the timeout and then immediately stop
+    # Patch _wake_event.wait to capture the timeout and then immediately stop
     # the loop on the first call.
     sched = _scheduler()
 
-    original_wait = sched._stop_event.wait
+    original_wait = sched._wake_event.wait
 
     def capturing_wait(timeout: float) -> bool:
         wait_calls.append(timeout)
         sched._stop_event.set()  # stop after one iteration
         return original_wait(0)  # return immediately
 
-    sched._stop_event.wait = capturing_wait  # type: ignore[method-assign]
+    sched._wake_event.wait = capturing_wait  # type: ignore[method-assign]
 
     # Directly monkey-patch _run_loop's poll_interval by making the config
     # return 0 for poll_interval_seconds.

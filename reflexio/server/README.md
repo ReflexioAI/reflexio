@@ -484,7 +484,8 @@ Key files:
 - `scheduler.py` / `worker.py`: Always-on discovery, bounded worker turns and renewable user leases.
 - `window_executor.py` / `window_codec.py`: Model execution, saved outcomes and frozen window policies.
 - `user_lease.py`: Shared ownership for automatic, manual and resumed extraction.
-- `waiting.py` / `local.py`: Bounded HTTP coverage waits and standalone-library recovery.
+- `waiting.py` / `local.py`: Bounded HTTP coverage waits, standalone-library recovery and post-admission scheduler wake-ups.
+- `server/scheduling.py`: Shared interruptible polling, with wake signals retained during a tick and bounded stop joins.
 - `services/storage/storage_base/_extraction_stream.py`: Shared admission/cursor/window state machine; SQLite and enterprise PostgreSQL supply backend adapters.
 
 **Pattern**: Success follows durable admission. Workers consume the first W eligible

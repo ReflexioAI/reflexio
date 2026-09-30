@@ -11,6 +11,8 @@ with — never another tenant's runs.
 from __future__ import annotations
 
 import logging
+import threading
+import weakref
 from collections.abc import Callable
 from datetime import UTC, datetime
 
@@ -27,6 +29,16 @@ from reflexio.server.services.extraction.resume_worker import ExtractionResumeWo
 logger = logging.getLogger(__name__)
 
 _DEFAULT_POLL_INTERVAL_SECONDS = 5.0
+_live_schedulers: weakref.WeakSet[ExtractionResumeScheduler] = weakref.WeakSet()
+_live_lock = threading.Lock()
+
+
+def wake_resume_schedulers() -> None:
+    """Wake process-local consumers after a committed tool resolution."""
+    with _live_lock:
+        schedulers = list(_live_schedulers)
+    for scheduler in schedulers:
+        scheduler.wake()
 
 
 class ExtractionResumeScheduler(ThreadedScheduler):
@@ -47,9 +59,14 @@ class ExtractionResumeScheduler(ThreadedScheduler):
         self.max_runs_per_tick = max_runs_per_tick
 
     def _on_started(self) -> None:
+        with _live_lock:
+            _live_schedulers.add(self)
         logger.info("event=extraction_resume_scheduler_started")
 
     def _on_stopped(self) -> None:
+        if not self.is_running():
+            with _live_lock:
+                _live_schedulers.discard(self)
         logger.info("event=extraction_resume_scheduler_stopped")
 
     def _discover_local_org_ids(
