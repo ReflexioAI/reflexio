@@ -2179,6 +2179,16 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             "uq_poj_active_target",
         ):
             self.conn.execute(f"DROP INDEX IF EXISTS {index_name}")  # noqa: S608
+        # Every json_type() is guarded with CASE WHEN json_valid(...), never
+        # `json_valid(x) AND json_type(x, ...)`. SQLite does not short-circuit
+        # AND in a result-column expression: it evaluates json_type on a
+        # non-JSON value and raises "malformed JSON". metadata_json is a plain
+        # str the older schema never validated, and this runs in the storage
+        # constructor, so one such row would stop the backend starting after
+        # an upgrade. That is reproduced for the two job-level guards. The
+        # candidate guard sits in a subquery WHERE, which does short-circuit
+        # today, but WHERE evaluation order is not guaranteed -- it is CASE
+        # too as hardening. CASE is lazy. Do not "simplify" any of it to AND.
         self.conn.execute(
             """
             WITH signatures AS (
@@ -2191,17 +2201,15 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                             WHERE events.job_id = jobs.job_id
                               AND events.event_type LIKE 'offline_tuner_%'
                         )
-                        OR (
-                            json_valid(jobs.metadata_json)
-                            AND json_type(jobs.metadata_json, '$.offline_tuner')
+                        OR CASE WHEN json_valid(jobs.metadata_json) THEN
+                            json_type(jobs.metadata_json, '$.offline_tuner')
                                 IS NOT NULL
-                        )
+                        ELSE 0 END
                         OR EXISTS (
                             SELECT 1
                             FROM playbook_optimization_candidates AS candidates
                             WHERE candidates.job_id = jobs.job_id
-                              AND json_valid(candidates.metadata_json)
-                              AND (
+                              AND CASE WHEN json_valid(candidates.metadata_json) THEN (
                                   json_type(
                                       candidates.metadata_json,
                                       '$.offline_tuner_metrics'
@@ -2218,12 +2226,11 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                                       candidates.metadata_json,
                                       '$.proposed_edit'
                                   ) IS NOT NULL
-                              )
+                              ) ELSE 0 END
                         )
                     ) AS tuner_signature,
-                    (
-                        json_valid(jobs.metadata_json)
-                        AND json_type(jobs.metadata_json, '$.source_window_count')
+                    CASE WHEN json_valid(jobs.metadata_json) THEN (
+                        json_type(jobs.metadata_json, '$.source_window_count')
                             IS NOT NULL
                         AND json_type(jobs.metadata_json, '$.train_window_count')
                             IS NOT NULL
@@ -2231,7 +2238,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                             jobs.metadata_json,
                             '$.validation_window_count'
                         ) IS NOT NULL
-                    ) AS gepa_signature
+                    ) ELSE 0 END AS gepa_signature
                 FROM playbook_optimization_jobs AS jobs
                 WHERE jobs.optimizer_kind IS NULL
             )
