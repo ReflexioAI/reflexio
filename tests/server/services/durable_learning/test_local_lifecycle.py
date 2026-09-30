@@ -1,18 +1,28 @@
 """A library-local scheduler outlives its handles for no longer than one call."""
 
 import gc
+import sqlite3
 import threading
+import time
+from unittest.mock import Mock
 
 import pytest
 
+from reflexio.models.api_schema.service_schemas import (
+    InteractionData,
+    PublishUserInteractionRequest,
+)
 from reflexio.models.config_schema import (
     Config,
     ProfileExtractorConfig,
     StorageConfigSQLite,
 )
 from reflexio.server.api_endpoints.request_context import RequestContext
+from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 from reflexio.server.services.configurator.configurator import DefaultConfigurator
 from reflexio.server.services.durable_learning import local
+from reflexio.server.services.generation_service import GenerationService
+from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 
 _THREAD_NAME = "reflexio-durable-learning-scheduler"
 
@@ -131,3 +141,74 @@ def test_two_handles_on_one_key_both_keep_the_scheduler_alive(
     assert first in local._live[first.storage_base_dir]
     assert local._schedulers.get(first.storage_base_dir) is scheduler
     assert scheduler.is_running()
+
+
+@pytest.mark.parametrize("adopted", [False, True], ids=["library", "server"])
+def test_committed_admission_wakes_consumer_but_rollback_does_not(
+    tmp_path, isolated_registry, monkeypatch, adopted
+):
+    """Wake delivery must observe committed work through another DB connection."""
+    monkeypatch.setenv("REFLEXIO_EMBEDDING_PROVIDER", "off")
+    context = _context(tmp_path / "wake", "wake-org")
+    store = context.storage
+    assert isinstance(store, SQLiteStorage)
+    service = GenerationService(
+        llm_client=LiteLLMClient(LiteLLMConfig(model="gpt-4o-mini")),
+        request_context=context,
+    )
+    monkeypatch.setattr(service, "_schedule_post_publish_evaluations", lambda **_: None)
+    # Keep actual scheduler lifecycle/wake delivery, with deterministic idle work.
+    monkeypatch.setattr(local.DurableLearningScheduler, "_run_once", lambda _: 3600)
+    observed = []
+    original_wake = local.DurableLearningScheduler.wake
+
+    def observe_wake(scheduler):
+        with sqlite3.connect(store.db_path) as reader:
+            observed.append(
+                reader.execute(
+                    "SELECT highwater FROM learning_work WHERE org_id=? AND user_id=?",
+                    (context.org_id, "wake-user"),
+                ).fetchone()
+            )
+        original_wake(scheduler)
+
+    monkeypatch.setattr(local.DurableLearningScheduler, "wake", observe_wake)
+    scheduler = None
+    if adopted:
+        scheduler = local.DurableLearningScheduler(
+            request_context_factory=lambda _: context, org_ids_provider=lambda: []
+        )
+        scheduler.start()
+        local.adopt_server_scheduler(scheduler)
+    request = PublishUserInteractionRequest(
+        request_id="wake-request",
+        user_id="wake-user",
+        session_id="wake-session",
+        interaction_data_list=[
+            InteractionData(
+                content="I prefer concise answers", created_at=int(time.time())
+            )
+        ],
+    )
+    original_admit = store.admit_extraction
+    try:
+        monkeypatch.setattr(
+            store,
+            "admit_extraction",
+            Mock(side_effect=RuntimeError("admission failed")),
+        )
+        with pytest.raises(RuntimeError, match="admission failed"):
+            service.run(request, defer_learning=True)
+        assert observed == []
+        assert store.get_request(request.request_id) is None
+
+        monkeypatch.setattr(store, "admit_extraction", original_admit)
+        service.run(request, defer_learning=True)
+        assert len(observed) == 1
+        assert observed[0] is not None and observed[0][0] > 0
+        consumer = scheduler if adopted else local._schedulers[context.storage_base_dir]
+        assert consumer is not None
+        assert consumer.is_running()
+    finally:
+        if scheduler is not None:
+            scheduler.stop()

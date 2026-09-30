@@ -127,12 +127,14 @@ def ensure_local_extraction(context: RequestContext) -> None:
     directory = context.storage_base_dir
     with _lock:
         if _server_scheduler is not None and _server_scheduler.is_running():
+            _server_scheduler.wake()
             return
         _contexts[(context.org_id, directory)] = context
         _live.setdefault(directory, weakref.WeakSet()).add(context)
         orphans = _take_orphan_schedulers()
         if directory not in _schedulers:
             _schedulers[directory] = _start_scheduler(directory)
+        _schedulers[directory].wake()
     for orphan in orphans:
         orphan.stop()
 

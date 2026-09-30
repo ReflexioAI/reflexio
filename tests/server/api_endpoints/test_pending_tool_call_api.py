@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import sqlite3
 import tempfile
 import time
 from dataclasses import replace
@@ -22,6 +23,10 @@ from reflexio.server.api import create_app
 from reflexio.server.api_endpoints.request_context import (
     RequestContext,
     get_request_context,
+)
+from reflexio.server.services.extraction.resume_scheduler import (
+    ExtractionResumeScheduler,
+    wake_resume_schedulers,
 )
 from reflexio.server.services.storage.error import StorageError
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
@@ -189,6 +194,51 @@ def test_resolve_pending_tool_call_is_idempotent_and_schedules_resume(
     run = storage.get_agent_run("run_1")
     assert run is not None
     assert run.status == AgentRunStatus.RESUME_READY
+
+
+@pytest.mark.parametrize("fail_resolution", [False, True], ids=["commit", "failure"])
+def test_resolution_wakes_registered_consumer_only_after_commit(
+    client, storage, monkeypatch, fail_resolution
+):
+    storage.create_pending_tool_call(_pending_call("ptc_wake", now=datetime.now(UTC)))
+    scheduler = ExtractionResumeScheduler(
+        request_context_factory=lambda _: client.app.state.fake_ctx,
+        bootstrap_org_id="org_1",
+    )
+    # Use the actual start/stop registry; avoid unrelated worker/model execution.
+    monkeypatch.setattr(scheduler, "_run_once", lambda: 3600)
+    committed_statuses = []
+    original_wake = scheduler.wake
+
+    def observe_wake():
+        with sqlite3.connect(storage.db_path) as reader:
+            committed_statuses.append(
+                reader.execute(
+                    "SELECT status FROM _pending_tool_calls WHERE id=?", ("ptc_wake",)
+                ).fetchone()[0]
+            )
+        original_wake()
+
+    monkeypatch.setattr(scheduler, "wake", observe_wake)
+    if fail_resolution:
+        monkeypatch.setattr(
+            storage,
+            "resolve_pending_tool_call",
+            MagicMock(side_effect=StorageError("resolution failed")),
+        )
+    scheduler.start()
+    try:
+        response = client.post(
+            "/api/pending_tool_calls/ptc_wake/resolve",
+            json={"result": {"answer": "AWS ECS"}, "valid_for_seconds": 3600},
+        )
+        assert response.status_code == (503 if fail_resolution else 200)
+        assert committed_statuses == ([] if fail_resolution else ["resolved"])
+    finally:
+        scheduler.stop()
+    assert not scheduler.is_running()
+    wake_resume_schedulers()
+    assert committed_statuses == ([] if fail_resolution else ["resolved"])
 
 
 def test_update_resolved_pending_tool_call_answer_schedules_resume(client, storage):

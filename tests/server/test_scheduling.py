@@ -109,7 +109,7 @@ def test_should_start_false_vetoes_startup() -> None:
 
 
 def test_run_once_return_value_drives_wait_interval() -> None:
-    """The value returned by ``_run_once`` is passed to ``stop_event.wait``."""
+    """The value returned by ``_run_once`` is passed to ``wake_event.wait``."""
     waits: list[float] = []
 
     class _IntervalScheduler(ThreadedScheduler):
@@ -120,14 +120,14 @@ def test_run_once_return_value_drives_wait_interval() -> None:
             return 42.0
 
     sched = _IntervalScheduler()
-    original_wait = sched._stop_event.wait
+    original_wait = sched._wake_event.wait
 
     def capturing_wait(timeout: float | None = None) -> bool:
         waits.append(timeout)  # type: ignore[arg-type]
         sched._stop_event.set()  # exit after one iteration
         return original_wait(0)
 
-    sched._stop_event.wait = capturing_wait  # type: ignore[method-assign]
+    sched._wake_event.wait = capturing_wait  # type: ignore[method-assign]
     sched._run_loop()
 
     assert waits == [42.0]
@@ -290,3 +290,60 @@ def test_multi_worker_daemon_log(monkeypatch, caplog) -> None:
     with caplog.at_level("WARNING"):
         _log_multi_worker_daemons()
     assert not caplog.records
+
+
+def test_wake_during_tick_is_not_lost_and_stop_interrupts_long_wait():
+    entered = threading.Event()
+    release = threading.Event()
+    second = threading.Event()
+
+    class BlockingScheduler(ThreadedScheduler):
+        def __init__(self):
+            super().__init__(thread_name="test-wake")
+            self.ticks = 0
+
+        def _run_once(self):
+            self.ticks += 1
+            if self.ticks == 1:
+                entered.set()
+                assert release.wait(2)
+            else:
+                second.set()
+            return 3600
+
+    scheduler = BlockingScheduler()
+    scheduler.start()
+    try:
+        assert entered.wait(2)
+        scheduler.wake()
+        release.set()
+        assert second.wait(2), "wake during a tick was lost"
+    finally:
+        release.set()
+        scheduler.stop(timeout_seconds=2)
+    assert not scheduler.is_running()
+
+
+def test_stop_between_loop_condition_and_wake_clear_exits_promptly():
+    entered = threading.Event()
+    release = threading.Event()
+    scheduler = _CountingScheduler()
+    original_clear = scheduler._wake_event.clear
+
+    def delayed_clear():
+        entered.set()
+        assert release.wait(2)
+        original_clear()
+
+    scheduler._wake_event.clear = delayed_clear
+    scheduler.start()
+    try:
+        assert entered.wait(2)
+        scheduler.stop(timeout_seconds=0)
+        release.set()
+        scheduler.stop(timeout_seconds=2)
+        assert not scheduler.is_running()
+        assert scheduler.ticks == 0
+    finally:
+        release.set()
+        scheduler.stop(timeout_seconds=2)

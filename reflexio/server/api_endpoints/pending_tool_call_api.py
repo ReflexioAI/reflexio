@@ -316,6 +316,11 @@ async def resolve_pending_tool_call(
             status_code=409,
             detail="Pending tool call already resolved with a different result",
         )
+    from reflexio.server.services.extraction.resume_scheduler import (
+        wake_resume_schedulers,
+    )
+
+    wake_resume_schedulers()
     logger.info(
         "event=pending_tool_call_resolved org_id=%s user_id=%s "
         "pending_tool_call_id=%s tool_name=%s",
