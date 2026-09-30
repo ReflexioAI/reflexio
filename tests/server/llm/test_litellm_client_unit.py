@@ -2463,6 +2463,53 @@ class TestStructuredOutputRepair:
         assert exc_info.value.first_parsed_provenance.model_name == "served-model"
         assert len(calls) == 2
 
+    def test_a_repair_refused_for_budget_keeps_first_parsed_provenance(
+        self, monkeypatch
+    ):
+        """Codex on reflexio#568: when the walk's budget runs out between a
+        parsed-but-invalid first attempt and its repair, the stop must still
+        carry the parsed attempt's provenance -- salvage attributes that content
+        to its model."""
+        import time as real_time
+        from types import SimpleNamespace
+
+        from reflexio.server.llm import _litellm_text_generation as ttg
+
+        clock = {"now": 1000.0}
+        monkeypatch.setattr(
+            ttg,
+            "time",
+            SimpleNamespace(
+                monotonic=lambda: clock["now"],
+                perf_counter=real_time.perf_counter,
+                sleep=real_time.sleep,
+                time=real_time.time,
+            ),
+        )
+        monkeypatch.setattr(ttg, "_LADDER_WALL_CLOCK_BUDGET_SECONDS", 100.0)
+        calls: list[dict[str, Any]] = []
+
+        def fake_completion(**kwargs):
+            calls.append(kwargs)
+            clock["now"] += 95  # leaves 5 s: too little for the repair turn
+            return self._make_mock_response('{"answer": "bad", "score": 1}')
+
+        client = _build_client(LiteLLMConfig(model="primary-model"))
+        with (
+            patch("litellm.completion", side_effect=fake_completion),
+            pytest.raises(LiteLLMClientError) as exc_info,
+        ):
+            client.generate_chat_response(
+                messages=[{"role": "user", "content": "test"}],
+                response_format=SampleResponse,
+                structured_output_validator=self._score_validator,
+            )
+
+        assert isinstance(exc_info.value, ttg.LadderBudgetExhaustedError)
+        assert exc_info.value.first_parsed_provenance is not None
+        assert exc_info.value.first_parsed_provenance.model_name == "served-model"
+        assert len(calls) == 1  # the repair was never sent
+
     def test_exhaustion_keeps_latest_parsed_output_after_final_parse_failure(self):
         """Within a single rung: when the corrective turn fails to PARSE, the typed
         error's parsed_output rolls forward to the most recent attempt that DID
@@ -4284,9 +4331,9 @@ class TestOwnedFallbackWalk:
         from contextlib import contextmanager
 
         @contextmanager
-        def _spy(model):
+        def _spy(model, **kwargs):
             slots.append(model)
-            with real_slot(model):
+            with real_slot(model, **kwargs):
                 yield
 
         monkeypatch.setattr(tg, "provider_slot", _spy)
@@ -4313,7 +4360,7 @@ class TestOwnedFallbackWalk:
         import reflexio.server.llm._litellm_text_generation as tg
 
         @contextmanager
-        def _cap_primary(model):
+        def _cap_primary(model, **_kwargs):
             if model == "minimax/MiniMax-M3":
                 raise ProviderCapSaturatedError("cap saturated")
             yield
@@ -4468,7 +4515,7 @@ class TestFallbackObservability:
         visited = []
 
         @contextmanager
-        def slot(model):
+        def slot(model, **_kwargs):
             visited.append(model)
             if model == "minimax/MiniMax-M3":
                 raise ProviderCapSaturatedError("primary saturated")
@@ -4864,7 +4911,7 @@ def test_provider_deadline_propagates_without_embedding_or_model_fallback(
     error = search_runtime.SearchDeadlineError("provider admission expired")
 
     @contextmanager
-    def expired_slot(model):
+    def expired_slot(model, **_kwargs):
         slots.append(model)
         raise error
         yield  # pragma: no cover

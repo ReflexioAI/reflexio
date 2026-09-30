@@ -175,6 +175,15 @@ _LADDER_MIN_TURN_SECONDS = 10.0
 StructuredOutputValidator = Callable[[BaseModel], Sequence[str]]
 
 
+class LadderBudgetExhaustedError(LiteLLMClientError):
+    """The walk's wall-clock budget ran out before a turn could start.
+
+    A ``LiteLLMClientError`` so the walker treats it as the rung's final failure,
+    but its own type so ``_call_and_parse`` re-raises it untouched instead of
+    logging it as a failed provider request -- nothing was sent.
+    """
+
+
 # Config values read per call but only worth reporting once. The env is still
 # re-read every call (tests and operators change it at runtime); the PARSE is
 # cached by the raw string, so an invalid value warns once per distinct value
@@ -1463,6 +1472,22 @@ class TextGenerationMixin:
         # the walk starts; `_prepare_turn` reads it at call time.
         walk_deadline = time.monotonic() + _LADDER_WALL_CLOCK_BUDGET_SECONDS
 
+        def _clamp_to_walk(
+            turn_params: dict[str, Any], hard_timeout: float
+        ) -> tuple[dict[str, Any], float]:
+            """Re-size a prepared turn to what the walk has left, at dispatch time."""
+            remaining = walk_deadline - time.monotonic()
+            if remaining < _LADDER_MIN_TURN_SECONDS:
+                raise LadderBudgetExhaustedError(
+                    f"LLM ladder budget exhausted ({_LADDER_WALL_CLOCK_BUDGET_SECONDS:.0f}s) "
+                    f"while waiting to dispatch {turn_params.get('model')}"
+                )
+            if hard_timeout <= remaining:
+                return turn_params, hard_timeout
+            grace = self._hard_timeout_grace_seconds()
+            clamped = {**turn_params, "timeout": max(1.0, remaining - grace)}
+            return clamped, remaining
+
         def _prepare_turn(
             turn_messages: list[dict[str, Any]], turn_kwargs: dict[str, Any]
         ) -> tuple[dict[str, Any], Any, bool, float]:
@@ -1497,7 +1522,7 @@ class TextGenerationMixin:
             if remaining < _LADDER_MIN_TURN_SECONDS:
                 # LiteLLMClientError propagates out of the rung to the walker,
                 # which treats it as that rung's final failure.
-                raise LiteLLMClientError(
+                raise LadderBudgetExhaustedError(
                     f"LLM ladder budget exhausted ({_LADDER_WALL_CLOCK_BUDGET_SECONDS:.0f}s): "
                     f"{remaining:.1f}s left, not attempting {params.get('model')}"
                 )
@@ -1543,7 +1568,20 @@ class TextGenerationMixin:
                 turn_hard_timeout,
             )
             try:
-                with provider_slot(turn_params["model"]):
+                # The slot wait is bounded by what the walk has left, and the
+                # turn is re-clamped once the slot is held: a saturated
+                # provider can hold a turn here long after `_prepare_turn`
+                # sized it, and dispatching with the stale remainder would
+                # overrun the budget by the length of the wait.
+                slot_budget = (
+                    walk_deadline - time.monotonic() - _LADDER_MIN_TURN_SECONDS
+                )
+                with provider_slot(
+                    turn_params["model"], max_wait=max(0.0, slot_budget)
+                ):
+                    turn_params, turn_hard_timeout = _clamp_to_walk(
+                        turn_params, turn_hard_timeout
+                    )
                     if provider_request_guard is not None:
                         provider_request_guard(
                             turn_params,
@@ -1646,7 +1684,11 @@ class TextGenerationMixin:
                     model=str(turn_params.get("model")),
                     provenance=provenance,
                 )
-            except (ProviderRequestGuardError, search_runtime.SearchDeadlineError):
+            except (
+                ProviderRequestGuardError,
+                search_runtime.SearchDeadlineError,
+                LadderBudgetExhaustedError,
+            ):
                 raise
             except (
                 StructuredOutputParseError,
@@ -1968,9 +2010,15 @@ class TextGenerationMixin:
             # to replay the very answer being repaired, turning the repair into
             # the silent no-op ``structured_output_repair_idempotency_key``
             # exists to prevent.
-            repair_params, repair_rf, repair_parse, repair_timeout = _prepare_turn(
-                repair_base, _corrective_kwargs(rung_kwargs)
-            )
+            try:
+                repair_params, repair_rf, repair_parse, repair_timeout = _prepare_turn(
+                    repair_base, _corrective_kwargs(rung_kwargs)
+                )
+            except LadderBudgetExhaustedError as exc:
+                # The first attempt DID parse; salvage attributes that content
+                # to its model, so the budget stop must carry that provenance.
+                exc.first_parsed_provenance = first_parsed_provenance
+                raise
             self.logger.warning(
                 "event=llm_structured_repair_attempted model=%s repair_target_model=%s schema=%s failure_kind=%s",
                 params.get("model"),

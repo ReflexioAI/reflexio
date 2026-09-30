@@ -160,3 +160,55 @@ def test_boot_check_is_silent_without_fallbacks(monkeypatch, caplog) -> None:
     with caplog.at_level(logging.WARNING):
         _warn_if_fallback_cannot_run([])
     assert "llm_fallback_unreachable" not in caplog.text
+
+
+@pytest.mark.parametrize(("slot_wait", "dispatched_hard"), [(70, 30.0), (95, None)])
+def test_a_provider_slot_wait_is_charged_to_the_budget(
+    monkeypatch, slot_wait: float, dispatched_hard: float | None
+) -> None:
+    """Codex on reflexio#568: a saturated provider can hold a turn in the slot
+    queue after `_prepare_turn` sized it. The turn is re-clamped once the slot is
+    held, and not dispatched at all if the wait spent the budget."""
+    from contextlib import contextmanager
+
+    clock = _Clock()
+    monkeypatch.setattr(
+        ttg,
+        "time",
+        SimpleNamespace(
+            monotonic=clock.monotonic,
+            perf_counter=real_time.perf_counter,
+            sleep=real_time.sleep,
+            time=real_time.time,
+        ),
+    )
+    monkeypatch.setattr(ttg, "_LADDER_WALL_CLOCK_BUDGET_SECONDS", 100.0)
+    monkeypatch.setenv("REFLEXIO_LLM_HARD_TIMEOUT_GRACE_SECONDS", "5")
+    waits: list[float | None] = []
+
+    @contextmanager
+    def _slow_slot(model: str, *, max_wait: float | None = None):
+        del model
+        waits.append(max_wait)
+        clock.now += slot_wait
+        yield
+
+    monkeypatch.setattr(ttg, "provider_slot", _slow_slot)
+    client = LiteLLMClient(LiteLLMConfig(model="primary/a", timeout=30))
+    sent: list[float] = []
+
+    def _fake(params, hard_timeout):
+        del params
+        sent.append(hard_timeout)
+        return _response("ok")
+
+    monkeypatch.setattr(client, "_completion_with_hard_timeout", _fake)
+    if dispatched_hard is None:
+        with pytest.raises(LiteLLMClientError):
+            client.generate_chat_response(_MESSAGES)
+        assert sent == []
+    else:
+        assert client.generate_chat_response(_MESSAGES) == "ok"
+        assert sent == [pytest.approx(dispatched_hard)]
+    # The slot wait itself is bounded by what the walk had left.
+    assert waits == [pytest.approx(100.0 - ttg._LADDER_MIN_TURN_SECONDS)]
