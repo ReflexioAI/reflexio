@@ -564,3 +564,50 @@ def test_a_foreign_console_still_suppresses_ours() -> None:
 
     roles = {getattr(h, "_reflexio_managed_handler_role", None) for h in root.handlers}
     assert "stdout" not in roles, "a genuine foreign console must still suppress ours"
+
+
+# --------------------------------------------------------------------------
+# The operational-event channel.
+# --------------------------------------------------------------------------
+
+
+def _emitted(record_logger: logging.Logger, level: int, message: str) -> bool:
+    """Whether a record at `level` reaches the root's handlers, not just the logger."""
+    seen: list[str] = []
+
+    class _Tap(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            seen.append(record.getMessage())
+
+    tap = _Tap(level=logging.DEBUG)
+    logging.getLogger().addHandler(tap)
+    try:
+        record_logger.log(level, message)
+    finally:
+        logging.getLogger().removeHandler(tap)
+    return message in seen
+
+
+def test_the_ops_channel_emits_info_under_the_production_profile() -> None:
+    """Production keeps the root at WARNING, so INFO is normally dropped. The ops
+    channel is what lets an informational event leave WARNING and still be seen."""
+    from reflexio.server.ops_log import get_ops_logger
+
+    _blank_root()
+    report = configure_logging(verbose=False)
+    assert report.root_level == logging.WARNING
+
+    assert _emitted(get_ops_logger("probe"), logging.INFO, "event=ops_probe")
+    # An ordinary first-party INFO line is still dropped: the channel is scoped.
+    assert not _emitted(
+        logging.getLogger("reflexio.server.probe"), logging.INFO, "plain_info"
+    )
+
+
+def test_a_caller_level_cannot_raise_the_ops_channel() -> None:
+    """`first_party_level` is lower-only for the ops channel too."""
+    from reflexio.server.ops_log import OPS_LOGGER_NAME
+
+    _blank_root()
+    configure_logging(verbose=False, first_party_level=logging.ERROR)
+    assert logging.getLogger(OPS_LOGGER_NAME).getEffectiveLevel() == logging.INFO
