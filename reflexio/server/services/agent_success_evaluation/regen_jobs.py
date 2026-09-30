@@ -19,6 +19,7 @@ from typing import Literal
 
 from reflexio.models.api_schema.internal_schema import SessionDescriptor
 from reflexio.server.api_endpoints.request_context import RequestContext
+from reflexio.server.background_work import background_work
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.services.agent_success_evaluation.runner import (
     GroupEvaluationOutcome,
@@ -309,6 +310,7 @@ class _CancelledError(Exception):
     """
 
 
+@background_work()
 def run_regen(
     *,
     job: RegenJob,

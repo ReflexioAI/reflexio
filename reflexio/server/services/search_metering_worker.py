@@ -9,6 +9,7 @@ import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
+from reflexio.server.background_work import background_work
 from reflexio.server.error_reporting import capture_anomaly
 from reflexio.server.tracing import (
     capture_trace_context,
@@ -168,6 +169,7 @@ class SearchMeteringWorker:
             logger.info("event=search_metering_worker_stopped alive_workers=%d", alive)
         return abandoned
 
+    @background_work()
     def _worker_loop(self) -> None:
         while not self._abort_event.is_set():
             try:

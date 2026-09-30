@@ -11,6 +11,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from reflexio.server.api_endpoints.request_context import RequestContext
+from reflexio.server.background_work import background_work
 from reflexio.server.env_utils import env_str
 from reflexio.server.operation_limiter import operation_limit_value
 from reflexio.server.operational_metrics import record_health
@@ -177,6 +178,7 @@ class DurableLearningWorker:
             completed += self._reserved_turn(org_id, lease_seconds)
         return completed
 
+    @background_work()
     def _reserved_turn(self, org_id: str, lease_seconds: int) -> int:
         try:
             return self._turn(org_id, lease_seconds)
@@ -202,6 +204,7 @@ class DurableLearningWorker:
         phase = "prepare"
         stop = threading.Event()
 
+        @background_work()
         def heartbeat() -> None:
             while not stop.wait(max(0.1, lease_seconds / 3)):
                 try:

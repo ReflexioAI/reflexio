@@ -19,6 +19,7 @@ from collections import deque
 from collections.abc import Callable
 from typing import NamedTuple
 
+from reflexio.server.background_work import background_work
 from reflexio.server.error_reporting import capture_anomaly
 from reflexio.server.work_scope import WorkScopeError
 
@@ -144,6 +145,7 @@ class BoundedCallbackExecutor:
                 drops_last_minute=facts.drops_last_minute,
             )
 
+    @background_work()
     def _worker_loop(self) -> None:
         while True:
             with self._cond:

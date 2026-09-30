@@ -3,6 +3,12 @@ Description: FastAPI backend server that processes user interactions to generate
 
 ## Table of Contents
 
+`background_work.py` exposes a neutral worker-context marker for deployments
+that reserve shared database capacity for foreground requests. Worker thread
+entry points mark themselves; the marker does not create connections, propagate
+tenant identity, or alter embedded Python cleanup behavior. A deployment's
+database infrastructure decides how to apply the admission class.
+
 
 - [Main Entry Points](#main-entry-points)
 - [Cache](#cache)

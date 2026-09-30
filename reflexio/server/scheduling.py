@@ -38,6 +38,8 @@ import logging
 import threading
 from typing import Protocol
 
+from reflexio.server.background_work import background_work
+
 logger = logging.getLogger(__name__)
 
 # How long a non-leader waits before re-checking the gate. Fixed (no interval
@@ -97,12 +99,16 @@ class ThreadedScheduler:
             return
         self._stop_event.clear()
         self._thread = threading.Thread(
-            target=self._run_loop,
+            target=self._run_background_loop,
             name=self._thread_name,
             daemon=True,
         )
         self._thread.start()
         self._on_started()
+
+    @background_work()
+    def _run_background_loop(self) -> None:
+        self._run_loop()
 
     def stop(self, *, timeout_seconds: float = 5.0) -> None:
         """Signal the loop to stop and join the thread.
