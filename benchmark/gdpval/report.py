@@ -131,10 +131,18 @@ def _write_csv(
             for host in hosts:
                 for phase in phases:
                     rec = by_cell.get((host, phase), {})
-                    row[f"{host}_{phase}_total_tokens"] = rec.get("tokens", {}).get("total_tokens", "")
-                    row[f"{host}_{phase}_score_10"] = rec.get("evaluation", {}).get("score_10", "")
-                    row[f"{host}_{phase}_actual_payment"] = rec.get("evaluation", {}).get("actual_payment", "")
-                    row[f"{host}_{phase}_cost_usd"] = rec.get("tokens", {}).get("cost_usd", "")
+                    row[f"{host}_{phase}_total_tokens"] = rec.get("tokens", {}).get(
+                        "total_tokens", ""
+                    )
+                    row[f"{host}_{phase}_score_10"] = rec.get("evaluation", {}).get(
+                        "score_10", ""
+                    )
+                    row[f"{host}_{phase}_actual_payment"] = rec.get(
+                        "evaluation", {}
+                    ).get("actual_payment", "")
+                    row[f"{host}_{phase}_cost_usd"] = rec.get("tokens", {}).get(
+                        "cost_usd", ""
+                    )
             writer.writerow(row)
 
 
@@ -147,7 +155,9 @@ def _render_markdown(
     lines: list[str] = ["# GDPVal Benchmark — Comparison", ""]
     lines.append("## Per-cell means")
     lines.append("")
-    lines.append("| Host | Phase | Tasks | Mean tokens | Mean score/10 | Mean payment | Mean cost USD |")
+    lines.append(
+        "| Host | Phase | Tasks | Mean tokens | Mean score/10 | Mean payment | Mean cost USD |"
+    )
     lines.append("|---|---|---:|---:|---:|---:|---:|")
     for host in hosts:
         for phase in phases:
@@ -177,8 +187,12 @@ def _render_markdown(
         lines.append(f"- Native learning token savings (P1 − P2): **{native:.0f}**")
         lines.append(f"- Reflexio marginal token savings (P2 − P3): **{marginal:.0f}**")
         lines.append(f"- Combined token savings (P1 − P3): **{combined:.0f}**")
-        lines.append(f"- Quality Δ from native learning (P2 − P1): **{q_native:+.2f}** score/10")
-        lines.append(f"- Quality Δ from reflexio (P3 − P2): **{q_marginal:+.2f}** score/10")
+        lines.append(
+            f"- Quality Δ from native learning (P2 − P1): **{q_native:+.2f}** score/10"
+        )
+        lines.append(
+            f"- Quality Δ from reflexio (P3 − P2): **{q_marginal:+.2f}** score/10"
+        )
         lines.append("")
 
     return "\n".join(lines)
