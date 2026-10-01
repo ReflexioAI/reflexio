@@ -702,3 +702,63 @@ class TestGetCachedRequestContext:
                 storage = context.storage
                 assert isinstance(storage, SQLiteStorage)
                 storage.conn.close()
+
+
+def test_prefetch_overlaps_independent_work_and_reuses_fresh_version(monkeypatch):
+    """One fresh read retains request context and causes normal stale eviction."""
+    from contextvars import ContextVar
+
+    from reflexio.server import search_runtime
+    from reflexio.server.cache import reflexio_cache as cache
+
+    started = threading.Event()
+    release = threading.Event()
+    old = MagicMock(org_id="prefetch-org")
+    replacement = MagicMock(org_id="prefetch-org")
+    project: ContextVar[str | None] = ContextVar("test_project", default=None)
+    project_token = project.set("test-project")
+
+    def version():
+        assert search_runtime.current() is scope
+        assert project.get() == "test-project"
+        started.set()
+        assert release.wait(2)
+        return ("db", 2)
+
+    old.current_config_version.side_effect = version
+    replacement.current_config_version.return_value = ("db", 2)
+    cache._reflexio_cache[("prefetch-org", None)] = cache._CacheEntry(old, ("db", 1))
+    monkeypatch.setattr(cache, "Reflexio", lambda **_kwargs: replacement)
+    scope = search_runtime.SearchScope(deadline=time.monotonic() + 5)
+    token = search_runtime._scope.set(scope)
+    try:
+        future = cache.prefetch_config_version("prefetch-org")
+        assert future is not None
+        assert started.wait(2)
+        assert not future.done()  # independent billing work can run here
+        assert future in scope.futures
+        release.set()
+        search_runtime.result(future)
+        assert cache.get_reflexio("prefetch-org") is replacement
+        assert old.current_config_version.call_count == 1
+    finally:
+        release.set()
+        search_runtime._scope.reset(token)
+        project.reset(project_token)
+
+
+def test_prefetch_never_constructs_cold_or_nonsearch_instances(monkeypatch):
+    from reflexio.server import search_runtime
+    from reflexio.server.cache import reflexio_cache as cache
+
+    constructor = MagicMock()
+    monkeypatch.setattr(cache, "Reflexio", constructor)
+    assert cache.prefetch_config_version("missing") is None
+    token = search_runtime._scope.set(search_runtime.SearchScope())
+    try:
+        assert cache.prefetch_config_version("missing") is None
+        cache._reflexio_cache[("missing", None)] = cache._CacheEntry(MagicMock(), None)
+        assert cache.prefetch_config_version("missing") is None
+    finally:
+        search_runtime._scope.reset(token)
+    constructor.assert_not_called()

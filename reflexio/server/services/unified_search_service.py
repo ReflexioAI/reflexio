@@ -1206,6 +1206,11 @@ def _submit_with_current_context(
     return future
 
 
+def submit_search_work(fn: Callable[[], object]) -> Future[Any]:
+    """Submit independent request work with shared capacity, context and deadline."""
+    return _submit_with_current_context(_SEARCH_FANOUT_EXECUTOR, fn)
+
+
 def _storage_backend_name(storage: BaseStorage) -> str:
     class_name = storage.__class__.__name__.lower()
     if "postgres" in class_name:

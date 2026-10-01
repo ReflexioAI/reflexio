@@ -2,6 +2,7 @@
 
 import logging
 import threading
+from concurrent.futures import Future
 from dataclasses import dataclass
 from typing import Any, Final
 
@@ -113,6 +114,24 @@ def _probe_version_safe(reflexio: Reflexio) -> _ProbeResult:
             exc,
         )
         return _PROBE_FAILED
+
+
+def prefetch_config_version(org_id: str) -> Future[Any] | None:
+    """Check a warm search instance while independent request reads run.
+
+    This only warms the request memo: eviction and construction remain owned
+    by get_reflexio after billing passes. Non-search and cold requests do nothing.
+    """
+    from reflexio.server import search_runtime
+    from reflexio.server.services.unified_search_service import submit_search_work
+
+    if search_runtime.current() is None:
+        return None
+    with _reflexio_cache_lock:
+        entry = _reflexio_cache.get((org_id, None))
+    if entry is None or entry.cached_version is None:
+        return None
+    return submit_search_work(lambda: _probe_version_safe(entry.reflexio))
 
 
 def get_reflexio(org_id: str, storage_base_dir: str | None = None) -> Reflexio:
