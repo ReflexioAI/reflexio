@@ -1636,6 +1636,14 @@ def test_playbook_pipeline_preserves_structured_fields(
     """
     user_id = "test_user_structured_data"
     agent_version = "test_agent_structured_data"
+    # This test checks field preservation across four publishes, not sliding
+    # window cadence. One complete window per sample avoids re-extracting seven
+    # overlapping windows per publish when the fixture's stride is one.
+    configurator = reflexio_instance_playbook_only.request_context.configurator
+    config = configurator.get_org_config().model_copy(deep=True)
+    config.window_size = len(sample_interaction_requests)
+    config.stride_size = len(sample_interaction_requests)
+    configurator.set_config(config)
     # Generated playbooks are stored under the singleton name regardless of the
     # configured extractor_name, so query by the singleton to retrieve them.
     playbook_name = SINGLETON_USER_PLAYBOOK_NAME
