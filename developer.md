@@ -134,6 +134,48 @@ Never change env variable values in `.env` directly for port overrides — use s
 To change which models Reflexio uses, edit [`reflexio/server/site_var/site_var_sources/llm_model_setting.json`](reflexio/server/site_var/site_var_sources/llm_model_setting.json).
 Use the provider prefix shown above (e.g., `anthropic/` for Anthropic models). Set the corresponding API key in your `.env` file.
 
+### Current model compatibility
+
+LiteLLM `>=1.103.1,<2` is required. Explicit model overrides support OpenAI
+`gpt-6-astra`, `gpt-6.1-sol`, `gpt-6-luna`, and Anthropic `claude-fable-5-1`,
+`claude-opus-5-5`, `claude-sonnet-5-5`, plus the existing Haiku 4.5 model.
+Direct `openai/` and `anthropic/` prefixes are supported; provider defaults
+remain unchanged.
+
+The latest-model adapter tests use the bundled LiteLLM catalog and local HTTP
+fixtures: `uv run pytest tests/server/llm/test_latest_provider_models.py -o addopts=`.
+They verify provider payloads, Responses routing, native schemas, and reasoning
+continuity through tool loops and subprocess snapshots without paid calls.
+
+`ToolCallingChatResponse` carries optional `reasoning_content`, `thinking_blocks`,
+`reasoning_items`, and `provider_specific_fields`. Tool history must replay these
+unchanged along with tool calls and any accompanying text. For the qualified
+GPT-6 and new Claude models, sampling fields are omitted after all overrides
+except Luna temperature/top_p with explicit `reasoning_effort="none"`;
+new Claude models reject forced tool selection. Missing catalog capabilities
+are supplied only for the explicitly qualified IDs, without fabricated pricing
+or persistent overrides of subsequently downloaded metadata.
+
+MiniMax `minimax/MiniMax-M3.1-Flash-Preview` and Z.ai `zai/glm-5.3`,
+`zai/glm-5.3-flash`, and `zai/glm-5.3-flashx` are also qualified. Their tests
+cover prompt-schema output, explicit reasoning-effort forwarding, rejection of
+disabled thinking, and real subprocess tool exchanges against a local HTTP
+server. These providers retain sampling settings and existing defaults.
+FlashX routes to the general API and requires a corresponding key; the other
+GLM models retain the existing coding-plan endpoint.
+
+Live subscription smoke tests are opt-in, capped at 4096 output tokens per call
+and two tool-loop steps, with no fallback ladder. Load `MINIMAX_API_KEY` and
+`ZAI_API_KEY` into the process before running:
+
+```bash
+RUN_LOW_PRIORITY=1 uv run pytest tests/e2e_tests/test_latest_secondary_providers_real_llm.py -q -o addopts= -rs
+```
+
+This file checks MiniMax M3/M3.1 Preview and GLM 5.2/5.3/5.3 Flash text, JSON,
+and tool calls with `assert_litellm_unpatched()` and actual process isolation.
+The tests intentionally consume provider quota; normal offline suites skip them.
+
 ## Modifying API Schemas
 
 Edit files in `reflexio/models/api_schema/`:

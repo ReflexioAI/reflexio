@@ -22,11 +22,18 @@ from typing import Any
 
 import litellm
 
+from reflexio.server.llm._litellm_types import completion_metadata
+from reflexio.server.llm._model_compat import model_completion
+
 
 @dataclass
 class _CompletionMessageSnapshot:
     content: str | None = None
     tool_calls: Any | None = None
+    reasoning_content: str | None = None
+    thinking_blocks: Any | None = None
+    provider_specific_fields: Any | None = None
+    reasoning_items: Any | None = None
 
 
 @dataclass
@@ -96,6 +103,7 @@ def _snapshot_completion_response(response: Any) -> _CompletionResponseSnapshot:
                 message=_CompletionMessageSnapshot(
                     content=getattr(message, "content", None),
                     tool_calls=_ensure_picklable(getattr(message, "tool_calls", None)),
+                    **completion_metadata(message),
                 ),
                 finish_reason=getattr(choice, "finish_reason", None),
             )
@@ -173,8 +181,6 @@ def _litellm_completion_worker(
 ) -> None:
     _reset_llm_client_state_after_fork()
     try:
-        result_queue.put(
-            ("ok", _picklable_completion_result(litellm.completion(**params)))
-        )
+        result_queue.put(("ok", _picklable_completion_result(model_completion(params))))
     except BaseException as exc:
         result_queue.put(("error", _snapshot_completion_error(exc, params)))

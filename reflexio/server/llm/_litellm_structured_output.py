@@ -300,6 +300,9 @@ class StructuredOutputMixin:
     @staticmethod
     @lru_cache(maxsize=256)
     def _supports_response_schema(model: str) -> bool:
+        from reflexio.server.llm._model_compat import ensure_model_capabilities
+
+        ensure_model_capabilities(model)
         try:
             return bool(litellm.supports_response_schema(model=model))
         except Exception:

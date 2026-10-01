@@ -53,6 +53,12 @@ from reflexio.server.llm._litellm_types import (
     StructuredOutputParseError,
     StructuredOutputRepairError,
     ToolCallingChatResponse,
+    completion_metadata,
+)
+from reflexio.server.llm._model_compat import (
+    apply_model_request_policy,
+    ensure_model_capabilities,
+    model_completion,
 )
 from reflexio.server.llm._provider_concurrency import (
     ProviderCapSaturatedError,
@@ -746,6 +752,7 @@ class TextGenerationMixin:
         actual_model = self._resolve_primary_model(
             kwargs.pop("model", None), model_role
         )
+        ensure_model_capabilities(actual_model)
 
         params: dict[str, Any] = {
             "model": actual_model,
@@ -836,6 +843,9 @@ class TextGenerationMixin:
             params["api_key"] = api_key
         if api_base:
             params["api_base"] = api_base
+        elif actual_model == "zai/glm-5.3-flashx":
+            # FlashX is available through the general API, not the coding plan.
+            params["api_base"] = "https://api.z.ai/api/paas/v4"
         elif actual_model.lower().startswith("zai/"):
             params["api_base"] = _ZAI_CODING_API_BASE
         if api_version:
@@ -852,6 +862,8 @@ class TextGenerationMixin:
         params["messages"] = self._apply_prompt_caching(
             params["messages"], params["model"]
         )
+        # Apply after caller overrides and the seed temperature override.
+        apply_model_request_policy(params)
 
         return (
             params,
@@ -1060,7 +1072,7 @@ class TextGenerationMixin:
         hard_timeout = max(0.001, hard_timeout)
 
         if not self._should_process_isolate_completion(timeout_seconds, grace_seconds):
-            return litellm.completion(**params)
+            return model_completion(params)
 
         process_context = multiprocessing.get_context()
         result_queue = process_context.Queue(maxsize=1)
@@ -1463,7 +1475,12 @@ class TextGenerationMixin:
                 or getattr(choice, "stop_reason", None)
                 or getattr(response, "stop_reason", None)
             )
-            return stop_reason == "refusal"
+            # LiteLLM normalizes Anthropic's refusal stop reason to the
+            # OpenAI-compatible content_filter finish reason. Snapshots retain
+            # finish_reason even when provider-specific stop_reason is absent.
+            return stop_reason == "refusal" or getattr(
+                choice, "finish_reason", None
+            ) in ("refusal", "content_filter")
 
         def _call_and_parse(
             turn_params: dict[str, Any],
@@ -1554,6 +1571,7 @@ class TextGenerationMixin:
                         usage=raw_usage,
                         cost_usd=call_cost,
                         parsed_output=parsed_output,
+                        **completion_metadata(message, response),
                     )
                     return _StructuredAttempt(
                         value=value,
