@@ -66,6 +66,7 @@ Compose the shared HTTP API, resolve request dependencies, and coordinate durabl
 **Key Functions**:
 
 - `get_reflexio(org_id)` - Get or create cached instance
+- `prefetch_config_version(org_id)` - Check a warm instance concurrently with independent search-request reads using the shared search executor and deadline. The request memo retains the fresh version; `get_reflexio` still owns invalidation and reconstruction. Cold and non-search requests are unchanged.
 - `invalidate_reflexio_cache(org_id)` - Invalidate after config changes
 - `clear_reflexio_cache()` - Clear entire cache (testing/admin)
 
