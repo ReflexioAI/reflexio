@@ -13,7 +13,8 @@ logger = logging.getLogger(__name__)
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from reflexio.server.llm._litellm_types import ModelProvenance
+from reflexio.server.llm._litellm_types import ModelProvenance, completion_metadata
+from reflexio.server.llm._model_compat import ensure_model_capabilities
 from reflexio.server.llm.llm_utils import (
     assert_provider_safe_schema,
     make_strict_json_schema,
@@ -256,6 +257,7 @@ def supports_tool_calling(model: str) -> bool:
     try:
         import litellm
 
+        ensure_model_capabilities(model)
         if bool(litellm.supports_function_calling(model=model)):
             return True
         if model in _TOOL_CALLING_EXACT_OVERRIDES or any(
@@ -747,13 +749,13 @@ def run_tool_loop(
             ]
             # Emit ONE assistant message carrying ALL tool_calls from this turn.
             # OpenAI/Anthropic strict mode requires this shape.
-            local_msgs.append(
-                {
-                    "role": "assistant",
-                    "content": None,
-                    "tool_calls": normalized_tool_calls,
-                }
-            )
+            assistant_message: dict[str, Any] = {
+                "role": "assistant",
+                "content": getattr(resp, "content", None),
+                "tool_calls": normalized_tool_calls,
+            }
+            assistant_message.update(completion_metadata(resp))
+            local_msgs.append(assistant_message)
             # Process every tool call and append per-call tool result messages.
             # A single response's usage is attached to every turn it produced —
             # the summary helpers dedup by (model, prompt_tokens, completion_tokens).

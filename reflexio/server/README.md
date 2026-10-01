@@ -160,6 +160,7 @@ Key files:
 
 - `litellm_client.py`: Stable import surface, client config/credential resolution, and `LiteLLMClient` facade
 - `_litellm_text_generation.py`, `_litellm_embedding.py`, `_litellm_structured_output.py`: Completion/tool-call, embedding, and structured-output mixins
+- `_model_compat.py`: Qualified provider capabilities, request parameter rules, and signed Claude tool-history preservation
 - `_litellm_json_extraction.py`, `_litellm_subprocess.py`, `_provider_concurrency.py`, `_litellm_types.py`: JSON parsing, hard-timeout subprocess snapshots/workers, per-provider concurrency caps (fail-open by default, fail-closed for configured providers), and shared public types/errors
 - `providers/`: Optional local/provider adapters (`claude-code/`, OpenClaw, local embedding, Nomic embedding, and GPU-only multilingual E5); registration is opt-in via environment/config
 - `llm_utils.py`: Helper functions for Pydantic model conversion; retains the compatibility export for `env_utils.positive_int_env`

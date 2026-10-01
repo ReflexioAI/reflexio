@@ -109,6 +109,10 @@ class ToolCallingChatResponse:
             ends the turn with a plain (non-tool) response, the content parsed into the
             ``response_format`` schema. None when the turn emitted tool calls, when no
             ``response_format`` was requested, or when the content was not parseable.
+        reasoning_content: Provider reasoning text to replay in tool history.
+        thinking_blocks: Signed or redacted thinking blocks to replay unchanged.
+        provider_specific_fields: Opaque provider metadata for conversation continuity.
+        reasoning_items: Responses API reasoning items, including encrypted content.
     """
 
     content: str | None
@@ -117,6 +121,34 @@ class ToolCallingChatResponse:
     usage: Any | None = None
     cost_usd: float | None = None
     parsed_output: BaseModel | None = None
+    reasoning_content: str | None = None
+    thinking_blocks: list[Any] | None = None
+    provider_specific_fields: dict[str, Any] | None = None
+    reasoning_items: list[Any] | None = None
+
+
+def completion_metadata(message: Any, response: Any = None) -> dict[str, Any]:
+    """Select typed continuation fields, ignoring absent attributes/test doubles."""
+    metadata: dict[str, Any] = {
+        name: value
+        for name, expected_type in (
+            ("reasoning_content", str),
+            ("thinking_blocks", list),
+            ("provider_specific_fields", dict),
+            ("reasoning_items", list),
+        )
+        if isinstance(value := getattr(message, name, None), expected_type)
+    }
+    hidden = getattr(response, "_hidden_params", None)
+    original = hidden.get("original_response") if isinstance(hidden, dict) else None
+    if isinstance(original, list) and metadata.get("thinking_blocks"):
+        # The original block sequence is needed: separating thinking and tools
+        # loses interleaving, which invalidates position-bound signatures.
+        metadata["provider_specific_fields"] = {
+            **metadata.get("provider_specific_fields", {}),
+            "reflexio_anthropic_content": original,
+        }
+    return metadata
 
 
 class LiteLLMClientError(Exception):
