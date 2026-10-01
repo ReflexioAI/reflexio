@@ -213,9 +213,7 @@ class OpenSpaceAdapter(HostAgentAdapter):
         workspace.mkdir(parents=True, exist_ok=True)
         augmented_prompt = prepare_task_workspace(task, str(workspace))
         if memory:
-            augmented_prompt = (
-                f"<memory>\n{memory}\n</memory>\n\n{augmented_prompt}"
-            )
+            augmented_prompt = f"<memory>\n{memory}\n</memory>\n\n{augmented_prompt}"
 
         # Concurrent-safe token accounting via contextvars. begin_task
         # opens a per-task stats bucket and sets a ContextVar that the
@@ -237,7 +235,9 @@ class OpenSpaceAdapter(HostAgentAdapter):
             )
             status = result.get("status", "unknown")
         except Exception as exc:
-            logger.exception("OpenSpace execute failed for task %s", task.get("task_id"))
+            logger.exception(
+                "OpenSpace execute failed for task %s", task.get("task_id")
+            )
             result = {"status": "error", "error": str(exc), "tool_executions": []}
             status = "error"
         finally:
@@ -347,5 +347,7 @@ class OpenSpaceAdapter(HostAgentAdapter):
         elif len(flat) == 1:
             # No tool calls AND no final response — still need SOMETHING so
             # the publish isn't an empty trajectory.
-            flat.append({"role": "Assistant", "content": result.get("status", "unknown")})
+            flat.append(
+                {"role": "Assistant", "content": result.get("status", "unknown")}
+            )
         return flat

@@ -469,6 +469,48 @@ def resolve_model_name(
     return _auto_detect_model(role, providers)
 
 
+def _warn_if_fallback_cannot_run(fallbacks: list[str]) -> None:
+    """Warn ONCE, at boot, when a stalled primary would leave no time for a fallback.
+
+    The ladder walk enforces one wall-clock budget across all rungs
+    (``_LADDER_WALL_CLOCK_BUDGET_SECONDS``), so this is a configuration fact, not
+    a per-call one -- it used to be re-warned on every structured call. Checked
+    against the process default generation timeout; a tenant's
+    ``generation_timeout_seconds`` override is not visible here.
+
+    Args:
+        fallbacks (list[str]): The configured fallback models.
+    """
+    if not fallbacks:
+        return
+    # Lazy: reflexio.lib imports the server package.
+    from reflexio.lib._base import GENERATION_TIMEOUT_SECONDS
+    from reflexio.server.llm._litellm_text_generation import (
+        _LADDER_MIN_TURN_SECONDS,
+        _LADDER_WALL_CLOCK_BUDGET_SECONDS,
+        _parse_grace_seconds,
+    )
+
+    # A stalled primary is killed at its timeout PLUS the hard-timeout grace, so
+    # the grace is part of what it consumes.
+    grace = _parse_grace_seconds(
+        os.environ.get("REFLEXIO_LLM_HARD_TIMEOUT_GRACE_SECONDS", "5") or "5"
+    )
+    if (
+        GENERATION_TIMEOUT_SECONDS + grace + _LADDER_MIN_TURN_SECONDS
+        > _LADDER_WALL_CLOCK_BUDGET_SECONDS
+    ):
+        logger.warning(
+            "event=llm_fallback_unreachable generation_timeout_seconds=%d "
+            "budget_seconds=%.0f fallbacks=%s -- a primary that runs to its "
+            "timeout leaves the fallback no time; lower "
+            "REFLEXIO_GENERATION_TIMEOUT_SECONDS",
+            GENERATION_TIMEOUT_SECONDS,
+            _LADDER_WALL_CLOCK_BUDGET_SECONDS,
+            fallbacks,
+        )
+
+
 def validate_llm_availability(
     api_key_config: APIKeyConfig | None = None,
 ) -> None:
@@ -562,3 +604,4 @@ def validate_llm_availability(
                 f"but no key for it is available. Set the provider's API key or "
                 f"remove it from REFLEXIO_LLM_FALLBACK_MODELS."
             )
+    _warn_if_fallback_cannot_run(fallbacks)

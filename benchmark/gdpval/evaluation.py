@@ -28,7 +28,9 @@ _EVALUATOR_SINGLETON: Any = None
 _EVALUATOR_INITIALIZED = False
 
 
-def _discover_artifacts(workspace_dir: Path, reference_filenames: list[str]) -> list[str]:
+def _discover_artifacts(
+    workspace_dir: Path, reference_filenames: list[str]
+) -> list[str]:
     """Scan a workspace for agent-created artifacts.
 
     Skips reference files (to avoid evaluating inputs) and zero-byte files.
@@ -74,7 +76,10 @@ def _get_evaluator() -> Any:
 
     meta_prompts_dir = CLAWWORK_ROOT / "eval" / "meta_prompts"
     if not meta_prompts_dir.exists():
-        logger.warning("ClawWork meta-prompts not found at %s; evaluation disabled", meta_prompts_dir)
+        logger.warning(
+            "ClawWork meta-prompts not found at %s; evaluation disabled",
+            meta_prompts_dir,
+        )
         return None
 
     ensure_clawwork_importable()

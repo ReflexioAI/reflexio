@@ -143,8 +143,12 @@ class HermesAdapter(HostAgentAdapter):
                     # Honor the provider-specific base-url env var (e.g.
                     # MINIMAX_API_BASE) for users on the China endpoint —
                     # same convention litellm uses.
-                    base_url_env = os.environ.get(f"{env_var.replace('_API_KEY', '_API_BASE')}")
-                    resolved_base = explicit_base_url or base_url_env or default_base_url
+                    base_url_env = os.environ.get(
+                        f"{env_var.replace('_API_KEY', '_API_BASE')}"
+                    )
+                    resolved_base = (
+                        explicit_base_url or base_url_env or default_base_url
+                    )
                     return key, resolved_base, explicit_provider or prefix.rstrip("/")
 
         # Hand off to Hermes's native auto-detect.
@@ -189,6 +193,7 @@ class HermesAdapter(HostAgentAdapter):
         # Validate that the import works and record the AIAgent class
         # so we don't pay the import cost on every run().
         from run_agent import AIAgent  # noqa: E402
+
         self._ai_agent_cls = AIAgent
         # Kept for API compatibility; set to None until first run() call.
         self._agent = None
@@ -264,7 +269,9 @@ class HermesAdapter(HostAgentAdapter):
             )
             status = self._classify_hermes_status(result)
         except Exception as exc:
-            logger.exception("Hermes run_conversation failed for task %s", task.get("task_id"))
+            logger.exception(
+                "Hermes run_conversation failed for task %s", task.get("task_id")
+            )
             result = {
                 "completed": False,
                 "partial": False,
@@ -365,7 +372,7 @@ class HermesAdapter(HostAgentAdapter):
             str: Bare model ID suitable for Hermes/OpenRouter.
         """
         if model.startswith("openrouter/"):
-            return model[len("openrouter/"):]
+            return model[len("openrouter/") :]
         return model
 
     @staticmethod
@@ -427,16 +434,20 @@ class HermesAdapter(HostAgentAdapter):
                     flat.append({"role": "Assistant", "content": rendered})
             elif role == "tool":
                 tool_name = msg.get("name") or "tool"
-                tool_content = content if isinstance(content, str) else str(content or "")
+                tool_content = (
+                    content if isinstance(content, str) else str(content or "")
+                )
                 if not tool_content.strip():
                     continue
                 truncated = tool_content[:2000]
                 if len(tool_content) > 2000:
                     truncated += f"... [truncated, total {len(tool_content)} chars]"
-                flat.append({
-                    "role": "Assistant",
-                    "content": f"[tool {tool_name} result]\n{truncated}",
-                })
+                flat.append(
+                    {
+                        "role": "Assistant",
+                        "content": f"[tool {tool_name} result]\n{truncated}",
+                    }
+                )
 
         if not seen_user:
             flat.insert(0, {"role": "User", "content": task.get("prompt", "") or ""})

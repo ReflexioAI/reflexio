@@ -16,41 +16,18 @@ of the fleet's spans over seven days and ``environment:production`` went to
 zero. A vendor budget is not something this module can fix, so it carries its
 own signal through the production container's log stream.
 
-WHAT MAKES THIS DEFENSIBLE AT WARNING
--------------------------------------
-Importing ``reflexio.server`` *is* the deployed logging configuration: the
-``else`` branch of ``DEBUG_LOG_TO_CONSOLE`` in ``server/__init__.py`` sits at
-module level, so it runs in every served process. It sets the ROOT logger to
-WARNING, attaches a stdout ``StreamHandler`` at INFO, and raises every logger
-named in ``REFLEXIO_INFO_LOGGERS`` to INFO. The split is deliberate: app-wide
-INFO drove ~3x log volume and grew memory to the container ceiling over a few
-hours (prod incident 2026-07-04), so INFO is opt-in per subsystem.
+WHERE THE LINE GOES
+-------------------
+Production keeps the root logger at WARNING, so an ordinary INFO record from
+here would be dropped. The timing lines therefore go to the operational-event
+channel (``reflexio/server/ops_log.py``): ``reflexio.ops.publish_timing`` at
+INFO, which ``configure_logging`` keeps enabled in every profile with no
+per-deployment switch. They used to be WARNING for visibility alone, which put
+228 routine lines into production's WARNING stream in 14 hours (2026-09-30). The message text is
+unchanged -- the ``reflexio-publish-timing-slow`` metric filter matches
+``event=publish_timing`` as a substring, whatever the level.
 
-An INFO record from this module is therefore dropped -- it is not allowlisted,
-so it inherits the root's WARNING and is rejected before it ever reaches a
-handler. That is ONE mechanism, not two, and an earlier version of this
-docstring got both halves of it wrong. Measured, by importing this
-configuration rather than describing it:
-
-* there IS a root handler (``StreamHandler`` at INFO). Records do not fall to
-  ``logging.lastResort``; and
-* an enterprise logging hook pinning ``reflexio`` to WARNING
-  is redundant here rather than a second,
-  independent mechanism -- with the pin removed, this logger's effective level
-  is still WARNING by inheritance. Nor does the pin defeat the allowlist:
-  ``setLevel`` on an ancestor leaves a descendant that was set explicitly, so
-  an allowlisted first-party logger still emits INFO in production. Nine do
-  today, on the live production task definition.
-
-So INFO is REACHABLE, and the case for WARNING is not that it is impossible.
-It is that INFO costs a second, coordinated change -- ``REFLEXIO_INFO_LOGGERS``
-edited on every deployment that wants the signal, including self-host ones we
-do not operate -- to read a diagnostic line when request timing needs
-investigation. Putting the level on the record needs no such coordination, which is
-what ``offline_tuner/config.py::TUNER_OUTCOME_LOG_LEVEL`` already does.
-
-That precedent justified WARNING on being "one line per completed attempt, not
-one per request". The handler event instead relies on suppression: a fast
+Volume is bounded by suppression, not by level: a fast
 handler logs nothing, and a second slow handler for the same org inside the
 throttle window logs nothing. The companion HTTP event has its own throttle
 and can also report expected extraction waits. Filter ``wait_for_response=1``
@@ -149,6 +126,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from reflexio.models.api_schema.common import sanitise_for_log
 from reflexio.server.env_utils import env_bool, env_str
+from reflexio.server.ops_log import get_ops_logger
 
 logger = logging.getLogger(__name__)
 
@@ -167,11 +145,11 @@ _DEFAULT_THRESHOLD_MS = 2000
 ENV_INTERVAL_SECONDS = "REFLEXIO_PUBLISH_TIMING_INTERVAL_SECONDS"
 _DEFAULT_INTERVAL_SECONDS = 60.0
 
-#: WARNING, not INFO. See the module docstring: INFO from this logger is
-#: dropped in production unless someone adds it to ``REFLEXIO_INFO_LOGGERS``,
-#: and a timing line nobody can read is worse than none because it reads as
-#: coverage. Not that INFO is impossible -- that it needs a second change.
-PUBLISH_TIMING_LOG_LEVEL = logging.WARNING
+#: INFO on the operational-event channel, which production always emits. A
+#: timing line nobody can read is worse than none because it reads as coverage,
+#: so it must stay on ``_timing_logger`` -- an INFO line on ``logger`` is dropped.
+PUBLISH_TIMING_LOG_LEVEL = logging.INFO
+_timing_logger = get_ops_logger("publish_timing")
 
 #: Durations carry this suffix so a CloudWatch Insights query can tell them
 #: from the counts :func:`record` attaches. ``metering=24`` beside
@@ -520,7 +498,7 @@ def emit(*, org_id: str, request_id: str) -> bool:
         ["event=publish_timing org_id=%s request_id=%s total_ms=%s" + correlation]
         + [f"{key}=%s" for key, _ in ordered]
     )
-    logger.log(
+    _timing_logger.log(
         PUBLISH_TIMING_LOG_LEVEL,
         fmt,
         # Both identifiers reach a shared multi-tenant log stream, and
@@ -637,7 +615,7 @@ def _emit_http(scope: _HttpScope, *, status: int, response_complete: bool) -> No
     fmt = "event=publish_http_timing timing_id=%s org_id=%s request_id=%s " + " ".join(
         f"{key}=%s" for key, _ in ordered
     )
-    logger.log(
+    _timing_logger.log(
         PUBLISH_TIMING_LOG_LEVEL,
         fmt,
         scope.timing_id,

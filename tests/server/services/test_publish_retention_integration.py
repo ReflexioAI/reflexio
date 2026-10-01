@@ -92,7 +92,7 @@ def test_http_persists_without_sweeping_then_scheduler_enforces_caps(
             records = [
                 dict(part.split("=", 1) for part in record.getMessage().split())
                 for record in caplog.records
-                if record.name == publish_timing.__name__
+                if record.name == publish_timing._timing_logger.name
                 and record.getMessage().startswith("event=publish_")
                 and f"request_id=retention-{number} " in record.getMessage()
             ]

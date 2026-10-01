@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import asyncio
 import datetime
-import logging
 import tempfile
 import time
 from collections.abc import Iterator
@@ -89,7 +88,7 @@ def _timing_lines(caplog: pytest.LogCaptureFixture) -> list[str]:
     return [
         record.getMessage()
         for record in caplog.records
-        if record.name == publish_timing.__name__
+        if record.name == publish_timing._timing_logger.name
         and record.levelno == publish_timing.PUBLISH_TIMING_LOG_LEVEL
     ]
 
@@ -130,7 +129,10 @@ def test_a_successful_publish_reports_exactly_one_line(
         reflexio = _reflexio(temp_dir)
         with (
             patch(f"{_PUBLISHER_MODULE}.get_reflexio", return_value=reflexio),
-            caplog.at_level(logging.WARNING, logger=publish_timing.__name__),
+            caplog.at_level(
+                publish_timing.PUBLISH_TIMING_LOG_LEVEL,
+                logger=publish_timing._timing_logger.name,
+            ),
             publish_timing.collect(),
         ):
             response = publisher_api.add_user_interaction(
@@ -163,7 +165,10 @@ def test_the_line_covers_the_post_commit_coverage_reads(
         with (
             patch(f"{_PUBLISHER_MODULE}.get_reflexio", return_value=reflexio),
             patch.object(type(storage), "extraction_report", slow_status),
-            caplog.at_level(logging.WARNING, logger=publish_timing.__name__),
+            caplog.at_level(
+                publish_timing.PUBLISH_TIMING_LOG_LEVEL,
+                logger=publish_timing._timing_logger.name,
+            ),
             publish_timing.collect(),
         ):
             publisher_api.add_user_interaction(
@@ -193,7 +198,10 @@ def test_a_failure_before_the_service_starts_still_reports(
             f"{_PUBLISHER_MODULE}.get_reflexio",
             side_effect=RuntimeError("storage pool dial timed out"),
         ),
-        caplog.at_level(logging.WARNING, logger=publish_timing.__name__),
+        caplog.at_level(
+            publish_timing.PUBLISH_TIMING_LOG_LEVEL,
+            logger=publish_timing._timing_logger.name,
+        ),
         publish_timing.collect(),
         pytest.raises(RuntimeError, match="storage pool dial timed out"),
     ):
@@ -226,7 +234,10 @@ def test_a_failed_publish_reports_its_phase_breakdown(
             )
         )
         with (
-            caplog.at_level(logging.WARNING, logger=publish_timing.__name__),
+            caplog.at_level(
+                publish_timing.PUBLISH_TIMING_LOG_LEVEL,
+                logger=publish_timing._timing_logger.name,
+            ),
             patch.object(
                 type(service.storage),
                 "add_user_interactions_bulk",
@@ -276,7 +287,10 @@ def test_the_coverage_wait_is_not_counted_as_serving_time(
         with (
             patch(f"{_PUBLISHER_MODULE}.get_reflexio", return_value=reflexio),
             patch.object(type(storage), "extraction_status", slow_first_poll),
-            caplog.at_level(logging.WARNING, logger=publish_timing.__name__),
+            caplog.at_level(
+                publish_timing.PUBLISH_TIMING_LOG_LEVEL,
+                logger=publish_timing._timing_logger.name,
+            ),
             publish_timing.collect(),
         ):
             publisher_api.add_user_interaction(
@@ -329,7 +343,10 @@ def test_a_publish_cancelled_while_queued_still_reports(
         with pytest.raises(asyncio.CancelledError):
             await task
 
-    with caplog.at_level(logging.WARNING, logger=publish_timing.__name__):
+    with caplog.at_level(
+        publish_timing.PUBLISH_TIMING_LOG_LEVEL,
+        logger=publish_timing._timing_logger.name,
+    ):
         asyncio.run(scenario())
 
     lines = _timing_lines(caplog)

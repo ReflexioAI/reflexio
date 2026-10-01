@@ -17,6 +17,7 @@ import openai.resources  # noqa: F401
 from reflexio.cli.env_loader import load_reflexio_env
 from reflexio.cli.paths import reflexio_home
 from reflexio.server.env_utils import env_truthy
+from reflexio.server.ops_log import OPS_LOGGER_NAME
 
 # Load environment variables using shared discovery logic
 load_reflexio_env()
@@ -503,6 +504,12 @@ def configure_logging(
     for name in info_loggers:
         logging.getLogger(name).setLevel(logging.INFO)
         pinned[name] = logging.INFO
+
+    # The operational-event channel is INFO in every profile, with no
+    # per-deployment switch: that is what lets informational events leave
+    # WARNING (`reflexio/server/ops_log.py`).
+    logging.getLogger(OPS_LOGGER_NAME).setLevel(logging.INFO)
+    pinned[OPS_LOGGER_NAME] = logging.INFO
 
     for name in _NOISY_THIRD_PARTY:
         logging.getLogger(name).setLevel(logging.WARNING)

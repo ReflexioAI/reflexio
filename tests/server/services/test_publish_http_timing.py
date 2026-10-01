@@ -25,7 +25,8 @@ def records(caplog, event):
     return [
         dict(part.split("=", 1) for part in r.getMessage().split())
         for r in caplog.records
-        if r.name == timing.__name__ and r.getMessage().startswith(f"event={event} ")
+        if r.name == timing._timing_logger.name
+        and r.getMessage().startswith(f"event={event} ")
     ]
 
 

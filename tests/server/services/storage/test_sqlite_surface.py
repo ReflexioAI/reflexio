@@ -37,6 +37,7 @@ _OPTIONAL_OPTIMIZER_METHODS = frozenset(
 _RETENTION_MIXIN_METHODS: frozenset[str] = frozenset(
     {
         "count_retention_target_rows",
+        "estimate_retention_target_rows",
         "delete_oldest_retention_target_rows",
         "gc_retired_optimization_jobs",
     }

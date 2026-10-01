@@ -141,12 +141,18 @@ def _get_semaphore(provider: str) -> threading.BoundedSemaphore:
 
 
 @contextmanager
-def provider_slot(model: str) -> Iterator[None]:
+def provider_slot(model: str, *, max_wait: float | None = None) -> Iterator[None]:
     """Cap concurrent in-flight calls to ``model``'s provider.
 
     Fails OPEN on saturation by default; fails CLOSED (raises
     ``ProviderCapSaturatedError``) for providers in
     ``REFLEXIO_LLM_FAIL_CLOSED_PROVIDERS``.
+
+    Args:
+        model (str): The model whose provider is capped.
+        max_wait (float | None): Cap on the wait for a permit, in seconds, on top
+            of the usual bound -- the caller's remaining deadline (the LLM
+            ladder walk's budget).
     """
     from reflexio.server import search_runtime
 
@@ -157,9 +163,10 @@ def provider_slot(model: str) -> Iterator[None]:
         return
     sem = _get_semaphore(provider)
     with search_runtime.phase("llm.provider_queue"):
-        acquired = sem.acquire(
-            timeout=search_runtime.remaining(_ACQUIRE_TIMEOUT_SECONDS)
-        )
+        wait = search_runtime.remaining(_ACQUIRE_TIMEOUT_SECONDS)
+        if max_wait is not None:
+            wait = min(wait, max_wait)
+        acquired = sem.acquire(timeout=wait)
     if not acquired:
         search_runtime.checkpoint()
         cap = _max_concurrency_for_provider(provider)
