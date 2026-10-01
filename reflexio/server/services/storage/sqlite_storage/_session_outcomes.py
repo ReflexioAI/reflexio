@@ -19,6 +19,7 @@ from reflexio.server.services.storage.session_outcome_identity import (
     outcome_contract_digest,
 )
 from reflexio.server.services.storage.storage_base._session_outcomes import (
+    OutcomePrefixPrecondition,
     SessionOutcomeContext,
     SessionOutcomeWriteResult,
 )
@@ -27,6 +28,7 @@ from ._base import (
     SQLiteStorageBase,
     _canonical_session_trajectory_snapshot,
     _iso_to_epoch,
+    _session_prefix_state,
 )
 
 
@@ -163,7 +165,10 @@ class SessionOutcomeStoreMixin:
         created_at: int,
         expected_context: SessionOutcomeContext,
         is_inferred: bool = False,
+        trajectory_through_request_id: str | None = None,
+        prefix_precondition: OutcomePrefixPrecondition | None = None,
     ) -> SessionOutcomeWriteResult:
+        cutover = trajectory_through_request_id
         with self._lock:
             try:
                 self.conn.execute("BEGIN IMMEDIATE")
@@ -171,6 +176,26 @@ class SessionOutcomeStoreMixin:
                     "SELECT * FROM session_outcomes WHERE session_id = ?",
                     (request.session_id,),
                 ).fetchone()
+                # THE PREFIX MUST STILL BE THE ONE THAT WAS JUDGED. Checked
+                # under the same write lock as the write, so nothing can land
+                # between this read and the statement that files the outcome.
+                # A cutover that is no longer in the session fails closed even
+                # without a precondition: there is no prefix left to describe.
+                if cutover is not None or prefix_precondition is not None:
+                    interaction_count, max_clock = _session_prefix_state(
+                        self.conn, request.session_id, cutover
+                    )
+                    cutover_missing = cutover is not None and max_clock is None
+                    moved = prefix_precondition is not None and (
+                        max_clock is None
+                        or max_clock > prefix_precondition.verdict_settled_at
+                        or interaction_count != prefix_precondition.interaction_count
+                    )
+                    if cutover_missing or moved:
+                        self.conn.rollback()
+                        return SessionOutcomeWriteResult(
+                            recorded=False, prefix_moved=True
+                        )
                 # A customer's own report replaces an outcome the tuner merely
                 # INFERRED. Falling THROUGH to the ordinary write path rather
                 # than branching here is deliberate: that path already runs the
@@ -216,7 +241,7 @@ class SessionOutcomeStoreMixin:
                     ).fetchone()
                     snapshot = (
                         _canonical_session_trajectory_snapshot(
-                            self.conn, request.session_id
+                            self.conn, request.session_id, cutover
                         )
                         if early_first is not None
                         else None
@@ -265,6 +290,10 @@ class SessionOutcomeStoreMixin:
                             or current_snapshot_digest is None
                             or stored_snapshot_digest == current_snapshot_digest
                         )
+                        # An EXTENDED cutover is new information even when the
+                        # verdict and the digest happen to match, so it takes
+                        # the refresh path and records the new cutover.
+                        and existing["trajectory_through_request_id"] == cutover
                     )
                     # A REFRESH THAT CHANGES NOTHING IS NOT A WRITE. The
                     # bridge re-reads the same window every pass, so the common
@@ -336,7 +365,7 @@ class SessionOutcomeStoreMixin:
                         reason=SessionOutcomeFailureReason.SUBJECT_NOT_WRITABLE,
                     )
                 snapshot = _canonical_session_trajectory_snapshot(
-                    self.conn, request.session_id
+                    self.conn, request.session_id, cutover
                 )
                 if snapshot.request_count == 0 or snapshot.first_request is None:
                     self.conn.rollback()
@@ -462,7 +491,8 @@ class SessionOutcomeStoreMixin:
                                   outcome_contract_digest = ?,
                                   finalized_trajectory_digest = ?,
                                   governance_subject_ref = ?, created_at = ?,
-                                  is_inferred = 0, superseded_outcome = ?
+                                  is_inferred = 0, superseded_outcome = ?,
+                                  trajectory_through_request_id = ?
                             WHERE session_id = ?""",
                         (
                             outcome_id,
@@ -479,6 +509,7 @@ class SessionOutcomeStoreMixin:
                             subject_ref,
                             created_at,
                             _superseded_outcome_json(existing, displaced_at=created_at),
+                            cutover,
                             request.session_id,
                         ),
                     )
@@ -518,7 +549,8 @@ class SessionOutcomeStoreMixin:
                                   label = ?, value = ?, metadata = ?,
                                   outcome_contract_digest = ?,
                                   finalized_trajectory_digest = ?,
-                                  governance_subject_ref = ?, created_at = ?
+                                  governance_subject_ref = ?, created_at = ?,
+                                  trajectory_through_request_id = ?
                             WHERE session_id = ?""",
                         (
                             str(request.outcome),
@@ -531,6 +563,7 @@ class SessionOutcomeStoreMixin:
                             snapshot_digest,
                             subject_ref,
                             created_at,
+                            cutover,
                             request.session_id,
                         ),
                     )
@@ -541,8 +574,9 @@ class SessionOutcomeStoreMixin:
                            (outcome_id, outcome_revision, user_id, session_id, outcome,
                             occurred_at, source, label, value, metadata,
                             outcome_contract_digest, finalized_trajectory_digest,
-                            governance_subject_ref, created_at, is_inferred)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                            governance_subject_ref, created_at, is_inferred,
+                            trajectory_through_request_id)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                         (
                             outcome_id,
                             revision,
@@ -559,6 +593,7 @@ class SessionOutcomeStoreMixin:
                             subject_ref,
                             created_at,
                             1 if is_inferred else 0,
+                            cutover,
                         ),
                     )
                 self.conn.commit()
@@ -605,7 +640,7 @@ class SessionOutcomeStoreMixin:
             f"""SELECT outcome_id, outcome_revision, user_id, session_id, outcome,
                        occurred_at, source, label, value, metadata,
                        outcome_contract_digest, finalized_trajectory_digest,
-                       created_at, is_inferred
+                       created_at, is_inferred, trajectory_through_request_id
                 FROM session_outcomes{where}
                  ORDER BY occurred_at DESC, user_id ASC, session_id ASC LIMIT ? OFFSET ?""",
             [*params, request.top_k, request.offset],
@@ -631,6 +666,7 @@ class SessionOutcomeStoreMixin:
                 # inferred row as settled, which is exactly the block that made
                 # a resumed session unrepairable.
                 is_inferred=bool(row["is_inferred"]),
+                trajectory_through_request_id=row["trajectory_through_request_id"],
             )
             for row in rows
         ]

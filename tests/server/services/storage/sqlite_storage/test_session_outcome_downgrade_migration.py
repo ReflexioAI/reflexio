@@ -104,6 +104,8 @@ def test_identity_schema_is_preserved_and_current_writes_resume(tmp_path) -> Non
         # than a runtime "no such column" on the next write.
         "is_inferred",
         "superseded_outcome",
+        # Cutover column, same two paths and the same reason.
+        "trajectory_through_request_id",
     }
     records = migrated.get_session_outcomes(GetSessionOutcomesRequest())
     records_by_session = {record.session_id: record for record in records}

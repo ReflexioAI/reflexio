@@ -488,6 +488,8 @@ def test_session_outcome_record_accepts_unknown_and_serializes_identities() -> N
             # rather than a feature that silently reads as "customer-reported"
             # for every row.
             "is_inferred": False,
+            # None = the whole session (a customer report or a legacy row).
+            "trajectory_through_request_id": None,
         }
     ]
 

@@ -19,6 +19,7 @@ from ._base import (
     _iso_to_epoch,
     _row_to_interaction,
     _row_to_request,
+    _through_prefix_predicate,
 )
 
 
@@ -297,11 +298,20 @@ class RequestMixin:
         return sorted(r["user_id"] for r in rows)
 
     @SQLiteStorageBase.handle_exceptions
-    def get_requests_by_session(self, user_id: str, session_id: str) -> list[Request]:
-        rows = self._fetchall(
-            "SELECT * FROM requests WHERE user_id = ? AND session_id = ?",
-            (user_id, session_id),
-        )
+    def get_requests_by_session(
+        self,
+        user_id: str,
+        session_id: str,
+        *,
+        through_request_id: str | None = None,
+    ) -> list[Request]:
+        sql = "SELECT * FROM requests AS r WHERE r.user_id = ? AND r.session_id = ?"
+        params: list[Any] = [user_id, session_id]
+        if through_request_id is not None:
+            sql += " AND " + _through_prefix_predicate("r")
+            params.append(through_request_id)
+        sql += " ORDER BY r.created_at ASC, r.request_id ASC"
+        rows = self._fetchall(sql, params)
         return [_row_to_request(r) for r in rows]
 
     @SQLiteStorageBase.handle_exceptions

@@ -33,7 +33,7 @@ _EVAL_RESULT_COLUMNS = (
     "result_id, user_id, session_id, agent_version, evaluation_name, is_success, "
     "failure_type, failure_reason, regular_vs_shadow, "
     "number_of_correction_per_session, user_turns_to_resolution, is_escalated, "
-    "tags, created_at"
+    "tags, created_at, trajectory_through_request_id, trajectory_interaction_count"
 )
 
 
@@ -79,8 +79,9 @@ class AgentEvaluationResultStoreMixin:
                            (user_id, session_id, agent_version, evaluation_name, is_success,
                             failure_type, failure_reason, regular_vs_shadow,
                             number_of_correction_per_session, user_turns_to_resolution,
-                            is_escalated, tags, embedding, created_at, governance_subject_ref)
-                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                            is_escalated, tags, embedding, created_at, governance_subject_ref,
+                            trajectory_through_request_id, trajectory_interaction_count)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                         (
                             result.user_id,
                             result.session_id,
@@ -101,6 +102,8 @@ class AgentEvaluationResultStoreMixin:
                             _json_dumps(result.embedding) if result.embedding else None,
                             created_at_iso,
                             subject_ref,
+                            result.trajectory_through_request_id,
+                            result.trajectory_interaction_count,
                         ),
                     )
                     self.conn.commit()

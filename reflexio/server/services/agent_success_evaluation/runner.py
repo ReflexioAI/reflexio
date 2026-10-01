@@ -14,9 +14,10 @@ import logging
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Literal
+from typing import Any, Literal
 
 from reflexio.models.api_schema.internal_schema import RequestInteractionDataModel
+from reflexio.models.api_schema.service_schemas import Request
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.services.agent_success_evaluation import _eval_health
@@ -104,8 +105,9 @@ def run_group_evaluation(
     force_regenerate: bool = False,
     run_agent_success: bool = True,
     run_retrieved_learning: bool = True,
+    through_request_id: str | None = None,
 ) -> GroupEvaluationOutcome:
-    """Run agent success evaluation for an entire session.
+    """Run agent success evaluation for an entire session, or a prefix of it.
 
     Steps:
     1. Check if already evaluated via operation state (skipped when force_regenerate)
@@ -136,6 +138,18 @@ def run_group_evaluation(
             direct callers leave it True.
         run_retrieved_learning: Whether this session was admitted for the
             retrieved-learning relevance/impact judge.
+        through_request_id: A cutover request. When set, judge only the
+            session's requests at or before it in ``(created_at, request_id)``
+            order -- selected in SQL by the storage keyword, never by sorting
+            here -- plus their interactions. The idle gate is skipped (a
+            prefix that ends at a reaction turn is complete by construction,
+            however live the session still is) and the already-evaluated
+            marker is neither read nor written: the marker is per session and
+            cannot say WHICH prefix was judged, so the caller owns coverage. A
+            cutover that is not in the session answers ``not_applicable``
+            (``cutover_not_found``). Every verdict, with or without a cutover,
+            is stamped with the last judged request and the judged interaction
+            count.
 
     Returns:
         GroupEvaluationOutcome: Per-family statuses for this invocation.
@@ -143,17 +157,18 @@ def run_group_evaluation(
     storage = request_context.storage
     state_key = _build_state_key(org_id, user_id, session_id)
 
-    # 1. Fetch all requests for the session
-    requests = storage.get_requests_by_session(user_id, session_id)  # type: ignore[reportOptionalMemberAccess]
+    cutover_judging = through_request_id is not None
+
+    # 1. Fetch all requests for the session (or its prefix through the cutover)
+    requests = _load_session_requests(storage, user_id, session_id, through_request_id)
     if not requests:
-        _eval_health.record_skip(SkipReason.NO_REQUESTS)
-        logger.info("No requests found for session %s, skipping", session_id)
         return GroupEvaluationOutcome("not_applicable", "skipped")
 
     # 2. Verify completion: latest request must be >= delay ago — skipped in
-    # force_regenerate mode so the operator can re-evaluate any session. The
+    # force_regenerate mode so the operator can re-evaluate any session, and
+    # when judging a cutover prefix, which is complete by construction. The
     # liveness gate applies to both evaluation families.
-    if not force_regenerate:
+    if not force_regenerate and not cutover_judging:
         latest_created_at = max(r.created_at for r in requests)
         now = int(datetime.now(UTC).timestamp())
         elapsed = now - latest_created_at
@@ -188,21 +203,11 @@ def run_group_evaluation(
     # force_regenerate mode so the regenerate worker can re-evaluate a session
     # that's already been marked. Retrieved-learning evaluation still runs
     # below: its completion is independent of the agent-success marker.
-    agent_success_already_evaluated = False
-    if not force_regenerate:
-        existing_state = storage.get_operation_state(state_key)  # type: ignore[reportOptionalMemberAccess]
-        if existing_state and isinstance(existing_state.get("operation_state"), dict):
-            op_state = existing_state["operation_state"]
-            if op_state.get("evaluated"):
-                _eval_health.record_skip(SkipReason.ALREADY_EVALUATED)
-                logger.info(
-                    "Session %s already evaluated (agent success), skipping to"
-                    " retrieved-learning evaluation",
-                    session_id,
-                )
-                agent_success_already_evaluated = True
-
-    if agent_success_already_evaluated:
+    if (
+        not force_regenerate
+        and not cutover_judging
+        and _marked_evaluated(storage, state_key, session_id)
+    ):
         return _finish_with_retrieved_evaluation(
             "skipped",
             user_id=user_id,
@@ -227,8 +232,18 @@ def run_group_evaluation(
     for interaction in all_interactions:
         interactions_by_request[interaction.request_id].append(interaction)
 
-    # Build RequestInteractionDataModel list, sorted by request created_at
-    requests_sorted = sorted(requests, key=lambda r: r.created_at)
+    # Build RequestInteractionDataModel list in (created_at, request_id) order:
+    # the same order SQL uses, so a same-second tie resolves identically here.
+    requests_sorted = sorted(requests, key=lambda r: (r.created_at, r.request_id))
+    # The stamp. With a cutover it is the cutover itself -- by the SQL
+    # predicate it is the prefix's maximum, and storage may hold sub-second
+    # timestamps that an epoch-second sort here cannot order. Without one it
+    # is the last request this run loaded.
+    judged_through_request_id = (
+        through_request_id
+        if through_request_id is not None
+        else requests_sorted[-1].request_id
+    )
     request_interaction_data_models = []
     for req in requests_sorted:
         req_interactions = interactions_by_request.get(req.request_id, [])
@@ -285,6 +300,8 @@ def run_group_evaluation(
         agent_version=agent_version,
         source=source,
         request_interaction_data_models=request_interaction_data_models,
+        trajectory_through_request_id=judged_through_request_id,
+        trajectory_interaction_count=len(all_interactions),
     )
 
     evaluation_service = AgentSuccessEvaluationService(
@@ -342,13 +359,15 @@ def run_group_evaluation(
                 session_id,
             )
 
-    # 7. Mark as evaluated
-    evaluated_at = int(datetime.now(UTC).timestamp())
-    storage.upsert_operation_state(  # type: ignore[reportOptionalMemberAccess]
-        state_key,
-        {"evaluated": True, "evaluated_at": evaluated_at},
-    )
-    logger.info("Marked session %s as evaluated at %d", session_id, evaluated_at)
+    # 7. Mark as evaluated -- not for a cutover prefix: the marker would read
+    # as "this session is judged" and short-circuit the whole-session judge.
+    if not cutover_judging:
+        evaluated_at = int(datetime.now(UTC).timestamp())
+        storage.upsert_operation_state(  # type: ignore[reportOptionalMemberAccess]
+            state_key,
+            {"evaluated": True, "evaluated_at": evaluated_at},
+        )
+        logger.info("Marked session %s as evaluated at %d", session_id, evaluated_at)
 
     # 8. Retrieved-learning evaluation — independent completion; a failure
     # here can never be reported as complete nor force agent-success rows to
@@ -363,6 +382,48 @@ def run_group_evaluation(
         force_regenerate=force_regenerate,
         run_retrieved_learning=run_retrieved_learning,
     )
+
+
+def _load_session_requests(
+    storage: Any, user_id: str, session_id: str, through_request_id: str | None
+) -> list[Request]:
+    """Load the session's requests, or its prefix through a cutover.
+
+    The keyword is passed ONLY when set, so a storage backend that predates it
+    keeps working for every caller that does not use it. Records the skip
+    reason when nothing comes back.
+    """
+    if through_request_id is None:
+        requests = storage.get_requests_by_session(user_id, session_id)
+        if not requests:
+            _eval_health.record_skip(SkipReason.NO_REQUESTS)
+            logger.info("No requests found for session %s, skipping", session_id)
+        return requests or []
+    requests = storage.get_requests_by_session(
+        user_id, session_id, through_request_id=through_request_id
+    )
+    if not requests:
+        _eval_health.record_skip(SkipReason.CUTOVER_NOT_FOUND)
+        logger.info("Cutover request not found in session %s, skipping", session_id)
+    return requests or []
+
+
+def _marked_evaluated(storage: Any, state_key: str, session_id: str) -> bool:
+    """Whether the per-session already-evaluated marker is set."""
+    existing_state = storage.get_operation_state(state_key)
+    if not existing_state or not isinstance(
+        existing_state.get("operation_state"), dict
+    ):
+        return False
+    if not existing_state["operation_state"].get("evaluated"):
+        return False
+    _eval_health.record_skip(SkipReason.ALREADY_EVALUATED)
+    logger.info(
+        "Session %s already evaluated (agent success), skipping to"
+        " retrieved-learning evaluation",
+        session_id,
+    )
+    return True
 
 
 def _finish_with_retrieved_evaluation(

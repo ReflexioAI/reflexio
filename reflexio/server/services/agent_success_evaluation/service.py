@@ -33,6 +33,8 @@ class AgentSuccessGenerationServiceConfig:
         agent_version: The agent version
         request_interaction_data_models: The interactions to evaluate
         source: Source of the interactions
+        trajectory_through_request_id: Last judged request, stamped on results
+        trajectory_interaction_count: Interactions judged, stamped on results
     """
 
     user_id: str
@@ -40,6 +42,8 @@ class AgentSuccessGenerationServiceConfig:
     agent_version: str
     request_interaction_data_models: list[RequestInteractionDataModel]
     source: str | None = None
+    trajectory_through_request_id: str | None = None
+    trajectory_interaction_count: int | None = None
 
 
 class AgentSuccessEvaluationService(
@@ -88,6 +92,8 @@ class AgentSuccessEvaluationService(
             agent_version=request.agent_version,
             request_interaction_data_models=request.request_interaction_data_models,
             source=request.source,
+            trajectory_through_request_id=request.trajectory_through_request_id,
+            trajectory_interaction_count=request.trajectory_interaction_count,
         )
 
     def _load_extractor_config(self) -> AgentSuccessConfig | None:

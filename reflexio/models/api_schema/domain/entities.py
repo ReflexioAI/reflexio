@@ -927,6 +927,12 @@ class AgentSuccessEvaluationResult(BaseModel):
     is_escalated: bool = False
     tags: list[str] | None = None
     embedding: EmbeddingVector = []
+    #: The last request the judge saw, in ``(created_at, request_id)`` order:
+    #: the verdict describes the session's requests at or before it. ``None``
+    #: on rows written before cutovers were recorded.
+    trajectory_through_request_id: str | None = None
+    #: How many interactions the judge saw in that prefix.
+    trajectory_interaction_count: int | None = Field(default=None, ge=0)
 
 
 class RetrievedLearningEvaluationResult(BaseModel):
@@ -1147,6 +1153,13 @@ class SessionOutcomeRecord(BaseModel):
     #: alone. Reading absence as "inferred" would invert that into silently
     #: overwriting real reports.
     is_inferred: bool = False
+    #: The cutover request an INFERRED outcome's ``finalized_trajectory_digest``
+    #: was scoped to: the session's requests at or before it in
+    #: ``(created_at, request_id)`` order, plus their interactions. Read-only,
+    #: and like ``is_inferred`` deliberately absent from
+    #: ``SetSessionOutcomeRequest``. ``None`` means the whole session -- a
+    #: customer's report, or an inferred row written before cutovers existed.
+    trajectory_through_request_id: str | None = None
 
     @field_validator("outcome_contract_digest", "finalized_trajectory_digest")
     @classmethod
