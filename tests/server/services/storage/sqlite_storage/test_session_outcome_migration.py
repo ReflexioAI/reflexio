@@ -703,20 +703,22 @@ def test_session_outcome_rebuild_failure_rolls_back_renamed_legacy_table(
     # this test asserts is that the REBUILD was atomic, not that no other
     # migration ever touched the table.
     normalised_restored = restored_schema.replace(
-        ", is_inferred INTEGER NOT NULL DEFAULT 0, superseded_outcome TEXT", ""
+        ", is_inferred INTEGER NOT NULL DEFAULT 0, superseded_outcome TEXT"
+        ", trajectory_through_request_id TEXT",
+        "",
     )
     assert "is_inferred" in restored_schema, (
         "the additive columns must survive a rolled-back rebuild"
     )
     assert normalised_restored == original_schema
     # Same normalisation as the schema above: `SELECT *` now also returns the
-    # two additive columns, which the baseline predates. Trimming to the
+    # three additive columns, which the baseline predates. Trimming to the
     # baseline's width keeps the assertion about the rebuild's atomicity rather
     # than about the column count.
     trimmed_restored = [row[: len(original_rows[0])] for row in restored_rows]
-    assert all(row[len(original_rows[0]) :] == (0, None) for row in restored_rows), (
-        "a rolled-back rebuild must leave the additive columns at their defaults"
-    )
+    assert all(
+        row[len(original_rows[0]) :] == (0, None, None) for row in restored_rows
+    ), "a rolled-back rebuild must leave the additive columns at their defaults"
     assert trimmed_restored == original_rows
     assert stranded_legacy_table is None
 

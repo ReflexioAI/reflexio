@@ -3,6 +3,7 @@
 import logging
 from collections.abc import Callable
 from time import time
+from typing import Any
 
 from reflexio.lib._base import ReflexioBase, _require_storage
 from reflexio.models.api_schema.common import sanitise_for_log
@@ -14,6 +15,9 @@ from reflexio.models.api_schema.domain import (
     SetSessionOutcomeResponse,
 )
 from reflexio.server.extensions import ServiceKey, get_service
+from reflexio.server.services.storage.storage_base._session_outcomes import (
+    OutcomePrefixPrecondition,
+)
 
 type SessionOutcomeAcceptance = Callable[
     [str, SetSessionOutcomeRequest, int, str], SessionOutcomeFailureReason | None
@@ -33,6 +37,8 @@ class SessionOutcomeMixin(ReflexioBase):
         request: SetSessionOutcomeRequest | dict,
         *,
         is_inferred: bool = False,
+        trajectory_through_request_id: str | None = None,
+        prefix_precondition: OutcomePrefixPrecondition | None = None,
     ) -> SetSessionOutcomeResponse:
         """Record a session's outcome, or rewrite one the tuner inferred.
 
@@ -53,6 +59,15 @@ class SessionOutcomeMixin(ReflexioBase):
           covering only a prefix.
 
         A customer's own outcome is never rewritten by either.
+
+        ``trajectory_through_request_id`` and ``prefix_precondition`` are
+        INTERNAL too, for the same reason. A cutover scopes the stored
+        trajectory digest to the session's requests at or before it; a
+        precondition refuses the write when that prefix moved after the
+        verdict settled. Either refusal answers ``CONFLICTING_FINALIZATION``
+        without a retry: re-reading cannot make a stale verdict current. They
+        reach storage ONLY when set, so a backend that predates them keeps
+        working for every caller that does not pass them.
         """
         if isinstance(request, dict):
             request = SetSessionOutcomeRequest(**request)
@@ -66,6 +81,13 @@ class SessionOutcomeMixin(ReflexioBase):
             )
         received_at = int(time())
         storage = self._get_storage()
+        prefix_kwargs: dict[str, Any] = {}
+        if trajectory_through_request_id is not None:
+            prefix_kwargs["trajectory_through_request_id"] = (
+                trajectory_through_request_id
+            )
+        if prefix_precondition is not None:
+            prefix_kwargs["prefix_precondition"] = prefix_precondition
         if request.occurred_at > received_at + 86400:
             return SetSessionOutcomeResponse(
                 success=False,
@@ -131,7 +153,14 @@ class SessionOutcomeMixin(ReflexioBase):
                     created_at=received_at,
                     expected_context=context,
                     is_inferred=is_inferred,
+                    **prefix_kwargs,
                 )
+                if result.prefix_moved:
+                    return SetSessionOutcomeResponse(
+                        success=False,
+                        reason=SessionOutcomeFailureReason.CONFLICTING_FINALIZATION,
+                        message="Judged trajectory prefix changed; outcome was not recorded",
+                    )
                 if result.context_changed:
                     continue
                 if result.reason is not None:

@@ -133,12 +133,25 @@ class RequestMixin:
         raise NotImplementedError
 
     @abstractmethod
-    def get_requests_by_session(self, user_id: str, session_id: str) -> list[Request]:
+    def get_requests_by_session(
+        self,
+        user_id: str,
+        session_id: str,
+        *,
+        through_request_id: str | None = None,
+    ) -> list[Request]:
         """Get all requests for a specific session.
 
         Args:
             user_id (str): User ID to filter requests
             session_id (str): Session ID to filter by
+            through_request_id (str, optional): A cutover request in the same
+                session. When set, return only the session's requests whose
+                ``(created_at, request_id)`` is ``<=`` the cutover's CURRENT
+                row, looked up by id inside the session and compared in SQL
+                with ``request_id`` as the tie-break. A cutover that is not in
+                the session matches nothing, so the result is empty (fails
+                closed). ``None`` returns the whole session.
 
         Returns:
             list[Request]: List of Request objects in the session

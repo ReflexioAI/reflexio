@@ -470,3 +470,31 @@ class TestCorrectionCount:
 
         assert result.number_of_correction_per_session == 3
         request_context.storage.count_user_playbooks_by_session.assert_not_called()
+
+    def test_result_carries_the_judged_cutover_stamp(
+        self,
+        mock_llm_client,
+        request_context,
+        extractor_config,
+        service_config,
+        sample_request_interaction_models,
+    ):
+        service_config.trajectory_through_request_id = "req2"
+        service_config.trajectory_interaction_count = 4
+        evaluator = AgentSuccessEvaluator(
+            request_context=request_context,
+            llm_client=mock_llm_client,
+            extractor_config=extractor_config,
+            service_config=service_config,
+            agent_context="Test agent",
+        )
+
+        result = evaluator._build_evaluation_result(
+            AgentSuccessEvaluationOutput(
+                is_success=True, number_of_correction_per_session=0
+            ),
+            sample_request_interaction_models,
+        )
+
+        assert result.trajectory_through_request_id == "req2"
+        assert result.trajectory_interaction_count == 4

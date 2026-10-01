@@ -39,6 +39,10 @@ class AgentSuccessEvaluationRequest(BaseModel):
     agent_version: str
     request_interaction_data_models: list[RequestInteractionDataModel]
     source: str | None = None
+    #: Last judged request in ``(created_at, request_id)`` order, and the number
+    #: of interactions judged, stamped onto every verdict this run produces.
+    trajectory_through_request_id: str | None = None
+    trajectory_interaction_count: int | None = None
 
 
 def construct_agent_success_evaluation_messages_from_sessions(

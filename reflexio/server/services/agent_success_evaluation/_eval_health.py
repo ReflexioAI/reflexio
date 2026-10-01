@@ -33,6 +33,7 @@ class SkipReason(enum.StrEnum):
     NOT_YET_COMPLETE = "not_yet_complete"
     NO_INTERACTIONS = "no_interactions"
     NO_DATA_MODELS = "no_data_models"
+    CUTOVER_NOT_FOUND = "cutover_not_found"
 
 
 _FAILURE_WINDOW_SECONDS = 24 * 60 * 60

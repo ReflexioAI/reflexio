@@ -131,10 +131,85 @@ def _json_loads(text: str | None) -> Any:
     return json.loads(text)
 
 
+def _through_prefix_predicate(req_alias: str) -> str:
+    """SQL fragment: request ``req_alias`` is at or before a cutover request.
+
+    The ONE definition of "the prefix through a cutover", shared by every
+    SQLite reader that scopes to one (``get_requests_by_session``, the outcome
+    trajectory digest and the outcome prefix precondition), so they cannot
+    disagree about which requests a verdict covered.
+
+    The cutover is looked up by id inside the same session and compared on its
+    CURRENT row as ``(created_at, request_id)``, so ``request_id`` breaks a
+    same-timestamp tie. A cutover that is not in the session matches nothing,
+    which fails closed. The fragment binds exactly one ``?``: the cutover id.
+
+    Args:
+        req_alias (str): Alias (or table name) of the outer ``requests`` row.
+
+    Returns:
+        str: A boolean SQL expression.
+    """
+    return (
+        "EXISTS (SELECT 1 FROM requests AS cut"
+        " WHERE cut.request_id = ?"
+        f" AND cut.session_id = {req_alias}.session_id"
+        f" AND ({req_alias}.created_at, {req_alias}.request_id)"
+        " <= (cut.created_at, cut.request_id))"
+    )
+
+
+def _session_prefix_state(
+    conn: sqlite3.Connection,
+    session_id: str,
+    through_request_id: str | None,
+) -> tuple[int, int | None]:
+    """Return ``(interaction_count, max_mutation_clock)`` for a session prefix.
+
+    SQLite rows carry no ``updated_at``, so a row's mutation clock is its
+    ``created_at``. ``max_mutation_clock`` is ``None`` when the prefix holds no
+    request at all -- with a cutover, that means the cutover is not in the
+    session.
+    """
+    predicate = ""
+    params: list[object] = [session_id]
+    if through_request_id is not None:
+        predicate = " AND " + _through_prefix_predicate("r")
+        params.append(through_request_id)
+    row = conn.execute(
+        f"""SELECT COUNT(i.interaction_id) AS interaction_count,
+                   MAX(r.created_at) AS request_clock,
+                   MAX(i.created_at) AS interaction_clock
+            FROM requests AS r
+            LEFT JOIN interactions AS i ON i.request_id = r.request_id
+            WHERE r.session_id = ?{predicate}""",
+        params,
+    ).fetchone()
+    if row is None or row["request_clock"] is None:
+        return 0, None
+    clocks = [_iso_to_epoch(str(row["request_clock"]))]
+    if row["interaction_clock"] is not None:
+        clocks.append(_iso_to_epoch(str(row["interaction_clock"])))
+    return int(row["interaction_count"]), max(clocks)
+
+
 def _canonical_session_trajectory_snapshot(
-    conn: sqlite3.Connection, session_id: str
+    conn: sqlite3.Connection,
+    session_id: str,
+    through_request_id: str | None = None,
 ) -> CanonicalTrajectoryDigestResult:
-    """Hash and describe a complete bounded, ordered row stream."""
+    """Hash and describe a complete bounded, ordered row stream.
+
+    With ``through_request_id`` only the prefix through that cutover is
+    hashed (see ``_through_prefix_predicate``). The accumulator is unchanged,
+    so a prefix through the session's last request hashes byte-identically to
+    the whole session.
+    """
+    prefix_predicate = ""
+    params: list[object] = [session_id]
+    if through_request_id is not None:
+        prefix_predicate = " AND " + _through_prefix_predicate("requests")
+        params.append(through_request_id)
     cursor = conn.execute(
         """SELECT requests.request_id, requests.user_id, requests.created_at,
                   requests.source, requests.agent_version, requests.session_id,
@@ -154,10 +229,12 @@ def _canonical_session_trajectory_snapshot(
            FROM requests
            LEFT JOIN interactions
              ON interactions.request_id = requests.request_id
-           WHERE requests.session_id = ?
+           WHERE requests.session_id = ?"""
+        + prefix_predicate
+        + """
            ORDER BY requests.created_at ASC, requests.request_id ASC,
                     interactions.created_at ASC, interactions.interaction_id ASC""",
-        (session_id,),
+        params,
     )
     accumulator = CanonicalTrajectoryDigestAccumulator(session_id)
     active_request_id: str | None = None
@@ -907,6 +984,8 @@ def _row_to_eval_result(
         is_escalated=bool(d.get("is_escalated", False)),
         tags=_json_loads(d.get("tags")),
         embedding=(_json_loads(d.get("embedding")) or [] if include_embedding else []),
+        trajectory_through_request_id=d.get("trajectory_through_request_id"),
+        trajectory_interaction_count=d.get("trajectory_interaction_count"),
     )
 
 
@@ -1175,6 +1254,31 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                 self.conn.execute(
                     "ALTER TABLE session_outcomes ADD COLUMN superseded_outcome TEXT"
                 )
+            # Cutover columns. NULL is the legacy whole-session meaning, so
+            # every pre-existing row is already correct without a backfill.
+            if (
+                session_outcome_columns
+                and "trajectory_through_request_id" not in session_outcome_columns
+            ):
+                self.conn.execute(
+                    "ALTER TABLE session_outcomes "
+                    "ADD COLUMN trajectory_through_request_id TEXT"
+                )
+            eval_result_columns = {
+                row["name"]
+                for row in self.conn.execute(
+                    "PRAGMA table_info(agent_success_evaluation_result)"
+                ).fetchall()
+            }
+            for column, column_type in (
+                ("trajectory_through_request_id", "TEXT"),
+                ("trajectory_interaction_count", "INTEGER"),
+            ):
+                if eval_result_columns and column not in eval_result_columns:
+                    self.conn.execute(
+                        "ALTER TABLE agent_success_evaluation_result "
+                        f"ADD COLUMN {column} {column_type}"
+                    )
             cur = self.conn.cursor()
             cur.executescript(_DDL)
             init_subject_write_barrier_table(self.conn)
@@ -1509,6 +1613,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                         is_inferred INTEGER NOT NULL DEFAULT 0
                             CHECK (is_inferred IN (0, 1)),
                         superseded_outcome TEXT,
+                        trajectory_through_request_id TEXT,
                         CHECK (superseded_outcome IS NULL OR is_inferred = 0),
                         PRIMARY KEY (user_id, session_id)
                     )"""
@@ -3520,6 +3625,10 @@ CREATE TABLE IF NOT EXISTS session_outcomes (
     -- The displaced inferred outcome, kept whole. On the row rather than in a
     -- sibling table so erasure has no new surface to learn about.
     superseded_outcome TEXT,
+    -- The cutover request an inferred outcome's digest was scoped to (its
+    -- session's requests at or before it in (created_at, request_id) order).
+    -- NULL = the whole session: a customer report or a legacy inferred row.
+    trajectory_through_request_id TEXT,
     CHECK (superseded_outcome IS NULL OR is_inferred = 0),
     PRIMARY KEY (user_id, session_id)
 );
@@ -3597,7 +3706,11 @@ CREATE TABLE IF NOT EXISTS agent_success_evaluation_result (
     user_turns_to_resolution INTEGER,
     is_escalated INTEGER NOT NULL DEFAULT 0,
     tags TEXT,
-    embedding TEXT
+    embedding TEXT,
+    -- The last request the judge saw, in (created_at, request_id) order, and
+    -- how many interactions it judged. NULL on rows written before cutovers.
+    trajectory_through_request_id TEXT,
+    trajectory_interaction_count INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_eval_agent_version ON agent_success_evaluation_result(agent_version);
 CREATE INDEX IF NOT EXISTS idx_eval_created_at ON agent_success_evaluation_result(created_at);

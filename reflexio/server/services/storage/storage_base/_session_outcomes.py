@@ -22,6 +22,12 @@ class SessionOutcomeWriteResult:
     outcome_revision: int | None = None
     outcome_contract_digest: str | None = None
     finalized_trajectory_digest: str | None = None
+    #: The judged prefix changed after the verdict was settled (a prefix
+    #: request or interaction is newer than ``verdict_settled_at``, the prefix
+    #: interaction count differs, or the cutover request is gone). Nothing was
+    #: written; the facade answers ``CONFLICTING_FINALIZATION`` and does not
+    #: retry, because the verdict no longer describes the prefix it would file.
+    prefix_moved: bool = False
 
     def __post_init__(self) -> None:
         identity = (
@@ -36,6 +42,25 @@ class SessionOutcomeWriteResult:
             raise ValueError(
                 "outcome identity fields must be all populated or all null"
             )
+
+
+@dataclass(frozen=True)
+class OutcomePrefixPrecondition:
+    """What the judged prefix looked like when its verdict was settled.
+
+    An INTERNAL write precondition for an inferred outcome scoped to a cutover:
+    the write lands only if no request or interaction in the prefix has a
+    mutation clock newer than ``verdict_settled_at`` and the prefix still holds
+    exactly ``interaction_count`` interactions. Otherwise the verdict describes
+    a prefix that no longer exists, and the write answers ``prefix_moved``.
+
+    Attributes:
+        verdict_settled_at (int): Epoch seconds the verdict was settled at.
+        interaction_count (int): Interactions the judge saw in the prefix.
+    """
+
+    verdict_settled_at: int
+    interaction_count: int
 
 
 @dataclass(frozen=True)
@@ -71,8 +96,21 @@ class SessionOutcomeStoreMixin:
         created_at: int,
         expected_context: SessionOutcomeContext,
         is_inferred: bool = False,
+        trajectory_through_request_id: str | None = None,
+        prefix_precondition: OutcomePrefixPrecondition | None = None,
     ) -> SessionOutcomeWriteResult:
         """Record one outcome.
+
+        ``trajectory_through_request_id`` and ``prefix_precondition`` are
+        INTERNAL keywords, absent from ``SetSessionOutcomeRequest`` for the same
+        reason ``is_inferred`` is. A cutover scopes the finalized trajectory
+        digest to the session's requests at or before the cutover in
+        ``(created_at, request_id)`` order (plus their interactions) and is
+        persisted on the row; ``None`` keeps whole-session semantics. A missing
+        cutover, or a prefix that moved after ``prefix_precondition`` was
+        taken, writes nothing and answers ``prefix_moved``. An exact retry
+        must also repeat the stored cutover, so an extended cutover takes the
+        refresh path rather than reading as a no-op.
 
         ``is_inferred`` marks a write the offline tuner produced from a judge
         verdict rather than a customer's own report. It is NOT on
