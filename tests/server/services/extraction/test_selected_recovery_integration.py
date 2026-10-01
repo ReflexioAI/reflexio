@@ -154,13 +154,17 @@ def test_stale_preview_never_claims(context):
         ({"pending_tool_call_ids": ["pending"]}, "pending_dependencies"),
         ({"status": AgentRunStatus.RUNNING}, "not_finalization_candidate"),
         (
-            {"claimed_by": "other", "claimed_at": datetime.now(UTC)},
+            {"claimed_by": "other"},
             "live_or_unknown_claim",
         ),
         ({"finalization_attempts": 3}, "retry_limit_reached"),
     ],
 )
 def test_blockers_are_explicit(context, change, reason):
+    # Collection can precede execution by more than the claim TTL in the full
+    # suite. Create the live claim here, when it is actually inspected.
+    if "claimed_by" in change:
+        change = {**change, "claimed_at": datetime.now(UTC)}
     run = replace(seed(context), **change)
     assert reason in inspect_run(context, run)["blockers"]
 
