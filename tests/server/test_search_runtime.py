@@ -51,27 +51,45 @@ async def call(app, *, disconnect=None, receive_input=None, messages=None):
 
 
 @pytest.mark.asyncio
-async def test_timeout_does_not_release_worker_capacity_or_send_late_success():
+async def test_timeout_does_not_release_worker_capacity_or_send_late_success(
+    monkeypatch,
+):
     app = FastAPI()
     entered, release, ended = threading.Event(), threading.Event(), threading.Event()
+    deadline_observed = threading.Event()
     side_effects = []
+    wait_for = asyncio.wait_for
+
+    async def expire_after_worker_entry(awaitable, timeout):
+        # Coordinate the response-wait deadline with actual worker entry. CI
+        # scheduling must not turn this running-worker test into a queued test.
+        if getattr(awaitable, "__qualname__", "") == "Event.wait":
+            assert await wait_for(asyncio.to_thread(entered.wait, 5), timeout=5)
+            state = runtime.current()
+            assert state is not None
+            state.deadline = time.monotonic()
+            timeout = 0
+        return await wait_for(awaitable, timeout)
+
+    monkeypatch.setattr(runtime.asyncio, "wait_for", expire_after_worker_entry)
 
     @app.post("/api/search")
     def search():
         entered.set()
         try:
-            release.wait(2)
+            release.wait()  # The test always releases this worker in finally.
             runtime.checkpoint()
             side_effects.append("exposure")
             return {"success": True}
+        except runtime.SearchDeadlineError:
+            deadline_observed.set()
+            raise
         finally:
             ended.set()
 
-    middleware = runtime.SearchRuntimeMiddleware(app, timeout=0.04, capacity=1)
+    middleware = runtime.SearchRuntimeMiddleware(app, timeout=5, capacity=1)
     try:
-        start = time.monotonic()
         messages = await call(middleware)
-        assert time.monotonic() - start < 0.5
         assert entered.is_set() and not ended.is_set()
         assert messages[0]["status"] == 504
         assert json.loads(messages[1]["body"])["reason"] == "search_deadline"
@@ -82,6 +100,7 @@ async def test_timeout_does_not_release_worker_capacity_or_send_late_success():
         release.set()
         await asyncio.gather(*middleware.tasks, return_exceptions=True)
     assert ended.is_set()
+    assert deadline_observed.is_set()
     assert side_effects == []
     assert len(messages) == 2
     await asyncio.sleep(0)
