@@ -698,6 +698,19 @@ class TestGetCachedRequestContext:
                 "migrations serialized, so these orgs are back on one file"
             )
         finally:
+            # Reflexio construction starts discovery against these connections.
+            # Join that owner before closing SQLite, outside the registry lock
+            # which discovery itself acquires. Leave other directories intact.
+            from reflexio.server.services.durable_learning import local
+
+            with local._lock:
+                scheduler = local._schedulers.pop(storage_base_dir, None)
+                local._live.pop(storage_base_dir, None)
+                for org_id in org_ids:
+                    local._contexts.pop((org_id, storage_base_dir), None)
+            if scheduler is not None:
+                scheduler.stop()
+                assert not scheduler.is_running()
             for context in contexts:
                 storage = context.storage
                 assert isinstance(storage, SQLiteStorage)
