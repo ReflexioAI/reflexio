@@ -270,6 +270,12 @@ def test_the_coverage_wait_is_not_counted_as_serving_time(
     for one whose own phases summed to ~110ms).
     """
     monkeypatch.setenv(publish_timing.ENV_THRESHOLD_MS, "300")
+    clock = [0.0]
+    monkeypatch.setattr(
+        publish_timing,
+        "time",
+        SimpleNamespace(perf_counter=lambda: clock[0], monotonic=time.monotonic),
+    )
 
     # Only the standalone coverage poll is delayed. The combined reporting
     # read remains fast and is included in the served duration.
@@ -278,7 +284,7 @@ def test_the_coverage_wait_is_not_counted_as_serving_time(
     def slow_first_poll(*_args: object, **_kwargs: object) -> dict[str, str]:
         calls["n"] += 1
         if calls["n"] == 1:
-            time.sleep(0.5)
+            clock[0] += 0.5
         return {"status": "done", "reason": "complete"}
 
     with tempfile.TemporaryDirectory() as temp_dir:
