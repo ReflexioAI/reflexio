@@ -398,18 +398,29 @@ def test_an_estimate_under_the_threshold_settles_the_target(granted_lock, anomal
 def test_a_delete_reprobes_the_targets_after_it(granted_lock, anomalies):
     """A cascade can shrink a later target (``user_playbooks`` deletes from
     ``agent_playbook_source_user_playbooks``), so what was probed before the
-    delete is not what the per-target loop would have seen."""
+    delete is not what the per-target loop would have seen. The targets after
+    a delete are probed one at a time -- never the whole remainder again per
+    delete, which would make an N-target sweep quadratic on SQLite."""
     storage = _BatchedStorage(
-        {"profiles": _exact(0), "interactions": _exact(600), "requests": _exact(0)}
+        {
+            "profiles": _exact(0),
+            "interactions": _exact(600),
+            "requests": _exact(0),
+            "skills": _exact(0),
+        }
     )
+    storage.count_value = 7
 
-    with _limits(profiles=500, interactions=500, requests=500):
+    with _limits(profiles=500, interactions=500, requests=500, skills=500):
         sweep_retention_caps(_ORG, storage)  # type: ignore[arg-type]
 
     assert [list(call) for call in storage.probe_calls] == [
-        ["profiles", "interactions", "requests"],
-        ["requests"],
+        ["profiles", "interactions", "requests", "skills"],
     ]
+    assert storage.counted == ["requests", "skills"], (
+        "the targets after a delete must be re-read, not taken from the "
+        "snapshot probed before it"
+    )
 
 
 def test_a_probe_error_fails_only_its_own_target(granted_lock, anomalies):

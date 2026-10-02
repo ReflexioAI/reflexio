@@ -12,8 +12,9 @@ On a remote backend that is a catalog read plus at most one batched count, not
 two to three round trips per target: an empty, never-analyzed org used to pay
 for 17 exact counts one by one, ~23 s per project, all of it overhead. The
 decisions are the per-target ones -- a delete still rests on an exact count, and
-any delete re-probes the targets after it, because a cascade may have shrunk
-them (``user_playbooks`` -> ``agent_playbook_source_user_playbooks``).
+after any delete the remaining targets are probed one at a time, as they always
+were, because a cascade may have shrunk them (``user_playbooks`` ->
+``agent_playbook_source_user_playbooks``).
 
 Two properties are
 load-bearing and easy to lose:
@@ -202,8 +203,8 @@ def sweep_retention_caps(org_id: str, storage: BaseStorage) -> RetentionSweepRes
     targets_failed = 0
     # Per-target wall time, so a slow sweep names the table that made it slow.
     target_seconds: dict[str, float] = {}
-    # Time inside `probe_retention_targets`, which a batched backend cannot
-    # attribute to any one target.
+    # Time inside the up-front `probe_retention_targets`, which a batched
+    # backend cannot attribute to any one target.
     probe_seconds = 0.0
     try:
         project_id = current_project_id()
@@ -243,22 +244,10 @@ def sweep_retention_caps(org_id: str, storage: BaseStorage) -> RetentionSweepRes
         if not mgr.acquire_simple_lock(stale_seconds=CLEANUP_STALE_LOCK_SECONDS):
             return RetentionSweepResult(0)
         try:
-            names = list(limits)
-            probes: Mapping[str, RetentionProbe] = {}
-            stale = True
-            for index, target_name in enumerate(names):
-                limit = limits[target_name]
-                if stale:
-                    # Every target still to come, in one call. Taken again after
-                    # any delete: a cascade may have removed rows from a target
-                    # probed before it, and the per-target loop this replaced
-                    # always saw a table as it stood after the previous delete.
-                    probe_started = time.monotonic()
-                    probes = _probe_targets(
-                        storage, {name: limits[name] for name in names[index:]}
-                    )
-                    probe_seconds += time.monotonic() - probe_started
-                    stale = False
+            probe_started = time.monotonic()
+            probes: Mapping[str, RetentionProbe] = _probe_targets(storage, limits)
+            probe_seconds = time.monotonic() - probe_started
+            for target_name, limit in limits.items():
                 probe = probes.get(target_name)
                 # Isolate per-target failures so one bad table does not
                 # short-circuit every subsequent target.
@@ -267,7 +256,13 @@ def sweep_retention_caps(org_id: str, storage: BaseStorage) -> RetentionSweepRes
                     total_count = _exact_rows(storage, target_name, limit, probe)
                     if total_count is not None:
                         if total_count >= limit:
-                            stale = True
+                            # A cascade may have removed rows from a target
+                            # probed before this delete, and the per-target
+                            # loop this replaced always saw a table as it stood
+                            # after the previous delete. So every target after
+                            # one is probed on its own, when its turn comes --
+                            # linear, as before, on every backend.
+                            probes = {}
                         deleted_total += _sweep_target(
                             org_id, project_id, storage, target_name, limit, total_count
                         )
