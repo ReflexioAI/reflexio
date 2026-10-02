@@ -11,6 +11,7 @@ from fastapi import (
     Depends,
     HTTPException,
     Request,
+    Response,
     status,
 )
 
@@ -40,6 +41,7 @@ from reflexio.server.auth import (
 )
 from reflexio.server.cache import reflexio_cache
 from reflexio.server.rate_limit import limiter
+from reflexio.server.readiness import ReadinessResponse, default_readiness
 from reflexio.server.routes._common import _run_limited_api
 
 logger = logging.getLogger(__name__)
@@ -56,9 +58,16 @@ def root() -> dict[str, str]:
 
 
 @router.get("/health", response_model=None)
-async def health_check() -> dict[str, str]:
-    """Health check endpoint for ECS/container orchestration."""
-    return {"status": "healthy"}
+async def health_check(
+    response: Response,
+    readiness: ReadinessResponse = Depends(default_readiness),
+) -> dict:
+    """Return host readiness without performing dependency I/O."""
+    response.status_code = 200 if readiness.status == "healthy" else 503
+    response.headers["Cache-Control"] = "no-store"
+    return readiness.model_dump(
+        mode="json", exclude_none=True, exclude_defaults=True
+    ) | {"status": readiness.status}
 
 
 @router.get(
