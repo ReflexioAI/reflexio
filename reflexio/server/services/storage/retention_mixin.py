@@ -5,13 +5,20 @@ Concrete SQL backends (SQLite, Postgres, Supabase) mix in
 ``count_retention_target_rows`` / ``delete_oldest_retention_target_rows``
 lives here so the dispatch — limit lookup, key selection, cascade,
 delete — cannot drift across the three backends.
+
+``probe_retention_targets`` is the sweep's read side: every target's size in
+one call, so a backend whose reads are remote round trips can answer all of
+them together. Its default -- ``probe_retention_targets_individually`` -- is
+the per-target estimate-then-count the sweep always did, so a backend that
+does not override the hook behaves exactly as before.
 """
 
 from __future__ import annotations
 
 import time
 from abc import ABC, abstractmethod
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from dataclasses import dataclass, replace
 from typing import Any
 
 from reflexio.server.services.storage.retention import (
@@ -39,6 +46,70 @@ def chunked(
     """
     for start in range(0, len(values), chunk_size):
         yield list(values[start : start + chunk_size])
+
+
+@dataclass(frozen=True, slots=True)
+class RetentionProbe:
+    """One target's size, as the retention sweep needs it.
+
+    Attributes:
+        rows (int): The exact row count when ``exact``; otherwise an upper-bound
+            ESTIMATE that was below the caller's exact-count threshold.
+        exact (bool): Whether ``rows`` is an exact count. The sweep warns and
+            deletes only on an exact count -- an estimate can only settle "far
+            below the cap, nothing to do".
+        seconds (float): Wall time spent probing this target alone, where it
+            can be attributed (the per-target path). A batched probe leaves it 0.
+        error (Exception | None): What probing this target raised, if anything.
+            Recorded rather than raised so one bad table does not cost the rest;
+            the sweep re-raises it inside that target's own isolation.
+    """
+
+    rows: int = 0
+    exact: bool = False
+    seconds: float = 0.0
+    error: Exception | None = None
+
+
+def probe_retention_targets_individually(
+    storage: Any, exact_count_from: Mapping[str, float]
+) -> dict[str, RetentionProbe]:
+    """Probe each target on its own: the estimate first, then an exact count.
+
+    The sweep's original per-target logic, unchanged: a target whose estimate is
+    below its ``exact_count_from`` threshold is settled by the estimate; any
+    other -- including one with no estimate -- is counted exactly. Each target's
+    failure is isolated into its own :class:`RetentionProbe`.
+
+    Takes ``Any`` rather than ``RetentionMixin`` because the sweep also falls
+    back to it for a storage that never mixed the hook in (test doubles, a
+    backend without retention), exactly as it used to call these methods.
+
+    Args:
+        storage (Any): Provides ``count_retention_target_rows`` and, optionally,
+            ``estimate_retention_target_rows``.
+        exact_count_from (Mapping[str, float]): Target name -> the estimate at
+            or above which the target must be counted exactly.
+
+    Returns:
+        dict[str, RetentionProbe]: One entry per requested target.
+    """
+    estimate_rows = getattr(storage, "estimate_retention_target_rows", None)
+    probes: dict[str, RetentionProbe] = {}
+    for target_name, threshold in exact_count_from.items():
+        started = time.monotonic()
+        try:
+            estimate = estimate_rows(target_name) if estimate_rows is not None else None
+            if estimate is not None and estimate < threshold:
+                probe = RetentionProbe(estimate, exact=False)
+            else:
+                probe = RetentionProbe(
+                    storage.count_retention_target_rows(target_name), exact=True
+                )
+        except Exception as exc:  # noqa: BLE001 -- isolated per target, re-raised by the sweep
+            probe = RetentionProbe(error=exc)
+        probes[target_name] = replace(probe, seconds=time.monotonic() - started)
+    return probes
 
 
 def get_retention_target(target_name: str) -> RetentionTarget:
@@ -97,6 +168,27 @@ class RetentionMixin(ABC):
             int | None: An estimate no lower than the exact count, or ``None``.
         """
         return self._retention_estimate_rows(get_retention_target(target_name))
+
+    def probe_retention_targets(
+        self, exact_count_from: Mapping[str, float]
+    ) -> dict[str, RetentionProbe]:
+        """Size every requested target, for the retention sweep, in one call.
+
+        For each target, either an exact count or -- only when the estimate is
+        below that target's threshold -- the estimate, marked ``exact=False``.
+        A target whose estimate is at or above its threshold, or that has no
+        estimate, MUST come back exact: the sweep warns and deletes on exact
+        counts only.
+
+        Args:
+            exact_count_from (Mapping[str, float]): Target name -> the estimate
+                at or above which the target must be counted exactly.
+
+        Returns:
+            dict[str, RetentionProbe]: One entry per requested target, with a
+            failure recorded in that target's ``error`` rather than raised.
+        """
+        return self._retention_probe_targets(exact_count_from)
 
     def delete_oldest_retention_target_rows(self, target_name: str, count: int) -> int:
         """Delete up to ``count`` oldest rows for a retention target.
@@ -243,6 +335,19 @@ class RetentionMixin(ABC):
         """
         del target
         return None
+
+    def _retention_probe_targets(
+        self, exact_count_from: Mapping[str, float]
+    ) -> dict[str, RetentionProbe]:
+        """Backend hook for :meth:`probe_retention_targets`.
+
+        Default: one target at a time, through the public estimate and count --
+        the right shape for a backend whose reads are local. A backend whose
+        reads are remote round trips may answer the whole set at once, but must
+        return the same decisions the default would: identical exact counts,
+        and an estimate only where the default would have skipped on it.
+        """
+        return probe_retention_targets_individually(self, exact_count_from)
 
     @abstractmethod
     def _retention_select_oldest_keys(

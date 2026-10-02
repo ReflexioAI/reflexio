@@ -14,6 +14,10 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from reflexio.server.services.storage import retention_sweep
+from reflexio.server.services.storage.retention_mixin import (
+    RetentionMixin,
+    RetentionProbe,
+)
 from reflexio.server.services.storage.retention_sweep import sweep_retention_caps
 
 _ORG = "org-1"
@@ -255,6 +259,226 @@ def test_an_estimate_near_or_over_the_cap_is_confirmed_exactly(
 
     storage.count_retention_target_rows.assert_called_once_with("interactions")
     storage.delete_oldest_retention_target_rows.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# The batched probe: one call sizes every target, decisions are unchanged
+# ---------------------------------------------------------------------------
+#
+# The tests above drive a `MagicMock`, which is not a `RetentionMixin`, so they
+# exercise the per-target fallback (`probe_retention_targets_individually`) --
+# the same estimate-then-count they always did. These drive a real mixin
+# subclass whose `probe_retention_targets` answers in one call, as the enterprise
+# backends do.
+
+
+class _BatchedStorage(RetentionMixin):
+    """A ``RetentionMixin`` whose probe is scripted, recording every call."""
+
+    def __init__(self, probes: dict[str, RetentionProbe]) -> None:
+        self.probes = probes
+        self.probe_calls: list[dict[str, float]] = []
+        self.counted: list[str] = []
+        self.count_value = 0
+        self.deleted: list[tuple[str, int]] = []
+
+    def probe_retention_targets(self, exact_count_from):  # type: ignore[override]
+        self.probe_calls.append(dict(exact_count_from))
+        return {
+            name: self.probes[name] for name in exact_count_from if name in self.probes
+        }
+
+    def count_retention_target_rows(self, target_name: str) -> int:
+        self.counted.append(target_name)
+        return self.count_value
+
+    def delete_oldest_retention_target_rows(self, target_name: str, count: int) -> int:
+        self.deleted.append((target_name, count))
+        return count
+
+    # Abstract hooks the sweep never reaches through this double.
+    def _retention_table_exists(self, table_name: str) -> bool:  # pragma: no cover
+        raise AssertionError("not used")
+
+    def _retention_count_rows(self, target):  # pragma: no cover
+        raise AssertionError("not used")
+
+    def _retention_select_oldest_keys(self, *a, **k):  # pragma: no cover
+        raise AssertionError("not used")
+
+    def _retention_delete_dependencies(self, *a, **k):  # pragma: no cover
+        raise AssertionError("not used")
+
+    def _retention_delete_target_rows(self, *a, **k):  # pragma: no cover
+        raise AssertionError("not used")
+
+
+def _exact(rows: int) -> RetentionProbe:
+    return RetentionProbe(rows, exact=True)
+
+
+def _estimate(rows: int) -> RetentionProbe:
+    return RetentionProbe(rows, exact=False)
+
+
+def test_one_probe_call_sizes_every_target(granted_lock, anomalies):
+    storage = _BatchedStorage(
+        {"interactions": _estimate(10), "profiles": _exact(0), "requests": _exact(5)}
+    )
+
+    with _limits(interactions=500, profiles=500, requests=500):
+        assert sweep_retention_caps(_ORG, storage).deleted == 0  # type: ignore[arg-type]
+
+    assert storage.probe_calls == [
+        {"interactions": 400.0, "profiles": 400.0, "requests": 400.0}
+    ], "the thresholds must be EXACT_COUNT_FROM_FRACTION of each cap"
+    assert storage.counted == [], "an exact probe must not be counted again"
+    assert anomalies == []
+
+
+@pytest.mark.parametrize(
+    ("rows", "expected"),
+    [
+        (449, []),
+        (450, ["retention.cap.approaching"]),
+        (499, ["retention.cap.approaching"]),
+        (500, ["retention.cap.enforced"]),
+    ],
+)
+def test_an_exact_probe_decides_like_the_count_did(
+    granted_lock, anomalies, rows, expected
+):
+    storage = _BatchedStorage({"interactions": _exact(rows)})
+
+    with _limits(interactions=500):
+        sweep_retention_caps(_ORG, storage)  # type: ignore[arg-type]
+
+    assert [name for name, _ in anomalies] == expected
+    assert storage.deleted == ([("interactions", 100)] if rows >= 500 else [])
+
+
+@pytest.mark.parametrize("estimate", [400, 500, 5000])
+def test_an_estimate_at_or_over_the_threshold_never_deletes_on_its_own(
+    granted_lock, anomalies, estimate
+):
+    """A probe that returns an estimate where it should have counted is
+    confirmed by an exact count; the estimate itself never warns or deletes."""
+    storage = _BatchedStorage({"interactions": _estimate(estimate)})
+    storage.count_value = 100
+
+    with _limits(interactions=500):
+        assert sweep_retention_caps(_ORG, storage).deleted == 0  # type: ignore[arg-type]
+
+    assert storage.counted == ["interactions"]
+    assert storage.deleted == []
+    assert anomalies == []
+
+
+def test_the_confirming_count_is_what_the_delete_rests_on(granted_lock, anomalies):
+    storage = _BatchedStorage({"interactions": _estimate(450)})
+    storage.count_value = 600
+
+    with _limits(interactions=500):
+        assert sweep_retention_caps(_ORG, storage).deleted == 120  # type: ignore[arg-type]
+
+    _, tags = anomalies[0]
+    assert tags["rows_before"] == 600
+
+
+def test_an_estimate_under_the_threshold_settles_the_target(granted_lock, anomalies):
+    storage = _BatchedStorage({"interactions": _estimate(399)})
+
+    with _limits(interactions=500):
+        sweep_retention_caps(_ORG, storage)  # type: ignore[arg-type]
+
+    assert storage.counted == []
+    assert storage.deleted == []
+
+
+def test_a_delete_reprobes_the_targets_after_it(granted_lock, anomalies):
+    """A cascade can shrink a later target (``user_playbooks`` deletes from
+    ``agent_playbook_source_user_playbooks``), so what was probed before the
+    delete is not what the per-target loop would have seen."""
+    storage = _BatchedStorage(
+        {"profiles": _exact(0), "interactions": _exact(600), "requests": _exact(0)}
+    )
+
+    with _limits(profiles=500, interactions=500, requests=500):
+        sweep_retention_caps(_ORG, storage)  # type: ignore[arg-type]
+
+    assert [list(call) for call in storage.probe_calls] == [
+        ["profiles", "interactions", "requests"],
+        ["requests"],
+    ]
+
+
+def test_a_probe_error_fails_only_its_own_target(granted_lock, anomalies):
+    storage = _BatchedStorage(
+        {
+            "broken": RetentionProbe(error=ZeroDivisionError("boom")),
+            "interactions": _exact(600),
+        }
+    )
+
+    with _limits(broken=500, interactions=500):
+        result = sweep_retention_caps(_ORG, storage)  # type: ignore[arg-type]
+
+    assert result.deleted == 120
+    assert not result.failed
+    assert storage.deleted == [("interactions", 120)]
+
+
+def test_every_probe_failing_fails_the_pass(granted_lock, anomalies):
+    error = RetentionProbe(error=RuntimeError("PGRST002"))
+    storage = _BatchedStorage({"interactions": error, "profiles": error})
+
+    with _limits(interactions=500, profiles=500):
+        result = sweep_retention_caps(_ORG, storage)  # type: ignore[arg-type]
+
+    assert result.failed
+    assert [name for name, _ in anomalies] == ["retention.sweep.all_targets_failed"]
+
+
+def test_a_target_the_probe_omitted_is_probed_on_its_own(granted_lock, anomalies):
+    storage = _BatchedStorage({"profiles": _exact(0)})
+    storage.count_value = 600
+
+    with _limits(profiles=500, interactions=500):
+        assert sweep_retention_caps(_ORG, storage).deleted == 120  # type: ignore[arg-type]
+
+    assert storage.counted == ["interactions"]
+
+
+def test_a_probe_that_raises_outright_fails_the_pass_and_frees_the_lease(
+    granted_lock, anomalies
+):
+    storage = _BatchedStorage({})
+    storage.probe_retention_targets = MagicMock(side_effect=RuntimeError("down"))  # type: ignore[method-assign]
+
+    with _limits(interactions=500):
+        result = sweep_retention_caps(_ORG, storage)  # type: ignore[arg-type]
+
+    assert result.failed
+    assert [name for name, _ in anomalies] == ["retention.sweep.failed"]
+    granted_lock.return_value.release_simple_lock.assert_called_once()
+
+
+def test_a_slow_pass_attributes_probe_time(granted_lock, anomalies, monkeypatch):
+    monkeypatch.setattr(retention_sweep, "SLOW_SWEEP_SECONDS", 0.0)
+    storage = _BatchedStorage(
+        {
+            "interactions": RetentionProbe(0, exact=True, seconds=0.0),
+            "requests": RetentionProbe(0, exact=True, seconds=7.0),
+        }
+    )
+
+    with _limits(interactions=500, requests=500):
+        sweep_retention_caps(_ORG, storage)  # type: ignore[arg-type]
+
+    [(name, tags)] = anomalies
+    assert name == "retention.sweep.slow"
+    assert tags["slowest_target"] == "requests"
+    assert "probe_seconds" in tags
 
 
 # ---------------------------------------------------------------------------
