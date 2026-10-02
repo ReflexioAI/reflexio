@@ -75,6 +75,7 @@ def test_reranker_uses_embedding_service_url_and_discovered_model(monkeypatch) -
                 "model": MULTILINGUAL_RERANK_MODEL,
                 "query": "数据库",
                 "documents": ["PostgreSQL", "weather"],
+                "timeout_ms": 2500,
             }
             assert timeout == 2.5
             return _Response(

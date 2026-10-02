@@ -7,13 +7,15 @@ import math
 import os
 import threading
 import time
-from collections.abc import AsyncIterator, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from fastapi import FastAPI, HTTPException, Response, status
+import anyio
+from fastapi import FastAPI, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 
 from reflexio.server.env_utils import positive_int_env
 from reflexio.server.llm.providers.local_embedding_provider import LocalEmbedder
@@ -118,6 +120,8 @@ class EmbeddingRequest(BaseModel):
     model: str
     input: str | list[str]
     dimensions: int | None = Field(default=None, gt=0)
+    priority: Literal["interactive", "bulk"] = "bulk"
+    timeout_ms: int = Field(default=30_000, gt=0, le=600_000)
 
 
 class EmbeddingData(BaseModel):
@@ -136,6 +140,7 @@ class RerankRequest(BaseModel):
     model: str
     query: str
     documents: list[str]
+    timeout_ms: int = Field(default=5_000, gt=0, le=600_000)
 
 
 class RerankData(BaseModel):
@@ -156,6 +161,58 @@ class RerankHealthResponse(BaseModel):
     ready: bool
 
 
+def _validate_embedding_width(
+    model: str, embeddings: list[list[float]], width: int | None
+) -> None:
+    if width is not None:
+        for vector in embeddings:
+            if len(vector) != width:
+                raise HTTPException(
+                    500,
+                    f"Encoder for {model} returned {len(vector)} dimensions; expected {width}",
+                )
+
+
+def _warm_reranker(runner: CrossEncoderRunner, require_ready: bool) -> None:
+    if reranker_enabled() and not runner.prewarm() and require_ready:
+        raise RuntimeError("CPU inference reranker failed its startup readiness check")
+
+
+async def _until_disconnected(
+    request: Request, submission: Awaitable[list[Any]]
+) -> list[Any]:
+    """Cancel queued CPU work when its HTTP borrower disappears."""
+    result = None
+    error = None
+
+    async def work() -> None:
+        nonlocal result, error
+        try:
+            result = await submission
+        except Exception as exc:
+            error = exc
+        finally:
+            group.cancel_scope.cancel()
+
+    async def disconnected() -> None:
+        nonlocal error
+        while not await request.is_disconnected():
+            await anyio.sleep(0.1)
+        error = HTTPException(499, "Inference client disconnected")
+        group.cancel_scope.cancel()
+
+    # Use the same cancellation scopes as Request.is_disconnected. Mixing
+    # asyncio Task.cancel with its AnyIO scope can lose cancellation and hang.
+    async with anyio.create_task_group() as group:
+        group.start_soon(work)
+        group.start_soon(disconnected)
+    if error is not None:
+        raise error
+    if result is None:
+        raise RuntimeError("Inference submission ended without a result")
+    return result
+
+
 def create_embedding_app(
     default_model: str | None = None,
     *,
@@ -164,6 +221,18 @@ def create_embedding_app(
     fixed_dimensions: Mapping[str, int] | None = None,
     reranker_model: str = RERANK_MODEL,
     reranker_runner: CrossEncoderRunner | None = None,
+    inference_submit: Callable[
+        [
+            Callable[[list[str]], list[Any]],
+            list[str],
+            Literal["interactive", "bulk"],
+            int,
+            int,
+        ],
+        Awaitable[list[Any]],
+    ]
+    | None = None,
+    inference_shutdown: Callable[[], None] | None = None,
 ) -> FastAPI:
     """Create the embedding daemon app and optionally register external encoders."""
     effective_encoders = dict(model_encoders or {})
@@ -189,8 +258,7 @@ def create_embedding_app(
             except Exception:
                 logger.exception("Failed to warm embedding model %s", default_model)
                 raise
-        if reranker_enabled():
-            runner.prewarm()
+        _warm_reranker(runner, require_ready=inference_submit is not None)
         logger.info(
             "event=inference_service_ready configured_model=%s "
             "configured_reranker_model=%s embedding_device=%s "
@@ -202,7 +270,11 @@ def create_embedding_app(
             runner.ready(),
             os.environ.get("HF_HUB_OFFLINE", "0"),
         )
-        yield
+        try:
+            yield
+        finally:
+            if inference_shutdown is not None:
+                inference_shutdown()
 
     embedding_app = FastAPI(title="Reflexio Embedding Service", lifespan=lifespan)
 
@@ -233,7 +305,9 @@ def create_embedding_app(
         )
 
     @embedding_app.post("/v1/embeddings")
-    def create_embeddings(request: EmbeddingRequest) -> EmbeddingResponse:
+    async def create_embeddings(
+        request: EmbeddingRequest, http_request: Request
+    ) -> EmbeddingResponse:
         """Create embeddings using the daemon's single active local model."""
         if request.model not in effective_allowed_models:
             raise HTTPException(
@@ -256,19 +330,23 @@ def create_embedding_app(
         texts = (
             [request.input] if isinstance(request.input, str) else list(request.input)
         )
-        embeddings = embed_texts(request.model, texts)
+        if inference_submit is not None:
+            _activate_model(request.model, allowed_models=effective_allowed_models)
+            encoder = effective_encoders.get(request.model)
+            embeddings = await _until_disconnected(
+                http_request,
+                inference_submit(
+                    encoder or (lambda chunk: _encode_texts_now(request.model, chunk)),
+                    texts,
+                    request.priority,
+                    request.timeout_ms,
+                    1,
+                ),
+            )
+        else:
+            embeddings = await run_in_threadpool(embed_texts, request.model, texts)
 
-        if expected_dimensions is not None:
-            for embedding in embeddings:
-                if len(embedding) != expected_dimensions:
-                    raise HTTPException(
-                        status_code=500,
-                        detail=(
-                            f"Encoder for {request.model} returned "
-                            f"{len(embedding)} dimensions; expected "
-                            f"{expected_dimensions}"
-                        ),
-                    )
+        _validate_embedding_width(request.model, embeddings, expected_dimensions)
 
         if request.dimensions:
             embeddings = [
@@ -284,7 +362,9 @@ def create_embedding_app(
         )
 
     @embedding_app.post("/v1/rerank")
-    def create_rerank_scores(request: RerankRequest) -> RerankResponse:
+    async def create_rerank_scores(
+        request: RerankRequest, http_request: Request
+    ) -> RerankResponse:
         """Score query/document pairs using this daemon's local cross-encoder."""
         if request.model != reranker_model:
             raise HTTPException(
@@ -296,7 +376,21 @@ def create_embedding_app(
                 detail="Reranking is disabled by REFLEXIO_RERANK_ENABLED",
             )
         try:
-            scores = runner.score_pairs(request.query, request.documents)
+            if inference_submit is not None:
+                scores = await _until_disconnected(
+                    http_request,
+                    inference_submit(
+                        lambda chunk: runner.score_pairs(request.query, chunk),
+                        request.documents,
+                        "interactive",
+                        request.timeout_ms,
+                        4,
+                    ),
+                )
+            else:
+                scores = await run_in_threadpool(
+                    runner.score_pairs, request.query, request.documents
+                )
         except CrossEncoderUnavailableError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
 
