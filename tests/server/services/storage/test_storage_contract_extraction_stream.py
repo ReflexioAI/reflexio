@@ -125,6 +125,41 @@ def test_sibling_cursor_survives_retries_and_other_users_claim(storage):
     assert [w.user_id for w in windows] == ["v"]
 
 
+def _backdate_backlog(storage, seconds):
+    with storage._stream_sql() as db:
+        db.query(
+            f"UPDATE {db.table('learning_work')} SET pending_since=pending_since-? "  # noqa: S608 -- registered identifier; bound values.
+            "WHERE pending_since>0",
+            (seconds,),
+        )
+
+
+def test_completed_window_restarts_a_still_pending_backlog_age(storage):
+    # A user who publishes faster than the queue drains is never empty; the
+    # age must measure stalled work, not time since the queue was last empty.
+    publish(storage, 30)
+    _backdate_backlog(storage, 7200)
+    assert storage.oldest_extraction_backlog_age() >= 7200
+    user, token = storage.claim_extraction("worker", 300)
+    window = storage.prepare_extraction(user, token)
+    storage.complete_extraction(window, token, {})
+    age = storage.oldest_extraction_backlog_age()
+    assert age is not None and age < 60
+
+
+def test_failing_sibling_cursor_keeps_the_backlog_aging(storage):
+    publish(storage, 10, playbook=True)
+    _backdate_backlog(storage, 7200)
+    user, token = storage.claim_extraction("worker1", 300)
+    failed = storage.prepare_extraction(user, token)
+    storage.retry_extraction(failed, token, "ProviderUnavailable")
+    user, token = storage.claim_extraction("worker2", 300)
+    sibling = storage.prepare_extraction(user, token)
+    assert sibling.kind != failed.kind
+    storage.complete_extraction(sibling, token, {})
+    assert storage.oldest_extraction_backlog_age() >= 7200
+
+
 def test_negative_receipt_and_stale_fence(storage):
     publish(storage, 10)
     user, token = storage.claim_extraction("worker", 300)

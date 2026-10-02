@@ -402,10 +402,16 @@ class ExtractionStreamStore:
                 f"UPDATE {db.table('extraction_windows')} SET completed=1,effects=? WHERE window_id=?",
                 (json.dumps(effects), window.window_id),
             )
+            # A completed window is progress, so restart a still-pending user's
+            # backlog clock -- unless a sibling cursor is failing (this cursor's
+            # attempts were reset above), which must keep aging and alarm.
             db.query(
-                f"UPDATE {db.table('learning_work')} SET due_at=0,lease_until=0,lease_token=NULL "
+                f"UPDATE {db.table('learning_work')} SET due_at=0,lease_until=0,lease_token=NULL,"
+                "pending_since=CASE WHEN pending_since>0 AND NOT EXISTS ("
+                f"SELECT 1 FROM {db.table('extraction_cursors')} WHERE user_id=? AND attempts>0"
+                ") THEN ? ELSE pending_since END "
                 "WHERE org_id=? AND user_id=?",
-                (self.org_id, window.user_id),
+                (window.user_id, db.now(), self.org_id, window.user_id),
             )
 
     def retry_extraction(self, window: Window, token: str, error: str) -> None:
@@ -550,6 +556,20 @@ class ExtractionStreamStore:
             ]
 
     def oldest_extraction_backlog_age(self) -> float | None:
+        """Seconds the longest-stalled user has had work pending without progress.
+
+        ``pending_since`` is set by the first admission after a drain, restarted
+        by every completed window (``complete_extraction``), and cleared when
+        nothing is left. Measuring "since the queue was last empty" instead
+        alarmed on any user who publishes faster than the queue ever drains.
+
+        Non-goals: a user who progresses but falls further behind does not age
+        here; a failing sibling cursor blocks the restart only within the
+        project scope the completion runs under.
+
+        Returns:
+            float | None: The age in seconds, or None when no work is pending.
+        """
         with self._stream_sql(read_only=True, coordination=True) as db:
             first = db.query(
                 f"SELECT MIN(pending_since) AS oldest FROM {db.table('learning_work')} WHERE pending_since>0"
