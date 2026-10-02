@@ -16,13 +16,15 @@ after any delete the remaining targets are probed one at a time, as they always
 were, because a cascade may have shrunk them (``user_playbooks`` ->
 ``agent_playbook_source_user_playbooks``).
 
-The probe is a snapshot taken at the start of the pass. A row committed after
-it is seen by the next pass -- as a row committed after the old per-target
-count always was, since that count was taken before acting on it too. What
-grew is the window, from one target's own count to the time spent on the
-targets before it, which is short because only a warning or a skip can precede
-a target on a snapshot (a delete drops the snapshot). Caps are a high-water
-mark enforced per pass, never an exact ceiling.
+The probe is a snapshot taken at the start of the pass, and a snapshot is only
+ever trusted to say "nothing to do": below the warn threshold by exact count,
+or below the exact-count threshold by estimate. A target the snapshot puts AT
+or OVER the warn threshold is counted again at its own turn, so every warning
+and every delete rests on a count taken immediately before acting on it -- the
+same window the per-target loop had. Writers committing between the snapshot
+and a target's turn can therefore only matter by moving it across 10% of its
+cap in that time, which the next pass then sees, exactly as a write landing
+just after the old per-target count was.
 
 Two properties are
 load-bearing and easy to lose:
@@ -364,6 +366,9 @@ def _exact_rows(
     Everything downstream -- the approaching warning and every delete -- rests
     on what this returns, so it never returns an estimate: one at or above the
     threshold (a probe that should have counted and did not) is counted here.
+    Nor does it act on a STALE count: a pre-fetched exact count at or over
+    ``CAP_WARN_FRACTION`` -- one that will warn or delete -- is taken again now,
+    because the pre-fetch happened before every earlier target's turn.
 
     Args:
         storage (BaseStorage): The org's app-role storage.
@@ -376,6 +381,7 @@ def _exact_rows(
         int | None: The exact count, or ``None`` when the target is far below
         its cap by estimate.
     """
+    fresh = probe is None
     if probe is None:
         probe = probe_retention_targets_individually(
             storage, {target_name: limit * EXACT_COUNT_FROM_FRACTION}
@@ -383,8 +389,9 @@ def _exact_rows(
     if probe.error is not None:
         raise probe.error
     if probe.exact:
-        return probe.rows
-    if probe.rows < limit * EXACT_COUNT_FROM_FRACTION:
+        if fresh or probe.rows < limit * CAP_WARN_FRACTION:
+            return probe.rows
+    elif probe.rows < limit * EXACT_COUNT_FROM_FRACTION:
         return None
     return storage.count_retention_target_rows(target_name)  # type: ignore[reportAttributeAccessIssue]
 

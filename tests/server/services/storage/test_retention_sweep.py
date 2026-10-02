@@ -280,6 +280,7 @@ class _BatchedStorage(RetentionMixin):
         self.probe_calls: list[dict[str, float]] = []
         self.counted: list[str] = []
         self.count_value = 0
+        self.counts: dict[str, int] = {}
         self.deleted: list[tuple[str, int]] = []
 
     def probe_retention_targets(self, exact_count_from):  # type: ignore[override]
@@ -290,7 +291,7 @@ class _BatchedStorage(RetentionMixin):
 
     def count_retention_target_rows(self, target_name: str) -> int:
         self.counted.append(target_name)
-        return self.count_value
+        return self.counts.get(target_name, self.count_value)
 
     def delete_oldest_retention_target_rows(self, target_name: str, count: int) -> int:
         self.deleted.append((target_name, count))
@@ -349,6 +350,7 @@ def test_an_exact_probe_decides_like_the_count_did(
     granted_lock, anomalies, rows, expected
 ):
     storage = _BatchedStorage({"interactions": _exact(rows)})
+    storage.count_value = rows  # the table did not move since the probe
 
     with _limits(interactions=500):
         sweep_retention_caps(_ORG, storage)  # type: ignore[arg-type]
@@ -385,6 +387,42 @@ def test_the_confirming_count_is_what_the_delete_rests_on(granted_lock, anomalie
     assert tags["rows_before"] == 600
 
 
+@pytest.mark.parametrize(
+    ("snapshot", "now", "expected", "deleted"),
+    [
+        # A writer crossed the cap after the probe: the delete must still happen.
+        (499, 500, ["retention.cap.enforced"], [("interactions", 100)]),
+        # Rows were removed after the probe: no delete on the stale 500.
+        (500, 470, ["retention.cap.approaching"], []),
+        (450, 449, [], []),
+    ],
+)
+def test_a_snapshot_that_would_warn_or_delete_is_recounted_first(
+    granted_lock, anomalies, snapshot, now, expected, deleted
+):
+    """The probe is taken before every earlier target's turn, so a snapshot
+    only ever settles "nothing to do"; anything that would warn or delete is
+    decided on a count taken at its own turn, as the per-target loop did."""
+    storage = _BatchedStorage({"interactions": _exact(snapshot)})
+    storage.count_value = now
+
+    with _limits(interactions=500):
+        sweep_retention_caps(_ORG, storage)  # type: ignore[arg-type]
+
+    assert storage.counted == ["interactions"]
+    assert [name for name, _ in anomalies] == expected
+    assert storage.deleted == deleted
+
+
+def test_a_snapshot_below_the_warn_threshold_is_not_recounted(granted_lock, anomalies):
+    storage = _BatchedStorage({"interactions": _exact(449)})
+
+    with _limits(interactions=500):
+        sweep_retention_caps(_ORG, storage)  # type: ignore[arg-type]
+
+    assert storage.counted == []
+
+
 def test_an_estimate_under_the_threshold_settles_the_target(granted_lock, anomalies):
     storage = _BatchedStorage({"interactions": _estimate(399)})
 
@@ -409,6 +447,7 @@ def test_a_delete_reprobes_the_targets_after_it(granted_lock, anomalies):
             "skills": _exact(0),
         }
     )
+    storage.counts = {"interactions": 600}  # still at cap when its turn comes
     storage.count_value = 7
 
     with _limits(profiles=500, interactions=500, requests=500, skills=500):
@@ -417,7 +456,9 @@ def test_a_delete_reprobes_the_targets_after_it(granted_lock, anomalies):
     assert [list(call) for call in storage.probe_calls] == [
         ["profiles", "interactions", "requests", "skills"],
     ]
-    assert storage.counted == ["requests", "skills"], (
+    # `interactions` is recounted before its delete; the two after it are
+    # re-read rather than taken from the snapshot probed before the delete.
+    assert storage.counted == ["interactions", "requests", "skills"], (
         "the targets after a delete must be re-read, not taken from the "
         "snapshot probed before it"
     )
@@ -430,6 +471,7 @@ def test_a_probe_error_fails_only_its_own_target(granted_lock, anomalies):
             "interactions": _exact(600),
         }
     )
+    storage.count_value = 600
 
     with _limits(broken=500, interactions=500):
         result = sweep_retention_caps(_ORG, storage)  # type: ignore[arg-type]

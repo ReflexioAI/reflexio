@@ -169,7 +169,10 @@ def test_embedded_deferred_publish_still_sweeps_and_throttles(
         retention_sweep._library_last_sweep.clear()
         third = reflexio.publish_interaction(_request(2), defer_learning=True)
         assert third.success, third.message
-        assert count.call_count == 2
+        # The third sweep ran (the throttle was cleared) and found `requests`
+        # at its cap: counted once by the up-front probe and once more at its
+        # own turn, because a warning or delete never acts on the snapshot.
+        assert count.call_count == 3
     assert storage.count_retention_target_rows("requests") == 2
 
 
