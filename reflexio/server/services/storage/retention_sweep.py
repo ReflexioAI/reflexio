@@ -21,10 +21,17 @@ ever trusted to say "nothing to do": below the warn threshold by exact count,
 or below the exact-count threshold by estimate. A target the snapshot puts AT
 or OVER the warn threshold is counted again at its own turn, so every warning
 and every delete rests on a count taken immediately before acting on it -- the
-same window the per-target loop had. Writers committing between the snapshot
-and a target's turn can therefore only matter by moving it across 10% of its
-cap in that time, which the next pass then sees, exactly as a write landing
-just after the old per-target count was.
+same window the per-target loop had.
+
+Residual, stated rather than hidden: a target the snapshot put BELOW the warn
+threshold is not recounted, so writers adding more than 10% of its cap (25,000
+rows at the default) between the probe and its turn go unseen until the next
+pass. That window holds no statements but the recounts of near-cap targets.
+It is the same shape as, and narrower than, the residual the estimate already
+carries -- a burst of 20% of the cap inside the statistics flush delay, the
+documented limit of a ``reltuples``-based ``estimate_retention_target_rows``.
+Closing it entirely means counting every target at its own turn, which is the
+cost this change exists to remove.
 
 Two properties are
 load-bearing and easy to lose:
