@@ -20,8 +20,13 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from reflexio.server.env_utils import env_truthy
-from reflexio.server.search_runtime import checkpoint, http_request_deadline, remaining
+from reflexio.server.env_utils import env_truthy, positive_int_env
+from reflexio.server.search_runtime import (
+    checkpoint,
+    current,
+    http_request_deadline,
+    remaining,
+)
 from reflexio.server.tracing import profile_step
 
 _LOGGER = logging.getLogger(__name__)
@@ -444,12 +449,23 @@ def _post_embedding_batch(
 ) -> list[list[float]]:
     """POST one bounded batch of texts to the embedding service."""
     payload: dict[str, Any] = {"model": model, "input": texts}
+    interactive = current() is not None or all(
+        text.startswith(("query: ", "search_query: ")) for text in texts
+    )
+    payload["priority"] = "interactive" if interactive else "bulk"
+    if not interactive:
+        timeout = max(
+            timeout,
+            positive_int_env("REFLEXIO_EMBEDDING_BULK_TIMEOUT_MS", 2_000, _LOGGER)
+            / 1000,
+        )
     if dimensions:
         payload["dimensions"] = dimensions
 
     last_error: Exception | None = None
     for attempt in range(2):
         try:
+            payload["timeout_ms"] = max(1, min(600_000, int(remaining(timeout) * 1000)))
             response = _http_client().post(url, json=payload, timeout=timeout)
             response.raise_for_status()
             body = response.json()

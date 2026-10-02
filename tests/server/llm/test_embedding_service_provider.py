@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+from unittest.mock import Mock
 
 import httpx
 import pytest
@@ -40,6 +41,45 @@ class _Response:
 
 def _reset_cache(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(provider, "_configured_model_cache", {})
+
+
+@pytest.mark.parametrize(
+    "active_search,prefix,priority,budget",
+    [
+        (False, "passage: ", "bulk", 30000),
+        (False, "query: ", "interactive", 2000),
+        (True, "passage: ", "interactive", 250),
+    ],
+)
+def test_cpu_bulk_budget_never_extends_searches(
+    monkeypatch, active_search, prefix, priority, budget
+):
+    monkeypatch.setenv("REFLEXIO_EMBEDDING_BULK_TIMEOUT_MS", "30000")
+    monkeypatch.setattr(
+        provider, "current", lambda: object() if active_search else None
+    )
+    monkeypatch.setattr(
+        provider,
+        "remaining",
+        lambda timeout: min(timeout, 0.25) if active_search else timeout,
+    )
+    client = Mock()
+    client.post.return_value = _Response(
+        {"data": [{"index": 0, "embedding": [1.0, 0.0]}]}
+    )
+    monkeypatch.setattr(provider, "_http_client", lambda: client)
+    assert provider._post_embedding_batch(
+        "http://inference/v1/embeddings",
+        model="custom",
+        texts=[prefix + "example"],
+        dimensions=None,
+        timeout=2,
+        mode="internal_service",
+    ) == [[1.0, 0.0]]
+    payload = client.post.call_args.kwargs["json"]
+    assert payload["priority"] == priority
+    assert payload["timeout_ms"] == budget
+    assert client.post.call_args.kwargs["timeout"] == (30 if priority == "bulk" else 2)
 
 
 def test_local_models_always_route_to_separate_service(monkeypatch) -> None:

@@ -167,6 +167,12 @@ Key files:
 - `llm_utils.py`: Helper functions for Pydantic model conversion; retains the compatibility export for `env_utils.positive_int_env`
 - `embedding_policy.py`: Schema-independent model prefixes and retrieval/clustering thresholds; `services.embedding_text` re-exports its public names
 - `embedding_service.py`: Inference HTTP app. Package-root, LLM and rerank public exports load on demand, so importing this daemon does not pull in application clients, schemas or extraction code. Public `from reflexio import ...` and LLM/rerank imports retain their existing objects.
+  Embedding requests carry `priority` (`bulk` by default, `interactive` for searches)
+  and `timeout_ms`; rerank requests carry their remaining deadline. An optional
+  scheduler hook receives bounded embedding/rerank chunks and cancels queued
+  work on disconnect. The ordinary unscheduled daemon remains supported.
+  `REFLEXIO_EMBEDDING_BULK_TIMEOUT_MS` extends only bulk HTTP requests;
+  search requests always retain their active search deadline.
 
 **Features**:
 

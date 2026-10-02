@@ -20,6 +20,7 @@ from reflexio.server.llm.rerank.common import (
     CrossEncoderUnavailableError,
     reranker_enabled,
 )
+from reflexio.server.search_runtime import remaining
 from reflexio.server.tracing import profile_step
 
 _SERVICE_TIMEOUT_MS_ENV_VAR = "REFLEXIO_RERANK_SERVICE_TIMEOUT_MS"
@@ -89,6 +90,7 @@ def _score_pairs_remote(
     url = f"{service_url.rstrip('/')}/v1/rerank"
     payload = {"model": model, "query": query, "documents": docs}
     timeout_seconds = _rerank_service_timeout_seconds()
+    payload["timeout_ms"] = max(1, min(600_000, int(remaining(timeout_seconds) * 1000)))
     with profile_step(
         "search.rerank.api",
         model=model,
