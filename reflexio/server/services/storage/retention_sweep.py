@@ -16,6 +16,14 @@ after any delete the remaining targets are probed one at a time, as they always
 were, because a cascade may have shrunk them (``user_playbooks`` ->
 ``agent_playbook_source_user_playbooks``).
 
+The probe is a snapshot taken at the start of the pass. A row committed after
+it is seen by the next pass -- as a row committed after the old per-target
+count always was, since that count was taken before acting on it too. What
+grew is the window, from one target's own count to the time spent on the
+targets before it, which is short because only a warning or a skip can precede
+a target on a snapshot (a delete drops the snapshot). Caps are a high-water
+mark enforced per pass, never an exact ceiling.
+
 Two properties are
 load-bearing and easy to lose:
 
