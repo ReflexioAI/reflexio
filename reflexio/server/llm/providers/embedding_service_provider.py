@@ -55,6 +55,7 @@ _http_client_instance: httpx.Client | None = None
 _http_client_pid: int | None = None
 _configured_model_cache: dict[tuple[int, str], InferenceServiceCapabilities] = {}
 _configured_model_lock = threading.Lock()
+_ADVERTISED_CAPABILITY_LOCK_SECONDS = 5
 
 
 class EmbeddingUnavailableError(RuntimeError):
@@ -170,8 +171,20 @@ def resolve_service_configured_reranker_model() -> str:
     return model
 
 
-def resolve_inference_service_capabilities() -> InferenceServiceCapabilities:
+def cached_inference_service_capabilities() -> InferenceServiceCapabilities | None:
+    """Return this process/endpoint contract without network or lock waits."""
+    return _configured_model_cache.get((os.getpid(), inference_service_url()))
+
+
+def resolve_inference_service_capabilities(
+    *, advertised: dict[str, Any] | None = None
+) -> InferenceServiceCapabilities:
     """Discover and process-cache both models with one ``/health`` request.
+
+    A host may supply a bounded fresh health response to qualify a cold cache
+    without another HTTP request. An existing process contract remains immutable;
+    supplied metadata never replaces it. Supplied responses wait at most five
+    seconds for another caller currently discovering the initial contract.
 
     Raises:
         EmbeddingUnavailableError: If the provider is ``off``, or the service
@@ -196,17 +209,27 @@ def resolve_inference_service_capabilities() -> InferenceServiceCapabilities:
     cached = _configured_model_cache.get(cache_key)
     if cached is not None:
         return cached
-    with _configured_model_lock:
+    admitted = (
+        _configured_model_lock.acquire(timeout=_ADVERTISED_CAPABILITY_LOCK_SECONDS)
+        if advertised is not None
+        else _configured_model_lock.acquire()
+    )
+    if not admitted:
+        raise EmbeddingUnavailableError("Inference capability discovery is busy")
+    try:
         cached = _configured_model_cache.get(cache_key)
         if cached is not None:
             return cached
         try:
-            response = _http_client().get(
-                f"{service_url}/health",
-                timeout=embedding_service_timeout_seconds(mode),
-            )
-            response.raise_for_status()
-            body = response.json()
+            if advertised is None:
+                response = _http_client().get(
+                    f"{service_url}/health",
+                    timeout=embedding_service_timeout_seconds(mode),
+                )
+                response.raise_for_status()
+                body = response.json()
+            else:
+                body = advertised
             configured_model = body.get("configured_model")
         except (
             httpx.HTTPError,
@@ -235,6 +258,8 @@ def resolve_inference_service_capabilities() -> InferenceServiceCapabilities:
         )
         _configured_model_cache[cache_key] = capabilities
         return capabilities
+    finally:
+        _configured_model_lock.release()
 
 
 def _http_client() -> httpx.Client:

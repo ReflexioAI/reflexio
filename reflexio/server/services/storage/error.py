@@ -14,6 +14,10 @@ class StorageError(Exception):
         return f"StorageError: {self.message}"
 
 
+class ReadinessUnavailableError(StorageError):
+    """Required infrastructure is not yet qualified for this operation."""
+
+
 class SubjectWriteBarrierError(StorageError):
     """Raised when a write targets a subject with an active erasure barrier."""
 

@@ -74,6 +74,7 @@ from reflexio.server.services.profile.service import (
 from reflexio.server.services.service_utils import (
     extract_interactions_from_request_interaction_data_models,
 )
+from reflexio.server.services.storage.error import ReadinessUnavailableError
 from reflexio.server.services.storage.storage_base import (
     AgentRunRecord,
     AgentRunStatus,
@@ -111,6 +112,8 @@ def _finalization_failure_status(
     eventually be delivered. Permanent receipt rejection is terminal, as are
     ordinary finalization failures at or above the configured ceiling.
     """
+    if isinstance(exc, ReadinessUnavailableError):
+        return AgentRunStatus.FINALIZATION_FAILED
     if isinstance(exc, ReceiptDeliveryError):
         if exc.status is UsageEventDeliveryStatus.REJECTED:
             return AgentRunStatus.FAILED
@@ -611,6 +614,43 @@ class ExtractionResumeWorker:
             items, pending_tool_call_ids, model_provenance = self._resume_run(
                 run, resolved_calls
             )
+        except ReadinessUnavailableError:
+            from reflexio.server.services.durable_learning.user_lease import (
+                fence_explicit_extraction,
+            )
+
+            if run.claimed_by is None or run.claimed_at is None:
+                raise ResumeWorkerError("Resume claim has no owner identity") from None
+            with self.storage.commit_scope():
+                fence_explicit_extraction(self.storage)
+                latest = self.storage.get_agent_run(run.id)
+                if (
+                    latest is not None
+                    and latest.status == AgentRunStatus.AGENT_COMPLETED
+                    and latest.committed_output is not None
+                    and latest.claimed_by == run.claimed_by
+                    and latest.claimed_at == run.claimed_at
+                ):
+                    # The agent has already committed its output. Conversion
+                    # readiness must retry that output rather than rerun the agent
+                    # or refund an execution that actually completed.
+                    return self.storage.update_agent_run_status(
+                        run.id,
+                        AgentRunStatus.FINALIZATION_FAILED,
+                        expected_statuses=(AgentRunStatus.AGENT_COMPLETED,),
+                        expected_claimed_by=run.claimed_by,
+                        expected_claimed_at=run.claimed_at,
+                        next_resume_at=datetime.now(UTC) + timedelta(seconds=30),
+                        last_error="ReadinessUnavailableError",
+                    )
+                deferred = self.storage.defer_extraction_resume(
+                    run.id,
+                    run.claimed_by,
+                    run.claimed_at.isoformat(),
+                    run.resume_attempts,
+                    (datetime.now(UTC) + timedelta(seconds=30)).isoformat(),
+                )
+            return self.storage.get_agent_run(run.id) if deferred else None
         except Exception as exc:
             with error_tags(
                 subsystem="extraction",
@@ -651,6 +691,13 @@ class ExtractionResumeWorker:
                 run.id,
                 finalized_status,
                 pending_tool_call_ids=pending_tool_call_ids,
+            )
+        except ReadinessUnavailableError:
+            return self._update_claimed_status(
+                run.id,
+                AgentRunStatus.FINALIZATION_FAILED,
+                next_resume_at=datetime.now(UTC) + timedelta(seconds=30),
+                last_error="ReadinessUnavailableError",
             )
         except Exception as exc:
             with error_tags(
@@ -716,6 +763,13 @@ class ExtractionResumeWorker:
                 run.id,
                 finalized_status,
                 pending_tool_call_ids=pending_tool_call_ids,
+            )
+        except ReadinessUnavailableError:
+            return self._update_claimed_status(
+                run.id,
+                AgentRunStatus.FINALIZATION_FAILED,
+                next_resume_at=datetime.now(UTC) + timedelta(seconds=30),
+                last_error="ReadinessUnavailableError",
             )
         except Exception as exc:
             with error_tags(

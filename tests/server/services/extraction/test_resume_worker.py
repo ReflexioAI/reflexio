@@ -2037,3 +2037,204 @@ def test_erased_source_cancels_resume_before_execution(request_context, storage)
     assert run is not None and run.status == AgentRunStatus.CANCELLED
     assert run.last_error == "source_interactions_erased"
     assert worker.run_once() is None
+
+
+@pytest.mark.parametrize("stage", ["retry", "finalization", "conversion"])
+def test_readiness_defers_committed_finalization_without_spending_budget(
+    storage, request_context, monkeypatch, stage
+):
+    from reflexio.server.services.storage.error import ReadinessUnavailableError
+
+    _seed_interactions(storage)
+    output = {
+        "profiles": [{"content": "Deploy to AWS ECS.", "time_to_live": "infinity"}]
+    }
+    initial_resume = stage != "retry"
+    if initial_resume:
+        _seed_ready_run(storage)
+    else:
+        storage.create_agent_run(
+            AgentRunRecord(
+                id="run_1",
+                binding=AgentBinding(
+                    org_id="org_1",
+                    extractor_kind="profile",
+                    user_id="user_1",
+                    request_id="request_1",
+                    agent_version="v1",
+                    source="api",
+                    source_interaction_ids=[1, 2],
+                ),
+                status=AgentRunStatus.FINALIZATION_FAILED,
+                committed_output=output,
+                finalization_attempts=2,
+                generation_request_snapshot={"request_id": "request_1"},
+            )
+        )
+    worker = ExtractionResumeWorker(
+        request_context=request_context, llm_client=MagicMock()
+    )
+    qualified = False
+
+    def embedding(*_args, **_kwargs):
+        if not qualified:
+            raise ReadinessUnavailableError("audit pending")
+        return [0.0] * 512
+
+    monkeypatch.setattr(storage, "_get_embedding", embedding)
+    monkeypatch.setattr(
+        "reflexio.server.services.profile.components.consolidator.ProfileConsolidator.deduplicate",
+        lambda _self, profiles, _user_id, _request_id: (profiles, [], []),
+    )
+
+    def resume(run, _calls):
+        storage.update_agent_run_status(
+            run.id, AgentRunStatus.AGENT_COMPLETED, committed_output=output
+        )
+        if stage == "conversion":
+            raise ReadinessUnavailableError("conversion audit pending")
+        return worker._items_from_committed_output(storage.get_agent_run(run.id))
+
+    resume_call = MagicMock(side_effect=resume)
+    monkeypatch.setattr(worker, "_resume_run", resume_call)
+    starting_attempts = 0 if initial_resume else 2
+    for _ in range(8):
+        before = datetime.now(UTC)
+        deferred = worker.run_once()
+        assert deferred is not None
+        assert deferred.status == AgentRunStatus.FINALIZATION_FAILED
+        assert deferred.finalization_attempts == starting_attempts
+        assert deferred.resume_attempts == int(initial_resume)
+        assert deferred.committed_output == output
+        assert deferred.next_resume_at is not None
+        assert 29 <= (deferred.next_resume_at - before).total_seconds() <= 31
+        assert (
+            storage.get_agent_run_finalization_receipt(
+                run_id="run_1", entity_type="profile"
+            )
+            is None
+        )
+        assert storage.get_user_profile("user_1") == []
+        storage.update_agent_run_status(
+            "run_1",
+            AgentRunStatus.FINALIZATION_FAILED,
+            next_resume_at=datetime(2000, 1, 1, tzinfo=UTC),
+        )
+    qualified = True
+    finalized = worker.run_once()
+    assert finalized is not None
+    assert finalized.status == AgentRunStatus.FINALIZED
+    assert finalized.finalization_attempts == starting_attempts
+    assert len(storage.get_user_profile("user_1")) == 1
+    assert (
+        len(
+            storage.get_agent_run_finalization_receipt(
+                run_id="run_1", entity_type="profile"
+            )
+        )
+        == 1
+    )
+    assert resume_call.call_count == int(initial_resume)
+    assert worker.run_once() is None
+
+
+def test_readiness_resume_deferral_refunds_attempt_and_recovers(
+    storage, request_context, monkeypatch
+):
+    from reflexio.server.services.storage.error import ReadinessUnavailableError
+
+    _seed_interactions(storage)
+    _seed_ready_run(storage)
+    worker = ExtractionResumeWorker(
+        request_context=request_context, llm_client=MagicMock()
+    )
+    resume = MagicMock(side_effect=ReadinessUnavailableError("inference pending"))
+    monkeypatch.setattr(worker, "_resume_run", resume)
+    for _ in range(8):
+        before = datetime.now(UTC)
+        deferred = worker.run_once()
+        assert deferred is not None
+        assert deferred.status == AgentRunStatus.RESUME_READY
+        assert deferred.resume_attempts == 0
+        assert deferred.next_resume_at is not None
+        assert 29 <= (deferred.next_resume_at - before).total_seconds() <= 31
+        storage.update_agent_run_status(
+            "run_1",
+            AgentRunStatus.RESUME_READY,
+            next_resume_at=datetime(2000, 1, 1, tzinfo=UTC),
+        )
+    resume.side_effect = None
+    resume.return_value = ([], [], None)
+    monkeypatch.setattr(
+        worker,
+        "_finalize_items",
+        lambda *_args, **_kwargs: FinalizationResult([], won_receipt=False),
+    )
+    finalized = worker.run_once()
+    assert finalized is not None
+    assert finalized.status == AgentRunStatus.FINALIZED
+    assert finalized.resume_attempts == 1
+
+
+def test_readiness_resume_refund_cannot_mutate_new_owner_or_refund_twice(storage):
+    from reflexio.server.services.durable_learning.user_lease import (
+        fence_explicit_extraction,
+        user_extraction_lease,
+    )
+
+    _seed_interactions(storage)
+    _seed_ready_run(storage)
+    claim = storage.claim_ready_agent_run(org_id="org_1", worker_id="worker_1")
+    with user_extraction_lease(storage, "user_1"), storage.commit_scope():
+        fence_explicit_extraction(storage)
+        attempts = storage.begin_extraction_resume(
+            claim.id, claim.claimed_by, claim.claimed_at.isoformat()
+        )
+        retry_at = (datetime.now(UTC) + timedelta(seconds=30)).isoformat()
+        assert not storage.defer_extraction_resume(
+            claim.id,
+            "different_owner",
+            claim.claimed_at.isoformat(),
+            attempts,
+            retry_at,
+        )
+        assert storage.get_agent_run(claim.id).resume_attempts == 1
+        assert storage.defer_extraction_resume(
+            claim.id, claim.claimed_by, claim.claimed_at.isoformat(), attempts, retry_at
+        )
+        assert not storage.defer_extraction_resume(
+            claim.id, claim.claimed_by, claim.claimed_at.isoformat(), attempts, retry_at
+        )
+    replacement = storage.claim_ready_agent_run(
+        org_id="org_1",
+        worker_id="worker_2",
+        now=datetime.now(UTC) + timedelta(seconds=31),
+    )
+    with user_extraction_lease(storage, "user_1"), storage.commit_scope():
+        fence_explicit_extraction(storage)
+        assert (
+            storage.begin_extraction_resume(
+                replacement.id,
+                replacement.claimed_by,
+                replacement.claimed_at.isoformat(),
+            )
+            == 1
+        )
+        assert not storage.defer_extraction_resume(
+            claim.id, claim.claimed_by, claim.claimed_at.isoformat(), attempts, retry_at
+        )
+        assert storage.get_agent_run(claim.id).resume_attempts == 1
+        assert storage.get_agent_run(claim.id).status == AgentRunStatus.RESUMING
+
+
+def test_readiness_finalization_classification_never_exhausts_retry_budget():
+    from reflexio.server.services.storage.error import ReadinessUnavailableError
+
+    assert (
+        _finalization_failure_status(
+            ReadinessUnavailableError("pending"),
+            next_attempt_count=100,
+            max_finalization_attempts=3,
+        )
+        == AgentRunStatus.FINALIZATION_FAILED
+    )

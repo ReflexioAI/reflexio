@@ -715,3 +715,15 @@ Generation services follow `BaseGenerationService`; focused search and read-side
 - [Prompt Bank README](prompt/prompt_bank/README.md) -- versioned prompt template system
 - [Playbook Service README](services/playbook/README.md) -- playbook extraction, aggregation, and deduplication pipeline
 - [Site Variables README](site_var/README.md) -- global configuration and feature flags
+
+## Cached host readiness
+
+Standalone `GET /health` keeps its existing healthy response. Application hosts
+can set `app.state.readiness_provider` to a callable returning `ReadinessResponse`
+from `models/api_schema/readiness.py`; the route reads that cached snapshot and
+returns 503 for unhealthy hosts. The provider performs no dependency I/O during
+a health request. `/healthz` remains process liveness.
+
+Hosts can raise `ReadinessUnavailableError` for temporarily unqualified vector
+operations. Resumable extraction keeps these runs queued without spending the
+retry budget; resume refunds remain protected by the claim and user lease fence.

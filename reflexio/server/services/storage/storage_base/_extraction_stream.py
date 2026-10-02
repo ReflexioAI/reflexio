@@ -11,6 +11,7 @@ import json
 import uuid
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any, Literal, Protocol
 
 from reflexio.server.work_scope import current_project_id
@@ -778,6 +779,36 @@ class ExtractionStreamStore:
                 (run_id, claimed_by, claimed_at),
             )
             return int(rows[0]["resume_attempts"]) if rows else None
+
+    def defer_extraction_resume(
+        self,
+        run_id: str,
+        claimed_by: str,
+        claimed_at: str,
+        attempt_count: int,
+        next_resume_at: str,
+    ) -> bool:
+        """Refund one infrastructure deferral under the same fenced user lease.
+
+        Claim, status and attempt checks prevent stale owners or repeated calls
+        from refunding another execution attempt. No agent output is discarded.
+        """
+        with self._stream_sql() as db:
+            rows = db.query(
+                f"UPDATE {db.table('_agent_runs')} SET resume_attempts=resume_attempts-1, "
+                "status='resume_ready', next_resume_at=?, updated_at=?, last_error='ReadinessUnavailableError' "
+                "WHERE id=? AND status='resuming' AND claimed_by=? AND claimed_at=? "
+                "AND resume_attempts=? AND resume_attempts>0 RETURNING id",
+                (
+                    next_resume_at,
+                    datetime.now(UTC).isoformat(),
+                    run_id,
+                    claimed_by,
+                    claimed_at,
+                    attempt_count,
+                ),
+            )
+            return bool(rows)
 
     def claim_user_extraction(
         self, user_id: str, owner: str, seconds: int
