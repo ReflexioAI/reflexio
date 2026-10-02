@@ -92,7 +92,7 @@ FULL_ROUTES = [
         None,
         (),
         "health_check",
-        (),
+        ("default_readiness",),
     ),
     (
         "/api/whoami",
