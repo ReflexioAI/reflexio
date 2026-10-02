@@ -6,7 +6,34 @@ target -- 17 today -- each one a serialised remote round trip, so one unlucky
 publish per throttle window paid for all of them and reported a fast request.
 Measured at 968ms on idle staging: 52% of that publish.
 
-It now runs once per project per lineage-GC tick. Two properties are
+It now runs once per project per lineage-GC tick, and sizes every target in
+ONE ``RetentionMixin.probe_retention_targets`` call before the per-target loop.
+On a remote backend that is a catalog read plus at most one batched count, not
+two to three round trips per target: an empty, never-analyzed org used to pay
+for 17 exact counts one by one, ~23 s per project, all of it overhead. The
+decisions are the per-target ones -- a delete still rests on an exact count, and
+after any delete the remaining targets are probed one at a time, as they always
+were, because a cascade may have shrunk them (``user_playbooks`` ->
+``agent_playbook_source_user_playbooks``).
+
+The probe is a snapshot taken at the start of the pass, and a snapshot is only
+ever trusted to say "nothing to do": below the warn threshold by exact count,
+or below the exact-count threshold by estimate. A target the snapshot puts AT
+or OVER the warn threshold is counted again at its own turn, so every warning
+and every delete rests on a count taken immediately before acting on it -- the
+same window the per-target loop had.
+
+Residual, stated rather than hidden: a target the snapshot put BELOW the warn
+threshold is not recounted, so writers adding more than 10% of its cap (25,000
+rows at the default) between the probe and its turn go unseen until the next
+pass. That window holds no statements but the recounts of near-cap targets.
+It is the same shape as, and narrower than, the residual the estimate already
+carries -- a burst of 20% of the cap inside the statistics flush delay, the
+documented limit of a ``reltuples``-based ``estimate_retention_target_rows``.
+Closing it entirely means counting every target at its own turn, which is the
+cost this change exists to remove.
+
+Two properties are
 load-bearing and easy to lose:
 
 - **It must run with a project bound.** Under the enterprise row-level policies
@@ -30,7 +57,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -41,6 +68,11 @@ from reflexio.server.services.operation_state_utils import OperationStateManager
 from reflexio.server.services.storage.retention import (
     delete_count_for_retention,
     get_row_retention_limits,
+)
+from reflexio.server.services.storage.retention_mixin import (
+    RetentionMixin,
+    RetentionProbe,
+    probe_retention_targets_individually,
 )
 from reflexio.server.services.storage.storage_base import BaseStorage
 from reflexio.server.work_scope import WORK_SCOPE_PROVIDER, current_project_id
@@ -188,6 +220,9 @@ def sweep_retention_caps(org_id: str, storage: BaseStorage) -> RetentionSweepRes
     targets_failed = 0
     # Per-target wall time, so a slow sweep names the table that made it slow.
     target_seconds: dict[str, float] = {}
+    # Time inside the up-front `probe_retention_targets`, which a batched
+    # backend cannot attribute to any one target.
+    probe_seconds = 0.0
     try:
         project_id = current_project_id()
 
@@ -226,14 +261,28 @@ def sweep_retention_caps(org_id: str, storage: BaseStorage) -> RetentionSweepRes
         if not mgr.acquire_simple_lock(stale_seconds=CLEANUP_STALE_LOCK_SECONDS):
             return RetentionSweepResult(0)
         try:
+            probe_started = time.monotonic()
+            probes: Mapping[str, RetentionProbe] = _probe_targets(storage, limits)
+            probe_seconds = time.monotonic() - probe_started
             for target_name, limit in limits.items():
+                probe = probes.get(target_name)
                 # Isolate per-target failures so one bad table does not
                 # short-circuit every subsequent target.
                 target_started = time.monotonic()
                 try:
-                    deleted_total += _sweep_target(
-                        org_id, project_id, storage, target_name, limit
-                    )
+                    total_count = _exact_rows(storage, target_name, limit, probe)
+                    if total_count is not None:
+                        if total_count >= limit:
+                            # A cascade may have removed rows from a target
+                            # probed before this delete, and the per-target
+                            # loop this replaced always saw a table as it stood
+                            # after the previous delete. So every target after
+                            # one is probed on its own, when its turn comes --
+                            # linear, as before, on every backend.
+                            probes = {}
+                        deleted_total += _sweep_target(
+                            org_id, project_id, storage, target_name, limit, total_count
+                        )
                 except Exception as exc:  # noqa: BLE001
                     targets_failed += 1
                     with error_tags(
@@ -247,7 +296,9 @@ def sweep_retention_caps(org_id: str, storage: BaseStorage) -> RetentionSweepRes
                             "Failed to sweep retention target %s", target_name
                         )
                 finally:
-                    target_seconds[target_name] = time.monotonic() - target_started
+                    target_seconds[target_name] = (
+                        time.monotonic() - target_started
+                    ) + (probe.seconds if probe is not None else 0.0)
         finally:
             mgr.release_simple_lock()
     except Exception as exc:  # noqa: BLE001
@@ -272,6 +323,7 @@ def sweep_retention_caps(org_id: str, storage: BaseStorage) -> RetentionSweepRes
                 target_seconds, key=target_seconds.__getitem__, default="-"
             ),
             slowest_target_seconds=round(max(target_seconds.values(), default=0.0), 1),
+            probe_seconds=round(probe_seconds, 1),
         )
     # EVERY target failing is a different animal from one failing: a single bad
     # table is isolated and usually permanent, but a backend-wide transient
@@ -288,43 +340,95 @@ def sweep_retention_caps(org_id: str, storage: BaseStorage) -> RetentionSweepRes
     return RetentionSweepResult(deleted_total)
 
 
+def _probe_targets(
+    storage: BaseStorage, limits: Mapping[str, int]
+) -> Mapping[str, RetentionProbe]:
+    """Size ``limits``' targets in one call where the backend supports it.
+
+    ``probe_retention_targets`` is supplied by ``RetentionMixin``, which every
+    SQL backend mixes in, and is deliberately NOT declared on ``BaseStorage`` --
+    see the note at ``storage_base/_base.py``: leaving it off is what lets a test
+    double subclass ``BaseStorage`` without implementing retention. Anything
+    without the mixin is probed one target at a time through the same
+    ``estimate``/``count`` methods this module always called, so a backend that
+    really lacks them still fails per target, inside the loop's isolation.
+    """
+    exact_count_from = {
+        name: limit * EXACT_COUNT_FROM_FRACTION for name, limit in limits.items()
+    }
+    if isinstance(storage, RetentionMixin):
+        return storage.probe_retention_targets(exact_count_from)
+    return probe_retention_targets_individually(storage, exact_count_from)
+
+
+def _exact_rows(
+    storage: BaseStorage,
+    target_name: str,
+    limit: int,
+    probe: RetentionProbe | None,
+) -> int | None:
+    """Return the target's EXACT row count, or ``None`` when it is settled cheaply.
+
+    ``None`` only for an estimate under ``EXACT_COUNT_FROM_FRACTION`` of the cap.
+    Everything downstream -- the approaching warning and every delete -- rests
+    on what this returns, so it never returns an estimate: one at or above the
+    threshold (a probe that should have counted and did not) is counted here.
+    Nor does it act on a STALE count: a pre-fetched exact count at or over
+    ``CAP_WARN_FRACTION`` -- one that will warn or delete -- is taken again now,
+    because the pre-fetch happened before every earlier target's turn.
+
+    Args:
+        storage (BaseStorage): The org's app-role storage.
+        target_name (str): Retention target being probed.
+        limit (int): Row cap for this target, already known positive.
+        probe (RetentionProbe | None): The pre-fetched probe; ``None`` when the
+            backend returned none for this target, which is probed on its own.
+
+    Returns:
+        int | None: The exact count, or ``None`` when the target is far below
+        its cap by estimate.
+    """
+    fresh = probe is None
+    if probe is None:
+        probe = probe_retention_targets_individually(
+            storage, {target_name: limit * EXACT_COUNT_FROM_FRACTION}
+        )[target_name]
+    if probe.error is not None:
+        raise probe.error
+    if probe.exact:
+        if fresh or probe.rows < limit * CAP_WARN_FRACTION:
+            return probe.rows
+    elif probe.rows < limit * EXACT_COUNT_FROM_FRACTION:
+        return None
+    return storage.count_retention_target_rows(target_name)  # type: ignore[reportAttributeAccessIssue]
+
+
 def _sweep_target(
     org_id: str,
     project_id: str | None,
     storage: BaseStorage,
     target_name: str,
     limit: int,
+    total_count: int,
 ) -> int:
-    """Probe one target, warn near its cap, delete at it.
+    """Warn near one target's cap, delete at it.
 
     Args:
         org_id (str): Org being swept, for anomaly attribution.
         project_id (str | None): Project bound on this thread, or ``None``
             where projects do not exist (OSS).
         storage (BaseStorage): The org's app-role storage.
-        target_name (str): Retention target being probed.
+        target_name (str): Retention target being enforced.
         limit (int): Row cap for this target, already known positive.
+        total_count (int): The target's EXACT row count -- never an estimate.
 
     Returns:
         int: Rows deleted for this target.
     """
-    # `count_retention_target_rows` / `delete_oldest_retention_target_rows` are
-    # supplied by `RetentionMixin`, which every SQL backend mixes in. They are
-    # deliberately NOT declared on `BaseStorage` -- see the note at
-    # `storage_base/_base.py`: leaving them off is what lets a test double
-    # subclass `BaseStorage` without implementing retention at all. So the
-    # caller genuinely holds a `BaseStorage` and the attribute is genuinely
-    # absent from that declared type; the ignore records that, rather than
-    # widening the parameter to a Protocol the call site would then have to cast
-    # to. A backend that really lacks the hook raises `AttributeError`, which
-    # the per-target isolation above absorbs.
-    # Cheap first: an upper-bound estimate well under the cap settles it without
-    # an exact count(*). A backend without one returns None and is counted.
-    estimate_rows = getattr(storage, "estimate_retention_target_rows", None)
-    estimate = estimate_rows(target_name) if estimate_rows is not None else None
-    if estimate is not None and estimate < limit * EXACT_COUNT_FROM_FRACTION:
-        return 0
-    total_count = storage.count_retention_target_rows(target_name)  # type: ignore[reportAttributeAccessIssue]
+    # `delete_oldest_retention_target_rows` is supplied by `RetentionMixin`; see
+    # `_probe_targets` for why it is not declared on `BaseStorage`. A backend
+    # that really lacks it raises `AttributeError`, which the per-target
+    # isolation in the caller absorbs.
     if total_count < limit:
         if total_count >= limit * CAP_WARN_FRACTION:
             capture_anomaly(

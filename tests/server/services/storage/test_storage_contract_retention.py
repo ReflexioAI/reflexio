@@ -72,6 +72,24 @@ def test_retention_deletes_oldest_interactions(storage: BaseStorage) -> None:
     assert {interaction.interaction_id for interaction in remaining} == {3, 4, 5}
 
 
+def test_probe_counts_exactly_unless_the_estimate_settles_it(
+    storage: BaseStorage,
+) -> None:
+    """The batched probe answers what the per-target estimate + count did."""
+    now = int(datetime.now(UTC).timestamp())
+    for i in range(1, 4):
+        storage.add_user_interaction("u1", _make_interaction(i, f"req{i}", now + i))
+
+    probes = storage.probe_retention_targets(  # type: ignore[attr-defined]
+        {"interactions": 0.0, "profiles": 0.0}
+    )
+
+    assert set(probes) == {"interactions", "profiles"}
+    assert (probes["interactions"].rows, probes["interactions"].exact) == (3, True)
+    assert (probes["profiles"].rows, probes["profiles"].exact) == (0, True)
+    assert all(probe.error is None for probe in probes.values())
+
+
 def test_retention_deletes_oldest_profiles(storage: BaseStorage) -> None:
     storage.add_user_profile("u1", [_make_profile("p1")])
     storage.add_user_profile("u1", [_make_profile("p2")])
