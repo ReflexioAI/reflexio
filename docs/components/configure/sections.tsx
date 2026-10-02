@@ -366,7 +366,7 @@ export function APIKeysSection({
 }
 
 const LLM_FIELDS: {
-  key: keyof LLMConfig;
+  key: Exclude<keyof LLMConfig, "generation_timeout_seconds">;
   label: string;
   hint: string;
 }[] = [

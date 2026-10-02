@@ -203,7 +203,7 @@ def test_distinct_agent_versions_split_into_separate_descriptors(
 def _seed_eval_result(
     storage: BaseStorage,
     session_id: str,
-    evaluation_name: str,
+    evaluation_name: str | None,
     user_id: str = "u1",
     agent_version: str = "v1",
     created_at: int = 1000,
@@ -524,3 +524,24 @@ def test_delete_by_ids_all_unknown_returns_zero(storage: BaseStorage) -> None:
     assert n == 0
     remaining = storage.get_agent_success_evaluation_results(limit=100)
     assert len(remaining) == 1
+
+
+@pytest.mark.parametrize("evaluation_name", [None, "named-judge"])
+def test_eval_id_lookup_preserves_nullable_identity(
+    storage: BaseStorage, evaluation_name: str | None
+) -> None:
+    _seed_eval_result(storage, "nullable-session", evaluation_name)
+    ids = storage.get_agent_success_evaluation_result_ids(
+        user_id="u1",
+        session_id="nullable-session",
+        evaluation_name=evaluation_name,
+        agent_version="v1",
+    )
+    assert len(ids) == 1
+    matching = [
+        row
+        for row in storage.get_agent_success_evaluation_results(limit=100)
+        if row.result_id == ids[0]
+    ]
+    assert len(matching) == 1
+    assert matching[0].evaluation_name == evaluation_name
