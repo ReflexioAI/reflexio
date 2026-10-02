@@ -331,10 +331,12 @@ def create_embedding_app(
             [request.input] if isinstance(request.input, str) else list(request.input)
         )
         if inference_submit is not None:
+            _activate_model(request.model, allowed_models=effective_allowed_models)
+            encoder = effective_encoders.get(request.model)
             embeddings = await _until_disconnected(
                 http_request,
                 inference_submit(
-                    lambda chunk: effective_encoders[request.model](chunk),
+                    encoder or (lambda chunk: _encode_texts_now(request.model, chunk)),
                     texts,
                     request.priority,
                     request.timeout_ms,

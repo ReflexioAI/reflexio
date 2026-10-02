@@ -9,10 +9,52 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from starlette.requests import Request
 
+from reflexio.server.llm import embedding_service
 from reflexio.server.llm.embedding_service import (
     _until_disconnected,
     create_embedding_app,
 )
+
+
+@pytest.fixture(autouse=True)
+def isolated_active_model(monkeypatch):
+    monkeypatch.setattr(embedding_service, "_ACTIVE_MODEL", None)
+
+
+@pytest.mark.parametrize(
+    "model", [embedding_service.MINILM_MODEL, embedding_service.NOMIC_TEXT_MODEL]
+)
+def test_scheduler_preserves_builtin_encoders_and_single_model_contract(
+    model, monkeypatch
+):
+    encoded = Mock(return_value=[[1.0, 0.0]])
+    monkeypatch.setattr(embedding_service, "_encode_texts_now", encoded)
+
+    async def submit(encode, texts, *_args):
+        return encode(texts)
+
+    runner = Mock()
+    runner.prewarm.return_value = True
+    app = create_embedding_app(inference_submit=submit, reranker_runner=runner)
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/embeddings", json={"model": model, "input": "example"}
+        )
+        assert response.status_code == 200
+        assert response.json()["data"][0]["embedding"] == [1.0, 0.0]
+        encoded.assert_called_once_with(model, ["example"])
+        other = (
+            embedding_service.NOMIC_TEXT_MODEL
+            if model == embedding_service.MINILM_MODEL
+            else embedding_service.MINILM_MODEL
+        )
+        assert (
+            client.post(
+                "/v1/embeddings", json={"model": other, "input": "other"}
+            ).status_code
+            == 409
+        )
+    encoded.assert_called_once()
 
 
 def make_app(submit, ready=True):
