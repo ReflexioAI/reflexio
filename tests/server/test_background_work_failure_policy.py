@@ -118,7 +118,7 @@ def test_transient_failures_persisting_ten_minutes_escalate(
     caplog, clock, transient_failure_classifier
 ):
     levels = []
-    for _ in range(7):  # t = 0, 100, ..., 600 seconds; gaps stay under 300
+    for _ in range(7):  # t = 0, 100, ..., 600 seconds; gaps stay under the gap
         levels.append(_report(caplog, _raised(transient_failure_classifier("x"))))
         clock[0] += 100
 
@@ -137,18 +137,41 @@ def test_blips_hours_apart_never_escalate(caplog, clock, transient_failure_class
     assert [first.levelno, second.levelno] == [logging.WARNING, logging.WARNING]
 
 
-def test_a_gap_longer_than_five_minutes_starts_a_new_episode(
+def test_a_gap_longer_than_twenty_minutes_starts_a_new_episode(
     caplog, clock, transient_failure_classifier
 ):
     _report(caplog, _raised(transient_failure_classifier("x")))
     clock[0] += 290
     _report(caplog, _raised(transient_failure_classifier("x")))
-    clock[0] += 301  # gap > 300: the episode resets at t=591
+    clock[0] += 1201  # gap > 1200: the episode resets at t=1491
     _report(caplog, _raised(transient_failure_classifier("x")))
-    clock[0] += 290  # t=881, only 290s into the new episode
+    clock[0] += 290  # only 290s into the new episode
     record = _report(caplog, _raised(transient_failure_classifier("x")))
 
     assert record.levelno == logging.WARNING
+
+
+@pytest.mark.parametrize(
+    ("cadence", "escalates_on"),
+    [
+        (340.0, 3),  # lineage GC / aggregation backoff: 300s plus run time
+        (930.0, 2),  # Braintrust: 900s poll plus run time
+    ],
+    ids=["300s-backoff", "900s-poller"],
+)
+def test_a_slow_scheduler_still_escalates_a_persistent_outage(
+    caplog, clock, transient_failure_classifier, cadence, escalates_on
+):
+    """Each failure of a slow scheduler must extend the episode, not reset it."""
+    levels = []
+    for _ in range(escalates_on):
+        levels.append(
+            _report(caplog, _raised(transient_failure_classifier("x"))).levelno
+        )
+        clock[0] += cadence
+
+    assert levels[:-1] == [logging.WARNING] * (escalates_on - 1)
+    assert levels[-1] == logging.ERROR
 
 
 def test_scopes_escalate_independently(caplog, clock, transient_failure_classifier):
@@ -171,7 +194,7 @@ def test_tracked_scopes_stay_bounded_and_ended_episodes_make_room(
 
     assert set(background_work._episodes) == {"a", "b", "c"}
 
-    clock[0] += 301  # every tracked episode has now ended
+    clock[0] += 1201  # every tracked episode has now ended
     _report(caplog, _raised(transient_failure_classifier("x")), scope="d")
 
     assert set(background_work._episodes) == {"d"}

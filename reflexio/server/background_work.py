@@ -28,8 +28,16 @@ _policy_logger = logging.getLogger(__name__)
 # A rollout drop lasts seconds; an outage lasts minutes. Transient failures for
 # one scope that keep recurring (gaps under the episode gap) for the escalation
 # window are reported at ERROR, so a real outage still pages.
+#
+# The gap must exceed the SLOWEST retry cadence plus its run time, or a slow
+# scheduler resets its episode on every failure and never escalates: lineage GC
+# retries 300s after a failed tick, aggregation backs a scope off for 300s, and
+# Braintrust polls every 900s. 20 minutes covers all three (a 900s poller
+# escalates on its second consecutive failure) while separate rollouts, hours
+# apart, still start fresh episodes. Cost: two rollouts under 20 minutes apart
+# that both hit one scope can merge into a single ERROR.
 _ESCALATE_AFTER_SECONDS = 600.0
-_EPISODE_GAP_SECONDS = 300.0
+_EPISODE_GAP_SECONDS = 1200.0
 _MAX_CHAIN_LINKS = 32
 _MAX_MESSAGE_CHARS = 200
 _MAX_TRACKED_SCOPES = 1024
