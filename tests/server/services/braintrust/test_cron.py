@@ -183,3 +183,30 @@ def test_service_default_factory_honors_braintrust_base_url(monkeypatch) -> None
 # Quiet the linter about importing time (used in scheduler module)
 _ = time
 _ = pytest
+
+
+def test_transient_org_sync_failure_is_a_warning_and_later_orgs_still_run(
+    caplog, transient_failure_classifier
+) -> None:
+    import logging
+
+    calls: list[str] = []
+
+    def run_sync(org: str) -> None:
+        if org == "org_a":
+            raise transient_failure_classifier("connection reset")
+        calls.append(org)
+        scheduler.stop()
+
+    scheduler = BraintrustSyncScheduler(
+        interval_seconds=999,
+        list_connected_orgs=lambda: ["org_a", "org_b"],
+        run_sync_for_org=run_sync,
+    )
+    caplog.set_level(logging.WARNING, logger=_cron.logger.name)
+
+    scheduler._loop()
+
+    assert calls == ["org_b"]
+    failures = [r for r in caplog.records if "sync_org_failed" in r.getMessage()]
+    assert [r.levelno for r in failures] == [logging.WARNING]

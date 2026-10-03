@@ -31,6 +31,7 @@ from collections.abc import Callable
 from reflexio.models.config_schema import Config
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.auth import DEFAULT_ORG_ID
+from reflexio.server.background_work import report_background_failure
 from reflexio.server.env_utils import env_str
 from reflexio.server.error_reporting import capture_anomaly
 from reflexio.server.org_fanout import iterate_orgs_bounded
@@ -304,15 +305,18 @@ class LineageGCScheduler(ThreadedScheduler):
         if self.org_id_provider is not None:
             try:
                 return list(self.org_id_provider())
-            except Exception:
+            except Exception as exc:
                 capture_anomaly(
                     "lineage.gc.org_id_provider_failed",
                     bootstrap_org_id=self.bootstrap_org_id,
                 )
-                logger.exception(
-                    "event=lineage_gc_org_id_provider_failed bootstrap_org_id=%s "
-                    "— falling back to bootstrap org only",
-                    self.bootstrap_org_id,
+                report_background_failure(
+                    logger,
+                    "lineage_gc_org_id_provider_failed",
+                    exc,
+                    scope="lineage-gc-org-discovery",
+                    bootstrap_org_id=self.bootstrap_org_id,
+                    fallback="bootstrap_org_only",
                 )
                 return [bootstrap_ctx.org_id]
 
@@ -348,9 +352,15 @@ class LineageGCScheduler(ThreadedScheduler):
             if ctx.storage is None:
                 return
             cfg = ctx.configurator.get_config()
-        except Exception:
+        except Exception as exc:
             capture_anomaly("lineage.gc.run_failed", org_id=org_id)
-            logger.exception("event=lineage_gc_org_failed org_id=%s", org_id)
+            report_background_failure(
+                logger,
+                "lineage_gc_org_failed",
+                exc,
+                scope=f"lineage-gc:{org_id}",
+                org_id=org_id,
+            )
             return
 
         # One pass per project, not one per org. Everything below writes
@@ -406,12 +416,16 @@ class LineageGCScheduler(ThreadedScheduler):
             return [None]
         try:
             project_ids: list[str | None] = list(_project_id_provider_hook(org_id))
-        except Exception:
+        except Exception as exc:
             # Enumeration is the whole tick for this org; a failure here must
             # not silently degrade to an unscoped pass that deletes nothing.
             capture_anomaly("lineage.gc.project_enumeration_failed", org_id=org_id)
-            logger.exception(
-                "event=lineage_gc_project_enumeration_failed org_id=%s", org_id
+            report_background_failure(
+                logger,
+                "lineage_gc_project_enumeration_failed",
+                exc,
+                scope=f"lineage-gc-projects:{org_id}",
+                org_id=org_id,
             )
             # No project ids means NO pass runs for this org -- including Class C
             # -- so without this the tick reports clean while retention did not
@@ -463,9 +477,15 @@ class LineageGCScheduler(ThreadedScheduler):
                         org_id=org_id,
                         count=expired_tombstoned,
                     )
-            except Exception:
+            except Exception as exc:
                 capture_anomaly("lineage.expiry_sweep.failed", org_id=org_id)
-                logger.exception("event=lineage_expiry_sweep_failed org_id=%s", org_id)
+                report_background_failure(
+                    logger,
+                    "lineage_expiry_sweep_failed",
+                    exc,
+                    scope=f"lineage-expiry-sweep:{org_id}",
+                    org_id=org_id,
+                )
 
             # Tombstone GC: each entity type is independent within the loop.
             try:
@@ -491,10 +511,14 @@ class LineageGCScheduler(ThreadedScheduler):
                         org_id=org_id,
                         count=tombstone_deleted,
                     )
-            except Exception:
+            except Exception as exc:
                 capture_anomaly("lineage.gc.tombstone_gc_failed", org_id=org_id)
-                logger.exception(
-                    "event=lineage_gc_tombstone_gc_failed org_id=%s", org_id
+                report_background_failure(
+                    logger,
+                    "lineage_gc_tombstone_gc_failed",
+                    exc,
+                    scope=f"lineage-tombstone-gc:{org_id}",
+                    org_id=org_id,
                 )
 
         # Class B: direct-delete of expired plain rows (no audit/grace
@@ -518,16 +542,19 @@ class LineageGCScheduler(ThreadedScheduler):
                             method_name,
                             deleted,
                         )
-                except Exception:
+                except Exception as exc:
                     capture_anomaly(
                         "lineage.class_b_reclaim.failed",
                         org_id=org_id,
                         method=method_name,
                     )
-                    logger.exception(
-                        "event=class_b_reclaim_failed org_id=%s method=%s",
-                        org_id,
-                        method_name,
+                    report_background_failure(
+                        logger,
+                        "class_b_reclaim_failed",
+                        exc,
+                        scope=f"lineage-class-b:{org_id}:{method_name}",
+                        org_id=org_id,
+                        method=method_name,
                     )
 
         # Class C: row-count retention caps. UNGATED -- the caps are env-driven
@@ -623,16 +650,19 @@ class LineageGCScheduler(ThreadedScheduler):
                         sweep_id,
                         deleted,
                     )
-            except Exception:
+            except Exception as exc:
                 capture_anomaly(
                     "lineage.per_org_sweep.failed",
                     org_id=org_id,
                     sweep=sweep_id,
                 )
-                logger.exception(
-                    "event=per_org_sweep_failed org_id=%s sweep=%s",
-                    org_id,
-                    sweep_id,
+                report_background_failure(
+                    logger,
+                    "per_org_sweep_failed",
+                    exc,
+                    scope=f"lineage-per-org-sweep:{org_id}:{sweep_id}",
+                    org_id=org_id,
+                    sweep=sweep_id,
                 )
 
     def _run_global_sweeps(self, cfg: object) -> None:
@@ -654,10 +684,16 @@ class LineageGCScheduler(ThreadedScheduler):
                 deleted = sweep(now)
                 if deleted:
                     logger.info("event=global_sweep deleted=%d", deleted)
-            except Exception:
+            except Exception as exc:
                 sweep_id = getattr(sweep, "__qualname__", repr(sweep))
                 capture_anomaly("lineage.global_sweep.failed", sweep=sweep_id)
-                logger.exception("event=global_sweep_failed sweep=%s", sweep_id)
+                report_background_failure(
+                    logger,
+                    "global_sweep_failed",
+                    exc,
+                    scope=f"lineage-global-sweep:{sweep_id}",
+                    sweep=sweep_id,
+                )
 
     def _run_always_global_sweeps(self) -> None:
         """Invoke each applicability-owning global sweep once per elected tick."""
@@ -667,10 +703,16 @@ class LineageGCScheduler(ThreadedScheduler):
                 processed = sweep(now)
                 if processed:
                     logger.info("event=always_global_sweep processed=%d", processed)
-            except Exception:
+            except Exception as exc:
                 sweep_id = getattr(sweep, "__qualname__", repr(sweep))
                 capture_anomaly("lineage.always_global_sweep.failed", sweep=sweep_id)
-                logger.exception("event=always_global_sweep_failed sweep=%s", sweep_id)
+                report_background_failure(
+                    logger,
+                    "always_global_sweep_failed",
+                    exc,
+                    scope=f"lineage-always-global-sweep:{sweep_id}",
+                    sweep=sweep_id,
+                )
 
     def _record_tick_failure(self) -> None:
         """Mark this tick as having failed work, from any fan-out worker."""
@@ -737,8 +779,10 @@ class LineageGCScheduler(ThreadedScheduler):
             org_ids = self._discover_org_ids(bootstrap_ctx)
             self._gc_tick(org_ids, max_workers=self._org_fanout_workers(bootstrap_ctx))
             self._run_global_sweeps(cfg)
-        except Exception:
-            logger.exception("event=lineage_gc_scheduler_tick_failed")
+        except Exception as exc:
+            report_background_failure(
+                logger, "lineage_gc_scheduler_tick_failed", exc, scope="lineage-gc"
+            )
             self._record_tick_failure()
         return self._next_interval(poll_interval)
 

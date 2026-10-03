@@ -18,6 +18,7 @@ from datetime import UTC, datetime
 
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.auth import DEFAULT_ORG_ID
+from reflexio.server.background_work import report_background_failure
 from reflexio.server.error_reporting import error_tags
 from reflexio.server.scheduling import ThreadedScheduler
 from reflexio.server.services.extraction.resumable_agent import (
@@ -117,7 +118,12 @@ class ExtractionResumeScheduler(ThreadedScheduler):
                 op="scheduler_org_discovery",
                 error_type=type(exc).__name__,
             ):
-                logger.exception("event=extraction_resume_scheduler_provider_failed")
+                report_background_failure(
+                    logger,
+                    "extraction_resume_scheduler_provider_failed",
+                    exc,
+                    scope="extraction-resume-org-discovery",
+                )
             return None
 
     def _expire_pending_tool_calls(self, ctx: RequestContext) -> None:
@@ -188,9 +194,12 @@ class ExtractionResumeScheduler(ThreadedScheduler):
                 org_id=org_id,
                 error_type=type(exc).__name__,
             ):
-                logger.exception(
-                    "event=extraction_resume_scheduler_org_failed org_id=%s",
-                    org_id,
+                report_background_failure(
+                    logger,
+                    "extraction_resume_scheduler_org_failed",
+                    exc,
+                    scope=f"extraction-resume:{org_id}",
+                    org_id=org_id,
                 )
 
     def _run_once(self) -> float:
@@ -231,7 +240,12 @@ class ExtractionResumeScheduler(ThreadedScheduler):
                 op="scheduler_tick",
                 error_type=type(exc).__name__,
             ):
-                logger.exception("event=extraction_resume_scheduler_tick_failed")
+                report_background_failure(
+                    logger,
+                    "extraction_resume_scheduler_tick_failed",
+                    exc,
+                    scope="extraction-resume",
+                )
         return poll_interval
 
 

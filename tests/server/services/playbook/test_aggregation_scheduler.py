@@ -672,3 +672,53 @@ def test_deferred_callback_failure_does_not_starve_later_scopes(monkeypatch, cap
     assert broken.claim_due_playbook_aggregation.call_count == 1
     assert "original storage failure" in caplog.text
     assert "playbook_aggregation_scope_defer_failed" in caplog.text
+
+
+def test_transient_org_failure_is_a_warning_and_still_backs_off(
+    monkeypatch, caplog, transient_failure_classifier
+) -> None:
+    monkeypatch.setattr(aggregation_scheduler.time, "monotonic", lambda: 100.0)
+    storage = MagicMock(supports_incremental_playbook_aggregation=True)
+    storage.repair_playbook_aggregation_pending_state.return_value = []
+    storage.claim_due_playbook_aggregation.side_effect = transient_failure_classifier(
+        "server closed the connection unexpectedly"
+    )
+    deferred = MagicMock()
+    context = _context(storage)
+    scheduler = aggregation_scheduler.PlaybookAggregationScheduler(
+        context_provider=lambda: [context], on_scope_deferred=deferred
+    )
+    caplog.set_level(logging.INFO, logger=aggregation_scheduler.logger.name)
+
+    scheduler._run_once()
+
+    failures = [r for r in caplog.records if "scheduler_org_failed" in r.getMessage()]
+    assert [r.levelno for r in failures] == [logging.WARNING]
+    assert not failures[0].exc_info
+    assert scheduler._retry_after == {("org-1", None): 400.0}
+    deferred.assert_called_once_with(context, 300.0)
+
+
+def test_lease_lost_to_a_dropped_connection_stays_transient(
+    monkeypatch, caplog, transient_failure_classifier
+) -> None:
+    from reflexio.server.background_work import is_transient_failure
+
+    claim = PlaybookAggregationClaim("v1", "owner", 7, 3, 10_000)
+    storage = MagicMock()
+    storage.renew_playbook_aggregation_claim.side_effect = transient_failure_classifier(
+        "SSL connection has been closed unexpectedly"
+    )
+    monkeypatch.setattr(aggregation_scheduler, "AGGREGATION_LEASE_SECONDS", 0.03)
+    caplog.set_level(logging.WARNING, logger=aggregation_scheduler.logger.name)
+    heartbeat = aggregation_scheduler.AggregationLeaseHeartbeat(storage, claim)
+    heartbeat.start()
+    assert heartbeat._thread is not None
+    heartbeat._thread.join(timeout=5)
+
+    with pytest.raises(RuntimeError, match="lease was lost") as lost:
+        heartbeat.require_live()
+
+    assert is_transient_failure(lost.value)
+    renewals = [r for r in caplog.records if "renewal_failed" in r.getMessage()]
+    assert [r.levelno for r in renewals] == [logging.WARNING]

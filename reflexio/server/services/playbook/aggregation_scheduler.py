@@ -11,7 +11,10 @@ from collections.abc import Callable, Iterable
 from typing import Any
 
 from reflexio.server.api_endpoints.request_context import RequestContext
-from reflexio.server.background_work import background_work
+from reflexio.server.background_work import (
+    background_work,
+    report_background_failure,
+)
 from reflexio.server.env_utils import env_str
 from reflexio.server.extensions import get_service
 from reflexio.server.operation_limiter import run_with_operation_limit
@@ -55,6 +58,9 @@ class AggregationLeaseHeartbeat:
         self.claim = claim
         self._stop = threading.Event()
         self._lost = threading.Event()
+        # Why renewal failed, chained onto `require_live`'s error so the
+        # failure policy sees a dropped connection rather than a bare RuntimeError.
+        self._renewal_error: BaseException | None = None
         self._thread: threading.Thread | None = None
 
     def start(self) -> None:
@@ -72,13 +78,18 @@ class AggregationLeaseHeartbeat:
                 renewed = self.storage.renew_playbook_aggregation_claim(
                     self.claim, lease_seconds=AGGREGATION_LEASE_SECONDS
                 )
-            except Exception:
-                logger.exception(
-                    "event=playbook_aggregation_progress state=lease_lost "
-                    "agent_version=%s fence=%s reason=renewal_failed",
-                    self.claim.agent_version,
-                    self.claim.fence,
+            except Exception as exc:
+                report_background_failure(
+                    logger,
+                    "playbook_aggregation_progress",
+                    exc,
+                    scope=f"playbook-aggregation-heartbeat:{self.claim.agent_version}",
+                    state="lease_lost",
+                    agent_version=self.claim.agent_version,
+                    fence=self.claim.fence,
+                    reason="renewal_failed",
                 )
+                self._renewal_error = exc
                 self._lost.set()
                 return
             if renewed is None:
@@ -93,7 +104,9 @@ class AggregationLeaseHeartbeat:
 
     def require_live(self) -> None:
         if self._lost.is_set():
-            raise RuntimeError("playbook aggregation lease was lost")
+            raise RuntimeError(
+                "playbook aggregation lease was lost"
+            ) from self._renewal_error
 
 
 class PlaybookAggregationScheduler(ThreadedScheduler):
@@ -230,10 +243,13 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
             if self._on_work_claimed is not None:
                 try:
                     self._on_work_claimed(context)
-                except Exception:
-                    logger.exception(
-                        "event=playbook_aggregation_claim_notification_failed org_id=%s",
-                        context.org_id,
+                except Exception as exc:
+                    report_background_failure(
+                        logger,
+                        "playbook_aggregation_claim_notification_failed",
+                        exc,
+                        scope=f"playbook-aggregation-notify:{context.org_id}",
+                        org_id=context.org_id,
                     )
             budget = _aggregation_budget()
             invalidation_page = storage.get_playbook_aggregation_invalidations(
@@ -305,13 +321,18 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
                 context.org_id,
                 claim.agent_version,
             )
-        except Exception:
-            logger.exception(
-                "event=playbook_aggregation_progress state=retryable_failed "
-                "org_id=%s agent_version=%s fence=%s",
-                context.org_id,
-                claim.agent_version,
-                claim.fence,
+        except Exception as exc:
+            report_background_failure(
+                logger,
+                "playbook_aggregation_progress",
+                exc,
+                scope="playbook-aggregation:{}:{}".format(
+                    *self._repair_scope_key(context)
+                ),
+                state="retryable_failed",
+                org_id=context.org_id,
+                agent_version=claim.agent_version,
+                fence=claim.fence,
             )
         finally:
             self._active_stage = "finalization"
@@ -361,12 +382,15 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
             return
         try:
             self._on_scope_deferred(context, delay)
-        except Exception:
+        except Exception as exc:
             # A provider failure cannot mask the original storage error or
             # prevent independent scopes from making progress.
-            logger.exception(
-                "event=playbook_aggregation_scope_defer_failed org_id=%s",
-                context.org_id,
+            report_background_failure(
+                logger,
+                "playbook_aggregation_scope_defer_failed",
+                exc,
+                scope=f"playbook-aggregation-defer:{context.org_id}",
+                org_id=context.org_id,
             )
 
     def _run_once(self) -> float:
@@ -392,24 +416,30 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
                     continue
                 try:
                     self._run_context(context)
-                except Exception:
+                except Exception as exc:
                     self._retry_after[scope] = (
                         time.monotonic() + _REPAIR_INTERVAL_SECONDS
                     )
                     self._defer_scope(context, _REPAIR_INTERVAL_SECONDS)
-                    logger.exception(
-                        "event=playbook_aggregation_scheduler_org_failed org_id=%s "
-                        "project_id=%s stage=%s retry_after_seconds=%s",
-                        org_id,
-                        scope[1],
-                        self._active_stage,
-                        _REPAIR_INTERVAL_SECONDS,
+                    report_background_failure(
+                        logger,
+                        "playbook_aggregation_scheduler_org_failed",
+                        exc,
+                        scope=f"playbook-aggregation:{org_id}:{scope[1]}",
+                        org_id=org_id,
+                        project_id=scope[1],
+                        stage=self._active_stage,
+                        retry_after_seconds=_REPAIR_INTERVAL_SECONDS,
                     )
                 else:
                     self._retry_after.pop(scope, None)
-        except Exception:
-            logger.exception(
-                "event=playbook_aggregation_scheduler_tick_failed stage=context_provider"
+        except Exception as exc:
+            report_background_failure(
+                logger,
+                "playbook_aggregation_scheduler_tick_failed",
+                exc,
+                scope="playbook-aggregation-tick",
+                stage="context_provider",
             )
         else:
             if not self._stop_event.is_set():
@@ -425,10 +455,13 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
                         live_scopes = set(inventory)
                         if not self._stop_event.is_set():
                             self._prune_scope_state(live_scopes)
-                except Exception:
-                    logger.exception(
-                        "event=playbook_aggregation_scheduler_tick_failed "
-                        "stage=scope_inventory"
+                except Exception as exc:
+                    report_background_failure(
+                        logger,
+                        "playbook_aggregation_scheduler_tick_failed",
+                        exc,
+                        scope="playbook-aggregation-inventory",
+                        stage="scope_inventory",
                     )
         return self._poll_interval_seconds
 

@@ -376,3 +376,22 @@ def test_an_idle_install_does_not_claim_the_bootstrap_org_has_work(monkeypatch, 
         "an idle install must not claim the bootstrap org has resumable "
         f"work; saw {noise}"
     )
+
+
+def test_transient_org_drain_failure_is_a_warning(
+    caplog, transient_failure_classifier
+) -> None:
+    def factory(_org_id: str):
+        raise transient_failure_classifier("terminating connection")
+
+    scheduler = resume_scheduler.ExtractionResumeScheduler(
+        request_context_factory=cast(Callable[[str], RequestContext], factory),
+        bootstrap_org_id="org_1",
+    )
+    caplog.set_level(logging.WARNING, logger=resume_scheduler.logger.name)
+
+    scheduler._drain_org("org_1")
+
+    failures = [r for r in caplog.records if "org_failed" in r.getMessage()]
+    assert [r.levelno for r in failures] == [logging.WARNING]
+    assert not failures[0].exc_info
