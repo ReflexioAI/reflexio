@@ -454,7 +454,13 @@ def _age_pass(
     cutoff = int(time.time()) - policy.age_days * 86400
     deadline = time.monotonic() + AGE_PASS_SECONDS
     deleted = failed = 0
-    for target in AGE_RETAINED_TARGETS:
+    for index, target in enumerate(AGE_RETAINED_TARGETS):
+        # An equal share of what is left, so one table with a long backlog (or a
+        # long protected prefix) cannot spend the whole pass and starve the rest.
+        remaining = max(0.0, deadline - time.monotonic())
+        target_deadline = time.monotonic() + remaining / (
+            len(AGE_RETAINED_TARGETS) - index
+        )
         try:
             result = storage.expire_retention_target_rows(
                 target.name,
@@ -462,7 +468,7 @@ def _age_pass(
                 budget=AGE_ROWS_PER_TARGET,
                 batch_size=AGE_BATCH_ROWS,
                 archiver=archiver,
-                deadline=deadline,
+                deadline=target_deadline,
             )
         except Exception as exc:  # noqa: BLE001 -- isolated per target
             capture_anomaly(

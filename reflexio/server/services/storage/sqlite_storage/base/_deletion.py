@@ -124,7 +124,10 @@ class SQLiteDeletionMixin:
 
     @SQLiteStorageBase.handle_exceptions
     def _retention_delete_archived_rows(
-        self, target: RetentionTarget, rows: list[dict[str, Any]]
+        self,
+        target: RetentionTarget,
+        rows: list[dict[str, Any]],
+        older_than: int | str,
     ) -> int:
         (id_column,) = target.id_columns
         guards = "".join(
@@ -142,8 +145,9 @@ class SQLiteDeletionMixin:
                     same = " AND ".join(f"{column} IS ?" for column in row)
                     cursor = self.conn.execute(
                         f"DELETE FROM {target.table_name} "  # noqa: S608
-                        f"WHERE {id_column} = ? AND {same}{guards}",
-                        (row[id_column], *row.values()),
+                        f"WHERE {id_column} = ? AND {target.order_column} < ? "
+                        f"AND {same}{guards}",
+                        (row[id_column], older_than, *row.values()),
                     )
                     if cursor.rowcount:
                         deleted.append((row[id_column],))

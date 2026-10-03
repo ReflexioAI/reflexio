@@ -365,7 +365,7 @@ class RetentionMixin(ABC):
                 return AgeRetentionResult(
                     eligible - len(keys), deleted, blocked="archive_failed"
                 )
-            deleted += self._retention_delete_aged_keys(target, keys, rows)
+            deleted += self._retention_delete_aged_keys(target, keys, rows, cutoff)
         return AgeRetentionResult(eligible, deleted, backlog=True)
 
     def _retention_delete_aged_keys(
@@ -373,6 +373,7 @@ class RetentionMixin(ABC):
         target: RetentionTarget,
         keys: list[tuple[Any, ...]],
         rows: list[dict[str, Any]],
+        older_than: int | str,
     ) -> int:
         """Delete exactly what was archived -- nothing newer, nothing cascaded.
 
@@ -382,14 +383,16 @@ class RetentionMixin(ABC):
         target is ``append_only``, rows are therefore deleted by
         :meth:`_retention_delete_archived_rows`, which deletes a row only if it
         still equals its archived version and has no dependents, in the same
-        statement as the delete. Rows it skips stay in place (a later sweep
-        re-archives and retries them).
+        statement as the delete, and only while it is still older than the
+        cutoff -- an upsert between key selection and the archive read can move
+        ``created_at`` forward, and the archived version would then match a
+        fresh row. Rows it skips stay in place (a later sweep retries them).
 
         Returns:
             int: Rows actually deleted.
         """
         if not target.append_only:
-            return self._retention_delete_archived_rows(target, rows)
+            return self._retention_delete_archived_rows(target, rows, older_than)
         self._retention_perform_delete(target, keys)
         return len(keys)
 
@@ -591,11 +594,15 @@ class RetentionMixin(ABC):
         raise NotImplementedError
 
     def _retention_delete_archived_rows(
-        self, target: RetentionTarget, rows: list[dict[str, Any]]
+        self,
+        target: RetentionTarget,
+        rows: list[dict[str, Any]],
+        older_than: int | str,
     ) -> int:
         """Delete ``rows`` (as returned by :meth:`_retention_fetch_rows`) from a
-        single-key target, each only if the stored row still equals it and has
-        no row in the target's ``RETENTION_CASCADES`` tables -- checked in ONE
+        single-key target, each only if the stored row still equals it, is still
+        older than ``older_than`` (in the ordering column's type), and has no
+        row in the target's ``RETENTION_CASCADES`` tables -- checked in ONE
         atomic statement or transaction with the delete. Clean up any index
         rows of what was deleted.
 

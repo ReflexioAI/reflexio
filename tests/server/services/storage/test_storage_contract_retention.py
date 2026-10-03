@@ -847,3 +847,27 @@ def test_age_expiry_keeps_a_row_upserted_mid_archive(storage: BaseStorage) -> No
     assert result.deleted == 2
     remaining = storage.get_all_interactions(limit=10)
     assert {interaction.interaction_id for interaction in remaining} == {2, 4, 5}
+
+
+def test_age_expiry_rechecks_the_cutoff_at_delete_time(storage: BaseStorage) -> None:
+    """An upsert between key selection and the archive read can move a row's
+    `created_at` past the cutoff; the archived (now fresh) row must survive."""
+    now = int(datetime.now(UTC).timestamp())
+    _seed_aged_interactions(storage, now)
+    conn = storage.conn  # type: ignore[attr-defined]
+    real_fetch = storage._retention_fetch_rows  # type: ignore[attr-defined]
+
+    def fetch_after_an_upsert(*args: Any, **kwargs: Any) -> Any:
+        conn.execute(
+            "UPDATE interactions SET created_at = ? WHERE interaction_id = 2",
+            (datetime.fromtimestamp(now, tz=UTC).isoformat(),),
+        )
+        conn.commit()
+        return real_fetch(*args, **kwargs)
+
+    with patch.object(storage, "_retention_fetch_rows", fetch_after_an_upsert):
+        result = _expire(storage, "interactions", now - 30 * _DAY, _RecordingArchiver())
+
+    assert result.deleted == 2
+    remaining = storage.get_all_interactions(limit=10)
+    assert {interaction.interaction_id for interaction in remaining} == {2, 4, 5}

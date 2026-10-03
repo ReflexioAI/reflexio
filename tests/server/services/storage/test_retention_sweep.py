@@ -878,3 +878,23 @@ def test_a_missing_archiver_is_not_a_retryable_failure(
 ):
     with _limits(), _policy(RetentionPolicy(age_days=30, enforce_age=True)):
         assert sweep_retention_caps(_ORG, mixin_storage).failed is False
+
+
+def test_each_age_target_gets_a_share_of_the_deadline(
+    mixin_storage, granted_lock, anomalies
+):
+    """The first target cannot be handed the whole pass's deadline."""
+    archiver = MagicMock(return_value=True)
+
+    with (
+        _limits(),
+        _policy(RetentionPolicy(age_days=30, enforce_age=True, archiver=archiver)),
+    ):
+        sweep_retention_caps(_ORG, mixin_storage)
+
+    deadlines = [
+        call.kwargs["deadline"]
+        for call in mixin_storage.expire_retention_target_rows.call_args_list
+    ]
+    first_share = deadlines[0] - (deadlines[-1] - retention_sweep.AGE_PASS_SECONDS)
+    assert first_share < retention_sweep.AGE_PASS_SECONDS / 2
