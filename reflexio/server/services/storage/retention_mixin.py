@@ -19,10 +19,13 @@ import time
 from abc import ABC, abstractmethod
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from typing import Any
 
 from reflexio.server.services.storage.retention import (
+    RETENTION_CASCADES,
     RETENTION_TARGETS_BY_NAME,
+    RetentionArchiver,
     RetentionTarget,
 )
 
@@ -30,6 +33,11 @@ from reflexio.server.services.storage.retention import (
 #   - SQLite's SQLITE_MAX_VARIABLE_NUMBER (999 on builds before 3.32; 32766 after).
 #   - PostgREST URL length limits (gateway caps are commonly 8-16 KB).
 RETENTION_DELETE_CHUNK = 500
+
+#: The age pass examines at most this many rows per eligible row it may act on,
+#: so held-back rows (protected, or with dependents) are stepped past without
+#: making the walk unbounded.
+AGE_EXAMINE_FACTOR = 10
 
 
 def chunked(
@@ -110,6 +118,50 @@ def probe_retention_targets_individually(
             probe = RetentionProbe(error=exc)
         probes[target_name] = replace(probe, seconds=time.monotonic() - started)
     return probes
+
+
+@dataclass(frozen=True, slots=True)
+class AgeRetentionResult:
+    """What one target's age pass did.
+
+    Attributes:
+        eligible (int): Rows found older than the cutoff and deletable -- not
+            protected by an unfinished extraction, with no dependent rows left.
+            In a dry run this is what WOULD have been deleted.
+        deleted (int): Rows archived and then deleted. Always 0 in a dry run.
+        backlog (bool): The pass stopped on its row budget or deadline with
+            more aged rows possibly left, rather than by running out of them.
+        blocked (str | None): Why the pass stopped before finishing, if it did:
+            ``"archive_failed"`` (the archiver declined; nothing in that batch
+            was deleted) or ``"fetch_mismatch"`` (the rows read for the archive
+            did not match the keys selected, so the batch was not deleted).
+    """
+
+    eligible: int = 0
+    deleted: int = 0
+    backlog: bool = False
+    blocked: str | None = None
+
+
+def retention_cutoff_value(target: RetentionTarget, epoch_seconds: int) -> int | str:
+    """Express an age cutoff in the type of ``target.order_column``.
+
+    Epoch columns compare against the integer. Every other ordering column is a
+    timestamp -- ``timestamptz``/``timestamp`` on Postgres, ISO-8601 TEXT on
+    SQLite -- and gets a UTC ISO string: Postgres casts the untyped literal to
+    the column's type, and SQLite compares it as text, which is chronological
+    to the second because every writer stores UTC ISO-8601.
+
+    Args:
+        target (RetentionTarget): Target whose ordering column is compared.
+        epoch_seconds (int): The cutoff, in Unix seconds.
+
+    Returns:
+        int | str: The cutoff in the column's comparison type.
+    """
+    if target.order_column_epoch:
+        return epoch_seconds
+    return datetime.fromtimestamp(epoch_seconds, tz=UTC).isoformat()
 
 
 def get_retention_target(target_name: str) -> RetentionTarget:
@@ -208,15 +260,17 @@ class RetentionMixin(ABC):
         target = get_retention_target(target_name)
         if not self._retention_table_exists(target.table_name):
             return 0
-        older_than_epoch = (
-            int(time.time()) - target.minimum_age_seconds
+        older_than = (
+            retention_cutoff_value(
+                target, int(time.time()) - target.minimum_age_seconds
+            )
             if target.minimum_age_seconds > 0
             else None
         )
         keys = self._retention_select_keys(
             target,
             count,
-            older_than_epoch=older_than_epoch,
+            older_than_epoch=older_than,
         )
         protect = getattr(self, "filter_extraction_retention", None)
         if protect is not None:
@@ -225,6 +279,155 @@ class RetentionMixin(ABC):
             return 0
         self._retention_perform_delete(target, keys)
         return len(keys)
+
+    def expire_retention_target_rows(
+        self,
+        target_name: str,
+        *,
+        older_than_epoch: int,
+        budget: int,
+        batch_size: int,
+        archiver: RetentionArchiver | None,
+        deadline: float,
+    ) -> AgeRetentionResult:
+        """Archive, then delete, a target's rows older than a cutoff.
+
+        Walks the target oldest-first by keyset -- ``(order_column, id)`` -- so a
+        row that stays protected (an unfinished extraction window, a user whose
+        extraction floor never advances) is stepped past instead of being
+        selected again at the head of every batch, which would stall the pass.
+
+        Per batch: select aged keys, drop the ones extraction still needs, drop
+        the ones with dependent rows left (a request whose interactions have not
+        aged out yet), read the full rows, hand them to ``archiver``, and delete
+        ONLY after it returns True. A row is never deleted unless the archiver
+        accepted it and it is older than the cutoff.
+
+        Args:
+            target_name (str): An ``age_retained`` target.
+            older_than_epoch (int): Rows strictly older than this, in Unix
+                seconds, are eligible.
+            budget (int): Most eligible rows to act on this call. Rows that are
+                held back (protected, or with dependents) do not spend it, so a
+                long protected prefix cannot starve the rows behind it; the walk
+                is instead bounded by ``AGE_EXAMINE_FACTOR * budget`` rows
+                examined, and by ``deadline``.
+            batch_size (int): Rows per select/archive/delete round.
+            archiver (RetentionArchiver | None): ``None`` makes this a dry run:
+                it counts what it would delete and deletes nothing.
+            deadline (float): ``time.monotonic()`` value after which no further
+                batch is started.
+
+        Returns:
+            AgeRetentionResult: Counts, and why the pass stopped early if it did.
+
+        Raises:
+            ValueError: If the target is not age-retained or has a composite key.
+        """
+        target = get_retention_target(target_name)
+        if not target.age_retained or len(target.id_columns) != 1:
+            raise ValueError(f"{target_name} is not a single-key age-retained target")
+        if not self._retention_table_exists(target.table_name):
+            return AgeRetentionResult()
+        # A target's own minimum age wins over a shorter plan window: exposure
+        # events' delete function refuses anything younger than 14 days, so a
+        # looser cutoff would select rows it then silently keeps.
+        older_than_epoch = min(
+            older_than_epoch, int(time.time()) - target.minimum_age_seconds
+        )
+        cutoff = retention_cutoff_value(target, older_than_epoch)
+        id_column = target.id_columns[0]
+        eligible = deleted = examined = 0
+        max_examined = budget * AGE_EXAMINE_FACTOR
+        after: tuple[Any, Any] | None = None
+        while eligible < budget and examined < max_examined:
+            if time.monotonic() >= deadline:
+                return AgeRetentionResult(eligible, deleted, backlog=True)
+            batch = self._retention_select_aged_keys(
+                target,
+                min(batch_size, budget - eligible, max_examined - examined),
+                cutoff,
+                after,
+            )
+            if not batch:
+                return AgeRetentionResult(eligible, deleted)
+            examined += len(batch)
+            after = batch[-1]
+            keys = self._retention_deletable_aged_keys(
+                target, [(key,) for _, key in batch]
+            )
+            if not keys:
+                continue
+            eligible += len(keys)
+            if archiver is None:
+                continue
+            ids = [key[0] for key in keys]
+            rows = self._retention_fetch_rows(target.table_name, id_column, ids)
+            if len(rows) != len(keys):
+                return AgeRetentionResult(
+                    eligible - len(keys), deleted, blocked="fetch_mismatch"
+                )
+            if not archiver(target.table_name, rows):
+                return AgeRetentionResult(
+                    eligible - len(keys), deleted, blocked="archive_failed"
+                )
+            deleted += self._retention_delete_aged_keys(target, keys, rows, cutoff)
+        return AgeRetentionResult(eligible, deleted, backlog=True)
+
+    def _retention_delete_aged_keys(
+        self,
+        target: RetentionTarget,
+        keys: list[tuple[Any, ...]],
+        rows: list[dict[str, Any]],
+        older_than: int | str,
+    ) -> int:
+        """Delete exactly what was archived -- nothing newer, nothing cascaded.
+
+        The checks before the archive upload are stale by the time it returns:
+        publishers do not take the cleanup lease, so in between a request may
+        have gained an interaction, or a row may have been upserted. Unless the
+        target is ``append_only``, rows are therefore deleted by
+        :meth:`_retention_delete_archived_rows`, which deletes a row only if it
+        still equals its archived version and has no dependents, in the same
+        statement as the delete, and only while it is still older than the
+        cutoff -- an upsert between key selection and the archive read can move
+        ``created_at`` forward, and the archived version would then match a
+        fresh row. Rows it skips stay in place (a later sweep retries them).
+
+        Returns:
+            int: Rows actually deleted.
+        """
+        if not target.append_only:
+            return self._retention_delete_archived_rows(target, rows, older_than)
+        self._retention_perform_delete(target, keys)
+        return len(keys)
+
+    def _retention_deletable_aged_keys(
+        self, target: RetentionTarget, keys: list[tuple[Any, ...]]
+    ) -> list[tuple[Any, ...]]:
+        """Drop keys extraction still needs, and keys with dependents left.
+
+        A key with a dependent row (``RETENTION_CASCADES``) is kept back rather
+        than cascaded: the cascade would delete that dependent without it ever
+        being archived. It becomes deletable once its dependents age out first.
+        """
+        protect = getattr(self, "filter_extraction_retention", None)
+        if protect is not None:
+            keys = protect(target.name, keys)
+        for cascade in RETENTION_CASCADES.get(target.name, ()):
+            if not keys:
+                break
+            held = {
+                row[cascade.fk_column]
+                for row in self._retention_fetch_rows(
+                    cascade.table_name,
+                    cascade.fk_column,
+                    [key[0] for key in keys],
+                    columns=(cascade.fk_column,),
+                )
+            }
+            keys = [key for key in keys if key[0] not in held]
+        return keys
 
     def gc_retired_optimization_jobs(
         self,
@@ -263,7 +466,7 @@ class RetentionMixin(ABC):
         target: RetentionTarget,
         count: int,
         *,
-        older_than_epoch: int | None,
+        older_than_epoch: int | str | None,
     ) -> list[tuple[Any, ...]]:
         """Select tombstones first, then oldest rows when a target opts in.
 
@@ -355,7 +558,7 @@ class RetentionMixin(ABC):
         target: RetentionTarget,
         count: int,
         statuses: tuple[str, ...] | None = None,
-        older_than_epoch: int | None = None,
+        older_than_epoch: int | str | None = None,
     ) -> list[tuple[Any, ...]]:
         """Return up to ``count`` oldest key tuples for ``target``.
 
@@ -369,8 +572,73 @@ class RetentionMixin(ABC):
             statuses (tuple[str, ...] | None): When not None, restrict the
                 select to rows whose ``status`` is one of these values. An
                 empty tuple matches nothing (never every row).
-            older_than_epoch (int | None): When set, restrict the select to
-                rows whose target ordering column is strictly older.
+            older_than_epoch (int | str | None): When set, restrict the select
+                to rows whose target ordering column is strictly older. Already
+                in the column's type -- see :func:`retention_cutoff_value`.
+        """
+        raise NotImplementedError
+
+    def _retention_select_aged_keys(
+        self,
+        target: RetentionTarget,
+        count: int,
+        older_than: int | str,
+        after: tuple[Any, Any] | None,
+    ) -> list[tuple[Any, Any]]:
+        """Return up to ``count`` ``(order_value, id)`` pairs older than a cutoff.
+
+        Single-key targets only. Ordered by ``(order_column, id)`` ascending and
+        strictly after ``after`` -- the last pair of the previous batch -- so the
+        caller pages by key rather than by offset.
+
+        Args:
+            target (RetentionTarget): Target being aged.
+            count (int): Maximum pairs to return.
+            older_than (int | str): Cutoff in the column's type.
+            after (tuple[Any, Any] | None): Exclusive keyset lower bound.
+        """
+        raise NotImplementedError
+
+    def _retention_delete_archived_rows(
+        self,
+        target: RetentionTarget,
+        rows: list[dict[str, Any]],
+        older_than: int | str,
+    ) -> int:
+        """Delete ``rows`` (as returned by :meth:`_retention_fetch_rows`) from a
+        single-key target, each only if the stored row still equals it, is still
+        older than ``older_than`` (in the ordering column's type), and has no
+        row in the target's ``RETENTION_CASCADES`` tables -- checked in ONE
+        atomic statement or transaction with the delete. Clean up any index
+        rows of what was deleted.
+
+        Returns:
+            int: Rows actually deleted.
+        """
+        raise NotImplementedError
+
+    def _retention_fetch_rows(
+        self,
+        table_name: str,
+        column: str,
+        values: list[Any],
+        columns: tuple[str, ...] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Read the rows of ``table_name`` whose ``column`` is in ``values``.
+
+        Args:
+            table_name (str): Table to read.
+            column (str): Column matched against ``values``.
+            values (list[Any]): Values to match.
+            columns (tuple[str, ...] | None): DISTINCT values of these columns;
+                ``None`` returns the whole row for archiving, minus derived
+                search columns (embeddings, full-text vectors) that can be
+                regenerated. Distinct, so a parent-key existence check reads one
+                row per parent rather than one per child.
+
+        Returns:
+            list[dict[str, Any]]: One dict per matching row; ``[]`` when the
+            table does not exist.
         """
         raise NotImplementedError
 

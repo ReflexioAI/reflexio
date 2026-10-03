@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import math
 import os
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from typing import Any, Literal
 
 DEFAULT_ROW_RETENTION_LIMIT = 250_000
 ROW_RETENTION_DELETE_FRACTION = 0.20
@@ -23,6 +25,21 @@ class RetentionTarget:
     priority_statuses: tuple[str, ...] = ()
     minimum_age_seconds: int = 0
     fixed_row_limit: int | None = None
+    # ``order_column`` holds epoch seconds (an integer), not a timestamp. An age
+    # cutoff must be compared in the column's own type: an int against a
+    # timestamptz raises on Postgres, and against SQLite's ISO TEXT it silently
+    # matches nothing (SQLite orders every INTEGER below every TEXT).
+    order_column_epoch: bool = False
+    # Raw/event data that expires by the org's plan ``retention_days`` when a
+    # ``RetentionPolicy`` sets ``age_days``. Single-key targets only.
+    age_retained: bool = False
+    # Customer content (raw events and learned knowledge). Under a policy whose
+    # ``customer_cap_action`` is ``"alert"`` the row cap on these only alerts.
+    customer_data: bool = False
+    # Rows are never updated in place after insert. The age pass may then
+    # delete by key alone; any other target is deleted only while the row still
+    # equals the version that was archived (an upsert mid-archive keeps it).
+    append_only: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,15 +65,31 @@ RETENTION_TARGETS: tuple[RetentionTarget, ...] = (
         "created_at",
         ("profile_id",),
         priority_statuses=TOMBSTONE_STATUSES,
+        customer_data=True,
     ),
-    RetentionTarget("interactions", "interactions", "created_at", ("interaction_id",)),
-    RetentionTarget("requests", "requests", "created_at", ("request_id",)),
+    RetentionTarget(
+        "interactions",
+        "interactions",
+        "created_at",
+        ("interaction_id",),
+        age_retained=True,
+        customer_data=True,
+    ),
+    RetentionTarget(
+        "requests",
+        "requests",
+        "created_at",
+        ("request_id",),
+        age_retained=True,
+        customer_data=True,
+    ),
     RetentionTarget(
         "user_playbooks",
         "user_playbooks",
         "created_at",
         ("user_playbook_id",),
         priority_statuses=TOMBSTONE_STATUSES,
+        customer_data=True,
     ),
     RetentionTarget(
         "agent_playbooks",
@@ -64,12 +97,15 @@ RETENTION_TARGETS: tuple[RetentionTarget, ...] = (
         "created_at",
         ("agent_playbook_id",),
         priority_statuses=TOMBSTONE_STATUSES,
+        customer_data=True,
     ),
     RetentionTarget(
         "agent_success_evaluation_result",
         "agent_success_evaluation_result",
         "created_at",
         ("result_id",),
+        age_retained=True,
+        customer_data=True,
     ),
     # Grouped session target: keyed on (user_id, session_id) — not result_id —
     # so retention always removes whole session snapshots, never a partial
@@ -83,6 +119,7 @@ RETENTION_TARGETS: tuple[RetentionTarget, ...] = (
         "retrieved_learning_evaluation",
         "created_at",
         ("user_id", "session_id"),
+        order_column_epoch=True,
     ),
     RetentionTarget(
         "offline_tuner_reward_label",
@@ -140,11 +177,72 @@ RETENTION_TARGETS: tuple[RetentionTarget, ...] = (
         ("exposure_event_id",),
         minimum_age_seconds=OPEN_WORLD_EVIDENCE_RETENTION_WINDOW_SECONDS,
         fixed_row_limit=DEFAULT_ROW_RETENTION_LIMIT,
+        order_column_epoch=True,
+        age_retained=True,
+        append_only=True,
     ),
-    RetentionTarget("skills", "skills", "created_at", ("skill_id",)),
+    RetentionTarget(
+        "skills", "skills", "created_at", ("skill_id",), customer_data=True
+    ),
 )
 
 RETENTION_TARGETS_BY_NAME = {target.name: target for target in RETENTION_TARGETS}
+
+#: Age-retained targets in the order the age pass visits them. ``interactions``
+#: comes before ``requests`` on purpose: the age path deletes a request only once
+#: it has no interactions left, so the requests -> interactions cascade can never
+#: remove an interaction that was not itself aged out and archived.
+AGE_RETAINED_TARGETS: tuple[RetentionTarget, ...] = tuple(
+    sorted(
+        (target for target in RETENTION_TARGETS if target.age_retained),
+        key=lambda target: target.name != "interactions",
+    )
+)
+
+#: Receives rows the age pass is about to delete, as ``(table_name, rows)``, and
+#: returns True only once they are durably stored. Any other outcome -- False or
+#: an exception -- leaves the rows in place.
+RetentionArchiver = Callable[[str, Sequence[dict[str, Any]]], bool]
+
+CapAction = Literal["delete", "alert"]
+
+
+@dataclass(frozen=True, slots=True)
+class RetentionPolicy:
+    """How one org's data is retained, as resolved by a policy provider.
+
+    The default is OSS behavior, unchanged: no age-based expiry, and every
+    target's row cap deletes the oldest 20% when reached.
+
+    Attributes:
+        age_days (int | None): Delete ``age_retained`` rows older than this many
+            days. ``None`` disables age-based expiry -- the answer whenever the
+            org's entitlement is unknown, never a guess.
+        enforce_age (bool): False reports what the age pass WOULD delete and
+            deletes nothing (``retention.age.would_delete``).
+        customer_cap_action (CapAction): What reaching the row cap does to a
+            ``customer_data`` target. ``"alert"`` raises an error-level anomaly
+            for a human and deletes nothing. Other targets always delete.
+        customer_cap_limit (int | None): The row cap for ``customer_data``
+            targets under ``"alert"``; ``None`` keeps the env-derived limit.
+        archiver (RetentionArchiver | None): Where expiring rows go before they
+            are deleted. Enforcement refuses to delete without one.
+    """
+
+    age_days: int | None = None
+    enforce_age: bool = False
+    customer_cap_action: CapAction = "delete"
+    customer_cap_limit: int | None = None
+    archiver: RetentionArchiver | None = None
+
+
+#: Applied when no provider is registered (OSS) -- today's behavior.
+DEFAULT_RETENTION_POLICY = RetentionPolicy()
+
+#: Applied when a registered provider FAILS. Deletes nothing it was not told to:
+#: no age expiry, and customer caps only alert. Falling back to the default
+#: instead would turn a provider outage into silent oldest-first deletion.
+FAIL_SAFE_RETENTION_POLICY = RetentionPolicy(customer_cap_action="alert")
 
 
 @dataclass(frozen=True, slots=True)

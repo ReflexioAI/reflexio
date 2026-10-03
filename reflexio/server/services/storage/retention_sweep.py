@@ -57,19 +57,26 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 
 from reflexio.server.error_reporting import capture_anomaly, error_tags
-from reflexio.server.extensions import get_service
+from reflexio.server.extensions import ServiceKey, get_service
+from reflexio.server.ops_log import get_ops_logger
 from reflexio.server.services.operation_state_utils import OperationStateManager
 from reflexio.server.services.storage.retention import (
+    AGE_RETAINED_TARGETS,
+    DEFAULT_RETENTION_POLICY,
+    FAIL_SAFE_RETENTION_POLICY,
+    RETENTION_TARGETS_BY_NAME,
+    RetentionPolicy,
     delete_count_for_retention,
     get_row_retention_limits,
 )
 from reflexio.server.services.storage.retention_mixin import (
+    AgeRetentionResult,
     RetentionMixin,
     RetentionProbe,
     probe_retention_targets_individually,
@@ -78,6 +85,7 @@ from reflexio.server.services.storage.storage_base import BaseStorage
 from reflexio.server.work_scope import WORK_SCOPE_PROVIDER, current_project_id
 
 logger = logging.getLogger(__name__)
+_ops_logger = get_ops_logger("retention")
 
 #: How long a ``storage_table_cleanup`` lease may be held before it is stale.
 CLEANUP_STALE_LOCK_SECONDS = 600
@@ -97,6 +105,23 @@ EXACT_COUNT_FROM_FRACTION = 0.80
 #: 60s per-org budget (``_ORG_SWEEP_TIMEOUT_SECONDS``), so a single slow pass
 #: already means retention alone is a third of the org's allowance.
 SLOW_SWEEP_SECONDS = 20.0
+
+#: Rows the age pass examines per target per sweep, and per select/archive/
+#: delete round. A daily sweep therefore drains at most this many expired rows a
+#: day per target -- a plan downgrade or the first enforced sweep spreads over
+#: days instead of one burst, and every round is archived before it is deleted.
+AGE_ROWS_PER_TARGET = 10_000
+AGE_BATCH_ROWS = 1_000
+
+#: Wall-clock budget for the whole age pass of one project. Well inside the
+#: scheduler's 60s per-org allowance, which also has to cover the cap pass.
+AGE_PASS_SECONDS = 20.0
+
+#: Resolves an org's :class:`RetentionPolicy`. Unregistered (OSS) means
+#: ``DEFAULT_RETENTION_POLICY``: no age expiry, every cap deletes as before.
+RETENTION_POLICY_PROVIDER = ServiceKey[Callable[[str], RetentionPolicy]](
+    "retention_policy_provider"
+)
 
 #: Tag value for a pass whose project could not be resolved. A literal, because
 #: ``error_reporting._normalize_tags`` DROPS ``None`` values: tagging the real
@@ -223,6 +248,10 @@ def sweep_retention_caps(org_id: str, storage: BaseStorage) -> RetentionSweepRes
     # Time inside the up-front `probe_retention_targets`, which a batched
     # backend cannot attribute to any one target.
     probe_seconds = 0.0
+    # The age pass is bounded by its own deadline (`AGE_PASS_SECONDS`) and is
+    # kept out of the slow-sweep measure, which exists to catch slow probes.
+    age_seconds = 0.0
+    age_failed = False
     try:
         project_id = current_project_id()
 
@@ -245,12 +274,9 @@ def sweep_retention_caps(org_id: str, storage: BaseStorage) -> RetentionSweepRes
             )
             return RetentionSweepResult(0, failed=True)
 
-        limits = {
-            target_name: limit
-            for target_name, limit in get_row_retention_limits().items()
-            if limit > 0
-        }
-        if not limits:
+        policy = _resolve_policy(org_id, project_id)
+        limits = _effective_limits(policy)
+        if not limits and policy.age_days is None:
             return RetentionSweepResult(0)
 
         mgr = OperationStateManager(
@@ -261,6 +287,11 @@ def sweep_retention_caps(org_id: str, storage: BaseStorage) -> RetentionSweepRes
         if not mgr.acquire_simple_lock(stale_seconds=CLEANUP_STALE_LOCK_SECONDS):
             return RetentionSweepResult(0)
         try:
+            if policy.age_days is not None:
+                age_started = time.monotonic()
+                age_deleted, age_failed = _age_pass(org_id, project_id, storage, policy)
+                deleted_total += age_deleted
+                age_seconds = time.monotonic() - age_started
             probe_started = time.monotonic()
             probes: Mapping[str, RetentionProbe] = _probe_targets(storage, limits)
             probe_seconds = time.monotonic() - probe_started
@@ -281,7 +312,13 @@ def sweep_retention_caps(org_id: str, storage: BaseStorage) -> RetentionSweepRes
                             # linear, as before, on every backend.
                             probes = {}
                         deleted_total += _sweep_target(
-                            org_id, project_id, storage, target_name, limit, total_count
+                            org_id,
+                            project_id,
+                            storage,
+                            target_name,
+                            limit,
+                            total_count,
+                            alert_only=_cap_alerts_only(policy, target_name),
                         )
                 except Exception as exc:  # noqa: BLE001
                     targets_failed += 1
@@ -311,7 +348,7 @@ def sweep_retention_caps(org_id: str, storage: BaseStorage) -> RetentionSweepRes
         logger.exception("event=retention_sweep_failed org_id=%s", org_id)
         return RetentionSweepResult(deleted_total, failed=True)
 
-    elapsed = time.monotonic() - started
+    elapsed = time.monotonic() - started - age_seconds
     if elapsed > SLOW_SWEEP_SECONDS:
         capture_anomaly(
             "retention.sweep.slow",
@@ -329,6 +366,11 @@ def sweep_retention_caps(org_id: str, storage: BaseStorage) -> RetentionSweepRes
     # table is isolated and usually permanent, but a backend-wide transient
     # (the PGRST002 that prompted the retry cadence) lands on all of them and
     # would otherwise be absorbed target by target into a clean-looking tick.
+    if age_failed:
+        # Every age target raised or was blocked: the shape a backend-wide or
+        # archive-wide transient takes. Report it so the scheduler takes its
+        # bounded fast retry rather than waiting a full poll interval.
+        return RetentionSweepResult(deleted_total, failed=True)
     if targets_failed and targets_failed == len(limits):
         capture_anomaly(
             "retention.sweep.all_targets_failed",
@@ -338,6 +380,155 @@ def sweep_retention_caps(org_id: str, storage: BaseStorage) -> RetentionSweepRes
         )
         return RetentionSweepResult(deleted_total, failed=True)
     return RetentionSweepResult(deleted_total)
+
+
+def _resolve_policy(org_id: str, project_id: str | None) -> RetentionPolicy:
+    """Ask the registered provider for the org's policy; fail SAFE, not open.
+
+    No provider is OSS, and gets today's behavior. A provider that raises gets
+    ``FAIL_SAFE_RETENTION_POLICY`` -- no age expiry, customer caps only alert --
+    because the default would turn a billing-database outage into oldest-first
+    deletion of customer data.
+    """
+    provider = get_service(RETENTION_POLICY_PROVIDER)
+    if provider is None:
+        return DEFAULT_RETENTION_POLICY
+    try:
+        return provider(org_id)
+    except Exception as exc:  # noqa: BLE001 -- reported, then fail safe
+        capture_anomaly(
+            "retention.policy.failed",
+            level="error",
+            org_id=org_id,
+            project_id=project_id or UNBOUND_PROJECT_TAG,
+            error_type=type(exc).__name__,
+        )
+        logger.exception("event=retention_policy_failed org_id=%s", org_id)
+        return FAIL_SAFE_RETENTION_POLICY
+
+
+def _cap_alerts_only(policy: RetentionPolicy, target_name: str) -> bool:
+    return (
+        policy.customer_cap_action == "alert"
+        and RETENTION_TARGETS_BY_NAME[target_name].customer_data
+    )
+
+
+def _effective_limits(policy: RetentionPolicy) -> dict[str, int]:
+    """Per-target caps, with ``customer_cap_limit`` applied to alert-only targets."""
+    limits = get_row_retention_limits()
+    if policy.customer_cap_limit is not None:
+        for name in limits:
+            if _cap_alerts_only(policy, name):
+                limits[name] = policy.customer_cap_limit
+    return {name: limit for name, limit in limits.items() if limit > 0}
+
+
+def _age_pass(
+    org_id: str, project_id: str | None, storage: BaseStorage, policy: RetentionPolicy
+) -> tuple[int, bool]:
+    """Expire ``age_retained`` rows older than ``policy.age_days``.
+
+    Runs before the cap pass, under the same lease. Each target is isolated: one
+    failing reports ``retention.age.failed`` and the rest still run. Enforcement
+    without an archiver deletes nothing and says so at error level -- archiving
+    is a precondition of deletion, not a best effort.
+
+    Returns:
+        tuple[int, bool]: Rows deleted across all age-retained targets, and
+        whether EVERY target raised or was blocked. A missing archiver is a
+        configuration error a retry cannot fix, so it is reported but not
+        counted as a failure.
+    """
+    if not isinstance(storage, RetentionMixin) or policy.age_days is None:
+        return 0, False
+    if policy.enforce_age and policy.archiver is None:
+        capture_anomaly(
+            "retention.age.no_archiver",
+            level="error",
+            org_id=org_id,
+            project_id=project_id,
+        )
+        return 0, False
+    archiver = policy.archiver if policy.enforce_age else None
+    cutoff = int(time.time()) - policy.age_days * 86400
+    deadline = time.monotonic() + AGE_PASS_SECONDS
+    deleted = failed = 0
+    for index, target in enumerate(AGE_RETAINED_TARGETS):
+        # An equal share of what is left, so one table with a long backlog (or a
+        # long protected prefix) cannot spend the whole pass and starve the rest.
+        remaining = max(0.0, deadline - time.monotonic())
+        target_deadline = time.monotonic() + remaining / (
+            len(AGE_RETAINED_TARGETS) - index
+        )
+        try:
+            result = storage.expire_retention_target_rows(
+                target.name,
+                older_than_epoch=cutoff,
+                budget=AGE_ROWS_PER_TARGET,
+                batch_size=AGE_BATCH_ROWS,
+                archiver=archiver,
+                deadline=target_deadline,
+            )
+        except Exception as exc:  # noqa: BLE001 -- isolated per target
+            capture_anomaly(
+                "retention.age.failed",
+                level="error",
+                org_id=org_id,
+                project_id=project_id,
+                target=target.name,
+                error_type=type(exc).__name__,
+            )
+            logger.exception("event=retention_age_failed target=%s", target.name)
+            failed += 1
+            continue
+        _report_age_result(org_id, project_id, target.name, policy, result)
+        deleted += result.deleted
+        failed += result.blocked is not None
+    return deleted, failed == len(AGE_RETAINED_TARGETS)
+
+
+def _report_age_result(
+    org_id: str,
+    project_id: str | None,
+    target_name: str,
+    policy: RetentionPolicy,
+    result: AgeRetentionResult,
+) -> None:
+    if result.blocked is not None:
+        capture_anomaly(
+            "retention.age.blocked",
+            level="error",
+            org_id=org_id,
+            project_id=project_id,
+            target=target_name,
+            reason=result.blocked,
+            deleted=result.deleted,
+        )
+    if not policy.enforce_age:
+        if result.eligible:
+            _ops_logger.info(
+                "event=retention_age_would_delete org_id=%s project_id=%s "
+                "target=%s rows=%d age_days=%s backlog=%s",
+                org_id,
+                project_id,
+                target_name,
+                result.eligible,
+                policy.age_days,
+                result.backlog,
+            )
+        return
+    if result.deleted:
+        _ops_logger.info(
+            "event=retention_age_enforced org_id=%s project_id=%s target=%s "
+            "deleted=%d age_days=%s backlog=%s",
+            org_id,
+            project_id,
+            target_name,
+            result.deleted,
+            policy.age_days,
+            result.backlog,
+        )
 
 
 def _probe_targets(
@@ -410,8 +601,10 @@ def _sweep_target(
     target_name: str,
     limit: int,
     total_count: int,
+    *,
+    alert_only: bool = False,
 ) -> int:
-    """Warn near one target's cap, delete at it.
+    """Warn near one target's cap; at it, delete -- or, ``alert_only``, page.
 
     Args:
         org_id (str): Org being swept, for anomaly attribution.
@@ -421,6 +614,9 @@ def _sweep_target(
         target_name (str): Retention target being enforced.
         limit (int): Row cap for this target, already known positive.
         total_count (int): The target's EXACT row count -- never an estimate.
+        alert_only (bool): The cap is a backstop for customer data: reaching it
+            raises an error-level ``retention.cap.exceeded`` for a human to act
+            on, and deletes nothing.
 
     Returns:
         int: Rows deleted for this target.
@@ -439,6 +635,26 @@ def _sweep_target(
                 rows=total_count,
                 limit=limit,
             )
+        return 0
+
+    if alert_only:
+        capture_anomaly(
+            "retention.cap.exceeded",
+            level="error",
+            org_id=org_id,
+            project_id=project_id,
+            target=target_name,
+            rows=total_count,
+            limit=limit,
+        )
+        logger.error(
+            "event=retention_cap_exceeded org_id=%s target=%s rows=%d limit=%d "
+            "-- alert only, nothing deleted",
+            org_id,
+            target_name,
+            total_count,
+            limit,
+        )
         return 0
 
     delete_count = delete_count_for_retention(total_count)

@@ -604,3 +604,270 @@ def test_retention_removes_whole_retrieved_learning_sessions(
     remaining = storage.get_retrieved_learning_evaluation_results(limit=10)
     assert {row.session_id for row in remaining} == {"new-sess"}
     assert len(remaining) == 2
+
+
+# -- Age-based expiry ---------------------------------------------------------
+#
+# Core invariant: the age pass deletes a row ONLY IF it is older than the
+# cutoff AND the archiver accepted it -- including rows a cascade would take.
+
+_DAY = 86_400
+
+
+class _RecordingArchiver:
+    def __init__(self, accept: bool = True) -> None:
+        self.accept = accept
+        self.batches: list[tuple[str, list[dict[str, Any]]]] = []
+
+    def __call__(self, table_name: str, rows: Any) -> bool:
+        self.batches.append((table_name, list(rows)))
+        return self.accept
+
+    def ids(self, table: str, column: str) -> set[Any]:
+        return {
+            row[column] for name, rows in self.batches if name == table for row in rows
+        }
+
+
+def _expire(
+    storage: BaseStorage,
+    target: str,
+    cutoff: int,
+    archiver: Any,
+    *,
+    budget: int = 1_000,
+    batch_size: int = 1_000,
+) -> Any:
+    return storage.expire_retention_target_rows(  # type: ignore[attr-defined]
+        target,
+        older_than_epoch=cutoff,
+        budget=budget,
+        batch_size=batch_size,
+        archiver=archiver,
+        deadline=float("inf"),
+    )
+
+
+def _seed_aged_interactions(storage: BaseStorage, now: int) -> None:
+    """Interactions 1-3 are 40 days old; 4-5 are 1 day old. One request each."""
+    for i in range(1, 6):
+        created = now - (40 if i <= 3 else 1) * _DAY + i
+        storage.add_request(_make_request(f"req{i}", created))
+        storage.add_user_interaction("u1", _make_interaction(i, f"req{i}", created))
+
+
+def test_age_expiry_archives_then_deletes_only_rows_older_than_cutoff(
+    storage: BaseStorage,
+) -> None:
+    now = int(datetime.now(UTC).timestamp())
+    _seed_aged_interactions(storage, now)
+    archiver = _RecordingArchiver()
+
+    result = _expire(storage, "interactions", now - 30 * _DAY, archiver)
+
+    assert (result.eligible, result.deleted, result.blocked) == (3, 3, None)
+    assert archiver.ids("interactions", "interaction_id") == {1, 2, 3}
+    assert all("embedding" not in row for _, rows in archiver.batches for row in rows)
+    remaining = storage.get_all_interactions(limit=10)
+    assert {interaction.interaction_id for interaction in remaining} == {4, 5}
+
+
+def test_age_expiry_cutoff_is_strict_on_iso_timestamps(storage: BaseStorage) -> None:
+    """A row exactly AT the cutoff second survives; one second older does not.
+
+    Guards the cutoff's type: an integer compared against SQLite's ISO TEXT
+    column matches nothing, which would make this test delete zero rows.
+    """
+    cutoff = int(datetime.now(UTC).timestamp()) - 30 * _DAY
+    storage.add_user_interaction("u1", _make_interaction(1, "req1", cutoff - 1))
+    storage.add_user_interaction("u1", _make_interaction(2, "req2", cutoff))
+
+    result = _expire(storage, "interactions", cutoff, _RecordingArchiver())
+
+    assert result.deleted == 1
+    remaining = storage.get_all_interactions(limit=10)
+    assert {interaction.interaction_id for interaction in remaining} == {2}
+
+
+def test_age_expiry_deletes_nothing_when_the_archiver_declines(
+    storage: BaseStorage,
+) -> None:
+    now = int(datetime.now(UTC).timestamp())
+    _seed_aged_interactions(storage, now)
+
+    result = _expire(
+        storage, "interactions", now - 30 * _DAY, _RecordingArchiver(accept=False)
+    )
+
+    assert (result.deleted, result.blocked) == (0, "archive_failed")
+    assert len(storage.get_all_interactions(limit=10)) == 5
+
+
+def test_age_expiry_dry_run_counts_and_deletes_nothing(storage: BaseStorage) -> None:
+    now = int(datetime.now(UTC).timestamp())
+    _seed_aged_interactions(storage, now)
+
+    result = _expire(storage, "interactions", now - 30 * _DAY, None)
+
+    assert (result.eligible, result.deleted) == (3, 0)
+    assert len(storage.get_all_interactions(limit=10)) == 5
+
+
+def test_age_expiry_keeps_a_request_until_its_interactions_are_gone(
+    storage: BaseStorage,
+) -> None:
+    """The requests -> interactions cascade must never take an unarchived row.
+
+    req1 is old but still has a NEW interaction, so it is held back; req2 is old
+    and childless once its own old interaction was aged out first.
+    """
+    now = int(datetime.now(UTC).timestamp())
+    old, new = now - 40 * _DAY, now - _DAY
+    storage.add_request(_make_request("req1", old))
+    storage.add_user_interaction("u1", _make_interaction(1, "req1", new))
+    storage.add_request(_make_request("req2", old + 1))
+    storage.add_user_interaction("u1", _make_interaction(2, "req2", old + 1))
+    archiver = _RecordingArchiver()
+    cutoff = now - 30 * _DAY
+
+    interactions = _expire(storage, "interactions", cutoff, archiver)
+    requests = _expire(storage, "requests", cutoff, archiver)
+
+    assert (interactions.deleted, requests.deleted) == (1, 1)
+    assert storage.get_request("req1") is not None
+    assert storage.get_request("req2") is None
+    remaining = storage.get_all_interactions(limit=10)
+    assert {interaction.interaction_id for interaction in remaining} == {1}
+    assert archiver.ids("interactions", "interaction_id") == {2}
+    assert archiver.ids("requests", "request_id") == {"req2"}
+
+
+def test_age_expiry_steps_past_protected_rows(storage: BaseStorage) -> None:
+    """A protected row at the head of the table must not stall the pass."""
+    now = int(datetime.now(UTC).timestamp())
+    _seed_aged_interactions(storage, now)
+
+    def protect_first(target: str, keys: list[tuple[Any, ...]]) -> list[Any]:
+        return (
+            [key for key in keys if key[0] != 1] if target == "interactions" else keys
+        )
+
+    with patch.object(
+        type(storage), "filter_extraction_retention", side_effect=protect_first
+    ):
+        result = _expire(
+            storage,
+            "interactions",
+            now - 30 * _DAY,
+            _RecordingArchiver(),
+            batch_size=1,
+        )
+
+    assert (result.eligible, result.deleted, result.backlog) == (2, 2, False)
+    remaining = storage.get_all_interactions(limit=10)
+    assert {interaction.interaction_id for interaction in remaining} == {1, 4, 5}
+
+
+def test_age_expiry_stops_at_its_budget(storage: BaseStorage) -> None:
+    now = int(datetime.now(UTC).timestamp())
+    _seed_aged_interactions(storage, now)
+
+    result = _expire(
+        storage, "interactions", now - 30 * _DAY, _RecordingArchiver(), budget=2
+    )
+
+    assert (result.deleted, result.backlog) == (2, True)
+
+
+def test_age_expiry_never_cascades_into_an_interaction_added_mid_archive(
+    storage: BaseStorage,
+) -> None:
+    """A publish can add an interaction to a held request while it is being
+    archived; the request delete must re-check, not cascade into that row."""
+    now = int(datetime.now(UTC).timestamp())
+    storage.add_request(_make_request("req1", now - 40 * _DAY))
+
+    def archiver_racing_a_publish(table_name: str, rows: Any) -> bool:
+        storage.add_user_interaction("u1", _make_interaction(9, "req1", now))
+        return True
+
+    result = _expire(storage, "requests", now - 30 * _DAY, archiver_racing_a_publish)
+
+    assert result.deleted == 0
+    assert storage.get_request("req1") is not None
+    remaining = storage.get_all_interactions(limit=10)
+    assert {interaction.interaction_id for interaction in remaining} == {9}
+
+
+def test_age_expiry_budget_is_not_spent_on_held_back_rows(
+    storage: BaseStorage,
+) -> None:
+    """A protected prefix longer than the budget must not starve later rows."""
+    now = int(datetime.now(UTC).timestamp())
+    _seed_aged_interactions(storage, now)
+
+    def protect_two_oldest(target: str, keys: list[tuple[Any, ...]]) -> list[Any]:
+        return [key for key in keys if key[0] not in {1, 2}]
+
+    with patch.object(
+        type(storage), "filter_extraction_retention", side_effect=protect_two_oldest
+    ):
+        result = _expire(
+            storage,
+            "interactions",
+            now - 30 * _DAY,
+            _RecordingArchiver(),
+            budget=1,
+            batch_size=1,
+        )
+
+    assert result.deleted == 1
+    remaining = storage.get_all_interactions(limit=10)
+    assert {interaction.interaction_id for interaction in remaining} == {1, 2, 4, 5}
+
+
+def test_age_expiry_keeps_a_row_upserted_mid_archive(storage: BaseStorage) -> None:
+    """Only the archived version may be deleted; an upsert during the upload
+    leaves a row whose current contents were never archived."""
+    now = int(datetime.now(UTC).timestamp())
+    _seed_aged_interactions(storage, now)
+    conn = storage.conn  # type: ignore[attr-defined]
+
+    def archiver_racing_an_upsert(table_name: str, rows: Any) -> bool:
+        conn.execute(
+            "UPDATE interactions SET content = 'edited' WHERE interaction_id = 2"
+        )
+        conn.commit()
+        return True
+
+    result = _expire(
+        storage, "interactions", now - 30 * _DAY, archiver_racing_an_upsert
+    )
+
+    assert result.deleted == 2
+    remaining = storage.get_all_interactions(limit=10)
+    assert {interaction.interaction_id for interaction in remaining} == {2, 4, 5}
+
+
+def test_age_expiry_rechecks_the_cutoff_at_delete_time(storage: BaseStorage) -> None:
+    """An upsert between key selection and the archive read can move a row's
+    `created_at` past the cutoff; the archived (now fresh) row must survive."""
+    now = int(datetime.now(UTC).timestamp())
+    _seed_aged_interactions(storage, now)
+    conn = storage.conn  # type: ignore[attr-defined]
+    real_fetch = storage._retention_fetch_rows  # type: ignore[attr-defined]
+
+    def fetch_after_an_upsert(*args: Any, **kwargs: Any) -> Any:
+        conn.execute(
+            "UPDATE interactions SET created_at = ? WHERE interaction_id = 2",
+            (datetime.fromtimestamp(now, tz=UTC).isoformat(),),
+        )
+        conn.commit()
+        return real_fetch(*args, **kwargs)
+
+    with patch.object(storage, "_retention_fetch_rows", fetch_after_an_upsert):
+        result = _expire(storage, "interactions", now - 30 * _DAY, _RecordingArchiver())
+
+    assert result.deleted == 2
+    remaining = storage.get_all_interactions(limit=10)
+    assert {interaction.interaction_id for interaction in remaining} == {2, 4, 5}
