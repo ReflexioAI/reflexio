@@ -131,8 +131,9 @@ def is_transient_failure(exc: BaseException) -> bool:
             if not _classifier_failure_warned:
                 _classifier_failure_warned = True
                 _policy_logger.warning(
-                    "event=transient_failure_classifier_failed error_class=%s",
+                    "event=transient_failure_classifier_failed error_class=%s error=%s",
                     type(classifier_exc).__name__,
+                    classifier_exc,
                 )
             return False
     return False
