@@ -50,7 +50,7 @@ class SQLiteDeletionMixin:
         target: RetentionTarget,
         count: int,
         statuses: tuple[str, ...] | None = None,
-        older_than_epoch: int | None = None,
+        older_than_epoch: int | str | None = None,
     ) -> list[tuple[Any, ...]]:
         if statuses is not None and not statuses:
             return []
@@ -72,6 +72,52 @@ class SQLiteDeletionMixin:
             tuple(params),
         )
         return [tuple(row[col] for col in target.id_columns) for row in rows]
+
+    @SQLiteStorageBase.handle_exceptions
+    def _retention_select_aged_keys(
+        self,
+        target: RetentionTarget,
+        count: int,
+        older_than: int | str,
+        after: tuple[Any, Any] | None,
+    ) -> list[tuple[Any, Any]]:
+        order, (id_column,) = target.order_column, target.id_columns
+        predicates = [f"{order} < ?"]
+        params: list[Any] = [older_than]
+        if after is not None:
+            predicates.append(f"({order}, {id_column}) > (?, ?)")
+            params.extend(after)
+        params.append(count)
+        rows = self._fetchall(
+            f"SELECT {order}, {id_column} FROM {target.table_name} "  # noqa: S608
+            f"WHERE {' AND '.join(predicates)} "
+            f"ORDER BY {order} ASC, {id_column} ASC LIMIT ?",
+            tuple(params),
+        )
+        return [(row[order], row[id_column]) for row in rows]
+
+    @SQLiteStorageBase.handle_exceptions
+    def _retention_fetch_rows(
+        self,
+        table_name: str,
+        column: str,
+        values: list[Any],
+        columns: tuple[str, ...] | None = None,
+    ) -> list[dict[str, Any]]:
+        if not values or not self._retention_table_exists(table_name):
+            return []
+        # A local file: the whole row comes off the page whatever the projection,
+        # so `*` costs nothing here. The derived `embedding` is dropped below.
+        select_sql = ", ".join(columns) if columns else "*"
+        rows = self._select_in_chunks(
+            f"SELECT {select_sql} FROM {table_name} "  # noqa: S608
+            f"WHERE {column} IN ({{placeholders}})",
+            values,
+        )
+        archived = [dict(row) for row in rows]
+        for row in archived:
+            row.pop("embedding", None)
+        return archived
 
     @SQLiteStorageBase.handle_exceptions
     def _retention_perform_delete(

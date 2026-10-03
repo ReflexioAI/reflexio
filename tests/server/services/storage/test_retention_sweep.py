@@ -702,3 +702,153 @@ def test_the_library_throttle_is_per_org(storage, granted_lock, monkeypatch):
             retention_sweep.maybe_sweep_retention_caps_for_library("org-b", storage)
             is not None
         )
+
+
+# -- Retention policy: alert-only customer caps, and the age pass -------------
+
+from reflexio.server.services.storage.retention import (  # noqa: E402
+    FAIL_SAFE_RETENTION_POLICY,
+    RetentionPolicy,
+)
+from reflexio.server.services.storage.retention_mixin import (  # noqa: E402
+    AgeRetentionResult,
+)
+
+
+def _policy(policy: RetentionPolicy):
+    return patch.object(retention_sweep, "_resolve_policy", return_value=policy)
+
+
+def test_an_alert_only_customer_cap_pages_and_deletes_nothing(
+    storage, granted_lock, anomalies
+):
+    storage.count_retention_target_rows.return_value = 600
+    storage.delete_oldest_retention_target_rows.return_value = 100
+
+    with (
+        _limits(interactions=500, share_links=500),
+        _policy(RetentionPolicy(customer_cap_action="alert")),
+    ):
+        assert sweep_retention_caps(_ORG, storage).deleted == 100
+
+    # Customer data only alerts; an internal table keeps its oldest-first trim.
+    storage.delete_oldest_retention_target_rows.assert_called_once_with(
+        "share_links", 120
+    )
+    exceeded = [tags for name, tags in anomalies if name == "retention.cap.exceeded"]
+    assert len(exceeded) == 1
+    assert (exceeded[0]["target"], exceeded[0]["level"]) == ("interactions", "error")
+
+
+def test_the_customer_cap_limit_replaces_the_env_limit(
+    storage, granted_lock, anomalies
+):
+    storage.count_retention_target_rows.return_value = 600
+
+    with (
+        _limits(interactions=500),
+        _policy(RetentionPolicy(customer_cap_action="alert", customer_cap_limit=2_000)),
+    ):
+        sweep_retention_caps(_ORG, storage)
+
+    assert anomalies == []
+
+
+def test_a_failing_policy_provider_fails_safe(storage, granted_lock, anomalies):
+    """A provider outage must not become silent oldest-first deletion."""
+    storage.count_retention_target_rows.return_value = 600
+
+    def broken(org_id: str) -> RetentionPolicy:
+        raise RuntimeError("billing db down")
+
+    with (
+        _limits(interactions=500),
+        patch.object(
+            retention_sweep,
+            "get_service",
+            lambda key: (
+                broken if key is retention_sweep.RETENTION_POLICY_PROVIDER else None
+            ),
+        ),
+    ):
+        sweep_retention_caps(_ORG, storage)
+
+    storage.delete_oldest_retention_target_rows.assert_not_called()
+    assert [name for name, _ in anomalies] == [
+        "retention.policy.failed",
+        "retention.cap.exceeded",
+    ]
+    assert FAIL_SAFE_RETENTION_POLICY.age_days is None
+
+
+@pytest.fixture
+def mixin_storage() -> MagicMock:
+    storage = MagicMock(spec=RetentionMixin)
+    storage.expire_retention_target_rows.return_value = AgeRetentionResult()
+    return storage
+
+
+def test_age_enforcement_without_an_archiver_deletes_nothing(
+    mixin_storage, granted_lock, anomalies
+):
+    with _limits(), _policy(RetentionPolicy(age_days=30, enforce_age=True)):
+        assert sweep_retention_caps(_ORG, mixin_storage).deleted == 0
+
+    mixin_storage.expire_retention_target_rows.assert_not_called()
+    assert [name for name, _ in anomalies] == ["retention.age.no_archiver"]
+
+
+def test_a_dry_run_never_hands_the_storage_an_archiver(
+    mixin_storage, granted_lock, anomalies
+):
+    archiver = MagicMock(return_value=True)
+
+    with _limits(), _policy(RetentionPolicy(age_days=30, archiver=archiver)):
+        sweep_retention_caps(_ORG, mixin_storage)
+
+    calls = mixin_storage.expire_retention_target_rows.call_args_list
+    assert calls and all(call.kwargs["archiver"] is None for call in calls)
+
+
+def test_age_enforcement_visits_interactions_before_requests(
+    mixin_storage, granted_lock, anomalies
+):
+    archiver = MagicMock(return_value=True)
+    mixin_storage.expire_retention_target_rows.return_value = AgeRetentionResult(
+        eligible=2, deleted=2
+    )
+
+    with (
+        _limits(),
+        _policy(RetentionPolicy(age_days=30, enforce_age=True, archiver=archiver)),
+    ):
+        result = sweep_retention_caps(_ORG, mixin_storage)
+
+    targets = [
+        call.args[0]
+        for call in mixin_storage.expire_retention_target_rows.call_args_list
+    ]
+    assert targets.index("interactions") < targets.index("requests")
+    assert result.deleted == 2 * len(targets)
+    assert all(
+        call.kwargs["archiver"] is archiver
+        for call in mixin_storage.expire_retention_target_rows.call_args_list
+    )
+
+
+def test_a_blocked_age_pass_raises_an_error_anomaly(
+    mixin_storage, granted_lock, anomalies
+):
+    mixin_storage.expire_retention_target_rows.return_value = AgeRetentionResult(
+        blocked="archive_failed"
+    )
+    archiver = MagicMock(return_value=False)
+
+    with (
+        _limits(),
+        _policy(RetentionPolicy(age_days=30, enforce_age=True, archiver=archiver)),
+    ):
+        sweep_retention_caps(_ORG, mixin_storage)
+
+    blocked = [tags for name, tags in anomalies if name == "retention.age.blocked"]
+    assert blocked and all(tags["reason"] == "archive_failed" for tags in blocked)
