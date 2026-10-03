@@ -31,6 +31,7 @@ from ._operations import OperationMixin
 from ._playbook import AGGREGATE_REASON_PREFIX
 from ._requests import RequestMixin
 from ._session_outcomes import (
+    OutcomePrefixPrecondition,
     SessionOutcomeContext,
     SessionOutcomeStoreMixin,
     SessionOutcomeWriteResult,
@@ -284,6 +285,7 @@ __all__ = [
     "AgentRunStatus",
     "BaseStorage",
     "NOT_APPLICABLE_ANSWER",
+    "OutcomePrefixPrecondition",
     "PendingToolCallRecord",
     "PendingToolCallStatus",
     "PendingToolCallUpsertResult",
