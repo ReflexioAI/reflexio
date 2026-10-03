@@ -777,3 +777,50 @@ def test_age_expiry_stops_at_its_budget(storage: BaseStorage) -> None:
     )
 
     assert (result.deleted, result.backlog) == (2, True)
+
+
+def test_age_expiry_never_cascades_into_an_interaction_added_mid_archive(
+    storage: BaseStorage,
+) -> None:
+    """A publish can add an interaction to a held request while it is being
+    archived; the request delete must re-check, not cascade into that row."""
+    now = int(datetime.now(UTC).timestamp())
+    storage.add_request(_make_request("req1", now - 40 * _DAY))
+
+    def archiver_racing_a_publish(table_name: str, rows: Any) -> bool:
+        storage.add_user_interaction("u1", _make_interaction(9, "req1", now))
+        return True
+
+    result = _expire(storage, "requests", now - 30 * _DAY, archiver_racing_a_publish)
+
+    assert result.deleted == 0
+    assert storage.get_request("req1") is not None
+    remaining = storage.get_all_interactions(limit=10)
+    assert {interaction.interaction_id for interaction in remaining} == {9}
+
+
+def test_age_expiry_budget_is_not_spent_on_held_back_rows(
+    storage: BaseStorage,
+) -> None:
+    """A protected prefix longer than the budget must not starve later rows."""
+    now = int(datetime.now(UTC).timestamp())
+    _seed_aged_interactions(storage, now)
+
+    def protect_two_oldest(target: str, keys: list[tuple[Any, ...]]) -> list[Any]:
+        return [key for key in keys if key[0] not in {1, 2}]
+
+    with patch.object(
+        type(storage), "filter_extraction_retention", side_effect=protect_two_oldest
+    ):
+        result = _expire(
+            storage,
+            "interactions",
+            now - 30 * _DAY,
+            _RecordingArchiver(),
+            budget=1,
+            batch_size=1,
+        )
+
+    assert result.deleted == 1
+    remaining = storage.get_all_interactions(limit=10)
+    assert {interaction.interaction_id for interaction in remaining} == {1, 2, 4, 5}

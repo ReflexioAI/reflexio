@@ -10,7 +10,10 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
-from reflexio.server.services.storage.retention import RetentionTarget
+from reflexio.server.services.storage.retention import (
+    RETENTION_CASCADES,
+    RetentionTarget,
+)
 from reflexio.server.services.storage.retention_mixin import (
     RETENTION_DELETE_CHUNK,
     chunked,
@@ -108,7 +111,7 @@ class SQLiteDeletionMixin:
             return []
         # A local file: the whole row comes off the page whatever the projection,
         # so `*` costs nothing here. The derived `embedding` is dropped below.
-        select_sql = ", ".join(columns) if columns else "*"
+        select_sql = f"DISTINCT {', '.join(columns)}" if columns else "*"
         rows = self._select_in_chunks(
             f"SELECT {select_sql} FROM {table_name} "  # noqa: S608
             f"WHERE {column} IN ({{placeholders}})",
@@ -118,6 +121,34 @@ class SQLiteDeletionMixin:
         for row in archived:
             row.pop("embedding", None)
         return archived
+
+    @SQLiteStorageBase.handle_exceptions
+    def _retention_delete_childless_rows(
+        self, target: RetentionTarget, keys: list[tuple[Any, ...]]
+    ) -> int:
+        (id_column,) = target.id_columns
+        guards = " AND ".join(
+            f"NOT EXISTS (SELECT 1 FROM {cascade.table_name} AS c "  # noqa: S608
+            f"WHERE c.{cascade.fk_column} = {target.table_name}.{id_column})"
+            for cascade in RETENTION_CASCADES.get(target.name, ())
+        )
+        deleted = 0
+        with self._lock:
+            try:
+                for chunk in chunked([key[0] for key in keys]):
+                    placeholders = ",".join("?" for _ in chunk)
+                    cursor = self.conn.execute(
+                        f"DELETE FROM {target.table_name} "  # noqa: S608
+                        f"WHERE {id_column} IN ({placeholders})"
+                        + (f" AND {guards}" if guards else ""),
+                        chunk,
+                    )
+                    deleted += cursor.rowcount
+                self.conn.commit()
+            except Exception:
+                self.conn.rollback()
+                raise
+        return deleted
 
     @SQLiteStorageBase.handle_exceptions
     def _retention_perform_delete(

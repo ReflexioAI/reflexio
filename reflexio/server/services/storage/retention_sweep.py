@@ -251,6 +251,7 @@ def sweep_retention_caps(org_id: str, storage: BaseStorage) -> RetentionSweepRes
     # The age pass is bounded by its own deadline (`AGE_PASS_SECONDS`) and is
     # kept out of the slow-sweep measure, which exists to catch slow probes.
     age_seconds = 0.0
+    age_failed = False
     try:
         project_id = current_project_id()
 
@@ -288,7 +289,8 @@ def sweep_retention_caps(org_id: str, storage: BaseStorage) -> RetentionSweepRes
         try:
             if policy.age_days is not None:
                 age_started = time.monotonic()
-                deleted_total += _age_pass(org_id, project_id, storage, policy)
+                age_deleted, age_failed = _age_pass(org_id, project_id, storage, policy)
+                deleted_total += age_deleted
                 age_seconds = time.monotonic() - age_started
             probe_started = time.monotonic()
             probes: Mapping[str, RetentionProbe] = _probe_targets(storage, limits)
@@ -364,6 +366,11 @@ def sweep_retention_caps(org_id: str, storage: BaseStorage) -> RetentionSweepRes
     # table is isolated and usually permanent, but a backend-wide transient
     # (the PGRST002 that prompted the retry cadence) lands on all of them and
     # would otherwise be absorbed target by target into a clean-looking tick.
+    if age_failed:
+        # Every age target raised or was blocked: the shape a backend-wide or
+        # archive-wide transient takes. Report it so the scheduler takes its
+        # bounded fast retry rather than waiting a full poll interval.
+        return RetentionSweepResult(deleted_total, failed=True)
     if targets_failed and targets_failed == len(limits):
         capture_anomaly(
             "retention.sweep.all_targets_failed",
@@ -419,7 +426,7 @@ def _effective_limits(policy: RetentionPolicy) -> dict[str, int]:
 
 def _age_pass(
     org_id: str, project_id: str | None, storage: BaseStorage, policy: RetentionPolicy
-) -> int:
+) -> tuple[int, bool]:
     """Expire ``age_retained`` rows older than ``policy.age_days``.
 
     Runs before the cap pass, under the same lease. Each target is isolated: one
@@ -428,10 +435,13 @@ def _age_pass(
     is a precondition of deletion, not a best effort.
 
     Returns:
-        int: Rows deleted across all age-retained targets.
+        tuple[int, bool]: Rows deleted across all age-retained targets, and
+        whether EVERY target raised or was blocked. A missing archiver is a
+        configuration error a retry cannot fix, so it is reported but not
+        counted as a failure.
     """
     if not isinstance(storage, RetentionMixin) or policy.age_days is None:
-        return 0
+        return 0, False
     if policy.enforce_age and policy.archiver is None:
         capture_anomaly(
             "retention.age.no_archiver",
@@ -439,11 +449,11 @@ def _age_pass(
             org_id=org_id,
             project_id=project_id,
         )
-        return 0
+        return 0, False
     archiver = policy.archiver if policy.enforce_age else None
     cutoff = int(time.time()) - policy.age_days * 86400
     deadline = time.monotonic() + AGE_PASS_SECONDS
-    deleted = 0
+    deleted = failed = 0
     for target in AGE_RETAINED_TARGETS:
         try:
             result = storage.expire_retention_target_rows(
@@ -464,10 +474,12 @@ def _age_pass(
                 error_type=type(exc).__name__,
             )
             logger.exception("event=retention_age_failed target=%s", target.name)
+            failed += 1
             continue
         _report_age_result(org_id, project_id, target.name, policy, result)
         deleted += result.deleted
-    return deleted
+        failed += result.blocked is not None
+    return deleted, failed == len(AGE_RETAINED_TARGETS)
 
 
 def _report_age_result(

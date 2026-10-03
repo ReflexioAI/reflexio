@@ -34,6 +34,11 @@ from reflexio.server.services.storage.retention import (
 #   - PostgREST URL length limits (gateway caps are commonly 8-16 KB).
 RETENTION_DELETE_CHUNK = 500
 
+#: The age pass examines at most this many rows per eligible row it may act on,
+#: so held-back rows (protected, or with dependents) are stepped past without
+#: making the walk unbounded.
+AGE_EXAMINE_FACTOR = 10
+
 
 def chunked(
     values: Sequence[Any], chunk_size: int = RETENTION_DELETE_CHUNK
@@ -302,7 +307,11 @@ class RetentionMixin(ABC):
             target_name (str): An ``age_retained`` target.
             older_than_epoch (int): Rows strictly older than this, in Unix
                 seconds, are eligible.
-            budget (int): Most rows to examine this call; bounds the work per tick.
+            budget (int): Most eligible rows to act on this call. Rows that are
+                held back (protected, or with dependents) do not spend it, so a
+                long protected prefix cannot starve the rows behind it; the walk
+                is instead bounded by ``AGE_EXAMINE_FACTOR * budget`` rows
+                examined, and by ``deadline``.
             batch_size (int): Rows per select/archive/delete round.
             archiver (RetentionArchiver | None): ``None`` makes this a dry run:
                 it counts what it would delete and deletes nothing.
@@ -323,12 +332,16 @@ class RetentionMixin(ABC):
         cutoff = retention_cutoff_value(target, older_than_epoch)
         id_column = target.id_columns[0]
         eligible = deleted = examined = 0
+        max_examined = budget * AGE_EXAMINE_FACTOR
         after: tuple[Any, Any] | None = None
-        while examined < budget:
+        while eligible < budget and examined < max_examined:
             if time.monotonic() >= deadline:
                 return AgeRetentionResult(eligible, deleted, backlog=True)
             batch = self._retention_select_aged_keys(
-                target, min(batch_size, budget - examined), cutoff, after
+                target,
+                min(batch_size, budget - eligible, max_examined - examined),
+                cutoff,
+                after,
             )
             if not batch:
                 return AgeRetentionResult(eligible, deleted)
@@ -352,9 +365,29 @@ class RetentionMixin(ABC):
                 return AgeRetentionResult(
                     eligible - len(keys), deleted, blocked="archive_failed"
                 )
-            self._retention_perform_delete(target, keys)
-            deleted += len(keys)
+            deleted += self._retention_delete_aged_keys(target, keys)
         return AgeRetentionResult(eligible, deleted, backlog=True)
+
+    def _retention_delete_aged_keys(
+        self, target: RetentionTarget, keys: list[tuple[Any, ...]]
+    ) -> int:
+        """Delete archived aged keys; never cascade into a dependent row.
+
+        The dependency check in :meth:`_retention_deletable_aged_keys` ran
+        before the archive upload, and publishers do not take the cleanup
+        lease -- so an interaction may have been added to a held request since.
+        A target with cascades is therefore deleted by the guarded hook, which
+        re-checks "no dependents" in the same statement as the delete, instead
+        of by the cap path's unconditional cascade. Rows it skips stay in place
+        (already archived; a later sweep retries them).
+
+        Returns:
+            int: Rows actually deleted.
+        """
+        if RETENTION_CASCADES.get(target.name):
+            return self._retention_delete_childless_rows(target, keys)
+        self._retention_perform_delete(target, keys)
+        return len(keys)
 
     def _retention_deletable_aged_keys(
         self, target: RetentionTarget, keys: list[tuple[Any, ...]]
@@ -553,6 +586,18 @@ class RetentionMixin(ABC):
         """
         raise NotImplementedError
 
+    def _retention_delete_childless_rows(
+        self, target: RetentionTarget, keys: list[tuple[Any, ...]]
+    ) -> int:
+        """Delete ``keys`` from a single-key target, skipping any that has a row
+        in one of its ``RETENTION_CASCADES`` tables, in ONE atomic statement or
+        transaction -- the existence check and the delete must not be separable.
+
+        Returns:
+            int: Rows actually deleted.
+        """
+        raise NotImplementedError
+
     def _retention_fetch_rows(
         self,
         table_name: str,
@@ -566,9 +611,11 @@ class RetentionMixin(ABC):
             table_name (str): Table to read.
             column (str): Column matched against ``values``.
             values (list[Any]): Values to match.
-            columns (tuple[str, ...] | None): Columns to return; ``None`` returns
-                the whole row for archiving, minus derived search columns
-                (embeddings, full-text vectors) that can be regenerated.
+            columns (tuple[str, ...] | None): DISTINCT values of these columns;
+                ``None`` returns the whole row for archiving, minus derived
+                search columns (embeddings, full-text vectors) that can be
+                regenerated. Distinct, so a parent-key existence check reads one
+                row per parent rather than one per child.
 
         Returns:
             list[dict[str, Any]]: One dict per matching row; ``[]`` when the

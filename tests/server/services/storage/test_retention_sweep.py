@@ -852,3 +852,29 @@ def test_a_blocked_age_pass_raises_an_error_anomaly(
 
     blocked = [tags for name, tags in anomalies if name == "retention.age.blocked"]
     assert blocked and all(tags["reason"] == "archive_failed" for tags in blocked)
+
+
+def test_every_age_target_blocked_fails_the_pass(
+    mixin_storage, granted_lock, anomalies
+):
+    """So the scheduler takes its bounded fast retry, not a full poll interval."""
+    mixin_storage.expire_retention_target_rows.return_value = AgeRetentionResult(
+        blocked="archive_failed"
+    )
+
+    with (
+        _limits(),
+        _policy(
+            RetentionPolicy(
+                age_days=30, enforce_age=True, archiver=MagicMock(return_value=False)
+            )
+        ),
+    ):
+        assert sweep_retention_caps(_ORG, mixin_storage).failed is True
+
+
+def test_a_missing_archiver_is_not_a_retryable_failure(
+    mixin_storage, granted_lock, anomalies
+):
+    with _limits(), _policy(RetentionPolicy(age_days=30, enforce_age=True)):
+        assert sweep_retention_caps(_ORG, mixin_storage).failed is False
