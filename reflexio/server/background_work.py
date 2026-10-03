@@ -136,20 +136,26 @@ def _transient_for_seconds(scope: str) -> float:
     Process-local on purpose: the rollout noise comes from the task that is
     about to exit, so state that dies with the process resets at the same rate
     as the condition it tracks.
+
+    Bounded: a new scope arriving at capacity first prunes ended episodes, and
+    if none have ended it is not tracked (it reports as a fresh episode). An
+    outage that wide is already escalating through the scopes being tracked.
     """
     now = _monotonic()
     with _episodes_lock:
-        first_seen, last_seen = _episodes.get(scope, (now, now))
-        if now - last_seen > _EPISODE_GAP_SECONDS:
-            first_seen = now
-        _episodes[scope] = (first_seen, now)
-        if len(_episodes) > _MAX_TRACKED_SCOPES:
+        if scope not in _episodes and len(_episodes) >= _MAX_TRACKED_SCOPES:
             for stale in [
                 key
                 for key, (_, seen) in _episodes.items()
                 if now - seen > _EPISODE_GAP_SECONDS
             ]:
                 del _episodes[stale]
+            if len(_episodes) >= _MAX_TRACKED_SCOPES:
+                return 0.0
+        first_seen, last_seen = _episodes.get(scope, (now, now))
+        if now - last_seen > _EPISODE_GAP_SECONDS:
+            first_seen = now
+        _episodes[scope] = (first_seen, now)
         return now - first_seen
 
 

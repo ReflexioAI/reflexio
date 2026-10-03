@@ -160,3 +160,18 @@ def test_scopes_escalate_independently(caplog, clock, transient_failure_classifi
 
     assert other.levelno == logging.WARNING
     assert same.levelno == logging.ERROR
+
+
+def test_tracked_scopes_stay_bounded_and_ended_episodes_make_room(
+    caplog, clock, monkeypatch, transient_failure_classifier
+):
+    monkeypatch.setattr(background_work, "_MAX_TRACKED_SCOPES", 3)
+    for scope in ("a", "b", "c", "d"):
+        _report(caplog, _raised(transient_failure_classifier("x")), scope=scope)
+
+    assert set(background_work._episodes) == {"a", "b", "c"}
+
+    clock[0] += 301  # every tracked episode has now ended
+    _report(caplog, _raised(transient_failure_classifier("x")), scope="d")
+
+    assert set(background_work._episodes) == {"d"}
