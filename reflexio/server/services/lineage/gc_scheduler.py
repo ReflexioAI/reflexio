@@ -318,6 +318,7 @@ class LineageGCScheduler(ThreadedScheduler):
                     bootstrap_org_id=self.bootstrap_org_id,
                     fallback="bootstrap_org_only",
                 )
+                self._record_tick_failure()
                 return [bootstrap_ctx.org_id]
 
         storage = getattr(bootstrap_ctx, "storage", None)
@@ -361,6 +362,7 @@ class LineageGCScheduler(ThreadedScheduler):
                 scope=f"lineage-gc:{org_id}",
                 org_id=org_id,
             )
+            self._record_tick_failure()
             return
 
         # One pass per project, not one per org. Everything below writes
@@ -486,6 +488,7 @@ class LineageGCScheduler(ThreadedScheduler):
                     scope=f"lineage-expiry-sweep:{org_id}",
                     org_id=org_id,
                 )
+                self._record_tick_failure()
 
             # Tombstone GC: each entity type is independent within the loop.
             try:
@@ -520,6 +523,7 @@ class LineageGCScheduler(ThreadedScheduler):
                     scope=f"lineage-tombstone-gc:{org_id}",
                     org_id=org_id,
                 )
+                self._record_tick_failure()
 
         # Class B: direct-delete of expired plain rows (no audit/grace
         # obligation; independent of lineage_gc).  Each sweep is isolated so
@@ -556,6 +560,7 @@ class LineageGCScheduler(ThreadedScheduler):
                         org_id=org_id,
                         method=method_name,
                     )
+                    self._record_tick_failure()
 
         # Class C: row-count retention caps. UNGATED -- the caps are env-driven
         # and always in force, so this block has no config flag of its own, and
@@ -664,6 +669,7 @@ class LineageGCScheduler(ThreadedScheduler):
                     org_id=org_id,
                     sweep=sweep_id,
                 )
+                self._record_tick_failure()
 
     def _run_global_sweeps(self, cfg: object) -> None:
         """Invoke each registered global sweep once, gated on expiry_reclamation.
@@ -694,6 +700,7 @@ class LineageGCScheduler(ThreadedScheduler):
                     scope=f"lineage-global-sweep:{sweep_id}",
                     sweep=sweep_id,
                 )
+                self._record_tick_failure()
 
     def _run_always_global_sweeps(self) -> None:
         """Invoke each applicability-owning global sweep once per elected tick."""
@@ -713,6 +720,7 @@ class LineageGCScheduler(ThreadedScheduler):
                     scope=f"lineage-always-global-sweep:{sweep_id}",
                     sweep=sweep_id,
                 )
+                self._record_tick_failure()
 
     def _record_tick_failure(self) -> None:
         """Mark this tick as having failed work, from any fan-out worker."""
