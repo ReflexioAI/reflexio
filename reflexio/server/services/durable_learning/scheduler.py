@@ -6,6 +6,7 @@ import logging
 from collections.abc import Callable, Iterable
 
 from reflexio.server.api_endpoints.request_context import RequestContext
+from reflexio.server.background_work import report_background_failure
 from reflexio.server.env_utils import env_str
 from reflexio.server.scheduling import ThreadedScheduler
 from reflexio.server.services.durable_learning.worker import (
@@ -52,8 +53,13 @@ class DurableLearningScheduler(ThreadedScheduler):
                 if not self._worker.start_org(org_id, self._lease):
                     break
                 self._last_org = org_id
-        except Exception:
-            logger.exception("Durable extraction discovery failed")
+        except Exception as exc:
+            report_background_failure(
+                logger,
+                "durable_extraction_discovery_failed",
+                exc,
+                scope="durable-learning-discovery",
+            )
         return self._poll
 
 

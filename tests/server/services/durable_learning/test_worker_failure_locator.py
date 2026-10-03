@@ -428,3 +428,20 @@ def test_setup_lease_loss_does_not_schedule_or_count_retry(monkeypatch, operatio
     assert not any(
         call.args[0] == "worker.retries" for call in sink.record.call_args_list
     )
+
+
+def test_transient_turn_failure_is_a_warning_and_releases_the_slot(
+    caplog: pytest.LogCaptureFixture, transient_failure_classifier: type[Exception]
+) -> None:
+    def factory(_org_id: str) -> RequestContext:
+        raise transient_failure_classifier("server closed the connection")
+
+    caplog.set_level(logging.WARNING, logger=worker_module.logger.name)
+    worker = DurableLearningWorker(factory)
+
+    assert worker.drain_org("org1", batch_size=2, lease_seconds=30) == 0
+
+    failures = [r for r in caplog.records if "extraction_turn_failed" in r.getMessage()]
+    # Both turns ran: the first failure released its capacity slot.
+    assert [r.levelno for r in failures] == [logging.WARNING, logging.WARNING]
+    assert not failures[0].exc_info

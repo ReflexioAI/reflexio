@@ -106,3 +106,22 @@ def test_library_recovers_persisted_backlog_without_new_publish(tmp_path, monkey
             local._live.clear()
         if scheduler:
             scheduler.stop()
+
+
+def test_transient_discovery_failure_is_a_warning(caplog, transient_failure_classifier):
+    import logging
+
+    from reflexio.server.services.durable_learning import scheduler as module
+
+    def provider():
+        raise transient_failure_classifier("connection reset")
+
+    scheduler = DurableLearningScheduler(
+        request_context_factory=_unused_context, org_ids_provider=provider
+    )
+    caplog.set_level(logging.WARNING, logger=module.logger.name)
+
+    assert scheduler._run_once() == scheduler._poll
+
+    failures = [r for r in caplog.records if "discovery_failed" in r.getMessage()]
+    assert [r.levelno for r in failures] == [logging.WARNING]

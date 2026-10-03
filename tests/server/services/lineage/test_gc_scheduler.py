@@ -990,3 +990,37 @@ def test_maybe_start_lineage_gc_reads_module_leader_gate_hook():
         if sched is not None:
             sched.stop(timeout_seconds=1.0)
     assert gc_mod._leader_gate_hook is None
+
+
+def test_transient_tick_failure_is_a_warning_and_still_retries_soon(
+    caplog, transient_failure_classifier
+) -> None:
+    def factory(_org_id: str):
+        raise transient_failure_classifier("SSL SYSCALL error: EOF detected")
+
+    scheduler = _scheduler(factory=factory)
+    caplog.set_level(logging.WARNING, logger=gc_mod.logger.name)
+
+    interval = scheduler._run_once()
+
+    failures = [r for r in caplog.records if "scheduler_tick_failed" in r.getMessage()]
+    assert [r.levelno for r in failures] == [logging.WARNING]
+    assert not failures[0].exc_info
+    assert interval == gc_mod._FAILED_TICK_RETRY_SECONDS
+
+
+def test_transient_org_failure_is_a_warning_and_still_raises_the_anomaly(
+    caplog, transient_failure_classifier
+) -> None:
+    def factory(_org_id: str):
+        raise transient_failure_classifier("server closed the connection")
+
+    scheduler = _scheduler(factory=factory)
+    caplog.set_level(logging.WARNING, logger=gc_mod.logger.name)
+
+    with patch.object(gc_mod, "capture_anomaly") as anomaly:
+        scheduler._sweep_org("org_a")
+
+    anomaly.assert_called_once_with("lineage.gc.run_failed", org_id="org_a")
+    failures = [r for r in caplog.records if "lineage_gc_org_failed" in r.getMessage()]
+    assert [r.levelno for r in failures] == [logging.WARNING]

@@ -189,3 +189,25 @@ def tool_call_completion():
     )
 
     return make_tool_call_response, make_finish_response
+
+
+class TransientTestError(ConnectionError):
+    """Stands in for a dropped database connection in failure-policy tests."""
+
+
+@pytest.fixture
+def transient_failure_classifier() -> Iterator[type[TransientTestError]]:
+    """Classify ``TransientTestError`` as transient; reset policy state around it.
+
+    Yields:
+        type[TransientTestError]: Raise this to simulate a rollout drop.
+    """
+    from reflexio.server import background_work
+
+    background_work.configure_transient_failure_classifier(
+        lambda exc: isinstance(exc, TransientTestError)
+    )
+    background_work._episodes.clear()
+    yield TransientTestError
+    background_work.configure_transient_failure_classifier(None)
+    background_work._episodes.clear()

@@ -11,7 +11,10 @@ from collections.abc import Callable
 from pathlib import Path
 
 from reflexio.server.api_endpoints.request_context import RequestContext
-from reflexio.server.background_work import background_work
+from reflexio.server.background_work import (
+    background_work,
+    report_background_failure,
+)
 from reflexio.server.env_utils import env_str
 from reflexio.server.operation_limiter import operation_limit_value
 from reflexio.server.operational_metrics import record_health
@@ -182,8 +185,14 @@ class DurableLearningWorker:
     def _reserved_turn(self, org_id: str, lease_seconds: int) -> int:
         try:
             return self._turn(org_id, lease_seconds)
-        except Exception:
-            logger.exception("Extraction turn failed org_id=%s", org_id)
+        except Exception as exc:
+            report_background_failure(
+                logger,
+                "extraction_turn_failed",
+                exc,
+                scope=f"durable-learning-turn:{org_id}",
+                org_id=org_id,
+            )
             return 0
         finally:
             _release()
@@ -210,8 +219,14 @@ class DurableLearningWorker:
                 try:
                     if not storage.renew_extraction(user_id, token, lease_seconds):
                         return
-                except Exception:
-                    logger.exception("Extraction heartbeat failed org_id=%s", org_id)
+                except Exception as exc:
+                    report_background_failure(
+                        logger,
+                        "extraction_heartbeat_failed",
+                        exc,
+                        scope=f"durable-learning-heartbeat:{org_id}",
+                        org_id=org_id,
+                    )
 
         thread = threading.Thread(
             target=heartbeat, daemon=True, name="reflexio-extraction-heartbeat"
