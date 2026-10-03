@@ -365,27 +365,31 @@ class RetentionMixin(ABC):
                 return AgeRetentionResult(
                     eligible - len(keys), deleted, blocked="archive_failed"
                 )
-            deleted += self._retention_delete_aged_keys(target, keys)
+            deleted += self._retention_delete_aged_keys(target, keys, rows)
         return AgeRetentionResult(eligible, deleted, backlog=True)
 
     def _retention_delete_aged_keys(
-        self, target: RetentionTarget, keys: list[tuple[Any, ...]]
+        self,
+        target: RetentionTarget,
+        keys: list[tuple[Any, ...]],
+        rows: list[dict[str, Any]],
     ) -> int:
-        """Delete archived aged keys; never cascade into a dependent row.
+        """Delete exactly what was archived -- nothing newer, nothing cascaded.
 
-        The dependency check in :meth:`_retention_deletable_aged_keys` ran
-        before the archive upload, and publishers do not take the cleanup
-        lease -- so an interaction may have been added to a held request since.
-        A target with cascades is therefore deleted by the guarded hook, which
-        re-checks "no dependents" in the same statement as the delete, instead
-        of by the cap path's unconditional cascade. Rows it skips stay in place
-        (already archived; a later sweep retries them).
+        The checks before the archive upload are stale by the time it returns:
+        publishers do not take the cleanup lease, so in between a request may
+        have gained an interaction, or a row may have been upserted. Unless the
+        target is ``append_only``, rows are therefore deleted by
+        :meth:`_retention_delete_archived_rows`, which deletes a row only if it
+        still equals its archived version and has no dependents, in the same
+        statement as the delete. Rows it skips stay in place (a later sweep
+        re-archives and retries them).
 
         Returns:
             int: Rows actually deleted.
         """
-        if RETENTION_CASCADES.get(target.name):
-            return self._retention_delete_childless_rows(target, keys)
+        if not target.append_only:
+            return self._retention_delete_archived_rows(target, rows)
         self._retention_perform_delete(target, keys)
         return len(keys)
 
@@ -586,12 +590,14 @@ class RetentionMixin(ABC):
         """
         raise NotImplementedError
 
-    def _retention_delete_childless_rows(
-        self, target: RetentionTarget, keys: list[tuple[Any, ...]]
+    def _retention_delete_archived_rows(
+        self, target: RetentionTarget, rows: list[dict[str, Any]]
     ) -> int:
-        """Delete ``keys`` from a single-key target, skipping any that has a row
-        in one of its ``RETENTION_CASCADES`` tables, in ONE atomic statement or
-        transaction -- the existence check and the delete must not be separable.
+        """Delete ``rows`` (as returned by :meth:`_retention_fetch_rows`) from a
+        single-key target, each only if the stored row still equals it and has
+        no row in the target's ``RETENTION_CASCADES`` tables -- checked in ONE
+        atomic statement or transaction with the delete. Clean up any index
+        rows of what was deleted.
 
         Returns:
             int: Rows actually deleted.

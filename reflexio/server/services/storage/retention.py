@@ -36,6 +36,10 @@ class RetentionTarget:
     # Customer content (raw events and learned knowledge). Under a policy whose
     # ``customer_cap_action`` is ``"alert"`` the row cap on these only alerts.
     customer_data: bool = False
+    # Rows are never updated in place after insert. The age pass may then
+    # delete by key alone; any other target is deleted only while the row still
+    # equals the version that was archived (an upsert mid-archive keeps it).
+    append_only: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -175,6 +179,7 @@ RETENTION_TARGETS: tuple[RetentionTarget, ...] = (
         fixed_row_limit=DEFAULT_ROW_RETENTION_LIMIT,
         order_column_epoch=True,
         age_retained=True,
+        append_only=True,
     ),
     RetentionTarget(
         "skills", "skills", "created_at", ("skill_id",), customer_data=True

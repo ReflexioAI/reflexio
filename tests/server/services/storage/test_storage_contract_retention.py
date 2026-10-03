@@ -824,3 +824,26 @@ def test_age_expiry_budget_is_not_spent_on_held_back_rows(
     assert result.deleted == 1
     remaining = storage.get_all_interactions(limit=10)
     assert {interaction.interaction_id for interaction in remaining} == {1, 2, 4, 5}
+
+
+def test_age_expiry_keeps_a_row_upserted_mid_archive(storage: BaseStorage) -> None:
+    """Only the archived version may be deleted; an upsert during the upload
+    leaves a row whose current contents were never archived."""
+    now = int(datetime.now(UTC).timestamp())
+    _seed_aged_interactions(storage, now)
+    conn = storage.conn  # type: ignore[attr-defined]
+
+    def archiver_racing_an_upsert(table_name: str, rows: Any) -> bool:
+        conn.execute(
+            "UPDATE interactions SET content = 'edited' WHERE interaction_id = 2"
+        )
+        conn.commit()
+        return True
+
+    result = _expire(
+        storage, "interactions", now - 30 * _DAY, archiver_racing_an_upsert
+    )
+
+    assert result.deleted == 2
+    remaining = storage.get_all_interactions(limit=10)
+    assert {interaction.interaction_id for interaction in remaining} == {2, 4, 5}

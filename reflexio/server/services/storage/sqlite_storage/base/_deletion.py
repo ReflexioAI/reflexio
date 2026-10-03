@@ -123,32 +123,39 @@ class SQLiteDeletionMixin:
         return archived
 
     @SQLiteStorageBase.handle_exceptions
-    def _retention_delete_childless_rows(
-        self, target: RetentionTarget, keys: list[tuple[Any, ...]]
+    def _retention_delete_archived_rows(
+        self, target: RetentionTarget, rows: list[dict[str, Any]]
     ) -> int:
         (id_column,) = target.id_columns
-        guards = " AND ".join(
-            f"NOT EXISTS (SELECT 1 FROM {cascade.table_name} AS c "  # noqa: S608
+        guards = "".join(
+            f" AND NOT EXISTS (SELECT 1 FROM {cascade.table_name} AS c "
             f"WHERE c.{cascade.fk_column} = {target.table_name}.{id_column})"
             for cascade in RETENTION_CASCADES.get(target.name, ())
         )
-        deleted = 0
+        deleted: list[tuple[Any, ...]] = []
         with self._lock:
             try:
-                for chunk in chunked([key[0] for key in keys]):
-                    placeholders = ",".join("?" for _ in chunk)
+                for row in rows:
+                    # `IS` matches NULL to NULL; every archived column must still
+                    # hold its archived value, so an upsert mid-archive keeps
+                    # the row.
+                    same = " AND ".join(f"{column} IS ?" for column in row)
                     cursor = self.conn.execute(
                         f"DELETE FROM {target.table_name} "  # noqa: S608
-                        f"WHERE {id_column} IN ({placeholders})"
-                        + (f" AND {guards}" if guards else ""),
-                        chunk,
+                        f"WHERE {id_column} = ? AND {same}{guards}",
+                        (row[id_column], *row.values()),
                     )
-                    deleted += cursor.rowcount
+                    if cursor.rowcount:
+                        deleted.append((row[id_column],))
+                if deleted and not RETENTION_CASCADES.get(target.name):
+                    # Index rows only (FTS/vec); a target with cascades deleted
+                    # nothing that has dependents.
+                    self._retention_delete_dependencies(target, deleted)
                 self.conn.commit()
             except Exception:
                 self.conn.rollback()
                 raise
-        return deleted
+        return len(deleted)
 
     @SQLiteStorageBase.handle_exceptions
     def _retention_perform_delete(
