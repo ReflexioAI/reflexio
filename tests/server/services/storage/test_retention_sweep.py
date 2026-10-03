@@ -898,3 +898,48 @@ def test_each_age_target_gets_a_share_of_the_deadline(
     ]
     first_share = deadlines[0] - (deadlines[-1] - retention_sweep.AGE_PASS_SECONDS)
     assert first_share < retention_sweep.AGE_PASS_SECONDS / 2
+
+
+def test_a_targets_minimum_age_floors_the_age_cutoff():
+    """A plan window shorter than exposure events' 14-day floor must not
+    select rows their delete function will refuse."""
+    import time as _time
+
+    from reflexio.server.services.storage.retention import RETENTION_TARGETS_BY_NAME
+
+    seen: list = []
+
+    class _Recorder(RetentionMixin):
+        def _retention_table_exists(self, table_name):
+            return True
+
+        def _retention_count_rows(self, target):
+            return 0
+
+        def _retention_select_oldest_keys(self, *args, **kwargs):
+            return []
+
+        def _retention_select_aged_keys(self, target, count, older_than, after):
+            seen.append(older_than)
+            return []
+
+        def _retention_delete_dependencies(self, target, keys):
+            pass
+
+        def _retention_delete_target_rows(self, target, keys):
+            pass
+
+    now = int(_time.time())
+    _Recorder().expire_retention_target_rows(
+        "user_playbook_exposure_events",
+        older_than_epoch=now - 7 * 86_400,
+        budget=10,
+        batch_size=10,
+        archiver=None,
+        deadline=float("inf"),
+    )
+
+    floor = RETENTION_TARGETS_BY_NAME[
+        "user_playbook_exposure_events"
+    ].minimum_age_seconds
+    assert seen and seen[0] <= now - floor

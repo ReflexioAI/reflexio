@@ -329,6 +329,12 @@ class RetentionMixin(ABC):
             raise ValueError(f"{target_name} is not a single-key age-retained target")
         if not self._retention_table_exists(target.table_name):
             return AgeRetentionResult()
+        # A target's own minimum age wins over a shorter plan window: exposure
+        # events' delete function refuses anything younger than 14 days, so a
+        # looser cutoff would select rows it then silently keeps.
+        older_than_epoch = min(
+            older_than_epoch, int(time.time()) - target.minimum_age_seconds
+        )
         cutoff = retention_cutoff_value(target, older_than_epoch)
         id_column = target.id_columns[0]
         eligible = deleted = examined = 0
