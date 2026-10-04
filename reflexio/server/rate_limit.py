@@ -16,16 +16,20 @@ from slowapi.util import get_remote_address
 
 from reflexio.server.tracing import profile_step
 
+_configured_key_func: Callable[..., str] | None = None
+
 
 def get_rate_limit_key(request: Request) -> str:
-    """Get rate limit key based on IP address.
+    """Dispatch to the configured key function, defaulting to the client IP.
 
     Args:
         request (Request): The incoming request
 
     Returns:
-        str: Rate limit key (IP address)
+        str: Configured rate limit key, or the client IP before configuration
     """
+    if _configured_key_func is not None:
+        return _configured_key_func(request)
     return get_remote_address(request)
 
 
@@ -68,12 +72,16 @@ _trace_external_rate_limit_backend(limiter)
 
 def configure_rate_limiter(key_func: Callable[..., str]) -> None:
     """
-    Replace the rate limiter's key function.
+    Replace the key function used by existing and future default route limits.
 
     This is the supported way to override the default IP-based key function
     (e.g. with an org-scoped or token-scoped variant in the enterprise layer).
 
     Args:
         key_func: A callable that accepts a Request and returns a string key.
+            Passing ``get_rate_limit_key`` restores the default IP key.
     """
-    limiter._key_func = key_func  # type: ignore[reportAttributeAccessIssue]
+    global _configured_key_func
+    # Slowapi captures a callable when each decorator runs. Keep its stable
+    # dispatcher so routes imported before configuration use the override too.
+    _configured_key_func = None if key_func is get_rate_limit_key else key_func
