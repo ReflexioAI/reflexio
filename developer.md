@@ -93,6 +93,13 @@ Long-uptime processes accumulate memory regardless of source (request handlers, 
 
 ## API Usage
 
+The shared Slowapi limiter defaults to client-IP buckets. Enterprise calls
+`configure_rate_limiter` to use validated token buckets; the override applies to
+routes decorated before or after configuration. Default decorators keep a stable
+dispatcher instead of capturing a stale key function. Passing
+`get_rate_limit_key` restores IP buckets. Explicit per-route key functions retain
+their own behavior, and configuring a key does not change any numerical limits.
+
 ```bash
 curl http://localhost:$BACKEND_PORT/...
 ```
