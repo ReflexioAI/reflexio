@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import threading
@@ -126,6 +127,15 @@ def exception_locator(exc: BaseException) -> str:
     return raised
 
 
+def _user_ref(user_id: str) -> str:
+    """Stable, value-free handle for a user in a failure scope.
+
+    Scopes are printed in log lines, and this worker keeps customer identifiers
+    out of them, so a scope names the user by a short hash rather than the id.
+    """
+    return hashlib.sha256(user_id.encode()).hexdigest()[:12]
+
+
 def worker_count() -> int:
     return max(
         1,
@@ -184,23 +194,56 @@ class DurableLearningWorker:
 
     @background_work()
     def _reserved_turn(self, org_id: str, lease_seconds: int) -> int:
+        # Two units, two streaks. Before a claim the unit is the org's claim
+        # (context + claim query), retried by the next poll. After a claim it
+        # is that USER's turn: an escaping failure leaves the lease to expire
+        # and the same user is claimed again. An org-wide turn scope let any
+        # other user's turn -- or an idle poll -- clear a stuck user's streak.
+        claimed: list[str] = []
         try:
-            completed = self._turn(org_id, lease_seconds)
+            completed = self._turn(org_id, lease_seconds, claimed)
         except Exception as exc:
-            report_background_failure(
-                logger,
-                "extraction_turn_failed",
-                exc,
-                scope=f"durable-learning-turn:{org_id}",
-                org_id=org_id,
-            )
+            if claimed:
+                user_ref = _user_ref(claimed[0])
+                report_background_failure(
+                    logger,
+                    "extraction_turn_failed",
+                    exc,
+                    scope=f"durable-learning-turn:{org_id}:{user_ref}",
+                    org_id=org_id,
+                    stage="claimed",
+                )
+            else:
+                report_background_failure(
+                    logger,
+                    "extraction_turn_failed",
+                    exc,
+                    scope=f"durable-learning-claim:{org_id}",
+                    org_id=org_id,
+                    stage="claim",
+                )
             return 0
         finally:
             _release()
-        report_background_success(f"durable-learning-turn:{org_id}")
+        if claimed:
+            user_ref = _user_ref(claimed[0])
+            report_background_success(f"durable-learning-turn:{org_id}:{user_ref}")
         return completed
 
-    def _turn(self, org_id: str, lease_seconds: int) -> int:
+    def _turn(
+        self, org_id: str, lease_seconds: int, claimed: list[str] | None = None
+    ) -> int:
+        """Claim one runnable user and run its turn.
+
+        Args:
+            org_id (str): The org to claim from.
+            lease_seconds (int): Lease length for the claim.
+            claimed (list[str] | None): Receives the claimed user id, so the
+                caller can attribute a failure that escapes after the claim.
+
+        Returns:
+            int: 1 when a window or its effects were delivered, else 0.
+        """
         from reflexio.lib._base import create_generation_litellm_client
 
         context = self._factory(org_id)
@@ -208,9 +251,14 @@ class DurableLearningWorker:
         if storage is None:
             return 0
         claim = storage.claim_extraction(self._instance_id, lease_seconds)
+        # The claim query itself succeeded, whether or not it found a user.
+        report_background_success(f"durable-learning-claim:{org_id}")
         if claim is None:
             return 0
         user_id, token = claim
+        if claimed is not None:
+            claimed.append(user_id)
+        user_ref = _user_ref(user_id)
         started = time.monotonic()
         outcome = "setup_failure"
         phase = "prepare"
@@ -222,13 +270,17 @@ class DurableLearningWorker:
                 try:
                     if not storage.renew_extraction(user_id, token, lease_seconds):
                         return
-                    report_background_success(f"durable-learning-heartbeat:{org_id}")
+                    report_background_success(
+                        f"durable-learning-heartbeat:{org_id}:{user_ref}"
+                    )
                 except Exception as exc:
+                    # Renewal is per (org, user, token): scope it to this lease's
+                    # user so another user's renewals cannot mask a stuck one.
                     report_background_failure(
                         logger,
                         "extraction_heartbeat_failed",
                         exc,
-                        scope=f"durable-learning-heartbeat:{org_id}",
+                        scope=f"durable-learning-heartbeat:{org_id}:{user_ref}",
                         org_id=org_id,
                     )
 

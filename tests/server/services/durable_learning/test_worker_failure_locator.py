@@ -25,6 +25,7 @@ from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -449,7 +450,76 @@ def test_transient_turn_failure_is_a_warning_and_releases_the_slot(
 
     from reflexio.server import background_work
 
-    assert background_work._streaks["durable-learning-turn:org1"][0] == 2
+    # Nothing was claimed, so the failing unit is the org's claim.
+    assert background_work._streaks["durable-learning-claim:org1"][0] == 2
+    # No storage: nothing was attempted, so nothing is reported either way.
     worker._factory = lambda _org_id: SimpleNamespace(storage=None)
     worker.drain_org("org1", batch_size=1, lease_seconds=30)
+    assert background_work._streaks["durable-learning-claim:org1"][0] == 2
+    # The claim query runs and finds no user: the claim unit succeeded.
+    idle = MagicMock()
+    idle.claim_extraction.return_value = None
+    worker._factory = lambda _org_id: SimpleNamespace(storage=idle)
+    worker.drain_org("org1", batch_size=1, lease_seconds=30)
     assert background_work._streaks == {}
+
+
+def _claimed_storage(user_id: str, *, release_fails: Exception | None) -> MagicMock:
+    storage = MagicMock()
+    storage.claim_extraction.return_value = (user_id, "token")
+    storage.pending_extraction_effects.return_value = []
+    storage.prepare_extraction.return_value = None
+    storage.renew_extraction.return_value = True
+    if release_fails is not None:
+        storage.release_user_extraction.side_effect = release_fails
+    return storage
+
+
+def test_a_stuck_users_turn_streak_survives_idle_polls_and_other_users(
+    transient_failure_classifier: type[Exception],
+) -> None:
+    """Only the same user's completed turn ends that user's streak."""
+    from reflexio.server import background_work
+    from reflexio.server.services.durable_learning.worker import _user_ref
+
+    stuck = _claimed_storage(
+        "user-a", release_fails=transient_failure_classifier("SSL EOF")
+    )
+    healthy = _claimed_storage("user-b", release_fails=None)
+    idle = MagicMock()
+    idle.claim_extraction.return_value = None
+    storages = iter([stuck, idle, healthy, stuck])
+    worker = DurableLearningWorker(
+        lambda _org_id: SimpleNamespace(storage=next(storages))
+    )
+    stuck_scope = f"durable-learning-turn:org1:{_user_ref('user-a')}"
+
+    worker.drain_org("org1", batch_size=4, lease_seconds=30)
+
+    assert background_work._streaks[stuck_scope][0] == 2
+    assert "user-a" not in " ".join(background_work._streaks)
+
+    recovered = _claimed_storage("user-a", release_fails=None)
+    worker._factory = lambda _org_id: SimpleNamespace(storage=recovered)
+    worker.drain_org("org1", batch_size=1, lease_seconds=30)
+    assert background_work._streaks == {}
+
+
+def test_heartbeat_failure_is_scoped_to_the_leased_user(
+    transient_failure_classifier: type[Exception],
+) -> None:
+    import time as _time
+
+    from reflexio.server import background_work
+    from reflexio.server.services.durable_learning.worker import _user_ref
+
+    storage = _claimed_storage("user-a", release_fails=None)
+    storage.renew_extraction.side_effect = transient_failure_classifier("SSL EOF")
+    storage.prepare_extraction.side_effect = lambda *_args: _time.sleep(0.6)
+    worker = DurableLearningWorker(lambda _org_id: SimpleNamespace(storage=storage))
+
+    worker.drain_org("org1", batch_size=1, lease_seconds=1)
+
+    assert set(background_work._streaks) == {
+        f"durable-learning-heartbeat:org1:{_user_ref('user-a')}"
+    }
