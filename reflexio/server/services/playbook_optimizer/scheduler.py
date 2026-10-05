@@ -166,7 +166,6 @@ class PlaybookOptimizationScheduler:
         try:
             with bind_work_scope(WorkScope(org_id=key[0], project_id=key[1])):
                 status = callback()
-            report_background_success("playbook-optimizer-callback")
             if status == "aborted":
                 self._record_abort(key, abort_threshold, cooldown_seconds)
             elif status in {"completed", "skipped"}:
@@ -186,16 +185,8 @@ class PlaybookOptimizationScheduler:
                 target_kind=key[2],
             )
             self._record_abort(key, abort_threshold, cooldown_seconds)
-        except Exception as exc:
-            # One-shot keyed work: the streak is per job type, see tagging. The
-            # abort bookkeeping below is separate and unchanged.
-            report_background_failure(
-                logger,
-                "playbook_optimizer_callback_failed",
-                exc,
-                scope="playbook-optimizer-callback",
-                key=key,
-            )
+        except Exception:
+            logger.exception("Playbook optimization callback failed for key=%s", key)
             self._record_abort(key, abort_threshold, cooldown_seconds)
 
     def _cooldown_remaining_locked(self, key: ScheduleKey, now: float) -> float:

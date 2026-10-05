@@ -156,7 +156,6 @@ class TaggingScheduler:
             with bind_work_scope(WorkScope(org_id=key[0], project_id=key[1])):
                 callback()
             logger.info("Completed tagging for key=%s", key)
-            report_background_success("tagging-callback")
         except WorkScopeError:
             # NOT an operational failure: the pass could not be attributed to a
             # project, so tolerating it would tag entities under the wrong one.
@@ -169,16 +168,8 @@ class TaggingScheduler:
                 project_id=key[1],
                 user_id=key[2],
             )
-        except Exception as exc:
-            # One-shot keyed work: the next pass is a different key, so the
-            # streak is per job type -- "tagging keeps failing" still escalates.
-            report_background_failure(
-                logger,
-                "tagging_callback_failed",
-                exc,
-                scope="tagging-callback",
-                key=key,
-            )
+        except Exception:
+            logger.exception("Tagging callback failed for key=%s", key)
 
 
 def schedule_tagging(

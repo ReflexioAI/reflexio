@@ -178,7 +178,6 @@ class GroupEvaluationScheduler:
             logger.info("Firing group evaluation for key=%s", key)
             with bind_work_scope(WorkScope(org_id=key[0], project_id=key[1])):
                 callback()
-            report_background_success("group-evaluation-callback")
         except WorkScopeError:
             # NOT an operational failure: the evaluation could not be attributed
             # to a project, so tolerating it would write it under the wrong one.
@@ -191,12 +190,5 @@ class GroupEvaluationScheduler:
                 project_id=key[1],
                 user_id=key[2],
             )
-        except Exception as exc:
-            # One-shot keyed work: the streak is per job type, see tagging.
-            report_background_failure(
-                logger,
-                "group_evaluation_callback_failed",
-                exc,
-                scope="group-evaluation-callback",
-                key=key,
-            )
+        except Exception:
+            logger.exception("Group evaluation callback failed for key=%s", key)

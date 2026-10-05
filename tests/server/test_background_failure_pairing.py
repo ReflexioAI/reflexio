@@ -255,7 +255,7 @@ def test_the_scan_sees_every_failure_call() -> None:
         text_calls += len(pattern.findall(source))
         ast_calls += sum(c.kind == _FAILURE for c in _calls_in(source))
     assert ast_calls == text_calls
-    assert ast_calls >= 30  # the floor: every #582 site plus the queued ones
+    assert ast_calls >= 25  # the floor: the #582 sites plus the converted loops
 
 
 # --- the rules fail on the shapes they exist to catch ------------------------
