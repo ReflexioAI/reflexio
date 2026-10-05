@@ -20,7 +20,10 @@ What this guard enforces, per module under ``reflexio/server``:
 3. no two failure call sites share a constant prefix, which subsumes two sites
    with an identical scope;
 4. every scope resolves to a shape with a non-empty constant prefix. A scope
-   held in a local or ``self`` attribute is followed to its single assignment;
+   held in a local or ``self`` attribute is followed to its single plain
+   assignment; any other binding of that name (a second assignment, ``+=``, a
+   walrus, a loop/``with``/unpacking target, a parameter) makes it
+   unresolvable, because the value at the call is then not the one read;
 5. every reference to either function is a direct call -- import aliases are
    resolved, and anything else fails because the guard could not see what it
    is called with: assigning the function to a name, passing it elsewhere, or
@@ -47,6 +50,8 @@ from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+
+import pytest
 
 import reflexio.server
 
@@ -120,34 +125,82 @@ def _enclosing_functions(tree: ast.Module) -> dict[ast.AST, ast.AST]:
     return owner
 
 
-def _assigned_values(
-    within: ast.AST, matches: Callable[[ast.expr], bool]
-) -> list[ast.expr]:
-    values = []
+def _binding_targets(node: ast.AST) -> list[ast.expr]:
+    """Every expression ``node`` binds or rebinds, unpacking included."""
+    if isinstance(node, ast.Assign):
+        return list(node.targets)
+    if isinstance(node, ast.AugAssign | ast.AnnAssign | ast.NamedExpr):
+        return [node.target]
+    if isinstance(node, ast.For | ast.AsyncFor | ast.comprehension):
+        return [node.target]
+    if isinstance(node, ast.withitem) and node.optional_vars is not None:
+        return [node.optional_vars]
+    if isinstance(node, ast.Delete):
+        return list(node.targets)
+    return []
+
+
+def _single_assigned_value(
+    within: ast.AST, matches: Callable[[ast.expr], bool], parameters: set[str]
+) -> ast.expr | None:
+    """The value of the ONE plain assignment binding what ``matches``, if any.
+
+    A second binding of any kind -- another assignment, ``+=``, a walrus, a
+    loop or ``with`` target, tuple unpacking, ``del``, an ``except ... as`` or
+    import alias, or a parameter of the same name -- means the value the call
+    sees is not decidable from one assignment, so the scope is unresolvable
+    rather than guessed.
+    """
+    if any(matches(ast.Name(id=name)) for name in parameters):
+        return None
+    binders: list[ast.AST] = []
     for node in ast.walk(within):
-        if isinstance(node, ast.Assign):
-            if any(matches(target) for target in node.targets):
-                values.append(node.value)
-        elif (
-            isinstance(node, ast.AnnAssign)
-            and node.value is not None
-            and matches(node.target)
+        if any(
+            matches(part)
+            for target in _binding_targets(node)
+            for part in ast.walk(target)
         ):
-            values.append(node.value)
-    return values
+            binders.append(node)
+        elif isinstance(node, ast.ExceptHandler | ast.alias):
+            bound = node.name if isinstance(node, ast.ExceptHandler) else node.asname
+            if bound is not None and matches(ast.Name(id=bound)):
+                binders.append(node)
+    if len(binders) != 1:
+        return None
+    (binder,) = binders
+    if (
+        isinstance(binder, ast.Assign)
+        and len(binder.targets) == 1
+        and matches(binder.targets[0])  # the target itself, not a tuple element
+    ):
+        return binder.value
+    if isinstance(binder, ast.AnnAssign) and binder.value is not None:
+        return binder.value
+    return None
+
+
+def _parameters(function: ast.AST) -> set[str]:
+    if not isinstance(function, ast.FunctionDef | ast.AsyncFunctionDef):
+        return set()
+    arguments = function.args
+    every = [*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs]
+    every += [arg for arg in (arguments.vararg, arguments.kwarg) if arg is not None]
+    return {arg.arg for arg in every}
 
 
 def _resolve(
     expr: ast.expr, tree: ast.Module, owner: dict[ast.AST, ast.AST], depth: int = 0
 ) -> ast.expr | None:
-    """Follow a Name or ``self.attr`` to its single assigned value."""
+    """Follow a Name or ``self.attr`` to its single plain assignment."""
     if depth > 4:
         return None
     if isinstance(expr, ast.Name):
         name = expr.id
-        values = _assigned_values(
-            owner.get(expr, tree),
+        function = owner.get(expr, tree)
+        value = _single_assigned_value(
+            function,
             lambda t: isinstance(t, ast.Name) and t.id == name,
+            _parameters(function),
         )
     elif (
         isinstance(expr, ast.Attribute)
@@ -155,7 +208,7 @@ def _resolve(
         and expr.value.id == "self"
     ):
         attr = expr.attr
-        values = _assigned_values(
+        value = _single_assigned_value(
             tree,
             lambda t: (
                 isinstance(t, ast.Attribute)
@@ -163,12 +216,13 @@ def _resolve(
                 and t.value.id == "self"
                 and t.attr == attr
             ),
+            set(),
         )
     else:
         return expr
-    if len({ast.dump(value) for value in values}) != 1:
+    if value is None:
         return None
-    return _resolve(values[0], tree, owner, depth + 1)
+    return _resolve(value, tree, owner, depth + 1)
 
 
 def _merge(parts: list[tuple[str, str]]) -> Shape:
@@ -549,3 +603,38 @@ def test_getattr_by_name_is_reported() -> None:
         "    fail(log, 'e', exc, scope='x')\n"
     )
     assert any("named in a string" in p for p in _violations(source))
+
+
+@pytest.mark.parametrize(
+    "rebinding",
+    [
+        "    scope += ':x'\n",
+        "    scope = 'job:a'\n",
+        "    (scope := 'job:b')\n",
+        "    for scope in ['job:c']:\n        pass\n",
+        "    scope, other = 'job:d', 1\n",
+    ],
+    ids=["augmented", "second-assignment", "walrus", "loop-target", "unpacking"],
+)
+def test_a_rebound_scope_variable_is_unresolvable(rebinding: str) -> None:
+    source = (
+        "def tick(exc):\n"
+        "    scope = 'job:a'\n"
+        "    report_background_failure(log, 'e', exc, scope=scope)\n"
+        + rebinding
+        + "    report_background_success(scope)\n"
+    )
+    assert any("no resolvable shape" in p for p in _violations(source))
+
+
+def test_a_rebound_self_attribute_scope_is_unresolvable() -> None:
+    source = (
+        "class Beat:\n"
+        "    def __init__(self, org):\n"
+        "        self._scope = f'beat:{org}'\n"
+        "    def run(self, exc):\n"
+        "        report_background_failure(log, 'e', exc, scope=self._scope)\n"
+        "        self._scope += ':x'\n"
+        "        report_background_success(self._scope)\n"
+    )
+    assert any("no resolvable shape" in p for p in _violations(source))
