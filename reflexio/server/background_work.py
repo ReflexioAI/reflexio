@@ -49,14 +49,21 @@ _MAX_MESSAGE_CHARS = 200
 # failure is untracked and reported at ERROR: that many failing units is an
 # outage, and failing loud is the safe direction.
 _MAX_TRACKED_SCOPES = 4096
+# A streak whose last failure is older than this is forgotten. Without it, a
+# unit that failed once and then went idle (nothing to do, so no success is
+# ever reported) keeps its streak, and unrelated rollout blips days apart add
+# up to a page. Converted units retry within minutes, so a real outage keeps
+# failing well inside this horizon and still escalates.
+_STREAK_IDLE_RESET_SECONDS = 3600.0
 
 # Patched by tests; the policy below reads time only through this name.
 _monotonic: Callable[[], float] = time.monotonic
 
 _classifier: Callable[[BaseException], bool] | None = None
 _classifier_failure_warned = False
-# scope -> (consecutive transient failures, monotonic time of the first one)
-_streaks: dict[str, tuple[int, float]] = {}
+# scope -> (consecutive transient failures, first failure, last failure),
+# times from ``_monotonic``.
+_streaks: dict[str, tuple[int, float, float]] = {}
 _streaks_lock = threading.Lock()
 
 
@@ -149,12 +156,21 @@ def _extend_streak(scope: str) -> tuple[int, float] | None:
     now = _monotonic()
     with _streaks_lock:
         current = _streaks.get(scope)
+        if current is not None and now - current[2] > _STREAK_IDLE_RESET_SECONDS:
+            current = None
         if current is None:
-            if len(_streaks) >= _MAX_TRACKED_SCOPES:
-                return None
-            current = (0, now)
+            if scope not in _streaks and len(_streaks) >= _MAX_TRACKED_SCOPES:
+                for idle in [
+                    key
+                    for key, (_, _, last) in _streaks.items()
+                    if now - last > _STREAK_IDLE_RESET_SECONDS
+                ]:
+                    del _streaks[idle]
+                if len(_streaks) >= _MAX_TRACKED_SCOPES:
+                    return None
+            current = (0, now, now)
         count, first = current[0] + 1, current[1]
-        _streaks[scope] = (count, first)
+        _streaks[scope] = (count, first, now)
         return count, now - first
 
 
