@@ -417,9 +417,8 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
     def _defer_scope(self, context: RequestContext, delay: float) -> None:
         if self._on_scope_deferred is None:
             return
-        defer_scope = "playbook-aggregation-defer:{}:{}".format(
-            *self._repair_scope_key(context)
-        )
+        org_id, project_id = self._repair_scope_key(context)
+        defer_scope = f"playbook-aggregation-defer:{org_id}:{project_id}"
         try:
             self._on_scope_deferred(context, delay)
         except Exception as exc:

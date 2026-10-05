@@ -4,31 +4,40 @@
 failed several consecutive times over several minutes; only
 ``report_background_success`` for that scope ends the streak. A failure site
 with no matching success therefore never resets: blips days apart add up to a
-page. And two failure sites sharing one scope prefix let one unit's success
-clear the other's streak -- the aggregation run and org scopes once built the
-same string.
+page. A success whose scope names a DIFFERENT unit -- a sibling, an enclosing
+org, another tenant -- erases a real outage. And two failure sites sharing a
+scope prefix let one unit's success clear the other's streak; the aggregation
+run and org scopes once built the same string.
 
 What this guard enforces, per module under ``reflexio/server``:
 
-1. every ``report_background_failure(scope=...)`` has a
-   ``report_background_success(...)`` whose scope has the same constant prefix
-   (the literal text before the first placeholder);
-2. every success prefix matches some failure prefix (a typo in a success
-   scope would otherwise pass rule 1 only because nothing checked it);
-3. no two failure call sites share a prefix -- which subsumes two sites with
-   an identical scope expression;
-4. every scope resolves to a string with a non-empty constant prefix. A scope
-   held in a local or ``self`` attribute is followed to its single assignment.
+1. every failure scope has a success scope of the same SHAPE: the same
+   constant text and the same ordered placeholder expressions (normalised
+   source), so ``f"job:{org}:{project}"`` does not match
+   ``f"job:{project}:{org}"``;
+2. every success shape matches some failure shape (a typo or a stale success
+   is not silently carried);
+3. no two failure call sites share a constant prefix, which subsumes two sites
+   with an identical scope;
+4. every scope resolves to a shape with a non-empty constant prefix. A scope
+   held in a local or ``self`` attribute is followed to its single assignment;
+5. every reference to either function is a direct call or the first argument
+   of ``functools.partial`` -- import aliases are resolved, and anything else
+   (assigning the function to a name, passing it elsewhere) fails, because the
+   guard could not see what it is called with.
 
-Non-goals: it cannot prove the success call sits where the unit completes (a
-success in the wrong branch passes), and it reads modules, not call graphs.
-Those stay review questions; the per-site tests pin the placement.
+Non-goals: it cannot prove the success call sits where the unit completes, or
+that the unit is retried at all (a success in the wrong branch passes; a
+one-shot callback converted to the policy passes). Those are review questions;
+the per-site tests pin the placement.
 """
 
 from __future__ import annotations
 
 import ast
-import re
+import io
+import string
+import tokenize
 from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -39,31 +48,65 @@ import reflexio.server
 _SERVER_ROOT = Path(reflexio.server.__file__).parent
 _FAILURE = "report_background_failure"
 _SUCCESS = "report_background_success"
+_CANONICAL = (_FAILURE, _SUCCESS)
+
+# ("c", text) is constant text; ("p", source) is a placeholder expression.
+Shape = tuple[tuple[str, str], ...]
 
 
 @dataclass(frozen=True)
 class _Call:
     kind: str  # _FAILURE or _SUCCESS
     line: int
-    prefix: str | None  # None when the scope could not be resolved
+    shape: Shape | None  # None when the scope could not be resolved
     expression: str
 
+    @property
+    def prefix(self) -> str:
+        if self.shape and self.shape[0][0] == "c":
+            return self.shape[0][1]
+        return ""
 
-def _called_name(call: ast.Call) -> str | None:
-    func = call.func
-    if isinstance(func, ast.Name):
-        return func.id
-    if isinstance(func, ast.Attribute):
-        return func.attr
+
+@dataclass
+class _Module:
+    calls: list[_Call]
+    stray_references: list[int]  # lines of references that are not calls
+
+
+def _aliases(tree: ast.Module) -> dict[str, str]:
+    """Local name -> canonical function name, from ``from ... import``."""
+    names = {name: name for name in _CANONICAL}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                if alias.name in _CANONICAL:
+                    names[alias.asname or alias.name] = alias.name
+    return names
+
+
+def _canonical(expr: ast.expr, aliases: dict[str, str]) -> str | None:
+    if isinstance(expr, ast.Name):
+        return aliases.get(expr.id)
+    if isinstance(expr, ast.Attribute) and expr.attr in _CANONICAL:
+        return expr.attr
     return None
 
 
-def _scope_arg(call: ast.Call, kind: str) -> ast.expr | None:
-    for keyword in call.keywords:
+def _is_partial(func: ast.expr) -> bool:
+    return (isinstance(func, ast.Name) and func.id == "partial") or (
+        isinstance(func, ast.Attribute) and func.attr == "partial"
+    )
+
+
+def _scope_arg(
+    args: list[ast.expr], keywords: list[ast.keyword], kind: str
+) -> ast.expr | None:
+    for keyword in keywords:
         if keyword.arg == "scope":
             return keyword.value
-    if kind == _SUCCESS and call.args:
-        return call.args[0]
+    if kind == _SUCCESS and args:
+        return args[0]
     return None
 
 
@@ -128,18 +171,50 @@ def _resolve(
     return _resolve(values[0], tree, owner, depth + 1)
 
 
-def _prefix(expr: ast.expr) -> tuple[str, bool] | None:
-    """Constant text before the first placeholder, and whether it is all of it."""
+def _merge(parts: list[tuple[str, str]]) -> Shape:
+    merged: list[tuple[str, str]] = []
+    for kind, text in parts:
+        if kind == "c" and not text:
+            continue
+        if kind == "c" and merged and merged[-1][0] == "c":
+            merged[-1] = ("c", merged[-1][1] + text)
+        else:
+            merged.append((kind, text))
+    return tuple(merged)
+
+
+def _placeholder(value: ast.expr, conversion: str, spec: str) -> str:
+    """One normal form for an f-string field and a ``.format`` field."""
+    return f"{ast.unparse(value)}!{conversion}:{spec}"
+
+
+def _spec_text(spec: ast.expr | None) -> str | None:
+    if spec is None:
+        return ""
+    if isinstance(spec, ast.JoinedStr) and all(
+        isinstance(v, ast.Constant) for v in spec.values
+    ):
+        return "".join(str(v.value) for v in spec.values if isinstance(v, ast.Constant))
+    return None  # a computed format spec: refuse rather than guess
+
+
+def _shape_parts(expr: ast.expr) -> list[tuple[str, str]] | None:
     if isinstance(expr, ast.Constant) and isinstance(expr.value, str):
-        return expr.value, True
+        return [("c", expr.value)]
     if isinstance(expr, ast.JoinedStr):
-        text = ""
+        parts: list[tuple[str, str]] = []
         for part in expr.values:
             if isinstance(part, ast.Constant) and isinstance(part.value, str):
-                text += part.value
+                parts.append(("c", part.value))
+            elif isinstance(part, ast.FormattedValue):
+                conversion = chr(part.conversion) if part.conversion != -1 else ""
+                spec = _spec_text(part.format_spec)
+                if spec is None:
+                    return None
+                parts.append(("p", _placeholder(part.value, conversion, spec)))
             else:
-                return text, False
-        return text, True
+                return None
+        return parts
     if (
         isinstance(expr, ast.Call)
         and isinstance(expr.func, ast.Attribute)
@@ -147,79 +222,126 @@ def _prefix(expr: ast.expr) -> tuple[str, bool] | None:
         and isinstance(expr.func.value, ast.Constant)
         and isinstance(expr.func.value.value, str)
     ):
-        template = expr.func.value.value
-        head = template.split("{", 1)[0]
-        return head, head == template
+        if any(isinstance(arg, ast.Starred) for arg in expr.args):
+            return None  # "{}:{}".format(*key): which value lands where is unknown
+        keywords = {k.arg: k.value for k in expr.keywords if k.arg is not None}
+        parts = []
+        auto = 0
+        for literal, field, spec, conversion in string.Formatter().parse(
+            expr.func.value.value
+        ):
+            parts.append(("c", literal))
+            if field is None:
+                continue
+            if field == "":
+                field = str(auto)
+                auto += 1
+            value = (
+                expr.args[int(field)]
+                if field.isdigit() and int(field) < len(expr.args)
+                else keywords.get(field)
+            )
+            if value is None:
+                return None
+            parts.append(("p", _placeholder(value, conversion or "", spec or "")))
+        return parts
     if isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.Add):
-        left = _prefix(expr.left)
-        if left is None:
+        left, right = _shape_parts(expr.left), _shape_parts(expr.right)
+        if left is None or right is None:
             return None
-        if not left[1]:
-            return left
-        right = _prefix(expr.right)
-        if right is None:
-            return left[0], False
-        return left[0] + right[0], right[1]
+        return left + right
     return None
 
 
-def _calls_in(source: str) -> list[_Call]:
+def _shape(expr: ast.expr) -> Shape | None:
+    parts = _shape_parts(expr)
+    if parts is None:
+        return None
+    shape = _merge(parts)
+    if not shape or shape[0][0] != "c":
+        return None  # a scope must start with constant text naming the worker
+    return shape
+
+
+def _scan(source: str) -> _Module:
     tree = ast.parse(source)
     owner = _enclosing_functions(tree)
-    calls = []
+    aliases = _aliases(tree)
+    calls: list[_Call] = []
+    accounted: set[int] = set()  # id() of reference nodes that are analysed
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
-        kind = _called_name(node)
-        if kind not in (_FAILURE, _SUCCESS):
+        kind = _canonical(node.func, aliases)
+        args, keywords = node.args, node.keywords
+        reference: ast.expr = node.func
+        if kind is None and _is_partial(node.func) and node.args:
+            kind = _canonical(node.args[0], aliases)
+            args, reference = node.args[1:], node.args[0]
+        if kind is None:
             continue
-        arg = _scope_arg(node, kind)
+        accounted.add(id(reference))
+        arg = _scope_arg(args, keywords, kind)
         resolved = _resolve(arg, tree, owner) if arg is not None else None
-        prefix = _prefix(resolved) if resolved is not None else None
         calls.append(
             _Call(
                 kind=kind,
                 line=node.lineno,
-                prefix=prefix[0] if prefix and prefix[0] else None,
+                shape=_shape(resolved) if resolved is not None else None,
                 expression=ast.unparse(arg) if arg is not None else "<missing>",
             )
         )
-    return calls
+    stray = [
+        node.lineno
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Name | ast.Attribute)
+        and _canonical(node, aliases) is not None
+        and id(node) not in accounted
+    ]
+    return _Module(calls=calls, stray_references=stray)
 
 
 def _violations(source: str) -> list[str]:
-    calls = _calls_in(source)
+    module = _scan(source)
     problems = [
-        f"line {c.line}: {c.kind} scope {c.expression!r} has no constant prefix "
-        "(use a literal, an f-string or a single assignment)"
-        for c in calls
-        if c.prefix is None
+        f"lines {module.stray_references}: a reference to the failure-policy "
+        "functions that is neither a call nor partial(fn, ...) -- the guard "
+        "cannot see what it is called with"
+    ] * bool(module.stray_references)
+    problems += [
+        f"line {c.line}: {c.kind} scope {c.expression!r} has no resolvable shape "
+        "with a constant prefix (use a literal, an f-string or a single assignment)"
+        for c in module.calls
+        if c.shape is None
     ]
-    failures: dict[str, list[int]] = defaultdict(list)
-    successes: set[str] = set()
-    for call in calls:
-        if call.prefix is None:
+    failures: dict[Shape, list[int]] = defaultdict(list)
+    prefixes: dict[str, list[int]] = defaultdict(list)
+    successes: set[Shape] = set()
+    for call in module.calls:
+        if call.shape is None:
             continue
         if call.kind == _FAILURE:
-            failures[call.prefix].append(call.line)
+            failures[call.shape].append(call.line)
+            prefixes[call.prefix].append(call.line)
         else:
-            successes.add(call.prefix)
-    for prefix, lines in sorted(failures.items()):
-        if prefix not in successes:
-            problems.append(
-                f"lines {lines}: failure scope prefix {prefix!r} has no "
-                f"{_SUCCESS} with that prefix -- its streak would never reset"
-            )
-        if len(lines) > 1:
-            problems.append(
-                f"lines {lines}: failure sites share the scope prefix {prefix!r} "
-                "-- one unit's success would clear the other's streak"
-            )
-    problems.extend(
-        f"success scope prefix {prefix!r} matches no failure scope in this "
-        "module (a typo leaves the failure's streak unreset)"
-        for prefix in sorted(successes - failures.keys())
-    )
+            successes.add(call.shape)
+    problems += [
+        f"lines {lines}: failure scope {shape} has no {_SUCCESS} of the same "
+        "shape -- its streak would never reset"
+        for shape, lines in sorted(failures.items())
+        if shape not in successes
+    ]
+    problems += [
+        f"lines {lines}: failure sites share the scope prefix {prefix!r} "
+        "-- one unit's success would clear the other's streak"
+        for prefix, lines in sorted(prefixes.items())
+        if len(lines) > 1
+    ]
+    problems += [
+        f"success scope {shape} matches no failure scope in this module "
+        "(a typo or stale success leaves the failure's streak unreset)"
+        for shape in sorted(successes - failures.keys())
+    ]
     return problems
 
 
@@ -233,7 +355,7 @@ def test_every_failure_scope_is_paired_and_unique() -> None:
     report = {}
     for path in _server_modules():
         source = path.read_text()
-        if _FAILURE not in source and _SUCCESS not in source:
+        if not any(name in source for name in _CANONICAL):
             continue
         problems = _violations(source)
         if problems:
@@ -241,28 +363,40 @@ def test_every_failure_scope_is_paired_and_unique() -> None:
     assert report == {}
 
 
-def test_the_scan_sees_every_failure_call() -> None:
-    """The guard is only as good as its selection: count calls two ways.
+def _name_tokens(source: str, names: set[str]) -> int:
+    """Count identifier tokens in ``names``, ignoring strings and comments."""
+    tokens = tokenize.generate_tokens(io.StringIO(source).readline)
+    return sum(tok.type == tokenize.NAME and tok.string in names for tok in tokens)
 
-    The AST count must equal a plain-text count of call openings, so a call
-    spelled in a way the AST walk misses cannot drop out unnoticed.
+
+def test_the_scan_accounts_for_every_mention() -> None:
+    """Selection check, by a second route that does not share the AST walk.
+
+    Every identifier token naming either function or one of its aliases must
+    be an import, a call, a partial target or a stray reference (which the
+    pairing test then rejects). A mention the walk skipped would leave the
+    token count higher than what the scan accounted for.
     """
-    pattern = re.compile(rf"(?<!def ){_FAILURE}\(")
-    ast_calls = 0
-    text_calls = 0
+    total_calls = 0
     for path in _server_modules():
         source = path.read_text()
-        text_calls += len(pattern.findall(source))
-        ast_calls += sum(c.kind == _FAILURE for c in _calls_in(source))
-    assert ast_calls == text_calls
-    assert ast_calls >= 25  # the floor: the #582 sites plus the converted loops
+        tree = ast.parse(source)
+        aliases = _aliases(tree)
+        imported = sum(
+            (alias.asname is not None) + 1
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom)
+            for alias in node.names
+            if alias.name in _CANONICAL
+        )
+        module = _scan(source)
+        accounted = imported + len(module.calls) + len(module.stray_references)
+        assert _name_tokens(source, set(aliases)) == accounted, path
+        total_calls += sum(c.kind == _FAILURE for c in module.calls)
+    assert total_calls >= 25  # the floor: the #582 sites plus the converted loops
 
 
 # --- the rules fail on the shapes they exist to catch ------------------------
-
-
-def _check(source: str) -> list[str]:
-    return _violations(source)
 
 
 def test_missing_success_is_reported() -> None:
@@ -273,7 +407,29 @@ def test_missing_success_is_reported() -> None:
         "    except Exception as exc:\n"
         "        report_background_failure(log, 'e', exc, scope=f'job:{org}')\n"
     )
-    assert any("has no report_background_success" in p for p in _check(source))
+    assert any("has no report_background_success" in p for p in _violations(source))
+
+
+def test_swapped_placeholders_do_not_pair() -> None:
+    source = (
+        "def tick(org, project):\n"
+        "    report_background_failure(log, 'e', exc, scope=f'job:{org}:{project}')\n"
+        "    report_background_success(f'job:{project}:{org}')\n"
+    )
+    problems = _violations(source)
+    assert any("has no report_background_success" in p for p in problems)
+    assert any("matches no failure scope" in p for p in problems)
+
+
+def test_format_and_fstring_of_the_same_shape_pair() -> None:
+    source = (
+        "def tick(org, project):\n"
+        "    report_background_failure(\n"
+        "        log, 'e', exc, scope='job:{}:{}'.format(org, project)\n"
+        "    )\n"
+        "    report_background_success(f'job:{org}:{project}')\n"
+    )
+    assert _violations(source) == []
 
 
 def test_shared_prefix_is_reported_even_when_both_succeed() -> None:
@@ -294,7 +450,7 @@ def test_shared_prefix_is_reported_even_when_both_succeed() -> None:
         "    else:\n"
         "        report_background_success(f'job:{org}')\n"
     )
-    assert any("share the scope prefix 'job:'" in p for p in _check(source))
+    assert any("share the scope prefix 'job:'" in p for p in _violations(source))
 
 
 def test_unresolvable_scope_is_reported() -> None:
@@ -303,16 +459,16 @@ def test_unresolvable_scope_is_reported() -> None:
         "    report_background_failure(log, 'e', exc, scope=scope)\n"
         "    report_background_success(scope)\n"
     )
-    assert any("no constant prefix" in p for p in _check(source))
+    assert any("no resolvable shape" in p for p in _violations(source))
 
 
 def test_success_typo_is_reported() -> None:
     source = (
         "def tick():\n"
-        "    report_background_failure(log, 'e', exc, scope='tagging-callback')\n"
-        "    report_background_success('tagging-callbak')\n"
+        "    report_background_failure(log, 'e', exc, scope='tagging-loop')\n"
+        "    report_background_success('tagging-lop')\n"
     )
-    problems = _check(source)
+    problems = _violations(source)
     assert any("matches no failure scope" in p for p in problems)
     assert any("has no report_background_success" in p for p in problems)
 
@@ -326,4 +482,36 @@ def test_self_attribute_scope_is_followed() -> None:
         "        report_background_failure(log, 'e', exc, scope=self._scope)\n"
         "        report_background_success(self._scope)\n"
     )
-    assert _check(source) == []
+    assert _violations(source) == []
+
+
+def test_aliased_import_is_seen() -> None:
+    source = (
+        "from reflexio.server.background_work import (\n"
+        "    report_background_failure as fail,\n"
+        ")\n"
+        "def tick(org):\n"
+        "    fail(log, 'e', exc, scope=f'job:{org}')\n"
+    )
+    assert any("has no report_background_success" in p for p in _violations(source))
+
+
+def test_partial_is_seen() -> None:
+    source = (
+        "import functools\n"
+        "def tick(org):\n"
+        "    report = functools.partial(\n"
+        "        report_background_failure, scope=f'job:{org}'\n"
+        "    )\n"
+        "    report(log, 'e', exc)\n"
+    )
+    assert any("has no report_background_success" in p for p in _violations(source))
+
+
+def test_a_reference_that_is_not_a_call_is_reported() -> None:
+    source = (
+        "def tick(org):\n"
+        "    handlers = [report_background_failure]\n"
+        "    report_background_success(f'job:{org}')\n"
+    )
+    assert any("neither a call nor partial" in p for p in _violations(source))
