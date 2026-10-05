@@ -23,8 +23,9 @@ What this guard enforces, per module under ``reflexio/server``:
    held in a local or ``self`` attribute is followed to its single plain
    assignment; any other binding of that name (a second assignment, ``+=``, a
    walrus, a loop/``with``/unpacking target, an import, a ``match`` capture,
-   a parameter) makes it unresolvable, because the value at the call is then
-   not the one read;
+   a ``def``/``class``, a ``global``/``nonlocal`` declaration, a ``type``
+   alias or type parameter, a parameter) makes it unresolvable, because the
+   value at the call is then not the one read;
 5. every reference to either function is a direct call -- import aliases are
    resolved, and anything else fails because the guard could not see what it
    is called with: assigning the function to a name, passing it elsewhere, or
@@ -138,27 +139,44 @@ def _binding_targets(node: ast.AST) -> list[ast.expr]:
         return [node.optional_vars]
     if isinstance(node, ast.Delete):
         return list(node.targets)
+    if isinstance(node, ast.TypeAlias):  # type n = ...
+        return [node.name]
     return []
 
 
-def _bound_name(node: ast.AST) -> str | None:
-    """The plain name ``node`` binds, for bindings that are not expressions.
+def _bound_names(node: ast.AST) -> list[str]:
+    """The plain names ``node`` binds, for bindings that are not expressions.
 
     ``except ... as n``; an import (``import a.b`` binds ``a``, ``from m import
-    x`` binds ``x``, ``as`` binds its alias); and the capture names of a
-    ``match`` pattern (``case str(n)``, ``case [*n]``, ``case {**n}``).
+    x`` binds ``x``, ``as`` binds its alias); the capture names of a ``match``
+    pattern (``case str(n)``, ``case [*n]``, ``case {**n}``); ``def n``,
+    ``async def n`` and ``class n``; ``global n`` / ``nonlocal n``, which
+    make ``n`` refer to a binding outside the function; and PEP 695 type
+    parameters (``def f[n]()``).
     """
+    name: str | None = None
+    if isinstance(node, ast.Global | ast.Nonlocal):
+        return list(node.names)
     if isinstance(node, ast.ExceptHandler):
-        return node.name
-    if isinstance(node, ast.alias):
-        if node.name == "*":
-            return None
-        return node.asname or node.name.split(".")[0]
-    if isinstance(node, ast.MatchAs | ast.MatchStar):
-        return node.name
-    if isinstance(node, ast.MatchMapping):
-        return node.rest
-    return None
+        name = node.name
+    elif isinstance(node, ast.alias):
+        if node.name != "*":
+            name = node.asname or node.name.split(".")[0]
+    elif isinstance(node, ast.MatchAs | ast.MatchStar):
+        name = node.name
+    elif isinstance(node, ast.MatchMapping):
+        name = node.rest
+    elif isinstance(
+        node,
+        ast.FunctionDef
+        | ast.AsyncFunctionDef
+        | ast.ClassDef
+        | ast.TypeVar
+        | ast.ParamSpec
+        | ast.TypeVarTuple,
+    ):
+        name = node.name
+    return [name] if name is not None else []
 
 
 def _single_assigned_value(
@@ -182,10 +200,12 @@ def _single_assigned_value(
             for part in ast.walk(target)
         ):
             binders.append(node)
-        else:
-            bound = _bound_name(node)
-            if bound is not None and matches(ast.Name(id=bound)):
-                binders.append(node)
+        elif node is not within and any(
+            matches(ast.Name(id=name)) for name in _bound_names(node)
+        ):
+            # `within` itself is skipped: a function's own name binds it in
+            # the ENCLOSING scope, not inside the body being resolved.
+            binders.append(node)
     if len(binders) != 1:
         return None
     (binder,) = binders
@@ -681,5 +701,56 @@ def test_an_import_or_match_capture_rebinding_a_scope_is_unresolvable(
         "    report_background_failure(log, 'e', exc, scope=scope)\n"
         + rebinding
         + "    report_background_success(scope)\n"
+    )
+    assert any("no resolvable shape" in p for p in _violations(source))
+
+
+@pytest.mark.parametrize(
+    "rebinding",
+    [
+        "    def scope():\n        pass\n",
+        "    async def scope():\n        pass\n",
+        "    class scope:\n        pass\n",
+        "    global scope\n",
+        "    type scope = int\n",
+    ],
+    ids=["def", "async-def", "class", "global", "type-alias"],
+)
+def test_a_def_class_global_or_type_rebinding_a_scope_is_unresolvable(
+    rebinding: str,
+) -> None:
+    source = (
+        "def tick(exc):\n"
+        + ("    global scope\n" if "global" in rebinding else "")
+        + "    scope = 'job:a'\n"
+        "    report_background_failure(log, 'e', exc, scope=scope)\n"
+        + ("" if "global" in rebinding else rebinding)
+        + "    report_background_success(scope)\n"
+    )
+    assert any("no resolvable shape" in p for p in _violations(source))
+
+
+def test_nonlocal_rebinding_a_scope_is_unresolvable() -> None:
+    source = (
+        "def outer(exc):\n"
+        "    scope = 'job:a'\n"
+        "    def tick():\n"
+        "        nonlocal scope\n"
+        "        scope = 'job:a'\n"
+        "        report_background_failure(log, 'e', exc, scope=scope)\n"
+        "        report_background_success(scope)\n"
+        "    tick()\n"
+    )
+    assert any("no resolvable shape" in p for p in _violations(source))
+
+
+def test_a_type_parameter_rebinding_a_scope_is_unresolvable() -> None:
+    source = (
+        "def tick(exc):\n"
+        "    scope = 'job:a'\n"
+        "    report_background_failure(log, 'e', exc, scope=scope)\n"
+        "    def helper[scope]() -> None:\n"
+        "        pass\n"
+        "    report_background_success(scope)\n"
     )
     assert any("no resolvable shape" in p for p in _violations(source))
