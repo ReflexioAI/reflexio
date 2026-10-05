@@ -9,6 +9,21 @@ entry points mark themselves; the marker does not create connections, propagate
 tenant identity, or alter embedded Python cleanup behavior. A deployment's
 database infrastructure decides how to apply the admission class.
 
+It also owns the failure-reporting policy for background work.
+`report_background_failure(logger, event, exc, *, scope, detail=None)` logs a
+bug at ERROR with its traceback, and a transient infrastructure failure (as
+judged by the classifier a deployment registers with
+`configure_transient_failure_classifier`; with none registered, every failure
+is an ERROR) at WARNING. A transient failure extends the streak for its
+`scope`; the streak escalates to ERROR once it holds 3 consecutive failures
+spanning at least 300s, and `report_background_success(scope)` ends it. Every
+failure scope therefore needs a success report where the same unit of work
+completes, and two failure sites in one module must not share a scope prefix;
+`tests/server/test_background_failure_pairing.py` enforces both. Accepted
+limit: the streak is process-local, so if an outage also restarts tasks faster
+than every 300s, background failures stay at WARNING; request-path errors and
+health alarms still page in that case.
+
 
 - [Main Entry Points](#main-entry-points)
 - [Cache](#cache)

@@ -16,6 +16,11 @@ unit's next success -- the shape of a Kubernetes ``failureThreshold`` or a
 circuit breaker -- rather than measuring a time window. A time window has to
 assume how soon the failed work is retried, and no single assumption holds
 across workers that back off, run daily, or wait behind other orgs' work.
+
+Accepted limit: streaks are process-local. If an outage also restarts tasks
+faster than every ``_ESCALATE_AFTER_SECONDS``, every streak restarts with its
+task and background failures stay at WARNING; request-path errors and
+health-check alarms still page in that case.
 """
 
 from __future__ import annotations
