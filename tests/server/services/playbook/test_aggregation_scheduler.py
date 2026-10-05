@@ -872,3 +872,53 @@ def test_run_and_org_failures_use_distinct_scopes(
         "playbook-aggregation-run:org-1:None:v1",
         "playbook-aggregation-org:org-1:None",
     ]
+
+
+def _seed_streak(scope: str, exc: BaseException) -> None:
+    from reflexio.server import background_work
+
+    background_work.report_background_failure(
+        aggregation_scheduler.logger, "seeded_failure", exc, scope=scope
+    )
+
+
+def test_a_context_with_aggregation_off_does_not_clear_the_org_streak(
+    transient_failure_classifier,
+) -> None:
+    """Nothing was attempted, so nothing succeeded."""
+    from reflexio.server import background_work
+
+    org_scope = "playbook-aggregation-org:org-1:None"
+    _seed_streak(org_scope, transient_failure_classifier("dropped"))
+    context = _context(MagicMock(supports_incremental_playbook_aggregation=True))
+    context.configurator = SimpleNamespace(
+        get_config=lambda: SimpleNamespace(user_playbook_extractor_config=None)
+    )
+    scheduler = aggregation_scheduler.PlaybookAggregationScheduler(
+        context_provider=lambda: [context]
+    )
+
+    scheduler._run_once()
+
+    assert org_scope in background_work._streaks
+
+
+def test_an_unavailable_inventory_does_not_clear_the_inventory_streak(
+    transient_failure_classifier,
+) -> None:
+    from reflexio.server import background_work
+
+    scope = "playbook-aggregation-inventory"
+    _seed_streak(scope, transient_failure_classifier("dropped"))
+    inventory: list[object] = [None]
+    scheduler = aggregation_scheduler.PlaybookAggregationScheduler(
+        context_provider=lambda: [],
+        scope_inventory_provider=lambda: inventory[0],
+    )
+
+    scheduler._run_once()
+    assert scope in background_work._streaks
+
+    inventory[0] = []
+    scheduler._run_once()
+    assert scope not in background_work._streaks

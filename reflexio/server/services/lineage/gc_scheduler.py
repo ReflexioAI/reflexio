@@ -668,8 +668,11 @@ class LineageGCScheduler(ThreadedScheduler):
             org_id: The org being swept this tick.
         """
         now = int(time.time())
-        for sweep in _per_org_sweep_hooks:
+        for position, sweep in enumerate(_per_org_sweep_hooks):
             sweep_id = getattr(sweep, "__qualname__", repr(sweep))
+            # Two hooks can share a qualname (closures from one factory); the
+            # registration position keeps their streaks apart.
+            sweep_key = f"{position}:{sweep_id}"
             try:
                 deleted = sweep(org_id, now)
                 if deleted:
@@ -689,13 +692,13 @@ class LineageGCScheduler(ThreadedScheduler):
                     logger,
                     "per_org_sweep_failed",
                     exc,
-                    scope=f"lineage-per-org-sweep:{org_id}:{sweep_id}",
+                    scope=f"lineage-per-org-sweep:{org_id}:{sweep_key}",
                     org_id=org_id,
                     sweep=sweep_id,
                 )
                 self._record_tick_failure()
             else:
-                report_background_success(f"lineage-per-org-sweep:{org_id}:{sweep_id}")
+                report_background_success(f"lineage-per-org-sweep:{org_id}:{sweep_key}")
 
     def _run_global_sweeps(self, cfg: object) -> None:
         """Invoke each registered global sweep once, gated on expiry_reclamation.
@@ -711,8 +714,11 @@ class LineageGCScheduler(ThreadedScheduler):
         if expiry is None or not expiry.enabled:
             return
         now = int(time.time())
-        for sweep in _global_sweep_hooks:
+        for position, sweep in enumerate(_global_sweep_hooks):
             sweep_id = getattr(sweep, "__qualname__", repr(sweep))
+            # Two hooks can share a qualname (closures from one factory); the
+            # registration position keeps their streaks apart.
+            sweep_key = f"{position}:{sweep_id}"
             try:
                 deleted = sweep(now)
                 if deleted:
@@ -723,18 +729,21 @@ class LineageGCScheduler(ThreadedScheduler):
                     logger,
                     "global_sweep_failed",
                     exc,
-                    scope=f"lineage-global-sweep:{sweep_id}",
+                    scope=f"lineage-global-sweep:{sweep_key}",
                     sweep=sweep_id,
                 )
                 self._record_tick_failure()
             else:
-                report_background_success(f"lineage-global-sweep:{sweep_id}")
+                report_background_success(f"lineage-global-sweep:{sweep_key}")
 
     def _run_always_global_sweeps(self) -> None:
         """Invoke each applicability-owning global sweep once per elected tick."""
         now = int(time.time())
-        for sweep in _always_global_sweep_hooks:
+        for position, sweep in enumerate(_always_global_sweep_hooks):
             sweep_id = getattr(sweep, "__qualname__", repr(sweep))
+            # Two hooks can share a qualname (closures from one factory); the
+            # registration position keeps their streaks apart.
+            sweep_key = f"{position}:{sweep_id}"
             try:
                 processed = sweep(now)
                 if processed:
@@ -745,12 +754,12 @@ class LineageGCScheduler(ThreadedScheduler):
                     logger,
                     "always_global_sweep_failed",
                     exc,
-                    scope=f"lineage-always-global-sweep:{sweep_id}",
+                    scope=f"lineage-always-global-sweep:{sweep_key}",
                     sweep=sweep_id,
                 )
                 self._record_tick_failure()
             else:
-                report_background_success(f"lineage-always-global-sweep:{sweep_id}")
+                report_background_success(f"lineage-always-global-sweep:{sweep_key}")
 
     def _record_tick_failure(self) -> None:
         """Mark this tick as having failed work, from any fan-out worker."""

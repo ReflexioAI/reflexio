@@ -215,7 +215,8 @@ class ExtractionResumeScheduler(ThreadedScheduler):
             provider_org_ids = self._discover_provider_org_ids()
             if self.org_id_provider is not None and provider_org_ids is not None:
                 if not provider_org_ids:
-                    report_background_success("extraction-resume-tick")
+                    # Not a success: the context and config resolution this
+                    # streak counts failures of was never attempted.
                     return poll_interval
                 # Resolve config through an org that the provider proved is
                 # actionable on this tick. The previous bootstrap may have

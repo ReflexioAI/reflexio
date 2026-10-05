@@ -409,3 +409,26 @@ def test_transient_org_drain_failure_is_a_warning(
         worker.return_value.drain.return_value = 0
         scheduler._drain_org("org_1")
     assert background_work._streaks == {}
+
+
+def test_an_empty_provider_tick_does_not_clear_the_tick_streak(
+    transient_failure_classifier,
+) -> None:
+    """The tick's failing work (context and config) never ran."""
+    from reflexio.server import background_work
+
+    background_work.report_background_failure(
+        resume_scheduler.logger,
+        "seeded_failure",
+        transient_failure_classifier("dropped"),
+        scope="extraction-resume-tick",
+    )
+    scheduler = resume_scheduler.ExtractionResumeScheduler(
+        request_context_factory=cast(Callable[[str], RequestContext], MagicMock()),
+        bootstrap_org_id="org_1",
+        org_id_provider=lambda: [],
+    )
+
+    scheduler._run_once()
+
+    assert "extraction-resume-tick" in background_work._streaks

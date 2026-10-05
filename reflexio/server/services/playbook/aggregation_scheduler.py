@@ -189,14 +189,16 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
         """
         return (str(context.org_id), current_project_id())
 
-    def _run_context(self, context: RequestContext) -> bool:
+    def _run_context(self, context: RequestContext) -> bool | None:
         """Run one bounded unit for ``context``.
 
         Returns:
-            bool: False when a claimed run failed (or was deferred) and the
-                failure was reported and swallowed here, so the caller must not
-                count this context as a success. True otherwise, including when
-                there was nothing to do.
+            bool | None: None when aggregation is off or unsupported for this
+                context, so no storage work was attempted; False when a claimed
+                run failed (or was deferred) and the failure was reported and
+                swallowed here; True when the storage work ran and succeeded,
+                including a claim that found nothing due. Only True may end the
+                caller's org-level failure streak.
         """
         self._active_stage = "configuration"
         storage = context.storage
@@ -204,9 +206,9 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
             context.configurator.get_config(), "user_playbook_extractor_config", None
         )
         if playbook_config is None or playbook_config.aggregation_config is None:
-            return True
+            return None
         if storage is None:
-            return True
+            return None
         if not getattr(storage, "supports_incremental_playbook_aggregation", False):
             blocked_reason = getattr(
                 storage, "playbook_aggregation_blocked_reason", None
@@ -218,7 +220,7 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
                     context.org_id,
                     blocked_reason,
                 )
-            return True
+            return None
         repair_now = time.monotonic()
         # Keyed by (org, work scope) rather than by org alone. The enterprise
         # context provider yields the SAME RequestContext once per project, so
@@ -278,17 +280,13 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
             if self._on_work_claimed is not None:
                 try:
                     self._on_work_claimed(context)
-                except Exception as exc:
-                    report_background_failure(
-                        logger,
-                        "playbook_aggregation_claim_notification_failed",
-                        exc,
-                        scope=f"playbook-aggregation-notify:{org_id}:{project_id}",
-                        org_id=context.org_id,
-                    )
-                else:
-                    report_background_success(
-                        f"playbook-aggregation-notify:{org_id}:{project_id}"
+                except Exception:
+                    # Stays at ERROR: the notification is one-shot -- nothing
+                    # re-invokes it for this claim -- so there is no retry for
+                    # a WARNING to lean on.
+                    logger.exception(
+                        "event=playbook_aggregation_claim_notification_failed org_id=%s",
+                        context.org_id,
                     )
             budget = _aggregation_budget()
             invalidation_page = storage.get_playbook_aggregation_invalidations(
@@ -506,7 +504,9 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
                         live_scopes = set(inventory)
                         if not self._stop_event.is_set():
                             self._prune_scope_state(live_scopes)
-                    report_background_success("playbook-aggregation-inventory")
+                        # None ("unavailable") is not a success: the provider
+                        # may have swallowed the very failure this streak counts.
+                        report_background_success("playbook-aggregation-inventory")
                 except Exception as exc:
                     report_background_failure(
                         logger,

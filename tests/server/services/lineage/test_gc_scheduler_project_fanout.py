@@ -193,3 +193,25 @@ def test_project_sweep_failures_are_scoped_per_project(transient_failure_classif
 
     assert background_work._streaks["lineage-expiry-sweep:org-1:prj_a"][0] == 2
     assert "lineage-expiry-sweep:org-1:prj_b" not in background_work._streaks
+
+
+def test_hooks_sharing_a_qualname_keep_separate_streaks(transient_failure_classifier):
+    """Closures from one factory share a qualname; one's success must not
+    clear the other's streak."""
+    from reflexio.server import background_work
+    from reflexio.server.services.lineage import gc_scheduler
+
+    def make(fails: bool):
+        def sweep(_org_id: str, _now: int) -> int:
+            if fails:
+                raise transient_failure_classifier("server closed the connection")
+            return 0
+
+        return sweep
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(gc_scheduler, "_per_org_sweep_hooks", [make(True), make(False)])
+        _scheduler()._run_per_org_sweeps(_ORG)
+
+    (scope,) = background_work._streaks
+    assert scope.startswith("lineage-per-org-sweep:org-1:0:")
