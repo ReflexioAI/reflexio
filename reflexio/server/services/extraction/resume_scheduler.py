@@ -18,7 +18,10 @@ from datetime import UTC, datetime
 
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.auth import DEFAULT_ORG_ID
-from reflexio.server.background_work import report_background_failure
+from reflexio.server.background_work import (
+    report_background_failure,
+    report_background_success,
+)
 from reflexio.server.error_reporting import error_tags
 from reflexio.server.scheduling import ThreadedScheduler
 from reflexio.server.services.extraction.resumable_agent import (
@@ -105,7 +108,7 @@ class ExtractionResumeScheduler(ThreadedScheduler):
         if self.org_id_provider is None:
             return None
         try:
-            return list(
+            discovered = list(
                 dict.fromkeys(
                     org_id
                     for org_id in self.org_id_provider()
@@ -125,6 +128,8 @@ class ExtractionResumeScheduler(ThreadedScheduler):
                     scope="extraction-resume-org-discovery",
                 )
             return None
+        report_background_success("extraction-resume-org-discovery")
+        return discovered
 
     def _expire_pending_tool_calls(self, ctx: RequestContext) -> None:
         storage = getattr(ctx, "storage", None)
@@ -201,6 +206,8 @@ class ExtractionResumeScheduler(ThreadedScheduler):
                     scope=f"extraction-resume:{org_id}",
                     org_id=org_id,
                 )
+        else:
+            report_background_success(f"extraction-resume:{org_id}")
 
     def _run_once(self) -> float:
         poll_interval = _DEFAULT_POLL_INTERVAL_SECONDS
@@ -208,6 +215,8 @@ class ExtractionResumeScheduler(ThreadedScheduler):
             provider_org_ids = self._discover_provider_org_ids()
             if self.org_id_provider is not None and provider_org_ids is not None:
                 if not provider_org_ids:
+                    # Not a success: the context and config resolution this
+                    # streak counts failures of was never attempted.
                     return poll_interval
                 # Resolve config through an org that the provider proved is
                 # actionable on this tick. The previous bootstrap may have
@@ -244,8 +253,10 @@ class ExtractionResumeScheduler(ThreadedScheduler):
                     logger,
                     "extraction_resume_scheduler_tick_failed",
                     exc,
-                    scope="extraction-resume",
+                    scope="extraction-resume-tick",
                 )
+        else:
+            report_background_success("extraction-resume-tick")
         return poll_interval
 
 

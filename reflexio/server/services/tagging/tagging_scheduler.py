@@ -24,6 +24,10 @@ from collections.abc import Callable
 from functools import partial
 
 from reflexio.server.api_endpoints.request_context import RequestContext
+from reflexio.server.background_work import (
+    report_background_failure,
+    report_background_success,
+)
 from reflexio.server.callback_executor import drain_callbacks, submit_callback
 from reflexio.server.env_utils import env_bool
 from reflexio.server.error_reporting import capture_anomaly
@@ -138,8 +142,11 @@ class TaggingScheduler:
                             f"tagging-{key[2][:20]}",
                             partial(self._run_callback, key, callback),
                         )
-            except Exception:
-                logger.exception("Error in tagging scheduler loop")
+                report_background_success("tagging-loop")
+            except Exception as exc:
+                report_background_failure(
+                    logger, "tagging_scheduler_loop_failed", exc, scope="tagging-loop"
+                )
                 time.sleep(1)
 
     @staticmethod

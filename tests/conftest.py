@@ -207,7 +207,7 @@ def transient_failure_classifier() -> Iterator[type[TransientTestError]]:
     background_work.configure_transient_failure_classifier(
         lambda exc: isinstance(exc, TransientTestError)
     )
-    background_work._episodes.clear()
+    background_work._streaks.clear()
     yield TransientTestError
     background_work.configure_transient_failure_classifier(None)
-    background_work._episodes.clear()
+    background_work._streaks.clear()

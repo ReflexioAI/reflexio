@@ -1024,3 +1024,54 @@ def test_transient_org_failure_is_a_warning_and_still_raises_the_anomaly(
     anomaly.assert_called_once_with("lineage.gc.run_failed", org_id="org_a")
     failures = [r for r in caplog.records if "lineage_gc_org_failed" in r.getMessage()]
     assert [r.levelno for r in failures] == [logging.WARNING]
+
+
+def test_fast_retry_exhaustion_pages_however_the_budget_was_spent(
+    caplog, monkeypatch, transient_failure_classifier
+) -> None:
+    """Codex round 5: two bootstrap failures spend most of the fast-retry
+    budget, then a per-org sweep outage exhausts it. From there every attempt
+    is a day apart -- past the streak idle reset -- so the sweep's own streak
+    restarts at 1 each day and never escalates. Exhaustion itself must page.
+    """
+    from reflexio.server import background_work
+
+    clock = [1000.0]
+    monkeypatch.setattr(background_work, "_monotonic", lambda: clock[0])
+    bootstrap_fails = [True]
+
+    def factory(org_id: str):
+        if bootstrap_fails[0]:
+            raise transient_failure_classifier("server closed the connection")
+        ctx = _default_factory(org_id)
+        ctx.storage.list_org_ids.return_value = ["org_a"]
+        return ctx
+
+    def sweep(_org_id: str, _now: int) -> int:
+        raise transient_failure_classifier("SSL SYSCALL error: EOF detected")
+
+    monkeypatch.setattr(gc_mod, "_per_org_sweep_hooks", [sweep])
+    monkeypatch.setattr(gc_mod, "_always_global_sweep_hooks", [])
+    monkeypatch.setattr(
+        gc_mod, "sweep_retention_caps", lambda *_a: SimpleNamespace(failed=False)
+    )
+    scheduler = _scheduler(factory=factory)
+    caplog.set_level(logging.WARNING, logger=gc_mod.logger.name)
+
+    intervals = []
+    for tick in range(6):
+        if tick == 2:
+            bootstrap_fails[0] = False  # the bootstrap recovers; the sweep breaks
+        intervals.append(scheduler._run_once())
+        clock[0] += intervals[-1]
+
+    messages = [(r.levelno, r.getMessage()) for r in caplog.records]
+    sweep_levels = [lvl for lvl, msg in messages if "per_org_sweep_failed" in msg]
+    exhausted = [lvl for lvl, msg in messages if "fast_retry_exhausted" in msg]
+    fast = gc_mod._FAILED_TICK_RETRY_SECONDS
+    assert intervals[:3] == [fast, fast, fast]
+    assert intervals[3] > fast  # the budget is spent: back to the daily cadence
+    # The hole this closes: a day apart, the sweep's streak never escalates.
+    assert logging.ERROR not in sweep_levels
+    # ...so exhaustion pages, on the tick it happens and on every daily failure.
+    assert exhausted == [logging.ERROR, logging.ERROR, logging.ERROR]

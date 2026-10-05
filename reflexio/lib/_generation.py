@@ -59,6 +59,7 @@ class GenerationMixin(ReflexioBase):
         from reflexio.server.services.playbook.playbook_service_utils import (
             PlaybookAggregatorRequest,
         )
+        from reflexio.server.work_scope import current_project_id
 
         aggregation_prompt_processor = get_service(AGGREGATION_PROMPT_PROCESSOR)
         min_interval_seconds = aggregation_min_interval_seconds()
@@ -89,7 +90,12 @@ class GenerationMixin(ReflexioBase):
                 )
         heartbeat = None
         if claim is not None:
-            heartbeat = AggregationLeaseHeartbeat(storage, claim)
+            heartbeat = AggregationLeaseHeartbeat(
+                storage,
+                claim,
+                org_id=str(self.request_context.org_id),
+                project_id=current_project_id(),
+            )
             aggregator_kwargs["aggregation_claim"] = claim
         playbook_aggregator = PlaybookAggregator(
             llm_client=self.llm_client,

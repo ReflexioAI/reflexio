@@ -2,18 +2,21 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import threading
 import time
 import uuid
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.background_work import (
     background_work,
     report_background_failure,
+    report_background_success,
 )
 from reflexio.server.env_utils import env_str
 from reflexio.server.operation_limiter import operation_limit_value
@@ -125,6 +128,30 @@ def exception_locator(exc: BaseException) -> str:
     return raised
 
 
+def _user_ref(user_id: str) -> str:
+    """Stable, value-free handle for a user in a failure scope.
+
+    Scopes are printed in log lines, and this worker keeps customer identifiers
+    out of them, so a scope names the user by a short hash rather than the id.
+    """
+    return hashlib.sha256(user_id.encode()).hexdigest()[:12]
+
+
+@dataclass
+class _TurnRecord:
+    """What one turn did, for the caller that reports its outcome.
+
+    ``completed`` is True only when the claimed user's extraction finished:
+    every pending effect delivered, or the window executed (or invalidated
+    because its inputs were deleted). A turn that deferred setup, scheduled a
+    retry, lost its lease or found nothing to prepare returns normally but
+    did not complete, and must not end that user's failure streak.
+    """
+
+    user_id: str | None = None
+    completed: bool = False
+
+
 def worker_count() -> int:
     return max(
         1,
@@ -183,21 +210,61 @@ class DurableLearningWorker:
 
     @background_work()
     def _reserved_turn(self, org_id: str, lease_seconds: int) -> int:
+        # Two units, two streaks. Before a claim the unit is the org's claim
+        # (context + claim query), retried by the next poll. After a claim it
+        # is that USER's turn: an escaping failure leaves the lease to expire
+        # and the same user is claimed again. An org-wide turn scope let any
+        # other user's turn -- or an idle poll -- clear a stuck user's streak.
+        record = _TurnRecord()
         try:
-            return self._turn(org_id, lease_seconds)
+            completed = self._turn(org_id, lease_seconds, record)
         except Exception as exc:
-            report_background_failure(
-                logger,
-                "extraction_turn_failed",
-                exc,
-                scope=f"durable-learning-turn:{org_id}",
-                org_id=org_id,
-            )
+            if record.user_id is not None:
+                user_ref = _user_ref(record.user_id)
+                report_background_failure(
+                    logger,
+                    "extraction_turn_failed",
+                    exc,
+                    scope=f"durable-learning-turn:{org_id}:{user_ref}",
+                    org_id=org_id,
+                    stage="claimed",
+                )
+            else:
+                report_background_failure(
+                    logger,
+                    "extraction_turn_failed",
+                    exc,
+                    scope=f"durable-learning-claim:{org_id}",
+                    org_id=org_id,
+                    stage="claim",
+                )
             return 0
         finally:
             _release()
+        # Only a turn that actually completed ends the user's streak: one that
+        # swallowed a failure (setup deferred, window retried, effect retried)
+        # returns normally too.
+        if record.user_id is not None and record.completed:
+            user_ref = _user_ref(record.user_id)
+            report_background_success(f"durable-learning-turn:{org_id}:{user_ref}")
+        return completed
 
-    def _turn(self, org_id: str, lease_seconds: int) -> int:
+    def _turn(
+        self, org_id: str, lease_seconds: int, record: _TurnRecord | None = None
+    ) -> int:
+        """Claim one runnable user and run its turn.
+
+        Args:
+            org_id (str): The org to claim from.
+            lease_seconds (int): Lease length for the claim.
+            record (_TurnRecord | None): Receives the claimed user id and
+                whether the extraction completed, so the caller can attribute
+                a failure that escapes after the claim and report success
+                only for a completed turn.
+
+        Returns:
+            int: 1 when a window or its effects were delivered, else 0.
+        """
         from reflexio.lib._base import create_generation_litellm_client
 
         context = self._factory(org_id)
@@ -205,9 +272,15 @@ class DurableLearningWorker:
         if storage is None:
             return 0
         claim = storage.claim_extraction(self._instance_id, lease_seconds)
+        # The claim query itself succeeded, whether or not it found a user.
+        report_background_success(f"durable-learning-claim:{org_id}")
         if claim is None:
             return 0
         user_id, token = claim
+        if record is None:
+            record = _TurnRecord()
+        record.user_id = user_id
+        user_ref = _user_ref(user_id)
         started = time.monotonic()
         outcome = "setup_failure"
         phase = "prepare"
@@ -219,12 +292,17 @@ class DurableLearningWorker:
                 try:
                     if not storage.renew_extraction(user_id, token, lease_seconds):
                         return
+                    report_background_success(
+                        f"durable-learning-heartbeat:{org_id}:{user_ref}"
+                    )
                 except Exception as exc:
+                    # Renewal is per (org, user, token): scope it to this lease's
+                    # user so another user's renewals cannot mask a stuck one.
                     report_background_failure(
                         logger,
                         "extraction_heartbeat_failed",
                         exc,
-                        scope=f"durable-learning-heartbeat:{org_id}",
+                        scope=f"durable-learning-heartbeat:{org_id}:{user_ref}",
                         org_id=org_id,
                     )
 
@@ -266,6 +344,8 @@ class DurableLearningWorker:
                             type(exc).__name__,
                             exception_locator(exc),
                         )
+                # One effect window per turn; it completed only if delivered.
+                record.completed = outcome == "success"
                 return 1
             window = storage.prepare_extraction(user_id, token)
             if window is None:
@@ -312,6 +392,8 @@ class DurableLearningWorker:
                     else:
                         record_health("worker.retries", phase="window")
                     return 0
+            # Reached only when the window executed or was invalidated.
+            record.completed = True
             return 1
         except LeaseLostError:
             # A stale claim cannot schedule setup work; its new owner proceeds.

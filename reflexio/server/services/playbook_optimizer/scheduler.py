@@ -7,6 +7,10 @@ import time
 from collections.abc import Callable
 from functools import partial
 
+from reflexio.server.background_work import (
+    report_background_failure,
+    report_background_success,
+)
 from reflexio.server.callback_executor import submit_callback
 from reflexio.server.error_reporting import capture_anomaly
 from reflexio.server.work_scope import (
@@ -142,8 +146,14 @@ class PlaybookOptimizationScheduler:
                                 cooldown_seconds,
                             ),
                         )
-            except Exception:
-                logger.exception("Playbook optimization scheduler loop failed")
+                report_background_success("playbook-optimizer-loop")
+            except Exception as exc:
+                report_background_failure(
+                    logger,
+                    "playbook_optimizer_scheduler_loop_failed",
+                    exc,
+                    scope="playbook-optimizer-loop",
+                )
                 time.sleep(1)
 
     def _run_callback(

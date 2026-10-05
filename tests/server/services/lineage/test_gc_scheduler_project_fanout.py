@@ -144,3 +144,104 @@ def test_a_failing_enumerator_sweeps_nothing_rather_than_sweeping_unscoped():
     scheduler._sweep_org(_ORG)
 
     assert seen == []
+
+
+def test_project_sweep_failures_are_scoped_per_project(transient_failure_classifier):
+    """One failing project must not share a streak with its healthy siblings.
+
+    With an org-wide scope the failing project would count once per project per
+    tick, and the healthy project's success would clear it every time.
+    """
+    from reflexio.server import background_work
+    from reflexio.server.services.lineage import gc_scheduler
+
+    def _expire(*, now: int) -> int:
+        if failing[0]:
+            raise transient_failure_classifier("server closed the connection")
+        return 0
+
+    failing = [False]
+    storage = types.SimpleNamespace(
+        expire_active_profiles=_expire,
+        gc_expired_tombstones=lambda **_kwargs: 0,
+    )
+    cfg = types.SimpleNamespace(
+        lineage_gc=types.SimpleNamespace(enabled=True, tombstone_grace_window_days=30),
+        expiry_reclamation=None,
+    )
+    scheduler = _scheduler()
+    original = scheduler._sweep_project_data
+
+    def _sweep(org_id, storage_, cfg_, project_id=None):
+        failing[0] = project_id == "prj_a"
+        original(org_id, storage_, cfg_, project_id)
+
+    scheduler._sweep_project_data = _sweep  # type: ignore[method-assign]
+    scheduler.request_context_factory = lambda _org: types.SimpleNamespace(  # type: ignore[assignment]
+        storage=storage, configurator=types.SimpleNamespace(get_config=lambda: cfg)
+    )
+    set_project_id_provider(lambda _org: ["prj_a", "prj_b"])
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            gc_scheduler,
+            "sweep_retention_caps",
+            lambda *_args: types.SimpleNamespace(failed=False),
+        )
+        scheduler._sweep_org(_ORG)
+        scheduler._sweep_org(_ORG)
+
+    assert background_work._streaks["lineage-expiry-sweep:org-1:prj_a"][0] == 2
+    assert "lineage-expiry-sweep:org-1:prj_b" not in background_work._streaks
+
+
+def test_hooks_sharing_a_qualname_keep_separate_streaks(transient_failure_classifier):
+    """Closures from one factory share a qualname; one's success must not
+    clear the other's streak."""
+    from reflexio.server import background_work
+    from reflexio.server.services.lineage import gc_scheduler
+
+    def make(fails: bool):
+        def sweep(_org_id: str, _now: int) -> int:
+            if fails:
+                raise transient_failure_classifier("server closed the connection")
+            return 0
+
+        return sweep
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(gc_scheduler, "_per_org_sweep_hooks", [make(True), make(False)])
+        _scheduler()._run_per_org_sweeps(_ORG)
+
+    (scope,) = background_work._streaks
+    assert scope.startswith("lineage-per-org-sweep:org-1:0:")
+
+
+def test_an_empty_project_list_does_not_end_the_enumeration_streak(
+    transient_failure_classifier,
+):
+    """A provider may swallow its own lookup failure and return []."""
+    from reflexio.server import background_work
+
+    results: list[object] = [transient_failure_classifier("dropped")]
+
+    def provider(_org: str) -> list[str]:
+        result = results[0]
+        if isinstance(result, BaseException):
+            raise result
+        return result  # type: ignore[return-value]
+
+    set_project_id_provider(provider)
+    scheduler = _scheduler()
+    scope = f"lineage-gc-projects:{_ORG}"
+
+    scheduler._project_ids_for(_ORG)
+    assert scope in background_work._streaks
+
+    results[0] = []
+    scheduler._project_ids_for(_ORG)
+    assert scope in background_work._streaks
+
+    results[0] = ["prj_a"]
+    scheduler._project_ids_for(_ORG)
+    assert scope not in background_work._streaks

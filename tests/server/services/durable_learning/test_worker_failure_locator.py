@@ -23,7 +23,9 @@ import os
 import re
 from collections.abc import Callable
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -445,3 +447,154 @@ def test_transient_turn_failure_is_a_warning_and_releases_the_slot(
     # Both turns ran: the first failure released its capacity slot.
     assert [r.levelno for r in failures] == [logging.WARNING, logging.WARNING]
     assert not failures[0].exc_info
+
+    from reflexio.server import background_work
+
+    # Nothing was claimed, so the failing unit is the org's claim.
+    assert background_work._streaks["durable-learning-claim:org1"][0] == 2
+    # No storage: nothing was attempted, so nothing is reported either way.
+    worker._factory = lambda _org_id: SimpleNamespace(storage=None)
+    worker.drain_org("org1", batch_size=1, lease_seconds=30)
+    assert background_work._streaks["durable-learning-claim:org1"][0] == 2
+    # The claim query runs and finds no user: the claim unit succeeded.
+    idle = MagicMock()
+    idle.claim_extraction.return_value = None
+    worker._factory = lambda _org_id: SimpleNamespace(storage=idle)
+    worker.drain_org("org1", batch_size=1, lease_seconds=30)
+    assert background_work._streaks == {}
+
+
+def _claimed_storage(user_id: str, *, release_fails: Exception | None) -> MagicMock:
+    storage = MagicMock()
+    storage.claim_extraction.return_value = (user_id, "token")
+    storage.pending_extraction_effects.return_value = []
+    storage.prepare_extraction.return_value = None
+    storage.renew_extraction.return_value = True
+    if release_fails is not None:
+        storage.release_user_extraction.side_effect = release_fails
+    return storage
+
+
+def test_a_stuck_users_turn_streak_survives_idle_polls_and_other_users(
+    transient_failure_classifier: type[Exception],
+) -> None:
+    """Only the same user's completed turn ends that user's streak."""
+    from reflexio.server import background_work
+    from reflexio.server.services.durable_learning.worker import _user_ref
+
+    stuck = _claimed_storage(
+        "user-a", release_fails=transient_failure_classifier("SSL EOF")
+    )
+    healthy = _claimed_storage("user-b", release_fails=None)
+    idle = MagicMock()
+    idle.claim_extraction.return_value = None
+    storages = iter([stuck, idle, healthy, stuck])
+    worker = DurableLearningWorker(
+        lambda _org_id: SimpleNamespace(storage=next(storages))
+    )
+    stuck_scope = f"durable-learning-turn:org1:{_user_ref('user-a')}"
+
+    worker.drain_org("org1", batch_size=4, lease_seconds=30)
+
+    assert background_work._streaks[stuck_scope][0] == 2
+    assert "user-a" not in " ".join(background_work._streaks)
+
+    # The same user returns but has nothing to prepare: it did not complete.
+    worker._factory = lambda _org_id: SimpleNamespace(
+        storage=_claimed_storage("user-a", release_fails=None)
+    )
+    worker.drain_org("org1", batch_size=1, lease_seconds=30)
+    assert background_work._streaks[stuck_scope][0] == 2
+
+    # The same user's extraction completes: only now does its streak end.
+    worker._factory = lambda _org_id: SimpleNamespace(
+        storage=_delivering_storage("user-a")
+    )
+    with _executor_stubbed():
+        worker.drain_org("org1", batch_size=1, lease_seconds=30)
+    assert background_work._streaks == {}
+
+
+def _delivering_storage(user_id: str) -> MagicMock:
+    storage = _claimed_storage(user_id, release_fails=None)
+    storage.pending_extraction_effects.return_value = [
+        (SimpleNamespace(project_id=None), [])
+    ]
+    return storage
+
+
+def _executor_stubbed():
+    from contextlib import ExitStack
+    from unittest.mock import patch
+
+    stack = ExitStack()
+    stack.enter_context(patch.object(worker_module, "WindowExecutor"))
+    stack.enter_context(
+        patch(
+            "reflexio.lib._base.create_generation_litellm_client",
+            lambda _context: None,
+        )
+    )
+    return stack
+
+
+def test_a_turn_that_swallows_its_setup_failure_does_not_end_the_streak(
+    monkeypatch: pytest.MonkeyPatch,
+    transient_failure_classifier: type[Exception],
+) -> None:
+    """Codex repro: setup keeps failing while deferral alternately fails and
+    succeeds. A successful deferral is a retry being scheduled, not a
+    completed turn, so the streak must keep growing and escalate."""
+    from reflexio.server import background_work
+
+    clock = [1000.0]
+    monkeypatch.setattr(background_work, "_monotonic", lambda: clock[0])
+    storage = _claimed_storage("user-a", release_fails=None)
+    storage.pending_extraction_effects.side_effect = transient_failure_classifier(
+        "server closed the connection"
+    )
+    deferrals = iter([transient_failure_classifier("SSL EOF"), None] * 3)
+
+    def defer(*_args: object) -> None:
+        failure = next(deferrals)
+        if failure is not None:
+            raise failure
+
+    storage.defer_extraction_setup.side_effect = defer
+    worker = DurableLearningWorker(lambda _org_id: SimpleNamespace(storage=storage))
+    levels: list[int] = []
+    handler = logging.Handler()
+    handler.emit = lambda record: (  # type: ignore[method-assign]
+        levels.append(record.levelno)
+        if "extraction_turn_failed" in record.getMessage()
+        else None
+    )
+    worker_module.logger.addHandler(handler)
+    try:
+        for _ in range(5):
+            worker.drain_org("org1", batch_size=1, lease_seconds=30)
+            clock[0] += 160
+    finally:
+        worker_module.logger.removeHandler(handler)
+
+    assert levels == [logging.WARNING, logging.WARNING, logging.ERROR]
+
+
+def test_heartbeat_failure_is_scoped_to_the_leased_user(
+    transient_failure_classifier: type[Exception],
+) -> None:
+    import time as _time
+
+    from reflexio.server import background_work
+    from reflexio.server.services.durable_learning.worker import _user_ref
+
+    storage = _claimed_storage("user-a", release_fails=None)
+    storage.renew_extraction.side_effect = transient_failure_classifier("SSL EOF")
+    storage.prepare_extraction.side_effect = lambda *_args: _time.sleep(0.6)
+    worker = DurableLearningWorker(lambda _org_id: SimpleNamespace(storage=storage))
+
+    worker.drain_org("org1", batch_size=1, lease_seconds=1)
+
+    assert set(background_work._streaks) == {
+        f"durable-learning-heartbeat:org1:{_user_ref('user-a')}"
+    }

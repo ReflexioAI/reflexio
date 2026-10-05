@@ -1,9 +1,10 @@
 """A swallowed lineage GC failure must shorten the next tick's wait.
 
-``report_background_failure`` downgrades a transient failure to WARNING and only
-escalates one that keeps recurring within its episode gap. A handler that
-swallows a failure without ``_record_tick_failure()`` leaves the scheduler on its
-daily cadence, so a persistent outage there would stay at WARNING for good.
+``report_background_failure`` downgrades a transient failure to WARNING and
+escalates only once the same scope has failed several consecutive times over
+several minutes. A handler that swallows a failure without
+``_record_tick_failure()`` leaves the scheduler on its daily cadence, so a
+persistent outage there would need days of consecutive failures to page.
 """
 
 import ast

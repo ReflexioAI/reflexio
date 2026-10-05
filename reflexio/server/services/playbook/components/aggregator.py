@@ -775,6 +775,9 @@ class PlaybookAggregator:
                 "staged": 0,
                 "attachments": 0,
                 "skipped": "legacy cluster adoption pending",
+                # Adoption may have stopped on swallowed embedding errors, so
+                # this pass is not evidence the run recovered.
+                "adoption_pending": True,
             }
         intake_window_limit = aggregator_clustering.max_clustering_playbooks()
         staged_ids = self.storage.stage_playbook_aggregation_intake(  # type: ignore[attr-defined]

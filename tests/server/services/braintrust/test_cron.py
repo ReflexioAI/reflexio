@@ -210,3 +210,13 @@ def test_transient_org_sync_failure_is_a_warning_and_later_orgs_still_run(
     assert calls == ["org_b"]
     failures = [r for r in caplog.records if "sync_org_failed" in r.getMessage()]
     assert [r.levelno for r in failures] == [logging.WARNING]
+
+    from reflexio.server import background_work
+
+    assert set(background_work._streaks) == {"braintrust-sync:org_a"}
+    calls.clear()
+    scheduler.run_sync_for_org = lambda org: (calls.append(org), scheduler.stop())
+    scheduler._stop.clear()
+    scheduler._loop()
+    assert calls == ["org_a"]  # the stop after org_a ends the pass
+    assert background_work._streaks == {}

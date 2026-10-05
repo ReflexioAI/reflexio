@@ -15,6 +15,10 @@ import time
 from collections.abc import Callable
 from functools import partial
 
+from reflexio.server.background_work import (
+    report_background_failure,
+    report_background_success,
+)
 from reflexio.server.callback_executor import submit_callback
 from reflexio.server.error_reporting import capture_anomaly
 from reflexio.server.services.agent_success_evaluation import _eval_health
@@ -150,9 +154,15 @@ class GroupEvaluationScheduler:
                             f"group-eval-{key[3][:20]}",
                             partial(self._run_callback, key, callback),
                         )
+                report_background_success("group-evaluation-loop")
 
-            except Exception:
-                logger.exception("Error in group evaluation scheduler loop")
+            except Exception as exc:
+                report_background_failure(
+                    logger,
+                    "group_evaluation_scheduler_loop_failed",
+                    exc,
+                    scope="group-evaluation-loop",
+                )
                 # Brief sleep to avoid tight error loops
                 time.sleep(1)
 
