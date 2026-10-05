@@ -193,17 +193,15 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
         """
         return (str(context.org_id), current_project_id())
 
-    def _run_context(self, context: RequestContext) -> bool | None:
+    def _run_context(self, context: RequestContext) -> None:
         """Run one bounded unit for ``context``.
 
-        Returns:
-            bool | None: None when aggregation is off or unsupported for this
-                context, so no storage work was attempted. True when the
-                org-level work -- configuration, repair and the claim, which
-                are what the caller's org scope counts -- succeeded, including
-                a claim that found nothing due. The claimed run and its
-                finalization are separate units with their own scopes,
-                reported here, so their outcome does not decide this value.
+        Three units, three streaks. The org unit -- configuration, repair and
+        the claim -- reports success here as soon as the claim returns,
+        whatever the claimed run or its finalization then do; its failures
+        escape to ``_run_once``. The claimed run and its finalization report
+        both outcomes here under their own scopes. A context with aggregation
+        off or unsupported attempts nothing and reports nothing.
 
         Raises:
             _FinalizationReportedError: Finalization failed after being reported
@@ -215,9 +213,9 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
             context.configurator.get_config(), "user_playbook_extractor_config", None
         )
         if playbook_config is None or playbook_config.aggregation_config is None:
-            return None
+            return
         if storage is None:
-            return None
+            return
         if not getattr(storage, "supports_incremental_playbook_aggregation", False):
             blocked_reason = getattr(
                 storage, "playbook_aggregation_blocked_reason", None
@@ -229,7 +227,8 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
                     context.org_id,
                     blocked_reason,
                 )
-            return None
+            return
+        org_id, project_id = self._repair_scope_key(context)
         repair_now = time.monotonic()
         # Keyed by (org, work scope) rather than by org alone. The enterprise
         # context provider yields the SAME RequestContext once per project, so
@@ -260,8 +259,11 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
             owner=f"aggregation:{self._worker_id}:{context.org_id}",
             lease_seconds=AGGREGATION_LEASE_SECONDS,
         )
+        # The org unit ran: configuration, repair (when due) and the claim
+        # all returned, whether or not anything was due.
+        report_background_success(f"playbook-aggregation-org:{org_id}:{project_id}")
         if claim is None:
-            return True
+            return
         started = time.perf_counter()
         logger.info(
             "event=playbook_aggregation_progress state=claimed org_id=%s "
@@ -271,7 +273,6 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
             claim.fence,
         )
         self._active_stage = "aggregation"
-        org_id, project_id = self._repair_scope_key(context)
         # Distinct from the org-failure scope in `_run_once`: this unit is the
         # claimed (org, project, agent_version) run, retried by the next claim
         # of that version; that one is everything else `_run_context` raises.
@@ -283,6 +284,7 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
         )
         heartbeat.start()
         success = False
+        aggregated = False
         result: dict[str, Any] = {}
         after = None
         try:
@@ -348,6 +350,7 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
                         PlaybookAggregatorRequest(agent_version=claim.agent_version)
                     ),
                 )
+                aggregated = True
             heartbeat.require_live()
             # `success` is set AFTER the backlog read, not before. Set before,
             # a failing read left success=True, so the `finally:` below called
@@ -360,10 +363,12 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
             # skips the recompute, releases the lease and schedules a retry.
             after = storage.get_playbook_aggregation_backlog(claim.agent_version)
             success = True
-            # A run can also return normally having swallowed per-cluster
-            # generation failures (logged at ERROR by the aggregator); that is
-            # a partial failure, not a completed run, so it ends no streak.
-            if not result.get("retryable_failures"):
+            # Only an aggregation that actually ran and completed ends the run
+            # streak. An invalidation-only pass (more than one batch pending)
+            # never ran the aggregator; a run that swallowed per-cluster
+            # generation failures (logged at ERROR by the aggregator) is a
+            # partial failure. Neither is evidence the run unit recovered.
+            if aggregated and not result.get("retryable_failures"):
                 report_background_success(run_scope)
         except TimeoutError:
             logger.warning(
@@ -446,7 +451,6 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
                     result.get("retryable_failures", 0),
                     result.get("embedding_pending", 0),
                 )
-        return True
 
     def _defer_scope(self, context: RequestContext, delay: float) -> None:
         if self._on_scope_deferred is None:
@@ -489,9 +493,10 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
                 if retry_delay > 0:
                     self._defer_scope(context, retry_delay)
                     continue
-                org_scope = f"playbook-aggregation-org:{org_id}:{scope[1]}"
+                project_id = scope[1]
+                org_scope = f"playbook-aggregation-org:{org_id}:{project_id}"
                 try:
-                    succeeded = self._run_context(context)
+                    self._run_context(context)
                 except _FinalizationReportedError:
                     # Reported under its own scope inside `_run_context`.
                     self._retry_after[scope] = (
@@ -509,15 +514,12 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
                         exc,
                         scope=org_scope,
                         org_id=org_id,
-                        project_id=scope[1],
+                        project_id=project_id,
                         stage=self._active_stage,
                         retry_after_seconds=_REPAIR_INTERVAL_SECONDS,
                     )
                 else:
                     self._retry_after.pop(scope, None)
-                    # None: nothing was attempted, so nothing succeeded.
-                    if succeeded:
-                        report_background_success(org_scope)
         except Exception as exc:
             report_background_failure(
                 logger,

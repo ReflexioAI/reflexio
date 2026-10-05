@@ -832,11 +832,12 @@ def test_run_org_and_finalize_streaks_each_end_on_their_own_success(
     scheduler._run_once()
     assert set(background_work._streaks) == {run_scope}
 
-    # Tick 3: the run succeeds; both units are healthy again.
+    # Tick 3: the aggregator really runs and completes; all units healthy.
     storage.get_playbook_aggregation_backlog.side_effect = None
     storage.get_playbook_aggregation_backlog.return_value = PlaybookAggregationBacklog(
         0, 0, 0
     )
+    _run_the_aggregator(monkeypatch, storage, result={})
     scheduler._run_once()
     assert background_work._streaks == {}
 
@@ -1002,3 +1003,84 @@ def test_a_run_with_swallowed_cluster_failures_does_not_end_the_run_streak(
     )
     scheduler._run_once()
     assert run_scope not in background_work._streaks
+
+
+def _run_the_aggregator(monkeypatch, storage, *, result) -> None:
+    """Route the next claimed pass through the aggregator, not invalidations."""
+    storage.get_playbook_aggregation_invalidations.return_value = []
+    monkeypatch.setattr(
+        aggregation_scheduler, "run_with_operation_limit", lambda **_kwargs: result
+    )
+    monkeypatch.setattr(
+        "reflexio.lib.generation_client.create_generation_litellm_client",
+        lambda _context: MagicMock(),
+    )
+    monkeypatch.setattr(aggregation_scheduler, "PlaybookAggregator", MagicMock())
+
+
+def test_invalidation_only_passes_do_not_end_the_run_streak(
+    monkeypatch, caplog, transient_failure_classifier
+) -> None:
+    """Codex round 4: run failures interleaved with >1-batch invalidation pages
+    (which skip the aggregator) must still escalate."""
+    from reflexio.server import background_work
+
+    clock = [1000.0]
+    monkeypatch.setattr(background_work, "_monotonic", lambda: clock[0])
+    monkeypatch.setattr(aggregation_scheduler.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        aggregation_scheduler.AggregationLeaseHeartbeat, "start", lambda _: None
+    )
+    storage = _claimed_storage()  # 101 invalidations: an invalidation-only pass
+    page = storage.get_playbook_aggregation_invalidations.return_value
+    _run_the_aggregator(monkeypatch, storage, result={})
+    storage.get_playbook_aggregation_backlog.side_effect = transient_failure_classifier(
+        "SSL connection has been closed unexpectedly"
+    )
+    scheduler = aggregation_scheduler.PlaybookAggregationScheduler(
+        context_provider=lambda: [_context(storage)]
+    )
+    caplog.set_level(logging.WARNING, logger=aggregation_scheduler.logger.name)
+
+    for _ in range(3):
+        storage.get_playbook_aggregation_invalidations.return_value = []
+        scheduler._run_once()  # the aggregator runs; its backlog read fails
+        clock[0] += 100
+        storage.get_playbook_aggregation_invalidations.return_value = page
+        storage.get_playbook_aggregation_backlog.side_effect = None
+        scheduler._run_once()  # invalidation-only pass: no run happened
+        storage.get_playbook_aggregation_backlog.side_effect = (
+            transient_failure_classifier("dropped")
+        )
+        clock[0] += 100
+
+    levels = [
+        r.levelno
+        for r in caplog.records
+        if "scope=playbook-aggregation-run:" in r.getMessage()
+    ]
+    assert levels == [logging.WARNING, logging.WARNING, logging.ERROR]
+
+
+def test_org_streak_ends_once_the_claim_succeeds_even_if_finalization_fails(
+    monkeypatch, transient_failure_classifier
+) -> None:
+    from reflexio.server import background_work
+
+    monkeypatch.setattr(
+        aggregation_scheduler.AggregationLeaseHeartbeat, "start", lambda _: None
+    )
+    org_scope = "playbook-aggregation-org:org-1:None"
+    _seed_streak(org_scope, transient_failure_classifier("dropped"))
+    storage = _claimed_storage()
+    storage.finish_playbook_aggregation_claim.side_effect = (
+        transient_failure_classifier("dropped")
+    )
+    scheduler = aggregation_scheduler.PlaybookAggregationScheduler(
+        context_provider=lambda: [_context(storage)]
+    )
+
+    scheduler._run_once()
+
+    assert org_scope not in background_work._streaks
+    assert "playbook-aggregation-finalize:org-1:None:v1" in background_work._streaks
