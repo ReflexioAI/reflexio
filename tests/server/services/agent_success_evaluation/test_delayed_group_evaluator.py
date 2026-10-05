@@ -189,7 +189,7 @@ class TestRunCallback:
         callback.assert_called_once()
 
     def test_exception_is_logged(self):
-        """_run_callback logs the exception when callback fails."""
+        """A non-transient callback failure is an ERROR with its traceback."""
         callback = MagicMock(side_effect=ValueError("bad value"))
         key: GroupKey = ("org_1", None, "user_1", "session_1")
 
@@ -198,5 +198,20 @@ class TestRunCallback:
         ) as mock_logger:
             GroupEvaluationScheduler._run_callback(key, callback)
 
-            mock_logger.exception.assert_called_once()
-            assert "failed" in mock_logger.exception.call_args[0][0].lower()
+            mock_logger.error.assert_called_once()
+            args, kwargs = mock_logger.error.call_args
+            assert args[1] == "group_evaluation_callback_failed"
+            assert isinstance(kwargs["exc_info"], ValueError)
+
+    def test_transient_failure_streak_ends_on_the_next_success(
+        self, transient_failure_classifier
+    ):
+        """The callback scope is the job type, so any later success ends it."""
+        from reflexio.server import background_work
+
+        failing = MagicMock(side_effect=transient_failure_classifier("dropped"))
+        GroupEvaluationScheduler._run_callback(("org_1", None, "u1", "s1"), failing)
+        assert set(background_work._streaks) == {"group-evaluation-callback"}
+
+        GroupEvaluationScheduler._run_callback(("org_2", None, "u2", "s2"), MagicMock())
+        assert background_work._streaks == {}

@@ -86,3 +86,17 @@ def test_schedule_tagging_skips_when_no_user(monkeypatch: Any) -> None:
     )
     assert len(scheduled) == 1
     assert scheduled[0][0] == ("o", None, "u", "v")
+
+
+def test_tagging_callback_streak_is_per_job_type(transient_failure_classifier) -> None:
+    """One-shot keyed work: any later tagging success ends the streak."""
+    from reflexio.server import background_work
+
+    def failing() -> None:
+        raise transient_failure_classifier("server closed the connection")
+
+    TaggingScheduler._run_callback(("org_1", None, "u1", "v1"), failing)
+    assert set(background_work._streaks) == {"tagging-callback"}
+
+    TaggingScheduler._run_callback(("org_2", None, "u2", "v1"), lambda: None)
+    assert background_work._streaks == {}

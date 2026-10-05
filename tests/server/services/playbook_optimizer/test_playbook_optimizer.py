@@ -1544,3 +1544,26 @@ def test_optimizer_failure_does_not_persist_exception_message(tmp_path):
     # Pinned literally, not against the source constant: an assertion that
     # imported the constant would follow it if someone changed it back.
     assert persisted_reason == "optimization run raised an unexpected error"
+
+
+def test_optimizer_callback_streak_ends_on_success_and_aborts_still_count(
+    transient_failure_classifier,
+) -> None:
+    """The streak is per job type; the abort bookkeeping is unchanged."""
+    from reflexio.server import background_work
+
+    scheduler = object.__new__(PlaybookOptimizationScheduler)
+    scheduler._mutex = threading.Lock()
+    scheduler._abort_counts = {}
+    key = ("org_1", None, "user_playbook", 7)
+
+    def failing() -> None:
+        raise transient_failure_classifier("server closed the connection")
+
+    scheduler._run_callback(key, failing, 5, 60)
+    assert set(background_work._streaks) == {"playbook-optimizer-callback"}
+    assert scheduler._abort_counts[key] == (1, 0.0)
+
+    scheduler._run_callback(key, lambda: "completed", 5, 60)
+    assert background_work._streaks == {}
+    assert key not in scheduler._abort_counts
