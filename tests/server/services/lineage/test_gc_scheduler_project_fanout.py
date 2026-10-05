@@ -215,3 +215,33 @@ def test_hooks_sharing_a_qualname_keep_separate_streaks(transient_failure_classi
 
     (scope,) = background_work._streaks
     assert scope.startswith("lineage-per-org-sweep:org-1:0:")
+
+
+def test_an_empty_project_list_does_not_end_the_enumeration_streak(
+    transient_failure_classifier,
+):
+    """A provider may swallow its own lookup failure and return []."""
+    from reflexio.server import background_work
+
+    results: list[object] = [transient_failure_classifier("dropped")]
+
+    def provider(_org: str) -> list[str]:
+        result = results[0]
+        if isinstance(result, BaseException):
+            raise result
+        return result  # type: ignore[return-value]
+
+    set_project_id_provider(provider)
+    scheduler = _scheduler()
+    scope = f"lineage-gc-projects:{_ORG}"
+
+    scheduler._project_ids_for(_ORG)
+    assert scope in background_work._streaks
+
+    results[0] = []
+    scheduler._project_ids_for(_ORG)
+    assert scope in background_work._streaks
+
+    results[0] = ["prj_a"]
+    scheduler._project_ids_for(_ORG)
+    assert scope not in background_work._streaks

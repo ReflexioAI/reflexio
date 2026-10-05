@@ -440,8 +440,12 @@ class LineageGCScheduler(ThreadedScheduler):
             # run at all. That is the silence this whole change exists to remove.
             self._record_tick_failure()
             return []
-        report_background_success(f"lineage-gc-projects:{org_id}")
-        if not project_ids:
+        if project_ids:
+            report_background_success(f"lineage-gc-projects:{org_id}")
+        else:
+            # Not a success either: a provider may swallow its own lookup
+            # failure and return [] (the enterprise one does, at ERROR).
+            #
             # NOT a fallback to one unscoped pass. Under project row-level
             # policies an unscoped sweep matches nothing anyway, so the fallback
             # would do no work while re-emitting the very unbound-credential
