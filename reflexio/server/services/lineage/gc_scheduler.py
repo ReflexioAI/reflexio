@@ -793,7 +793,14 @@ class LineageGCScheduler(ThreadedScheduler):
         # every registered global sweep too, not just retention.
         fast = min(_FAILED_TICK_RETRY_SECONDS, poll_interval)
         if self._consecutive_failed_ticks > _MAX_CONSECUTIVE_FAST_RETRIES:
-            logger.warning(
+            # ERROR, not WARNING: every fast retry failed, so this is a
+            # persistent failure. The per-scope streaks cannot be relied on to
+            # page for it: the budget is per scheduler, so failures of other
+            # scopes may have spent it, and after this the next attempt is a
+            # full interval (a day) away -- past the streak idle reset, so each
+            # later failure would count as the first. Paging here does not
+            # depend on how the budget was spent.
+            logger.error(
                 "event=lineage_gc_fast_retry_exhausted consecutive=%d — backing "
                 "off to the configured interval; the per-org anomalies say why",
                 self._consecutive_failed_ticks,
