@@ -1089,12 +1089,12 @@ def test_org_streak_ends_once_the_claim_succeeds_even_if_finalization_fails(
 @pytest.mark.parametrize(
     "partial",
     [
-        {"skipped": "legacy cluster adoption pending"},
+        {"skipped": "legacy cluster adoption pending", "adoption_pending": True},
         {"retryable_failures": 1},
         {"cluster_fence_losses": 1},
         {"embedding_pending": 3},
     ],
-    ids=["skipped", "retryable", "fence-loss", "embedding-pending"],
+    ids=["adoption-pending", "retryable", "fence-loss", "embedding-pending"],
 )
 def test_a_partial_or_blocked_run_never_ends_the_run_streak(
     monkeypatch, caplog, transient_failure_classifier, partial
@@ -1137,3 +1137,49 @@ def test_a_partial_or_blocked_run_never_ends_the_run_streak(
         if "scope=playbook-aggregation-run:" in r.getMessage()
     ]
     assert levels == [logging.WARNING, logging.WARNING, logging.ERROR]
+
+
+@pytest.mark.parametrize(
+    "skip_reason",
+    ["no cluster changes detected", "operation already applied"],
+)
+def test_a_healthy_no_work_run_ends_the_run_streak(
+    monkeypatch, caplog, transient_failure_classifier, skip_reason
+) -> None:
+    """A run that read the store and found nothing to do recovered: it must end
+    the streak, or blips an hour apart with quiet runs between them page."""
+    from reflexio.server import background_work
+
+    clock = [1000.0]
+    monkeypatch.setattr(background_work, "_monotonic", lambda: clock[0])
+    monkeypatch.setattr(aggregation_scheduler.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        aggregation_scheduler.AggregationLeaseHeartbeat, "start", lambda _: None
+    )
+    storage = _claimed_storage()
+    storage.get_playbook_aggregation_backlog.return_value = PlaybookAggregationBacklog(
+        0, 0, 0
+    )
+    scheduler = aggregation_scheduler.PlaybookAggregationScheduler(
+        context_provider=lambda: [_context(storage)]
+    )
+    caplog.set_level(logging.WARNING, logger=aggregation_scheduler.logger.name)
+
+    for _ in range(3):
+        _run_the_aggregator(monkeypatch, storage, result={})
+        storage.get_playbook_aggregation_backlog.side_effect = (
+            transient_failure_classifier("dropped")
+        )
+        scheduler._run_once()
+        clock[0] += 200
+        storage.get_playbook_aggregation_backlog.side_effect = None
+        _run_the_aggregator(monkeypatch, storage, result={"skipped": skip_reason})
+        scheduler._run_once()
+        clock[0] += 200
+
+    levels = [
+        r.levelno
+        for r in caplog.records
+        if "scope=playbook-aggregation-run:" in r.getMessage()
+    ]
+    assert levels == [logging.WARNING] * 3

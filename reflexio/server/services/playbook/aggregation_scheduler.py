@@ -43,15 +43,20 @@ _REPAIR_INTERVAL_SECONDS = 300.0
 
 
 # Result keys with which `PlaybookAggregator.run` reports that it returned
-# without fully doing its work. Any of them truthy means the run made partial
-# or no progress, so it is not evidence the run unit recovered:
-# - skipped: legacy cluster adoption pending (its embedding errors swallowed),
-#   operation already applied, no config, too few new playbooks, no changes;
+# without fully doing its work, possibly after swallowing the very failure the
+# run streak counts. Any of them truthy means the run is not evidence the unit
+# recovered:
+# - adoption_pending: legacy cluster adoption stopped short (its member
+#   embedding errors are swallowed);
 # - retryable_failures: per-cluster generation failures, logged at ERROR;
 # - cluster_fence_losses: clusters lost to a concurrent fence;
 # - embedding_pending: members deferred for want of a vector.
+# A plain `skipped` (operation already applied, no config, too few new
+# playbooks, no cluster changes) is a healthy run that read the store and found
+# nothing to do, so it DOES end the streak: otherwise blips an hour apart with
+# quiet, healthy runs between them would add up to a page.
 _PARTIAL_RESULT_MARKERS = (
-    "skipped",
+    "adoption_pending",
     "retryable_failures",
     "cluster_fence_losses",
     "embedding_pending",
