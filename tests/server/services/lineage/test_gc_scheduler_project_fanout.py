@@ -144,3 +144,52 @@ def test_a_failing_enumerator_sweeps_nothing_rather_than_sweeping_unscoped():
     scheduler._sweep_org(_ORG)
 
     assert seen == []
+
+
+def test_project_sweep_failures_are_scoped_per_project(transient_failure_classifier):
+    """One failing project must not share a streak with its healthy siblings.
+
+    With an org-wide scope the failing project would count once per project per
+    tick, and the healthy project's success would clear it every time.
+    """
+    from reflexio.server import background_work
+    from reflexio.server.services.lineage import gc_scheduler
+
+    def _expire(*, now: int) -> int:
+        if failing[0]:
+            raise transient_failure_classifier("server closed the connection")
+        return 0
+
+    failing = [False]
+    storage = types.SimpleNamespace(
+        expire_active_profiles=_expire,
+        gc_expired_tombstones=lambda **_kwargs: 0,
+    )
+    cfg = types.SimpleNamespace(
+        lineage_gc=types.SimpleNamespace(enabled=True, tombstone_grace_window_days=30),
+        expiry_reclamation=None,
+    )
+    scheduler = _scheduler()
+    original = scheduler._sweep_project_data
+
+    def _sweep(org_id, storage_, cfg_, project_id=None):
+        failing[0] = project_id == "prj_a"
+        original(org_id, storage_, cfg_, project_id)
+
+    scheduler._sweep_project_data = _sweep  # type: ignore[method-assign]
+    scheduler.request_context_factory = lambda _org: types.SimpleNamespace(  # type: ignore[assignment]
+        storage=storage, configurator=types.SimpleNamespace(get_config=lambda: cfg)
+    )
+    set_project_id_provider(lambda _org: ["prj_a", "prj_b"])
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            gc_scheduler,
+            "sweep_retention_caps",
+            lambda *_args: types.SimpleNamespace(failed=False),
+        )
+        scheduler._sweep_org(_ORG)
+        scheduler._sweep_org(_ORG)
+
+    assert background_work._streaks["lineage-expiry-sweep:org-1:prj_a"][0] == 2
+    assert "lineage-expiry-sweep:org-1:prj_b" not in background_work._streaks

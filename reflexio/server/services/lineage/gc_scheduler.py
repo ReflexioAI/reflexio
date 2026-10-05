@@ -31,7 +31,10 @@ from collections.abc import Callable
 from reflexio.models.config_schema import Config
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.auth import DEFAULT_ORG_ID
-from reflexio.server.background_work import report_background_failure
+from reflexio.server.background_work import (
+    report_background_failure,
+    report_background_success,
+)
 from reflexio.server.env_utils import env_str
 from reflexio.server.error_reporting import capture_anomaly
 from reflexio.server.org_fanout import iterate_orgs_bounded
@@ -304,7 +307,7 @@ class LineageGCScheduler(ThreadedScheduler):
         """
         if self.org_id_provider is not None:
             try:
-                return list(self.org_id_provider())
+                discovered = list(self.org_id_provider())
             except Exception as exc:
                 capture_anomaly(
                     "lineage.gc.org_id_provider_failed",
@@ -320,6 +323,8 @@ class LineageGCScheduler(ThreadedScheduler):
                 )
                 self._record_tick_failure()
                 return [bootstrap_ctx.org_id]
+            report_background_success("lineage-gc-org-discovery")
+            return discovered
 
         storage = getattr(bootstrap_ctx, "storage", None)
         org_ids: list[str] = []
@@ -364,6 +369,7 @@ class LineageGCScheduler(ThreadedScheduler):
             )
             self._record_tick_failure()
             return
+        report_background_success(f"lineage-gc:{org_id}")
 
         # One pass per project, not one per org. Everything below writes
         # project-scoped tables; with no project bound the enterprise row-level
@@ -382,7 +388,7 @@ class LineageGCScheduler(ThreadedScheduler):
             )
             try:
                 with bind_work_scope(scope):
-                    self._sweep_project_data(org_id, ctx.storage, cfg)
+                    self._sweep_project_data(org_id, ctx.storage, cfg, project_id)
             except WorkScopeError:
                 # A project that vanished between enumeration and binding.
                 # Escalate and keep going: letting this out of the loop would
@@ -434,6 +440,7 @@ class LineageGCScheduler(ThreadedScheduler):
             # run at all. That is the silence this whole change exists to remove.
             self._record_tick_failure()
             return []
+        report_background_success(f"lineage-gc-projects:{org_id}")
         if not project_ids:
             # NOT a fallback to one unscoped pass. Under project row-level
             # policies an unscoped sweep matches nothing anyway, so the fallback
@@ -449,7 +456,11 @@ class LineageGCScheduler(ThreadedScheduler):
         return project_ids
 
     def _sweep_project_data(
-        self, org_id: str, storage: BaseStorage, cfg: Config
+        self,
+        org_id: str,
+        storage: BaseStorage,
+        cfg: Config,
+        project_id: str | None = None,
     ) -> None:
         """Run the Class A and Class B sweeps for the bound project.
 
@@ -459,7 +470,14 @@ class LineageGCScheduler(ThreadedScheduler):
             org_id (str): Org being swept, for log/anomaly attribution.
             storage (BaseStorage): The org's storage, already known non-None.
             cfg (Config): The org config resolved once by ``_sweep_org``.
+            project_id (str | None): The bound project; None for the single
+                unscoped OSS pass.
         """
+        # Failure streaks are per (org, project): this runs once per project
+        # each tick, so an org-wide scope would count one failing project N
+        # times per tick and let a healthy sibling clear its streak. Passed in
+        # rather than read from the bound scope, which is inert in OSS.
+        unit = f"{org_id}:{project_id}"
         # Class A: profile expiry sweep (requires PII/grace sign-off; gated on
         # lineage_gc.enabled independently of Class B).
         if cfg.lineage_gc.enabled:
@@ -485,10 +503,12 @@ class LineageGCScheduler(ThreadedScheduler):
                     logger,
                     "lineage_expiry_sweep_failed",
                     exc,
-                    scope=f"lineage-expiry-sweep:{org_id}",
+                    scope=f"lineage-expiry-sweep:{unit}",
                     org_id=org_id,
                 )
                 self._record_tick_failure()
+            else:
+                report_background_success(f"lineage-expiry-sweep:{unit}")
 
             # Tombstone GC: each entity type is independent within the loop.
             try:
@@ -520,10 +540,12 @@ class LineageGCScheduler(ThreadedScheduler):
                     logger,
                     "lineage_gc_tombstone_gc_failed",
                     exc,
-                    scope=f"lineage-tombstone-gc:{org_id}",
+                    scope=f"lineage-tombstone-gc:{unit}",
                     org_id=org_id,
                 )
                 self._record_tick_failure()
+            else:
+                report_background_success(f"lineage-tombstone-gc:{unit}")
 
         # Class B: direct-delete of expired plain rows (no audit/grace
         # obligation; independent of lineage_gc).  Each sweep is isolated so
@@ -556,11 +578,13 @@ class LineageGCScheduler(ThreadedScheduler):
                         logger,
                         "class_b_reclaim_failed",
                         exc,
-                        scope=f"lineage-class-b:{org_id}:{method_name}",
+                        scope=f"lineage-class-b:{unit}:{method_name}",
                         org_id=org_id,
                         method=method_name,
                     )
                     self._record_tick_failure()
+                else:
+                    report_background_success(f"lineage-class-b:{unit}:{method_name}")
 
         # Class C: row-count retention caps. UNGATED -- the caps are env-driven
         # and always in force, so this block has no config flag of its own, and
@@ -670,6 +694,8 @@ class LineageGCScheduler(ThreadedScheduler):
                     sweep=sweep_id,
                 )
                 self._record_tick_failure()
+            else:
+                report_background_success(f"lineage-per-org-sweep:{org_id}:{sweep_id}")
 
     def _run_global_sweeps(self, cfg: object) -> None:
         """Invoke each registered global sweep once, gated on expiry_reclamation.
@@ -686,12 +712,12 @@ class LineageGCScheduler(ThreadedScheduler):
             return
         now = int(time.time())
         for sweep in _global_sweep_hooks:
+            sweep_id = getattr(sweep, "__qualname__", repr(sweep))
             try:
                 deleted = sweep(now)
                 if deleted:
                     logger.info("event=global_sweep deleted=%d", deleted)
             except Exception as exc:
-                sweep_id = getattr(sweep, "__qualname__", repr(sweep))
                 capture_anomaly("lineage.global_sweep.failed", sweep=sweep_id)
                 report_background_failure(
                     logger,
@@ -701,17 +727,19 @@ class LineageGCScheduler(ThreadedScheduler):
                     sweep=sweep_id,
                 )
                 self._record_tick_failure()
+            else:
+                report_background_success(f"lineage-global-sweep:{sweep_id}")
 
     def _run_always_global_sweeps(self) -> None:
         """Invoke each applicability-owning global sweep once per elected tick."""
         now = int(time.time())
         for sweep in _always_global_sweep_hooks:
+            sweep_id = getattr(sweep, "__qualname__", repr(sweep))
             try:
                 processed = sweep(now)
                 if processed:
                     logger.info("event=always_global_sweep processed=%d", processed)
             except Exception as exc:
-                sweep_id = getattr(sweep, "__qualname__", repr(sweep))
                 capture_anomaly("lineage.always_global_sweep.failed", sweep=sweep_id)
                 report_background_failure(
                     logger,
@@ -721,6 +749,8 @@ class LineageGCScheduler(ThreadedScheduler):
                     sweep=sweep_id,
                 )
                 self._record_tick_failure()
+            else:
+                report_background_success(f"lineage-always-global-sweep:{sweep_id}")
 
     def _record_tick_failure(self) -> None:
         """Mark this tick as having failed work, from any fan-out worker."""
@@ -789,9 +819,11 @@ class LineageGCScheduler(ThreadedScheduler):
             self._run_global_sweeps(cfg)
         except Exception as exc:
             report_background_failure(
-                logger, "lineage_gc_scheduler_tick_failed", exc, scope="lineage-gc"
+                logger, "lineage_gc_scheduler_tick_failed", exc, scope="lineage-gc-tick"
             )
             self._record_tick_failure()
+        else:
+            report_background_success("lineage-gc-tick")
         return self._next_interval(poll_interval)
 
 
