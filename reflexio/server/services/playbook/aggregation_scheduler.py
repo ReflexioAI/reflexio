@@ -53,6 +53,10 @@ def aggregation_min_interval_seconds() -> int:
         return 3600
 
 
+class _FinalizationReportedError(Exception):
+    """Finalization failed and was already reported under its own scope."""
+
+
 class AggregationLeaseHeartbeat:
     def __init__(
         self,
@@ -194,11 +198,16 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
 
         Returns:
             bool | None: None when aggregation is off or unsupported for this
-                context, so no storage work was attempted; False when a claimed
-                run failed (or was deferred) and the failure was reported and
-                swallowed here; True when the storage work ran and succeeded,
-                including a claim that found nothing due. Only True may end the
-                caller's org-level failure streak.
+                context, so no storage work was attempted. True when the
+                org-level work -- configuration, repair and the claim, which
+                are what the caller's org scope counts -- succeeded, including
+                a claim that found nothing due. The claimed run and its
+                finalization are separate units with their own scopes,
+                reported here, so their outcome does not decide this value.
+
+        Raises:
+            _FinalizationReportedError: Finalization failed after being reported
+                under its own scope; the caller backs off without reporting.
         """
         self._active_stage = "configuration"
         storage = context.storage
@@ -351,7 +360,11 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
             # skips the recompute, releases the lease and schedules a retry.
             after = storage.get_playbook_aggregation_backlog(claim.agent_version)
             success = True
-            report_background_success(run_scope)
+            # A run can also return normally having swallowed per-cluster
+            # generation failures (logged at ERROR by the aggregator); that is
+            # a partial failure, not a completed run, so it ends no streak.
+            if not result.get("retryable_failures"):
+                report_background_success(run_scope)
         except TimeoutError:
             logger.warning(
                 "event=playbook_aggregation_progress state=deferred org_id=%s "
@@ -374,14 +387,35 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
             self._active_stage = "finalization"
             heartbeat.stop()
             active_claim = heartbeat.claim
-            finished = storage.finish_playbook_aggregation_claim(
-                active_claim,
-                success=success,
-                retry_after_seconds=AGGREGATION_RETRY_SECONDS,
-                backlog_retry_after_seconds=AGGREGATION_BACKLOG_RETRY_SECONDS,
-                min_interval_seconds=aggregation_min_interval_seconds(),
-                backlog=after if success else None,
+            # Finalization is its own unit: it runs (and is retried) whether
+            # or not the run succeeded, so its streak must reset when IT
+            # succeeds -- not when an unrelated run does.
+            finalize_scope = (
+                f"playbook-aggregation-finalize:{org_id}:{project_id}:"
+                f"{claim.agent_version}"
             )
+            try:
+                finished = storage.finish_playbook_aggregation_claim(
+                    active_claim,
+                    success=success,
+                    retry_after_seconds=AGGREGATION_RETRY_SECONDS,
+                    backlog_retry_after_seconds=AGGREGATION_BACKLOG_RETRY_SECONDS,
+                    min_interval_seconds=aggregation_min_interval_seconds(),
+                    backlog=after if success else None,
+                )
+            except Exception as exc:
+                report_background_failure(
+                    logger,
+                    "playbook_aggregation_scheduler_org_failed",
+                    exc,
+                    scope=finalize_scope,
+                    org_id=org_id,
+                    project_id=project_id,
+                    stage="finalization",
+                    retry_after_seconds=_REPAIR_INTERVAL_SECONDS,
+                )
+                raise _FinalizationReportedError from exc
+            report_background_success(finalize_scope)
             if not finished:
                 logger.warning(
                     "event=playbook_aggregation_progress state=lease_lost org_id=%s "
@@ -412,7 +446,7 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
                     result.get("retryable_failures", 0),
                     result.get("embedding_pending", 0),
                 )
-        return success
+        return True
 
     def _defer_scope(self, context: RequestContext, delay: float) -> None:
         if self._on_scope_deferred is None:
@@ -458,6 +492,12 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
                 org_scope = f"playbook-aggregation-org:{org_id}:{scope[1]}"
                 try:
                     succeeded = self._run_context(context)
+                except _FinalizationReportedError:
+                    # Reported under its own scope inside `_run_context`.
+                    self._retry_after[scope] = (
+                        time.monotonic() + _REPAIR_INTERVAL_SECONDS
+                    )
+                    self._defer_scope(context, _REPAIR_INTERVAL_SECONDS)
                 except Exception as exc:
                     self._retry_after[scope] = (
                         time.monotonic() + _REPAIR_INTERVAL_SECONDS
@@ -475,9 +515,7 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
                     )
                 else:
                     self._retry_after.pop(scope, None)
-                    # A run that failed inside `_run_context` was reported and
-                    # swallowed under its own scope; clearing this one then
-                    # would reset an org streak the context did not complete.
+                    # None: nothing was attempted, so nothing succeeded.
                     if succeeded:
                         report_background_success(org_scope)
         except Exception as exc:

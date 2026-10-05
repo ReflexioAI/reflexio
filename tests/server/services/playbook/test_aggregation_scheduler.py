@@ -798,7 +798,7 @@ def _claimed_storage() -> MagicMock:
     return storage
 
 
-def test_swallowed_run_failure_does_not_clear_the_org_streak(
+def test_run_org_and_finalize_streaks_each_end_on_their_own_success(
     monkeypatch, transient_failure_classifier
 ) -> None:
     from reflexio.server import background_work
@@ -822,16 +822,15 @@ def test_swallowed_run_failure_does_not_clear_the_org_streak(
     scheduler._run_once()
     assert set(background_work._streaks) == {org_scope}
 
-    # Tick 2: the claim works but the run fails and is swallowed in
-    # `_run_context`. The org unit did not complete, so its streak survives.
+    # Tick 2: the claim works (the org unit recovered) but the run fails and
+    # is swallowed in `_run_context`: only the run's own streak grows.
     clock[0] += aggregation_scheduler._REPAIR_INTERVAL_SECONDS + 1
     storage.claim_due_playbook_aggregation.side_effect = None
     storage.get_playbook_aggregation_backlog.side_effect = transient_failure_classifier(
         "SSL connection has been closed unexpectedly"
     )
     scheduler._run_once()
-    assert set(background_work._streaks) == {org_scope, run_scope}
-    assert background_work._streaks[org_scope][0] == 1
+    assert set(background_work._streaks) == {run_scope}
 
     # Tick 3: the run succeeds; both units are healthy again.
     storage.get_playbook_aggregation_backlog.side_effect = None
@@ -842,7 +841,7 @@ def test_swallowed_run_failure_does_not_clear_the_org_streak(
     assert background_work._streaks == {}
 
 
-def test_run_and_org_failures_use_distinct_scopes(
+def test_run_and_finalize_failures_use_distinct_scopes(
     monkeypatch, caplog, transient_failure_classifier
 ) -> None:
     monkeypatch.setattr(aggregation_scheduler.time, "monotonic", lambda: 1000.0)
@@ -870,7 +869,7 @@ def test_run_and_org_failures_use_distinct_scopes(
     ]
     assert scopes == [
         "playbook-aggregation-run:org-1:None:v1",
-        "playbook-aggregation-org:org-1:None",
+        "playbook-aggregation-finalize:org-1:None:v1",
     ]
 
 
@@ -922,3 +921,84 @@ def test_an_unavailable_inventory_does_not_clear_the_inventory_streak(
     inventory[0] = []
     scheduler._run_once()
     assert scope not in background_work._streaks
+
+
+def test_finalization_streak_resets_when_finalization_succeeds_whatever_the_run(
+    monkeypatch, transient_failure_classifier
+) -> None:
+    """Codex round 3: a recovered finalization must reset its own streak even
+    while the run itself keeps being deferred (limiter saturation)."""
+    from reflexio.server import background_work
+
+    clock = [1000.0]
+    monkeypatch.setattr(aggregation_scheduler.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        aggregation_scheduler.AggregationLeaseHeartbeat, "start", lambda _: None
+    )
+
+    def saturated(**_kwargs):
+        raise TimeoutError("limiter saturated")
+
+    monkeypatch.setattr(aggregation_scheduler, "run_with_operation_limit", saturated)
+    storage = _claimed_storage()
+    storage.get_playbook_aggregation_invalidations.return_value = []
+    monkeypatch.setattr(
+        "reflexio.lib.generation_client.create_generation_litellm_client",
+        lambda _context: MagicMock(),
+    )
+    monkeypatch.setattr(aggregation_scheduler, "PlaybookAggregator", MagicMock())
+    scheduler = aggregation_scheduler.PlaybookAggregationScheduler(
+        context_provider=lambda: [_context(storage)]
+    )
+    finalize_scope = "playbook-aggregation-finalize:org-1:None:v1"
+
+    storage.finish_playbook_aggregation_claim.side_effect = (
+        transient_failure_classifier("dropped")
+    )
+    scheduler._run_once()
+    assert set(background_work._streaks) == {finalize_scope}
+
+    clock[0] += aggregation_scheduler._REPAIR_INTERVAL_SECONDS + 1
+    storage.finish_playbook_aggregation_claim.side_effect = None
+    storage.finish_playbook_aggregation_claim.return_value = True
+    scheduler._run_once()
+    assert background_work._streaks == {}
+
+
+def test_a_run_with_swallowed_cluster_failures_does_not_end_the_run_streak(
+    monkeypatch, transient_failure_classifier
+) -> None:
+    from reflexio.server import background_work
+
+    monkeypatch.setattr(
+        aggregation_scheduler.AggregationLeaseHeartbeat, "start", lambda _: None
+    )
+    monkeypatch.setattr(
+        aggregation_scheduler,
+        "run_with_operation_limit",
+        lambda **_kwargs: {"retryable_failures": 2},
+    )
+    monkeypatch.setattr(
+        "reflexio.lib.generation_client.create_generation_litellm_client",
+        lambda _context: MagicMock(),
+    )
+    monkeypatch.setattr(aggregation_scheduler, "PlaybookAggregator", MagicMock())
+    storage = _claimed_storage()
+    storage.get_playbook_aggregation_invalidations.return_value = []
+    storage.get_playbook_aggregation_backlog.return_value = PlaybookAggregationBacklog(
+        0, 0, 0
+    )
+    run_scope = "playbook-aggregation-run:org-1:None:v1"
+    _seed_streak(run_scope, transient_failure_classifier("dropped"))
+    scheduler = aggregation_scheduler.PlaybookAggregationScheduler(
+        context_provider=lambda: [_context(storage)]
+    )
+
+    scheduler._run_once()
+    assert run_scope in background_work._streaks
+
+    monkeypatch.setattr(
+        aggregation_scheduler, "run_with_operation_limit", lambda **_kwargs: {}
+    )
+    scheduler._run_once()
+    assert run_scope not in background_work._streaks
