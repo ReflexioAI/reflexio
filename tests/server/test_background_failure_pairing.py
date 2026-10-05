@@ -25,7 +25,11 @@ What this guard enforces, per module under ``reflexio/server``:
    resolved, and anything else fails because the guard could not see what it
    is called with: assigning the function to a name, passing it elsewhere, or
    ``functools.partial`` (a partial's bound ``scope=`` can be overridden where
-   it is invoked, so the scope the guard reads is not the one reported).
+   it is invoked, so the scope the guard reads is not the one reported);
+6. neither function name appears as a string constant, which is how
+   ``getattr(module, "report_background_failure")`` would reach it without a
+   reference the walk can see. Import statements carry names, not strings, so
+   they are unaffected.
 
 Non-goals: it cannot prove the success call sits where the unit completes, or
 that the unit is retried at all (a success in the wrong branch passes; a
@@ -73,6 +77,7 @@ class _Call:
 class _Module:
     calls: list[_Call]
     stray_references: list[int]  # lines of references that are not calls
+    string_mentions: list[int]  # lines of string constants naming a function
 
 
 def _aliases(tree: ast.Module) -> dict[str, str]:
@@ -290,7 +295,14 @@ def _scan(source: str) -> _Module:
         and _canonical(node, aliases) is not None
         and id(node) not in accounted
     ]
-    return _Module(calls=calls, stray_references=stray)
+    strings = [
+        node.lineno
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and node.value.strip() in _CANONICAL
+    ]
+    return _Module(calls=calls, stray_references=stray, string_mentions=strings)
 
 
 def _violations(source: str) -> list[str]:
@@ -300,6 +312,10 @@ def _violations(source: str) -> list[str]:
         "functions that is not a direct call (partial included) -- the guard "
         "cannot see what it is called with"
     ] * bool(module.stray_references)
+    problems += [
+        f"lines {module.string_mentions}: a failure-policy function named in a "
+        "string (getattr and friends) -- the guard cannot see that call"
+    ] * bool(module.string_mentions)
     problems += [
         f"line {c.line}: {c.kind} scope {c.expression!r} has no resolvable shape "
         "with a constant prefix (use a literal, an f-string or a single assignment)"
@@ -356,9 +372,20 @@ def test_every_failure_scope_is_paired_and_unique() -> None:
 
 
 def _name_tokens(source: str, names: set[str]) -> int:
-    """Count identifier tokens in ``names``, ignoring strings and comments."""
-    tokens = tokenize.generate_tokens(io.StringIO(source).readline)
-    return sum(tok.type == tokenize.NAME and tok.string in names for tok in tokens)
+    """Count identifier tokens in ``names`` plus string literals naming either
+    function, ignoring comments."""
+    count = 0
+    for tok in tokenize.generate_tokens(io.StringIO(source).readline):
+        if tok.type == tokenize.NAME and tok.string in names:
+            count += 1
+        elif tok.type == tokenize.STRING:
+            try:
+                value = ast.literal_eval(tok.string)
+            except (ValueError, SyntaxError):
+                continue
+            if isinstance(value, str) and value.strip() in _CANONICAL:
+                count += 1
+    return count
 
 
 def test_the_scan_accounts_for_every_mention() -> None:
@@ -382,7 +409,12 @@ def test_the_scan_accounts_for_every_mention() -> None:
             if alias.name in _CANONICAL
         )
         module = _scan(source)
-        accounted = imported + len(module.calls) + len(module.stray_references)
+        accounted = (
+            imported
+            + len(module.calls)
+            + len(module.stray_references)
+            + len(module.string_mentions)
+        )
         assert _name_tokens(source, set(aliases)) == accounted, path
         total_calls += sum(c.kind == _FAILURE for c in module.calls)
     assert total_calls >= 25  # the floor: the #582 sites plus the converted loops
@@ -507,3 +539,13 @@ def test_a_reference_that_is_not_a_call_is_reported() -> None:
         "    report_background_success(f'job:{org}')\n"
     )
     assert any("not a direct call" in p for p in _violations(source))
+
+
+def test_getattr_by_name_is_reported() -> None:
+    source = (
+        "import reflexio.server.background_work as bw\n"
+        "def tick(exc):\n"
+        "    fail = getattr(bw, 'report_background_failure')\n"
+        "    fail(log, 'e', exc, scope='x')\n"
+    )
+    assert any("named in a string" in p for p in _violations(source))
