@@ -9,7 +9,13 @@ tick that fails is retried by the next tick, so a connection dropped while a
 deployment replaces tasks loses nothing; reporting it at ERROR pages for a
 non-event. :func:`report_background_failure` is the single place that decides
 between a WARNING (transient, retried) and an ERROR (a bug, or an outage that
-has outlasted a rollout).
+has outlasted a rollout), and :func:`report_background_success` ends a streak.
+
+Escalation counts CONSECUTIVE failures of one unit of work, reset by that
+unit's next success -- the shape of a Kubernetes ``failureThreshold`` or a
+circuit breaker -- rather than measuring a time window. A time window has to
+assume how soon the failed work is retried, and no single assumption holds
+across workers that back off, run daily, or wait behind other orgs' work.
 """
 
 from __future__ import annotations
@@ -25,30 +31,28 @@ _background: ContextVar[bool] = ContextVar("reflexio_background_work", default=F
 
 _policy_logger = logging.getLogger(__name__)
 
-# A rollout drop lasts seconds; an outage lasts minutes. Transient failures for
-# one scope that keep recurring (gaps under the episode gap) for the escalation
-# window are reported at ERROR, so a real outage still pages.
-#
-# The gap must exceed the SLOWEST retry cadence plus its run time, or a slow
-# scheduler resets its episode on every failure and never escalates: lineage GC
-# retries 300s after a failed tick, aggregation backs a scope off for 300s, and
-# Braintrust polls every 900s. 20 minutes covers all three (a 900s poller
-# escalates on its second consecutive failure) while separate rollouts, hours
-# apart, still start fresh episodes. Cost: two rollouts under 20 minutes apart
-# that both hit one scope can merge into a single ERROR.
-_ESCALATE_AFTER_SECONDS = 600.0
-_EPISODE_GAP_SECONDS = 1200.0
+# A streak escalates only when BOTH hold: enough consecutive failures, and the
+# streak has lasted long enough. The count keeps a slow job from paging on one
+# blip; the duration keeps a fast loop (5s) from paging while the pooler
+# restarts. Measured on production rollouts 2026-09-29..10-03: the longest
+# burst of in-scope failures on one task lasted 88s, so 300s is ~3.4x that.
+_ESCALATE_AFTER_FAILURES = 3
+_ESCALATE_AFTER_SECONDS = 300.0
 _MAX_CHAIN_LINKS = 32
 _MAX_MESSAGE_CHARS = 200
-_MAX_TRACKED_SCOPES = 1024
+# Successes remove entries, so this bounds scopes failing AT ONCE. Past it a
+# failure is untracked and reported at ERROR: that many failing units is an
+# outage, and failing loud is the safe direction.
+_MAX_TRACKED_SCOPES = 4096
 
 # Patched by tests; the policy below reads time only through this name.
 _monotonic: Callable[[], float] = time.monotonic
 
 _classifier: Callable[[BaseException], bool] | None = None
 _classifier_failure_warned = False
-_episodes: dict[str, tuple[float, float]] = {}
-_episodes_lock = threading.Lock()
+# scope -> (consecutive transient failures, monotonic time of the first one)
+_streaks: dict[str, tuple[int, float]] = {}
+_streaks_lock = threading.Lock()
 
 
 def is_background_work() -> bool:
@@ -79,38 +83,34 @@ def configure_transient_failure_classifier(
     Args:
         fn (Callable[[BaseException], bool] | None): Returns True when one
             exception (a single link, not its chain) is a transient
-            infrastructure failure that the next tick will retry.
+            infrastructure failure that the next attempt will retry.
     """
     global _classifier, _classifier_failure_warned
     _classifier = fn
     _classifier_failure_warned = False
 
 
-def _exception_chain(exc: BaseException) -> Iterator[BaseException]:
-    """Yield ``exc`` and every exception reachable through cause/context.
+def _cause_chain(exc: BaseException) -> Iterator[BaseException]:
+    """Yield ``exc`` and the exceptions it was deliberately raised ``from``.
 
-    Bounded and cycle-safe, because ``__context__`` graphs can loop.
+    Only ``__cause__`` is followed. ``__context__`` is set whenever an
+    exception is raised while another is being handled, so following it would
+    classify a BUG raised during recovery from a dropped connection as the
+    dropped connection. A wrapper that means "this is that failure" says so
+    with ``raise ... from``. Bounded and cycle-safe.
     """
     seen: set[int] = set()
-    pending = [exc]
-    while pending and len(seen) < _MAX_CHAIN_LINKS:
-        current = pending.pop(0)
+    current: BaseException | None = exc
+    while current is not None and len(seen) < _MAX_CHAIN_LINKS:
         if id(current) in seen:
-            continue
+            return
         seen.add(id(current))
         yield current
-        pending.extend(
-            linked
-            for linked in (current.__cause__, current.__context__)
-            if linked is not None
-        )
+        current = current.__cause__
 
 
 def is_transient_failure(exc: BaseException) -> bool:
-    """Whether any link in ``exc``'s chain is a transient infrastructure failure.
-
-    The chain is walked because workers routinely wrap a driver error in their
-    own exception; the wrapper alone says nothing about the cause.
+    """Whether ``exc``, or what it was raised ``from``, is a transient failure.
 
     Args:
         exc (BaseException): The failure a worker caught.
@@ -123,7 +123,7 @@ def is_transient_failure(exc: BaseException) -> bool:
     classifier = _classifier
     if classifier is None:
         return False
-    for link in _exception_chain(exc):
+    for link in _cause_chain(exc):
         try:
             if classifier(link):
                 return True
@@ -139,37 +139,37 @@ def is_transient_failure(exc: BaseException) -> bool:
     return False
 
 
-def _transient_for_seconds(scope: str) -> float:
-    """Record one transient failure for ``scope``; return how long it has lasted.
-
-    Process-local on purpose: the rollout noise comes from the task that is
-    about to exit, so state that dies with the process resets at the same rate
-    as the condition it tracks.
-
-    Bounded: a new scope arriving at capacity first prunes ended episodes, and
-    if none have ended it is not tracked (it reports as a fresh episode). An
-    outage that wide is already escalating through the scopes being tracked.
-    """
+def _extend_streak(scope: str) -> tuple[int, float] | None:
+    """Count one more consecutive transient failure; None when untracked."""
     now = _monotonic()
-    with _episodes_lock:
-        if scope not in _episodes and len(_episodes) >= _MAX_TRACKED_SCOPES:
-            for stale in [
-                key
-                for key, (_, seen) in _episodes.items()
-                if now - seen > _EPISODE_GAP_SECONDS
-            ]:
-                del _episodes[stale]
-            if len(_episodes) >= _MAX_TRACKED_SCOPES:
-                return 0.0
-        first_seen, last_seen = _episodes.get(scope, (now, now))
-        if now - last_seen > _EPISODE_GAP_SECONDS:
-            first_seen = now
-        _episodes[scope] = (first_seen, now)
-        return now - first_seen
+    with _streaks_lock:
+        current = _streaks.get(scope)
+        if current is None:
+            if len(_streaks) >= _MAX_TRACKED_SCOPES:
+                return None
+            current = (0, now)
+        count, first = current[0] + 1, current[1]
+        _streaks[scope] = (count, first)
+        return count, now - first
 
 
-def _one_line(exc: BaseException) -> str:
-    text = " ".join(str(exc).split())
+def report_background_success(scope: str) -> None:
+    """End ``scope``'s failure streak: the unit of work just succeeded.
+
+    Call it where the SAME unit whose failure is reported under ``scope``
+    completes -- not where an enclosing loop merely carries on. Without it a
+    streak only grows, so unrelated blips days apart would add up to a page.
+
+    Args:
+        scope (str): The scope passed to :func:`report_background_failure`.
+    """
+    if scope in _streaks:
+        with _streaks_lock:
+            _streaks.pop(scope, None)
+
+
+def _one_line(text: str) -> str:
+    text = " ".join(text.split())
     if len(text) > _MAX_MESSAGE_CHARS:
         return text[: _MAX_MESSAGE_CHARS - 3] + "..."
     return text
@@ -181,55 +181,72 @@ def report_background_failure(
     exc: BaseException,
     *,
     scope: str,
+    detail: Callable[[BaseException], str] | None = None,
     **fields: object,
 ) -> None:
     """Log a caught background-work failure at the level it deserves.
 
     - Not transient: ERROR with the traceback, as ``logger.exception`` did.
-    - Transient: one WARNING line without a traceback. The next tick retries,
-      so a connection dropped during a rollout is visible but does not page.
-    - Transient for ``scope`` continuously for ``_ESCALATE_AFTER_SECONDS``
-      (gaps under ``_EPISODE_GAP_SECONDS``): ERROR with the traceback, marked
-      ``escalated=true``, so an outage that outlasts a rollout still pages.
+    - Transient: one WARNING line without a traceback; the streak for
+      ``scope`` grows until :func:`report_background_success` ends it.
+    - Transient, and the streak has reached ``_ESCALATE_AFTER_FAILURES``
+      failures over at least ``_ESCALATE_AFTER_SECONDS``: ERROR with the
+      traceback, marked ``escalated=true``, so a real outage still pages.
 
     Args:
         logger (logging.Logger): The worker's own logger.
         event (str): The worker's event name, e.g. ``lineage_gc_org_failed``.
         exc (BaseException): The caught failure.
-        scope (str): Stable identity of the failing unit (worker plus org or
-            project); escalation is tracked per scope.
+        scope (str): Stable identity of the unit whose next attempt retries
+            this work (worker plus org, project, ...).
+        detail (Callable[[BaseException], str] | None): Renders ``exc`` for
+            the log line. When given, it replaces ``str(exc)`` everywhere and
+            no traceback is attached (a traceback prints the message), for
+            handlers whose exceptions can carry credentials or tenant data.
         **fields (object): Extra ``key=value`` context for the log line.
     """
-    detail = "".join(f" {key}={value}" for key, value in fields.items())
+    context = "".join(f" {key}={value}" for key, value in fields.items())
+    exc_info: BaseException | None = None if detail is not None else exc
+    rendered = f" {_one_line(detail(exc))}" if detail is not None else ""
     if not is_transient_failure(exc):
         logger.error(
-            "event=%s scope=%s%s",
+            "event=%s scope=%s%s%s",
             event,
             scope,
-            detail,
-            exc_info=exc,
+            rendered,
+            context,
+            exc_info=exc_info,
             stacklevel=2,
         )
         return
-    age = _transient_for_seconds(scope)
-    if age >= _ESCALATE_AFTER_SECONDS:
+    streak = _extend_streak(scope)
+    if streak is None or (
+        streak[0] >= _ESCALATE_AFTER_FAILURES and streak[1] >= _ESCALATE_AFTER_SECONDS
+    ):
+        count, seconds = streak if streak is not None else (0, 0.0)
         logger.error(
-            "event=%s transient=true escalated=true transient_for_seconds=%d "
-            "scope=%s%s",
+            "event=%s transient=true escalated=true consecutive_failures=%d "
+            "streak_seconds=%d tracked=%s scope=%s%s%s",
             event,
-            int(age),
+            count,
+            int(seconds),
+            "false" if streak is None else "true",
             scope,
-            detail,
-            exc_info=exc,
+            rendered,
+            context,
+            exc_info=exc_info,
             stacklevel=2,
         )
         return
+    message = detail(exc) if detail is not None else str(exc)
     logger.warning(
-        "event=%s transient=true scope=%s error_class=%s error=%s%s",
+        "event=%s transient=true consecutive_failures=%d scope=%s "
+        "error_class=%s error=%s%s",
         event,
+        streak[0],
         scope,
         type(exc).__name__,
-        _one_line(exc),
-        detail,
+        _one_line(message),
+        context,
         stacklevel=2,
     )
