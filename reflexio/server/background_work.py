@@ -219,7 +219,11 @@ def report_background_failure(
         event (str): The worker's event name, e.g. ``lineage_gc_org_failed``.
         exc (BaseException): The caught failure.
         scope (str): Stable identity of the unit whose next attempt retries
-            this work (worker plus org, project, ...).
+            this work (worker plus org, project, ...). Parts are joined with
+            ``:``, so they must not themselves contain ``:`` -- two units
+            would share a streak. Enterprise ids cannot (integer org ids,
+            ``prj_[A-Za-z0-9_-]`` project ids), and without a registered
+            classifier, as in plain OSS, no streak is ever kept.
         detail (Callable[[BaseException], str] | None): Renders ``exc`` for
             the log line. When given, it replaces ``str(exc)`` everywhere and
             no traceback is attached (a traceback prints the message), for

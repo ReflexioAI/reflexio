@@ -21,10 +21,11 @@ What this guard enforces, per module under ``reflexio/server``:
    with an identical scope;
 4. every scope resolves to a shape with a non-empty constant prefix. A scope
    held in a local or ``self`` attribute is followed to its single assignment;
-5. every reference to either function is a direct call or the first argument
-   of ``functools.partial`` -- import aliases are resolved, and anything else
-   (assigning the function to a name, passing it elsewhere) fails, because the
-   guard could not see what it is called with.
+5. every reference to either function is a direct call -- import aliases are
+   resolved, and anything else fails because the guard could not see what it
+   is called with: assigning the function to a name, passing it elsewhere, or
+   ``functools.partial`` (a partial's bound ``scope=`` can be overridden where
+   it is invoked, so the scope the guard reads is not the one reported).
 
 Non-goals: it cannot prove the success call sits where the unit completes, or
 that the unit is retried at all (a success in the wrong branch passes; a
@@ -91,12 +92,6 @@ def _canonical(expr: ast.expr, aliases: dict[str, str]) -> str | None:
     if isinstance(expr, ast.Attribute) and expr.attr in _CANONICAL:
         return expr.attr
     return None
-
-
-def _is_partial(func: ast.expr) -> bool:
-    return (isinstance(func, ast.Name) and func.id == "partial") or (
-        isinstance(func, ast.Attribute) and func.attr == "partial"
-    )
 
 
 def _scope_arg(
@@ -275,9 +270,6 @@ def _scan(source: str) -> _Module:
         kind = _canonical(node.func, aliases)
         args, keywords = node.args, node.keywords
         reference: ast.expr = node.func
-        if kind is None and _is_partial(node.func) and node.args:
-            kind = _canonical(node.args[0], aliases)
-            args, reference = node.args[1:], node.args[0]
         if kind is None:
             continue
         accounted.add(id(reference))
@@ -305,7 +297,7 @@ def _violations(source: str) -> list[str]:
     module = _scan(source)
     problems = [
         f"lines {module.stray_references}: a reference to the failure-policy "
-        "functions that is neither a call nor partial(fn, ...) -- the guard "
+        "functions that is not a direct call (partial included) -- the guard "
         "cannot see what it is called with"
     ] * bool(module.stray_references)
     problems += [
@@ -373,7 +365,7 @@ def test_the_scan_accounts_for_every_mention() -> None:
     """Selection check, by a second route that does not share the AST walk.
 
     Every identifier token naming either function or one of its aliases must
-    be an import, a call, a partial target or a stray reference (which the
+    be an import, a call or a stray reference (which the
     pairing test then rejects). A mention the walk skipped would leave the
     token count higher than what the scan accounted for.
     """
@@ -496,16 +488,16 @@ def test_aliased_import_is_seen() -> None:
     assert any("has no report_background_success" in p for p in _violations(source))
 
 
-def test_partial_is_seen() -> None:
+def test_partial_is_rejected_even_with_a_matching_success() -> None:
+    """A partial's bound scope can be overridden at the call, so it is refused."""
     source = (
         "import functools\n"
-        "def tick(org):\n"
-        "    report = functools.partial(\n"
-        "        report_background_failure, scope=f'job:{org}'\n"
-        "    )\n"
-        "    report(log, 'e', exc)\n"
+        "def tick(exc):\n"
+        "    fail = functools.partial(report_background_failure, scope='job:a')\n"
+        "    fail(log, 'event', exc, scope='job:b')\n"
+        "    report_background_success('job:a')\n"
     )
-    assert any("has no report_background_success" in p for p in _violations(source))
+    assert any("not a direct call" in p for p in _violations(source))
 
 
 def test_a_reference_that_is_not_a_call_is_reported() -> None:
@@ -514,4 +506,4 @@ def test_a_reference_that_is_not_a_call_is_reported() -> None:
         "    handlers = [report_background_failure]\n"
         "    report_background_success(f'job:{org}')\n"
     )
-    assert any("neither a call nor partial" in p for p in _violations(source))
+    assert any("not a direct call" in p for p in _violations(source))
