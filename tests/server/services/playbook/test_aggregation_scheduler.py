@@ -1084,3 +1084,56 @@ def test_org_streak_ends_once_the_claim_succeeds_even_if_finalization_fails(
 
     assert org_scope not in background_work._streaks
     assert "playbook-aggregation-finalize:org-1:None:v1" in background_work._streaks
+
+
+@pytest.mark.parametrize(
+    "partial",
+    [
+        {"skipped": "legacy cluster adoption pending"},
+        {"retryable_failures": 1},
+        {"cluster_fence_losses": 1},
+        {"embedding_pending": 3},
+    ],
+    ids=["skipped", "retryable", "fence-loss", "embedding-pending"],
+)
+def test_a_partial_or_blocked_run_never_ends_the_run_streak(
+    monkeypatch, caplog, transient_failure_classifier, partial
+) -> None:
+    """Codex round 6: escaping run failures alternating with runs that return
+    without doing their work (e.g. legacy adoption blocked on swallowed
+    embedding errors) must still escalate."""
+    from reflexio.server import background_work
+
+    clock = [1000.0]
+    monkeypatch.setattr(background_work, "_monotonic", lambda: clock[0])
+    monkeypatch.setattr(aggregation_scheduler.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        aggregation_scheduler.AggregationLeaseHeartbeat, "start", lambda _: None
+    )
+    storage = _claimed_storage()
+    storage.get_playbook_aggregation_backlog.return_value = PlaybookAggregationBacklog(
+        0, 0, 0
+    )
+    scheduler = aggregation_scheduler.PlaybookAggregationScheduler(
+        context_provider=lambda: [_context(storage)]
+    )
+    caplog.set_level(logging.WARNING, logger=aggregation_scheduler.logger.name)
+
+    for _ in range(3):
+        _run_the_aggregator(monkeypatch, storage, result={})
+        storage.get_playbook_aggregation_backlog.side_effect = (
+            transient_failure_classifier("dropped")
+        )
+        scheduler._run_once()  # the run fails and escapes
+        clock[0] += 100
+        storage.get_playbook_aggregation_backlog.side_effect = None
+        _run_the_aggregator(monkeypatch, storage, result=dict(partial))
+        scheduler._run_once()  # the run returns without doing its work
+        clock[0] += 100
+
+    levels = [
+        r.levelno
+        for r in caplog.records
+        if "scope=playbook-aggregation-run:" in r.getMessage()
+    ]
+    assert levels == [logging.WARNING, logging.WARNING, logging.ERROR]

@@ -42,6 +42,26 @@ AGGREGATION_INVALIDATION_BATCH_SIZE = 100
 _REPAIR_INTERVAL_SECONDS = 300.0
 
 
+# Result keys with which `PlaybookAggregator.run` reports that it returned
+# without fully doing its work. Any of them truthy means the run made partial
+# or no progress, so it is not evidence the run unit recovered:
+# - skipped: legacy cluster adoption pending (its embedding errors swallowed),
+#   operation already applied, no config, too few new playbooks, no changes;
+# - retryable_failures: per-cluster generation failures, logged at ERROR;
+# - cluster_fence_losses: clusters lost to a concurrent fence;
+# - embedding_pending: members deferred for want of a vector.
+_PARTIAL_RESULT_MARKERS = (
+    "skipped",
+    "retryable_failures",
+    "cluster_fence_losses",
+    "embedding_pending",
+)
+
+
+def _is_unqualified_success(result: dict[str, Any]) -> bool:
+    return not any(result.get(marker) for marker in _PARTIAL_RESULT_MARKERS)
+
+
 def aggregation_min_interval_seconds() -> int:
     raw = env_str("REFLEXIO_AGGREGATION_MIN_INTERVAL_SECONDS", "3600")
     try:
@@ -363,12 +383,12 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
             # skips the recompute, releases the lease and schedules a retry.
             after = storage.get_playbook_aggregation_backlog(claim.agent_version)
             success = True
-            # Only an aggregation that actually ran and completed ends the run
-            # streak. An invalidation-only pass (more than one batch pending)
-            # never ran the aggregator; a run that swallowed per-cluster
-            # generation failures (logged at ERROR by the aggregator) is a
-            # partial failure. Neither is evidence the run unit recovered.
-            if aggregated and not result.get("retryable_failures"):
+            # Only an aggregation that actually ran and fully completed ends
+            # the run streak. An invalidation-only pass (more than one batch
+            # pending) never ran the aggregator, and a run that returned with
+            # any `_PARTIAL_RESULT_MARKERS` set skipped or deferred work --
+            # possibly after swallowing the very failure this streak counts.
+            if aggregated and _is_unqualified_success(result):
                 report_background_success(run_scope)
         except TimeoutError:
             logger.warning(
