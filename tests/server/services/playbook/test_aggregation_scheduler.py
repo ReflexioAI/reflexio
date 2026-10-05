@@ -199,7 +199,9 @@ def test_lease_heartbeat_marks_renewal_exception_as_lost() -> None:
     claim = PlaybookAggregationClaim("v1", "owner", 7, 3, 10_000)
     storage = MagicMock()
     storage.renew_playbook_aggregation_claim.side_effect = RuntimeError("db down")
-    heartbeat = aggregation_scheduler.AggregationLeaseHeartbeat(storage, claim)
+    heartbeat = aggregation_scheduler.AggregationLeaseHeartbeat(
+        storage, claim, org_id="org-1", project_id=None
+    )
     heartbeat._stop.wait = MagicMock(return_value=False)
 
     heartbeat._run()
@@ -711,7 +713,9 @@ def test_lease_lost_to_a_dropped_connection_stays_transient(
     )
     monkeypatch.setattr(aggregation_scheduler, "AGGREGATION_LEASE_SECONDS", 0.03)
     caplog.set_level(logging.WARNING, logger=aggregation_scheduler.logger.name)
-    heartbeat = aggregation_scheduler.AggregationLeaseHeartbeat(storage, claim)
+    heartbeat = aggregation_scheduler.AggregationLeaseHeartbeat(
+        storage, claim, org_id="org-1", project_id=None
+    )
     heartbeat.start()
     assert heartbeat._thread is not None
     heartbeat._thread.join(timeout=5)
@@ -722,3 +726,149 @@ def test_lease_lost_to_a_dropped_connection_stays_transient(
     assert is_transient_failure(lost.value)
     renewals = [r for r in caplog.records if "renewal_failed" in r.getMessage()]
     assert [r.levelno for r in renewals] == [logging.WARNING]
+
+
+def test_heartbeat_scope_names_the_org_project_and_version(
+    caplog, transient_failure_classifier
+) -> None:
+    claim = PlaybookAggregationClaim("v1", "owner", 7, 3, 10_000)
+    storage = MagicMock()
+    storage.renew_playbook_aggregation_claim.side_effect = transient_failure_classifier(
+        "SSL connection has been closed unexpectedly"
+    )
+    caplog.set_level(logging.WARNING, logger=aggregation_scheduler.logger.name)
+    heartbeat = aggregation_scheduler.AggregationLeaseHeartbeat(
+        storage, claim, org_id="org-1", project_id="proj-a"
+    )
+    heartbeat._stop.wait = MagicMock(return_value=False)
+
+    heartbeat._run()
+
+    (record,) = [r for r in caplog.records if "renewal_failed" in r.getMessage()]
+    assert "scope=playbook-aggregation-heartbeat:org-1:proj-a:v1 " in (
+        record.getMessage()
+    )
+
+
+def test_heartbeat_renewal_ends_its_streak(transient_failure_classifier) -> None:
+    from reflexio.server import background_work
+
+    scope = "playbook-aggregation-heartbeat:org-1:proj-a:v1"
+    background_work.report_background_failure(
+        aggregation_scheduler.logger,
+        "playbook_aggregation_progress",
+        transient_failure_classifier("dropped"),
+        scope=scope,
+    )
+    other = "playbook-aggregation-heartbeat:org-2:proj-a:v1"
+    background_work.report_background_failure(
+        aggregation_scheduler.logger,
+        "playbook_aggregation_progress",
+        transient_failure_classifier("dropped"),
+        scope=other,
+    )
+    claim = PlaybookAggregationClaim("v1", "owner", 7, 3, 10_000)
+    storage = MagicMock()
+    storage.renew_playbook_aggregation_claim.return_value = claim
+    heartbeat = aggregation_scheduler.AggregationLeaseHeartbeat(
+        storage, claim, org_id="org-1", project_id="proj-a"
+    )
+    heartbeat._stop.wait = MagicMock(side_effect=[False, True])
+
+    heartbeat._run()
+
+    assert scope not in background_work._streaks
+    assert other in background_work._streaks
+
+
+def _claimed_storage() -> MagicMock:
+    storage = MagicMock(supports_incremental_playbook_aggregation=True)
+    storage.repair_playbook_aggregation_pending_state.return_value = []
+    storage.claim_due_playbook_aggregation.return_value = PlaybookAggregationClaim(
+        "v1", "owner", 1, 0, 2000
+    )
+    # More invalidations than one batch: the run drains them and never builds
+    # an aggregator, which keeps this a pure scheduler test.
+    storage.get_playbook_aggregation_invalidations.return_value = [
+        SimpleNamespace(invalidation_id=i)
+        for i in range(aggregation_scheduler.AGGREGATION_INVALIDATION_BATCH_SIZE + 1)
+    ]
+    storage.apply_playbook_aggregation_invalidations.return_value = True
+    storage.finish_playbook_aggregation_claim.return_value = True
+    return storage
+
+
+def test_swallowed_run_failure_does_not_clear_the_org_streak(
+    monkeypatch, transient_failure_classifier
+) -> None:
+    from reflexio.server import background_work
+
+    clock = [1000.0]
+    monkeypatch.setattr(aggregation_scheduler.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        aggregation_scheduler.AggregationLeaseHeartbeat, "start", lambda _: None
+    )
+    storage = _claimed_storage()
+    scheduler = aggregation_scheduler.PlaybookAggregationScheduler(
+        context_provider=lambda: [_context(storage)]
+    )
+    org_scope = "playbook-aggregation-org:org-1:None"
+    run_scope = "playbook-aggregation-run:org-1:None:v1"
+
+    # Tick 1: the claim itself fails, so the org-level unit failed.
+    storage.claim_due_playbook_aggregation.side_effect = transient_failure_classifier(
+        "server closed the connection unexpectedly"
+    )
+    scheduler._run_once()
+    assert set(background_work._streaks) == {org_scope}
+
+    # Tick 2: the claim works but the run fails and is swallowed in
+    # `_run_context`. The org unit did not complete, so its streak survives.
+    clock[0] += aggregation_scheduler._REPAIR_INTERVAL_SECONDS + 1
+    storage.claim_due_playbook_aggregation.side_effect = None
+    storage.get_playbook_aggregation_backlog.side_effect = transient_failure_classifier(
+        "SSL connection has been closed unexpectedly"
+    )
+    scheduler._run_once()
+    assert set(background_work._streaks) == {org_scope, run_scope}
+    assert background_work._streaks[org_scope][0] == 1
+
+    # Tick 3: the run succeeds; both units are healthy again.
+    storage.get_playbook_aggregation_backlog.side_effect = None
+    storage.get_playbook_aggregation_backlog.return_value = PlaybookAggregationBacklog(
+        0, 0, 0
+    )
+    scheduler._run_once()
+    assert background_work._streaks == {}
+
+
+def test_run_and_org_failures_use_distinct_scopes(
+    monkeypatch, caplog, transient_failure_classifier
+) -> None:
+    monkeypatch.setattr(aggregation_scheduler.time, "monotonic", lambda: 1000.0)
+    monkeypatch.setattr(
+        aggregation_scheduler.AggregationLeaseHeartbeat, "start", lambda _: None
+    )
+    storage = _claimed_storage()
+    storage.get_playbook_aggregation_backlog.side_effect = transient_failure_classifier(
+        "dropped"
+    )
+    storage.finish_playbook_aggregation_claim.side_effect = (
+        transient_failure_classifier("dropped")
+    )
+    caplog.set_level(logging.WARNING, logger=aggregation_scheduler.logger.name)
+    scheduler = aggregation_scheduler.PlaybookAggregationScheduler(
+        context_provider=lambda: [_context(storage)]
+    )
+
+    scheduler._run_once()
+
+    scopes = [
+        message.split("scope=", 1)[1].split(" ", 1)[0]
+        for message in (r.getMessage() for r in caplog.records)
+        if "scope=" in message
+    ]
+    assert scopes == [
+        "playbook-aggregation-run:org-1:None:v1",
+        "playbook-aggregation-org:org-1:None",
+    ]
