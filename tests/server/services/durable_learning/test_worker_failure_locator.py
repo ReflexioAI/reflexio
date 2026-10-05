@@ -23,6 +23,7 @@ import os
 import re
 from collections.abc import Callable
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
@@ -445,3 +446,10 @@ def test_transient_turn_failure_is_a_warning_and_releases_the_slot(
     # Both turns ran: the first failure released its capacity slot.
     assert [r.levelno for r in failures] == [logging.WARNING, logging.WARNING]
     assert not failures[0].exc_info
+
+    from reflexio.server import background_work
+
+    assert background_work._streaks["durable-learning-turn:org1"][0] == 2
+    worker._factory = lambda _org_id: SimpleNamespace(storage=None)
+    worker.drain_org("org1", batch_size=1, lease_seconds=30)
+    assert background_work._streaks == {}

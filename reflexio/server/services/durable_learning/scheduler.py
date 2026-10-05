@@ -6,7 +6,10 @@ import logging
 from collections.abc import Callable, Iterable
 
 from reflexio.server.api_endpoints.request_context import RequestContext
-from reflexio.server.background_work import report_background_failure
+from reflexio.server.background_work import (
+    report_background_failure,
+    report_background_success,
+)
 from reflexio.server.env_utils import env_str
 from reflexio.server.scheduling import ThreadedScheduler
 from reflexio.server.services.durable_learning.worker import (
@@ -42,6 +45,7 @@ class DurableLearningScheduler(ThreadedScheduler):
         try:
             orgs = sorted(set(self._org_ids_provider()))
             if not orgs:
+                report_background_success("durable-learning-discovery")
                 return self._poll
             if self._last_org in orgs:
                 offset = orgs.index(self._last_org) + 1
@@ -60,6 +64,8 @@ class DurableLearningScheduler(ThreadedScheduler):
                 exc,
                 scope="durable-learning-discovery",
             )
+        else:
+            report_background_success("durable-learning-discovery")
         return self._poll
 
 

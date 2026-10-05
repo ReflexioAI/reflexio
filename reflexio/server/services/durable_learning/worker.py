@@ -14,6 +14,7 @@ from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.background_work import (
     background_work,
     report_background_failure,
+    report_background_success,
 )
 from reflexio.server.env_utils import env_str
 from reflexio.server.operation_limiter import operation_limit_value
@@ -184,7 +185,7 @@ class DurableLearningWorker:
     @background_work()
     def _reserved_turn(self, org_id: str, lease_seconds: int) -> int:
         try:
-            return self._turn(org_id, lease_seconds)
+            completed = self._turn(org_id, lease_seconds)
         except Exception as exc:
             report_background_failure(
                 logger,
@@ -196,6 +197,8 @@ class DurableLearningWorker:
             return 0
         finally:
             _release()
+        report_background_success(f"durable-learning-turn:{org_id}")
+        return completed
 
     def _turn(self, org_id: str, lease_seconds: int) -> int:
         from reflexio.lib._base import create_generation_litellm_client
@@ -219,6 +222,7 @@ class DurableLearningWorker:
                 try:
                     if not storage.renew_extraction(user_id, token, lease_seconds):
                         return
+                    report_background_success(f"durable-learning-heartbeat:{org_id}")
                 except Exception as exc:
                     report_background_failure(
                         logger,

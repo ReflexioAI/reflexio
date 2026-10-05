@@ -125,3 +125,10 @@ def test_transient_discovery_failure_is_a_warning(caplog, transient_failure_clas
 
     failures = [r for r in caplog.records if "discovery_failed" in r.getMessage()]
     assert [r.levelno for r in failures] == [logging.WARNING]
+
+    from reflexio.server import background_work
+
+    assert set(background_work._streaks) == {"durable-learning-discovery"}
+    scheduler._org_ids_provider = lambda: []
+    scheduler._run_once()
+    assert background_work._streaks == {}

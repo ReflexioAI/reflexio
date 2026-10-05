@@ -30,6 +30,7 @@ from dataclasses import dataclass, field
 from reflexio.server.background_work import (
     background_work,
     report_background_failure,
+    report_background_success,
 )
 from reflexio.server.env_utils import env_bool
 from reflexio.server.services.braintrust.client import (
@@ -132,6 +133,8 @@ class BraintrustSyncScheduler:
                     scope="braintrust-sync-discovery",
                 )
                 org_ids = []
+            else:
+                report_background_success("braintrust-sync-discovery")
             for org_id in org_ids:
                 if self._stop.is_set():
                     break
@@ -145,6 +148,8 @@ class BraintrustSyncScheduler:
                         scope=f"braintrust-sync:{org_id}",
                         org_id=org_id,
                     )
+                else:
+                    report_background_success(f"braintrust-sync:{org_id}")
             # Sleep interruptibly so stop() takes effect promptly.
             self._stop.wait(timeout=self.interval_seconds)
 

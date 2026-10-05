@@ -5,7 +5,7 @@ import threading
 from collections.abc import Callable
 from types import SimpleNamespace
 from typing import cast
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from reflexio.models.config_schema import PendingToolCallConfig
 from reflexio.server.api_endpoints.request_context import RequestContext
@@ -395,3 +395,17 @@ def test_transient_org_drain_failure_is_a_warning(
     failures = [r for r in caplog.records if "org_failed" in r.getMessage()]
     assert [r.levelno for r in failures] == [logging.WARNING]
     assert not failures[0].exc_info
+
+    from reflexio.server import background_work
+
+    assert set(background_work._streaks) == {"extraction-resume:org_1"}
+    scheduler.request_context_factory = lambda _org_id: SimpleNamespace(  # type: ignore[assignment]
+        storage=None
+    )
+    with (
+        patch.object(resume_scheduler, "pending_tool_calls_enabled", lambda _c: True),
+        patch.object(resume_scheduler, "ExtractionResumeWorker") as worker,
+    ):
+        worker.return_value.drain.return_value = 0
+        scheduler._drain_org("org_1")
+    assert background_work._streaks == {}
