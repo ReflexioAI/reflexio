@@ -22,8 +22,9 @@ What this guard enforces, per module under ``reflexio/server``:
 4. every scope resolves to a shape with a non-empty constant prefix. A scope
    held in a local or ``self`` attribute is followed to its single plain
    assignment; any other binding of that name (a second assignment, ``+=``, a
-   walrus, a loop/``with``/unpacking target, a parameter) makes it
-   unresolvable, because the value at the call is then not the one read;
+   walrus, a loop/``with``/unpacking target, an import, a ``match`` capture,
+   a parameter) makes it unresolvable, because the value at the call is then
+   not the one read;
 5. every reference to either function is a direct call -- import aliases are
    resolved, and anything else fails because the guard could not see what it
    is called with: assigning the function to a name, passing it elsewhere, or
@@ -140,6 +141,26 @@ def _binding_targets(node: ast.AST) -> list[ast.expr]:
     return []
 
 
+def _bound_name(node: ast.AST) -> str | None:
+    """The plain name ``node`` binds, for bindings that are not expressions.
+
+    ``except ... as n``; an import (``import a.b`` binds ``a``, ``from m import
+    x`` binds ``x``, ``as`` binds its alias); and the capture names of a
+    ``match`` pattern (``case str(n)``, ``case [*n]``, ``case {**n}``).
+    """
+    if isinstance(node, ast.ExceptHandler):
+        return node.name
+    if isinstance(node, ast.alias):
+        if node.name == "*":
+            return None
+        return node.asname or node.name.split(".")[0]
+    if isinstance(node, ast.MatchAs | ast.MatchStar):
+        return node.name
+    if isinstance(node, ast.MatchMapping):
+        return node.rest
+    return None
+
+
 def _single_assigned_value(
     within: ast.AST, matches: Callable[[ast.expr], bool], parameters: set[str]
 ) -> ast.expr | None:
@@ -161,8 +182,8 @@ def _single_assigned_value(
             for part in ast.walk(target)
         ):
             binders.append(node)
-        elif isinstance(node, ast.ExceptHandler | ast.alias):
-            bound = node.name if isinstance(node, ast.ExceptHandler) else node.asname
+        else:
+            bound = _bound_name(node)
             if bound is not None and matches(ast.Name(id=bound)):
                 binders.append(node)
     if len(binders) != 1:
@@ -636,5 +657,29 @@ def test_a_rebound_self_attribute_scope_is_unresolvable() -> None:
         "        report_background_failure(log, 'e', exc, scope=self._scope)\n"
         "        self._scope += ':x'\n"
         "        report_background_success(self._scope)\n"
+    )
+    assert any("no resolvable shape" in p for p in _violations(source))
+
+
+@pytest.mark.parametrize(
+    "rebinding",
+    [
+        "    from somewhere import scope\n",
+        "    import scope.sub\n",
+        "    match exc:\n        case str(scope):\n            pass\n",
+        "    match exc:\n        case [*scope]:\n            pass\n",
+        "    match exc:\n        case {**scope}:\n            pass\n",
+    ],
+    ids=["from-import", "dotted-import", "match-as", "match-star", "match-rest"],
+)
+def test_an_import_or_match_capture_rebinding_a_scope_is_unresolvable(
+    rebinding: str,
+) -> None:
+    source = (
+        "def tick(exc):\n"
+        "    scope = 'job:a'\n"
+        "    report_background_failure(log, 'e', exc, scope=scope)\n"
+        + rebinding
+        + "    report_background_success(scope)\n"
     )
     assert any("no resolvable shape" in p for p in _violations(source))
