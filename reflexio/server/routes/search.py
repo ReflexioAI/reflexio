@@ -243,13 +243,15 @@ def search_user_playbooks_endpoint(
             experiment=assignment,
         )
     else:
-        response = _run_limited_api(
-            org_id,
-            "search",
-            lambda: reflexio_cache.get_reflexio(org_id=org_id).search_user_playbooks(
-                payload
-            ),
-        )
+        storage: object | None = None
+
+        def run_search() -> Any:
+            nonlocal storage
+            reflexio = reflexio_cache.get_reflexio(org_id=org_id)
+            storage = reflexio.get_storage()
+            return reflexio.search_user_playbooks(payload)
+
+        response = _run_limited_api(org_id, "search", run_search)
         resp = SearchUserPlaybooksViewResponse(
             success=response.success,
             user_playbooks=[
@@ -258,21 +260,26 @@ def search_user_playbooks_endpoint(
             msg=response.msg,
             experiment=assignment,
         )
-        if caller_type == "production_agent" and response.user_playbooks:
+        if (
+            caller_type == "production_agent"
+            and response.user_playbooks
+            and storage is not None
+        ):
             # Outcome deliberately ignored: an unregistered recorder is a
             # supported OSS/no-auth configuration, and this route cannot
             # tell that apart from an enterprise misconfiguration. Asserting
             # here would turn a supported deployment's search into a 500.
-            record_search_exposures(
-                SearchExposureBatch(
-                    org_id=org_id,
-                    request_id=payload.request_id,
-                    session_id=payload.session_id,
-                    interaction_id=None,
-                    user_id=payload.user_id,
-                    user_playbooks=tuple(response.user_playbooks),
+            with search_runtime.search_exposure_scope(org_id, storage):
+                record_search_exposures(
+                    SearchExposureBatch(
+                        org_id=org_id,
+                        request_id=payload.request_id,
+                        session_id=payload.session_id,
+                        interaction_id=None,
+                        user_id=payload.user_id,
+                        user_playbooks=tuple(response.user_playbooks),
+                    )
                 )
-            )
     enqueue_search_metering(
         org_id=org_id,
         caller_type=caller_type,
@@ -452,6 +459,7 @@ def unified_search_endpoint(
         def run_search() -> Any:
             with profile_step("search.reflexio_cache"):
                 reflexio = reflexio_cache.get_reflexio(org_id=org_id)
+            search_runtime.remember_search_storage(org_id, reflexio.get_storage())
             return reflexio.unified_search(payload, org_id=org_id)
 
         response = _run_limited_api(org_id, "search", run_search)

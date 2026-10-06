@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import threading
 import time
 import uuid
@@ -26,6 +27,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from reflexio.server.env_utils import env_bool
 from reflexio.server.operational_metrics import record_health
+from reflexio.server.work_scope import current_project_id, current_work_scope
 
 logger = logging.getLogger(__name__)
 # Production defaults first-party logs to WARNING. Opt in only this compact,
@@ -93,6 +95,11 @@ class SearchScope:
     outcome: str = "unknown"
     retries: int = 0
     retry_owner: SearchScope | None = field(default=None, repr=False)
+    parent_scope: SearchScope | None = field(default=None, repr=False)
+    children: dict[int, SearchScope] = field(default_factory=dict, repr=False)
+    operation_finished: bool = False
+    operation_budget: bool = False
+    search_stores: dict[tuple[str, str | None], object] = field(default_factory=dict)
     config_versions: dict[tuple[str, int, object], tuple[Any, Any]] = field(
         default_factory=dict
     )
@@ -136,6 +143,9 @@ class SearchScope:
             self.cancelled = True
             self.outcome = outcome
             futures, leases = tuple(self.futures.items()), tuple(self.leases)
+            children = tuple(self.children.values())
+        for child in children:
+            child.cancel(outcome)
         for future, cancel_queued in futures:
             if cancel_queued:
                 future.cancel()
@@ -161,6 +171,25 @@ class SearchScope:
             counters, counts = dict(self.counters), dict(self.phase_counts)
             retrieval_shape = dict(self.retrieval_shape)
             active_phases = sorted({name for name, _ in self.active.values()})
+            # Child work can outlive its recording callback. Snapshot it while
+            # still owned; detachment merges/removes it under this same lock.
+            for child in self.children.values():
+                with child.lock:
+                    intervals.extend(child.intervals)
+                    intervals.extend(
+                        (name, start, end) for name, start in child.active.values()
+                    )
+                    active_phases.extend(name for name, _ in child.active.values())
+                    for name, count in child.phase_counts.items():
+                        counts[name] = counts.get(name, 0) + count
+                    for name, count in child.counters.items():
+                        previous = counters.get(name, 0)
+                        counters[name] = (
+                            max(previous, count)
+                            if name.endswith("_peak")
+                            else previous + count
+                        )
+            active_phases = sorted(set(active_phases))
         phases: dict[str, list[tuple[float, float]]] = {}
         work: dict[str, float] = {}
         covered: list[tuple[float, float]] = []
@@ -333,6 +362,106 @@ def checkpoint() -> None:
     remaining()
 
 
+def remember_search_storage(org_id: str, storage: object) -> None:
+    """Retain the exact retrieval store, scoped to this request and project."""
+    state = current()
+    if state is None:
+        return
+    work = current_work_scope()
+    if work is not None and work.org_id != org_id:
+        raise ValueError("Search storage organization does not match work scope")
+    with state.lock:
+        state.search_stores[(org_id, current_project_id())] = storage
+
+
+def search_storage(org_id: str) -> object | None:
+    """Resolve a captured store without cache construction or remote reads."""
+    state = current()
+    if state is None:
+        return None
+    work = current_work_scope()
+    if work is not None and work.org_id != org_id:
+        return None
+    with state.lock:
+        return state.search_stores.get((org_id, current_project_id()))
+
+
+@contextmanager
+def search_exposure_scope(org_id: str, storage: object) -> Iterator[None]:
+    """Bind direct HTTP recording without imposing a retrieval deadline.
+
+    Unified search already has request-owned state. Direct search uses a narrow
+    recording scope; embedded recorders never install this HTTP-only boundary.
+    """
+    token = _scope.set(SearchScope()) if current() is None else None
+    try:
+        remember_search_storage(org_id, storage)
+        yield
+    finally:
+        if token is not None:
+            _scope.reset(token)
+
+
+@contextmanager
+def bounded_operation(seconds: float) -> Iterator[None]:
+    """Isolate a request operation's I/O budget and cancellation from its parent.
+
+    Parent disconnects still interrupt child borrowers. No thread is abandoned;
+    callers must use deadline-aware I/O. Embedded calls retain their own budgets.
+    """
+    if not math.isfinite(seconds) or seconds <= 0:
+        raise ValueError("Operation budget must be finite and positive")
+    parent = current()
+    if parent is None:
+        yield
+        return
+    with parent.lock:
+        child = SearchScope(
+            deadline=time.monotonic() + parent.remaining(seconds),
+            timing_id=parent.timing_id,
+            trace_id=parent.trace_id,
+            retry_owner=parent.retry_owner or parent,
+            parent_scope=parent,
+            operation_budget=True,
+            config_versions=dict(parent.config_versions),
+            search_stores=dict(parent.search_stores),
+        )
+        parent.children[id(child)] = child
+    owner = child.retry_owner or parent
+    if owner is not parent:
+        with owner.lock:
+            owner.children[id(child)] = child
+            if owner.cancelled:
+                child.cancel(owner.outcome)
+    token = _scope.set(child)
+    try:
+        checkpoint()
+        yield
+        checkpoint()
+    finally:
+        _scope.reset(token)
+        with child.lock:
+            child.operation_finished = True
+        _release_child(child)
+
+
+def _release_child(child: SearchScope) -> None:
+    with child.lock:
+        if not child.operation_finished or child.futures:
+            return
+        parent = child.parent_scope
+        if parent is None:
+            return
+        child.parent_scope = None
+    owner = child.retry_owner or parent
+    with owner.lock:
+        _merge_scope_timings(owner, child)
+        owner.children.pop(id(child), None)
+    if parent is not owner:
+        with parent.lock:
+            parent.children.pop(id(child), None)
+
+
 def on_response_accepted(
     name: str, callback: Callable[[], Any], *, order: int = 10
 ) -> None:
@@ -359,9 +488,7 @@ def _disconnect_finalizer(
     finalization.cancel("disconnected")
 
 
-def _record_finalization(
-    state: SearchScope, finalization: SearchScope, started: float
-) -> None:
+def _merge_scope_timings(state: SearchScope, finalization: SearchScope) -> None:
     with state.lock, finalization.lock:
         state.intervals.extend(finalization.intervals)
         for name, count in finalization.phase_counts.items():
@@ -371,6 +498,12 @@ def _record_finalization(
             state.counters[name] = (
                 max(previous, count) if name.endswith("_peak") else previous + count
             )
+
+
+def _record_finalization(
+    state: SearchScope, finalization: SearchScope, started: float
+) -> None:
+    _merge_scope_timings(state, finalization)
     record_health(
         "search.finalization.duration",
         time.monotonic() - started,
@@ -397,6 +530,7 @@ async def _finalize_response(
         # Finalization is part of this request, not a new configuration read.
         # Copy completed successes only; keep its own deadline, locks and leases.
         config_versions = dict(state.config_versions)
+        search_stores = dict(state.search_stores)
     if not callbacks:
         state.remaining(30)
         if time.monotonic() >= deadline:
@@ -408,6 +542,7 @@ async def _finalize_response(
         timing_id=state.timing_id,
         retry_owner=state,
         config_versions=config_versions,
+        search_stores=search_stores,
     )
     begun = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -507,12 +642,22 @@ def track(future: Future[Any], *, cancel_queued: bool = True) -> None:
     with scope.lock:
         scope.futures[future] = cancel_queued
         cancelled = scope.cancelled
+    owner = scope.retry_owner or scope
+    owned_by_root = scope.parent_scope is not None and owner is not scope
+    if owned_by_root:
+        with owner.lock:
+            owner.futures[future] = cancel_queued
+            cancelled = cancelled or owner.cancelled
     if cancelled and cancel_queued:
         future.cancel()
 
     def done(completed: Future[Any]) -> None:
         with scope.lock:
             scope.futures.pop(completed, None)
+        if owned_by_root:
+            with owner.lock:
+                owner.futures.pop(completed, None)
+        _release_child(scope)
 
     future.add_done_callback(done)
 
@@ -863,12 +1008,17 @@ async def _drain_workers(
     state: SearchScope, response_at: Callable[[], float | None]
 ) -> None:
     # The app can finish while executor jobs still own connections.
-    with state.lock:
-        outstanding = tuple(state.futures)
-    if outstanding:
+    while True:
+        with state.lock:
+            outstanding = tuple(state.futures)
+        if not outstanding:
+            break
         await asyncio.gather(
             *(asyncio.wrap_future(f) for f in outstanding), return_exceptions=True
         )
+        # A tracked worker may enqueue descendants before it completes. Only
+        # quiescence, rather than one snapshot, releases request admission.
+        await asyncio.sleep(0)
     responded = response_at()
     if responded is not None:
         record_health(
