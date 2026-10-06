@@ -2,6 +2,7 @@
 
 import json
 import pickle
+from inspect import getattr_static
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -28,7 +29,11 @@ from reflexio.server.llm.litellm_client import (
 )
 from reflexio.server.llm.model_defaults import ModelRole
 from reflexio.server.llm.tools import Tool, ToolRegistry, run_tool_loop
-from reflexio.test_support.llm_mock import unpatched_litellm
+from reflexio.test_support.llm_mock import (
+    litellm_is_patched,
+    patched_litellm,
+    unpatched_litellm,
+)
 
 MODELS = sorted(OPENAI_MODELS | ANTHROPIC_MODELS) + ["claude-haiku-4-5-20251001"]
 
@@ -343,15 +348,31 @@ def transport(monkeypatch):
     monkeypatch.setattr(
         LiteLLMClient, "_should_process_isolate_completion", lambda *_a: False
     )
-    with unpatched_litellm():
+    with unpatched_litellm(), monkeypatch.context() as completion_patch:
         # An enterprise + OSS selection can install nested session patchers.
         # Bind the exported real entry point explicitly so this test cannot
         # pass through a remaining session mock.
         from litellm.main import completion
 
-        monkeypatch.setattr(litellm, "completion", completion)
+        completion_patch.setattr(litellm, "completion", completion)
         yield requests, responses
     assert not responses, "The expected provider exchange did not complete"
+
+
+def test_transport_teardown_preserves_the_session_mock():
+    with patched_litellm():
+        patches = pytest.MonkeyPatch()
+        fixture = getattr_static(transport, "__wrapped__")(patches)
+        try:
+            next(fixture)
+            with pytest.raises(StopIteration):
+                next(fixture)
+        finally:
+            fixture.close()
+            patches.undo()
+        assert litellm_is_patched(), (
+            "Adapter teardown must not disable later unit mocks"
+        )
 
 
 @pytest.mark.parametrize("model", sorted(ANTHROPIC_MODELS))
@@ -841,10 +862,10 @@ def test_secondary_tool_loop_through_actual_subprocess(model, monkeypatch):
 
     registry.register(Tool(name="lookup", args_model=LookupArgs, handler=lookup))
     try:
-        with unpatched_litellm():
+        with unpatched_litellm(), monkeypatch.context() as completion_patch:
             from litellm.main import completion
 
-            monkeypatch.setattr(litellm, "completion", completion)
+            completion_patch.setattr(litellm, "completion", completion)
             result = run_tool_loop(
                 client,
                 [{"role": "user", "content": "Look up test and answer."}],
