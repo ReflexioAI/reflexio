@@ -38,6 +38,7 @@ from reflexio.server.services.playbook.playbook_service_utils import (
 from reflexio.server.services.profile.profile_generation_service_utils import (
     check_string_token_overlap,
 )
+from reflexio.server.services.storage.error import ReadinessUnavailableError
 
 logger = logging.getLogger(__name__)
 
@@ -698,6 +699,16 @@ class PlaybookConsolidator(BaseDeduplicator):
                     if fb.user_playbook_id and fb.user_playbook_id not in seen_ids:
                         seen_ids.add(fb.user_playbook_id)
                         existing_playbooks.append(fb)
+            except ReadinessUnavailableError as exc:  # noqa: PERF203
+                # Embedding not ready yet (a new task's warm-up after a deploy):
+                # expected and self-clearing, so not an ERROR. Recall degrades
+                # exactly as for any other failed search below.
+                logger.warning(
+                    "event=playbook_consolidation_search_not_ready query_index=%d "
+                    "error=%s",
+                    i,
+                    exc,
+                )
             except Exception:  # noqa: PERF203 — per-query isolation is the point
                 logger.exception(
                     "event=playbook_consolidation_search_failed query_index=%d", i

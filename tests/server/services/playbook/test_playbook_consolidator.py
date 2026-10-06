@@ -2343,6 +2343,33 @@ class TestRetrievalResilience:
 
         assert mock_consolidator.retrieve_existing_playbooks([playbook]) == []
 
+    def test_not_ready_yet_is_skipped_at_warning_not_error(
+        self, mock_consolidator, caplog
+    ):
+        """A deploy's warm-up ("embedding not ready yet") degrades recall like
+        any failed search, but logs WARNING: it is expected and clears itself."""
+        import logging
+
+        from reflexio.server.services.storage.error import ReadinessUnavailableError
+
+        first = _make_user_playbook(0, trigger="first condition")
+        second = _make_user_playbook(1, trigger="second condition")
+        survivor = _make_user_playbook(9, user_playbook_id=77)
+        mock_consolidator.client.get_embeddings.return_value = [[0.1], [0.2]]
+        mock_consolidator.request_context.storage.search_user_playbooks.side_effect = [
+            ReadinessUnavailableError("embedding_readiness_unavailable"),
+            [survivor],
+        ]
+
+        with caplog.at_level(logging.WARNING):
+            result = mock_consolidator.retrieve_existing_playbooks([first, second])
+
+        assert [playbook.user_playbook_id for playbook in result] == [77]
+        levels = {
+            r.levelno for r in caplog.records if "playbook_consolidation" in r.message
+        }
+        assert levels == {logging.WARNING}
+
 
 # ===============================
 # Survivor overlap guard
