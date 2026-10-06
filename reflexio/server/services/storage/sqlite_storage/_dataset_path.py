@@ -41,7 +41,7 @@ _ATTRIBUTED_TABLES = (
     "audit_events",
     "braintrust_connection",
     "imported_score",
-    "learning_jobs",
+    "learning_jobs",  # retired queue; present only in files from older releases
     "lineage_event",
     "purge_operation_targets",
     "purge_operations",

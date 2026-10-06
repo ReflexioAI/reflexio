@@ -9,7 +9,6 @@ from ._base import (
 )
 from ._extraction_stream import SQLiteExtractionStreamMixin
 from ._extras import ExtrasMixin
-from ._learning_jobs import SQLiteLearningJobStoreMixin
 from ._lineage import SQLiteLineageMixin
 from ._operations import OperationMixin
 from ._requests import RequestMixin
@@ -45,7 +44,6 @@ from .profiles import InteractionStoreMixin, ProfileSearchMixin, ProfileStoreMix
 
 class SQLiteStorage(
     SQLiteExtractionStreamMixin,
-    SQLiteLearningJobStoreMixin,
     SQLiteAgentRunStoreMixin,
     SQLitePendingToolCallStoreMixin,
     SQLiteRunToolDependencyStoreMixin,

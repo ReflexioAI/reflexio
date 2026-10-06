@@ -1316,7 +1316,6 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         self._migrate_retire_profile_change_logs()
         self._migrate_retire_playbook_aggregation_change_logs()
         init_stall_state_table(self.conn)
-        self._migrate_learning_jobs()
         from ._extraction_stream import migrate_extraction_stream
 
         migrate_extraction_stream(self.conn)
@@ -2892,77 +2891,6 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
             )
             self.conn.commit()
 
-    def _migrate_learning_jobs(self) -> None:
-        """Create the learning_jobs table + partial indexes if missing (idempotent).
-
-        Runs ``CREATE TABLE IF NOT EXISTS`` and ``CREATE INDEX IF NOT EXISTS`` only —
-        both are no-ops when the table / indexes already exist.  New columns added in
-        subsequent tasks are backfilled via ``PRAGMA table_info`` + ``ALTER TABLE … ADD
-        COLUMN`` (mirroring ``_migrate_lineage_event_table``), because
-        ``CREATE TABLE IF NOT EXISTS`` silently skips the DDL on existing databases.
-
-        Called at the end of migrate() so the table is always present on startup.
-        """
-        with self._lock:
-            self.conn.executescript("""
-                CREATE TABLE IF NOT EXISTS learning_jobs (
-                    job_id TEXT PRIMARY KEY,
-                    org_id TEXT NOT NULL,
-                    user_id TEXT NOT NULL,
-                    job_type TEXT NOT NULL DEFAULT 'learning',
-                    latest_request_id TEXT,
-                    status TEXT NOT NULL DEFAULT 'pending',
-                    attempts INTEGER NOT NULL DEFAULT 0,
-                    max_attempts INTEGER NOT NULL DEFAULT 3,
-                    claimed_by TEXT,
-                    claim_token TEXT,
-                    claim_expires_at TEXT,
-                    covers_through TEXT,
-                    force_extraction INTEGER NOT NULL DEFAULT 0,
-                    skip_aggregation INTEGER NOT NULL DEFAULT 0,
-                    project_id TEXT,
-                    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-                    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
-                );
-                CREATE UNIQUE INDEX IF NOT EXISTS learning_jobs_coalesce
-                    ON learning_jobs (org_id, user_id, job_type) WHERE status = 'pending';
-                -- Recreate the poll index with 'failed' in the predicate. CREATE
-                -- INDEX IF NOT EXISTS is a no-op on an existing index with the old
-                -- ('pending','claimed') predicate, so DROP first to migrate it.
-                DROP INDEX IF EXISTS learning_jobs_poll;
-                CREATE INDEX IF NOT EXISTS learning_jobs_poll
-                    ON learning_jobs (created_at) WHERE status IN ('pending','failed','claimed');
-            """)
-            # Backfill columns added after the initial release (existing DBs skip
-            # CREATE TABLE IF NOT EXISTS so these must be applied separately).
-            existing_cols = {
-                row["name"]
-                for row in self.conn.execute(
-                    "PRAGMA table_info(learning_jobs)"
-                ).fetchall()
-            }
-            if "force_extraction" not in existing_cols:
-                self.conn.execute(
-                    "ALTER TABLE learning_jobs ADD COLUMN force_extraction INTEGER NOT NULL DEFAULT 0"
-                )
-            if "skip_aggregation" not in existing_cols:
-                self.conn.execute(
-                    "ALTER TABLE learning_jobs ADD COLUMN skip_aggregation INTEGER NOT NULL DEFAULT 0"
-                )
-            # Nullable with no default: OSS has no projects, so NULL is the
-            # correct value for every existing and new row here.
-            if "project_id" not in existing_cols:
-                self.conn.execute(
-                    "ALTER TABLE learning_jobs ADD COLUMN project_id TEXT"
-                )
-            self.conn.commit()
-
-    def learning_jobs_columns(self) -> list[str]:
-        """Return the column names of the learning_jobs table."""
-        with self._lock:
-            rows = self.conn.execute("PRAGMA table_info(learning_jobs)").fetchall()
-        return [row["name"] for row in rows]
-
     def _migrate_agent_playbook_source_windows(self) -> None:
         """Add source window snapshots to existing agent source mappings."""
         cols = {
@@ -4321,33 +4249,4 @@ CREATE TABLE IF NOT EXISTS lineage_event (
     UNIQUE (org_id, entity_type, entity_id, op, request_id)
 );
 CREATE INDEX IF NOT EXISTS idx_lineage_entity ON lineage_event (entity_type, entity_id);
-
--- ============================================================================
--- Durable learning pipeline — cross-org job queue
--- ============================================================================
-
-CREATE TABLE IF NOT EXISTS learning_jobs (
-    job_id TEXT PRIMARY KEY,
-    org_id TEXT NOT NULL,
-    user_id TEXT NOT NULL,
-    job_type TEXT NOT NULL DEFAULT 'learning',
-    latest_request_id TEXT,
-    status TEXT NOT NULL DEFAULT 'pending',
-    attempts INTEGER NOT NULL DEFAULT 0,
-    max_attempts INTEGER NOT NULL DEFAULT 3,
-    claimed_by TEXT,
-    claim_token TEXT,
-    claim_expires_at TEXT,
-    covers_through TEXT,
-    force_extraction INTEGER NOT NULL DEFAULT 0,
-    skip_aggregation INTEGER NOT NULL DEFAULT 0,
-    project_id TEXT,
-    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
-);
-CREATE UNIQUE INDEX IF NOT EXISTS learning_jobs_coalesce
-    ON learning_jobs (org_id, user_id, job_type) WHERE status = 'pending';
-CREATE INDEX IF NOT EXISTS learning_jobs_poll
-    ON learning_jobs (created_at) WHERE status IN ('pending','failed','claimed');
-
 """

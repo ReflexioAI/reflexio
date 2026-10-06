@@ -184,7 +184,7 @@ def test_public_publish_to_durable_worker_persists_profile_and_playbook(monkeypa
 
 
 def test_enqueue_failure_rolls_back_interactions(monkeypatch):
-    """Zero-loss proof: if enqueue_learning_job raises inside commit_scope, the
+    """Zero-loss proof: if extraction admission raises inside commit_scope, the
     entire transaction rolls back — neither the request nor its interactions
     persist."""
     monkeypatch.setenv("REFLEXIO_DURABLE_LEARNING_QUEUE", "true")
@@ -205,10 +205,10 @@ def test_enqueue_failure_rolls_back_interactions(monkeypatch):
         # Both the request and its interactions must be absent (rolled back).
         assert svc.storage is not None
         assert svc.storage.get_request("r2") is None, (
-            "request must not persist when enqueue_learning_job fails inside commit_scope"
+            "request must not persist when extraction admission fails inside commit_scope"
         )
         assert svc.storage.get_user_interaction("u2") == [], (
-            "interactions must not persist when enqueue_learning_job fails inside commit_scope"
+            "interactions must not persist when extraction admission fails inside commit_scope"
         )
 
 

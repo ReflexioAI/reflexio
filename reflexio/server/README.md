@@ -527,8 +527,7 @@ interactions, then S new inputs per window, independently of request boundaries.
 Model calls run outside writer transactions; outputs, cursor advancement and effect
 receipts commit together under a lease fence. Incomplete tails wait for input or a
 force barrier. Billing/finalization retry durably; derived dispatch remains best
-effort. `GET /api/learning_status` reads required cursor coverage. Legacy
-`_learning_jobs.py` remains for cutover reconciliation, not automatic extraction.
+effort. `GET /api/learning_status` reads required cursor coverage.
 
 ### Async Extraction
 

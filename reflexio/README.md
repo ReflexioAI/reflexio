@@ -50,7 +50,7 @@ server/routes/ -> RequestContext + get_reflexio() -> lib/reflexio_lib.py
 ```
 
 - **Generation actors** load configuration, run extractors/evaluators, and persist results through `BaseStorage`.
-- **Automatic extraction** uses durable streams with independent project/kind cursors under one user lease. Legacy `learning_jobs` remains only for reconciliation.
+- **Automatic extraction** uses durable streams with independent project/kind cursors under one user lease.
 - **Paused extraction** uses `services/extraction/` to persist human clarification and resume/finalize idempotently.
 - **Aggregation** is fenced per agent version; agent-playbook successors retain the approval workflow.
 - **Storage selection** belongs to the configurator. OSS defaults to SQLite; deployment extensions supply other factories.
