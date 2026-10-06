@@ -94,7 +94,7 @@ Generation uses configured actors and fenced persistence; deferred workers rebui
 - **NEVER import storage implementations directly** — use `request_context.storage` (`BaseStorage`).
 - **ALWAYS use `LiteLLMClient`** for completions/embeddings and `request_context.prompt_manager.render_prompt(...)` for prompts — no hardcoded prompts, no direct OpenAI/Claude clients.
 - **All `_operation_state` writes go through `OperationStateManager`** — don't touch the table directly (it backs locks, bookmarks, progress, and cancellation).
-- **Automatic extraction uses `storage_base/_extraction_stream.py`** — admission locks the user work row first; window output writes, cursor advancement and receipts share one fenced transaction. Legacy `learning_jobs` is retained only for reconciliation.
+- **Automatic extraction uses `storage_base/_extraction_stream.py`** — admission locks the user work row first; window output writes, cursor advancement and receipts share one fenced transaction.
 - **Aggregation state is per agent version** — scheduled intake, centroid matching, cluster membership, invalidation, and agent-playbook generation must never cross versions; keep LLM and clustering work outside `commit_scope()`.
 - **`tool_can_use` lives at root `Config`** — shared by playbook extraction and success evaluation, not per-service.
 - **Preserve governance subject refs/barriers** — route validation through `services/governance/` and `storage/governance_validation.py`; do not bypass retention or subject-write checks in storage implementations.

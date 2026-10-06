@@ -25,7 +25,6 @@ from ._base import BaseStorageCore, matches_status_filter
 from ._commit_scope import CommitScopeMixin
 from ._extraction_stream import ExtractionStreamStore
 from ._extras import ExtrasMixin
-from ._learning_jobs import LearningJob, LearningJobStatus, LearningJobStoreABC
 from ._lineage import EntityType, LineageEventMixin
 from ._operations import OperationMixin
 from ._playbook import AGGREGATE_REASON_PREFIX
@@ -51,7 +50,6 @@ from .profiles import InteractionStoreMixin, ProfileSearchMixin, ProfileStoreMix
 
 class BaseStorage(
     ExtractionStreamStore,
-    LearningJobStoreABC,
     CommitScopeMixin,
     AgentRunMixin,
     ProfileStoreMixin,
@@ -262,20 +260,8 @@ class BaseStorage(
             "purged_user_playbooks": len(purge_upb_ids),
         }
 
-    def learning_jobs_columns(self) -> list[str]:
-        """Return the column names of the learning_jobs table.
-
-        Each backend overrides this to query its own schema introspection
-        mechanism (SQLite: PRAGMA table_info; Postgres/Supabase:
-        information_schema.columns).
-        """
-        raise NotImplementedError
-
 
 __all__ = [
-    "LearningJob",
-    "LearningJobStatus",
-    "LearningJobStoreABC",
     "CommitScopeMixin",
     "AgentBinding",
     "AgentRunMixin",

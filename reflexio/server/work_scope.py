@@ -1,15 +1,15 @@
 """Neutral tenant-scope seam for deferred work. OSS defines the hole.
 
 Background work is decoupled *in time* from the request that created it: a
-durable learning job, a debounced tagging pass, a shadow-comparison judge and a
+durable extraction window, a debounced tagging pass, a shadow-comparison judge and a
 publish-learning run all execute on a daemon thread long after their request
 returned. Such work therefore cannot inherit a request-scoped context variable,
 and wrapping the worker in a context-manager scope does not fix it either —
 the debounce schedulers deliberately *coalesce across requests*, so by the time
 a callback fires there may be several requests behind it.
 
-That is why the scope travels on the **job payload** (``LearningJob.project_id``
-and the scheduler keys' project component) rather than in ambient context: the
+That is why the scope travels on the **work payload** (the extraction stream's
+project key and the scheduler keys' project component) rather than in ambient context: the
 payload is the only thing that survives coalescing with its attribution intact.
 
 This module supplies the two halves OSS needs to carry a scope it does not
