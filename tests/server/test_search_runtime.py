@@ -1380,3 +1380,221 @@ async def test_disconnect_skips_pending_served_state_and_response(disconnect_kin
     finally:
         release.set()
         await asyncio.gather(request, *middleware.tasks, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_bounded_operation_expiry_preserves_accepted_response_and_metering():
+    effects, scopes = [], []
+
+    def exposure():
+        parent = runtime.current()
+        assert parent is not None
+        scopes.append(parent)
+        with pytest.raises(runtime.SearchDeadlineError), runtime.bounded_operation(1):
+            child = runtime.current()
+            assert child is not None and child is not parent
+            with runtime.phase("search.exposure.query"):
+                child.deadline = time.monotonic() - 1
+            runtime.checkpoint()
+        assert runtime.current() is parent
+        assert not parent.cancelled
+        effects.append("exposure_failed")
+
+    async def app(scope, receive, send):
+        runtime.remember_search_storage("org-1", object())
+        runtime.on_response_accepted("exposure", exposure, order=0)
+        runtime.on_response_accepted("metering", lambda: effects.append("metered"))
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"{}"})
+
+    messages = await call(runtime.SearchRuntimeMiddleware(app))
+    assert messages[0]["status"] == 200
+    assert effects == ["exposure_failed", "metered"]
+
+
+def test_bounded_operation_links_parent_disconnect_and_keeps_storage(monkeypatch):
+    parent = runtime.SearchScope(deadline=time.monotonic() + 5)
+    token = runtime._scope.set(parent)
+    interrupted = threading.Event()
+    store = object()
+    try:
+        runtime.remember_search_storage("org-1", store)
+        with pytest.raises(runtime.SearchDeadlineError), runtime.bounded_operation(1):
+            child = runtime.current()
+            assert child is not None and child.deadline is not None
+            assert runtime.search_storage("org-1") is store
+            assert child.retry_owner is parent
+            assert child.deadline <= time.monotonic() + 1
+            with runtime.connection(interrupted.set):
+                parent.cancel("disconnected")
+                assert interrupted.wait(2)
+                assert child.cancelled
+        assert runtime.current() is parent
+        assert not parent.leases
+    finally:
+        runtime._scope.reset(token)
+
+
+def test_request_storage_requires_exact_org_project_and_survives_child(monkeypatch):
+    from reflexio.server.work_scope import WorkScope
+
+    state = runtime.SearchScope(deadline=time.monotonic() + 5)
+    token = runtime._scope.set(state)
+    active = WorkScope("org-a", "project-a")
+    monkeypatch.setattr(runtime, "current_work_scope", lambda: active)
+    monkeypatch.setattr(runtime, "current_project_id", lambda: active.project_id)
+    storage = object()
+    try:
+        runtime.remember_search_storage("org-a", storage)
+        with runtime.bounded_operation(1), runtime.phase("search.exposure.query"):
+            assert runtime.search_storage("org-a") is storage
+            assert runtime.search_storage("org-b") is None
+        assert "search.exposure.query" in state.phase_counts
+        active = WorkScope("org-a", "project-b")
+        assert runtime.search_storage("org-a") is None
+        active = WorkScope("org-b", "project-a")
+        assert runtime.search_storage("org-a") is None
+        with pytest.raises(ValueError, match="organization"):
+            runtime.remember_search_storage("org-a", storage)
+    finally:
+        runtime._scope.reset(token)
+
+
+def test_direct_exposure_scope_bounds_only_recording_and_resets():
+    store = object()
+    assert runtime.current() is None
+    with runtime.search_exposure_scope("org-direct", store):
+        parent = runtime.current()
+        assert parent is not None
+        assert parent.deadline is None
+        assert runtime.search_storage("org-direct") is store
+        with pytest.raises(runtime.SearchDeadlineError), runtime.bounded_operation(1):
+            child = runtime.current()
+            assert child is not None
+            child.cancel("timeout")
+            runtime.checkpoint()
+        assert not parent.cancelled
+    assert runtime.current() is None
+
+
+def test_child_cancellation_does_not_consume_an_extra_executor_slot(monkeypatch):
+    monkeypatch.setattr(runtime, "_cancel_slots", threading.BoundedSemaphore(1))
+    parent = runtime.SearchScope(deadline=time.monotonic() + 5)
+    token = runtime._scope.set(parent)
+    interrupted = threading.Event()
+    try:
+        with (
+            pytest.raises(runtime.SearchDeadlineError),
+            runtime.bounded_operation(1),
+            runtime.connection(interrupted.set),
+        ):
+            parent.cancel("disconnected")
+            assert interrupted.wait(0.5)
+    finally:
+        runtime._scope.reset(token)
+
+
+def test_child_future_remains_owned_until_its_worker_exits():
+    from contextvars import copy_context
+
+    parent = runtime.SearchScope(deadline=time.monotonic() + 5)
+    token = runtime._scope.set(parent)
+    entered, release, drained = threading.Event(), threading.Event(), threading.Event()
+
+    def work():
+        entered.set()
+        release.wait(2)
+
+    try:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            try:
+                with runtime.bounded_operation(1):
+                    child = runtime.current()
+                    future = executor.submit(copy_context().run, work)
+                    runtime.track(future, cancel_queued=False)
+                    future.add_done_callback(lambda _f: drained.set())
+                    assert entered.wait(1)
+                assert future in parent.futures
+                assert child in parent.children.values()
+                release.set()
+                future.result(1)
+                assert drained.wait(1)
+                assert not parent.futures
+                assert not parent.children
+            finally:
+                release.set()
+    finally:
+        runtime._scope.reset(token)
+
+
+@pytest.mark.asyncio
+async def test_child_descendant_drain_retains_admission_and_response_timings(
+    monkeypatch,
+):
+    from contextvars import copy_context
+
+    first_release, last_release = threading.Event(), threading.Event()
+    descendant_entered = threading.Event()
+    drain_started = asyncio.Event()
+    snapshots, states = [], []
+    original_drain = runtime._drain_workers
+
+    async def observed_drain(state, response_at):
+        drain_started.set()
+        await original_drain(state, response_at)
+
+    monkeypatch.setattr(runtime, "_drain_workers", observed_drain)
+    monkeypatch.setattr(
+        runtime,
+        "_emit",
+        lambda state, end, _status: snapshots.append(state.snapshot(end)),
+    )
+    executor = ThreadPoolExecutor(max_workers=1)
+
+    def descendant():
+        with runtime.phase("search.child.descendant"):
+            descendant_entered.set()
+            last_release.wait(3)
+
+    def first():
+        with runtime.phase("search.child.first"):
+            first_release.wait(3)
+            pending = executor.submit(copy_context().run, descendant)
+            runtime.track(pending, cancel_queued=False)
+
+    def exposure():
+        with runtime.bounded_operation(1):
+            with runtime.phase("search.child.finished"):
+                pass
+            pending = executor.submit(copy_context().run, first)
+            runtime.track(pending, cancel_queued=False)
+
+    async def app(scope, receive, send):
+        states.append(runtime.current())
+        runtime.on_response_accepted("exposure", exposure)
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"{}"})
+
+    middleware = runtime.SearchRuntimeMiddleware(app, capacity=1)
+    try:
+        assert (await call(middleware))[0]["status"] == 200
+        await asyncio.wait_for(drain_started.wait(), 1)
+        assert snapshots[0]["phase_counts"]["search.child.finished"] == 1
+        first_release.set()
+        assert await asyncio.to_thread(descendant_entered.wait, 1)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert len(middleware.tasks) == 1
+        assert (await call(middleware))[0]["status"] == 503
+        last_release.set()
+        await asyncio.gather(*middleware.tasks)
+        await asyncio.sleep(0)
+        assert not middleware.tasks
+        final = states[0].snapshot(time.monotonic())
+        assert final["phase_counts"]["search.child.finished"] == 1
+        assert final["phase_counts"]["search.child.descendant"] == 1
+    finally:
+        first_release.set()
+        last_release.set()
+        await asyncio.gather(*middleware.tasks, return_exceptions=True)
+        executor.shutdown()

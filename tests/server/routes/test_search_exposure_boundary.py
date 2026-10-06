@@ -761,3 +761,38 @@ def test_deadline_after_route_completion_discards_all_served_state() -> None:
     assert recorder.batches == []
     meter.assert_not_called()
     observer.assert_not_called()
+
+
+@pytest.mark.parametrize("path", ["/api/search", "/api/search_user_playbooks"])
+def test_http_recorder_reuses_retrieval_store_and_contains_child_timeout(path):
+    from reflexio.server import search_runtime
+
+    stores, order = [], []
+
+    class Recorder:
+        def record(self, batch):
+            parent = search_runtime.current()
+            assert parent is not None
+            if path == "/api/search_user_playbooks":
+                assert parent.deadline is None
+            stores.append(search_runtime.search_storage(batch.org_id))
+            with search_runtime.bounded_operation(1):
+                child = search_runtime.current()
+                assert child is not None
+                child.cancel("timeout")
+                search_runtime.checkpoint()
+
+    register_service(SEARCH_EXPOSURE_RECORDER, Recorder())
+    with (
+        _search_results([_playbook(31, "Ready answer")]) as reflexio,
+        patch(
+            "reflexio.server.routes.search.enqueue_search_metering",
+            side_effect=lambda **_kw: order.append("meter"),
+        ),
+    ):
+        expected = reflexio.get_storage.return_value
+        response = _client().post(path, json={"query": "answer", "user_id": "user-1"})
+    assert stores == [expected]
+    assert response.status_code == 200
+    assert response.json()["user_playbooks"][0]["content"] == "Ready answer"
+    assert order == ["meter"]
