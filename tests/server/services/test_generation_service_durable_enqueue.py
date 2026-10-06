@@ -102,6 +102,11 @@ def test_public_publish_to_durable_worker_persists_profile_and_playbook(monkeypa
     """
     monkeypatch.setenv("REFLEXIO_DURABLE_LEARNING_QUEUE", "true")
     monkeypatch.setenv("REFLEXIO_EMBEDDING_PROVIDER", "off")
+    # This boundary test owns real tagging teardown, not the production debounce.
+    monkeypatch.setattr(
+        "reflexio.server.services.tagging.tagging_scheduler._EFFECTIVE_DELAY_SECONDS",
+        0,
+    )
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         org_id = "durable_public_boundary"

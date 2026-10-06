@@ -782,16 +782,21 @@ async def test_slow_unauthenticated_body_does_not_take_search_worker_slot(
     async with AsyncClient(
         transport=ASGITransport(app=middleware), base_url="http://test"
     ) as client:
-        slow = asyncio.create_task(client.post("/api/search", content=slow_body()))
+        # Keep request construction outside the deadline-sensitive body phase.
+        # Building this request wraps the iterator without consuming its body.
+        slow_request = client.build_request("POST", "/api/search", content=slow_body())
+        valid_request = client.build_request(
+            "POST",
+            "/api/search",
+            json={"ok": True},
+            headers={"Authorization": "Bearer valid"},
+        )
+        slow = asyncio.create_task(client.send(slow_request))
         try:
             await asyncio.wait_for(waiting.wait(), 0.5)
             assert not middleware.tasks
             assert not authenticating
-            valid = await client.post(
-                "/api/search",
-                json={"ok": True},
-                headers={"Authorization": "Bearer valid"},
-            )
+            valid = await client.send(valid_request)
             assert valid.status_code == 200
             assert valid.json() == {"ok": True}
             rejected = await asyncio.wait_for(slow, 0.5)
