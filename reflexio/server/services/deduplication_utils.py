@@ -14,6 +14,7 @@ from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.llm.model_defaults import ModelRole, resolve_model_name
 from reflexio.server.services.embedding_text import embedding_input
+from reflexio.server.services.storage.error import ReadinessUnavailableError
 from reflexio.server.site_var.site_var_manager import SiteVarManager
 
 logger = logging.getLogger(__name__)
@@ -86,6 +87,11 @@ def resolve_dedup_query_embeddings(
                     dimensions=embedding_dimensions,
                 )
             )
+    except ReadinessUnavailableError:
+        # Not ready yet (startup warm-up). The batch cannot finish without
+        # vectors -- its later embedding precompute raises the same error -- so
+        # stop it here and let the caller retry, instead of searching blind.
+        raise
     except Exception as e:
         logger.warning("Failed to generate embeddings for dedup search: %s", e)
         return [None] * len(query_texts)

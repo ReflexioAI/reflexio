@@ -1551,6 +1551,47 @@ class TestRetrieveExistingProfilesStatusFilter:
         assert existing[0].status == Status.PENDING
 
 
+class TestRetrieveExistingProfilesReadiness:
+    """A failed search degrades recall, but "not ready yet" stops the batch."""
+
+    def _profile(self) -> UserProfile:
+        return UserProfile(
+            profile_id="p-new",
+            user_id="user",
+            content="User likes dark mode",
+            last_modified_timestamp=int(datetime.now(UTC).timestamp()),
+            generated_from_request_id="req",
+            profile_time_to_live=ProfileTimeToLive.ONE_MONTH,
+        )
+
+    def test_a_search_failure_is_still_skipped(
+        self, mock_request_context, mock_llm_client, mock_site_var_manager
+    ):
+        mock_request_context.storage.search_user_profile.side_effect = RuntimeError(
+            "vector backend unavailable"
+        )
+        deduplicator = ProfileConsolidator(
+            request_context=mock_request_context, llm_client=mock_llm_client
+        )
+
+        assert deduplicator._retrieve_existing_profiles([self._profile()], "user") == []
+
+    def test_not_ready_yet_stops_the_batch(
+        self, mock_request_context, mock_llm_client, mock_site_var_manager
+    ):
+        from reflexio.server.services.storage.error import ReadinessUnavailableError
+
+        mock_request_context.storage.search_user_profile.side_effect = (
+            ReadinessUnavailableError("embedding_readiness_unavailable")
+        )
+        deduplicator = ProfileConsolidator(
+            request_context=mock_request_context, llm_client=mock_llm_client
+        )
+
+        with pytest.raises(ReadinessUnavailableError):
+            deduplicator._retrieve_existing_profiles([self._profile()], "user")
+
+
 # ===============================
 # Test: Supersede-without-replacement invariant
 # ===============================

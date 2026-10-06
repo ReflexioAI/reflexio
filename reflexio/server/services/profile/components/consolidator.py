@@ -32,6 +32,7 @@ from reflexio.server.services.profile.profile_generation_service_utils import (
     ProfileTimeToLive,
     calculate_expiration_timestamp,
 )
+from reflexio.server.services.storage.error import ReadinessUnavailableError
 
 logger = logging.getLogger(__name__)
 
@@ -485,6 +486,10 @@ class ProfileConsolidator(BaseDeduplicator):
                     if profile.profile_id and profile.profile_id not in seen_ids:
                         seen_ids.add(profile.profile_id)
                         existing_profiles.append(profile)
+            except ReadinessUnavailableError:
+                # Not ready yet (startup warm-up): stop the batch for the caller
+                # to retry; the later embedding precompute would fail the same way.
+                raise
             except Exception as e:  # noqa: PERF203
                 logger.warning(
                     "Failed to search existing profiles for query %d: %s", i, e

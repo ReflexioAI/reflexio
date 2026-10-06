@@ -2343,6 +2343,24 @@ class TestRetrievalResilience:
 
         assert mock_consolidator.retrieve_existing_playbooks([playbook]) == []
 
+    def test_not_ready_yet_stops_the_batch_instead_of_skipping(self, mock_consolidator):
+        """Startup warm-up is not a per-query failure: every query and the later
+        embedding precompute fail alike, so the batch stops for the caller to
+        retry instead of logging one ERROR per query and continuing."""
+        from reflexio.server.services.storage.error import ReadinessUnavailableError
+
+        first = _make_user_playbook(0, trigger="first condition")
+        second = _make_user_playbook(1, trigger="second condition")
+        mock_consolidator.client.get_embeddings.return_value = [[0.1], [0.2]]
+        search = mock_consolidator.request_context.storage.search_user_playbooks
+        search.side_effect = ReadinessUnavailableError(
+            "embedding_readiness_unavailable"
+        )
+
+        with pytest.raises(ReadinessUnavailableError):
+            mock_consolidator.retrieve_existing_playbooks([first, second])
+        assert search.call_count == 1
+
 
 # ===============================
 # Survivor overlap guard
