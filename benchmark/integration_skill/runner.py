@@ -342,12 +342,7 @@ def _evaluate(
             stderr=directory / "grade-stderr.log",
         )
     env.pop("CODEX_HOME")
-    grader_infra_error = grading["exit_code"] != 0 and not grading["timed_out"]
-    try:
-        grade = json.loads((directory / "grade.json").read_text())
-    except json.JSONDecodeError:
-        grade = {"passed": False, "error": "grader did not produce JSON"}
-        grader_infra_error = not grading["timed_out"]
+    grade, grader_infra_error = read_grade(directory / "grade.json", grading)
     diff = subprocess.check_output(["git", "diff", "HEAD"], cwd=workspace, text=True)  # noqa: S603
     (directory / "changes.diff").write_text(diff)
     changed = subprocess.check_output(  # noqa: S603
@@ -383,6 +378,18 @@ def _evaluate(
     }
     (directory / "result.json").write_text(json.dumps(result, indent=2))
     return result
+
+
+def read_grade(path: Path, execution: dict) -> tuple[dict, bool]:
+    infrastructure_error = execution["exit_code"] != 0 and not execution["timed_out"]
+    try:
+        grade = json.loads(path.read_text())
+        if not isinstance(grade, dict) or not isinstance(grade.get("passed"), bool):
+            raise ValueError("invalid grade shape")
+    except (OSError, ValueError):
+        grade = {"passed": False, "error": "grader did not produce a valid result"}
+        infrastructure_error = not execution["timed_out"]
+    return grade, infrastructure_error
 
 
 def evaluate(
@@ -543,7 +550,7 @@ def rescore(output: Path, python: Path, codex: str, model: str) -> dict:
                 stdout=path.parent / "final-grade.json",
                 stderr=path.parent / "final-grade-stderr.log",
             )
-        grade = json.loads((path.parent / "final-grade.json").read_text())
+        grade, grading_infra = read_grade(path.parent / "final-grade.json", execution)
         result["initial_grade"] = result.get("initial_grade", result["grade"])
         result["grade"] = grade
         result["final_grader_sha256"] = identity["source_sha256"]["grader.py"]
@@ -558,6 +565,8 @@ def rescore(output: Path, python: Path, codex: str, model: str) -> dict:
             )
             else "fail"
         )
+        if grading_infra:
+            result["status"] = "infrastructure_error"
         path.write_text(json.dumps(result, indent=2))
         results.append(result)
     report = {"summary": summarize(results), "runs": results}
