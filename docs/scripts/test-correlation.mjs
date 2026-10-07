@@ -5,6 +5,7 @@ import path from "node:path";
 import vm from "node:vm";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
+import { execFileSync } from "node:child_process";
 const ts = createRequire(import.meta.url)("typescript");
 
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
@@ -67,5 +68,30 @@ for (const [file, variable, prefix, retrieval] of [
     cell.includes(`client.grade_on_demand(session_id=${variable}`)));
   assert.match(searchCell, /user_id=USER_ID/);
   assert.match(publishCell, /user_id=USER_ID/);
+  if (file === "03_playbook.ipynb") {
+    const selectionCell = cells.find((cell) => cell.includes("selected_playbook ="));
+    assert.ok(selectionCell);
+    // Execute the actual selection/guard code with an unrelated listing present.
+    // Stop before prompting or any paid model calls.
+    const selectionCode = selectionCell.split("user_message =")[0];
+    execFileSync("python3", ["-c", `
+import json, sys
+from types import SimpleNamespace
+code = json.load(sys.stdin)
+served = SimpleNamespace(user_playbook_id="served")
+unrelated = SimpleNamespace(user_playbook_id="unrelated")
+client = SimpleNamespace(get_user_playbooks=lambda **kwargs: SimpleNamespace(user_playbooks=[unrelated]))
+for success, results in [(True, [served]), (True, []), (False, [served])]:
+    namespace = {"unified": SimpleNamespace(success=success, user_playbooks=results, msg="search failed"), "client": client, "USER_ID": "demo"}
+    try:
+        exec(code, namespace)
+    except RuntimeError:
+        assert not success or not results
+        assert "selected_playbook" not in namespace
+    else:
+        assert success and results
+        assert namespace["selected_playbook"] is served
+`], { input: JSON.stringify(selectionCode) });
+  }
 }
 console.log("Explorer preserves caller sessions; notebook retrieval, publish and grading share a fresh run identity");

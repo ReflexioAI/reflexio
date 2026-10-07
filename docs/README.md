@@ -53,8 +53,11 @@ conversation, then reuse that ID in its related calls. The optional field has no
 shared default: a permanent demo ID would merge independent runs and trigger
 search deduplication across them. The playbook and simulation notebooks generate
 a run ID once and reuse the corresponding session through retrieval, publish,
-and evaluation.
+and evaluation. The playbook notebook injects a playbook from that search
+response and stops when the search fails or returns none, rather than substituting
+a result from a separate listing.
 
 Run `npm run test:correlation` to verify the real explorer code generator and
-notebook session identities. The docs-correlation GitHub workflow runs this check
+notebook session identities and actual playbook selection/empty-result guards.
+This check also requires Python 3 for the isolated notebook selection fixture. The docs-correlation GitHub workflow runs this check
 and TypeScript on affected PRs.
