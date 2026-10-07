@@ -1,6 +1,6 @@
-# Mapping sampled Braintrust records
+# Mapping sampled source records
 
-Fetch `mapping_schema` from setup context; it is authoritative for the installed server. PUT a complete `definition`, not a partial patch. Construct rules with all nine fields explicitly present. Server defaults on omitted fields are not evidence; do not rely on them.
+Fetch connection-specific `mapping_schema` and capabilities from setup context; it is authoritative for the installed server. PUT a complete `definition`, not a partial patch. Construct rules with all nine fields explicitly present. Server defaults on omitted fields are not evidence; do not rely on them.
 
 | Field | Meaning |
 | --- | --- |
@@ -17,6 +17,8 @@ Fetch `mapping_schema` from setup context; it is authoritative for the installed
 For an unmapped field use `{ "scope": "current", "path": "", "fallback": "", "transform": "none", "constant": "" }`. For a mapped field replace `path` with its observed JSON Pointer; choose `root` only when the root is actually resolved. Escape `~` as `~0` and `/` as `~1`. Arrays use actual numeric indices; do not assume every trace has the same message position.
 
 A response rule has a unique `name`, `when` predicates (e.g. `{ "scope":"current", "path":"/span_attributes/name", "op":"eq", "values":["respond"] }`), and `fields` containing all nine entries. Use the existing `span` layout for one request/answer span. More complex message/history layouts require the server schema's explicit contracts; do not improvise them. Exactly one rule must match each intended answer. Use `unmatched:"held"`, `evaluation_only:false`, and `allow_user_only:false` for normal conversation setup. Preview before validating.
+
+OpenTelemetry supports `current` mappings only; never request root/related lookups for its receiver. Its sample `raw` record contains normalized span attributes such as `metadata` and observed `input`/`output`; inspect that record rather than mapping pointers into the OTLP transport envelope. Cloud-provider raw shapes differ: all example paths below must be checked against the actual sample.
 
 Current/root lookup uses raw `span_id` and `root_span_id`: a root must be uniquely present in retained or expanded evidence. `is_root:true` alone is insufficient. Check setup-context capabilities; older servers without `related_span_fetch` support only current/root mappings. Do not send a version-2 mapping to those servers.
 
@@ -35,7 +37,7 @@ Use this sequence for the first setup, based on observed tracing code and sample
    Add session correlation when that field is available on both spans; a verified
    unique turn match within the same trace does not require a duplicated session ID.
    Do not include helpers in the answer traffic filter. The related
-   lookup stays inside the same Braintrust project and trace.
+   lookup stays inside the same source project and trace.
 4. Preview several different turns, including two turns in the same conversation
    where available. Confirm the question belongs to its answer, exactly one
    candidate matches, user identity is stable across conversations, and helper
@@ -64,7 +66,7 @@ refreshing samples or resuming collection does not remove a rate limit.
 
 ## Related fields (mapping version 2)
 
-Sampling automatically expands traces when `related_span_fetch` is true. Each anchor record has `source_project_id` and `related_context: {status, code?, records}`. Each related record has its own `id`, `source_project_id`, and `raw` Braintrust span. Only `status:"complete"` means the bounded lookup was exhausted; it does not promise no future spans will arrive. `partial`, `failed`, and `pending` cannot establish uniqueness. Inspect codes and refresh the sample when appropriate; do not work around limits by guessing.
+Sampling automatically expands traces when `related_span_fetch` is true. Each anchor record has `source_project_id` and `related_context: {status, code?, records}`. Each related record has its own `id`, `source_project_id`, and `raw` provider span. Only `status:"complete"` means the bounded lookup was exhausted; it does not promise no future spans will arrive. `partial`, `failed`, and `pending` cannot establish uniqueness. Inspect codes and refresh the sample when appropriate; do not work around limits by guessing.
 
 Set `definition.version:2`, keep all nine field entries, and add `related_sources` to each applicable `span` rule. Example **only when these names and shared values are observed**:
 
@@ -93,7 +95,7 @@ Keep a non-secret local mapping artifact plus evidence record IDs and chosen tra
 
 ## Offer a retrieved-learning logging patch
 
-After approval, inspect the application's actual Reflexio search, context injection, and Braintrust response tracing path. Log on the same response span:
+After approval, inspect the application's actual Reflexio search, context injection, and selected provider’s response tracing path. Log on the same response span:
 
 ```json
 {
@@ -107,9 +109,11 @@ After approval, inspect the application's actual Reflexio search, context inject
 }
 ```
 
-Map the `references` field to `/metadata/reflexio/retrieved_learnings` once a fresh sample confirms that path on the response span. Supported kinds: `profile`, `user_playbook`, `agent_playbook`. Read IDs from the actual search results (`profile_id`, `user_playbook_id`, `agent_playbook_id`) and convert them to strings. Include only items actually injected into that response's context, not all retrieval candidates. Reset attribution per response; preserve request-local association under concurrent requests. Write `[]` when instrumentation knows that no learning was injected; leave absent if unknown. Never infer IDs from citations or manufacture references for historical traces.
+The JSON and `span.log` snippets here illustrate Braintrust-style logging, not a universal SDK call. Use the application’s installed provider SDK and observed sample shape. For OpenTelemetry, attributes are normalized into the retained record; inspect how structured values are represented before choosing a transform. Map `references` to the observed path only after a fresh sample confirms the exact value shape; `/metadata/reflexio/retrieved_learnings` is a Braintrust example, not a default for every provider. Supported kinds: `profile`, `user_playbook`, `agent_playbook`. Read IDs from the actual search results (`profile_id`, `user_playbook_id`, `agent_playbook_id`) and convert them to strings. Include only items actually injected into that response's context, not all retrieval candidates. Reset attribution per response; preserve request-local association under concurrent requests. Write `[]` when instrumentation knows that no learning was injected; leave absent if unknown. Never infer IDs from citations or manufacture references for historical traces.
 
-Re-read source status first. If already active, obtain explicit authorization for the separate mapping update before changing its saved mapping. Save the updated mapping, preview the fresh sample, and validate using its `sample_id`, the preview's `sample_digest`, and the saved mapping revision as `expected_revision`. For a draft source, return the updated review link for frontend activation. If already active, explain that saving and validating a draft leaves the active mapping unchanged. Only after explicit authorization to update that active source, re-read `/streams/{id}/status` and PUT `/streams/{id}/active-mapping` with `{ "revision": <status revision>, "mapping_revision": <validated mapping revision> }`, then verify status reports the selected mapping revision. This is a separate lifecycle operation, not part of initial setup; do not call `/activate` or promise retroactive attribution for imported records.
+Re-read source status first. Draft OpenTelemetry receivers can preview pushed examples through this flow. Already active receivers do not produce new inspection samples and cannot use pull sample jobs; explain that fresh-sample attribution verification is unavailable through this guide. Do not proceed to the active-mapping update below for them or rotate/create a duplicate receiver to obtain evidence. Locally verified logging changes alone do not prove attribution mapping works.
+
+For pull connectors, if already active, obtain explicit authorization for the separate mapping update before changing its saved mapping. Save the updated mapping, preview the fresh sample, and validate using its `sample_id`, the preview's `sample_digest`, and the saved mapping revision as `expected_revision`. For a draft source, return the updated review link for frontend activation. If already active, explain that saving and validating a draft leaves the active mapping unchanged. Only after explicit authorization to update that active source, re-read `/streams/{id}/status` and PUT `/streams/{id}/active-mapping` with `{ "revision": <status revision>, "mapping_revision": <validated mapping revision> }`, then verify status reports the selected mapping revision. This is a separate lifecycle operation, not part of initial setup; do not call `/activate` or promise retroactive attribution for imported records.
 
 If the application does not yet retrieve Reflexio learning, explain that logging alone cannot create attribution; ask before adding retrieval/context integration. Reuse its existing tracing SDK/version and merge metadata without discarding existing fields. Do not add `publish_interaction`; the connector handles import after frontend activation. Test actual IDs, explicit empty capture, concurrent requests, and unchanged user responses before claiming instrumentation works.
 

@@ -15,11 +15,11 @@ Browser sessions retain `/api/projects/{project_id}/data-sources` with a matchin
 
 | Method and relative path | Request / result |
 | --- | --- |
-| GET `/setup-context` | Protocol version, project binding, mapping JSON schema, supported scopes, existing connection/stream IDs, relative frontend `review_path`. Require `setup_version = 1`. |
+| GET `/setup-context` | Protocol version, project binding, mapping JSON schema, supported scopes, existing connection/stream IDs, relative frontend `review_path`. Require `setup_version = 1`; check `providers` and `provider_regions`. Re-read with `?connection_id=<id>` for the selected connection’s capabilities and review link. |
 | GET base | Connection and stream configuration plus sample summaries. Sample summaries omit records; fetch sample detail to inspect them. |
-| POST `/connections` | `{ "name": "Support traces", "api_key": "<Braintrust key>" }`; returns redacted connection and revision. |
+| POST `/connections` | `{ "name": "Support traces", "provider": "<advertised provider>", "region": "<advertised region>", "api_key": "<provider credential or receiver token>" }`; include provider-specific credential fields from [provider setup](providers.md); returns redacted connection and revision. |
 | GET `/connections/{id}/projects` | `{ "projects": [...], "truncated": false }`; entries contain `id`, `name`, and `workspace_id`. Only explicit `truncated:false` establishes completeness. `truncated:true` means the server's bounded pagination stopped early; this endpoint exposes no continuation cursor. If the flag is missing, completeness is unknown. Do not infer absence or unique name matches from an incomplete list, invent pagination parameters, or repeatedly fetch the same bounded list; explain that discovery must be completed before resolving those choices. |
-| PUT `/connections/{id}/stream` | `{ "revision": <connection revision>, "external_project_id": "<Braintrust project ID>", "filters": [{ "path": "span_attributes.name", "op": "eq", "values": ["<observed response span name>"] }]  }`; returns stream. Re-read connection after selection because its revision advances. |
+| PUT `/connections/{id}/stream` | `{ "revision": <connection revision>, "external_project_id": "<discovered project ID>", "filters": [{ "path": "span_attributes.name", "op": "eq", "values": ["<observed response span name>"] }]  }`; returns stream. Re-read connection after selection because its revision advances. |
 | PUT `/streams/{id}/history-draft` | `{ "revision": <stream revision>, "history": true, "history_start": <Unix seconds>, "history_end": <Unix seconds> }`. End is exclusive; omit end to continue history through activation. For new-only collection send `history:false` with no bounds. |
 | POST `/streams/{id}/samples` | `{ "revision": <stream revision>, "sample_window": { "start": "2026-08-12T00:00:00Z", "end": "2026-08-20T00:00:00Z" } }`; returns sample ID, HTTP 202. |
 | GET `/samples/{id}` | Poll queued/running at a bounded interval (start at 2 seconds); complete includes records. Stop and explain failed/expired status. |
@@ -39,18 +39,22 @@ Use integer revisions exactly as returned. Keep mapping revision separate from c
 
 The activation API remains available to Reflexio's frontend. **This setup guide stops at a validated draft and review link. Do not call `/activate`.** Source management does not grant governance/erase permission.
 
+## Provider differences
+
+See [provider setup](providers.md) for credential payloads and the OpenTelemetry receiver sequence. Pull-only history/sample-job endpoints do not apply to OpenTelemetry. Use the connection-specific `sampling`, `mapping_scopes`, `related_span_fetch`, and `historical_read_windows`; do not assume Braintrust capabilities apply to other sources.
+
 ## Historical sample coverage and recovery
 
 Newer protocol-1 servers advertise `sampling` and `field_guidance` in setup context.
 A sample can include `buckets` (`start`, `end`, `status`, `retained`, `code`) and
 `example_ids`. Status distinguishes `sampled`, `empty` and `unread`. Read the full
-sample response, not only the summary inventory. Windowed samples longer than a day
+sample response, not only the summary inventory. Braintrust windowed samples longer than a day
 cover up to seven buckets within shared retention limits (50 records, 1 MB).
 These are sample counts, never estimated provider totals. Partial reads are retained;
 rate limits stop subsequent windows. Wait for cooldown before retrying; do not loop.
 
 Servers advertising `automatic_read_retries` and `shared_connection_cooldown`
-automatically resume queued sample jobs after transient Braintrust failures.
+automatically resume queued sample jobs after transient provider failures.
 `retry_at` is a Unix timestamp: poll the same job, respecting that time rather
 than creating replacement jobs. Successfully read buckets and expanded traces
 are retained. `/status` exposes `provider_read.waiting`, `retry_at`, and `code`;

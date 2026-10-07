@@ -26,7 +26,7 @@ The loop has two halves. **Retrieval** — search before the agent acts and inje
 
 Inspect dependency manifests, tracing imports and initialization, configuration names (not secret values), and the actual response-logging path. A dependency or unused key name alone does not show that user-facing interactions are logged there; clarify ambiguous evidence with the developer.
 
-[Connect a data source](https://github.com/ReflexioAI/reflexio/blob/main/skills/connect-data-source/SKILL.md) is the authority for supported providers — currently Braintrust, not OpenTelemetry.
+[Connect a data source](https://github.com/ReflexioAI/reflexio/blob/main/skills/connect-data-source/SKILL.md) is the authority for supported providers: Braintrust, Langfuse Cloud, LangSmith Cloud, Phoenix Cloud, and OpenTelemetry (OTLP/HTTP traces). Its setup-context check determines which providers the installed server supports. For existing OpenTelemetry tracing, the connected route configures a receiver/exporter and uses pushed examples; it does not read provider history.
 
 | Evidence | Ingestion method |
 | --- | --- |
