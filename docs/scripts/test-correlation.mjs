@@ -68,6 +68,25 @@ for (const [file, variable, prefix, retrieval] of [
     cell.includes(`client.grade_on_demand(session_id=${variable}`)));
   assert.match(searchCell, /user_id=USER_ID/);
   assert.match(publishCell, /user_id=USER_ID/);
+  if (file === "06_real_world_simulation.ipynb") {
+    // Every injected entity type must share the serving identity, not just playbooks.
+    execFileSync("python3", ["-c", `
+import json, sys
+from types import SimpleNamespace
+code = json.load(sys.stdin)
+for session_id in ["first-run", "second-run"]:
+    calls = []
+    def profiles(request):
+        calls.append(("profiles", request["user_id"], request["session_id"]))
+        return SimpleNamespace(user_profiles=[])
+    def playbooks(**kwargs):
+        calls.append(("playbooks", kwargs["user_id"], kwargs["session_id"]))
+        return SimpleNamespace(user_playbooks=[])
+    client = SimpleNamespace(search_user_profiles=profiles, search_user_playbooks=playbooks)
+    exec(code, {"client": client, "USER_ID": "demo", "ENHANCED_SESSION": session_id, "rprint": lambda *args: None})
+    assert calls == [("profiles", "demo", session_id), ("playbooks", "demo", session_id)]
+`], { input: JSON.stringify(searchCell) });
+  }
   if (file === "03_playbook.ipynb") {
     const selectionCell = cells.find((cell) => cell.includes("selected_playbook ="));
     assert.ok(selectionCell);
