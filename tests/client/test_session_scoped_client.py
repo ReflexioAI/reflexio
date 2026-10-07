@@ -9,6 +9,7 @@ each other rather than to a literal.
 """
 
 import inspect
+import sys
 import warnings
 from typing import Any
 
@@ -532,7 +533,10 @@ def test_request_model_only_search_agrees_with_publish(monkeypatch) -> None:
     )
 
 
-def test_scoped_deprecated_alias_warns_the_calling_frame(monkeypatch) -> None:
+@pytest.mark.parametrize("relocated", [False, True])
+def test_scoped_deprecated_alias_warns_the_calling_frame(
+    monkeypatch, relocated
+) -> None:
     """The warning must be attributed to the caller, not to the wrapper.
 
     Emission alone is the wrong assertion, and an earlier version of this
@@ -545,11 +549,21 @@ def test_scoped_deprecated_alias_warns_the_calling_frame(monkeypatch) -> None:
     """
     client = _make_client()
     captured = _capture_sync(monkeypatch, client)
+    if relocated:
+        monkeypatch.setattr(
+            sys.modules[__name__], "__file__", "/mutants/relocated_test.py"
+        )
 
     with pytest.warns(DeprecationWarning, match="search_profiles") as record:
         client.for_session(BOUND).search_profiles(user_id="u1", query="q")
 
-    assert record[0].filename == __file__, (
+    # Mutation runners can relocate __file__ while preserving code filenames.
+    # Python attributes warnings to the executing frame, so compare that frame.
+    frame = inspect.currentframe()
+    assert frame is not None
+    caller_filename = frame.f_code.co_filename
+    del frame
+    assert record[0].filename == caller_filename, (
         "the deprecation was attributed to "
         f"{record[0].filename}, not the caller -- default filters hide it"
     )
