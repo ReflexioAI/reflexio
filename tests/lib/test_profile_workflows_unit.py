@@ -6,6 +6,7 @@ but real storage (SQLiteStorage in temp directory) and real services.
 
 import datetime
 import tempfile
+import threading
 from datetime import UTC
 
 import pytest
@@ -80,7 +81,26 @@ def reflexio_with_config(temp_storage, ensure_mock_env):
         "profile_extractor_config", profile_extractor_config
     )
 
-    return reflexio
+    yield reflexio
+
+    # Stop this directory's discovery before waiting for its in-flight work.
+    # Otherwise a coverage-failure test can return while extraction is still
+    # running, after which pytest closes logging and removes storage underneath it.
+    from reflexio.server.services.durable_learning import local
+    from reflexio.server.services.tagging.tagging_scheduler import drain_tagging
+
+    with local._lock:
+        scheduler = local._schedulers.pop(temp_storage, None)
+        local._live.pop(temp_storage, None)
+        local._contexts.pop((org_id, temp_storage), None)
+    if scheduler is not None:
+        scheduler.stop()
+        assert not scheduler.is_running()
+    for thread in threading.enumerate():
+        if thread.name == "reflexio-extraction-window":
+            thread.join(timeout=5.0)
+            assert not thread.is_alive(), "Extraction outlived its test fixture"
+    assert drain_tagging(timeout_seconds=5.0), "Tagging outlived its test fixture"
 
 
 @pytest.fixture

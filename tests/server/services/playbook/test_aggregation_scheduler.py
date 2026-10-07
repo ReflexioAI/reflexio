@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Iterable
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
@@ -910,7 +911,7 @@ def test_an_unavailable_inventory_does_not_clear_the_inventory_streak(
 
     scope = "playbook-aggregation-inventory"
     _seed_streak(scope, transient_failure_classifier("dropped"))
-    inventory: list[object] = [None]
+    inventory: list[Iterable[tuple[str, str | None]] | None] = [None]
     scheduler = aggregation_scheduler.PlaybookAggregationScheduler(
         context_provider=lambda: [],
         scope_inventory_provider=lambda: inventory[0],

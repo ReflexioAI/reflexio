@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 
 class SessionOutcomeMixin(ReflexioBase):
-    @_require_storage(SetSessionOutcomeResponse)
+    @_require_storage(SetSessionOutcomeResponse, raise_programming_errors=True)
     def mark_session_outcome(
         self,
         request: SetSessionOutcomeRequest | dict,
@@ -81,13 +81,14 @@ class SessionOutcomeMixin(ReflexioBase):
             )
         received_at = int(time())
         storage = self._get_storage()
-        prefix_kwargs: dict[str, Any] = {}
-        if trajectory_through_request_id is not None:
-            prefix_kwargs["trajectory_through_request_id"] = (
-                trajectory_through_request_id
-            )
-        if prefix_precondition is not None:
-            prefix_kwargs["prefix_precondition"] = prefix_precondition
+        prefix_kwargs: dict[str, Any] = {
+            key: value
+            for key, value in {
+                "trajectory_through_request_id": trajectory_through_request_id,
+                "prefix_precondition": prefix_precondition,
+            }.items()
+            if value is not None
+        }
         if request.occurred_at > received_at + 86400:
             return SetSessionOutcomeResponse(
                 success=False,
@@ -208,6 +209,8 @@ class SessionOutcomeMixin(ReflexioBase):
                     outcome_contract_digest=result.outcome_contract_digest,
                     finalized_trajectory_digest=result.finalized_trajectory_digest,
                 )
+        except (TypeError, AttributeError):
+            raise
         except Exception:
             logger.exception("Failed to record session outcome")
             return SetSessionOutcomeResponse(

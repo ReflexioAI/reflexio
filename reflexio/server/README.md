@@ -754,3 +754,19 @@ a health request. `/healthz` remains process liveness.
 Hosts can raise `ReadinessUnavailableError` for temporarily unqualified vector
 operations. Resumable extraction keeps these runs queued without spending the
 retry budget; resume refunds remain protected by the claim and user lease fence.
+
+### Session-outcome error handling
+
+The library's `mark_session_outcome` propagates `TypeError` and `AttributeError`
+so programming defects are not reported as unavailable storage. Storage failures
+still return `success=False` with `reason=storage_error`. This applies equally
+when internal trajectory cutover arguments are supplied; a moved prefix remains
+a structured `conflicting_finalization` response. Other storage-guarded library
+methods retain their existing error-handling behavior.
+
+SQLite evaluation-ID lookup accepts an unnamed (`None`) evaluator for older or
+directly inserted records, using NULL-safe equality while preserving user,
+session, and agent-version filtering. Normal evaluations use the configured
+singleton evaluator identity. This compatibility guarantee is SQLite-specific;
+other storage adapters must explicitly support nullable identities before
+callers rely on it there.

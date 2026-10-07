@@ -453,13 +453,17 @@ def test_transient_turn_failure_is_a_warning_and_releases_the_slot(
     # Nothing was claimed, so the failing unit is the org's claim.
     assert background_work._streaks["durable-learning-claim:org1"][0] == 2
     # No storage: nothing was attempted, so nothing is reported either way.
-    worker._factory = lambda _org_id: SimpleNamespace(storage=None)
+    worker._factory = lambda _org_id: cast(
+        RequestContext, SimpleNamespace(storage=None)
+    )
     worker.drain_org("org1", batch_size=1, lease_seconds=30)
     assert background_work._streaks["durable-learning-claim:org1"][0] == 2
     # The claim query runs and finds no user: the claim unit succeeded.
     idle = MagicMock()
     idle.claim_extraction.return_value = None
-    worker._factory = lambda _org_id: SimpleNamespace(storage=idle)
+    worker._factory = lambda _org_id: cast(
+        RequestContext, SimpleNamespace(storage=idle)
+    )
     worker.drain_org("org1", batch_size=1, lease_seconds=30)
     assert background_work._streaks == {}
 
@@ -490,7 +494,7 @@ def test_a_stuck_users_turn_streak_survives_idle_polls_and_other_users(
     idle.claim_extraction.return_value = None
     storages = iter([stuck, idle, healthy, stuck])
     worker = DurableLearningWorker(
-        lambda _org_id: SimpleNamespace(storage=next(storages))
+        lambda _org_id: cast(RequestContext, SimpleNamespace(storage=next(storages)))
     )
     stuck_scope = f"durable-learning-turn:org1:{_user_ref('user-a')}"
 
@@ -500,15 +504,16 @@ def test_a_stuck_users_turn_streak_survives_idle_polls_and_other_users(
     assert "user-a" not in " ".join(background_work._streaks)
 
     # The same user returns but has nothing to prepare: it did not complete.
-    worker._factory = lambda _org_id: SimpleNamespace(
-        storage=_claimed_storage("user-a", release_fails=None)
+    worker._factory = lambda _org_id: cast(
+        RequestContext,
+        SimpleNamespace(storage=_claimed_storage("user-a", release_fails=None)),
     )
     worker.drain_org("org1", batch_size=1, lease_seconds=30)
     assert background_work._streaks[stuck_scope][0] == 2
 
     # The same user's extraction completes: only now does its streak end.
-    worker._factory = lambda _org_id: SimpleNamespace(
-        storage=_delivering_storage("user-a")
+    worker._factory = lambda _org_id: cast(
+        RequestContext, SimpleNamespace(storage=_delivering_storage("user-a"))
     )
     with _executor_stubbed():
         worker.drain_org("org1", batch_size=1, lease_seconds=30)
@@ -561,7 +566,9 @@ def test_a_turn_that_swallows_its_setup_failure_does_not_end_the_streak(
             raise failure
 
     storage.defer_extraction_setup.side_effect = defer
-    worker = DurableLearningWorker(lambda _org_id: SimpleNamespace(storage=storage))
+    worker = DurableLearningWorker(
+        lambda _org_id: cast(RequestContext, SimpleNamespace(storage=storage))
+    )
     levels: list[int] = []
     handler = logging.Handler()
     handler.emit = lambda record: (  # type: ignore[method-assign]
@@ -591,7 +598,9 @@ def test_heartbeat_failure_is_scoped_to_the_leased_user(
     storage = _claimed_storage("user-a", release_fails=None)
     storage.renew_extraction.side_effect = transient_failure_classifier("SSL EOF")
     storage.prepare_extraction.side_effect = lambda *_args: _time.sleep(0.6)
-    worker = DurableLearningWorker(lambda _org_id: SimpleNamespace(storage=storage))
+    worker = DurableLearningWorker(
+        lambda _org_id: cast(RequestContext, SimpleNamespace(storage=storage))
+    )
 
     worker.drain_org("org1", batch_size=1, lease_seconds=1)
 

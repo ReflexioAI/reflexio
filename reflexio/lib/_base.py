@@ -72,13 +72,18 @@ def create_generation_litellm_client(
 
 
 def _require_storage[T: BaseModel](
-    response_type: type[T], *, msg_field: str = "message"
+    response_type: type[T],
+    *,
+    msg_field: str = "message",
+    raise_programming_errors: bool = False,
 ) -> Callable[..., Callable[..., T]]:
     """Decorator that guards a Reflexio method with storage-configured check and error handling.
 
     Args:
         response_type: The Pydantic response model to return on failure
         msg_field: Name of the message field on the response ('message' or 'msg')
+        raise_programming_errors: Propagate TypeError and AttributeError instead of
+            returning a failure response. Opt-in preserves other methods' behavior.
     """
 
     def decorator(method: Callable[..., T]) -> Callable[..., T]:
@@ -91,6 +96,10 @@ def _require_storage[T: BaseModel](
             try:
                 return method(self, *args, **kwargs)
             except Exception as e:
+                if raise_programming_errors and isinstance(
+                    e, (TypeError, AttributeError)
+                ):
+                    raise
                 return response_type.model_validate(
                     {"success": False, msg_field: str(e)}
                 )
