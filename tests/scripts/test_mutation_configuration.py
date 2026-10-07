@@ -14,4 +14,10 @@ def test_mutmut_loads_current_configuration(monkeypatch):
     assert config.tests_dir == ["tests/"]
     assert config.pytest_add_cli_args[:2] == ["-o", "addopts="]
     assert "not requires_credentials" in " ".join(config.pytest_add_cli_args)
-    assert Path("reflexio/") in config.also_copy
+    assert {Path("reflexio/"), Path("skills/"), Path("docs/lib/methods/")} <= set(
+        config.also_copy
+    )
+    assert all(
+        path.exists()
+        for path in (Path("reflexio/"), Path("skills/"), Path("docs/lib/methods/"))
+    )

@@ -416,4 +416,6 @@ Run locally with `nice -n 10 uv run mutmut run --max-children 2`, then
 Results are in `mutants/mutmut-cicd-stats.json`. The old `--paths-to-mutate`
 option and `html` command are unsupported. The former feedback utility target
 was removed because that source module no longer exists. `also_copy` supplies
-the remaining package so selected mutated modules can import their dependencies.
+the remaining package so selected mutated modules can import their dependencies,
+plus the skill bundles and method documentation used during test collection and
+contract checks.
