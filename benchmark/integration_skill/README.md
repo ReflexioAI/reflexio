@@ -2,6 +2,8 @@
 
 Measure whether a coding agent can repair an existing managed-cloud integration using the portable skill. This is a local application-integration benchmark, not a latency benchmark for Reflexio or evidence that an offline tuning run completed.
 
+See [the initial comparison](RESULTS.md) for the completed 12-trial experiment and its limitations.
+
 The default experiment has two applications (Python SDK and Python 3.11-compatible HTTP), two pinned skill versions, and three repetitions per version: 12 sequential Codex runs. Both applications already search, filter context, call the model, and publish responses; the deliberate defect is missing retrieved-learning references. The complete skill directory changes between versions; the application, local API guide, dependency environment, prompt, model, and reasoning setting remain the same. The HTTP fixture is compatible with Python 3.11 but runs under the common Python 3.12 benchmark interpreter.
 
 Versions: original `7ce76a843eef201f53029a027cba21a914a3ed29`, updated `91956d6c59865746a1591062dfa0ff2202285b90` (PR #594). The updated commit must be available locally, e.g. `git fetch origin team/integration-tuning-attribution`. Run from a checkout whose SDK matches the original commit; the candidate changes only skill documents. No installation or model calls occur in ordinary test collection.
