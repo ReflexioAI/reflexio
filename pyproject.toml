@@ -260,11 +260,11 @@ reportMissingImports = "warning"
 paths_to_mutate = [
     "reflexio/server/services/service_utils.py",
     "reflexio/server/services/deduplication_utils.py",
-    "reflexio/server/services/feedback/feedback_service_utils.py",
     "reflexio/server/services/storage/storage_base/_base.py",
 ]
-tests_dir = "tests/"
-runner = "python -m pytest -x -q -o 'addopts='"
+tests_dir = ["tests/"]
+also_copy = ["reflexio/"]
+pytest_add_cli_args = ["-o", "addopts=", "--timeout=120", "-m", "not integration and not e2e and not requires_credentials"]
 
 [tool.commitizen]
 name = "cz_conventional_commits"
