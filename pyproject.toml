@@ -89,7 +89,7 @@ dev = [
     "pyright>=1.1.400",
     "pytest-cov>=6.0",
     "syrupy>=5.0",
-    "mutmut>=3.2.0",
+    "mutmut>=3.8.0,<4",
     "commitizen>=4.1.0",
     "python-semantic-release>=10.0.0",
     "build>=1.0.0",
@@ -257,12 +257,12 @@ exclude = [
 reportMissingImports = "warning"
 
 [tool.mutmut]
-paths_to_mutate = [
+source_paths = [
     "reflexio/server/services/service_utils.py",
     "reflexio/server/services/deduplication_utils.py",
     "reflexio/server/services/storage/storage_base/_base.py",
 ]
-tests_dir = ["tests/"]
+pytest_add_cli_args_test_selection = ["tests/"]
 also_copy = ["reflexio/", "skills/", "docs/lib/methods/"]
 pytest_add_cli_args = ["-o", "addopts=", "--timeout=120", "-m", "not integration and not e2e and not requires_credentials"]
 

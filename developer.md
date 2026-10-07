@@ -407,9 +407,12 @@ enterprise managed-cloud health guide for rollout and phase interpretation.
 ### Mutation testing
 
 The enterprise weekly workflow runs the locked mutmut version on self-hosted
-background compute. The configuration uses mutmut 3's list-based `tests_dir`
+background compute. The configuration uses mutmut 3.8+ list-based `source_paths` and
+`pytest_add_cli_args_test_selection`
 and `pytest_add_cli_args`; pytest runs serially inside each of the two mutation
 children and excludes integration, e2e and paid-provider cases.
+Use the console entry point with the locked version: older mutmut 3.5 crashes
+when baseline tests start multiprocessing spawn workers.
 
 Run locally with `nice -n 10 uv run mutmut run --max-children 2`, then
 `uv run mutmut results --all true` and `uv run mutmut export-cicd-stats`.
