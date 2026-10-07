@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import logging
 import logging.handlers
-import tempfile
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -520,7 +519,9 @@ def test_a_handler_this_module_did_not_attach_is_left_alone() -> None:
     )
 
 
-def test_a_foreign_rotating_handler_does_not_suppress_the_verbose_profile() -> None:
+def test_a_foreign_rotating_handler_does_not_suppress_the_verbose_profile(
+    tmp_path: Path,
+) -> None:
     """The verbose profile must still get its console and both log files.
 
     ``RotatingFileHandler`` is a ``StreamHandler`` subclass via ``FileHandler``, so
@@ -531,7 +532,7 @@ def test_a_foreign_rotating_handler_does_not_suppress_the_verbose_profile() -> N
     """
     root = _blank_root()
     foreign = logging.handlers.RotatingFileHandler(
-        Path(tempfile.gettempdir()) / "foreign_probe.log", maxBytes=1024, backupCount=0
+        tmp_path / "foreign_probe.log", maxBytes=1024, backupCount=0
     )
     root.addHandler(foreign)
     try:
