@@ -81,13 +81,14 @@ class SessionOutcomeMixin(ReflexioBase):
             )
         received_at = int(time())
         storage = self._get_storage()
-        prefix_kwargs: dict[str, Any] = {}
-        if trajectory_through_request_id is not None:
-            prefix_kwargs["trajectory_through_request_id"] = (
-                trajectory_through_request_id
-            )
-        if prefix_precondition is not None:
-            prefix_kwargs["prefix_precondition"] = prefix_precondition
+        prefix_kwargs: dict[str, Any] = {
+            key: value
+            for key, value in {
+                "trajectory_through_request_id": trajectory_through_request_id,
+                "prefix_precondition": prefix_precondition,
+            }.items()
+            if value is not None
+        }
         if request.occurred_at > received_at + 86400:
             return SetSessionOutcomeResponse(
                 success=False,

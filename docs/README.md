@@ -44,3 +44,17 @@ The site runs on **port 3000** by default. When started via `run_services.sh` fr
 ```bash
 npm run build
 ```
+
+## Correlated examples
+
+Search, publish, and evaluation belong to the same serving session only when
+they share its identity. In the explorer, enter a fresh session ID for each new
+conversation, then reuse that ID in its related calls. The optional field has no
+shared default: a permanent demo ID would merge independent runs and trigger
+search deduplication across them. The playbook and simulation notebooks generate
+a run ID once and reuse the corresponding session through retrieval, publish,
+and evaluation.
+
+Run `npm run test:correlation` to verify the real explorer code generator and
+notebook session identities. The docs-correlation GitHub workflow runs this check
+and TypeScript on affected PRs.

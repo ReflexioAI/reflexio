@@ -22,10 +22,11 @@ from reflexio.server.services.storage.storage_base import SessionOutcomeContext
         StorageError("offline"),
     ],
 )
+@pytest.mark.parametrize("with_cutover", [False, True])
 @pytest.mark.parametrize(
     "operation", ["get_session_outcome_context", "record_session_outcome"]
 )
-def test_outcome_facade_surfaces_programming_errors(failure, operation):
+def test_outcome_facade_surfaces_programming_errors(failure, operation, with_cutover):
     facade = object.__new__(SessionOutcomeMixin)
     facade.request_context = MagicMock()
     facade.request_context.org_id = "test"
@@ -37,10 +38,11 @@ def test_outcome_facade_surfaces_programming_errors(failure, operation):
     request = SetSessionOutcomeRequest(
         session_id="session", outcome=SessionOutcomeKind.SUCCESS, occurred_at=2
     )
+    kwargs = {"trajectory_through_request_id": "r2"} if with_cutover else {}
     if isinstance(failure, StorageError):
-        response = facade.mark_session_outcome(request)
+        response = facade.mark_session_outcome(request, **kwargs)
         assert response.success is False
         assert response.reason == SessionOutcomeFailureReason.STORAGE_ERROR
     else:
         with pytest.raises(type(failure), match=str(failure)):
-            facade.mark_session_outcome(request)
+            facade.mark_session_outcome(request, **kwargs)

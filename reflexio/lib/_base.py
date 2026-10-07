@@ -82,6 +82,8 @@ def _require_storage[T: BaseModel](
     Args:
         response_type: The Pydantic response model to return on failure
         msg_field: Name of the message field on the response ('message' or 'msg')
+        raise_programming_errors: Propagate TypeError and AttributeError instead of
+            returning a failure response. Opt-in preserves other methods' behavior.
     """
 
     def decorator(method: Callable[..., T]) -> Callable[..., T]:

@@ -198,6 +198,7 @@ def _single_assigned_value(
             matches(part)
             for target in _binding_targets(node)
             for part in ast.walk(target)
+            if isinstance(part, ast.expr)
         ):
             binders.append(node)
         elif node is not within and any(

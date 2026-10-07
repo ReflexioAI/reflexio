@@ -92,7 +92,7 @@ class AgentEvaluationResultStoreMixin:
         self,
         user_id: str,
         session_id: str,
-        evaluation_name: str | None,
+        evaluation_name: str,
         agent_version: str,
     ) -> list[int]:
         """Return result ids for one eval identity tuple."""

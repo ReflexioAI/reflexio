@@ -528,9 +528,16 @@ def test_delete_by_ids_all_unknown_returns_zero(storage: BaseStorage) -> None:
 
 @pytest.mark.parametrize("evaluation_name", [None, "named-judge"])
 def test_eval_id_lookup_preserves_nullable_identity(
-    storage: BaseStorage, evaluation_name: str | None
+    storage: SQLiteStorage, evaluation_name: str | None
 ) -> None:
     _seed_eval_result(storage, "nullable-session", evaluation_name)
+    # Matching a nullable name must still preserve the rest of the identity.
+    _seed_eval_result(storage, "other-session", evaluation_name)
+    _seed_eval_result(storage, "nullable-session", evaluation_name, user_id="other")
+    _seed_eval_result(storage, "nullable-session", evaluation_name, agent_version="v2")
+    _seed_eval_result(
+        storage, "nullable-session", "other-judge" if evaluation_name is None else None
+    )
     ids = storage.get_agent_success_evaluation_result_ids(
         user_id="u1",
         session_id="nullable-session",
