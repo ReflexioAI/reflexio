@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import re
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -49,10 +50,11 @@ class Capture:
         self.records: list[dict[str, Any]] = []
         self.barrier = barrier
 
-    def start(self, seed: int, state: str) -> None:
+    def start(self, seed: int, state: str, identities: dict) -> None:
         self.local.record = {
             "seed": seed,
             "state": state,
+            "identities": identities.copy(),
             "search": [],
             "publish": [],
             "model": [],
@@ -115,6 +117,11 @@ def check_record(record: dict) -> None:
             f"agent-content-{seed}",
         ):
             assert marker in context, f"required context lost: {marker}"
+        actual_markers = set(re.findall(r"(?:profile|user|agent)-content-\d+", context))
+        expected_markers = {
+            f"{kind}-content-{seed}" for kind in ("profile", "user", "agent")
+        }
+        assert actual_markers == expected_markers, "foreign learning context injected"
         assert "[discard]" not in context, "discarded candidate injected"
         expected = [
             ("profile", f"profile-{seed}"),
@@ -126,7 +133,9 @@ def check_record(record: dict) -> None:
     body = record["publish"][0]
     search = record["search"][0]
     for key in ("user_id", "session_id", "source", "agent_version"):
-        assert body[key] == search[key], f"identity mismatch: {key}"
+        assert body[key] == search[key] == record["identities"][key], (
+            f"identity mismatch: {key}"
+        )
     request = PublishUserInteractionRequest.model_validate(body)
     assert len(request.interaction_data_list) == 2, "changed interaction count"
     user, agent = request.interaction_data_list
@@ -167,17 +176,24 @@ def grade(workspace: Path, kind: str) -> dict:
             client = client_for(kind, capture)
 
             def turn(
-                seed: int, state: str = "populated", capture=capture, client=client
+                seed: int,
+                state: str = "populated",
+                capture=capture,
+                client=client,
+                scenario=scenario,
             ) -> None:
-                capture.start(seed, state)
+                identities = {
+                    "user_id": f"benchmark-user-{scenario}",
+                    "session_id": f"benchmark-session-{scenario}",
+                    "source": f"benchmark-{scenario}",
+                    "agent_version": f"support@{scenario}",
+                }
+                capture.start(seed, state, identities)
                 response = module.handle_turn(
                     client,
                     capture,
                     user_message=f"message-{seed}",
-                    user_id="benchmark-user",
-                    session_id="benchmark-session",
-                    source="support",
-                    agent_version="support@1",
+                    **identities,
                 )
                 assert response == f"response:message-{seed}", "user response changed"
 
@@ -211,7 +227,19 @@ def main() -> None:
     parser.add_argument("workspace", type=Path)
     parser.add_argument("kind", choices=("python_app", "http_app"))
     args = parser.parse_args()
-    print(json.dumps(grade(args.workspace, args.kind)))
+    try:
+        result = grade(args.workspace, args.kind)
+    except Exception as exc:
+        result = {
+            "passed": False,
+            "checks": {
+                "application_load": {
+                    "passed": False,
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+            },
+        }
+    print(json.dumps(result))
 
 
 if __name__ == "__main__":

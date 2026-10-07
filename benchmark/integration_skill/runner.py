@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import json
 import os
@@ -55,17 +56,31 @@ def run_process(
             process.communicate(prompt.encode() if prompt else None, timeout=timeout)
         except subprocess.TimeoutExpired:
             timed_out = True
-            os.killpg(process.pid, signal.SIGTERM)
-            try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
+            stop_group(process)
+        except BaseException:
+            stop_group(process)
+            raise
+        finally:
+            # A completed leader can leave background commands in its group.
+            # Kill any survivors before the workspace is graded.
+            with contextlib.suppress(ProcessLookupError):
                 os.killpg(process.pid, signal.SIGKILL)
-                process.wait()
     return {
         "exit_code": process.returncode,
         "timed_out": timed_out,
         "elapsed_seconds": round(time.monotonic() - started, 3),
     }
+
+
+def stop_group(process: subprocess.Popen) -> None:
+    with contextlib.suppress(ProcessLookupError):
+        os.killpg(process.pid, signal.SIGTERM)
+    with contextlib.suppress(subprocess.TimeoutExpired):
+        process.wait(timeout=1)
+    # Always escalate: a descendant may ignore TERM after the leader exits.
+    with contextlib.suppress(ProcessLookupError):
+        os.killpg(process.pid, signal.SIGKILL)
+    process.wait()
 
 
 def parse_events(path: Path) -> dict:
@@ -243,7 +258,7 @@ print("sandbox verified")
     assert (home / "config.toml").exists()
 
 
-def evaluate(
+def _evaluate(
     output: Path,
     kind: str,
     version: str,
@@ -327,10 +342,12 @@ def evaluate(
             stderr=directory / "grade-stderr.log",
         )
     env.pop("CODEX_HOME")
+    grader_infra_error = grading["exit_code"] != 0 and not grading["timed_out"]
     try:
         grade = json.loads((directory / "grade.json").read_text())
     except json.JSONDecodeError:
         grade = {"passed": False, "error": "grader did not produce JSON"}
+        grader_infra_error = not grading["timed_out"]
     diff = subprocess.check_output(["git", "diff", "HEAD"], cwd=workspace, text=True)  # noqa: S603
     (directory / "changes.diff").write_text(diff)
     changed = subprocess.check_output(  # noqa: S603
@@ -347,7 +364,7 @@ def evaluate(
         )
         else "fail"
     )
-    if not events["completed"] and not execution["timed_out"]:
+    if grader_infra_error or (not events["completed"] and not execution["timed_out"]):
         status = "infrastructure_error"
     result = {
         "fixture": kind,
@@ -368,6 +385,64 @@ def evaluate(
     return result
 
 
+def evaluate(
+    output: Path,
+    kind: str,
+    version: str,
+    repetition: int,
+    python: Path,
+    codex: str,
+    model: str,
+    timeout: int,
+) -> dict:
+    started = time.monotonic()
+    try:
+        return _evaluate(
+            output, kind, version, repetition, python, codex, model, timeout
+        )
+    except Exception as exc:
+        directory = output / f"{kind}-{version}-{repetition}"
+        directory.mkdir(exist_ok=True)
+        result = {
+            "fixture": kind,
+            "version": version,
+            "skill_sha": VERSIONS[version],
+            "repetition": repetition,
+            "model": model,
+            "status": "infrastructure_error",
+            "elapsed_seconds": round(time.monotonic() - started, 3),
+            "usage": None,
+            "error": f"{type(exc).__name__}: {exc}",
+            "artifacts": str(directory),
+        }
+        (directory / "result.json").write_text(json.dumps(result, indent=2))
+        return result
+
+
+def provenance(python: Path) -> dict:
+    script = """import hashlib,importlib.metadata,json,sys
+sdk=importlib.metadata.distribution('reflexio-client')
+hash=hashlib.sha256()
+for file in sorted(sdk.files or [], key=str):
+    if str(file).startswith('reflexio/') and str(file).endswith('.py'):
+        hash.update(str(file).encode())
+        hash.update(sdk.locate_file(file).read_bytes())
+print(json.dumps({'python_version':sys.version,'sdk_version':sdk.version,
+                  'sdk_sha256':hash.hexdigest()}))
+"""
+    identity = json.loads(
+        subprocess.check_output([str(python), "-c", script], text=True)  # noqa: S603
+    )  # noqa: S603
+    if identity["sdk_version"] != "0.2.16":
+        raise ValueError("benchmark requires pinned reflexio-client==0.2.16")
+    identity["source_sha256"] = {
+        str(path.relative_to(ROOT)): digest(path)
+        for path in sorted(ROOT.rglob("*"))
+        if path.is_file() and path.suffix in (".py", ".md", ".json")
+    }
+    return identity
+
+
 def summarize(results: list[dict]) -> dict:
     summary = {}
     for version in VERSIONS:
@@ -386,6 +461,111 @@ def summarize(results: list[dict]) -> dict:
     return summary
 
 
+def write_report(output: Path, results: list[dict]) -> None:
+    lines = [
+        "# Integration skill benchmark",
+        "",
+        "| Fixture | Original | Updated |",
+        "| --- | --- | --- |",
+    ]
+    for kind in ("python_app", "http_app"):
+        cells = []
+        for version in VERSIONS:
+            rows = [
+                r for r in results if r["fixture"] == kind and r["version"] == version
+            ]
+            cells.append(
+                f"{sum(r['status'] == 'pass' for r in rows)}/{len(rows)} passed"
+            )
+        lines.append(f"| {kind} | {cells[0]} | {cells[1]} |")
+    lines.extend(
+        [
+            "",
+            "| Version | Status counts | Total agent seconds | Input tokens | Output tokens |",
+            "| --- | --- | --- | --- | --- |",
+        ]
+    )
+    for version, item in summarize(results).items():
+        lines.append(
+            f"| {version} | {item['counts']} | {item['elapsed_seconds']} | "
+            f"{item['reported_input_tokens']} | {item['reported_output_tokens']} |"
+        )
+    lines.extend(
+        [
+            "",
+            "See results.json for scenario checks, missing-usage counts, and per-run artifacts.",
+            "Small local sample; no live cloud or tuning verification.",
+            "Verification claims require manual transcript review.",
+        ]
+    )
+    (output / "report.md").write_text("\n".join(lines) + "\n")
+
+
+def rescore(output: Path, python: Path, codex: str, model: str) -> dict:
+    """Regrade saved applications uniformly without any further agent calls."""
+    identity = provenance(python)
+    (output / "final-grading-provenance.json").write_text(
+        json.dumps(identity, indent=2)
+    )
+    results = []
+    auth_cache = Path.home() / ".cache" / "reflexio-skill-benchmark"
+    auth_cache.mkdir(parents=True, exist_ok=True)
+    for path in sorted(output.glob("*/result.json")):
+        result = json.loads(path.read_text())
+        if result.get("status") == "infrastructure_error":
+            results.append(result)
+            continue
+        workspace = path.parent / "application"
+        env = {
+            "PATH": str(python.parent) + ":/usr/local/bin:/usr/bin:/bin",
+            "PYTHON_DOTENV_DISABLED": "1",
+        }
+        with tempfile.TemporaryDirectory(prefix="rescore-", dir=auth_cache) as temp:
+            home = Path(temp)
+            write_config(home, workspace, python, model, grading=True)
+            env["CODEX_HOME"] = str(home)
+            execution = run_process(
+                [
+                    codex,
+                    "sandbox",
+                    "-P",
+                    "benchmark",
+                    "-C",
+                    str(workspace),
+                    str(python),
+                    str(ROOT / "grader.py"),
+                    str(workspace),
+                    result["fixture"],
+                ],
+                cwd=workspace,
+                env=env,
+                timeout=45,
+                stdout=path.parent / "final-grade.json",
+                stderr=path.parent / "final-grade-stderr.log",
+            )
+        grade = json.loads((path.parent / "final-grade.json").read_text())
+        result["initial_grade"] = result.get("initial_grade", result["grade"])
+        result["grade"] = grade
+        result["final_grader_sha256"] = identity["source_sha256"]["grader.py"]
+        result["status"] = (
+            "pass"
+            if (
+                grade["passed"]
+                and execution["exit_code"] == 0
+                and result["exit_code"] == 0
+                and result["completed"]
+                and not result["protected_violations"]
+            )
+            else "fail"
+        )
+        path.write_text(json.dumps(result, indent=2))
+        results.append(result)
+    report = {"summary": summarize(results), "runs": results}
+    (output / "results.json").write_text(json.dumps(report, indent=2))
+    write_report(output, results)
+    return report
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path, required=True)
@@ -396,6 +576,11 @@ def main() -> None:
         help="Python in a preinstalled lightweight SDK + pytest venv",
     )
     parser.add_argument("--model", default="gpt-6.1-sol")
+    parser.add_argument(
+        "--rescore",
+        action="store_true",
+        help="Regrade existing outputs without model calls",
+    )
     parser.add_argument("--repetitions", type=int, default=3)
     parser.add_argument("--timeout", type=int, default=900)
     args = parser.parse_args()
@@ -404,9 +589,15 @@ def main() -> None:
     codex = shutil.which("codex")
     if not codex:
         parser.error("codex is required")
+    if args.rescore:
+        report = rescore(args.output, args.python.absolute(), codex, args.model)
+        print(json.dumps(report["summary"], indent=2))
+        return
     args.output.mkdir(parents=True, exist_ok=False)
+    identity = provenance(args.python.absolute())
     manifest = {
         "versions": VERSIONS,
+        "provenance": identity,
         "model": args.model,
         "reasoning": "medium",
         "prompt": PROMPT,
@@ -441,23 +632,7 @@ def main() -> None:
                     f"Completed: {result['status']} ({result['elapsed_seconds']}s)",
                     flush=True,
                 )
-    lines = [
-        "# Integration skill benchmark",
-        "",
-        "| Version | Results | Seconds |",
-        "| --- | --- | --- |",
-    ]
-    for version, item in summarize(results).items():
-        lines.append(f"| {version} | {item['counts']} | {item['elapsed_seconds']} |")
-    lines.extend(
-        [
-            "",
-            "See results.json for checks, reported usage, and per-run artifacts.",
-            "Small local sample; no live cloud or tuning verification.",
-            "Verification claims require manual transcript review.",
-        ]
-    )
-    (args.output / "report.md").write_text("\n".join(lines) + "\n")
+    write_report(args.output, results)
 
 
 if __name__ == "__main__":
