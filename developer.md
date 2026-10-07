@@ -403,3 +403,19 @@ do not imply a worker thread has stopped: request admission remains held until
 its application and queued/running retrieval work settles. Timing logs for every search
 and application outcome metrics are independent of sampled tracing. See the
 enterprise managed-cloud health guide for rollout and phase interpretation.
+
+### Mutation testing
+
+The enterprise weekly workflow runs the locked mutmut version on self-hosted
+background compute. The configuration uses mutmut 3's list-based `tests_dir`
+and `pytest_add_cli_args`; pytest runs serially inside each of the two mutation
+children and excludes integration, e2e and paid-provider cases.
+
+Run locally with `nice -n 10 uv run mutmut run --max-children 2`, then
+`uv run mutmut results --all true` and `uv run mutmut export-cicd-stats`.
+Results are in `mutants/mutmut-cicd-stats.json`. The old `--paths-to-mutate`
+option and `html` command are unsupported. The former feedback utility target
+was removed because that source module no longer exists. `also_copy` supplies
+the remaining package so selected mutated modules can import their dependencies,
+plus the skill bundles and method documentation used during test collection and
+contract checks.
