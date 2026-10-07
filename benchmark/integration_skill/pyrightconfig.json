@@ -1,0 +1,10 @@
+{
+  "include": ["runner.py", "grader.py", "fixtures", "tests"],
+  "typeCheckingMode": "basic",
+  "extraPaths": ["../.."],
+  "executionEnvironments": [
+    {"root": "fixtures/python_app", "extraPaths": ["fixtures"]},
+    {"root": "fixtures/http_app", "extraPaths": ["fixtures"]},
+    {"root": ".", "extraPaths": ["../.."]}
+  ]
+}

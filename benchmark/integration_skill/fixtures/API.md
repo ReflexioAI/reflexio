@@ -1,0 +1,11 @@
+# Local integration contract
+
+This application already uses a full-access managed project key, configured by its production dependency-injection layer. Do not add credentials, change endpoints, replace its client/model interface, or add another ingestion method. This task is offline: use the supplied skill, SDK, and this contract; do not perform live verification or install dependencies.
+
+`handle_turn` is the application entrypoint. Keep its signature, existing response, source/version/session boundaries, and filtering behavior. Search candidates beginning with `[discard]` are intentionally excluded from model context. `model.generate(user_message, context)` records the model input and returns the response. `model.diagnostic(message)` is the existing safe diagnostic sink.
+
+Search is `/api/search`, with `success`, `profiles`, `user_playbooks`, `agent_playbooks`, and optional `experiment`. The SDK exposes equivalent attributes. Each result has `content` and respectively `profile_id` (string), `user_playbook_id` (integer), or `agent_playbook_id` (integer). `client.for_session(session_id).search(...)` and `.publish_interaction(...)` bind the SDK calls to one session. HTTP `client.post(path, json=payload, timeout=5)` returns decoded JSON and raises on transport/HTTP failure; credentials/base URL are already configured. Publish is `/api/publish_interaction`, with identities and `interaction_data_list`; the SDK accepts `interactions=[InteractionData(...)]`. Accepted agent roles include `Agent` and `Assistant`. Search failure must not block a response. Check publish `success` and `warnings`.
+
+Use actual IDs for fields documented by the supplied skill. The SDK request and response models are available in the installed `reflexio` package. For readback, `client.get_interactions(user_id=..., start_time=..., end_time=..., top_k=...)` posts to `/api/get_interactions`. Returned interactions expose `request_id` and `retrieved_learnings`. Live checks have not been authorized.
+
+Run the existing smoke test with `.venv/bin/python -m pytest -q`. Add appropriate local integration tests as needed. Preserve `support.py`, `pyproject.toml`, and existing tests; production receives its real dependencies externally.
