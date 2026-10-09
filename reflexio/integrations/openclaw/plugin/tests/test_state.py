@@ -461,6 +461,104 @@ class TestRetrievedLearningRefs:
         )
         assert "retrieved_learnings" not in turns[0]
 
+    def test_abandoned_turn_refs_do_not_attach_to_the_next_response(self):
+        _, turns = state.unpublished_slice(
+            [
+                {"role": "User", "content": "abandoned"},
+                {
+                    "retrieved_learning_refs": [
+                        {"kind": "user_playbook", "learning_id": "old"}
+                    ]
+                },
+                {"role": "User", "content": "next"},
+                {
+                    "retrieved_learning_refs": [
+                        {"kind": "user_playbook", "learning_id": "new"}
+                    ]
+                },
+                {"role": "Assistant", "content": "next response"},
+            ]
+        )
+        assert turns[-1]["retrieved_learnings"] == [
+            {"kind": "user_playbook", "learning_id": "new"}
+        ]
+
+    def test_abandoned_refs_do_not_consume_the_session_cap(self):
+        cap = state._RETRIEVED_LEARNINGS_SESSION_CAP
+        _, turns = state.unpublished_slice(
+            [
+                {"role": "User", "content": "abandoned"},
+                {
+                    "retrieved_learning_refs": [
+                        {"kind": "user_playbook", "learning_id": str(n)}
+                        for n in range(cap)
+                    ]
+                },
+                {"role": "User", "content": "next"},
+                {
+                    "retrieved_learning_refs": [
+                        {"kind": "profile", "learning_id": "new"}
+                    ]
+                },
+                {"role": "Assistant", "content": "next response"},
+            ]
+        )
+        assert turns[-1]["retrieved_learnings"] == [
+            {"kind": "profile", "learning_id": "new"}
+        ]
+
+    def test_each_valid_watermark_scopes_refs_before_counting_the_cap(self):
+        cap = state._RETRIEVED_LEARNINGS_SESSION_CAP
+        published, turns = state.unpublished_slice(
+            [
+                {
+                    "retrieved_learning_refs": [
+                        {"kind": "user_playbook", "learning_id": str(n)}
+                        for n in range(cap)
+                    ]
+                },
+                {"published_up_to": 1, "published_retrieved_learnings": 0},
+                {"role": "Assistant", "content": "already published without refs"},
+                {"published_up_to": 3, "published_retrieved_learnings": 0},
+                {
+                    "retrieved_learning_refs": [
+                        {"kind": "profile", "learning_id": "new"}
+                    ]
+                },
+                {"role": "Assistant", "content": "next response"},
+            ]
+        )
+        assert published == 3
+        assert len(turns) == 1
+        assert turns[0]["retrieved_learnings"] == [
+            {"kind": "profile", "learning_id": "new"}
+        ]
+
+    def test_invalid_intermediate_markers_do_not_discard_pending_refs(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr(state, "_RETRIEVED_LEARNINGS_SESSION_CAP", 1)
+        _, turns = state.unpublished_slice(
+            [
+                {
+                    "retrieved_learning_refs": [
+                        {"kind": "profile", "learning_id": "kept"}
+                    ]
+                },
+                {"published_up_to": 99},
+                {"role": "Assistant", "content": "published"},
+                {"published_up_to": 3},
+                {
+                    "retrieved_learning_refs": [
+                        {"kind": "profile", "learning_id": "new"}
+                    ]
+                },
+                {"role": "Assistant", "content": "next"},
+            ]
+        )
+        assert len(turns) == 1
+        assert "retrieved_learnings" not in turns[0]
+
     def test_session_cap_trims_the_tail(self):
         """Over-cap the evaluator returns failed/candidate_limit_exceeded for
         the whole session, and the server 422s an over-cap publish request."""
@@ -546,3 +644,53 @@ class TestRetrievedLearningRefs:
 
         assert published == 1
         assert [turn["content"] for turn in turns] == ["raced in"]
+
+
+@pytest.mark.parametrize("marker", [True, False, "1", None, -1, 99])
+def test_invalid_watermarks_cannot_acknowledge_records(marker):
+    assert (
+        state._published_watermarks([{"role": "User"}, {"published_up_to": marker}])
+        == []
+    )
+
+
+@pytest.mark.parametrize("receipt", [True, -1, 1001, "0", None])
+def test_invalid_reference_receipts_preserve_legacy_budget(receipt):
+    records = [
+        {"retrieved_learning_refs": [{"kind": "profile", "learning_id": "old"}]},
+        {"published_up_to": 1, "published_retrieved_learnings": receipt},
+    ]
+    assert state.published_reference_count(records) == 1
+
+
+def test_legacy_abandoned_refs_still_reserve_the_server_budget(monkeypatch):
+    monkeypatch.setattr(state, "_RETRIEVED_LEARNINGS_SESSION_CAP", 1)
+    _, turns = state.unpublished_slice(
+        [
+            {"role": "User", "content": "abandoned"},
+            {"retrieved_learning_refs": [{"kind": "profile", "learning_id": "old"}]},
+            {"role": "User", "content": "next"},
+            {"role": "Assistant", "content": "old plugin attached stale reference"},
+            {"published_up_to": 4},
+            {"retrieved_learning_refs": [{"kind": "profile", "learning_id": "new"}]},
+            {"role": "Assistant", "content": "current"},
+        ]
+    )
+    assert len(turns) == 1
+    assert "retrieved_learnings" not in turns[0]
+
+
+def test_later_receipt_cannot_reduce_acknowledged_reference_budget(monkeypatch):
+    monkeypatch.setattr(state, "_RETRIEVED_LEARNINGS_SESSION_CAP", 1)
+    records = [
+        {"retrieved_learning_refs": [{"kind": "profile", "learning_id": "old"}]},
+        {"role": "Assistant", "content": "first"},
+        {"published_up_to": 2, "published_retrieved_learnings": 1},
+        {"role": "Assistant", "content": "second"},
+        {"published_up_to": 4, "published_retrieved_learnings": 0},
+        {"retrieved_learning_refs": [{"kind": "profile", "learning_id": "new"}]},
+        {"role": "Assistant", "content": "third"},
+    ]
+    assert state.published_reference_count(records) == 1
+    _, turns = state.unpublished_slice(records)
+    assert "retrieved_learnings" not in turns[0]

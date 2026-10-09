@@ -382,21 +382,59 @@ def _wire_retrieved_ref(value: Any) -> dict[str, str] | None:
     return {"kind": str(kind), "learning_id": learning_id}
 
 
-def _published_watermark(records: list[dict[str, Any]]) -> int:
-    """Return the offset the last valid ``published_up_to`` marker declares.
+def _published_watermarks(records: list[dict[str, Any]]) -> list[int]:
+    """Return all valid ``published_up_to`` offsets in record order.
 
-    Clamped to the marker's own index: an over-range marker (tampered or
-    corrupt buffer) would otherwise skip every later turn and silently drop
-    valid unpublished records.
+    Only offsets within the marker's own index are accepted: an over-range
+    marker would otherwise silently drop valid unpublished records.
     """
-    published = 0
+    published = []
     for idx, rec in enumerate(records):
         if "published_up_to" not in rec:
             continue
         marker = rec.get("published_up_to")
-        if isinstance(marker, int) and 0 <= marker <= idx:
-            published = marker
+        if type(marker) is int and 0 <= marker <= idx:
+            published.append(marker)
     return published
+
+
+def published_reference_count(records: list[dict[str, Any]]) -> int:
+    """Reserve sent references, conservatively for legacy buffers.
+
+    New successful markers store the cumulative count actually sent. Legacy
+    markers lack that receipt, and old folds could attach abandoned references,
+    so reserve valid references before their offset rather than guessing what
+    an earlier version sent. This can trim sooner, never over-admit.
+    """
+    published = 0
+    count = None
+    acknowledged = 0
+    for idx, rec in enumerate(records):
+        marker = rec.get("published_up_to")
+        if type(marker) is int and 0 <= marker <= idx:
+            published = marker
+            candidate = rec.get("published_retrieved_learnings")
+            count = (
+                candidate
+                if type(candidate) is int
+                and 0 <= candidate <= _RETRIEVED_LEARNINGS_SESSION_CAP
+                else None
+            )
+            if count is not None:
+                acknowledged = max(acknowledged, count)
+    if count is not None:
+        return acknowledged
+    return max(
+        acknowledged,
+        min(
+            _RETRIEVED_LEARNINGS_SESSION_CAP,
+            sum(
+                sum(_wire_retrieved_ref(ref) is not None for ref in refs)
+                for rec in records[:published]
+                if isinstance(refs := rec.get("retrieved_learning_refs"), list)
+            ),
+        ),
+    )
 
 
 def unpublished_slice(
@@ -404,33 +442,15 @@ def unpublished_slice(
 ) -> tuple[int, list[dict[str, Any]]]:
     """Split records into (last-published index, unpublished turn records).
 
-    The watermark is resolved first, then the buffer is folded from index 0
-    and turns at or after the watermark are returned. Tool records fold into
-    the closest following Assistant turn's ``tools_used``;
-    ``retrieved_learning_refs`` records fold into the closest following
-    Assistant turn's ``retrieved_learnings``.
+    Resolve the last valid watermark before folding its unpublished suffix.
+    An offset describes the snapshot sent, not the marker's physical position:
+    records appended during a publish remain eligible for the next publish.
+    References and tool calls attach to the following Assistant turn, and a
+    new User turn discards pending context from an abandoned response.
 
-    Folding from 0 rather than resetting at the marker is load-bearing twice
-    over, and both are real losses rather than tidiness:
-
-    * A record appended WHILE a publish is in flight used to be destroyed by
-      that publish's own watermark. ``publish_unpublished`` reads a snapshot
-      of length N, sends it, then stamps ``published_up_to = N`` -- but a hook
-      firing during the HTTP call appends at index N, so the marker lands at
-      index N+1 declaring N. The old single pass cleared its accumulators on
-      seeing any marker, so the record at index N -- a refs record, a user
-      turn, a tool call -- was dropped even though the marker never claimed
-      it. Resolving the watermark first and filtering by index keeps exactly
-      the records the marker does not cover.
-    * ``attached_total`` used to reset at every marker, which bounded each
-      HTTP request and nothing else. The binding limit is the evaluator's, and
-      it is SESSION-wide: ``RetrievedLearningEvaluator`` refuses a session
-      carrying more than ``MAX_CANONICAL_CANDIDATES`` distinct
-      ``(interaction_id, kind, learning_id)`` refs, returning ``failed`` with
-      ``candidate_limit_exceeded`` and making zero LLM calls. A session only
-      grows, so once crossed, every later evaluation of that session fails
-      permanently -- at up to nine refs per turn, around 112 attributed turns.
-      Counting from 0 makes the cap mean what the evaluator means by it.
+    Successful publish markers preserve the cumulative reference count, so
+    the evaluator's session-wide limit holds across publishes. Legacy buffers
+    reserve historical references conservatively; see published_reference_count.
 
     Returns:
         tuple[int, list[dict]]: ``(published_up_to, interactions)``. The
@@ -438,19 +458,19 @@ def unpublished_slice(
             the list is formatted for ``InteractionData`` construction.
     """
     buffered = list(records)
-    published = _published_watermark(buffered)
+    watermarks = _published_watermarks(buffered)
+    published = watermarks[-1] if watermarks else 0
+    boundaries = set(watermarks)
     pending_tools: list[dict[str, Any]] = []
     pending_refs: list[dict[str, str]] = []
     turns: list[dict[str, Any]] = []
-    attached_total = 0
+    attached_total = published_reference_count(buffered)
     truncated = 0
-    for idx, rec in enumerate(buffered):
-        if idx == published:
-            # Pending state does not cross the watermark. Refs or tool calls
-            # sitting unattached when a publish completed belong to turns that
-            # were already sent; carrying them forward would attribute stale
-            # context to the next turn. They have still been counted above,
-            # because the evaluator counts them against the session.
+    for idx in range(published, len(buffered)):
+        rec = buffered[idx]
+        if idx in boundaries:
+            # Clear at the snapshot boundary, never at the marker's physical
+            # position: hooks can append records while publication is in flight.
             pending_tools = []
             pending_refs = []
         if "published_up_to" in rec:
@@ -462,6 +482,11 @@ def unpublished_slice(
             )
             continue
         role = rec.get("role")
+        if role == "User":
+            # A new prompt closes an abandoned turn. Neither its injected
+            # context nor its unfinished tools belong to the next response.
+            pending_refs = []
+            pending_tools = []
         if role == "Assistant_tool":
             raw_tool_input = rec.get("tool_input")
             tool_input = raw_tool_input if isinstance(raw_tool_input, dict) else {}
@@ -512,8 +537,7 @@ def unpublished_slice(
                 pending_refs = []
                 if retrieved:
                     turn["retrieved_learnings"] = retrieved
-            if idx >= published:
-                turns.append(turn)
+            turns.append(turn)
     if truncated:
         _LOGGER.warning(
             "Dropped %d retrieved-learning refs at the session cap of %d",

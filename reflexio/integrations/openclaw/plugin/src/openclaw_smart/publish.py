@@ -90,6 +90,15 @@ def publish_unpublished(
             skip_aggregation=skip_aggregation,
         )
         if ok:
-            state.append(session_id, {"published_up_to": len(records)})
+            reference_count = state.published_reference_count(records) + sum(
+                len(turn.get("retrieved_learnings", [])) for turn in interactions
+            )
+            state.append(
+                session_id,
+                {
+                    "published_up_to": len(records),
+                    "published_retrieved_learnings": reference_count,
+                },
+            )
             return ("ok", len(interactions))
         return ("failed", len(interactions))
