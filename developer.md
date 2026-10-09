@@ -454,3 +454,35 @@ was removed because that source module no longer exists. `also_copy` supplies
 the remaining package so selected mutated modules can import their dependencies,
 plus the skill bundles and method documentation used during test collection and
 contract checks.
+
+### Windows startup and publish diagnostics (#482, #295)
+
+The `Windows local diagnostics` workflow runs on `windows-2022`. It downloads
+MiniLM into an empty temporary cache, verifies a real 384-dimension embedding,
+and checks that the CLI supervisor launches its backend child only afterward.
+The backend child is a launch marker; this does not exercise full backend
+configuration, the reranker, or paid extraction.
+
+It also runs a separate temporary-SQLite probe: 20 concurrent publishes through
+`/api/publish_interaction` alongside 20 profile reads. Every publish must return
+`success=true` and persist its request. Inference and background extraction are
+excluded to isolate storage/admission. The child emits Python/package/platform
+versions and dumps thread stacks after 20 seconds; its parent kills it at 30
+seconds so a stuck worker cannot hang the test indefinitely.
+
+Run the same probes from a Windows checkout (PowerShell):
+
+```powershell
+uv sync --group dev
+$env:PYTHON_DOTENV_DISABLED = "1"
+$env:RUN_COLD_MODEL_PROBE = "1"
+uv run pytest tests/e2e_tests/test_local_model_cold_start_diagnostic.py tests/e2e_tests/test_local_publish_concurrency_diagnostic.py tests/cli/test_utils.py -o addopts= --timeout=360 -v -s
+```
+
+`RUN_COLD_MODEL_PROBE` is test-only and opts into the ~79MB model download.
+The cache and database are disposable; existing `.env`, databases, and model
+caches are unchanged. A passing Windows Server runner narrows these reports;
+it does not reproduce the original Windows 11/Bash environment. To close an
+original hang report, still capture the installed version, exact command or
+request, and thread stacks from the failing environment, including inference
+and extraction if they were active.

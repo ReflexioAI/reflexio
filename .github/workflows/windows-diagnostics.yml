@@ -1,0 +1,49 @@
+name: Windows local diagnostics
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/windows-diagnostics.yml
+      - reflexio/**
+      - pyproject.toml
+      - uv.lock
+      - tests/conftest.py
+      - tests/cli/test_utils.py
+      - tests/e2e_tests/test_local_publish_concurrency_diagnostic.py
+      - tests/e2e_tests/test_local_model_cold_start_diagnostic.py
+      - tests/test_scripts/local_publish_probe.py
+
+permissions:
+  contents: read
+
+jobs:
+  local-diagnostics:
+    runs-on: windows-2022
+    timeout-minutes: 20
+    env:
+      PYTHON_DOTENV_DISABLED: "1"
+      RUN_COLD_MODEL_PROBE: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - name: Install development dependencies
+        run: uv sync --group dev
+      - name: Probe real cold model and concurrent SQLite admission
+        run: >-
+          uv run pytest
+          tests/e2e_tests/test_local_model_cold_start_diagnostic.py
+          tests/e2e_tests/test_local_publish_concurrency_diagnostic.py
+          tests/cli/test_utils.py
+          -o addopts= --timeout=360 --junitxml=windows-diagnostics.xml -v -s
+      - name: Preserve diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-local-diagnostics
+          path: windows-diagnostics.xml
+          if-no-files-found: warn
