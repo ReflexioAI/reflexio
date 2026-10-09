@@ -202,3 +202,17 @@ def test_entrypoint_default_listener_is_loopback():
     from reflexio.server.__main__ import _build_parser
 
     assert _build_parser().parse_args(["--port", "8061"]).host == "127.0.0.1"
+
+
+@pytest.mark.parametrize("key", ["", "configured-secret"])
+def test_standalone_swagger_advertises_the_bearer_authentication_option(
+    monkeypatch, key
+):
+    monkeypatch.setenv("REFLEXIO_API_KEY", key)
+    monkeypatch.setattr(api.app, "openapi_schema", None)
+    schema = api.app.openapi()
+    assert schema["components"]["securitySchemes"]["BearerAuth"]["scheme"] == "bearer"
+    expected = [{"BearerAuth": []}] if key else [{"BearerAuth": []}, {}]
+    assert schema["paths"]["/api/whoami"]["get"]["security"] == expected
+    for path in ["/health", "/healthz", "/healthz/eval", "/meta/version"]:
+        assert schema["paths"][path]["get"]["security"] == []

@@ -1,11 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Settings, AlertCircle, CheckCircle2, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useSettings } from "@/hooks/use-settings";
 import {
-  ReflexioConfig,
+  type ReflexioConfig,
   defaultConfig,
   serializeConfig,
 } from "@/lib/config-schema";
@@ -53,54 +53,74 @@ function errorMessage(err: unknown): string {
 }
 
 export function ConfigEditor() {
-  const { apiEndpoint } = useSettings();
+  const { apiEndpoint, apiKey } = useSettings();
   const [config, setConfig] = useState<ReflexioConfig>(defaultConfig);
   const [status, setStatus] = useState<Status>({ kind: "loading" });
+  const operation = useRef(0);
 
   const baseUrl = useMemo(() => apiEndpoint.replace(/\/$/, ""), [apiEndpoint]);
 
-  const fetchConfig = useCallback(async (): Promise<ReflexioConfig> => {
-    const res = await fetch(`${baseUrl}/api/get_config`);
+  const fetchConfig = useCallback(async (signal?: AbortSignal): Promise<ReflexioConfig> => {
+    const res = await fetch(`${baseUrl}/api/get_config`, {
+      headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : undefined,
+      signal,
+    });
     if (!res.ok) {
       const body = await res.text();
       throw new Error(`GET /api/get_config failed (${res.status}): ${body}`);
     }
     return hydrate(await res.json());
-  }, [baseUrl]);
+  }, [baseUrl, apiKey]);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (signal?: AbortSignal) => {
+    const current = ++operation.current;
     setStatus({ kind: "loading" });
     try {
-      setConfig(await fetchConfig());
+      const next = await fetchConfig(signal);
+      if (current !== operation.current || signal?.aborted) return;
+      setConfig(next);
       setStatus({ kind: "idle" });
     } catch (err) {
+      if (current !== operation.current || signal?.aborted) return;
       setStatus({ kind: "error", message: errorMessage(err) });
     }
   }, [fetchConfig]);
 
   useEffect(() => {
-    void load();
+    const controller = new AbortController();
+    void load(controller.signal);
+    return () => {
+      controller.abort();
+    };
   }, [load]);
 
   const save = useCallback(async () => {
+    const current = ++operation.current;
     setStatus({ kind: "saving" });
     try {
       const payload = serializeConfig(config);
       const res = await fetch(`${baseUrl}/api/set_config`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+        },
         body: JSON.stringify(payload),
       });
       if (!res.ok) {
         const body = await res.text();
         throw new Error(`${res.status}: ${body}`);
       }
-      setConfig(await fetchConfig());
+      if (current !== operation.current) return;
+      const next = await fetchConfig();
+      if (current !== operation.current) return;
+      setConfig(next);
       setStatus({ kind: "success", message: "Config saved." });
     } catch (err) {
+      if (current !== operation.current) return;
       setStatus({ kind: "error", message: errorMessage(err) });
     }
-  }, [baseUrl, config, fetchConfig]);
+  }, [baseUrl, apiKey, config, fetchConfig]);
 
   const busy = status.kind === "loading" || status.kind === "saving";
   const payload = serializeConfig(config);
@@ -154,7 +174,7 @@ export function ConfigEditor() {
             </Button>
             <Button
               variant="outline"
-              onClick={load}
+              onClick={() => void load()}
               disabled={busy}
               className="gap-2"
             >

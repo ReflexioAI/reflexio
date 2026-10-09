@@ -73,7 +73,9 @@ Windows-only model initialization failure still needs its own diagnosis.
 The standalone backend binds `127.0.0.1` by default. With no
 `REFLEXIO_API_KEY`, data endpoints accept only loopback clients using a loopback
 hostname; browser origins must also be loopback. Remote callers and untrusted
-browser origins receive 401. Health, version, and API documentation remain public.
+browser origins receive 401. Health, version, and API documentation remain public. In Swagger, use Authorize
+to supply the key. In the bundled docs, enter it in the top-bar API key field;
+it stays in memory and clears on endpoint changes or page reloads.
 
 For network access, configure a strong `REFLEXIO_API_KEY` before startup and use
 `reflexio services start --backend-host 0.0.0.0`. Every data request, including
