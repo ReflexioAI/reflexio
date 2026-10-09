@@ -26,6 +26,9 @@ pytestmark = pytest.mark.e2e
 def test_custom_gateway_keeps_nested_model_id_and_bearer_key(
     gateway_model, monkeypatch
 ):
+    # This contract intentionally targets loopback, regardless of the caller's
+    # production URL policy. monkeypatch restores that policy after the test.
+    monkeypatch.delenv("REFLEXIO_BLOCK_PRIVATE_URLS", raising=False)
     # Keep inherited observability settings from sending this local probe to
     # a remote telemetry service. Completion transport itself stays real.
     monkeypatch.delenv("BRAINTRUST_API_KEY", raising=False)
