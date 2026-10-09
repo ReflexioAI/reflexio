@@ -108,6 +108,8 @@ Also retain `results.experiment` when it is present. It is the server-assigned r
 
 ## Publish the completed turn
 
+Existing managed-cloud integrations must populate this field too: enabling playbook tuning in Settings does not attach playbooks to sessions. Audit the existing publish call and supply the references built from the same retained search results as the prompt. In particular, the offline tuner's user-playbook attribution uses `kind="user_playbook"` and the actual returned `user_playbook_id` as a string. References to profiles or agent playbooks keep their respective kinds; they are not substitutes for a user-playbook reference.
+
 Use the synchronous method for a synchronous application:
 
 ```python
@@ -141,6 +143,8 @@ publish_result = await session.publish_interaction_async(...)
 ```
 
 Check `publish_result.success`; a false value must enter the application's publish-failure diagnostic path even if no exception was raised. Observe `publish_result.warnings`, which can report ignored fields or skipped interactions. Retain `publish_result.request_id` and `publish_result.learning_status` when present. Handle diagnostics without replacing the completed agent response or logging interaction content or credentials.
+
+Verify through the application's real turn handler with mocked search results: capture the model input and the publish call, and assert that each injected learning's reference appears on the agent interaction. Include a discarded result, empty/failed search, consecutive turns, and concurrent requests. For an authorized live test, read back the stored interaction with `client.get_interactions(user_id=..., start_time=..., end_time=..., top_k=...)`, match its `request_id` to `publish_result.request_id`, and confirm `retrieved_learnings` contains the injected reference. A successful publish alone is not this verification; neither check guarantees a tuning run. See [Verification](../SKILL.md#verification).
 
 Keep the normal defaults `wait_for_response=False`, `force_extraction=False`, and `skip_aggregation=False`. The call still waits for the HTTP response; `wait_for_response=False` means the server queues extraction instead of processing it synchronously.
 

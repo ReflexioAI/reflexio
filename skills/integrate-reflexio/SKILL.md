@@ -105,6 +105,16 @@ Render a compact, delimited context block that keeps meaning and trust boundarie
 
 Per turn, start a fresh `retrieved_learnings` list recording the `kind` and stable `learning_id` of every learning included in that turn's model input, used visibly or not. Exclude discarded candidates and earlier turns' references. A search with `session_id` may omit learnings already returned in that session — expected, best-effort, and no reason to carry earlier learnings forward.
 
+### Existing integrations and managed-cloud playbook tuning
+
+Enabling playbook tuning in Settings alone is not enough. The managed offline tuner needs evidence linking a served user playbook to the session and response it informed. Search and ingestion must agree on the project, `user_id`, `session_id`, and `agent_version`; the completed agent interaction must carry the injected playbook's reference in `retrieved_learnings`. This supplies attribution, not a guarantee that tuning will run: the tuner's other eligibility and evidence requirements still apply.
+
+When integrating into an application that already uses Reflexio, audit its actual search, prompt construction, and ingestion path. A successful publish without references does not verify attribution. Preserve correctly populated references and repair missing ones at the existing seam; do not add a second publish flow. Use `kind="user_playbook"` with the returned `user_playbook_id` as a string for user playbooks. Preserve `agent_playbook` and `profile` references too, using their own returned IDs; never relabel them as user playbooks or substitute prompt tags, titles, or `citations` for these identities.
+
+For direct publishing, attach the references to the completed agent interaction as shown below. For connected tracing, follow the connection skill's attribution follow-up: record the injected references on the response trace and map `references` from that observed field into imported interactions. Logging without the active reference mapping does not complete attribution. Missing references remain nonblocking for dialogue import, but must be reported as a tuning-attribution gap. Obtain the required authorization before patching tracing or updating an active source mapping; do not claim historical attribution was repaired or fabricate references for old sessions.
+
+### Retrieval experiment assignment
+
 If search returns a retrieval-experiment assignment, keep its ID and arm with the request. A holdout response succeeds with no learnings.
 
 ### After the agent responds — direct publishing
@@ -157,6 +167,8 @@ Focused tests, both methods:
 
 Direct publishing, additionally: publication follows the completed response with the expected identity fields, every injected learning's `kind` and stable ID, and any experiment assignment echoed unchanged; `success=False` and `warnings` are observed without disrupting the response.
 
+**Test attribution through the application's integration path.** Supply mocked search results with distinct profile, user-playbook, and agent-playbook IDs; capture both the real model-call input and the outgoing publish payload (or response trace for connected ingestion). Assert that every retained, injected learning has its matching `(kind, learning_id)` on the completed agent interaction, numeric playbook IDs are strings, and discarded candidates are absent. Exercise an empty result and a failed search with no injected context, consecutive turns, and concurrent requests; references must not leak between turns or requests. Do not settle for testing the reference-list helper alone. For example, injecting returned user playbook `42` must publish `{"kind":"user_playbook","learning_id":"42"}` on that turn's agent interaction.
+
 Connected source: run the connection skill's preview and validation checks, confirm no overlapping publish flow was introduced, and report draft validation separately from activation and observed imports. A saved draft is not evidence of import.
 
 Live checks, when credentials are available:
@@ -165,5 +177,6 @@ Live checks, when credentials are available:
 - **Expect an empty result on a new project.** Nothing is retrievable until interactions are ingested and extracted; empty search is not a wiring failure.
 - **End-to-end verification requires the developer's consent** (or a request for live verification). For direct publishing, use a disposable test project and unique test `user_id`, `session_id`, and `agent_version`; publish one exchange with `force_extraction=True` and `skip_aggregation=True`, then poll learning status with a bounded deadline and search again after extraction completes. Report pending or failed extraction instead of waiting indefinitely. A synthetic exchange may yield no learnings. `delete_session` removes requests and interactions, not extracted learnings; do not claim it fully cleans up the test.
 - **Connected-source verification:** after the developer activates the source, observe an actual import through the agreed traffic filters and mapping, then verify retrieval using its mapped identities once extraction completes. Until activation, report draft preview and validation only. A direct publish does not verify the connector.
+- **Attribution verification, with the same live-test consent:** use a disposable project with an actual retrievable user playbook. Retrieve and inject it for a completed turn, then publish or observe its import. Read back the stored agent interaction through the documented interaction API, using the test user, bounded time range, and result limit; match its `request_id` to the accepted publish or imported request and confirm the exact `user_playbook` reference survived. If no playbook is available, report this check as not run. Report local payload/trace checks and live stored-reference checks separately. Neither proves a tuning run completed, and enabling Settings alone is not verification.
 
 Never claim live verification when only mocks or static checks ran.
