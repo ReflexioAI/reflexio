@@ -454,3 +454,38 @@ was removed because that source module no longer exists. `also_copy` supplies
 the remaining package so selected mutated modules can import their dependencies,
 plus the skill bundles and method documentation used during test collection and
 contract checks.
+
+### Qualifying reviewer reason-code precedence (#428)
+
+The default candidate reviewer remains v1.3.0. The experimental, inactive
+v1.4.0 prompt chooses the decision first, then uses the first applicable
+reason code: ownership, absence, unseen artifact, causality, internal status,
+speculation, other unsupported facts, duplicate, generic, late trigger, compound.
+Accepted candidates use `grounded_useful`; revisions label the defect removed.
+This preserves the measured subject gate and the fatal-code/revision distinction.
+
+Run the paired evaluation with a real provider key exported in the shell:
+
+```bash
+uv run python scripts/evaluate_review_reason_codes.py \
+  --model minimax/MiniMax-M3 --repeats 2 --out /tmp/reason-codes.json
+```
+
+Both arms see the same frozen cases, chronology, model, temperature and empty
+fallback list. The command refuses a patched LiteLLM and returns nonzero on
+call errors; its report keeps expected, processed and error counts separate.
+The corpus covers every label plus accepted and revisable controls in reporting
+and code-review contexts. It is synthetic except for a publicly reported
+candidate shape from #428; it is not the original production candidate pool.
+Do not use lexical similarity to group candidates or equate label consistency
+with correct accept/revise/reject decisions.
+
+Before activating v1.4.0, require matched, error-free processing and improved
+label accuracy without loss of decision accuracy or any positive-control
+survivors. Inspect each mismatch and the model's explanation, rather than
+hiding losses in aggregate totals. Then qualify against the original frozen
+production candidate pools, healthy same-tenant windows, and a different domain
+using the enterprise paired-review harness. That requires the normal
+production-read permissions. The synthetic corpus alone cannot justify a
+production-quality or original-defect-resolution claim. Re-measure after any
+prompt edit, preserving both fatal gates and useful revision cores.
