@@ -23,6 +23,7 @@ function load(relative) {
   return exports;
 }
 const { generatePythonCode } = load("execution/code-generator.ts");
+const { initialParams } = load("execution/default-params.ts");
 const { unifiedSearchMethods } = load("methods/unified-search.ts");
 const { interactionMethods } = load("methods/interactions.ts");
 const search = unifiedSearchMethods.find((method) => method.pythonName === "search");
@@ -40,10 +41,9 @@ for (const method of [search, publish]) {
   assert.doesNotMatch(generatePythonCode(method, defaults(method)), /session_id=/);
   // A caller chooses one identity for related calls, without a permanent demo default.
   for (const sessionId of ["first-run-session", "second-run-session"]) {
-    assert.ok(generatePythonCode(method, {
-      ...defaults(method),
-      session_id: sessionId,
-    }).includes(`session_id="${sessionId}"`));
+    const params = initialParams(method, sessionId);
+    assert.equal(params.session_id, sessionId);
+    assert.ok(generatePythonCode(method, params).includes(`session_id="${sessionId}"`));
   }
 }
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useEffect, useRef } from "react";
+import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import type { MethodDef } from "@/lib/types";
 import { MethodBadge } from "./method-badge";
 import { SplitPanel } from "@/components/layout/split-panel";
@@ -8,24 +8,28 @@ import { CodePanel } from "./code-panel";
 import { ResultsPanel } from "./results-panel";
 import { useSettings } from "@/hooks/use-settings";
 import { useExecution } from "@/hooks/use-execution";
+import { initialParams } from "@/lib/execution/default-params";
 
 interface MethodPageProps {
   method: MethodDef;
 }
 
 export function MethodPage({ method }: MethodPageProps) {
-  const { apiEndpoint, apiKey } = useSettings();
+  const { apiEndpoint, apiKey, sessionId, setSessionId } = useSettings();
   const { result, loading, error, execute } = useExecution();
 
-  const [params, setParams] = useState<Record<string, unknown>>(() => {
-    const defaults: Record<string, unknown> = {};
-    for (const p of method.params) {
-      if (p.default !== undefined) {
-        defaults[p.name] = p.default;
-      }
-    }
-    return defaults;
-  });
+  const [params, setParams] = useState<Record<string, unknown>>(() =>
+    initialParams(method, sessionId)
+  );
+  // The visit identity arrives after hydration; explicit caller edits win.
+  const effectiveParams = useMemo(
+    () => ({ ...initialParams(method, sessionId), ...params }),
+    [method, sessionId, params]
+  );
+  const handleParamsChange = (next: Record<string, unknown>) => {
+    setParams(next);
+    if (typeof next.session_id === "string") setSessionId(next.session_id);
+  };
 
   const handleRun = useCallback(
     (runParams: Record<string, unknown>) => {
@@ -41,9 +45,9 @@ export function MethodPage({ method }: MethodPageProps) {
     const hasRequired = method.params.some((p) => p.required);
     if (!hasRequired && apiEndpoint) {
       hasAutoRun.current = true;
-      handleRun(params);
+      handleRun(effectiveParams);
     }
-  }, [method, apiEndpoint, handleRun, params]);
+  }, [method, apiEndpoint, handleRun, effectiveParams]);
 
   return (
     <div className="flex flex-col h-full">
@@ -70,8 +74,8 @@ export function MethodPage({ method }: MethodPageProps) {
           right={
             <CodePanel
               method={method}
-              params={params}
-              onParamsChange={setParams}
+              params={effectiveParams}
+              onParamsChange={handleParamsChange}
               onRun={handleRun}
               loading={loading}
             />

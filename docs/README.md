@@ -6,7 +6,7 @@ Description: Interactive Next.js API explorer for the OSS server and Python SDK.
 
 - **Method pages**: `app/[group]/[method]/page.tsx` — grouped API/SDK method reference.
 - **Registry**: `lib/methods/registry.ts`, `lib/methods/` — method definitions and examples by domain.
-- **Execution**: `lib/execution/api-executor.ts`, `code-generator.ts`, `code-parser.ts` — request execution and example conversion (all under `lib/execution/`).
+- **Execution**: `lib/execution/api-executor.ts`, `code-generator.ts`, `code-parser.ts`, `default-params.ts` — request execution and example conversion (all under `lib/execution/`).
 - **Configuration UI**: `app/configure/page.tsx`, `lib/config-schema.ts`.
 - **Shared rendering**: `components/`, `app/layout.tsx`, `app/providers.tsx`.
 - **Backend routing**: `next.config.ts`, `lib/constants.ts`.
@@ -48,10 +48,13 @@ npm run build
 ## Correlated examples
 
 Search, publish, and evaluation belong to the same serving session only when
-they share its identity. In the explorer, enter a fresh session ID for each new
-conversation, then reuse that ID in its related calls. The optional field has no
-shared default: a permanent demo ID would merge independent runs and trigger
-search deduplication across them. The playbook and simulation notebooks generate
+they share its identity. The explorer creates a fresh UUID per browser visit and
+shares it between unified search and publish. Editing the session field updates
+that shared identity; Reset preserves it, and reloading creates a new UUID.
+It is kept out of persistent settings. Enter a fresh ID when beginning another
+conversation within the same visit, then reuse it for its related evaluation.
+Registry definitions keep the field optional without a permanent demo default,
+which would merge independent runs and trigger search deduplication across them. The playbook and simulation notebooks generate
 a run ID once and reuse the corresponding session through retrieval, publish,
 and evaluation. The playbook notebook injects a playbook from that search
 response and stops when the search fails or returns none, rather than substituting

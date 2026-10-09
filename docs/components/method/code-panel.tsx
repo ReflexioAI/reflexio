@@ -8,6 +8,8 @@ import { ParamForm } from "./param-form";
 import { MethodDef } from "@/lib/types";
 import { generatePythonCode } from "@/lib/execution/code-generator";
 import { parsePythonCode } from "@/lib/execution/code-parser";
+import { initialParams } from "@/lib/execution/default-params";
+import { useSettings } from "@/hooks/use-settings";
 import dynamic from "next/dynamic";
 
 const MonacoEditor = dynamic(() => import("@monaco-editor/react"), {
@@ -35,6 +37,7 @@ export function CodePanel({
   loading,
 }: CodePanelProps) {
   const { resolvedTheme } = useTheme();
+  const { sessionId } = useSettings();
   const [showParams, setShowParams] = useState(true);
   const generatedCode = useMemo(
     () => generatePythonCode(method, params),
@@ -74,15 +77,9 @@ export function CodePanel({
   }, [codeEdited, displayedCode, method, params, onRun]);
 
   const handleReset = useCallback(() => {
-    const emptyParams: Record<string, unknown> = {};
-    for (const p of method.params) {
-      if (p.default !== undefined) {
-        emptyParams[p.name] = p.default;
-      }
-    }
     setCodeEdited(false);
-    onParamsChange(emptyParams);
-  }, [method, onParamsChange]);
+    onParamsChange(initialParams(method, sessionId));
+  }, [method, onParamsChange, sessionId]);
 
   // Cmd+Enter shortcut
   useEffect(() => {
