@@ -1,4 +1,4 @@
-import { MethodDef } from "../types";
+import type { MethodDef } from "../types";
 
 export function initialParams(
   method: MethodDef,

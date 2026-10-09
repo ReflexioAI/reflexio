@@ -13,13 +13,18 @@ const ts = createRequire(import.meta.url)("typescript");
 
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 
-function load(relative) {
+const nativeRequire = createRequire(import.meta.url);
+
+function load(relative, imports = {}) {
   const source = fs.readFileSync(path.join(scriptDirectory, "../lib", relative), "utf8");
   const { outputText } = ts.transpileModule(source, {
-    compilerOptions: { module: ts.ModuleKind.CommonJS },
+    compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX },
   });
   const exports = {};
-  vm.runInNewContext(outputText, { exports });
+  vm.runInNewContext(outputText, {
+    exports,
+    require: (name) => imports[name] ?? nativeRequire(name),
+  });
   return exports;
 }
 const { generatePythonCode } = load("execution/code-generator.ts");
@@ -117,3 +122,46 @@ for success, results in [(True, [served]), (True, []), (False, [served])]:
   }
 }
 console.log("Explorer preserves caller sessions; notebook retrieval, publish and grading share a fresh run identity");
+
+// Invoke the real editor Run callback with controlled hook state. Browser checks
+// cover DOM/state transitions; this regression pins editor-to-form synchronization.
+let hookIndex = 0;
+const actions = [];
+const editedCode = 'client.search(query="refund", session_id="editor-session")';
+const { CodePanel } = load("../components/method/code-panel.tsx", {
+  react: {
+    useState: () => [[true, editedCode, true][hookIndex++], () => {}],
+    useCallback: (callback) => callback,
+    useEffect: () => {},
+    useMemo: (factory) => factory(),
+  },
+  "next-themes": { useTheme: () => ({ resolvedTheme: "light" }) },
+  "next/dynamic": { default: () => () => null },
+  "@/components/ui/button": { Button: "button" },
+  "./param-form": { ParamForm: "param-form" },
+  "@/hooks/use-settings": { useSettings: () => ({ sessionId: "original-session" }) },
+  "@/lib/execution/default-params": { initialParams },
+  "@/lib/execution/code-generator": { generatePythonCode },
+  "@/lib/execution/code-parser": load("execution/code-parser.ts"),
+});
+const panel = CodePanel({
+  method: search,
+  params: initialParams(search, "original-session"),
+  onParamsChange: (params) => actions.push(["update", params.session_id]),
+  onRun: (params) => actions.push(["execute", params.session_id]),
+  loading: false,
+});
+function findRun(element) {
+  if (!element || typeof element !== "object") return null;
+  const children = [element.props?.children].flat();
+  if (element.type === "button" && children.includes("Run")) return element;
+  for (const child of children) {
+    const found = findRun(child);
+    if (found) return found;
+  }
+  return null;
+}
+const run = findRun(panel);
+assert.ok(run, "the editor must expose its Run action");
+run.props.onClick();
+assert.deepEqual(actions, [["update", "editor-session"], ["execute", "editor-session"]]);
