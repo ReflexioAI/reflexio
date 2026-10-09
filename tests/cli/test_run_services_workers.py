@@ -40,6 +40,25 @@ def test_daemon_mode_forwards_workers() -> None:
     assert cmd[cmd.index("--workers") + 1] == "2"
 
 
+@pytest.mark.parametrize("host", ["127.0.0.1", "0.0.0.0", "::1"])  # noqa: S104
+def test_backend_bind_host_reaches_spawned_command(host: str, monkeypatch) -> None:
+    import reflexio.cli.run_services as run_services_module
+
+    args = run_services_module._build_run_services_parser().parse_args(
+        ["--only", "backend", "--no-reload", "--workers", "1", "--backend-host", host]
+    )
+    captured = []
+    monkeypatch.setattr(run_services_module, "load_reflexio_env", lambda: None)
+    monkeypatch.setattr(
+        run_services_module,
+        "run_services",
+        lambda services, _ports: captured.extend(services),
+    )
+    run_services_module.execute(args)
+    backend = next(service for service in captured if service.name == "backend")
+    assert backend.command[backend.command.index("--host") + 1] == host
+
+
 def test_daemon_mode_forwards_max_requests_and_jitter() -> None:
     cmd = _cmd(reload=False, workers=2, max_requests=5000, max_requests_jitter=500)
     assert "--max-requests" in cmd
@@ -149,3 +168,19 @@ def test_backend_starts_shared_service_for_cloud_embeddings(monkeypatch) -> None
 
     assert [service.name for service in captured] == ["embedding", "backend"]
     assert "REFLEXIO_EMBEDDING_SERVICE_URL" not in os.environ
+
+
+def test_services_cli_forwards_backend_host(monkeypatch, runner, app) -> None:
+    import reflexio.cli.commands.services as services_module
+    from reflexio.cli import bootstrap_config, env_loader
+
+    captured = []
+    monkeypatch.setattr(env_loader, "load_reflexio_env", lambda: None)
+    monkeypatch.setattr(bootstrap_config, "resolve_storage", lambda _: "sqlite")
+    monkeypatch.setattr(services_module, "_ensure_llm_configured", lambda _: None)
+    monkeypatch.setattr(services_module.run_mod, "execute", captured.append)
+    result = runner.invoke(
+        app, ["services", "start", "--only", "backend", "--backend-host", "127.0.0.1"]
+    )
+    assert result.exit_code == 0, result.output
+    assert captured[0].backend_host == "127.0.0.1"
