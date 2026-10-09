@@ -263,7 +263,7 @@ source_paths = [
     "reflexio/server/services/storage/storage_base/_base.py",
 ]
 pytest_add_cli_args_test_selection = ["tests/"]
-also_copy = ["reflexio/", "skills/", "docs/lib/methods/"]
+also_copy = ["reflexio/", "skills/", "docs/lib/methods/", ".env.example"]
 pytest_add_cli_args = ["-o", "addopts=", "--timeout=120", "-m", "not integration and not e2e and not requires_credentials"]
 
 [tool.commitizen]

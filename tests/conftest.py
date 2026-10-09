@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 _THIS_DIR = Path(__file__).resolve().parent  # tests/
-PROJECT_ROOT = _THIS_DIR.parent.parent  # repo root
+PROJECT_ROOT = _THIS_DIR.parent  # repo root, or mutmut's relocated source root
 
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
