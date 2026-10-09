@@ -1,4 +1,4 @@
-import { MethodDef } from "../types";
+import type { MethodDef } from "../types";
 
 /** Convert Python-style literals (None, True, False) to JSON equivalents */
 function pythonToJson(value: string): string {
@@ -14,13 +14,16 @@ export interface ExecutionResult {
 export async function executeApiCall(
   method: MethodDef,
   params: Record<string, unknown>,
-  apiEndpoint: string
+  apiEndpoint: string,
+  apiKey = ""
 ): Promise<ExecutionResult> {
   const start = performance.now();
 
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
   };
+
+  if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
 
   let url = `${apiEndpoint.replace(/\/$/, "")}${method.endpoint}`;
   let body: string | undefined;

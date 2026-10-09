@@ -31,6 +31,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
+from starlette.middleware import Middleware
 
 from reflexio.server.api_endpoints import (
     health_api,
@@ -43,6 +44,7 @@ from reflexio.server.auth import (
     default_get_caller_type,
     default_get_org_id,
 )
+from reflexio.server.env_utils import env_str
 from reflexio.server.middleware import (
     BodySizeLimitMiddleware,
     BotProtectionMiddleware,
@@ -136,7 +138,17 @@ for _domain_router in (
 
 # Paths that should remain publicly accessible (no lock icon in Swagger)
 _PUBLIC_PATHS = frozenset(
-    {"/", "/health", "/meta/version", "/token", "/docs", "/openapi.json"}
+    {
+        "/",
+        "/health",
+        "/healthz",
+        "/healthz/eval",
+        "/meta/version",
+        "/token",
+        "/docs",
+        "/redoc",
+        "/openapi.json",
+    }
 )
 _PUBLIC_PATH_PREFIXES = ("/api/register", "/api/registration-config", "/api/auth/")
 
@@ -163,7 +175,7 @@ async def _safe_request_validation_exception_handler(
     )
 
 
-def _add_openapi_security(app: FastAPI) -> None:
+def _add_openapi_security(app: FastAPI, *, allow_local_access: bool = False) -> None:
     """Inject Bearer auth security scheme into the OpenAPI spec.
 
     Overrides the default openapi() method to add a global HTTPBearer security
@@ -195,7 +207,10 @@ def _add_openapi_security(app: FastAPI) -> None:
                     if is_public:
                         method_detail["security"] = []
                     else:
-                        method_detail.setdefault("security", [{"BearerAuth": []}])
+                        requirements: list[dict[str, list[str]]] = [{"BearerAuth": []}]
+                        if allow_local_access and not env_str("REFLEXIO_API_KEY", ""):
+                            requirements.append({})
+                        method_detail.setdefault("security", requirements)
 
         app.openapi_schema = schema
         return schema
@@ -709,5 +724,17 @@ def create_app(  # noqa: C901
     return app
 
 
-# Default standalone app (no auth)
+# The standalone OSS app allows no-key access only from loopback. Embedded
+# hosts use create_app's existing authentication seams instead.
+from reflexio.server.local_access import LocalAccessMiddleware
+
 app = create_app()
+_add_openapi_security(app, allow_local_access=True)
+# Reject before the request reaches data middleware, but keep CORS, security
+# headers and correlation around authentication failures too.
+_cors_index = next(
+    index
+    for index, item in enumerate(app.user_middleware)
+    if item.cls is CORSMiddleware
+)
+app.user_middleware.insert(_cors_index + 1, Middleware(LocalAccessMiddleware))

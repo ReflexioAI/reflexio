@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import { useTheme } from "next-themes";
 import { Moon, Sun, Menu } from "lucide-react";
 import { Input } from "@/components/ui/input";
@@ -9,7 +10,7 @@ import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 import { Sidebar } from "./sidebar";
 
 export function TopBar() {
-  const { apiEndpoint, setApiEndpoint } = useSettings();
+  const { apiEndpoint, setApiEndpoint, apiKey, setApiKey } = useSettings();
   const { theme, setTheme } = useTheme();
 
   return (
@@ -26,17 +27,29 @@ export function TopBar() {
       </Sheet>
 
       <div className="flex items-center gap-2 flex-1 min-w-0">
-        <img src="/reflexio_fav.svg" alt="Reflexio" className="h-6 w-6 shrink-0" />
+        <Image src="/reflexio_fav.svg" alt="Reflexio" width={24} height={24} className="h-6 w-6 shrink-0" />
         <span className="text-sm font-semibold whitespace-nowrap hidden sm:block">Reflexio</span>
         <div className="mx-2 h-5 w-px bg-border hidden sm:block" />
-        <label className="text-xs text-muted-foreground whitespace-nowrap hidden sm:block">
+        <label htmlFor="api-endpoint" className="text-xs text-muted-foreground whitespace-nowrap hidden sm:block">
           API Endpoint
         </label>
         <Input
+          id="api-endpoint"
+          aria-label="API Endpoint"
           value={apiEndpoint}
           onChange={(e) => setApiEndpoint(e.target.value)}
           placeholder="http://localhost:8061"
           className="h-8 text-xs max-w-xs font-mono"
+        />
+        <Input
+          aria-label="API key"
+          type="password"
+          autoComplete="off"
+          value={apiKey}
+          onChange={(e) => setApiKey(e.target.value)}
+          placeholder="API key (optional)"
+          title="Kept in memory; cleared when the endpoint changes or the page reloads."
+          className="h-8 text-xs max-w-48 min-w-0"
         />
       </div>
 

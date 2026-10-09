@@ -1,3 +1,6 @@
+// Keep authenticated execution covered by the existing docs CI entry point.
+import "./test-execution-auth.mjs";
+
 // Exercise the real explorer definitions through its Python code generator.
 import assert from "node:assert/strict";
 import fs from "node:fs";

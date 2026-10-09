@@ -273,10 +273,20 @@ class TestBuildBackendService:
         app_idx = svc.command.index("--app")
         assert svc.command[app_idx + 1] == "reflexio.server.api:app"
 
-    def test_host_is_all_interfaces(self) -> None:
+    def test_standalone_host_is_loopback(self) -> None:
         svc = build_backend_service({"backend": 8081}, reload=False)
         host_idx = svc.command.index("--host")
-        assert svc.command[host_idx + 1] == "0.0.0.0"  # noqa: S104
+        assert svc.command[host_idx + 1] == "127.0.0.1"
+
+    def test_custom_host_application_retains_network_bind(self) -> None:
+        svc = build_backend_service(
+            {"backend": 8081}, app_module="enterprise:app", reload=False
+        )
+        assert svc.command[svc.command.index("--host") + 1] == "0.0.0.0"  # noqa: S104
+
+    def test_explicit_host_is_forwarded(self) -> None:
+        svc = build_backend_service({"backend": 8081}, host="::1", reload=False)
+        assert svc.command[svc.command.index("--host") + 1] == "::1"
 
     def test_uses_python_module_entrypoint(self) -> None:
         """Backend launches via ``python -m reflexio.server`` so the uvicorn

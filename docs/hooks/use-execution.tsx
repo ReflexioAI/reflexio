@@ -1,8 +1,8 @@
 "use client";
 
 import { useState, useCallback } from "react";
-import { MethodDef } from "@/lib/types";
-import { executeApiCall, ExecutionResult } from "@/lib/execution/api-executor";
+import type { MethodDef } from "@/lib/types";
+import { executeApiCall, type ExecutionResult } from "@/lib/execution/api-executor";
 
 interface ExecutionState {
   result: ExecutionResult | null;
@@ -21,7 +21,8 @@ export function useExecution() {
     async (
       method: MethodDef,
       params: Record<string, unknown>,
-      apiEndpoint: string
+      apiEndpoint: string,
+      apiKey = ""
     ) => {
       setState({ result: null, loading: true, error: null });
 
@@ -29,7 +30,8 @@ export function useExecution() {
         const result = await executeApiCall(
           method,
           params,
-          apiEndpoint
+          apiEndpoint,
+          apiKey
         );
         setState({ result, loading: false, error: null });
       } catch (err) {

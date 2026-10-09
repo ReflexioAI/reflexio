@@ -7,7 +7,7 @@ import {
   useEffect,
   useCallback,
   useRef,
-  ReactNode,
+  type ReactNode,
 } from "react";
 
 interface Settings {
@@ -15,6 +15,8 @@ interface Settings {
 }
 
 interface SettingsContextValue extends Settings {
+  apiKey: string;
+  setApiKey: (key: string) => void;
   setApiEndpoint: (endpoint: string) => void;
 }
 
@@ -29,7 +31,10 @@ function loadSettings(): Settings {
   }
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
-    if (stored) return JSON.parse(stored);
+    if (stored) {
+      const parsed = JSON.parse(stored);
+      if (typeof parsed.apiEndpoint === "string") return { apiEndpoint: parsed.apiEndpoint };
+    }
   } catch {
     // ignore
   }
@@ -38,6 +43,8 @@ function loadSettings(): Settings {
 
 export function SettingsProvider({ children }: { children: ReactNode }) {
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
+  // Credentials stay in memory, separate from persisted endpoint settings.
+  const [apiKey, setApiKey] = useState("");
   const hasLoadedClientSettings = useRef(false);
   const [clientSettingsLoaded, setClientSettingsLoaded] = useState(false);
 
@@ -65,12 +72,13 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
   }, [settings, clientSettingsLoaded]);
 
   const setApiEndpoint = useCallback((endpoint: string) => {
-    setSettings((prev) => ({ ...prev, apiEndpoint: endpoint }));
+    setApiKey("");
+    setSettings({ apiEndpoint: endpoint });
   }, []);
 
   return (
     <SettingsContext.Provider
-      value={{ ...settings, setApiEndpoint }}
+      value={{ ...settings, apiKey, setApiKey, setApiEndpoint }}
     >
       {children}
     </SettingsContext.Provider>

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useCallback, useEffect, useRef } from "react";
-import { MethodDef } from "@/lib/types";
+import type { MethodDef } from "@/lib/types";
 import { MethodBadge } from "./method-badge";
 import { SplitPanel } from "@/components/layout/split-panel";
 import { CodePanel } from "./code-panel";
@@ -14,7 +14,7 @@ interface MethodPageProps {
 }
 
 export function MethodPage({ method }: MethodPageProps) {
-  const { apiEndpoint } = useSettings();
+  const { apiEndpoint, apiKey } = useSettings();
   const { result, loading, error, execute } = useExecution();
 
   const [params, setParams] = useState<Record<string, unknown>>(() => {
@@ -29,9 +29,9 @@ export function MethodPage({ method }: MethodPageProps) {
 
   const handleRun = useCallback(
     (runParams: Record<string, unknown>) => {
-      execute(method, runParams, apiEndpoint);
+      execute(method, runParams, apiEndpoint, apiKey);
     },
-    [method, apiEndpoint, execute]
+    [method, apiEndpoint, apiKey, execute]
   );
 
   // Auto-run on mount if no required parameters
