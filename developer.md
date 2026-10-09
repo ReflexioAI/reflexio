@@ -454,3 +454,57 @@ was removed because that source module no longer exists. `also_copy` supplies
 the remaining package so selected mutated modules can import their dependencies,
 plus the skill bundles and method documentation used during test collection and
 contract checks.
+
+### OpenAI-compatible gateways, including OrcaRouter (#492)
+
+Use the existing `APIKeyConfig.custom_endpoint` setting for a compatible chat
+gateway. Its model overrides completion-role model selection. Prefix the
+**gateway model id** with `openai/` so LiteLLM uses its OpenAI-compatible adapter:
+
+```python
+import os
+
+from reflexio.models.config_schema import APIKeyConfig, CustomEndpointConfig
+from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
+
+keys = APIKeyConfig(
+    custom_endpoint=CustomEndpointConfig(
+        model="openai/orcarouter/auto",
+        api_key=os.environ["ORCAROUTER_API_KEY"],
+        api_base="https://api.orcarouter.ai/v1",
+    )
+)
+client = LiteLLMClient(
+    LiteLLMConfig(model="openai/orcarouter/auto", api_key_config=keys)
+)
+response = client.generate_chat_response(
+    [{"role": "user", "content": "Hello"}]
+)
+```
+
+For Reflexio's backend, store this `keys` object in the existing
+`Config.api_key_config` field using the deployment's configurator. The snippet
+above constructs an individual LLM client; it does not change a running
+backend's configuration. `ORCAROUTER_API_KEY` here is a caller-provided variable,
+not an automatically detected Reflexio provider variable.
+
+[OrcaRouter's documentation](https://www.orcarouter.ai/switch/openrouter) specifies
+the `/v1` base URL, API-key authentication, and nested gateway model ids. The
+wire model for `openai/orcarouter/auto` is `orcarouter/auto`; for a specific vendor
+model, use e.g. `openai/anthropic/claude-sonnet-4`, whose wire model remains
+`anthropic/claude-sonnet-4`.
+
+The credential-free local HTTP contract test
+`tests/e2e_tests/test_custom_gateway_contract.py` verifies the real LiteLLM
+adapter sends the nested id, Bearer key, and `/v1/chat/completions` request and
+reads the response. It also verifies that the completion override does not
+redirect embeddings. Run it with `uv run pytest
+ tests/e2e_tests/test_custom_gateway_contract.py -o addopts= -v`.
+
+This establishes the existing integration path, not live OrcaRouter service
+compatibility. Structured outputs, tool calls, caching, gateway failover and
+budgets still need a vendor-account test before claiming support. The custom
+endpoint pins one model for **all completion roles**; it does not offer separate
+per-role gateway models. Embeddings keep their own provider. A dedicated provider
+would be justified by a confirmed requirement beyond this existing path, such
+as independent per-role gateway selection, rather than by endpoint branding.
