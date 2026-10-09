@@ -142,6 +142,12 @@ uv run reflexio services stop              # Stop all services
 
 > Source-checkout alternatives: `python -m reflexio.cli services start` or `./run_services.sh`
 
+The standalone server listens on loopback by default and needs no API key for
+local use. To allow network clients, set `REFLEXIO_API_KEY`, start with
+`--backend-host 0.0.0.0`, and send `Authorization: Bearer <key>` on data requests.
+Use TLS for network access. Without a key, remote clients and nonlocal browser
+origins cannot access data endpoints. See [standalone access](developer.md#standalone-oss-access).
+
 When the backend is selected, the launcher also starts the local inference
 service on port 8069 unless `REFLEXIO_EMBEDDING_SERVICE_URL` points to a remote
 service. It serves embeddings and the optional cross-encoder reranker; cloud

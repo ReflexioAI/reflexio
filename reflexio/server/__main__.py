@@ -30,7 +30,7 @@ def _build_parser() -> argparse.ArgumentParser:
         argparse.ArgumentParser: Configured parser for ``reflexio.server``.
     """
     parser = argparse.ArgumentParser(prog="reflexio.server")
-    parser.add_argument("--host", default="0.0.0.0")  # noqa: S104
+    parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, required=True)
     parser.add_argument("--reload", action="store_true")
     parser.add_argument(
@@ -112,6 +112,7 @@ def main(argv: list[str] | None = None) -> None:
             reload=True,
             reload_includes=args.reload_include or None,
             log_config=UVICORN_LOG_CONFIG,
+            proxy_headers=args.app != "reflexio.server.api:app",
         )
         return
 
@@ -129,6 +130,7 @@ def main(argv: list[str] | None = None) -> None:
         limit_max_requests_jitter=args.max_requests_jitter,
         timeout_graceful_shutdown=args.graceful_shutdown_sec,
         log_config=UVICORN_LOG_CONFIG,
+        proxy_headers=args.app != "reflexio.server.api:app",
     )
 
 

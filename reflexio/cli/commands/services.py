@@ -168,8 +168,11 @@ def validate_storage_backend(storage: str | None) -> None:
 @app.command()
 def start(
     backend_host: Annotated[
-        str, typer.Option(help="Backend bind address (127.0.0.1 for local-only access)")
-    ] = "0.0.0.0",  # noqa: S104
+        str,
+        typer.Option(
+            help="Backend bind address; network access requires REFLEXIO_API_KEY"
+        ),
+    ] = "127.0.0.1",
     backend_port: Annotated[
         int | None, typer.Option(help="Backend server port (default: 8061)")
     ] = None,

@@ -14,7 +14,11 @@ from unittest.mock import patch
 import pytest
 from fastapi.testclient import TestClient
 
-from reflexio.server.api import app
+from reflexio.server.api import create_app
+
+# These test account behavior independently of the standalone listener policy.
+# Actual standalone access is exercised in test_local_access.py.
+app = create_app()
 
 
 @pytest.fixture(autouse=True)

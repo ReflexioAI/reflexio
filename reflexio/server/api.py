@@ -709,5 +709,9 @@ def create_app(  # noqa: C901
     return app
 
 
-# Default standalone app (no auth)
+# The standalone OSS app allows no-key access only from loopback. Embedded
+# hosts use create_app's existing authentication seams instead.
+from reflexio.server.local_access import LocalAccessMiddleware
+
 app = create_app()
+app.add_middleware(LocalAccessMiddleware)

@@ -68,6 +68,26 @@ the model download/warmup timed out. Check the preceding `[embedding]` logs for
 the failing stage. This deadline accommodation is platform-independent; a
 Windows-only model initialization failure still needs its own diagnosis.
 
+### Standalone OSS access
+
+The standalone backend binds `127.0.0.1` by default. With no
+`REFLEXIO_API_KEY`, data endpoints accept only loopback clients using a loopback
+hostname; browser origins must also be loopback. Remote callers and untrusted
+browser origins receive 401. Health, version, and API documentation remain public.
+
+For network access, configure a strong `REFLEXIO_API_KEY` before startup and use
+`reflexio services start --backend-host 0.0.0.0`. Every data request, including
+local requests, then needs `Authorization: Bearer <key>`; the Python client reads
+the same environment variable. Use TLS at the network boundary. Binding all
+interfaces without a key does not grant remote data access. The equivalent
+standalone entrypoint is `python -m reflexio.server --host 0.0.0.0 --port 8061`.
+
+This policy belongs to `reflexio.server.api:app`. Enterprise and other hosts
+composing `create_app` supply their own authentication and are responsible for
+their listener configuration. Their authentication dependency is unchanged.
+The standalone launcher disables proxy-header rewriting, and no-key access
+rejects forwarding headers. Reverse-proxy deployments must configure the key.
+
 ## Dev mode vs. daemon mode
 
 The `reflexio services start` command has two distinct modes:
