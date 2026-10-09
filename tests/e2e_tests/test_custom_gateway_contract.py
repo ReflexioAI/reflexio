@@ -26,6 +26,20 @@ pytestmark = pytest.mark.e2e
 def test_custom_gateway_keeps_nested_model_id_and_bearer_key(
     gateway_model, monkeypatch
 ):
+    # Keep inherited observability settings from sending this local probe to
+    # a remote telemetry service. Completion transport itself stays real.
+    monkeypatch.delenv("BRAINTRUST_API_KEY", raising=False)
+    monkeypatch.setattr(litellm, "telemetry", False)
+    for callback_list in (
+        "callbacks",
+        "success_callback",
+        "failure_callback",
+        "input_callback",
+        "_async_success_callback",
+        "_async_failure_callback",
+        "_async_input_callback",
+    ):
+        monkeypatch.setattr(litellm, callback_list, [])
     received = []
 
     class Handler(BaseHTTPRequestHandler):
@@ -64,23 +78,23 @@ def test_custom_gateway_keeps_nested_model_id_and_bearer_key(
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     worker = Thread(target=server.serve_forever, daemon=True)
     worker.start()
-    config = APIKeyConfig(
-        custom_endpoint=CustomEndpointConfig(
-            model=f"openai/{gateway_model}",
-            api_key="local-contract-key",
-            api_base=f"http://127.0.0.1:{server.server_port}/v1",  # type: ignore[arg-type]
-        )
-    )
-    client = LiteLLMClient(
-        LiteLLMConfig(
-            model="unused-model",
-            api_key_config=config,
-            timeout=10,
-            max_retries=0,
-            fallback_models=[],
-        )
-    )
     try:
+        config = APIKeyConfig(
+            custom_endpoint=CustomEndpointConfig(
+                model=f"openai/{gateway_model}",
+                api_key="local-contract-key",
+                api_base=f"http://127.0.0.1:{server.server_port}/v1",  # type: ignore[arg-type]
+            )
+        )
+        client = LiteLLMClient(
+            LiteLLMConfig(
+                model="unused-model",
+                api_key_config=config,
+                timeout=10,
+                max_retries=0,
+                fallback_models=[],
+            )
+        )
         with unpatched_litellm(), monkeypatch.context() as transport:
             # Lift the per-test fixture patch too; the only endpoint is local.
             transport.setattr(litellm, "completion", completion)
