@@ -252,7 +252,7 @@ def test_run_services_cleans_up_when_initial_service_start_fails(
         return proc
 
     monkeypatch.setattr(utils.subprocess, "Popen", fake_popen)
-    monkeypatch.setattr(utils, "_wait_for_all_ready", lambda *_args: True)
+    monkeypatch.setattr(utils, "_wait_for_all_ready", lambda *_args, **_kwargs: True)
 
     with pytest.raises(OSError, match="simulated initial spawn failure"):
         utils.run_services(
@@ -318,9 +318,10 @@ def test_run_services_waits_for_local_embedding_before_starting_backend(
         lifecycle.append(f"start:{command[0]}")
         return _FakeProcess(pid=1000 + len(lifecycle), polls_to_exit=1)
 
-    def fake_wait_for_ready(ready_events, processes) -> bool:
+    def fake_wait_for_ready(ready_events, processes, *, timeout) -> bool:
         assert set(ready_events) == {"embedding"}
         assert set(processes) == {"embedding"}
+        assert timeout == utils._LOCAL_INFERENCE_READY_TIMEOUT_SECS
         lifecycle.append("ready:embedding")
         return True
 
@@ -356,7 +357,7 @@ def test_run_services_aborts_when_local_embedding_is_not_ready(
         return proc
 
     monkeypatch.setattr(utils.subprocess, "Popen", fake_popen)
-    monkeypatch.setattr(utils, "_wait_for_all_ready", lambda *_args: False)
+    monkeypatch.setattr(utils, "_wait_for_all_ready", lambda *_args, **_kwargs: False)
 
     with pytest.raises(RuntimeError, match=r"embedding.*ready"):
         utils.run_services(
@@ -574,3 +575,114 @@ def test_run_services_drops_failed_respawn_without_stopping_sibling(
     assert "respawn failed; marked degraded: simulated spawn failure" in (
         capsys.readouterr().out
     )
+
+
+@pytest.mark.unit
+def test_cold_model_readiness_can_cross_the_ordinary_startup_deadline(monkeypatch):
+    clock = [0.0]
+    ready = threading.Event()
+    process = _FakeProcess(pid=1000, polls_to_exit=None)
+    monkeypatch.setattr(utils.time, "monotonic", lambda: clock[0])
+
+    def advance(seconds):
+        clock[0] += seconds
+        if clock[0] >= 65:
+            ready.set()
+
+    monkeypatch.setattr(utils.time, "sleep", advance)
+    assert utils._wait_for_all_ready(
+        {"embedding": ready},
+        {"embedding": process},
+        timeout=utils._LOCAL_INFERENCE_READY_TIMEOUT_SECS,
+    )
+    assert 65 <= clock[0] < 66
+
+
+@pytest.mark.unit
+def test_model_readiness_still_has_a_bounded_timeout(monkeypatch):
+    clock = [0.0]
+    monkeypatch.setattr(utils.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        utils.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds)
+    )
+    assert not utils._wait_for_all_ready(
+        {"embedding": threading.Event()},
+        {"embedding": _FakeProcess(pid=1000, polls_to_exit=None)},
+        timeout=utils._LOCAL_INFERENCE_READY_TIMEOUT_SECS,
+    )
+    assert clock[0] == utils._LOCAL_INFERENCE_READY_TIMEOUT_SECS
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "exit_code,expected",
+    [(1, "process exited with code 1"), (None, "timed out after 300s")],
+)
+def test_model_readiness_failure_names_exit_or_timeout(
+    monkeypatch, tmp_path, exit_code, expected
+):
+    _patch_run_services_environment(monkeypatch, tmp_path)
+    process = _FakeProcess(
+        pid=1000,
+        polls_to_exit=1 if exit_code is not None else None,
+        returncode=exit_code or 0,
+    )
+    monkeypatch.setattr(utils.subprocess, "Popen", lambda *_args, **_kwargs: process)
+    monkeypatch.setattr(utils, "_wait_for_all_ready", lambda *_args, **_kwargs: False)
+    with pytest.raises(RuntimeError, match=expected):
+        utils.run_services(
+            [
+                utils.ServiceConfig(name="embedding", command=["embedding"]),
+                utils.ServiceConfig(name="backend", command=["backend"]),
+            ],
+            {"embedding": 8072, "backend": 8071},
+        )
+    assert process.terminated
+
+
+def test_supervisor_waits_for_delayed_model_process_before_launching_backend(
+    monkeypatch, tmp_path
+):
+    """Real child output/thread readiness, with scaled deadlines and no model I/O."""
+    marker = tmp_path / "model-ready"
+    early_start = tmp_path / "backend-started-early"
+    pidfile = tmp_path / "services.json"
+    monkeypatch.setattr(utils, "ensure_requested_ports_available", lambda _: None)
+    monkeypatch.setattr(utils, "get_pidfile_path", lambda _: pidfile)
+    monkeypatch.setattr(
+        utils,
+        "get_stop_request_path",
+        lambda name, port: tmp_path / f"{name}-{port}.stop",
+    )
+    monkeypatch.setattr(utils.signal, "signal", lambda *_: None)
+    monkeypatch.setattr(utils, "_SERVICE_READY_TIMEOUT_SECS", 0.05)
+    monkeypatch.setattr(utils, "_LOCAL_INFERENCE_READY_TIMEOUT_SECS", 2.0)
+    monkeypatch.setattr(utils, "_SERVICE_READY_POLL_INTERVAL_SECS", 0.01)
+    monkeypatch.setattr(utils, "_SERVICE_MONITOR_POLL_INTERVAL_SECS", 0.01)
+    embedding_code = (
+        "import time; from pathlib import Path; time.sleep(0.2); "
+        f"Path({str(marker)!r}).write_text('ready'); "
+        "print('Application startup complete.', flush=True); time.sleep(0.5)"
+    )
+    backend_code = (
+        "from pathlib import Path; "
+        f"ready = Path({str(marker)!r}).exists(); "
+        f"None if ready else Path({str(early_start)!r}).write_text('started before model readiness'); "
+        "assert ready; print('Application startup complete.', flush=True)"
+    )
+    utils.run_services(
+        [
+            utils.ServiceConfig(
+                name="embedding", command=[sys.executable, "-u", "-c", embedding_code]
+            ),
+            utils.ServiceConfig(
+                name="backend", command=[sys.executable, "-u", "-c", backend_code]
+            ),
+        ],
+        {"embedding": 8072, "backend": 8071},
+    )
+    assert marker.read_text() == "ready"
+    assert not early_start.exists(), (
+        "The first backend launch must wait for model readiness"
+    )
+    assert not pidfile.exists()

@@ -40,6 +40,7 @@ skill or rule below them is reachable. Clone with `git clone -c core.symlinks=tr
 `git config core.symlinks true` followed by `git checkout -- .claude` in an
 existing checkout.
 
+
 ## Services
 
 Two services, started together via `./run_services.sh`:
@@ -58,6 +59,14 @@ uv run reflexio services start --storage supabase  # Supabase PostgreSQL
 ```
 
 Stop services with `./stop_services.sh`.
+
+Local inference starts before the backend. Its readiness wait allows up to five
+minutes for the first embedding/reranker model download and warmup; the ordinary
+service readiness wait remains one minute. A failed inference startup stops the
+started processes and reports whether the child exited (with its exit code) or
+the model download/warmup timed out. Check the preceding `[embedding]` logs for
+the failing stage. This deadline accommodation is platform-independent; a
+Windows-only model initialization failure still needs its own diagnosis.
 
 ## Dev mode vs. daemon mode
 

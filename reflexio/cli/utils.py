@@ -272,6 +272,8 @@ _NOISE_SUPPRESSION_ENV: dict[str, dict[str, str]] = {
 
 # Keep supervisor tuning internal until operational evidence justifies exposing it.
 _SERVICE_READY_TIMEOUT_SECS = 60.0
+# First launch downloads and initializes embedding/reranker artifacts.
+_LOCAL_INFERENCE_READY_TIMEOUT_SECS = 300.0
 _SERVICE_READY_POLL_INTERVAL_SECS = 0.1
 _SERVICE_MONITOR_POLL_INTERVAL_SECS = 0.5
 _SERVICE_HEALTHY_WINDOW_SECS = 30.0
@@ -315,9 +317,13 @@ def _stream_output(
 def _wait_for_all_ready(
     ready_events: dict[str, threading.Event],
     processes: Mapping[str, _PollableProcess],
+    *,
+    timeout: float | None = None,
 ) -> bool:
     """Wait for readiness, returning early when a child exits or times out."""
-    deadline = time.monotonic() + _SERVICE_READY_TIMEOUT_SECS
+    deadline = time.monotonic() + (
+        _SERVICE_READY_TIMEOUT_SECS if timeout is None else timeout
+    )
     while time.monotonic() < deadline:
         if any(proc.poll() is not None for proc in processes.values()):
             return False
@@ -511,12 +517,25 @@ def run_services(
         if gate_local_embedding:
             embedding = next(svc for svc in services if svc.name == "embedding")
             supervisor.start_service(embedding)
+            supervisor.write_output(
+                f"Waiting up to {_LOCAL_INFERENCE_READY_TIMEOUT_SECS:g}s for "
+                "local inference readiness; first launch "
+                "may download and initialize embedding and reranker models."
+            )
             if not _wait_for_all_ready(
                 {"embedding": supervisor.ready_events["embedding"]},
                 {"embedding": supervisor.processes["embedding"]},
+                timeout=_LOCAL_INFERENCE_READY_TIMEOUT_SECS,
             ):
+                exit_code = supervisor.processes["embedding"].poll()
+                reason = (
+                    f"process exited with code {exit_code}"
+                    if exit_code is not None
+                    else f"model download/warmup timed out after {_LOCAL_INFERENCE_READY_TIMEOUT_SECS:g}s"
+                )
                 raise RuntimeError(
-                    "embedding service did not become ready before backend startup"
+                    "embedding service did not become ready before backend startup: "
+                    f"{reason}. See the embedding logs above for the failing stage."
                 )
 
         for svc in services:
