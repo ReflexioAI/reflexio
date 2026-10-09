@@ -23,7 +23,9 @@ pytestmark = pytest.mark.e2e
 @pytest.mark.parametrize(
     "gateway_model", ["orcarouter/auto", "anthropic/claude-sonnet-4"]
 )
-def test_custom_gateway_keeps_nested_model_id_and_bearer_key(gateway_model, monkeypatch):
+def test_custom_gateway_keeps_nested_model_id_and_bearer_key(
+    gateway_model, monkeypatch
+):
     received = []
 
     class Handler(BaseHTTPRequestHandler):
