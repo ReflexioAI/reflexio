@@ -121,7 +121,6 @@ for success, results in [(True, [served]), (True, []), (False, [served])]:
 `], { input: JSON.stringify(selectionCode) });
   }
 }
-console.log("Explorer preserves caller sessions; notebook retrieval, publish and grading share a fresh run identity");
 
 // Invoke the real editor Run callback with controlled hook state. Browser checks
 // cover DOM/state transitions; this regression pins editor-to-form synchronization.
@@ -165,3 +164,5 @@ const run = findRun(panel);
 assert.ok(run, "the editor must expose its Run action");
 run.props.onClick();
 assert.deepEqual(actions, [["update", "editor-session"], ["execute", "editor-session"]]);
+
+console.log("Explorer preserves caller sessions; notebook retrieval, publish and grading share a fresh run identity");
