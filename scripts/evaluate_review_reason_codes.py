@@ -128,6 +128,8 @@ def evaluate(
     repeats: int,
     checkpoint: Path | None = None,
 ) -> dict:
+    if not cases:
+        raise ValueError("cases must be nonempty")
     if repeats < 1:
         raise ValueError("repeats must be positive")
     prepared = {case.id: prepare_case(case) for case in cases}
@@ -192,16 +194,23 @@ def evaluate(
                     for index, candidate in enumerate(case.candidates, 1)
                 }
                 for decision in result.output.decisions:
-                    target = expected[decision.candidate_id]
+                    candidate_id = decision.candidate_id.strip()
+                    target = expected[candidate_id]
                     rows.append(
                         {
                             "case": case.id,
                             "repeat": repeat,
                             "version": version,
-                            "candidate": decision.candidate_id,
+                            "candidate": candidate_id,
                             "decision": decision.decision,
                             "reason_code": decision.reason_code,
                             "reason": decision.reason,
+                            "evidence_ids": list(decision.evidence_ids),
+                            "revision": (
+                                decision.revision.model_dump()
+                                if decision.revision is not None
+                                else None
+                            ),
                             "decision_correct": decision.decision == target.decision,
                             "code_correct": decision.reason_code == target.reason_code,
                         }
@@ -236,21 +245,26 @@ def evaluate(
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cases", type=Path, default=DEFAULT_CASES)
-    parser.add_argument("--model", required=True)
+    parser.add_argument(
+        "--expected-model",
+        required=True,
+        help="Assert the automatically resolved generation model; does not select a model",
+    )
     parser.add_argument("--repeats", type=int, default=2)
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
     cases = load_cases(args.cases)
     assert_litellm_unpatched()
     client = LiteLLMClient(
-        LiteLLMConfig(model=args.model, temperature=0.7, fallback_models=[])
+        LiteLLMConfig(model=args.expected_model, temperature=0.7, fallback_models=[])
     )
     from reflexio.server.llm.model_defaults import ModelRole
 
     actual_model = client._resolve_primary_model(None, ModelRole.GENERATION)
-    if actual_model != args.model:
+    if actual_model != args.expected_model:
         parser.error(
-            f"Generation resolves to {actual_model}, not requested {args.model}; use the resolved model to keep reported identity accurate"
+            f"Generation resolves to {actual_model}, not expected {args.expected_model}; "
+            "--expected-model checks role resolution and does not select a model"
         )
     report = evaluate(cases, client, args.repeats, args.out)
     args.out.write_text(json.dumps(report, indent=2))

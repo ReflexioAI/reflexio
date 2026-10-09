@@ -10,8 +10,10 @@ from reflexio.server.llm.litellm_client import LiteLLMConfig
 from reflexio.server.prompt.prompt_manager import PromptManager
 from reflexio.server.services.playbook.components.reviewer import (
     CandidateReviewDecision,
+    CandidateRevision,
     PlaybookCandidateReviewOutput,
 )
+from scripts import evaluate_review_reason_codes as evaluation
 from scripts.evaluate_review_reason_codes import (
     DEFAULT_CASES,
     evaluate,
@@ -67,6 +69,80 @@ def test_paired_evaluation_uses_real_reviewer_and_counts_errors_separately():
 def test_evaluation_rejects_empty_measurement(repeats):
     with pytest.raises(ValueError, match="positive"):
         evaluate(load_cases(DEFAULT_CASES), MagicMock(), repeats)
+
+
+def test_evaluation_rejects_empty_corpus_before_calls():
+    client = MagicMock()
+    with pytest.raises(ValueError, match="nonempty"):
+        evaluate([], client, 1)
+    client.generate_chat_response.assert_not_called()
+
+
+def test_revision_evidence_and_normalized_ids_survive_real_reviewer_and_checkpoint(
+    tmp_path: Path,
+):
+    case = next(
+        case for case in load_cases(DEFAULT_CASES) if case.id == "speculative-revisable"
+    )
+    revision = CandidateRevision(
+        content="Show totals first in reports.",
+        trigger="When preparing reports",
+        rationale="The user explicitly requested this order.",
+    )
+    output = PlaybookCandidateReviewOutput(
+        decisions=[
+            CandidateReviewDecision(
+                id=" C1 ",
+                decision="revise",
+                reason_code="speculative",
+                evidence_ids=["C1-E1"],
+                revision=revision,
+            )
+        ]
+    )
+    client = MagicMock()
+    client.config = LiteLLMConfig(model="test-model", fallback_models=[])
+    client.generate_chat_response.return_value = output
+    checkpoint = tmp_path / "checkpoint.json"
+    report = evaluate([case], client, 1, checkpoint)
+    assert not report["errors"]
+    for row in report["rows"]:
+        assert row["candidate"] == "C1"
+        assert row["decision_correct"] and row["code_correct"]
+        assert row["revision"] == revision.model_dump()
+        assert row["evidence_ids"] == ["C1-E1"]
+    assert json.loads(checkpoint.read_text())["rows"] == report["rows"]
+
+
+@pytest.mark.parametrize("actual_model", ["expected-model", "another-model"])
+def test_cli_checks_expected_role_model_before_evaluating(
+    monkeypatch, tmp_path: Path, actual_model: str
+):
+    client = MagicMock()
+    client._resolve_primary_model.return_value = actual_model
+    constructor = MagicMock(return_value=client)
+    run = MagicMock(return_value={"summary": {}, "errors": []})
+    monkeypatch.setattr(evaluation, "LiteLLMClient", constructor)
+    monkeypatch.setattr(evaluation, "assert_litellm_unpatched", lambda: None)
+    monkeypatch.setattr(evaluation, "evaluate", run)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "evaluate",
+            "--expected-model",
+            "expected-model",
+            "--out",
+            str(tmp_path / "out.json"),
+        ],
+    )
+    if actual_model == "expected-model":
+        assert evaluation.main() == 0
+        run.assert_called_once()
+    else:
+        with pytest.raises(SystemExit) as error:
+            evaluation.main()
+        assert error.value.code == 2
+        run.assert_not_called()
 
 
 def test_fixture_validation_rejects_unresolvable_evidence(tmp_path: Path):

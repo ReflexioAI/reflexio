@@ -468,12 +468,18 @@ Run the paired evaluation with a real provider key exported in the shell:
 
 ```bash
 uv run python scripts/evaluate_review_reason_codes.py \
-  --model minimax/MiniMax-M3 --repeats 2 --out /tmp/reason-codes.json
+  --expected-model minimax/MiniMax-M3 --repeats 2 --out /tmp/reason-codes.json
 ```
 
 Both arms see the same frozen cases, chronology, model, temperature and empty
 fallback list. The command refuses a patched LiteLLM and returns nonzero on
 call errors; its report keeps expected, processed and error counts separate.
+`--expected-model` checks the generation model resolved from the normal provider
+configuration; it does not select or override that model. A mismatch fails
+before paid calls. Export only the intended provider's key for the documented
+MiniMax run. Reports retain revision content and evidence IDs for manual
+inspection of useful-core preservation; correct decision/code labels alone
+cannot establish revision quality.
 The corpus covers every label plus accepted and revisable controls in reporting
 and code-review contexts. It is synthetic except for a publicly reported
 candidate shape from #428; it is not the original production candidate pool.
