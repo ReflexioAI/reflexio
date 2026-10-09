@@ -94,6 +94,7 @@ uv run reflexio services start                          # backend :8061, docs :8
 uv run reflexio services start --storage sqlite         # OSS default; remote storage factories require a deployment extension
 uv run reflexio services start --backend-port 9000 --docs-port 9001
 uv run reflexio services start --only backend --no-reload
+uv run reflexio services start --only backend --backend-host 127.0.0.1  # local-only
 uv run reflexio embeddings serve --port 8072            # OpenAI-compatible local embeddings
 uv run reflexio services stop
 uv run reflexio services stop --force                   # SIGKILL instead of SIGTERM
