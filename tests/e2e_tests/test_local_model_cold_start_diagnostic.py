@@ -5,6 +5,7 @@ The backend child is a launch marker, not the full extraction pipeline.
 """
 
 import os
+import signal
 import sys
 from pathlib import Path
 
@@ -56,17 +57,25 @@ def test_real_cold_model_ready_before_backend_launch(monkeypatch, tmp_path: Path
         f"Path({str(backend)!r}).write_text('started after model readiness'); "
         "print('Application startup complete.', flush=True)"
     )
-    utils.run_services(
-        [
-            utils.ServiceConfig(
-                name="embedding", command=[sys.executable, "-u", "-c", embedding_code]
-            ),
-            utils.ServiceConfig(
-                name="backend", command=[sys.executable, "-u", "-c", backend_code]
-            ),
-        ],
-        {"embedding": 8072, "backend": 8071},
-    )
+    previous_handlers = {
+        sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)
+    }
+    try:
+        utils.run_services(
+            [
+                utils.ServiceConfig(
+                    name="embedding",
+                    command=[sys.executable, "-u", "-c", embedding_code],
+                ),
+                utils.ServiceConfig(
+                    name="backend", command=[sys.executable, "-u", "-c", backend_code]
+                ),
+            ],
+            {"embedding": 8072, "backend": 8071},
+        )
+    finally:
+        for sig, handler in previous_handlers.items():
+            signal.signal(sig, handler)
     assert ready.read_text() == "real 384-dimension embedding ready"
     assert backend.read_text() == "started after model readiness"
     assert not early_backend.exists(), "First backend launch preceded model readiness"
