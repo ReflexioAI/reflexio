@@ -7,6 +7,7 @@ are excluded, so a pass cannot establish that the original Windows hang is fixed
 import asyncio
 import faulthandler
 import json
+import os
 import platform
 import sys
 import tempfile
@@ -17,6 +18,11 @@ from pathlib import Path
 from unittest.mock import patch
 
 import httpx
+
+# This admission-only probe must never use a developer's inherited cloud key
+# or attempt an inference service request. Keep the separate cold-model probe
+# responsible for inference behavior.
+os.environ["REFLEXIO_EMBEDDING_PROVIDER"] = "off"
 
 from reflexio.lib.reflexio_lib import Reflexio
 from reflexio.models.config_schema import Config, StorageConfigSQLite
@@ -81,7 +87,10 @@ async def probe(client, storage):
 faulthandler.enable()
 faulthandler.dump_traceback_later(20, repeat=True)
 
-with tempfile.TemporaryDirectory(prefix="reflexio-295-") as tmp:
+with (
+    tempfile.TemporaryDirectory(prefix="reflexio-295-") as tmp,
+    patch("reflexio.server.services.durable_learning.local.ensure_local_extraction"),
+):
     org_id = "isolated-publish-probe"
     configurator = DefaultConfigurator(org_id=org_id, base_dir=tmp)
     configurator.set_config(
@@ -98,9 +107,6 @@ with tempfile.TemporaryDirectory(prefix="reflexio-295-") as tmp:
             patch(
                 "reflexio.server.cache.reflexio_cache.get_reflexio",
                 return_value=reflexio,
-            ),
-            patch(
-                "reflexio.server.services.durable_learning.local.ensure_local_extraction"
             ),
         ):
 

@@ -25,6 +25,7 @@ def test_real_cold_model_ready_before_backend_launch(monkeypatch, tmp_path: Path
     cache = tmp_path / "cold-model"
     ready = tmp_path / "model-ready"
     backend = tmp_path / "backend-started"
+    early_backend = tmp_path / "backend-started-early"
     assert not cache.exists()
     monkeypatch.setattr(utils, "ensure_requested_ports_available", lambda _: None)
     monkeypatch.setattr(
@@ -49,7 +50,9 @@ def test_real_cold_model_ready_before_backend_launch(monkeypatch, tmp_path: Path
     )
     backend_code = (
         "from pathlib import Path; "
-        f"assert Path({str(ready)!r}).exists(), 'backend started before model readiness'; "
+        f"ready = Path({str(ready)!r}).exists(); "
+        f"None if ready else Path({str(early_backend)!r}).write_text('started before model readiness'); "
+        "assert ready, 'backend started before model readiness'; "
         f"Path({str(backend)!r}).write_text('started after model readiness'); "
         "print('Application startup complete.', flush=True)"
     )
@@ -66,5 +69,6 @@ def test_real_cold_model_ready_before_backend_launch(monkeypatch, tmp_path: Path
     )
     assert ready.read_text() == "real 384-dimension embedding ready"
     assert backend.read_text() == "started after model readiness"
+    assert not early_backend.exists(), "First backend launch preceded model readiness"
     assert (cache / "onnx" / "model.onnx").is_file()
     assert not (tmp_path / "services.json").exists()
