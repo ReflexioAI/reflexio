@@ -167,6 +167,9 @@ def validate_storage_backend(storage: str | None) -> None:
 
 @app.command()
 def start(
+    backend_host: Annotated[
+        str, typer.Option(help="Backend bind address (127.0.0.1 for local-only access)")
+    ] = "0.0.0.0",  # noqa: S104
     backend_port: Annotated[
         int | None, typer.Option(help="Backend server port (default: 8061)")
     ] = None,
@@ -256,6 +259,7 @@ def start(
             set_env_var(env_path, "REFLEXIO_STORAGE", resolved)
 
     args = argparse.Namespace(
+        backend_host=backend_host,
         backend_port=backend_port,
         docs_port=docs_port,
         embedding_port=embedding_port,

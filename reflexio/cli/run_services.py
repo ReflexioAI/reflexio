@@ -40,6 +40,11 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
             run-services flags. Mutated in-place.
     """
     parser.add_argument(
+        "--backend-host",
+        default="0.0.0.0",
+        help="Backend bind address (default: 0.0.0.0; use 127.0.0.1 for local access)",
+    )
+    parser.add_argument(
         "--backend-port",
         type=int,
         default=None,
@@ -166,6 +171,7 @@ def build_backend_service(
     ports: dict[str, int],
     *,
     app_module: str = "reflexio.server.api:app",
+    host: str = "0.0.0.0",  # noqa: S104
     reload: bool = True,
     reload_includes: list[str] | None = None,
     workers: int = 2,
@@ -179,6 +185,7 @@ def build_backend_service(
         ports (dict[str, int]): Resolved port map (must contain "backend").
         app_module (str): ASGI app path; defaults to the production app
             factory.
+        host (str): Bind address. Use 127.0.0.1 for local-only access.
         reload (bool): When True, enables uvicorn autoreload (single
             worker forced). When False, daemon mode with multi-worker
             request-count recycling is used.
@@ -214,7 +221,7 @@ def build_backend_service(
         "--app",
         app_module,
         "--host",
-        "0.0.0.0",  # noqa: S104
+        host,
         "--port",
         str(ports["backend"]),
     ]
@@ -355,6 +362,7 @@ def execute(args: argparse.Namespace) -> None:
         services.append(
             build_backend_service(
                 ports,
+                host=getattr(args, "backend_host", "0.0.0.0"),
                 reload=reload,
                 reload_includes=["reflexio/server/site_var/site_var_sources/*.json"],
                 workers=workers,
