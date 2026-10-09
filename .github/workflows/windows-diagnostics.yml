@@ -5,8 +5,11 @@ on:
   pull_request:
     paths:
       - .github/workflows/windows-diagnostics.yml
-      - reflexio/cli/**
-      - reflexio/server/llm/providers/local_embedding_provider.py
+      - reflexio/**
+      - pyproject.toml
+      - uv.lock
+      - tests/conftest.py
+      - tests/cli/test_utils.py
       - tests/e2e_tests/test_local_publish_concurrency_diagnostic.py
       - tests/e2e_tests/test_local_model_cold_start_diagnostic.py
       - tests/test_scripts/local_publish_probe.py
