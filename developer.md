@@ -108,7 +108,7 @@ The `reflexio services start` command has two distinct modes:
 
 | Flag | Default | Purpose |
 |---|---|---|
-| `--backend-host ADDRESS` | `0.0.0.0` | Backend bind address; use `127.0.0.1` for local-only access |
+| `--backend-host ADDRESS` | `127.0.0.1` | Backend bind address; network access requires `REFLEXIO_API_KEY` |
 | `--no-reload` | (off; opt in for daemon mode) | Switches to daemon mode |
 | `--workers N` | 2 | Worker count. Higher = more parallelism; must be ≥1 |
 | `--max-requests N` | 10000 | Worker recycles after this many requests; 0 disables |
