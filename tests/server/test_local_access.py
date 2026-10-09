@@ -160,6 +160,23 @@ def test_matching_bearer_key_allows_remote_data_access(monkeypatch):
 
 
 @pytest.mark.parametrize(
+    "key,authorization", [("", None), ("secret", None), ("secret", "Bearer wrong")]
+)
+def test_browser_authentication_failures_preserve_cors_and_security_headers(
+    monkeypatch, key, authorization
+):
+    headers = {"Origin": "http://localhost:8062"}
+    if authorization:
+        headers["Authorization"] = authorization
+    response = request(monkeypatch, peer="192.0.2.1", key=key, headers=headers)
+    assert response.status_code == 401
+    assert response.json() == {"detail": "Authentication required"}
+    assert response.headers["access-control-allow-origin"] == "*"
+    assert response.headers["www-authenticate"] == "Bearer"
+    assert response.headers["x-content-type-options"] == "nosniff"
+
+
+@pytest.mark.parametrize(
     "path",
     [
         "/health",

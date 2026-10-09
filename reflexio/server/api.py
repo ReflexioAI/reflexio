@@ -31,6 +31,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
+from starlette.middleware import Middleware
 
 from reflexio.server.api_endpoints import (
     health_api,
@@ -729,4 +730,11 @@ from reflexio.server.local_access import LocalAccessMiddleware
 
 app = create_app()
 _add_openapi_security(app, allow_local_access=True)
-app.add_middleware(LocalAccessMiddleware)
+# Reject before the request reaches data middleware, but keep CORS, security
+# headers and correlation around authentication failures too.
+_cors_index = next(
+    index
+    for index, item in enumerate(app.user_middleware)
+    if item.cls is CORSMiddleware
+)
+app.user_middleware.insert(_cors_index + 1, Middleware(LocalAccessMiddleware))
