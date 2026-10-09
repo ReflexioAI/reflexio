@@ -160,15 +160,20 @@ def test_matching_bearer_key_allows_remote_data_access(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "path", ["/health", "/meta/version", "/docs", "/redoc", "/openapi.json"]
+    "path",
+    [
+        "/health",
+        "/healthz",
+        "/healthz/eval",
+        "/meta/version",
+        "/docs",
+        "/redoc",
+        "/openapi.json",
+    ],
 )
-def test_health_and_documentation_remain_public(monkeypatch, path):
-    assert (
-        request(
-            monkeypatch, peer="192.0.2.1", key="configured-secret", path=path
-        ).status_code
-        == 200
-    )
+@pytest.mark.parametrize("key", ["", "configured-secret"])
+def test_health_and_documentation_remain_public(monkeypatch, path, key):
+    assert request(monkeypatch, peer="192.0.2.1", key=key, path=path).status_code == 200
 
 
 def test_preflight_does_not_require_a_bearer_key(monkeypatch):

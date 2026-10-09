@@ -39,7 +39,16 @@ class LocalAccessMiddleware:
         if scope["method"] == "OPTIONS" or (
             scope["method"] in {"GET", "HEAD"}
             and scope["path"]
-            in {"/", "/health", "/meta/version", "/docs", "/redoc", "/openapi.json"}
+            in {
+                "/",
+                "/health",
+                "/healthz",
+                "/healthz/eval",
+                "/meta/version",
+                "/docs",
+                "/redoc",
+                "/openapi.json",
+            }
         ):
             await self.app(scope, receive, send)
             return
