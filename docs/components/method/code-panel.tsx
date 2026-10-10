@@ -5,9 +5,11 @@ import { useTheme } from "next-themes";
 import { Play, RotateCcw, ChevronDown, ChevronRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ParamForm } from "./param-form";
-import { MethodDef } from "@/lib/types";
+import type { MethodDef } from "@/lib/types";
 import { generatePythonCode } from "@/lib/execution/code-generator";
 import { parsePythonCode } from "@/lib/execution/code-parser";
+import { initialParams } from "@/lib/execution/default-params";
+import { useSettings } from "@/hooks/use-settings";
 import dynamic from "next/dynamic";
 
 const MonacoEditor = dynamic(() => import("@monaco-editor/react"), {
@@ -35,6 +37,7 @@ export function CodePanel({
   loading,
 }: CodePanelProps) {
   const { resolvedTheme } = useTheme();
+  const { sessionId } = useSettings();
   const [showParams, setShowParams] = useState(true);
   const generatedCode = useMemo(
     () => generatePythonCode(method, params),
@@ -66,23 +69,18 @@ export function CodePanel({
     if (codeEdited) {
       const parsed = parsePythonCode(displayedCode, method);
       if (parsed) {
+        onParamsChange(parsed.params);
         onRun(parsed.params);
         return;
       }
     }
     onRun(params);
-  }, [codeEdited, displayedCode, method, params, onRun]);
+  }, [codeEdited, displayedCode, method, params, onRun, onParamsChange]);
 
   const handleReset = useCallback(() => {
-    const emptyParams: Record<string, unknown> = {};
-    for (const p of method.params) {
-      if (p.default !== undefined) {
-        emptyParams[p.name] = p.default;
-      }
-    }
     setCodeEdited(false);
-    onParamsChange(emptyParams);
-  }, [method, onParamsChange]);
+    onParamsChange(initialParams(method, sessionId));
+  }, [method, onParamsChange, sessionId]);
 
   // Cmd+Enter shortcut
   useEffect(() => {
@@ -151,6 +149,7 @@ export function CodePanel({
       {/* Param Form */}
       <div className="border-t border-border">
         <button
+          type="button"
           onClick={() => setShowParams(!showParams)}
           className="flex items-center gap-1.5 w-full px-3 py-2 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
         >

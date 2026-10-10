@@ -18,6 +18,8 @@ interface SettingsContextValue extends Settings {
   apiKey: string;
   setApiKey: (key: string) => void;
   setApiEndpoint: (endpoint: string) => void;
+  sessionId: string;
+  setSessionId: (sessionId: string) => void;
 }
 
 const SettingsContext = createContext<SettingsContextValue | null>(null);
@@ -45,6 +47,9 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
   // Credentials stay in memory, separate from persisted endpoint settings.
   const [apiKey, setApiKey] = useState("");
+  // Related explorer calls share one identity during this browser visit.
+  // Keep it out of persisted settings so reloads begin a fresh conversation.
+  const [sessionId, setSessionId] = useState("");
   const hasLoadedClientSettings = useRef(false);
   const [clientSettingsLoaded, setClientSettingsLoaded] = useState(false);
 
@@ -53,6 +58,7 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     queueMicrotask(() => {
       if (!isMounted) return;
       setSettings(loadSettings());
+      setSessionId(crypto.randomUUID());
       hasLoadedClientSettings.current = true;
       setClientSettingsLoaded(true);
     });
@@ -78,7 +84,7 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
 
   return (
     <SettingsContext.Provider
-      value={{ ...settings, apiKey, setApiKey, setApiEndpoint }}
+      value={{ ...settings, apiKey, setApiKey, setApiEndpoint, sessionId, setSessionId }}
     >
       {children}
     </SettingsContext.Provider>
