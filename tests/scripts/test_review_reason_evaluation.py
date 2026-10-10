@@ -185,7 +185,7 @@ def test_every_frozen_case_can_be_prepared_before_paid_calls():
         assert all(item.request_id == case.id for item in existing)
 
 
-@pytest.mark.parametrize("candidate_version", ["1.4.0", "1.5.0"])
+@pytest.mark.parametrize("candidate_version", ["1.4.0", "1.5.0", "1.6.0"])
 def test_candidate_version_selection_preserves_baseline_and_report_identity(
     candidate_version,
 ):
@@ -214,7 +214,9 @@ def test_candidate_version_selection_preserves_baseline_and_report_identity(
     prompts = [
         str(call.args[0]) for call in client.generate_chat_response.call_args_list
     ]
-    assert ("**Independent lessons:**" in prompts[1]) == (candidate_version == "1.5.0")
+    assert ("**Independent lessons:**" in prompts[1]) == (
+        candidate_version in ("1.5.0", "1.6.0")
+    )
     changed_case = case.model_copy(deep=True)
     changed_case.turns[0].content += " Changed evidence."
     changed = evaluate([changed_case], client, 1, candidate_version=candidate_version)
@@ -228,7 +230,10 @@ def test_invalid_candidate_version_fails_before_calls():
     client.generate_chat_response.assert_not_called()
 
 
-def test_clarified_prompt_preserves_fatal_gates_revision_policy_and_active_default():
+@pytest.mark.parametrize("candidate_version", ["1.5.0", "1.6.0"])
+def test_clarified_prompt_preserves_fatal_gates_revision_policy_and_active_default(
+    candidate_version,
+):
     manager = PromptManager()
     assert manager.get_active_version("playbook_candidate_review") == "1.3.0"
     values: dict[str, str] = dict.fromkeys(
@@ -245,7 +250,7 @@ def test_clarified_prompt_preserves_fatal_gates_revision_policy_and_active_defau
     )
     old = manager.render_prompt("playbook_candidate_review", values)
     clarified = PromptManager(
-        version_override={"playbook_candidate_review": "1.5.0"}
+        version_override={"playbook_candidate_review": candidate_version}
     ).render_prompt("playbook_candidate_review", values)
     assert (
         clarified.split("## Reason-code precedence")[0]

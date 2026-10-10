@@ -469,13 +469,18 @@ steps of one supported procedure stay together, internal-status proof has
 precedence over unsupported causality, and invented future instructions are
 speculative rather than unsupported factual attributes. Grounded preferences
 still require a duplication and scope check before acceptance. v1.3.0 and
-v1.4.0 remain byte-for-byte unchanged.
+v1.4.0 remain byte-for-byte unchanged. The further inactive v1.6.0 candidate
+clarifies that evidence explicitly joining preparation and delivery of one
+requested result defines a complete workflow; sharing a topic alone does not.
+It also requires preference rationales to cite the stated instruction without
+adding an unstated benefit or timing constraint. v1.5.0 is preserved unchanged
+because it lost supported delivery steps in the focused positive control.
 
 Run the paired evaluation with a real provider key exported in the shell:
 
 ```bash
 uv run python scripts/evaluate_review_reason_codes.py \
-  --expected-model minimax/MiniMax-M3 --candidate-version 1.5.0 \
+  --expected-model minimax/MiniMax-M3 --candidate-version 1.6.0 \
   --repeats 5 --out /tmp/reason-codes.json
 ```
 
@@ -491,7 +496,7 @@ and retain revision content and evidence IDs for manual
 inspection of useful-core preservation; correct decision/code labels alone
 cannot establish revision quality.
 The corpus covers every label plus accepted and revisable controls in reporting,
-code-review, translation, troubleshooting and upload contexts. The v1.5 evaluation
+code-review, translation, troubleshooting and upload contexts. The v1.5/v1.6 evaluation
 is a new matched comparison: two formerly ambiguous inputs were clarified and
 three boundary controls added. Do not aggregate these scores with the original
 14-case measurements. Run repeated paired disagreement cases and positive
