@@ -2,6 +2,7 @@
 
 import ast
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -18,6 +19,7 @@ def test_mutmut_loads_current_configuration(monkeypatch):
     settings = config()
     reset_config()
     assert settings.source_paths
+    assert settings.debug
     assert all(path.is_file() for path in settings.source_paths)
     assert settings.pytest_add_cli_args_test_selection == ["tests/"]
     assert settings.pytest_add_cli_args[:2] == ["-o", "addopts="]
@@ -31,8 +33,11 @@ def test_mutmut_loads_current_configuration(monkeypatch):
     )
 
 
+@pytest.mark.parametrize("hash_seed", [0, 6])
 @pytest.mark.parametrize("malformed", [False, True], ids=["measured", "huge-int"])
-def test_actual_engine_orders_fast_checks_and_keeps_survivor_tests(tmp_path, malformed):
+def test_actual_engine_orders_fast_checks_and_keeps_survivor_tests(
+    tmp_path, malformed, hash_seed
+):
     """A full mutant test set stays intact while pytest -x fails fast."""
     engine = shutil.which("mutmut")
     assert engine is not None
@@ -68,6 +73,9 @@ def pytest_collection_modifyitems(items):
         data = json.loads(path.read_text())
         data["duration_by_test"] = {item.nodeid: 10 ** 400 for item in items}
         path.write_text(json.dumps(data))
+        with (PROJECT_ROOT.parent / "collected.jsonl").open("a") as stream:
+            stream.write(json.dumps([os.environ["MUTANT_UNDER_TEST"],
+                                     [item.name for item in items]]) + "\\n")
     production_hook(items)
 """
             )
@@ -105,7 +113,12 @@ def test_z_fast():
     )
     for command in (["run", "--max-children", "1"], ["export-cicd-stats"]):
         result = subprocess.run(  # noqa: S603 - installed engine, fixed arguments
-            [engine, *command], cwd=tmp_path, capture_output=True, text=True, timeout=90
+            [engine, *command],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            timeout=90,
+            env={**os.environ, "PYTHONHASHSEED": str(hash_seed)},
         )
         assert result.returncode == 0, result.stdout + result.stderr
     stats = json.loads((tmp_path / "mutants/mutmut-cicd-stats.json").read_text())
@@ -119,8 +132,17 @@ def test_z_fast():
     metadata = json.loads((tmp_path / "mutants/number.py.meta").read_text())
     evaluated = metadata["exit_code_by_key"]
     assert set(executed) == {key for key, code in evaluated.items() if code in (0, 1)}
+    collected = {}
+    if malformed:
+        for line in (tmp_path / "collected.jsonl").read_text().splitlines():
+            mutant, names = json.loads(line)
+            collected[mutant] = [
+                "slow" if name == "test_a_slow" else "fast" for name in names
+            ]
     for mutant, names in executed.items():
-        expected = ["slow", "fast"] if malformed else ["fast", "slow"]
+        # Mutmut selects associated tests from a set, so their CLI/collection
+        # order may differ from source order. Preserve that actual input order.
+        expected = collected[mutant] if malformed else ["fast", "slow"]
         assert names[0] == expected[0], (mutant, names)
         if evaluated[mutant] == 0:
             assert names == expected, (mutant, names)

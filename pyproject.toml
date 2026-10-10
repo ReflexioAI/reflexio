@@ -257,6 +257,8 @@ exclude = [
 reportMissingImports = "warning"
 
 [tool.mutmut]
+# Forked statistics-pass output otherwise stays in the child's capture buffer.
+debug = true
 # Stats and baseline suites start threads and initialize native runtimes.
 # Fork each mutation from a clean server, never their contaminated parent.
 process_isolation = "forkserver"
