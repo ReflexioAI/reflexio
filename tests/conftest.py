@@ -1,8 +1,11 @@
 """Test configuration — delegates to shared reflexio.test_support module."""
 
+import errno
 import json
 import math
 import os
+import shutil
+import sqlite3
 import sys
 import tempfile
 from collections.abc import Iterator
@@ -129,6 +132,62 @@ def pytest_runtest_logreport(report: pytest.TestReport) -> None:
     from mutmut.state import state
 
     state().duration_by_test[report.nodeid] += report.duration
+
+
+@pytest.hookimpl(hookwrapper=True, tryfirst=True)
+def pytest_runtest_teardown(
+    item: pytest.Item, nextitem: pytest.Item | None
+) -> Iterator[None]:
+    """Attribute calls made while fixtures drain to their own test, not the next."""
+    yield
+    if os.environ.get("MUTANT_UNDER_TEST") != "stats":
+        return
+    from mutmut.state import state
+
+    stats = state()
+    for function in stats._stats:
+        stats.tests_by_mangled_function_name[function].add(
+            item.nodeid.removeprefix("mutants/")
+        )
+    stats._stats.clear()
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo):
+    """Scratch exhaustion is infrastructure failure, never a mutation kill."""
+    yield
+    if "MUTANT_UNDER_TEST" not in os.environ or call.excinfo is None:
+        return
+    pending: list[BaseException | None] = [call.excinfo.value]
+    seen: set[int] = set()
+    while pending:
+        error = pending.pop()
+        if error is None or id(error) in seen:
+            continue
+        seen.add(id(error))
+        if (isinstance(error, OSError) and error.errno == errno.ENOSPC) or (
+            isinstance(error, sqlite3.OperationalError)
+            and getattr(error, "sqlite_errorcode", None) == sqlite3.SQLITE_FULL
+        ):
+            pytest.exit("Mutation temporary storage exhausted", returncode=35)
+        pending.extend((error.__cause__, error.__context__))
+
+
+@pytest.hookimpl(hookwrapper=True, tryfirst=True)
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> Iterator[None]:
+    """Remove this session's owned scratch before mutant workers use os._exit."""
+    yield
+    if "MUTANT_UNDER_TEST" not in os.environ:
+        return
+    factory = getattr(session.config, "_tmp_path_factory", None)
+    if not isinstance(factory, pytest.TempPathFactory):
+        return
+    owned = factory._basetemp
+    if owned is not None:
+        try:
+            shutil.rmtree(owned)
+        except OSError:
+            pytest.exit("Mutation temporary storage cleanup failed", returncode=35)
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
