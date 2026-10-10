@@ -14,6 +14,7 @@ from reflexio.models.api_schema.domain.enums import PlaybookReviewReasonCode
 from reflexio.models.api_schema.internal_schema import RequestInteractionDataModel
 from reflexio.models.structured_output import normalize_provider_value
 from reflexio.server.api_endpoints.request_context import RequestContext
+from reflexio.server.llm._litellm_text_generation import ProviderRequestGuard
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.llm.model_defaults import ModelRole
 from reflexio.server.services.playbook.playbook_evidence import (
@@ -324,9 +325,16 @@ class PlaybookCandidateReviewer:
         *,
         request_context: RequestContext,
         llm_client: LiteLLMClient,
+        max_tokens: int | None = None,
+        reasoning_effort: Literal["high", "none"] | None = None,
+        provider_request_guard: ProviderRequestGuard | None = None,
     ) -> None:
         self.request_context = request_context
         self.client = llm_client
+        # Internal qualification overrides; normal service callers supply none.
+        self.max_tokens = max_tokens
+        self.reasoning_effort = reasoning_effort
+        self.provider_request_guard = provider_request_guard
 
     def is_enabled(self) -> bool:
         """Return whether a reviewer prompt version is active."""
@@ -640,7 +648,7 @@ class PlaybookCandidateReviewer:
         )
         units_by_candidate = self._candidate_evidence_units(candidates, prompt_context)
         version = self.request_context.prompt_manager.get_active_version(self.PROMPT_ID)
-        evidence_first = version == "1.14.0"
+        evidence_first = version in {"1.14.0", "1.15.0"}
         variables = {
             "agent_context_prompt": agent_context,
             "playbook_definition": playbook_definition,
@@ -683,6 +691,20 @@ class PlaybookCandidateReviewer:
             ]
             response_format = EvidenceFirstReviewOutput
             validator = self._evidence_first_validation_errors
+        inference_options: dict[str, Any] = {}
+        if self.max_tokens is not None:
+            inference_options["max_tokens"] = self.max_tokens
+        if self.reasoning_effort is not None:
+            # Z.ai's reasoning_effort is absent from the installed LiteLLM
+            # standard-param allowlist. extra_body preserves it on the wire.
+            inference_options["extra_body"] = {
+                "reasoning_effort": self.reasoning_effort,
+                "thinking": {
+                    "type": "disabled" if self.reasoning_effort == "none" else "enabled"
+                },
+            }
+        if self.provider_request_guard is not None:
+            inference_options["provider_request_guard"] = self.provider_request_guard
         output = self.client.generate_chat_response(
             messages,
             model_role=ModelRole.GENERATION,
@@ -692,6 +714,7 @@ class PlaybookCandidateReviewer:
             structured_output_validator=lambda value: validator(
                 value, units_by_candidate
             ),
+            **inference_options,
         )
         supporting_evidence: list[CandidateSupportingEvidence] = []
         if evidence_first:

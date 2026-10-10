@@ -177,7 +177,9 @@ def test_cli_checks_expected_role_model_before_evaluating(
     client = MagicMock()
     client._resolve_primary_model.return_value = actual_model
     constructor = MagicMock(return_value=client)
-    run = MagicMock(return_value={"summary": {}, "errors": []})
+    run = MagicMock(
+        return_value={"summary": {}, "errors": [], "measurement_errors": []}
+    )
     monkeypatch.setattr(evaluation, "LiteLLMClient", constructor)
     monkeypatch.setattr(evaluation, "assert_litellm_unpatched", lambda: None)
     monkeypatch.setattr(evaluation, "evaluate", run)
@@ -255,6 +257,7 @@ def test_every_frozen_case_can_be_prepared_before_paid_calls():
         "1.12.0",
         "1.13.0",
         "1.14.0",
+        "1.15.0",
     ],
 )
 def test_candidate_version_selection_preserves_baseline_and_report_identity(
@@ -320,6 +323,7 @@ def test_candidate_version_selection_preserves_baseline_and_report_identity(
             "1.12.0",
             "1.13.0",
             "1.14.0",
+            "1.15.0",
         )
     )
     changed_case = case.model_copy(deep=True)

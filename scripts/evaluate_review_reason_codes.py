@@ -31,6 +31,7 @@ from reflexio.server.services.playbook.components.reviewer import (
     PlaybookCandidateReviewer,
 )
 from reflexio.test_support.llm_mock import assert_litellm_unpatched
+from reflexio.test_support.reviewer_metrics import ReviewCallMetrics
 
 DEFAULT_CASES = (
     Path(__file__).resolve().parents[1] / "tests/test_data/reviewer_reason_codes.json"
@@ -147,6 +148,8 @@ def evaluate(
     checkpoint: Path | None = None,
     *,
     candidate_version: str = "1.4.0",
+    max_tokens: int | None = None,
+    reasoning_effort: Literal["high", "none"] | None = None,
 ) -> dict:
     if candidate_version not in (
         "1.4.0",
@@ -160,14 +163,21 @@ def evaluate(
         "1.12.0",
         "1.13.0",
         "1.14.0",
+        "1.15.0",
     ):
         raise ValueError(
-            "candidate_version must be 1.4.0, 1.5.0, 1.6.0, 1.7.0, 1.8.0, 1.9.0, 1.10.0, 1.11.0, 1.12.0, 1.13.0 or 1.14.0"
+            "candidate_version must be 1.4.0, 1.5.0, 1.6.0, 1.7.0, 1.8.0, 1.9.0, 1.10.0, 1.11.0, 1.12.0, 1.13.0, 1.14.0 or 1.15.0"
         )
     if not cases:
         raise ValueError("cases must be nonempty")
     if repeats < 1:
         raise ValueError("repeats must be positive")
+    if max_tokens is not None and max_tokens < 1:
+        raise ValueError("max_tokens must be positive")
+    if reasoning_effort is not None and client.config.model != "zai/glm-5.2":
+        raise ValueError(
+            "reasoning profile is qualified for the GLM-5.2 experiment only"
+        )
     prompt_identities = {
         version: PromptManager(
             version_override={"playbook_candidate_review": version}
@@ -177,6 +187,9 @@ def evaluate(
     prepared = {case.id: prepare_case(case) for case in cases}
     rows = []
     errors = []
+    calls = []
+    measurement_errors = []
+    settings = {"max_tokens": max_tokens, "reasoning_effort": reasoning_effort}
     case_hash = hashlib.sha256(
         json.dumps(
             [case.model_dump(mode="json") for case in cases], sort_keys=True
@@ -196,6 +209,9 @@ def evaluate(
                         "prompt_identities": prompt_identities,
                         "rows": rows,
                         "errors": errors,
+                        "calls": calls,
+                        "inference_settings": settings,
+                        "measurement_errors": measurement_errors,
                     },
                     indent=2,
                 ),
@@ -221,18 +237,26 @@ def evaluate(
                         storage=None,
                     ),
                 )
+                metrics = ReviewCallMetrics(
+                    client.config.model, max_tokens, reasoning_effort
+                )
                 reviewer = PlaybookCandidateReviewer(
-                    request_context=context, llm_client=client
+                    request_context=context,
+                    llm_client=client,
+                    max_tokens=max_tokens,
+                    reasoning_effort=reasoning_effort,
+                    provider_request_guard=metrics.guard,
                 )
                 try:
-                    result = reviewer.decide(
-                        candidates=candidates,
-                        request_interaction_data_models=sessions,
-                        existing_playbooks=existing,
-                        agent_context=case.agent_context,
-                        playbook_definition="Reusable user guidance",
-                        tool_context="",
-                    )
+                    with metrics:
+                        result = reviewer.decide(
+                            candidates=candidates,
+                            request_interaction_data_models=sessions,
+                            existing_playbooks=existing,
+                            agent_context=case.agent_context,
+                            playbook_definition="Reusable user guidance",
+                            tool_context="",
+                        )
                 except Exception as exc:
                     errors.append(
                         {
@@ -242,8 +266,26 @@ def evaluate(
                             "error_type": type(exc).__name__,
                         }
                     )
-                    save_progress()
                     continue
+                finally:
+                    calls.append(
+                        {
+                            "case": case.id,
+                            "repeat": repeat,
+                            "version": version,
+                            **metrics.data,
+                        }
+                    )
+                    if not metrics.data["observation_complete"]:
+                        measurement_errors.append(
+                            {
+                                "case": case.id,
+                                "repeat": repeat,
+                                "version": version,
+                                "error_type": "IncompleteProviderObservation",
+                            }
+                        )
+                    save_progress()
                 expected = {
                     f"C{index}": candidate
                     for index, candidate in enumerate(case.candidates, 1)
@@ -313,6 +355,9 @@ def evaluate(
         "summary": summary,
         "rows": rows,
         "errors": errors,
+        "calls": calls,
+        "inference_settings": settings,
+        "measurement_errors": measurement_errors,
     }
 
 
@@ -339,10 +384,13 @@ def main() -> int:
             "1.12.0",
             "1.13.0",
             "1.14.0",
+            "1.15.0",
         ),
         default="1.4.0",
     )
     parser.add_argument("--repeats", type=int, default=2)
+    parser.add_argument("--max-tokens", type=int)
+    parser.add_argument("--reasoning-effort", choices=("high", "none"))
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
     cases = load_cases(args.cases)
@@ -368,11 +416,17 @@ def main() -> int:
             "--expected-model checks role resolution and does not select a model"
         )
     report = evaluate(
-        cases, client, args.repeats, args.out, candidate_version=args.candidate_version
+        cases,
+        client,
+        args.repeats,
+        args.out,
+        candidate_version=args.candidate_version,
+        max_tokens=args.max_tokens,
+        reasoning_effort=args.reasoning_effort,
     )
     _write_private_text(args.out, json.dumps(report, indent=2))
     print(json.dumps(report["summary"], indent=2))
-    return 1 if report["errors"] else 0
+    return 1 if report["errors"] or report["measurement_errors"] else 0
 
 
 if __name__ == "__main__":

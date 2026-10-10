@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 from unittest.mock import MagicMock
 
 import pytest
@@ -1021,7 +1021,10 @@ def test_evidence_first_survivor_requires_excerpts_and_final_evidence_ownership(
     )
 
 
-def test_evidence_first_policy_is_separate_and_excerpts_are_not_persisted(caplog):
+@pytest.mark.parametrize("version", ["1.14.0", "1.15.0"])
+def test_evidence_first_policy_is_separate_and_excerpts_are_not_persisted(
+    caplog, version
+):
     import json
 
     from reflexio.server.services.playbook.components.reviewer import (
@@ -1031,7 +1034,7 @@ def test_evidence_first_policy_is_separate_and_excerpts_are_not_persisted(caplog
     response = _evidence_first_output()
     reviewer, client = _reviewer(response)
     reviewer.request_context.prompt_manager = PromptManager(
-        version_override={"playbook_candidate_review": "1.14.0"}
+        version_override={"playbook_candidate_review": version}
     )
     candidate = _candidate(1, "Use metric units.", content="Use metric units.")
     outcome = reviewer.decide(
@@ -1059,3 +1062,40 @@ def test_evidence_first_policy_is_separate_and_excerpts_are_not_persisted(caplog
     assert "Use metric units." not in (survivor.notes or "")
     assert "Use metric units." not in caplog.text
     assert PromptManager().get_active_version("playbook_candidate_review") == "1.3.0"
+
+
+def test_reviewer_inference_overrides_are_local_and_preserve_validator():
+    response = _evidence_first_output()
+    normal, client = _reviewer(response)
+    normal.request_context.prompt_manager = PromptManager(
+        version_override={"playbook_candidate_review": "1.15.0"}
+    )
+    guard = MagicMock()
+    experimental = PlaybookCandidateReviewer(
+        request_context=normal.request_context,
+        llm_client=client,
+        max_tokens=8192,
+        reasoning_effort="high",
+        provider_request_guard=guard,
+    )
+    arguments: dict[str, Any] = {
+        "candidates": [_candidate(1, "Use metric units.", content="Use metric units.")],
+        "request_interaction_data_models": [_interaction_model(1, "Use metric units.")],
+        "existing_playbooks": [],
+        "agent_context": "",
+        "playbook_definition": "Reusable guidance",
+        "tool_context": "",
+    }
+    experimental.decide(**arguments)
+    options = client.generate_chat_response.call_args.kwargs
+    assert options["max_tokens"] == 8192
+    assert options["extra_body"] == {
+        "reasoning_effort": "high",
+        "thinking": {"type": "enabled"},
+    }
+    assert options["provider_request_guard"] is guard
+    assert options["max_retries"] == 0
+    assert callable(options["structured_output_validator"])
+    normal.decide(**arguments)
+    options = client.generate_chat_response.call_args.kwargs
+    assert not {"max_tokens", "extra_body", "provider_request_guard"} & options.keys()

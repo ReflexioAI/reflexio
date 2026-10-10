@@ -78,3 +78,26 @@ validation does not establish safe generalization or prove the model's reasoning
 order. Stop if unsafe guidance persists or a supported healthy core is lost.
 Measure development and private cases before freezing the untouched holdout;
 complete extraction/review/consolidation staging validation precedes activation.
+
+## Approved task-scope and inference-profile experiment
+
+Inactive v1.15 retains the v1.14 response/message contract while making selected
+parameters conditional on their availability for the current task. A historical
+selection is not a standing preference or proof of cross-session carry-over.
+Acknowledgment occurrence alone establishes neither its necessity nor a benefit.
+The initial comparison uses GLM-5.2 with explicit `high` reasoning and an 8192-token
+limit for both v1.3 and v1.15, temperature 0.7, five serial repeats per frozen
+priority case, alternating arms, no fallback or outer transport retries. A live
+probe verified the explicit settings on the outbound request and a structured
+response. Both prompt policy and reasoning profile differ from the earlier
+default-profile v1.14 run; do not attribute cross-run differences to wording alone.
+
+Per-call private metrics verify every initial and repair dispatch and retain
+recovered failures, usage/cost and latency alongside final outcomes. Missing
+observations invalidate measurement rather than counting as zero repairs.
+Code checks and independent review precede paid comparison. Only after the
+focused gates pass should the unchanged candidate/profile reach the broader
+development and private sets, then the untouched holdout and staging pipeline.
+The 68-case corpus, frozen oracles and held-out inputs remain unchanged. This
+experiment configures evaluation calls only; production activation and any
+reviewer-specific provider routing still require a separate reviewed change.
