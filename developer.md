@@ -519,6 +519,35 @@ current v1.3 default uses its existing messages and response schema. Qualificati
 still audits complete instructions, triggers and rationales, including healthy
 multi-turn workflows, before holdout, staging and a separate activation change.
 
+Inactive v1.15 keeps the evidence-first contract and explicitly scopes selected
+parameters to their current task. Historical values cannot become standing
+preferences; acknowledgment occurrence proves neither a requirement nor a benefit.
+The evaluation-only `--max-tokens` and `--reasoning-effort` settings apply equally
+to both arms. The current GLM-5.2 experiment uses 8192 output tokens and `high`
+reasoning, sent through `extra_body` because the installed adapter drops the
+standard reasoning argument. A live wire/body and structured-response probe
+verified this path. These options do not configure production services.
+
+`reflexio/test_support/reviewer_metrics.py` supplies both evaluation tools with
+per-call request, repair, token/cost and timing observations. It pins each initial
+and repair request before dispatch and keeps only explicit non-content fields.
+Private reports record `calls` even on errors, and `measurement_errors` when
+request observations are missing/incomplete; both commands fail such measurements.
+Attempt timing includes client/provider slot wait; wall timing covers the complete
+logical review. Token-limit equality alone is not proof of truncation. Reports
+do not retain provider reasoning, raw logs, headers, credentials or conversation
+text in these metric objects. Complete outcome/revision data remains private in
+the existing report fields. Qualification still needs independent semantic audit.
+
+
+Evaluation observation coverage is explicit: `request_lifecycle_complete`,
+`timing_complete`, `usage_complete`, and `estimated_cost_complete`.
+`observation_complete` requires matched request/end counts, per-request timing,
+and token usage; missing observations fail the measurement gate. Missing cost
+remains unknown (never zero) and is reported separately from token coverage.
+Without an explicit token override, the first observed effective limit is frozen
+for every subsequent repair in that logical call.
+
 See the [2026-10-10 qualification report](tests/test_data/reviewer_reason_evaluation_20261010.md)
 for pinned sources, repeated real-model results, observed regressions and activation limits.
 

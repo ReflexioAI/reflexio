@@ -233,7 +233,7 @@ Inline consolidation always runs during generation (the legacy `deduplicator` fe
 | `PLAYBOOK_CANDIDATE_REVIEW_PROMPT_ID` | `playbook_candidate_review` | PlaybookCandidateReviewer |
 | `PLAYBOOK_AGGREGATION_PROMPT_ID` | `playbook_aggregation` | PlaybookAggregator |
 
-Reviewer v1.14.0 is an inactive evidence-first experiment. Its internal
+Reviewer v1.14.0 and v1.15.0 are inactive evidence-first experiments. Their internal
 `EvidenceFirstReviewOutput` carries bounded exact supporting excerpts, validated
 against the candidate's final retained source units. Policy is separated from
 untrusted input data. Excerpts are available to private evaluation artifacts,
