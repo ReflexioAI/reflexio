@@ -291,3 +291,100 @@ guard. Subsequent inactive v1.13 selection checks passed 25 tests; Ruff and
 Pyright passed. Independent local review cleared the validation changes and
 v1.13 policy for development evaluation. This is code/policy clearance, not
 model qualification or activation approval.
+
+## Failed v1.13 private development diagnosis
+
+The run stopped after 17 saved outputs, with one baseline structured-output
+repair error and two interrupted checkpoints. Independent inspection of all nine
+completed candidate outputs found two decisive grounding failures: an invented
+example answer format and unsupported benefit/incorrect acknowledgment claims.
+All nine candidate decisions and reason labels matched their frozen oracles,
+showing why those scores cannot substitute for inspecting saved guidance. Other
+outputs preserved their useful cores; announced-versus-completed wording remains
+a separate concern on some procedure rationales. No holdout calls ran.
+
+- Launch enterprise source: `7241ed4f551af62c14d980ee3a3009481bf9bb35`.
+- Launch OSS source: `a42e0c666ecd5b95e23c532bc475a70f1e7a69d5`.
+- Reviewer v1.13 raw prompt byte SHA-256: `2193b326097573bbb4c5d9ec89f54023311010bf62953f607a1c8450c1773852`.
+- Stopped report byte SHA-256: `468de15c42156e95af9caa22a66d1ab7777a2747d6c39d3336a3769c10ea9b79`.
+
+## Independent grounding-check diagnostic
+
+A private diagnostic tests four unsafe proposed outputs and two grounded controls,
+five times each. Its checker receives proposed content/trigger/rationale, own
+retained evidence with request/source/session metadata, and task/tool context;
+the original candidate and reviewer explanation are omitted. Frozen expected
+verdicts are used only for scoring, never supplied to the model. Returned clauses
+must be verbatim substrings of the proposed field and are independently audited.
+This is a development capability test, not an integrated reviewer or production
+acceptance gate. Inputs and raw reports remain private.
+
+MiniMax-M3 completed all 30 calls with zero errors. Both healthy controls passed
+all five repetitions. Unsupported example format was detected 5/5; benefit or
+incorrect acknowledgment 4/5; escalation 1/5; added negative restriction 0/5.
+Thus 10/20 unsafe outputs passed the checker incorrectly. Only 6/20 unsafe outputs
+had every preregistered defect detected across all affected fields; a single
+correct unsafe verdict can still miss another defect. One escalation explanation
+also overstated absence of alternatives as contradiction rather than missing
+support. These results disqualify this diagnostic checker as a reliable gate.
+
+- Frozen private case canonical SHA-256: `24b3cc4e59125773ed48488c8febe00fce411be4da1c85ddae95ac3da4f46811`.
+- MiniMax driver byte SHA-256: `91fbd9ed5057f0690d887b2efc633c829045f4cb01db86097ea313e7059289f6`.
+- MiniMax report byte SHA-256: `5e67782bdce0bf6ab4dae35e6d317d432aec18f63813b983b380fdd62055e256`.
+
+No reviewer replacement or additional production checking stage is qualified.
+The active prompt remains v1.3.0. The untouched holdout, broader private coverage,
+fallback qualification and complete staging-pipeline gates remain pending.
+
+The same diagnostic prompt, inputs, oracles, temperature and five-repeat schedule
+were then tested with GLM-5.2, using isolated provider credentials. This run stopped
+after 18 saved outputs and four client errors following provider rate-limit
+failures. All 18 completed verdicts matched their expected answers; all 13
+successful unsafe outputs identified their preregistered defects in every affected
+field. Five grounded procedure outputs passed; the grounded prohibition control
+was not reached. Additional acknowledgment/usefulness objections were separately
+marked ambiguous, not treated as valid just because the unsafe verdict was right.
+Incomplete coverage and provider failures prevent qualification; no selective
+reruns were used.
+
+- GLM diagnostic driver byte SHA-256: `2c568330f3634de7edeefdd8d31e51108080e147ec62172e8b67577eff9494b0`.
+- Stopped GLM report byte SHA-256: `9e7fb8bd1222f6964c8b4c14298bfac123af681625e64b72a9ca8672dbe6fdee`.
+
+A separate MiniMax diagnostic prompt makes grounding of future recommendations
+and negative constraints explicit and requires detection of every defect in all
+three fields. It uses the same six frozen development cases and was measured below. Because these cases informed the new wording, success would be an
+in-sample capability result, not generalization or activation clearance.
+
+The stricter MiniMax diagnostic completed all 30 calls without errors. It detected
+all 20 unsafe outputs, but incorrectly rejected two of ten healthy controls
+(both on a valid illustrative trigger category). It found every preregistered
+defect in 19/20 unsafe outputs, missing the invented rationale in one example
+format repetition. An additional unsupported session-adjacency claim was missed
+in every negative-restriction repetition, and one explanation still overstated
+internal status as proof that alternatives were unavailable. This diagnostic
+trades false negatives for healthy-control suppression and is not qualified.
+The preregistered secondary synthetic diagnostic remains unmeasured.
+
+- Revised diagnostic prompt SHA-256: `aa6e9f890fed1b583cc3c1ba12537e6f79ab13ebb78cc4c3b266a5991610f2af`.
+- Revised diagnostic driver byte SHA-256: `91739936cdcebdc2341e1fe485ea1153112bb262849d271baa607b4897a7300e`.
+- Revised diagnostic report byte SHA-256: `d893d59a83a716be4a75dff63bcd7f8e0baf955e5a8b63f273234aa1a34f8c76`.
+
+## Failed lower-temperature replacement diagnostic
+
+A new diagnostic compares the current v1.3/temperature-0.7 configuration with
+v1.13/temperature-0.0 on the same five private priority cases, with five planned
+repetitions and alternating arm order. This compares a declared replacement
+configuration, not an isolated causal temperature effect. Real client construction
+changes temperature only; generation, parsing and validation remain unpatched.
+The seed override is asserted absent before calls so it cannot silently force
+both arms to temperature zero.
+
+The run stopped after seven saved outputs (four baseline, three candidate), zero
+call errors and two interrupted checkpoints. The first candidate retail revision
+still retained an unsupported emotional-benefit claim; the next retail revision
+and the inspected QA revision were grounded. These results fail the semantic gate.
+Two retail outputs differed despite temperature zero; determinism is not assumed.
+Neither a lower temperature nor this diagnostic qualifies a replacement.
+
+- Diagnostic driver byte SHA-256: `da2a0c1311ed1bc2fca8e8390e73e3811210b64360af8cc2c39f883b6891b84a`.
+- Stopped report byte SHA-256: `d18cab9fab7370f7154213c8a323aa6fcdc8c4e785a810cab160b37064e64eb3`.
