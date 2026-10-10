@@ -86,8 +86,8 @@ that does not compensate for losing a healthy workflow. No holdout calls ran.
 
 ## Reproducible identities
 
-The full source SHA records the launch checkout. Template digests identify actual
-rendered prompt templates; corpus/case hashes identify inputs. Private raw
+The full source SHA records the launch checkout. Template digests identify selected
+unrendered prompt content; corpus/case hashes identify inputs. Private raw
 artifacts and snapshot manifests are retained outside source control.
 
 - Frozen corpus byte SHA-256: `10514be06e673a20a09380977f795b497d534224da9f602606468719960a40de`.
@@ -157,3 +157,24 @@ to MiniMax-M3 with no explicit generation override. This verifies source/default
 and configuration resolution, not a live inference trace. Production configures
 a `zai/glm-5.2` fallback; the MiniMax-only runs do not qualify fallback behavior.
 That gap must be addressed before a production activation claim.
+
+## Completed v1.9 priority development checks
+
+Before expanding development evaluation, v1.9 was paired with v1.3 on two
+existing controls, five repetitions each. Both made all 10 expected decisions.
+V1.9 selected all 10 expected reason codes; v1.3 selected 8/10. Neither arm had
+call errors. Independent semantic inspection confirmed that all five v1.9
+workflow accepts retained totals-first formatting, the legal recipient and
+Friday cadence, with valid citations; all five artifact rejects retained no
+unsupported rule. The artifact control explicitly says “unseen chart”: these
+results do not establish performance on uncued claims.
+
+The unchanged candidate is now undergoing the remaining 36 development cases.
+Private-window, fallback, holdout and full-pipeline gates remain pending.
+
+- Priority launch source: `b9c95ce5e429470a00164efe8c6c8778e0796ccb`.
+- Priority cases SHA-256: `ccbfc01bb30bee5c4286e6c2eda67f7f0d07950178729ae1daa98853e93ebac1`.
+- Priority report byte SHA-256: `478faa464014e712cfde7d8a6fb92803a1a4cc3955bb9a95ff44290fe6d07039`.
+- Priority prompt identities (unrendered content digests):
+  - 1.3.0: `{"active_version": "1.3.0", "prompt_id": "playbook_candidate_review", "template_content_digest": "c6f03e36e2772775d17a147a4e8c697a49962199c4424bcf60cf881d6c8a04fc"}`.
+  - 1.9.0: `{"active_version": "1.9.0", "prompt_id": "playbook_candidate_review", "template_content_digest": "2d0a7fba4cd69be75652cdb61f0ff605eb3affecf2bc5cdcb674c2d2abcc5d94"}`.
