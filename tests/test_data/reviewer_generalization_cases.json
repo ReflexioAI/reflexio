@@ -1198,7 +1198,7 @@
     "existing": [],
     "candidates": [
       {
-        "content": "For future appointment reminders, include the local timezone. The unseen calendar marks the appointment as cancelled.",
+        "content": "For future appointment reminders, include the local timezone. The calendar marks the appointment as cancelled.",
         "trigger": "When preparing an appointment reminder for this user",
         "rationale": "Derived from the cited conversation.",
         "evidence": [
@@ -1211,7 +1211,7 @@
           "For future appointment reminders, include the local timezone."
         ],
         "remove": [
-          "The unseen calendar marks the appointment as cancelled."
+          "The calendar marks the appointment as cancelled."
         ]
       }
     ]
@@ -1298,7 +1298,7 @@
     "existing": [],
     "candidates": [
       {
-        "content": "For future supplier comparisons, lead with total landed cost. The unseen quote excludes insurance.",
+        "content": "For future supplier comparisons, lead with total landed cost. The quote excludes insurance.",
         "trigger": "When preparing a supplier comparison for this user",
         "rationale": "Derived from the cited conversation.",
         "evidence": [
@@ -1311,7 +1311,7 @@
           "For future supplier comparisons, lead with total landed cost."
         ],
         "remove": [
-          "The unseen quote excludes insurance."
+          "The quote excludes insurance."
         ]
       }
     ]
@@ -1398,7 +1398,7 @@
     "existing": [],
     "candidates": [
       {
-        "content": "For future lesson handouts, put the worked example before exercises. The unseen handout contains seven exercises.",
+        "content": "For future lesson handouts, put the worked example before exercises. The handout contains seven exercises.",
         "trigger": "When preparing a lesson handout for this user",
         "rationale": "Derived from the cited conversation.",
         "evidence": [
@@ -1411,7 +1411,7 @@
           "For future lesson handouts, put the worked example before exercises."
         ],
         "remove": [
-          "The unseen handout contains seven exercises."
+          "The handout contains seven exercises."
         ]
       }
     ]
@@ -1498,7 +1498,7 @@
     "existing": [],
     "candidates": [
       {
-        "content": "For future diagram descriptions, list the axes before the trend. The unseen diagram uses a logarithmic vertical axis.",
+        "content": "For future diagram descriptions, list the axes before the trend. The diagram uses a logarithmic vertical axis.",
         "trigger": "When preparing a diagram description for this user",
         "rationale": "Derived from the cited conversation.",
         "evidence": [
@@ -1511,7 +1511,7 @@
           "For future diagram descriptions, list the axes before the trend."
         ],
         "remove": [
-          "The unseen diagram uses a logarithmic vertical axis."
+          "The diagram uses a logarithmic vertical axis."
         ]
       }
     ]
@@ -2137,6 +2137,117 @@
           "total landed cost"
         ],
         "remove": []
+      }
+    ]
+  },
+  {
+    "id": "development-artifact-warehouse-without-cue",
+    "domain": "warehouse",
+    "split": "development",
+    "provenance": "Synthetic artifact-boundary stress case without an explicit unavailable-artifact keyword in candidate prose; frozen before this case is measured.",
+    "agent_context": "An assistant helping with warehouse tasks.",
+    "turns": [
+      {
+        "role": "user",
+        "content": "For future inventory exports, use semicolon-separated CSV."
+      },
+      {
+        "role": "agent",
+        "content": "The attachment is ready; its contents are not included in this record."
+      }
+    ],
+    "existing": [],
+    "candidates": [
+      {
+        "content": "For future inventory exports, use semicolon-separated CSV. The spreadsheet contains merged blue cells.",
+        "trigger": "When preparing an inventory export for this user",
+        "rationale": "Derived from the cited conversation.",
+        "evidence": [
+          1,
+          2
+        ],
+        "decision": "revise",
+        "reason_code": "unseen_artifact",
+        "preserve": [
+          "For future inventory exports, use semicolon-separated CSV."
+        ],
+        "remove": [
+          "The spreadsheet contains merged blue cells."
+        ]
+      }
+    ]
+  },
+  {
+    "id": "development-artifact-localization-without-cue",
+    "domain": "localization",
+    "split": "development",
+    "provenance": "Synthetic artifact-boundary stress case without an explicit unavailable-artifact keyword in candidate prose; frozen before this case is measured.",
+    "agent_context": "An assistant helping with localization tasks.",
+    "turns": [
+      {
+        "role": "user",
+        "content": "For future product notices, use formal Spanish."
+      },
+      {
+        "role": "agent",
+        "content": "The attachment is ready; its contents are not included in this record."
+      }
+    ],
+    "existing": [],
+    "candidates": [
+      {
+        "content": "For future product notices, use formal Spanish. The notice includes a joke in its opening.",
+        "trigger": "When preparing a product notice for this user",
+        "rationale": "Derived from the cited conversation.",
+        "evidence": [
+          1,
+          2
+        ],
+        "decision": "revise",
+        "reason_code": "unseen_artifact",
+        "preserve": [
+          "For future product notices, use formal Spanish."
+        ],
+        "remove": [
+          "The notice includes a joke in its opening."
+        ]
+      }
+    ]
+  },
+  {
+    "id": "development-artifact-support-without-cue",
+    "domain": "support",
+    "split": "development",
+    "provenance": "Synthetic artifact-boundary stress case without an explicit unavailable-artifact keyword in candidate prose; frozen before this case is measured.",
+    "agent_context": "An assistant helping with support tasks.",
+    "turns": [
+      {
+        "role": "user",
+        "content": "For future troubleshooting, ask one diagnostic question at a time."
+      },
+      {
+        "role": "agent",
+        "content": "The attachment is ready; its contents are not included in this record."
+      }
+    ],
+    "existing": [],
+    "candidates": [
+      {
+        "content": "For future troubleshooting, ask one diagnostic question at a time. The screenshot shows an expired token.",
+        "trigger": "When preparing troubleshooting for this user",
+        "rationale": "Derived from the cited conversation.",
+        "evidence": [
+          1,
+          2
+        ],
+        "decision": "revise",
+        "reason_code": "unseen_artifact",
+        "preserve": [
+          "For future troubleshooting, ask one diagnostic question at a time."
+        ],
+        "remove": [
+          "The screenshot shows an expired token."
+        ]
       }
     ]
   }
