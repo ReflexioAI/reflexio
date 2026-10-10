@@ -421,3 +421,37 @@ pending. The active reviewer remains v1.3.0; no model or checker is adopted.
 - Launch OSS source: `959123d9c4b87df0b52302e7c853cddc02c55c42`.
 - Diagnostic driver byte SHA-256: `a04391266c28a43fdecdfa46228b1fbb003b5189dfa88da7c27b62e22f93ad27`.
 - Stopped report byte SHA-256: `353eeb26800f0677194735bf4b8fecc250807e42a97b390515e9f5e09988123a`.
+
+## Evidence-first contract: MiniMax failure
+
+Inactive v1.14.0 separates static trusted policy from JSON conversation data and
+requires bounded internal supporting excerpts before decisions. The server checks
+exact own-source substrings and final retained evidence membership; role and source
+metadata remain visible. Supporting-excerpt objects are not copied into saved playbook fields. This
+compares a response/message contract change against v1.3, not isolated wording.
+
+The implementation passed 203 affected extraction/reviewer/prompt tests; 75 focused
+checks passed after strengthening version-selection assertions, and 17 enterprise
+replay tests passed. The own-excerpt regression failed under deliberate removal of
+its guard; source was restored with a verified byte hash. Ruff, type checks and
+independent correctness/privacy review cleared the implementation. Two P2 findings
+(evaluator selection and report permissions) were fixed and re-reviewed. These are
+implementation gates, not semantic qualification.
+
+The real MiniMax comparison used the same five private priority cases, temperature
+0.7, five planned repeats and alternating arms, serial calls, no fallback and no
+outer transport retries. It stopped after seven outputs (four candidate, three
+baseline), zero errors and one interrupted checkpoint, out of 50 planned outputs.
+All four candidate decisions/codes matched their frozen oracles; quotes and final
+own references were valid. Two revisions were clearly grounded. One retained an
+observed acknowledgment clause whose reusable necessity remains unverified, not a
+fabricated event. Another decisively retained an unsupported emotional-benefit
+claim in saved content despite accurate quotes. Its rationale also overstated
+support for acknowledgment as reusable guidance. Quote validation cannot certify
+safe generalization. The remaining cases were not reached; v1.14 is not qualified
+on MiniMax. No holdout calls or default/model activation occurred.
+
+- Launch enterprise source: `75d3f57281572fc6226a96ee56c6aaa53f397b63`.
+- Launch OSS source: `6f38d6c421270c767e49bb03ab245ab68fce460b`.
+- Diagnostic driver byte SHA-256: `7745f0d3edc83664173cbe22e2542875f67796d273e5e373e0f2184cabe5331e`.
+- Stopped report byte SHA-256: `216f757a41a98cd7d6af8b49d230c47d03cf8b09fe1afb843234c773e94cdd3c`.
