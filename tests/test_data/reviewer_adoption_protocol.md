@@ -21,7 +21,7 @@ complete useful cores, not fragments to mix into one compound learning.
 These semantic requirements require manual inspection; string matching alone
 does not establish grounding or safe generalization.
 
-Both arms use MiniMax-M3, temperature 0.7, no fallback, identical frozen inputs,
+Both arms use MiniMax-M3, temperature 0.7, no fallback or transport retries, identical frozen inputs,
 and five repetitions per case. Alternate arm order and retain hashes, raw
 decisions, revision text, explanations and evidence IDs. Print decision and
 label denominators separately: survival-only controls have no label oracle.
