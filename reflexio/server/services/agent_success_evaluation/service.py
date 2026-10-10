@@ -46,6 +46,7 @@ class AgentSuccessGenerationServiceConfig:
     trajectory_interaction_count: int | None = None
     #: PostgreSQL snapshot from the actual input read, never the result write.
     trajectory_visibility_snapshot: str | None = None
+    trajectory_gc_epoch: int | None = None
 
 
 class AgentSuccessEvaluationService(
@@ -97,6 +98,7 @@ class AgentSuccessEvaluationService(
             trajectory_through_request_id=request.trajectory_through_request_id,
             trajectory_interaction_count=request.trajectory_interaction_count,
             trajectory_visibility_snapshot=request.trajectory_visibility_snapshot,
+            trajectory_gc_epoch=request.trajectory_gc_epoch,
         )
 
     def _load_extractor_config(self) -> AgentSuccessConfig | None:

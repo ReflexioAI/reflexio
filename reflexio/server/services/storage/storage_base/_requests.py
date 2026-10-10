@@ -17,6 +17,7 @@ class SessionJudgmentInputs:
     requests: list[Request]
     interactions: list[Interaction]
     visibility_snapshot: str | None = None
+    gc_epoch: int | None = None
 
 
 class RequestMixin:

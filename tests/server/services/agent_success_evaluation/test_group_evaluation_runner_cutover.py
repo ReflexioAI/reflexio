@@ -256,6 +256,7 @@ def test_runner_carries_actual_input_snapshot_instead_of_persistence_state() -> 
                 [_request("actual", _now() - 10_000)],
                 [_interaction(1, "actual", _now() - 10_000)],
                 "12:15:13",
+                7,
             )
 
     outcome, captured = _run(
@@ -264,6 +265,7 @@ def test_runner_carries_actual_input_snapshot_instead_of_persistence_state() -> 
     assert outcome.agent_success_status == "complete"  # type: ignore[attr-defined]
     assert len(captured) == 1
     assert captured[0].trajectory_visibility_snapshot == "12:15:13"
+    assert captured[0].trajectory_gc_epoch == 7
     assert captured[0].trajectory_through_request_id == "actual"
     assert [
         row.request.request_id for row in captured[0].request_interaction_data_models

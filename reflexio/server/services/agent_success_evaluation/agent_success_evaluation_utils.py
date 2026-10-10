@@ -45,6 +45,7 @@ class AgentSuccessEvaluationRequest(BaseModel):
     trajectory_interaction_count: int | None = None
     #: PostgreSQL snapshot from the actual input read, never the result write.
     trajectory_visibility_snapshot: str | None = None
+    trajectory_gc_epoch: int | None = None
 
 
 def construct_agent_success_evaluation_messages_from_sessions(

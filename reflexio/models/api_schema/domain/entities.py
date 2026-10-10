@@ -935,6 +935,7 @@ class AgentSuccessEvaluationResult(BaseModel):
     trajectory_interaction_count: int | None = Field(default=None, ge=0)
     #: PostgreSQL snapshot from the actual input read, never the result write.
     trajectory_visibility_snapshot: str | None = None
+    trajectory_gc_epoch: int | None = None
 
 
 class RetrievedLearningEvaluationResult(BaseModel):

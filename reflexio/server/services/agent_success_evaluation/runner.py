@@ -320,6 +320,7 @@ def run_group_evaluation(
         trajectory_through_request_id=judged_through_request_id,
         trajectory_interaction_count=len(all_interactions),
         trajectory_visibility_snapshot=inputs.visibility_snapshot,
+        trajectory_gc_epoch=inputs.gc_epoch,
     )
 
     evaluation_service = AgentSuccessEvaluationService(
