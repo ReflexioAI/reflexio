@@ -62,12 +62,23 @@ def _is_direct_user_preference_source(source: PlaybookEvidenceSource) -> bool:
 def contains_call_local_turn_ref(*values: str | None) -> bool:
     """Return whether persisted prose contains a call-local turn label.
 
-    ``T#`` labels are meaningful only inside one extraction call. Evidence
-    objects carry those labels long enough to resolve real provenance, but a
-    persisted trigger, rationale, or instruction must remain self-contained.
+    Turn labels (``T#``), bracketed candidate labels (``[C#]``), and reviewer
+    evidence labels (``C#-E#``), including bracketed/parenthesized shorthand
+    citations such as ``(E1, E3)``, are meaningful only inside one prompt call.
+    A persisted trigger, rationale, or instruction must remain self-contained.
+    Bare ``C#`` or ``E#`` may be a real product/code identifier and is not rejected.
+    Citation syntax is recognized; the meaning of every bare identifier is not.
     """
     prose = " ".join(value for value in values if value)
-    return re.search(r"\bT\d+\b", prose, flags=re.IGNORECASE) is not None
+    return (
+        re.search(
+            r"\bT\d+\b|\bC\d+-E\d+\b|\[C\d+\]"
+            r"|(?<!\w)[\[(]\s*E\d+(?:\s*(?:,|/|and)\s*E\d+)*\s*[\])]",
+            prose,
+            flags=re.IGNORECASE,
+        )
+        is not None
+    )
 
 
 def resolve_verbatim_source_span(

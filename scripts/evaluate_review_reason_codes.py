@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Literal, cast
@@ -30,10 +31,19 @@ from reflexio.server.services.playbook.components.reviewer import (
     PlaybookCandidateReviewer,
 )
 from reflexio.test_support.llm_mock import assert_litellm_unpatched
+from reflexio.test_support.reviewer_metrics import ReviewCallMetrics
 
 DEFAULT_CASES = (
     Path(__file__).resolve().parents[1] / "tests/test_data/reviewer_reason_codes.json"
 )
+
+
+def _write_private_text(path: Path, text: str) -> None:
+    """Keep raw revision and supporting-source artifacts owner-readable only."""
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+        os.fchmod(stream.fileno(), 0o600)
+        stream.write(text)
 
 
 class Turn(BaseModel):
@@ -47,7 +57,13 @@ class Candidate(BaseModel):
     rationale: str
     evidence: list[int] = Field(min_length=1)
     decision: Literal["accept", "revise", "reject"]
-    reason_code: PlaybookReviewReasonCode
+    allowed_decisions: list[Literal["accept", "revise", "reject"]] | None = Field(
+        default=None, min_length=1
+    )
+    reason_code: PlaybookReviewReasonCode | None
+    preserve: list[str] = Field(default_factory=list)
+    preserve_any: list[list[str]] = Field(default_factory=list)
+    remove: list[str] = Field(default_factory=list)
 
 
 class Case(BaseModel):
@@ -57,6 +73,8 @@ class Case(BaseModel):
     turns: list[Turn] = Field(min_length=1)
     candidates: list[Candidate] = Field(min_length=1)
     existing: list[str] = Field(default_factory=list)
+    domain: str = "unspecified"
+    split: Literal["development", "holdout"] = "development"
 
 
 def load_cases(path: Path) -> list[Case]:
@@ -130,13 +148,36 @@ def evaluate(
     checkpoint: Path | None = None,
     *,
     candidate_version: str = "1.4.0",
+    max_tokens: int | None = None,
+    reasoning_effort: Literal["high", "none"] | None = None,
 ) -> dict:
-    if candidate_version not in ("1.4.0", "1.5.0", "1.6.0"):
-        raise ValueError("candidate_version must be 1.4.0, 1.5.0 or 1.6.0")
+    if candidate_version not in (
+        "1.4.0",
+        "1.5.0",
+        "1.6.0",
+        "1.7.0",
+        "1.8.0",
+        "1.9.0",
+        "1.10.0",
+        "1.11.0",
+        "1.12.0",
+        "1.13.0",
+        "1.14.0",
+        "1.15.0",
+    ):
+        raise ValueError(
+            "candidate_version must be 1.4.0, 1.5.0, 1.6.0, 1.7.0, 1.8.0, 1.9.0, 1.10.0, 1.11.0, 1.12.0, 1.13.0, 1.14.0 or 1.15.0"
+        )
     if not cases:
         raise ValueError("cases must be nonempty")
     if repeats < 1:
         raise ValueError("repeats must be positive")
+    if max_tokens is not None and max_tokens < 1:
+        raise ValueError("max_tokens must be positive")
+    if reasoning_effort is not None and client.config.model != "zai/glm-5.2":
+        raise ValueError(
+            "reasoning profile is qualified for the GLM-5.2 experiment only"
+        )
     prompt_identities = {
         version: PromptManager(
             version_override={"playbook_candidate_review": version}
@@ -146,6 +187,9 @@ def evaluate(
     prepared = {case.id: prepare_case(case) for case in cases}
     rows = []
     errors = []
+    calls = []
+    measurement_errors = []
+    settings = {"max_tokens": max_tokens, "reasoning_effort": reasoning_effort}
     case_hash = hashlib.sha256(
         json.dumps(
             [case.model_dump(mode="json") for case in cases], sort_keys=True
@@ -154,7 +198,8 @@ def evaluate(
 
     def save_progress() -> None:
         if checkpoint is not None:
-            checkpoint.write_text(
+            _write_private_text(
+                checkpoint,
                 json.dumps(
                     {
                         "complete": False,
@@ -164,9 +209,12 @@ def evaluate(
                         "prompt_identities": prompt_identities,
                         "rows": rows,
                         "errors": errors,
+                        "calls": calls,
+                        "inference_settings": settings,
+                        "measurement_errors": measurement_errors,
                     },
                     indent=2,
-                )
+                ),
             )
 
     for case in cases:
@@ -189,18 +237,26 @@ def evaluate(
                         storage=None,
                     ),
                 )
+                metrics = ReviewCallMetrics(
+                    client.config.model, max_tokens, reasoning_effort
+                )
                 reviewer = PlaybookCandidateReviewer(
-                    request_context=context, llm_client=client
+                    request_context=context,
+                    llm_client=client,
+                    max_tokens=max_tokens,
+                    reasoning_effort=reasoning_effort,
+                    provider_request_guard=metrics.guard,
                 )
                 try:
-                    result = reviewer.decide(
-                        candidates=candidates,
-                        request_interaction_data_models=sessions,
-                        existing_playbooks=existing,
-                        agent_context=case.agent_context,
-                        playbook_definition="Reusable user guidance",
-                        tool_context="",
-                    )
+                    with metrics:
+                        result = reviewer.decide(
+                            candidates=candidates,
+                            request_interaction_data_models=sessions,
+                            existing_playbooks=existing,
+                            agent_context=case.agent_context,
+                            playbook_definition="Reusable user guidance",
+                            tool_context="",
+                        )
                 except Exception as exc:
                     errors.append(
                         {
@@ -210,8 +266,26 @@ def evaluate(
                             "error_type": type(exc).__name__,
                         }
                     )
-                    save_progress()
                     continue
+                finally:
+                    calls.append(
+                        {
+                            "case": case.id,
+                            "repeat": repeat,
+                            "version": version,
+                            **metrics.data,
+                        }
+                    )
+                    if not metrics.data["observation_complete"]:
+                        measurement_errors.append(
+                            {
+                                "case": case.id,
+                                "repeat": repeat,
+                                "version": version,
+                                "error_type": "IncompleteProviderObservation",
+                            }
+                        )
+                    save_progress()
                 expected = {
                     f"C{index}": candidate
                     for index, candidate in enumerate(case.candidates, 1)
@@ -229,13 +303,23 @@ def evaluate(
                             "reason_code": decision.reason_code,
                             "reason": decision.reason,
                             "evidence_ids": list(decision.evidence_ids),
+                            "supporting_evidence": [
+                                support.model_dump(mode="json", by_alias=True)
+                                for support in result.supporting_evidence
+                                if support.candidate_id.strip() == candidate_id
+                            ],
                             "revision": (
                                 decision.revision.model_dump()
                                 if decision.revision is not None
                                 else None
                             ),
-                            "decision_correct": decision.decision == target.decision,
-                            "code_correct": decision.reason_code == target.reason_code,
+                            "decision_correct": decision.decision
+                            in (target.allowed_decisions or [target.decision]),
+                            "code_correct": (
+                                decision.reason_code == target.reason_code
+                                if target.reason_code is not None
+                                else None
+                            ),
                         }
                     )
                 save_progress()
@@ -251,7 +335,13 @@ def evaluate(
             "expected": expected_count,
             "processed": len(arm),
             "decision_correct": sum(row["decision_correct"] for row in arm),
-            "code_correct": sum(row["code_correct"] for row in arm),
+            "code_correct": sum(row["code_correct"] is True for row in arm),
+            "code_expected": sum(
+                candidate.reason_code is not None
+                for case in cases
+                for candidate in case.candidates
+            )
+            * repeats,
             "errors": sum(error["version"] == version for error in errors),
         }
     return {
@@ -265,27 +355,57 @@ def evaluate(
         "summary": summary,
         "rows": rows,
         "errors": errors,
+        "calls": calls,
+        "inference_settings": settings,
+        "measurement_errors": measurement_errors,
     }
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cases", type=Path, default=DEFAULT_CASES)
+    parser.add_argument("--split", choices=("development", "holdout"))
     parser.add_argument(
         "--expected-model",
         required=True,
         help="Assert the automatically resolved generation model; does not select a model",
     )
     parser.add_argument(
-        "--candidate-version", choices=("1.4.0", "1.5.0", "1.6.0"), default="1.4.0"
+        "--candidate-version",
+        choices=(
+            "1.4.0",
+            "1.5.0",
+            "1.6.0",
+            "1.7.0",
+            "1.8.0",
+            "1.9.0",
+            "1.10.0",
+            "1.11.0",
+            "1.12.0",
+            "1.13.0",
+            "1.14.0",
+            "1.15.0",
+        ),
+        default="1.4.0",
     )
     parser.add_argument("--repeats", type=int, default=2)
+    parser.add_argument("--max-tokens", type=int)
+    parser.add_argument("--reasoning-effort", choices=("high", "none"))
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
     cases = load_cases(args.cases)
+    if args.split:
+        cases = [case for case in cases if case.split == args.split]
+        if not cases:
+            parser.error("selected split is empty")
     assert_litellm_unpatched()
     client = LiteLLMClient(
-        LiteLLMConfig(model=args.expected_model, temperature=0.7, fallback_models=[])
+        LiteLLMConfig(
+            model=args.expected_model,
+            temperature=0.7,
+            fallback_models=[],
+            max_retries=0,
+        )
     )
     from reflexio.server.llm.model_defaults import ModelRole
 
@@ -296,11 +416,17 @@ def main() -> int:
             "--expected-model checks role resolution and does not select a model"
         )
     report = evaluate(
-        cases, client, args.repeats, args.out, candidate_version=args.candidate_version
+        cases,
+        client,
+        args.repeats,
+        args.out,
+        candidate_version=args.candidate_version,
+        max_tokens=args.max_tokens,
+        reasoning_effort=args.reasoning_effort,
     )
-    args.out.write_text(json.dumps(report, indent=2))
+    _write_private_text(args.out, json.dumps(report, indent=2))
     print(json.dumps(report["summary"], indent=2))
-    return 1 if report["errors"] else 0
+    return 1 if report["errors"] or report["measurement_errors"] else 0
 
 
 if __name__ == "__main__":

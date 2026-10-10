@@ -473,6 +473,81 @@ regression exercises both layouts in isolated processes with distinct packages.
 
 ### Qualifying reviewer reason-code precedence (#428)
 
+The follow-up [adoption protocol](tests/test_data/reviewer_adoption_protocol.md)
+defines development/held-out coverage, semantic oracles and activation gates.
+Use `--cases tests/test_data/reviewer_generalization_cases.json --split development`
+or `--split holdout` to select one split. Survival-only controls allow acceptance
+or a grounded revision and have no exact reason-label oracle; `code_expected`
+is their separate label denominator. Inspect saved content as well as scores.
+The inactive v1.7.0 candidate clarifies unavailable artifact claims versus using
+record omissions as proof of absence. It also keeps internal-status proof of
+value distinct. It failed a workflow preservation control. Inactive v1.8
+clarified preparation-and-delivery atomicity but failed artifact-label stability.
+Inactive v1.9 shortened the procedure but failed a persisted-rationale contract.
+See the [adoption evaluation report](tests/test_data/reviewer_adoption_evaluation_20261010.md)
+for retained failures and remaining gates. Earlier-version results cannot qualify
+a new version.
+Inactive v1.10 keeps revised rationales restricted to the retained supported core;
+review diagnostics belong in the separate reason (retained in review notes),
+not in the persisted guidance fields. The shared persisted
+prose guard rejects turn labels, bracketed candidate labels and reviewer evidence
+labels, while retaining ordinary bare product identifiers such as C1.
+V1.10 failed private semantic checks by retaining unsupported prohibitions and
+adding an escalation fallback. Inactive v1.11 audits each negative clause and
+restricts revision to subtraction and faithful paraphrase of the supported core.
+Two additional development controls cover those failures; the holdout is unchanged.
+V1.11 failed private checks by retaining an unsupported alternative path, leaking
+shorthand evidence citations and rejecting a useful task-specific procedure.
+Inactive v1.12 explicitly audits unsupported original branches and preserves
+bounded task-specific prerequisites. The shared guard also rejects shorthand
+citation lists such as `(E1, E3)`, while allowing bare E-number product identifiers
+and formulas such as `SUM(E1, E3)`. It cannot infer every bare identifier's meaning.
+V1.12 failed by retaining an unsupported generic escalation path. Inactive v1.13
+adds worked subtraction examples in different synthetic domains, but failed private
+checks: saved revisions retained unsupported guidance despite matching decision and
+label oracles. Independent grounding checks and a lower-temperature replacement
+also remain unqualified. See the adoption evaluation report for counts and limits.
+
+Inactive reviewer v1.14.0 tests a different single-call response contract. Trusted
+review policy is a system message; context and source text are user-message data.
+The model supplies bounded supporting excerpts before decisions. Validation checks
+exact substrings against each candidate's final retained evidence, keeping role
+and request-source metadata visible; this establishes provenance, not semantic
+grounding. Excerpts remain transient, outside saved playbooks, public responses
+and ordinary logs. Owner-only evaluation reports retain them for auditing. The
+current v1.3 default uses its existing messages and response schema. Qualification
+still audits complete instructions, triggers and rationales, including healthy
+multi-turn workflows, before holdout, staging and a separate activation change.
+
+Inactive v1.15 keeps the evidence-first contract and explicitly scopes selected
+parameters to their current task. Historical values cannot become standing
+preferences; acknowledgment occurrence proves neither a requirement nor a benefit.
+The evaluation-only `--max-tokens` and `--reasoning-effort` settings apply equally
+to both arms. The current GLM-5.2 experiment uses 8192 output tokens and `high`
+reasoning, sent through `extra_body` because the installed adapter drops the
+standard reasoning argument. A live wire/body and structured-response probe
+verified this path. These options do not configure production services.
+
+`reflexio/test_support/reviewer_metrics.py` supplies both evaluation tools with
+per-call request, repair, token/cost and timing observations. It pins each initial
+and repair request before dispatch and keeps only explicit non-content fields.
+Private reports record `calls` even on errors, and `measurement_errors` when
+request observations are missing/incomplete; both commands fail such measurements.
+Attempt timing includes client/provider slot wait; wall timing covers the complete
+logical review. Token-limit equality alone is not proof of truncation. Reports
+do not retain provider reasoning, raw logs, headers, credentials or conversation
+text in these metric objects. Complete outcome/revision data remains private in
+the existing report fields. Qualification still needs independent semantic audit.
+
+
+Evaluation observation coverage is explicit: `request_lifecycle_complete`,
+`timing_complete`, `usage_complete`, and `estimated_cost_complete`.
+`observation_complete` requires matched request/end counts, per-request timing,
+and token usage; missing observations fail the measurement gate. Missing cost
+remains unknown (never zero) and is reported separately from token coverage.
+Without an explicit token override, the first observed effective limit is frozen
+for every subsequent repair in that logical call.
+
 See the [2026-10-10 qualification report](tests/test_data/reviewer_reason_evaluation_20261010.md)
 for pinned sources, repeated real-model results, observed regressions and activation limits.
 

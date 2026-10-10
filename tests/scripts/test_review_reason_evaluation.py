@@ -11,7 +11,10 @@ from reflexio.server.prompt.prompt_manager import PromptManager
 from reflexio.server.services.playbook.components.reviewer import (
     CandidateReviewDecision,
     CandidateRevision,
+    CandidateSupportingEvidence,
+    EvidenceFirstReviewOutput,
     PlaybookCandidateReviewOutput,
+    SupportingExcerpt,
 )
 from scripts import evaluate_review_reason_codes as evaluation
 from scripts.evaluate_review_reason_codes import (
@@ -48,6 +51,7 @@ def test_paired_evaluation_uses_real_reviewer_and_counts_errors_separately():
         "processed": 1,
         "decision_correct": 1,
         "code_correct": 1,
+        "code_expected": 1,
         "errors": 0,
     }
     assert report["summary"]["1.4.0"] == {
@@ -55,6 +59,7 @@ def test_paired_evaluation_uses_real_reviewer_and_counts_errors_separately():
         "processed": 0,
         "decision_correct": 0,
         "code_correct": 0,
+        "code_expected": 1,
         "errors": 1,
     }
     assert report["errors"][0]["error_type"] == "RuntimeError"
@@ -76,6 +81,57 @@ def test_evaluation_rejects_empty_corpus_before_calls():
     with pytest.raises(ValueError, match="nonempty"):
         evaluate([], client, 1)
     client.generate_chat_response.assert_not_called()
+
+
+def test_survival_oracle_does_not_invent_reason_label_accuracy():
+    case = next(
+        case for case in load_cases(DEFAULT_CASES) if case.id == "positive-preference"
+    )
+    case.candidates[0].allowed_decisions = ["accept", "revise"]
+    case.candidates[0].reason_code = None
+    client = MagicMock()
+    client.config = LiteLLMConfig(model="test-model", fallback_models=[])
+    client.generate_chat_response.return_value = PlaybookCandidateReviewOutput(
+        decisions=[
+            CandidateReviewDecision(
+                id="C1",
+                decision="revise",
+                reason_code="unsupported_evidence",
+                evidence_ids=["C1-E1"],
+                revision=CandidateRevision(
+                    content="Show totals first in future reports.",
+                    trigger="When preparing reports",
+                    rationale="The user requested this order.",
+                ),
+            )
+        ]
+    )
+    report = evaluate([case], client, 1)
+    assert all(row["decision_correct"] for row in report["rows"])
+    assert all(row["code_correct"] is None for row in report["rows"])
+    assert all(arm["code_expected"] == 0 for arm in report["summary"].values())
+
+
+def test_generalization_holdout_is_disjoint_and_preserves_fatal_revision_controls():
+    cases = load_cases(DEFAULT_CASES.with_name("reviewer_generalization_cases.json"))
+    development = {case.id for case in cases if case.split == "development"}
+    holdout = {case.id for case in cases if case.split == "holdout"}
+    assert development and holdout and development.isdisjoint(holdout)
+    assert len({case.domain for case in cases}) >= 10
+    for split in ("development", "holdout"):
+        selected = [case for case in cases if case.split == split]
+        assert any(
+            candidate.decision == "revise"
+            and candidate.reason_code == "unseen_artifact"
+            for case in selected
+            for candidate in case.candidates
+        )
+        assert any(
+            candidate.decision == "reject"
+            and candidate.reason_code == "absence_inference"
+            for case in selected
+            for candidate in case.candidates
+        )
 
 
 def test_revision_evidence_and_normalized_ids_survive_real_reviewer_and_checkpoint(
@@ -121,7 +177,9 @@ def test_cli_checks_expected_role_model_before_evaluating(
     client = MagicMock()
     client._resolve_primary_model.return_value = actual_model
     constructor = MagicMock(return_value=client)
-    run = MagicMock(return_value={"summary": {}, "errors": []})
+    run = MagicMock(
+        return_value={"summary": {}, "errors": [], "measurement_errors": []}
+    )
     monkeypatch.setattr(evaluation, "LiteLLMClient", constructor)
     monkeypatch.setattr(evaluation, "assert_litellm_unpatched", lambda: None)
     monkeypatch.setattr(evaluation, "evaluate", run)
@@ -185,7 +243,23 @@ def test_every_frozen_case_can_be_prepared_before_paid_calls():
         assert all(item.request_id == case.id for item in existing)
 
 
-@pytest.mark.parametrize("candidate_version", ["1.4.0", "1.5.0", "1.6.0"])
+@pytest.mark.parametrize(
+    "candidate_version",
+    [
+        "1.4.0",
+        "1.5.0",
+        "1.6.0",
+        "1.7.0",
+        "1.8.0",
+        "1.9.0",
+        "1.10.0",
+        "1.11.0",
+        "1.12.0",
+        "1.13.0",
+        "1.14.0",
+        "1.15.0",
+    ],
+)
 def test_candidate_version_selection_preserves_baseline_and_report_identity(
     candidate_version,
 ):
@@ -194,7 +268,7 @@ def test_candidate_version_selection_preserves_baseline_and_report_identity(
     )
     client = MagicMock()
     client.config = LiteLLMConfig(model="test-model", fallback_models=[])
-    client.generate_chat_response.return_value = PlaybookCandidateReviewOutput(
+    accepted = PlaybookCandidateReviewOutput(
         decisions=[
             CandidateReviewDecision(
                 id="C1",
@@ -204,7 +278,29 @@ def test_candidate_version_selection_preserves_baseline_and_report_identity(
             )
         ]
     )
+
+    def respond(*args, **kwargs):
+        if kwargs["response_format"] is EvidenceFirstReviewOutput:
+            return EvidenceFirstReviewOutput(
+                supporting_evidence=[
+                    CandidateSupportingEvidence(
+                        id="C1",
+                        excerpts=[
+                            SupportingExcerpt(
+                                evidence_id="C1-E1",
+                                text=case.turns[0].content[:600],
+                            )
+                        ],
+                    )
+                ],
+                decisions=accepted.decisions,
+            )
+        return accepted
+
+    client.generate_chat_response.side_effect = respond
     report = evaluate([case], client, 1, candidate_version=candidate_version)
+    assert report["errors"] == []
+    assert all(arm["processed"] == 1 for arm in report["summary"].values())
     assert set(report["summary"]) == {"1.3.0", candidate_version}
     assert report["candidate_version"] == candidate_version
     assert (
@@ -215,7 +311,20 @@ def test_candidate_version_selection_preserves_baseline_and_report_identity(
         str(call.args[0]) for call in client.generate_chat_response.call_args_list
     ]
     assert ("**Independent lessons:**" in prompts[1]) == (
-        candidate_version in ("1.5.0", "1.6.0")
+        candidate_version
+        in (
+            "1.5.0",
+            "1.6.0",
+            "1.7.0",
+            "1.8.0",
+            "1.9.0",
+            "1.10.0",
+            "1.11.0",
+            "1.12.0",
+            "1.13.0",
+            "1.14.0",
+            "1.15.0",
+        )
     )
     changed_case = case.model_copy(deep=True)
     changed_case.turns[0].content += " Changed evidence."
@@ -257,3 +366,17 @@ def test_clarified_prompt_preserves_fatal_gates_revision_policy_and_active_defau
         == old.split("## Output rules")[0]
     )
     assert clarified.split("## Output rules")[1] == old.split("## Output rules")[1]
+
+
+def test_report_writer_restricts_new_and_existing_files(tmp_path):
+    import stat
+
+    from scripts.evaluate_review_reason_codes import _write_private_text
+
+    report = tmp_path / "private.json"
+    _write_private_text(report, "first")
+    assert stat.S_IMODE(report.stat().st_mode) == 0o600
+    report.chmod(0o644)
+    _write_private_text(report, "second")
+    assert stat.S_IMODE(report.stat().st_mode) == 0o600
+    assert report.read_text() == "second"
