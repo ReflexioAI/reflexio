@@ -63,11 +63,11 @@ evaluation, not activation. V1.7 subsequently failed the workflow gate below.
 Inactive v1.8 clarified requested-workflow atomicity but failed the artifact
 label gate below. Inactive v1.9 consolidates the procedure into a shorter
 prompt while preserving fatal gates, revisions and workflows. It failed the
-persisted-rationale gate recorded below. Inactive v1.11 additionally enforces subtraction-only revision and checks each
-negative clause for its own evidence. It failed the private gates below. The
-current inactive candidate is v1.12, which explicitly removes unsupported original
-branches and preserves bounded task-specific prerequisites. V1.10 failed the private semantic gate
-recorded below. V1.12 requires fresh repeated qualification; no previous version
+persisted-rationale gate recorded below. Inactive v1.11 additionally enforces
+subtraction-only revision and checks each negative clause for its own evidence. It failed the private gates below. Inactive v1.12 explicitly removes unsupported original branches and preserves
+bounded task-specific prerequisites. It failed the private grounding gate below.
+The current inactive candidate is v1.13, adding worked subtraction examples.
+V1.10 failed the private semantic gate recorded below. V1.13 requires fresh repeated qualification; no previous version
 qualifies it.
 
 Before activation: finish development and inspect every saved survivor; pass the
@@ -261,3 +261,33 @@ The shared prose guard is extended to bracketed/parenthesized shorthand evidence
 citations. Bare E-number product identifiers remain allowed; the guard recognizes
 citation syntax and cannot determine the meaning of every bare identifier.
 New inactive v1.12 keeps the same gates and requires fresh qualification.
+
+
+## Failed v1.12 private development diagnosis
+
+The run stopped after 14 saved outputs, with no call errors before interruption
+and two interrupted checkpoints. Independent inspection of seven candidate
+outputs found one revision retaining an unsupported generic escalation path in
+both content and rationale after deleting its unsupported specific example.
+All seven audited decisions preserved a useful core, but the invented surviving
+action fails the grounding gate. Only three of those seven matched their frozen
+reason labels; the mismatches are retained separately from semantic inspection.
+This incomplete run cannot qualify v1.12. No holdout calls ran.
+
+- Launch enterprise source: `8e0edb00af466f6e21b7d8faa352d3fb569f3141`.
+- Launch OSS source: `10bfe3b622395970d7c5bf8cbc4b98ae7453bddb`.
+- Stopped report byte SHA-256: `8f524b345677dcf0eefbfc94407aaa200602fa848c6ee63864a874c8ff1fa370`.
+
+Inactive v1.13 adds cross-domain worked examples of removing unsupported
+continuations and preserving task-specific prerequisites. Neither example is
+customer text. It requires independent policy review and fresh measurement.
+
+
+## Latest implementation validation
+
+The full affected extraction/reviewer/evaluator/prompt suite passed 726 tests
+with low-priority controls enabled and no skips after the shorthand citation
+guard. Subsequent inactive v1.13 selection checks passed 25 tests; Ruff and
+Pyright passed. Independent local review cleared the validation changes and
+v1.13 policy for development evaluation. This is code/policy clearance, not
+model qualification or activation approval.

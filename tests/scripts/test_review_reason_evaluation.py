@@ -250,6 +250,7 @@ def test_every_frozen_case_can_be_prepared_before_paid_calls():
         "1.10.0",
         "1.11.0",
         "1.12.0",
+        "1.13.0",
     ],
 )
 def test_candidate_version_selection_preserves_baseline_and_report_identity(
@@ -282,7 +283,17 @@ def test_candidate_version_selection_preserves_baseline_and_report_identity(
     ]
     assert ("**Independent lessons:**" in prompts[1]) == (
         candidate_version
-        in ("1.5.0", "1.6.0", "1.7.0", "1.8.0", "1.9.0", "1.10.0", "1.11.0", "1.12.0")
+        in (
+            "1.5.0",
+            "1.6.0",
+            "1.7.0",
+            "1.8.0",
+            "1.9.0",
+            "1.10.0",
+            "1.11.0",
+            "1.12.0",
+            "1.13.0",
+        )
     )
     changed_case = case.model_copy(deep=True)
     changed_case.turns[0].content += " Changed evidence."

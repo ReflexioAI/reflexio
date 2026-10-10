@@ -149,9 +149,10 @@ def evaluate(
         "1.10.0",
         "1.11.0",
         "1.12.0",
+        "1.13.0",
     ):
         raise ValueError(
-            "candidate_version must be 1.4.0, 1.5.0, 1.6.0, 1.7.0, 1.8.0, 1.9.0, 1.10.0, 1.11.0 or 1.12.0"
+            "candidate_version must be 1.4.0, 1.5.0, 1.6.0, 1.7.0, 1.8.0, 1.9.0, 1.10.0, 1.11.0, 1.12.0 or 1.13.0"
         )
     if not cases:
         raise ValueError("cases must be nonempty")
@@ -320,6 +321,7 @@ def main() -> int:
             "1.10.0",
             "1.11.0",
             "1.12.0",
+            "1.13.0",
         ),
         default="1.4.0",
     )
