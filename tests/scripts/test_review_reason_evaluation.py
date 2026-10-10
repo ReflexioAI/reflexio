@@ -48,6 +48,7 @@ def test_paired_evaluation_uses_real_reviewer_and_counts_errors_separately():
         "processed": 1,
         "decision_correct": 1,
         "code_correct": 1,
+        "code_expected": 1,
         "errors": 0,
     }
     assert report["summary"]["1.4.0"] == {
@@ -55,6 +56,7 @@ def test_paired_evaluation_uses_real_reviewer_and_counts_errors_separately():
         "processed": 0,
         "decision_correct": 0,
         "code_correct": 0,
+        "code_expected": 1,
         "errors": 1,
     }
     assert report["errors"][0]["error_type"] == "RuntimeError"
@@ -76,6 +78,57 @@ def test_evaluation_rejects_empty_corpus_before_calls():
     with pytest.raises(ValueError, match="nonempty"):
         evaluate([], client, 1)
     client.generate_chat_response.assert_not_called()
+
+
+def test_survival_oracle_does_not_invent_reason_label_accuracy():
+    case = next(
+        case for case in load_cases(DEFAULT_CASES) if case.id == "positive-preference"
+    )
+    case.candidates[0].allowed_decisions = ["accept", "revise"]
+    case.candidates[0].reason_code = None
+    client = MagicMock()
+    client.config = LiteLLMConfig(model="test-model", fallback_models=[])
+    client.generate_chat_response.return_value = PlaybookCandidateReviewOutput(
+        decisions=[
+            CandidateReviewDecision(
+                id="C1",
+                decision="revise",
+                reason_code="unsupported_evidence",
+                evidence_ids=["C1-E1"],
+                revision=CandidateRevision(
+                    content="Show totals first in future reports.",
+                    trigger="When preparing reports",
+                    rationale="The user requested this order.",
+                ),
+            )
+        ]
+    )
+    report = evaluate([case], client, 1)
+    assert all(row["decision_correct"] for row in report["rows"])
+    assert all(row["code_correct"] is None for row in report["rows"])
+    assert all(arm["code_expected"] == 0 for arm in report["summary"].values())
+
+
+def test_generalization_holdout_is_disjoint_and_preserves_fatal_revision_controls():
+    cases = load_cases(DEFAULT_CASES.with_name("reviewer_generalization_cases.json"))
+    development = {case.id for case in cases if case.split == "development"}
+    holdout = {case.id for case in cases if case.split == "holdout"}
+    assert development and holdout and development.isdisjoint(holdout)
+    assert len({case.domain for case in cases}) >= 10
+    for split in ("development", "holdout"):
+        selected = [case for case in cases if case.split == split]
+        assert any(
+            candidate.decision == "revise"
+            and candidate.reason_code == "unseen_artifact"
+            for case in selected
+            for candidate in case.candidates
+        )
+        assert any(
+            candidate.decision == "reject"
+            and candidate.reason_code == "absence_inference"
+            for case in selected
+            for candidate in case.candidates
+        )
 
 
 def test_revision_evidence_and_normalized_ids_survive_real_reviewer_and_checkpoint(

@@ -47,7 +47,13 @@ class Candidate(BaseModel):
     rationale: str
     evidence: list[int] = Field(min_length=1)
     decision: Literal["accept", "revise", "reject"]
-    reason_code: PlaybookReviewReasonCode
+    allowed_decisions: list[Literal["accept", "revise", "reject"]] | None = Field(
+        default=None, min_length=1
+    )
+    reason_code: PlaybookReviewReasonCode | None
+    preserve: list[str] = Field(default_factory=list)
+    preserve_any: list[list[str]] = Field(default_factory=list)
+    remove: list[str] = Field(default_factory=list)
 
 
 class Case(BaseModel):
@@ -57,6 +63,8 @@ class Case(BaseModel):
     turns: list[Turn] = Field(min_length=1)
     candidates: list[Candidate] = Field(min_length=1)
     existing: list[str] = Field(default_factory=list)
+    domain: str = "unspecified"
+    split: Literal["development", "holdout"] = "development"
 
 
 def load_cases(path: Path) -> list[Case]:
@@ -234,8 +242,13 @@ def evaluate(
                                 if decision.revision is not None
                                 else None
                             ),
-                            "decision_correct": decision.decision == target.decision,
-                            "code_correct": decision.reason_code == target.reason_code,
+                            "decision_correct": decision.decision
+                            in (target.allowed_decisions or [target.decision]),
+                            "code_correct": (
+                                decision.reason_code == target.reason_code
+                                if target.reason_code is not None
+                                else None
+                            ),
                         }
                     )
                 save_progress()
@@ -251,7 +264,13 @@ def evaluate(
             "expected": expected_count,
             "processed": len(arm),
             "decision_correct": sum(row["decision_correct"] for row in arm),
-            "code_correct": sum(row["code_correct"] for row in arm),
+            "code_correct": sum(row["code_correct"] is True for row in arm),
+            "code_expected": sum(
+                candidate.reason_code is not None
+                for case in cases
+                for candidate in case.candidates
+            )
+            * repeats,
             "errors": sum(error["version"] == version for error in errors),
         }
     return {
@@ -271,6 +290,7 @@ def evaluate(
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cases", type=Path, default=DEFAULT_CASES)
+    parser.add_argument("--split", choices=("development", "holdout"))
     parser.add_argument(
         "--expected-model",
         required=True,
@@ -283,6 +303,10 @@ def main() -> int:
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
     cases = load_cases(args.cases)
+    if args.split:
+        cases = [case for case in cases if case.split == args.split]
+        if not cases:
+            parser.error("selected split is empty")
     assert_litellm_unpatched()
     client = LiteLLMClient(
         LiteLLMConfig(model=args.expected_model, temperature=0.7, fallback_models=[])
