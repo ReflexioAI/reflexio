@@ -11,7 +11,10 @@ from reflexio.server.prompt.prompt_manager import PromptManager
 from reflexio.server.services.playbook.components.reviewer import (
     CandidateReviewDecision,
     CandidateRevision,
+    CandidateSupportingEvidence,
+    EvidenceFirstReviewOutput,
     PlaybookCandidateReviewOutput,
+    SupportingExcerpt,
 )
 from scripts import evaluate_review_reason_codes as evaluation
 from scripts.evaluate_review_reason_codes import (
@@ -251,6 +254,7 @@ def test_every_frozen_case_can_be_prepared_before_paid_calls():
         "1.11.0",
         "1.12.0",
         "1.13.0",
+        "1.14.0",
     ],
 )
 def test_candidate_version_selection_preserves_baseline_and_report_identity(
@@ -261,7 +265,7 @@ def test_candidate_version_selection_preserves_baseline_and_report_identity(
     )
     client = MagicMock()
     client.config = LiteLLMConfig(model="test-model", fallback_models=[])
-    client.generate_chat_response.return_value = PlaybookCandidateReviewOutput(
+    accepted = PlaybookCandidateReviewOutput(
         decisions=[
             CandidateReviewDecision(
                 id="C1",
@@ -271,7 +275,29 @@ def test_candidate_version_selection_preserves_baseline_and_report_identity(
             )
         ]
     )
+
+    def respond(*args, **kwargs):
+        if kwargs["response_format"] is EvidenceFirstReviewOutput:
+            return EvidenceFirstReviewOutput(
+                supporting_evidence=[
+                    CandidateSupportingEvidence(
+                        id="C1",
+                        excerpts=[
+                            SupportingExcerpt(
+                                evidence_id="C1-E1",
+                                text=case.turns[0].content[:600],
+                            )
+                        ],
+                    )
+                ],
+                decisions=accepted.decisions,
+            )
+        return accepted
+
+    client.generate_chat_response.side_effect = respond
     report = evaluate([case], client, 1, candidate_version=candidate_version)
+    assert report["errors"] == []
+    assert all(arm["processed"] == 1 for arm in report["summary"].values())
     assert set(report["summary"]) == {"1.3.0", candidate_version}
     assert report["candidate_version"] == candidate_version
     assert (
@@ -293,6 +319,7 @@ def test_candidate_version_selection_preserves_baseline_and_report_identity(
             "1.11.0",
             "1.12.0",
             "1.13.0",
+            "1.14.0",
         )
     )
     changed_case = case.model_copy(deep=True)
@@ -335,3 +362,17 @@ def test_clarified_prompt_preserves_fatal_gates_revision_policy_and_active_defau
         == old.split("## Output rules")[0]
     )
     assert clarified.split("## Output rules")[1] == old.split("## Output rules")[1]
+
+
+def test_report_writer_restricts_new_and_existing_files(tmp_path):
+    import stat
+
+    from scripts.evaluate_review_reason_codes import _write_private_text
+
+    report = tmp_path / "private.json"
+    _write_private_text(report, "first")
+    assert stat.S_IMODE(report.stat().st_mode) == 0o600
+    report.chmod(0o644)
+    _write_private_text(report, "second")
+    assert stat.S_IMODE(report.stat().st_mode) == 0o600
+    assert report.read_text() == "second"

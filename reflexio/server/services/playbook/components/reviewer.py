@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -248,6 +249,31 @@ class PlaybookCandidateReviewOutput(BaseModel):
         return data
 
 
+class SupportingExcerpt(BaseModel):
+    """Transient verbatim evidence; provenance is not semantic approval."""
+
+    evidence_id: str = Field(min_length=1)
+    text: str = Field(min_length=1, max_length=600)
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class CandidateSupportingEvidence(BaseModel):
+    candidate_id: str = Field(alias="id", min_length=1)
+    excerpts: list[SupportingExcerpt] = Field(min_length=1, max_length=16)
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+
+class EvidenceFirstReviewOutput(BaseModel):
+    """Experimental internal response; evidence precedes the decisions."""
+
+    supporting_evidence: list[CandidateSupportingEvidence]
+    decisions: list[CandidateReviewDecision]
+
+    model_config = ConfigDict(extra="forbid")
+
+
 @dataclass(frozen=True)
 class CandidateEvidenceUnit:
     """One validated evidence span exposed through a call-local unit id."""
@@ -256,6 +282,8 @@ class CandidateEvidenceUnit:
     turn_ref: str
     source_span: str
     interaction_id: int
+    role: str = ""
+    request_source: str = ""
 
 
 @dataclass(frozen=True)
@@ -268,6 +296,9 @@ class PlaybookReviewOutcome:
 
     output: PlaybookCandidateReviewOutput
     units_by_candidate: dict[str, list[CandidateEvidenceUnit]]
+    # Only private evaluation artifacts may retain these. apply_decisions never
+    # copies them into saved playbooks, notes, or public response models.
+    supporting_evidence: list[CandidateSupportingEvidence] = field(default_factory=list)
 
 
 def _append_review_note(
@@ -343,6 +374,8 @@ class PlaybookCandidateReviewer:
                             turn_ref=mapped_unit.turn_ref,
                             source_span=mapped_unit.source_span,
                             interaction_id=interaction_id,
+                            role=mapped_unit.role,
+                            request_source=mapped_unit.request_source,
                         )
                     )
             if not units:
@@ -461,6 +494,59 @@ class PlaybookCandidateReviewer:
         return tuple(errors)
 
     @staticmethod
+    def _evidence_first_validation_errors(
+        output: object,
+        units_by_candidate: dict[str, list[CandidateEvidenceUnit]],
+    ) -> tuple[str, ...]:
+        if not isinstance(output, EvidenceFirstReviewOutput):
+            return ("review output has the wrong evidence-first structured type",)
+        decisions = PlaybookCandidateReviewOutput(decisions=output.decisions)
+        errors = list(
+            PlaybookCandidateReviewer._validation_errors(decisions, units_by_candidate)
+        )
+        supports: dict[str, CandidateSupportingEvidence] = {}
+        for index, support in enumerate(output.supporting_evidence):
+            candidate_id = support.candidate_id.strip()
+            if candidate_id not in units_by_candidate or candidate_id in supports:
+                errors.append(
+                    f"supporting_evidence[{index}] has unknown or repeated candidate"
+                )
+                continue
+            supports[candidate_id] = support
+            own_units = {
+                unit.evidence_id: unit for unit in units_by_candidate[candidate_id]
+            }
+            for excerpt in support.excerpts:
+                unit = own_units.get(excerpt.evidence_id)
+                if (
+                    unit is None
+                    or not excerpt.text.strip()
+                    or excerpt.text not in unit.source_span
+                ):
+                    # Never include quoted customer text in errors/repair logs.
+                    errors.append(
+                        f"supporting_evidence[{index}] has invalid own-source excerpt"
+                    )
+        for index, decision in enumerate(output.decisions):
+            support = supports.get(decision.candidate_id.strip())
+            if decision.decision == "reject":
+                if support is not None:
+                    errors.append(
+                        f"decisions[{index}] reject must not retain supporting excerpts"
+                    )
+            elif support is None:
+                errors.append(
+                    f"decisions[{index}] survivor requires supporting excerpts"
+                )
+            elif not {excerpt.evidence_id for excerpt in support.excerpts}.issubset(
+                set(decision.evidence_ids)
+            ):
+                errors.append(
+                    f"decisions[{index}] supporting excerpts must belong to final retained evidence"
+                )
+        return tuple(errors)
+
+    @staticmethod
     def _apply_decisions(
         candidates: list[UserPlaybook],
         output: PlaybookCandidateReviewOutput,
@@ -553,32 +639,71 @@ class PlaybookCandidateReviewer:
             label_turns=True,
         )
         units_by_candidate = self._candidate_evidence_units(candidates, prompt_context)
+        version = self.request_context.prompt_manager.get_active_version(self.PROMPT_ID)
+        evidence_first = version == "1.14.0"
+        variables = {
+            "agent_context_prompt": agent_context,
+            "playbook_definition": playbook_definition,
+            "tool_context": tool_context or "(none)",
+            "interaction_context": prompt_context.text,
+            "artifact_availability": (
+                "Only visible interaction and tool-result text in the chronology "
+                "is available. Unquoted artifact contents and downstream user "
+                "outcomes are unavailable."
+            ),
+            "candidates": self._format_candidates(candidates, units_by_candidate),
+            "existing_playbooks": self._format_existing(existing_playbooks),
+        }
         prompt = self.request_context.prompt_manager.render_prompt(
-            self.PROMPT_ID,
-            {
-                "agent_context_prompt": agent_context,
-                "playbook_definition": playbook_definition,
-                "tool_context": tool_context or "(none)",
-                "interaction_context": prompt_context.text,
-                "artifact_availability": (
-                    "Only visible interaction and tool-result text in the chronology "
-                    "is available. Unquoted artifact contents and downstream user "
-                    "outcomes are unavailable."
-                ),
-                "candidates": self._format_candidates(candidates, units_by_candidate),
-                "existing_playbooks": self._format_existing(existing_playbooks),
-            },
+            self.PROMPT_ID, variables
         )
+        messages = [{"role": "user", "content": prompt}]
+        response_format: (
+            type[PlaybookCandidateReviewOutput] | type[EvidenceFirstReviewOutput]
+        ) = PlaybookCandidateReviewOutput
+        validator = self._validation_errors
+        if evidence_first:
+            # Context and transcript text never enter the trusted policy message.
+            payload: dict[str, Any] = dict(variables)
+            payload["own_evidence"] = {
+                candidate_id: [
+                    {
+                        "id": unit.evidence_id,
+                        "role": unit.role,
+                        "request_source": unit.request_source,
+                        "text": unit.source_span,
+                    }
+                    for unit in units
+                ]
+                for candidate_id, units in units_by_candidate.items()
+            }
+            messages = [
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+            ]
+            response_format = EvidenceFirstReviewOutput
+            validator = self._evidence_first_validation_errors
         output = self.client.generate_chat_response(
-            [{"role": "user", "content": prompt}],
+            messages,
             model_role=ModelRole.GENERATION,
             max_retries=0,
-            response_format=PlaybookCandidateReviewOutput,
+            response_format=response_format,
             parse_structured_output=True,
-            structured_output_validator=lambda value: self._validation_errors(
+            structured_output_validator=lambda value: validator(
                 value, units_by_candidate
             ),
         )
+        supporting_evidence: list[CandidateSupportingEvidence] = []
+        if evidence_first:
+            errors = validator(output, units_by_candidate)
+            if errors:
+                raise ValueError("; ".join(errors))
+            if not isinstance(output, EvidenceFirstReviewOutput):
+                raise ValueError(
+                    "Playbook reviewer returned the wrong evidence-first type"
+                )
+            supporting_evidence = output.supporting_evidence
+            output = PlaybookCandidateReviewOutput(decisions=output.decisions)
         if not isinstance(output, PlaybookCandidateReviewOutput):
             raise ValueError("Playbook reviewer returned the wrong structured type")
         errors = self._validation_errors(output, units_by_candidate)
@@ -603,7 +728,9 @@ class PlaybookCandidateReviewer:
             ),
         )
         return PlaybookReviewOutcome(
-            output=output, units_by_candidate=units_by_candidate
+            output=output,
+            units_by_candidate=units_by_candidate,
+            supporting_evidence=supporting_evidence,
         )
 
     def review(

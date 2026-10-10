@@ -508,6 +508,17 @@ checks: saved revisions retained unsupported guidance despite matching decision 
 label oracles. Independent grounding checks and a lower-temperature replacement
 also remain unqualified. See the adoption evaluation report for counts and limits.
 
+Inactive reviewer v1.14.0 tests a different single-call response contract. Trusted
+review policy is a system message; context and source text are user-message data.
+The model supplies bounded supporting excerpts before decisions. Validation checks
+exact substrings against each candidate's final retained evidence, keeping role
+and request-source metadata visible; this establishes provenance, not semantic
+grounding. Excerpts remain transient, outside saved playbooks, public responses
+and ordinary logs. Owner-only evaluation reports retain them for auditing. The
+current v1.3 default uses its existing messages and response schema. Qualification
+still audits complete instructions, triggers and rationales, including healthy
+multi-turn workflows, before holdout, staging and a separate activation change.
+
 See the [2026-10-10 qualification report](tests/test_data/reviewer_reason_evaluation_20261010.md)
 for pinned sources, repeated real-model results, observed regressions and activation limits.
 

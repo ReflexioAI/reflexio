@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Literal, cast
@@ -34,6 +35,14 @@ from reflexio.test_support.llm_mock import assert_litellm_unpatched
 DEFAULT_CASES = (
     Path(__file__).resolve().parents[1] / "tests/test_data/reviewer_reason_codes.json"
 )
+
+
+def _write_private_text(path: Path, text: str) -> None:
+    """Keep raw revision and supporting-source artifacts owner-readable only."""
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+        os.fchmod(stream.fileno(), 0o600)
+        stream.write(text)
 
 
 class Turn(BaseModel):
@@ -150,9 +159,10 @@ def evaluate(
         "1.11.0",
         "1.12.0",
         "1.13.0",
+        "1.14.0",
     ):
         raise ValueError(
-            "candidate_version must be 1.4.0, 1.5.0, 1.6.0, 1.7.0, 1.8.0, 1.9.0, 1.10.0, 1.11.0, 1.12.0 or 1.13.0"
+            "candidate_version must be 1.4.0, 1.5.0, 1.6.0, 1.7.0, 1.8.0, 1.9.0, 1.10.0, 1.11.0, 1.12.0, 1.13.0 or 1.14.0"
         )
     if not cases:
         raise ValueError("cases must be nonempty")
@@ -175,7 +185,8 @@ def evaluate(
 
     def save_progress() -> None:
         if checkpoint is not None:
-            checkpoint.write_text(
+            _write_private_text(
+                checkpoint,
                 json.dumps(
                     {
                         "complete": False,
@@ -187,7 +198,7 @@ def evaluate(
                         "errors": errors,
                     },
                     indent=2,
-                )
+                ),
             )
 
     for case in cases:
@@ -250,6 +261,11 @@ def evaluate(
                             "reason_code": decision.reason_code,
                             "reason": decision.reason,
                             "evidence_ids": list(decision.evidence_ids),
+                            "supporting_evidence": [
+                                support.model_dump(mode="json", by_alias=True)
+                                for support in result.supporting_evidence
+                                if support.candidate_id.strip() == candidate_id
+                            ],
                             "revision": (
                                 decision.revision.model_dump()
                                 if decision.revision is not None
@@ -322,6 +338,7 @@ def main() -> int:
             "1.11.0",
             "1.12.0",
             "1.13.0",
+            "1.14.0",
         ),
         default="1.4.0",
     )
@@ -353,7 +370,7 @@ def main() -> int:
     report = evaluate(
         cases, client, args.repeats, args.out, candidate_version=args.candidate_version
     )
-    args.out.write_text(json.dumps(report, indent=2))
+    _write_private_text(args.out, json.dumps(report, indent=2))
     print(json.dumps(report["summary"], indent=2))
     return 1 if report["errors"] else 0
 

@@ -61,3 +61,20 @@ complete extraction/review path in staging, then use the managed prepared-releas
 workflow for production. Keep the prior prompt for a reviewed rollback. No schema
 migration is expected for selecting a prompt version. Record production inference
 model identity; qualification on MiniMax cannot justify a different runtime model.
+
+## Approved evidence-first experiment
+
+Inactive v1.14.0 deliberately changes the reviewer message and response contract;
+it is not an isolated prompt-wording comparison. Both arms retain frozen inputs,
+model, temperature, five repeats and alternating order. The candidate receives
+trusted policy separately from untrusted source data and returns internal excerpts
+before decisions. Every survivor needs bounded exact excerpts from its final
+retained evidence; rejects retain none. Role and request-source metadata remain
+visible and cannot be upgraded by quoting. Excerpts are retained only in owner-only
+qualification reports, never saved as rationale or exposed publicly.
+
+The unchanged semantic gates apply to content, trigger and rationale. Quote
+validation does not establish safe generalization or prove the model's reasoning
+order. Stop if unsafe guidance persists or a supported healthy core is lost.
+Measure development and private cases before freezing the untouched holdout;
+complete extraction/review/consolidation staging validation precedes activation.
