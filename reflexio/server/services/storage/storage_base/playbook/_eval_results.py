@@ -92,10 +92,10 @@ class AgentEvaluationResultStoreMixin:
         self,
         user_id: str,
         session_id: str,
-        evaluation_name: str,
+        evaluation_name: str | None,
         agent_version: str,
     ) -> list[int]:
-        """Return result ids for one eval identity tuple."""
+        """Return result ids for one eval identity tuple, including unnamed results."""
         rows = self.get_agent_success_evaluation_results(
             limit=10_000,
             agent_version=agent_version,
