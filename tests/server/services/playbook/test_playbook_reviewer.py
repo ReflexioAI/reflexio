@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from typing import Literal
 from unittest.mock import MagicMock
 
 import pytest
@@ -17,6 +18,7 @@ from reflexio.server.services.playbook.components.reviewer import (
     CandidateEvidenceUnit,
     CandidateReviewDecision,
     CandidateRevision,
+    EvidenceFirstReviewOutput,
     PlaybookCandidateEvidenceError,
     PlaybookCandidateReviewer,
     PlaybookCandidateReviewOutput,
@@ -72,7 +74,7 @@ def _candidate(
     )
 
 
-def _reviewer(response: PlaybookCandidateReviewOutput):
+def _reviewer(response: PlaybookCandidateReviewOutput | EvidenceFirstReviewOutput):
     request_context = MagicMock()
     request_context.prompt_manager = PromptManager()
     client = MagicMock()
@@ -911,3 +913,149 @@ def test_public_result_rejects_a_reason_code_nothing_can_emit():
                 "reason_code": "not_a_real_code",
             }
         )
+
+
+def _evidence_first_output(
+    *,
+    excerpt_id="C1-E1",
+    text="Use metric units.",
+    decision: Literal["accept", "revise", "reject"] = "accept",
+):
+    from reflexio.server.services.playbook.components.reviewer import (
+        CandidateSupportingEvidence,
+        EvidenceFirstReviewOutput,
+        SupportingExcerpt,
+    )
+
+    return EvidenceFirstReviewOutput(
+        supporting_evidence=[
+            CandidateSupportingEvidence(
+                id="C1", excerpts=[SupportingExcerpt(evidence_id=excerpt_id, text=text)]
+            )
+        ],
+        decisions=[
+            CandidateReviewDecision(
+                id="C1",
+                decision=decision,
+                reason_code="grounded_useful",
+                evidence_ids=["C1-E1"] if decision != "reject" else [],
+            )
+        ],
+    )
+
+
+@pytest.mark.parametrize(
+    "excerpt_id,text,decision,valid",
+    [
+        ("C1-E1", "Use metric units.", "accept", True),
+        ("C2-E1", "Use metric units.", "accept", False),
+        ("C1-E1", "Use imperial units.", "accept", False),
+        ("C1-E1", "   ", "accept", False),
+        ("C1-E1", "Use metric units.", "reject", False),
+    ],
+)
+def test_evidence_first_validates_own_exact_retained_excerpts(
+    excerpt_id, text, decision, valid
+):
+    output = _evidence_first_output(excerpt_id=excerpt_id, text=text, decision=decision)
+    units = {
+        "C1": [
+            CandidateEvidenceUnit(
+                evidence_id="C1-E1",
+                turn_ref="T1",
+                source_span="Use metric units.",
+                interaction_id=1,
+                role="user",
+                request_source="AgentGenerated",
+            )
+        ]
+    }
+    errors = PlaybookCandidateReviewer._evidence_first_validation_errors(output, units)
+    assert (not errors) == valid
+    assert all(text not in error for error in errors)
+    # Exact quoting never upgrades AgentGenerated evidence to direct-user origin.
+    assert units["C1"][0].request_source == "AgentGenerated"
+
+
+def test_evidence_first_survivor_requires_excerpts_and_final_evidence_ownership():
+    output = _evidence_first_output()
+    units = {
+        "C1": [
+            CandidateEvidenceUnit(
+                evidence_id="C1-E1",
+                turn_ref="T1",
+                source_span="Use metric units.",
+                interaction_id=1,
+            ),
+            CandidateEvidenceUnit(
+                evidence_id="C1-E2",
+                turn_ref="T2",
+                source_span="Keep the answer short.",
+                interaction_id=2,
+            ),
+        ]
+    }
+    output.decisions[0] = CandidateReviewDecision(
+        id="C1",
+        decision="revise",
+        reason_code="compound",
+        evidence_ids=["C1-E2"],
+        revision=CandidateRevision(
+            content="Keep answers short.",
+            trigger="Before answering",
+            rationale="The user requested brevity.",
+        ),
+    )
+    assert any(
+        "final retained evidence" in e
+        for e in PlaybookCandidateReviewer._evidence_first_validation_errors(
+            output, units
+        )
+    )
+    output.supporting_evidence = []
+    assert any(
+        "requires supporting excerpts" in e
+        for e in PlaybookCandidateReviewer._evidence_first_validation_errors(
+            output, units
+        )
+    )
+
+
+def test_evidence_first_policy_is_separate_and_excerpts_are_not_persisted(caplog):
+    import json
+
+    from reflexio.server.services.playbook.components.reviewer import (
+        EvidenceFirstReviewOutput,
+    )
+
+    response = _evidence_first_output()
+    reviewer, client = _reviewer(response)
+    reviewer.request_context.prompt_manager = PromptManager(
+        version_override={"playbook_candidate_review": "1.14.0"}
+    )
+    candidate = _candidate(1, "Use metric units.", content="Use metric units.")
+    outcome = reviewer.decide(
+        candidates=[candidate],
+        request_interaction_data_models=[_interaction_model(1, "Use metric units.")],
+        existing_playbooks=[],
+        agent_context="UNTRUSTED_CONTEXT_CANARY",
+        playbook_definition="Reusable guidance",
+        tool_context="",
+    )
+    messages = client.generate_chat_response.call_args.args[0]
+    assert [message["role"] for message in messages] == ["system", "user"]
+    assert "UNTRUSTED_CONTEXT_CANARY" not in messages[0]["content"]
+    payload = json.loads(messages[1]["content"])
+    assert payload["own_evidence"]["C1"][0]["role"] == "user"
+    assert payload["own_evidence"]["C1"][0]["request_source"] == "test"
+    assert (
+        client.generate_chat_response.call_args.kwargs["response_format"]
+        is EvidenceFirstReviewOutput
+    )
+    assert len(outcome.supporting_evidence) == 1
+    survivor = reviewer.apply_decisions(candidates=[candidate], outcome=outcome)[0]
+    assert survivor.rationale == candidate.rationale
+    assert "supporting_evidence" not in survivor.model_dump()
+    assert "Use metric units." not in (survivor.notes or "")
+    assert "Use metric units." not in caplog.text
+    assert PromptManager().get_active_version("playbook_candidate_review") == "1.3.0"
