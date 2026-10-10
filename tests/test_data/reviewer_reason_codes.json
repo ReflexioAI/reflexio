@@ -1,0 +1,452 @@
+[
+  {
+    "id": "ownership-over-status",
+    "provenance": "Shape and candidate wording from public #428 follow-up; synthetic chronology, not the original production window.",
+    "agent_context": "An assistant that performs user requests using tools and remembers reusable user guidance.",
+    "turns": [
+      {
+        "role": "Agent",
+        "content": "Notification failed: FIRST_LECTURE_READY, status=FAILED."
+      },
+      {
+        "role": "Agent",
+        "content": "Notification failed: FIRST_LECTURE_READY, status=FAILED."
+      }
+    ],
+    "candidates": [
+      {
+        "content": "Do not echo the bare notification failure line; report it plainly instead.",
+        "trigger": "When a notification failure is recorded",
+        "rationale": "Derived from the cited turns.",
+        "evidence": [
+          1,
+          2
+        ],
+        "decision": "reject",
+        "reason_code": "not_agent_decision"
+      }
+    ],
+    "existing": []
+  },
+  {
+    "id": "absence-over-unsupported",
+    "provenance": "Synthetic taxonomy/control case; not customer data.",
+    "agent_context": "An assistant that performs user requests using tools and remembers reusable user guidance.",
+    "turns": [
+      {
+        "role": "User",
+        "content": "Please make a chart."
+      },
+      {
+        "role": "Agent",
+        "content": "I will make the chart."
+      }
+    ],
+    "candidates": [
+      {
+        "content": "When asked to make a chart, deliver it rather than produce nothing as happened here.",
+        "trigger": "When asked to make a chart",
+        "rationale": "Derived from the cited turns.",
+        "evidence": [
+          1,
+          2
+        ],
+        "decision": "reject",
+        "reason_code": "absence_inference"
+      }
+    ],
+    "existing": []
+  },
+  {
+    "id": "unseen-over-causality",
+    "provenance": "Synthetic taxonomy/control case; not customer data.",
+    "agent_context": "An assistant that performs user requests using tools and remembers reusable user guidance.",
+    "turns": [
+      {
+        "role": "User",
+        "content": "Please improve the attached chart."
+      },
+      {
+        "role": "Agent",
+        "content": "The chart was generated."
+      }
+    ],
+    "candidates": [
+      {
+        "content": "Use blue bars because the red bars in the unseen chart caused the user to dislike it.",
+        "trigger": "When preparing a chart",
+        "rationale": "Derived from the cited turns.",
+        "evidence": [
+          1,
+          2
+        ],
+        "decision": "reject",
+        "reason_code": "unseen_artifact"
+      }
+    ],
+    "existing": []
+  },
+  {
+    "id": "causality-over-speculation",
+    "provenance": "Synthetic boundary case; no successful retry or timing comparison supports a revision core. Not customer data.",
+    "agent_context": "An assistant that performs user requests using tools and remembers reusable user guidance.",
+    "turns": [
+      {
+        "role": "User",
+        "content": "The test failed. We have not retried it."
+      },
+      {
+        "role": "Agent",
+        "content": "No timing comparison or retry result is available."
+      }
+    ],
+    "candidates": [
+      {
+        "content": "Always retry immediately because waiting causes this test to fail.",
+        "trigger": "When this test fails",
+        "rationale": "Derived from the cited turns.",
+        "evidence": [
+          1,
+          2
+        ],
+        "decision": "reject",
+        "reason_code": "unsupported_causality"
+      }
+    ],
+    "existing": []
+  },
+  {
+    "id": "internal-status-revisable",
+    "provenance": "Synthetic taxonomy/control case; not customer data.",
+    "agent_context": "An assistant that performs user requests using tools and remembers reusable user guidance.",
+    "turns": [
+      {
+        "role": "User",
+        "content": "For future reports, show totals before individual entries."
+      },
+      {
+        "role": "Agent",
+        "content": "Report generated successfully."
+      }
+    ],
+    "candidates": [
+      {
+        "content": "Show totals before individual entries because generation success proves the user prefers that order.",
+        "trigger": "When preparing a report",
+        "rationale": "Derived from the cited turns.",
+        "evidence": [
+          1,
+          2
+        ],
+        "decision": "revise",
+        "reason_code": "internal_status"
+      }
+    ],
+    "existing": []
+  },
+  {
+    "id": "speculative-revisable",
+    "provenance": "Synthetic taxonomy/control case; not customer data.",
+    "agent_context": "An assistant that performs user requests using tools and remembers reusable user guidance.",
+    "turns": [
+      {
+        "role": "User",
+        "content": "For future reports, show totals first."
+      }
+    ],
+    "candidates": [
+      {
+        "content": "Show totals first, then email the report to the legal team every Friday.",
+        "trigger": "When preparing reports",
+        "rationale": "Derived from the cited turns.",
+        "evidence": [
+          1
+        ],
+        "decision": "revise",
+        "reason_code": "speculative"
+      }
+    ],
+    "existing": []
+  },
+  {
+    "id": "unsupported-fact-revisable",
+    "provenance": "Synthetic boundary case; unsupported factual attribute isolated from causal justification in the v1.5 evaluation. Not customer data.",
+    "agent_context": "An assistant that performs user requests using tools and remembers reusable user guidance.",
+    "turns": [
+      {
+        "role": "User",
+        "content": "Use totals first in future reports."
+      }
+    ],
+    "candidates": [
+      {
+        "content": "Show totals first. The user is a certified accountant.",
+        "trigger": "When preparing reports",
+        "rationale": "Derived from the cited turns.",
+        "evidence": [
+          1
+        ],
+        "decision": "revise",
+        "reason_code": "unsupported_evidence"
+      }
+    ],
+    "existing": []
+  },
+  {
+    "id": "redundant-rule",
+    "provenance": "Synthetic taxonomy/control case; not customer data.",
+    "agent_context": "An assistant that performs user requests using tools and remembers reusable user guidance.",
+    "turns": [
+      {
+        "role": "User",
+        "content": "In future code reviews, list blocking defects first."
+      }
+    ],
+    "candidates": [
+      {
+        "content": "List blocking defects first in code reviews.",
+        "trigger": "When reviewing code",
+        "rationale": "Derived from the cited turns.",
+        "evidence": [
+          1
+        ],
+        "decision": "reject",
+        "reason_code": "redundant"
+      }
+    ],
+    "existing": [
+      "List blocking defects first in code reviews."
+    ]
+  },
+  {
+    "id": "generic-summary",
+    "provenance": "Synthetic taxonomy/control case; not customer data.",
+    "agent_context": "An assistant that performs user requests using tools and remembers reusable user guidance.",
+    "turns": [
+      {
+        "role": "User",
+        "content": "Please calculate 2 plus 2."
+      },
+      {
+        "role": "Agent",
+        "content": "4."
+      }
+    ],
+    "candidates": [
+      {
+        "content": "Complete the user request accurately.",
+        "trigger": "When a user makes a request",
+        "rationale": "Derived from the cited turns.",
+        "evidence": [
+          1,
+          2
+        ],
+        "decision": "reject",
+        "reason_code": "generic"
+      }
+    ],
+    "existing": []
+  },
+  {
+    "id": "late-trigger-revisable",
+    "provenance": "Synthetic taxonomy/control case; not customer data.",
+    "agent_context": "An assistant that performs user requests using tools and remembers reusable user guidance.",
+    "turns": [
+      {
+        "role": "User",
+        "content": "In future reports, put totals first."
+      }
+    ],
+    "candidates": [
+      {
+        "content": "Put totals first in reports.",
+        "trigger": "After the report has been delivered",
+        "rationale": "Derived from the cited turns.",
+        "evidence": [
+          1
+        ],
+        "decision": "revise",
+        "reason_code": "late_trigger"
+      }
+    ],
+    "existing": []
+  },
+  {
+    "id": "compound-revisable",
+    "provenance": "Synthetic taxonomy/control case; not customer data.",
+    "agent_context": "An assistant that performs user requests using tools and remembers reusable user guidance.",
+    "turns": [
+      {
+        "role": "User",
+        "content": "For future reports, put totals first. In future code reviews, list blocking defects first."
+      }
+    ],
+    "candidates": [
+      {
+        "content": "Put totals first in reports and list blocking defects first in code reviews.",
+        "trigger": "When preparing a report or reviewing code",
+        "rationale": "Derived from the cited turns.",
+        "evidence": [
+          1
+        ],
+        "decision": "revise",
+        "reason_code": "compound"
+      }
+    ],
+    "existing": []
+  },
+  {
+    "id": "positive-preference",
+    "provenance": "Synthetic taxonomy/control case; not customer data.",
+    "agent_context": "An assistant that performs user requests using tools and remembers reusable user guidance.",
+    "turns": [
+      {
+        "role": "User",
+        "content": "For future reports, put totals first."
+      }
+    ],
+    "candidates": [
+      {
+        "content": "Put totals first in reports.",
+        "trigger": "When preparing reports",
+        "rationale": "The user explicitly requested this order for future reports.",
+        "evidence": [
+          1
+        ],
+        "decision": "accept",
+        "reason_code": "grounded_useful"
+      }
+    ],
+    "existing": []
+  },
+  {
+    "id": "positive-agent-controlled-retry",
+    "provenance": "Synthetic taxonomy/control case; not customer data.",
+    "agent_context": "An assistant that performs user requests using tools and remembers reusable user guidance.",
+    "turns": [
+      {
+        "role": "User",
+        "content": "The tool rejects quantities above 10. Retry with 10 when it rejects a larger quantity."
+      },
+      {
+        "role": "Agent",
+        "content": "The tool rejected quantity 12; I retried with quantity 10."
+      },
+      {
+        "role": "User",
+        "content": "Yes, use that bounded retry in future."
+      }
+    ],
+    "candidates": [
+      {
+        "content": "When the tool rejects a quantity above 10, retry with quantity 10.",
+        "trigger": "When the tool rejects a quantity above 10",
+        "rationale": "The user explicitly instructed and confirmed this bounded retry.",
+        "evidence": [
+          1,
+          2,
+          3
+        ],
+        "decision": "accept",
+        "reason_code": "grounded_useful"
+      }
+    ],
+    "existing": []
+  },
+  {
+    "id": "positive-code-review-preference",
+    "provenance": "Synthetic taxonomy/control case; not customer data.",
+    "agent_context": "An assistant that performs user requests using tools and remembers reusable user guidance.",
+    "turns": [
+      {
+        "role": "User",
+        "content": "In future code reviews, list blocking defects first."
+      }
+    ],
+    "candidates": [
+      {
+        "content": "List blocking defects first in code reviews.",
+        "trigger": "When reviewing code",
+        "rationale": "The user explicitly requested this reusable code-review order.",
+        "evidence": [
+          1
+        ],
+        "decision": "accept",
+        "reason_code": "grounded_useful"
+      }
+    ],
+    "existing": []
+  },
+  {
+    "id": "positive-supported-procedure",
+    "provenance": "Synthetic v1.5 boundary control; not customer data.",
+    "agent_context": "An assistant that performs user requests using tools and remembers reusable user guidance.",
+    "turns": [
+      {
+        "role": "User",
+        "content": "For future uploads, if an upload fails, retry it once. If that retry fails too, report the failure to me."
+      }
+    ],
+    "candidates": [
+      {
+        "content": "When an upload fails, retry once; if that retry fails, report the failure to the user.",
+        "trigger": "When an upload fails",
+        "rationale": "The user explicitly requested this guidance for future tasks.",
+        "evidence": [
+          1
+        ],
+        "decision": "accept",
+        "reason_code": "grounded_useful"
+      }
+    ],
+    "existing": []
+  },
+  {
+    "id": "positive-supported-delivery",
+    "provenance": "Synthetic v1.5 boundary control; not customer data.",
+    "agent_context": "An assistant that performs user requests using tools and remembers reusable user guidance.",
+    "turns": [
+      {
+        "role": "User",
+        "content": "For future weekly reports, show totals first, then email the finished report to the legal team every Friday."
+      }
+    ],
+    "candidates": [
+      {
+        "content": "For weekly reports, show totals first, then email the finished report to the legal team every Friday.",
+        "trigger": "When preparing a weekly report",
+        "rationale": "The user explicitly requested this guidance for future tasks.",
+        "evidence": [
+          1
+        ],
+        "decision": "accept",
+        "reason_code": "grounded_useful"
+      }
+    ],
+    "existing": []
+  },
+  {
+    "id": "independent-contexts-revisable",
+    "provenance": "Synthetic v1.5 boundary control; not customer data.",
+    "agent_context": "An assistant that performs user requests using tools and remembers reusable user guidance.",
+    "turns": [
+      {
+        "role": "User",
+        "content": "For future translations, use a formal tone. During future troubleshooting, ask one diagnostic question at a time."
+      }
+    ],
+    "candidates": [
+      {
+        "content": "Use a formal tone for translations and ask one diagnostic question at a time during troubleshooting.",
+        "trigger": "When translating text or troubleshooting",
+        "rationale": "The user explicitly requested this guidance for future tasks.",
+        "evidence": [
+          1
+        ],
+        "decision": "revise",
+        "reason_code": "compound"
+      }
+    ],
+    "existing": []
+  }
+]
