@@ -625,3 +625,31 @@ head. The 68-case corpus and 28-case holdout hashes remain unchanged.
 - Driver byte SHA-256: `9bd0f9f97fad4bcd20b20ffce3361251eca73ac398178b32f02e07e64bee3e3d`.
 - Stopped bundle byte SHA-256: `2ef0aff9fb3afd95885fc3af74fafd2df520aeaf824b127818e716aac470a602`.
 - Private log byte SHA-256: `5c935fb697c3959e60e7603f072c8b9d8b0c0f290ae5359a7ffc2fea1b0c0d6b`.
+
+### Original-only private oracle audit before another measurement
+
+A subsequent read-only review inspected all 22 original candidates and their own
+retained sources, without changing pools or rerunning models. A second reviewer
+independently confirmed all proposed changes and the decision-ambiguous case from
+original inputs, rather than choosing labels to match measured answers.
+
+Five previously scored labels need correction under unchanged precedence:
+retail 42/118 and UI 48/580 include unsupported causal benefits/effects;
+43/190 is the fatal system-output subject case; 48/712 and 48/5140 make unavailable
+artifact value/compliance claims that precede the generic internal-status defect.
+Two previously reason-unscored cases have proposed more-specific labels: 43/193
+uses omitted delivery as evidence of non-delivery; 48/5142 can preserve a task
+prerequisite while removing unsupported realized-artifact properties. These two
+were not previously wrong scored labels. Case 42/116 has an unresolved useful-core
+threshold and should not be a confident strict decision control before resolution.
+Case 42/121 retains a supported rejection with its reason code deliberately
+unscored; no new exact label was silently assigned.
+
+The original oracle remains byte-identical. The audit is a proposal, not a new
+qualification oracle: separately version/review/preregister any corrected labels
+and ambiguity treatment before another run. The stopped v1.16 comparison remains
+incomplete and unqualified. Previous semantic failures are not erased by finding
+these label defects; historical raw outputs and original scores remain preserved.
+
+- Original oracle byte SHA-256: `0b74a51fef5abd5015b12191fd6c23b74cbd7e8ceec8b2b654ae80daf581ca16`.
+- Private audit proposal byte SHA-256: `fa95312231a2d8349237e1d9244827480a94f220a2cdca6683ac326c95629c15`.
