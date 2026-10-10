@@ -139,8 +139,8 @@ def evaluate(
     *,
     candidate_version: str = "1.4.0",
 ) -> dict:
-    if candidate_version not in ("1.4.0", "1.5.0", "1.6.0"):
-        raise ValueError("candidate_version must be 1.4.0, 1.5.0 or 1.6.0")
+    if candidate_version not in ("1.4.0", "1.5.0", "1.6.0", "1.7.0"):
+        raise ValueError("candidate_version must be 1.4.0, 1.5.0, 1.6.0 or 1.7.0")
     if not cases:
         raise ValueError("cases must be nonempty")
     if repeats < 1:
@@ -297,7 +297,9 @@ def main() -> int:
         help="Assert the automatically resolved generation model; does not select a model",
     )
     parser.add_argument(
-        "--candidate-version", choices=("1.4.0", "1.5.0", "1.6.0"), default="1.4.0"
+        "--candidate-version",
+        choices=("1.4.0", "1.5.0", "1.6.0", "1.7.0"),
+        default="1.4.0",
     )
     parser.add_argument("--repeats", type=int, default=2)
     parser.add_argument("--out", type=Path, required=True)
@@ -309,7 +311,12 @@ def main() -> int:
             parser.error("selected split is empty")
     assert_litellm_unpatched()
     client = LiteLLMClient(
-        LiteLLMConfig(model=args.expected_model, temperature=0.7, fallback_models=[])
+        LiteLLMConfig(
+            model=args.expected_model,
+            temperature=0.7,
+            fallback_models=[],
+            max_retries=0,
+        )
     )
     from reflexio.server.llm.model_defaults import ModelRole
 
