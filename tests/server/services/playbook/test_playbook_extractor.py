@@ -1080,6 +1080,9 @@ class TestBuildUserPlaybook:
             ({"evidence_kind": None}, {}),
             ({"trigger": None}, {}),
             ({"content": None}, {}),
+            ({"content": "Follow the correction in [C1-E1]."}, {}),
+            ({"trigger": "When [C1] applies"}, {}),
+            ({"rationale": "The correction in C1-E1 supports this."}, {}),
             ({}, {"interaction_id": 0}),
         ],
     )

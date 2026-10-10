@@ -139,9 +139,17 @@ def evaluate(
     *,
     candidate_version: str = "1.4.0",
 ) -> dict:
-    if candidate_version not in ("1.4.0", "1.5.0", "1.6.0", "1.7.0", "1.8.0", "1.9.0"):
+    if candidate_version not in (
+        "1.4.0",
+        "1.5.0",
+        "1.6.0",
+        "1.7.0",
+        "1.8.0",
+        "1.9.0",
+        "1.10.0",
+    ):
         raise ValueError(
-            "candidate_version must be 1.4.0, 1.5.0, 1.6.0, 1.7.0, 1.8.0 or 1.9.0"
+            "candidate_version must be 1.4.0, 1.5.0, 1.6.0, 1.7.0, 1.8.0, 1.9.0 or 1.10.0"
         )
     if not cases:
         raise ValueError("cases must be nonempty")
@@ -300,7 +308,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--candidate-version",
-        choices=("1.4.0", "1.5.0", "1.6.0", "1.7.0", "1.8.0", "1.9.0"),
+        choices=("1.4.0", "1.5.0", "1.6.0", "1.7.0", "1.8.0", "1.9.0", "1.10.0"),
         default="1.4.0",
     )
     parser.add_argument("--repeats", type=int, default=2)

@@ -169,7 +169,7 @@ Friday cadence, with valid citations; all five artifact rejects retained no
 unsupported rule. The artifact control explicitly says “unseen chart”: these
 results do not establish performance on uncued claims.
 
-The unchanged candidate is now undergoing the remaining 36 development cases.
+The subsequent remaining-development diagnosis failed as recorded below.
 Private-window, fallback, holdout and full-pipeline gates remain pending.
 
 - Priority launch source: `b9c95ce5e429470a00164efe8c6c8778e0796ccb`.
@@ -178,3 +178,17 @@ Private-window, fallback, holdout and full-pipeline gates remain pending.
 - Priority prompt identities (unrendered content digests):
   - 1.3.0: `{"active_version": "1.3.0", "prompt_id": "playbook_candidate_review", "template_content_digest": "c6f03e36e2772775d17a147a4e8c697a49962199c4424bcf60cf881d6c8a04fc"}`.
   - 1.9.0: `{"active_version": "1.9.0", "prompt_id": "playbook_candidate_review", "template_content_digest": "2d0a7fba4cd69be75652cdb61f0ff605eb3affecf2bc5cdcb674c2d2abcc5d94"}`.
+
+## Failed v1.9 broader development diagnosis
+
+The remaining-development run was stopped after 22 outputs, with no call errors.
+Independent semantic inspection caught a revision whose content and trigger
+passed but whose rationale retained the temporary `[C1-E1]` label and review
+commentary about the removed artifact claim. Decision/reason scores did not
+catch this defect. The persisted-prose guard previously rejected only turn labels;
+it now also rejects bracketed candidate and reviewer evidence labels. Regression
+tests demonstrated the missing guard before the fix. Inactive v1.10 separates
+retained-core rationale from review diagnostics and requires fresh qualification.
+The holdout remains untouched.
+
+- Stopped v1.9 report byte SHA-256: `8003891358a52433baacd977a33dec81274e888eee973b9a6a471e63f5bfe26b`.

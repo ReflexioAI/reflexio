@@ -481,9 +481,17 @@ or a grounded revision and have no exact reason-label oracle; `code_expected`
 is their separate label denominator. Inspect saved content as well as scores.
 The inactive v1.7.0 candidate clarifies unavailable artifact claims versus using
 record omissions as proof of absence. It also keeps internal-status proof of
-value distinct. It failed a workflow preservation control. Inactive v1.8 clarifies the atomicity
-of preparation and delivery of one requested result; it requires fresh
-qualification. Earlier-version results cannot qualify it.
+value distinct. It failed a workflow preservation control. Inactive v1.8
+clarified preparation-and-delivery atomicity but failed artifact-label stability.
+Inactive v1.9 shortened the procedure but failed a persisted-rationale contract.
+See the [adoption evaluation report](tests/test_data/reviewer_adoption_evaluation_20261010.md)
+for retained failures and remaining gates. Earlier-version results cannot qualify
+a new version.
+Inactive v1.10 keeps revised rationales restricted to the retained supported core;
+review diagnostics belong in the separate reason (retained in review notes),
+not in the persisted guidance fields. The shared persisted
+prose guard rejects turn labels, bracketed candidate labels and reviewer evidence
+labels, while retaining ordinary bare product identifiers such as C1.
 
 See the [2026-10-10 qualification report](tests/test_data/reviewer_reason_evaluation_20261010.md)
 for pinned sources, repeated real-model results, observed regressions and activation limits.
