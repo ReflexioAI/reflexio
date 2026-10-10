@@ -169,6 +169,18 @@ def _reset_runtime_services() -> Iterator[None]:
     reset_services()
     yield
     reset_services()
+    # Local schedulers capture a test's context and storage. Stop them before
+    # the next test; otherwise they keep polling deleted SQLite directories
+    # and mutmut records their utility calls against unrelated tests.
+    scheduler_module = sys.modules.get(
+        "reflexio.server.services.playbook.aggregation_scheduler"
+    )
+    if scheduler_module is not None:
+        for scheduler in list(scheduler_module._LOCAL_SCHEDULERS.values()):
+            scheduler.stop(timeout_seconds=5)
+            assert not scheduler.is_running(), (
+                "test-owned aggregation scheduler did not stop"
+            )
     for var in _OSS_TEST_POLLUTING_ENV_VARS:
         os.environ.pop(var, None)
 
