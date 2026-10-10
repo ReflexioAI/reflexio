@@ -1,5 +1,7 @@
 """Test configuration — delegates to shared reflexio.test_support module."""
 
+import json
+import math
 import os
 import sys
 import tempfile
@@ -125,6 +127,30 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
             item.add_marker(pytest.mark.e2e)
         elif path.name.endswith(("_integration.py", "_integration_test.py")):
             item.add_marker(pytest.mark.integration)
+
+    # Each mutant uses pytest -x. Run quick checks first without dropping any
+    # selected tests; survivors still run the complete associated test set.
+    if "__mutmut_" not in os.environ.get("MUTANT_UNDER_TEST", ""):
+        return
+    try:
+        durations = json.loads((PROJECT_ROOT / "mutmut-stats.json").read_text())[
+            "duration_by_test"
+        ]
+    except (OSError, ValueError, KeyError, TypeError):
+        return
+    if not isinstance(durations, dict):
+        return
+    measured = [durations.get(item.nodeid, math.inf) for item in items]
+    try:
+        invalid = any(
+            not isinstance(value, (int, float)) or value < 0 or math.isnan(value)
+            for value in measured
+        )
+    except OverflowError:
+        return
+    if invalid:
+        return
+    items.sort(key=lambda item: (durations.get(item.nodeid, math.inf), item.nodeid))
 
 
 def pytest_unconfigure(config):
