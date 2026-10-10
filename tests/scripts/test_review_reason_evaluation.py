@@ -240,7 +240,7 @@ def test_every_frozen_case_can_be_prepared_before_paid_calls():
 
 @pytest.mark.parametrize(
     "candidate_version",
-    ["1.4.0", "1.5.0", "1.6.0", "1.7.0", "1.8.0", "1.9.0", "1.10.0"],
+    ["1.4.0", "1.5.0", "1.6.0", "1.7.0", "1.8.0", "1.9.0", "1.10.0", "1.11.0"],
 )
 def test_candidate_version_selection_preserves_baseline_and_report_identity(
     candidate_version,
@@ -271,7 +271,8 @@ def test_candidate_version_selection_preserves_baseline_and_report_identity(
         str(call.args[0]) for call in client.generate_chat_response.call_args_list
     ]
     assert ("**Independent lessons:**" in prompts[1]) == (
-        candidate_version in ("1.5.0", "1.6.0", "1.7.0", "1.8.0", "1.9.0", "1.10.0")
+        candidate_version
+        in ("1.5.0", "1.6.0", "1.7.0", "1.8.0", "1.9.0", "1.10.0", "1.11.0")
     )
     changed_case = case.model_copy(deep=True)
     changed_case.turns[0].content += " Changed evidence."

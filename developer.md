@@ -492,6 +492,10 @@ review diagnostics belong in the separate reason (retained in review notes),
 not in the persisted guidance fields. The shared persisted
 prose guard rejects turn labels, bracketed candidate labels and reviewer evidence
 labels, while retaining ordinary bare product identifiers such as C1.
+V1.10 failed private semantic checks by retaining unsupported prohibitions and
+adding an escalation fallback. Inactive v1.11 audits each negative clause and
+restricts revision to subtraction and faithful paraphrase of the supported core.
+Two additional development controls cover those failures; the holdout is unchanged.
 
 See the [2026-10-10 qualification report](tests/test_data/reviewer_reason_evaluation_20261010.md)
 for pinned sources, repeated real-model results, observed regressions and activation limits.
