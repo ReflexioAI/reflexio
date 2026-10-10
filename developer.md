@@ -523,3 +523,5 @@ using the enterprise paired-review harness. That requires the normal
 production-read permissions. The synthetic corpus alone cannot justify a
 production-quality or original-defect-resolution claim. Re-measure after any
 prompt edit, preserving both fatal gates and useful revision cores.
+
+Mutation pytest bootstraps select an empty, owned temporary environment file before loading configuration or importing the server, preventing collection from creating a persistent user `.env`. Ordinary pytest retains its provider credential loading.

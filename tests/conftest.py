@@ -31,6 +31,14 @@ _OSS_TEST_POLLUTING_ENV_VARS = (
 for _var in _OSS_TEST_POLLUTING_ENV_VARS:
     os.environ.pop(_var, None)
 
+# Mutation collection must not auto-create an env file in the real user home.
+# Both this loader and the server import load it, so isolate before either call.
+_REFLEXIO_TEST_HOME = Path(tempfile.mkdtemp(prefix="reflexio-test-home-"))
+if "MUTANT_UNDER_TEST" in os.environ:
+    _mutation_env_file = _REFLEXIO_TEST_HOME / ".env"
+    _mutation_env_file.touch()
+    os.environ["REFLEXIO_ENV_FILE"] = str(_mutation_env_file)
+
 # Load the developer's provider credentials without importing the server yet.
 # The server configures file handlers during import, so the temporary paths
 # below must be in place before that import occurs.
@@ -52,7 +60,6 @@ for _var in _OSS_TEST_POLLUTING_ENV_VARS:
 # whatever leftover storage config the developer happens to have on disk —
 # producing `No storage factory registered for StorageConfigSupabase` when
 # the leftover was from a prior `--storage supabase` run.
-_REFLEXIO_TEST_HOME = Path(tempfile.mkdtemp(prefix="reflexio-test-home-"))
 os.environ["REFLEXIO_LOG_DIR"] = str(_REFLEXIO_TEST_HOME)
 os.environ["LOCAL_STORAGE_PATH"] = str(_REFLEXIO_TEST_HOME / ".reflexio" / "data")
 
