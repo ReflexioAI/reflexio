@@ -336,7 +336,10 @@ def test_review_validation_rejects_new_evidence():
     assert "decisions[0] introduces unknown evidence" in errors
 
 
-def test_review_validation_rejects_local_turn_labels_in_revision_prose():
+@pytest.mark.parametrize(
+    "label", ["[T1]", "T12", "[C1-E1]", "C12-E34", "[C1]", "c2-e3"]
+)
+def test_review_validation_rejects_local_turn_labels_in_revision_prose(label):
     units = {
         "C1": [
             CandidateEvidenceUnit(
@@ -357,7 +360,7 @@ def test_review_validation_rejects_local_turn_labels_in_revision_prose():
                 revision=CandidateRevision(
                     content="Keep the grounded procedure.",
                     trigger="When the condition occurs",
-                    rationale="The correction in [T1] supports it.",
+                    rationale=f"The correction in {label} supports it.",
                 ),
             )
         ]
@@ -366,6 +369,17 @@ def test_review_validation_rejects_local_turn_labels_in_revision_prose():
     errors = PlaybookCandidateReviewer._validation_errors(output, units)
 
     assert "decisions[0] revision contains call-local turn label" in errors
+
+
+@pytest.mark.parametrize(
+    "prose", ["Use product C1.", "Select C12.", "Use R2-D2.", "Use ACE1."]
+)
+def test_call_local_reference_guard_preserves_non_label_identifiers(prose):
+    from reflexio.server.services.playbook.playbook_evidence import (
+        contains_call_local_turn_ref,
+    )
+
+    assert not contains_call_local_turn_ref(prose)
 
 
 def test_apply_decisions_uses_the_same_trimmed_candidate_id_as_validation():
