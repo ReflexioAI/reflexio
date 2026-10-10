@@ -480,6 +480,20 @@ class ResumableExtractionAgent:
         if committed_output is not None:
             committed_output["trace"] = result.trace.model_dump(mode="json")
         active_statuses = (AgentRunStatus.RUNNING, AgentRunStatus.RESUMING)
+        # A resume runs under a worker's claim. Fence its terminal writes on
+        # that claim, not on status alone: once the run is requeued (claim TTL
+        # expiry, or governed erasure withdrawing an answer this worker already
+        # loaded) a NEW claim puts it back in RESUMING, and a status-only write
+        # would let this stale worker overwrite it. A fenced write that matches
+        # nothing returns None, which the late-output branch below discards.
+        claim_fence: dict[str, Any] = (
+            {
+                "expected_claimed_by": run.claimed_by,
+                "expected_claimed_at": run.claimed_at,
+            }
+            if run.status == AgentRunStatus.RESUMING and run.claimed_by is not None
+            else {}
+        )
         if (
             result.finished_reason == "structured_output"
             and committed_output is not None
@@ -491,6 +505,7 @@ class ResumableExtractionAgent:
                 pending_tool_call_ids=result.pending_tool_call_ids,
                 max_steps_remaining=result.max_steps_remaining,
                 expected_statuses=active_statuses,
+                **claim_fence,
             )
             if (
                 stored_run is None
@@ -544,6 +559,7 @@ class ResumableExtractionAgent:
                 max_steps_remaining=result.max_steps_remaining,
                 last_error=last_error,
                 expected_statuses=active_statuses,
+                **claim_fence,
             )
             logger.warning(
                 "event=extraction_agent_failed org_id=%s user_id=%s "
