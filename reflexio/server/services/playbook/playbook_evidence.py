@@ -63,13 +63,20 @@ def contains_call_local_turn_ref(*values: str | None) -> bool:
     """Return whether persisted prose contains a call-local turn label.
 
     Turn labels (``T#``), bracketed candidate labels (``[C#]``), and reviewer
-    evidence labels (``C#-E#``) are meaningful only inside one prompt call.
+    evidence labels (``C#-E#``), including bracketed/parenthesized shorthand
+    citations such as ``(E1, E3)``, are meaningful only inside one prompt call.
     A persisted trigger, rationale, or instruction must remain self-contained.
-    Bare ``C#`` may be a real product/code identifier and is not rejected.
+    Bare ``C#`` or ``E#`` may be a real product/code identifier and is not rejected.
+    Citation syntax is recognized; the meaning of every bare identifier is not.
     """
     prose = " ".join(value for value in values if value)
     return (
-        re.search(r"\bT\d+\b|\bC\d+-E\d+\b|\[C\d+\]", prose, flags=re.IGNORECASE)
+        re.search(
+            r"\bT\d+\b|\bC\d+-E\d+\b|\[C\d+\]"
+            r"|(?<!\w)[\[(]\s*E\d+(?:\s*(?:,|/|and)\s*E\d+)*\s*[\])]",
+            prose,
+            flags=re.IGNORECASE,
+        )
         is not None
     )
 

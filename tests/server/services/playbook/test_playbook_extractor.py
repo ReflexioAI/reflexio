@@ -1083,6 +1083,9 @@ class TestBuildUserPlaybook:
             ({"content": "Follow the correction in [C1-E1]."}, {}),
             ({"trigger": "When [C1] applies"}, {}),
             ({"rationale": "The correction in C1-E1 supports this."}, {}),
+            ({"content": "Follow the correction in [E1]."}, {}),
+            ({"trigger": "When (E1, E3) applies"}, {}),
+            ({"rationale": "The correction in (E1 and E2) supports this."}, {}),
             ({}, {"interaction_id": 0}),
         ],
     )

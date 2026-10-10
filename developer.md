@@ -496,6 +496,13 @@ V1.10 failed private semantic checks by retaining unsupported prohibitions and
 adding an escalation fallback. Inactive v1.11 audits each negative clause and
 restricts revision to subtraction and faithful paraphrase of the supported core.
 Two additional development controls cover those failures; the holdout is unchanged.
+V1.11 failed private checks by retaining an unsupported alternative path, leaking
+shorthand evidence citations and rejecting a useful task-specific procedure.
+Inactive v1.12 explicitly audits unsupported original branches and preserves
+bounded task-specific prerequisites. The shared guard also rejects shorthand
+citation lists such as `(E1, E3)`, while allowing bare E-number product identifiers
+and formulas such as `SUM(E1, E3)`. It cannot infer every bare identifier's meaning.
+V1.12 requires fresh qualification; no earlier score qualifies it.
 
 See the [2026-10-10 qualification report](tests/test_data/reviewer_reason_evaluation_20261010.md)
 for pinned sources, repeated real-model results, observed regressions and activation limits.

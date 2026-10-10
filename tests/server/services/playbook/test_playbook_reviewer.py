@@ -337,7 +337,19 @@ def test_review_validation_rejects_new_evidence():
 
 
 @pytest.mark.parametrize(
-    "label", ["[T1]", "T12", "[C1-E1]", "C12-E34", "[C1]", "c2-e3"]
+    "label",
+    [
+        "[T1]",
+        "T12",
+        "[C1-E1]",
+        "C12-E34",
+        "[C1]",
+        "c2-e3",
+        "(E1, E3)",
+        "[E2]",
+        "(E1 and E4)",
+        "[e2/e3]",
+    ],
 )
 def test_review_validation_rejects_local_turn_labels_in_revision_prose(label):
     units = {
@@ -372,7 +384,18 @@ def test_review_validation_rejects_local_turn_labels_in_revision_prose(label):
 
 
 @pytest.mark.parametrize(
-    "prose", ["Use product C1.", "Select C12.", "Use R2-D2.", "Use ACE1."]
+    "prose",
+    [
+        "Use product C1.",
+        "Select C12.",
+        "Use R2-D2.",
+        "Use ACE1.",
+        "Use product E1.",
+        "Select E3, then E4.",
+        "Use (E1 device).",
+        "Use SUM(E1, E3) to total the specified cells.",
+        "Use AVERAGE(E1/E3).",
+    ],
 )
 def test_call_local_reference_guard_preserves_non_label_identifiers(prose):
     from reflexio.server.services.playbook.playbook_evidence import (

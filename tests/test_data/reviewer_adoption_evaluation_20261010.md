@@ -63,10 +63,11 @@ evaluation, not activation. V1.7 subsequently failed the workflow gate below.
 Inactive v1.8 clarified requested-workflow atomicity but failed the artifact
 label gate below. Inactive v1.9 consolidates the procedure into a shorter
 prompt while preserving fatal gates, revisions and workflows. It failed the
-persisted-rationale gate recorded below. The current inactive candidate is
-v1.11, which additionally enforces subtraction-only revision and checks each
-negative clause for its own evidence. V1.10 failed the private semantic gate
-recorded below. V1.11 requires fresh repeated qualification; no previous version
+persisted-rationale gate recorded below. Inactive v1.11 additionally enforces subtraction-only revision and checks each
+negative clause for its own evidence. It failed the private gates below. The
+current inactive candidate is v1.12, which explicitly removes unsupported original
+branches and preserves bounded task-specific prerequisites. V1.10 failed the private semantic gate
+recorded below. V1.12 requires fresh repeated qualification; no previous version
 qualifies it.
 
 Before activation: finish development and inspect every saved survivor; pass the
@@ -236,6 +237,27 @@ All private text stays outside the repository.
 - Expanded development corpus byte SHA-256: `998255ffba588c558d0e56f49f09e989f12a47fd444e0a24a6ad6de0a832a08d`.
 - Unchanged held-out split canonical SHA-256: `87b0e112987d3e0d6b320b6d85fce52409b195b01c15ecc78ec0cfbaa2da6b34`.
 
-V1.11 is inactive and unmeasured. Its new development oracles require independent
-inspection before model calls. Full affected tests for the guard/v1.10 source:
+The two new development oracles were independently inspected before v1.11
+model calls. Full affected tests for the guard/v1.10 source:
 712 passed with low-priority controls enabled; no skips. Activation remains gated.
+
+
+## Failed v1.11 private development diagnosis
+
+The run stopped after 24 saved outputs, with zero call errors before interruption
+and two interrupted checkpoints. Independent inspection found an unsupported
+original fallback retained in a revision, temporary shorthand evidence labels in
+a saved rationale, and a false generic rejection of a useful task-specific
+prerequisite procedure. Other revisions removed unsupported reasking prohibitions,
+but this improvement does not compensate for the failures. Oracles and the
+untouched holdout are unchanged. V1.11 remains inactive.
+
+- Launch enterprise source: `4e6c637e8c8a8f97fa5cefd1e5ad00182a19c492`.
+- Launch OSS source: `8b08982d64aa09d7f4e6df6bef64deb6df8318eb`.
+- Reviewer v1.11 template content digest: `b4080db4abe31628a5e5831bcc5b41723776fcb96a5f874521da02475b426130`.
+- Stopped report byte SHA-256: `bd3c125c1727f55a9cd282619c3f530c056f2ffc15b940d575b1cae9991cbaa5`.
+
+The shared prose guard is extended to bracketed/parenthesized shorthand evidence
+citations. Bare E-number product identifiers remain allowed; the guard recognizes
+citation syntax and cannot determine the meaning of every bare identifier.
+New inactive v1.12 keeps the same gates and requires fresh qualification.
