@@ -558,6 +558,11 @@ for every subsequent repair in that logical call.
 See the [2026-10-10 qualification report](tests/test_data/reviewer_reason_evaluation_20261010.md)
 for pinned sources, repeated real-model results, observed regressions and activation limits.
 
+Inactive v1.16 additionally limits revised rationales to the retained rule’s
+evidence basis, omitting event narration from both rationale and review reason.
+Reason is saved as survivor notes and is included in semantic qualification. The frozen controls
+and explicit GLM evaluation profile remain unchanged.
+
 The default candidate reviewer remains v1.3.0. The experimental, inactive
 v1.4.0 prompt chooses the decision first, then uses the first applicable
 reason code: ownership, absence, unseen artifact, causality, internal status,

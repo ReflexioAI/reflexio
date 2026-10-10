@@ -101,3 +101,17 @@ development and private sets, then the untouched holdout and staging pipeline.
 The 68-case corpus, frozen oracles and held-out inputs remain unchanged. This
 experiment configures evaluation calls only; production activation and any
 reviewer-specific provider routing still require a separate reviewed change.
+
+## Approved concise-rationale experiment
+
+Inactive v1.16 preserves the v1.15 decision/evidence contract and task-local rules.
+Revised rationales state only a concise, own-evidence basis for the retained rule.
+Conversation narration is omitted from both rationale and review reason. Concise
+grounded diagnostics belong in reason, which is persisted as survivor notes and
+is included in semantic audit. Required workflow sequence remains in content/trigger. No decision oracle or corpus input is edited.
+Repeat the same five private priority controls five times in both arms, serial and
+alternating, GLM-5.2 high/enabled with 8192 tokens, temperature 0.7, no fallback or
+outer transport retries. Stop on an unsupported or unverified saved clause, lost
+healthy core, frozen-oracle mismatch, or invalid observation. Exact excerpts and
+correct labels alone do not qualify the result. Broader development/private,
+untouched holdout and staging gates follow only a successful focused comparison.
