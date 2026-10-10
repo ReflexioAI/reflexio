@@ -388,3 +388,36 @@ Neither a lower temperature nor this diagnostic qualifies a replacement.
 
 - Diagnostic driver byte SHA-256: `da2a0c1311ed1bc2fca8e8390e73e3811210b64360af8cc2c39f883b6891b84a`.
 - Stopped report byte SHA-256: `d18cab9fab7370f7154213c8a323aa6fcdc8c4e785a810cab160b37064e64eb3`.
+
+## Incomplete serial GLM reviewer diagnostic
+
+A separate diagnostic calls the actual reviewer with GLM-5.2 for both v1.3 and
+v1.13, temperature 0.7, alternating arm order and five planned repetitions over
+the same five priority cases. Calls run serially with isolated credentials,
+fallback disabled and no outer transport retries. Generation, parsing and
+validation remain unpatched; the seed override is asserted absent before calls.
+This is a provider-specific diagnostic, not qualification of MiniMax primary
+behavior or proof of production capacity.
+
+The run stopped after 15 saved outputs: eight candidate and seven baseline,
+zero call errors and one interrupted checkpoint, out of 50 planned outputs.
+All eight candidate decisions and reason codes matched the frozen oracles and
+used valid own evidence references. Six candidate revisions were clearly
+grounded. Two persisted rationales remain ambiguous under the all-clauses gate:
+one retail rationale can imply a further user report after the final assistant
+recommendation; one procedure rationale says the agent proceeded with choices
+where the evidence establishes an announcement of work, not verified execution.
+The procedure's conditional source choice is supported by retained evidence;
+independent adjudication did not substantiate an invented choice or durable
+user preference. Neither ambiguity is recorded as an unequivocally invented
+event, and neither output is counted as verified safe.
+
+The other priority cases were not reached. Zero errors in this serial run do not
+establish that serial execution resolves the earlier rate limits. Broader
+development, private evidence, untouched holdout and full-pipeline gates remain
+pending. The active reviewer remains v1.3.0; no model or checker is adopted.
+
+- Launch enterprise source: `102ebba1c02918ac51bd4b0911002954ead6c123`.
+- Launch OSS source: `959123d9c4b87df0b52302e7c853cddc02c55c42`.
+- Diagnostic driver byte SHA-256: `a04391266c28a43fdecdfa46228b1fbb003b5189dfa88da7c27b62e22f93ad27`.
+- Stopped report byte SHA-256: `353eeb26800f0677194735bf4b8fecc250807e42a97b390515e9f5e09988123a`.
