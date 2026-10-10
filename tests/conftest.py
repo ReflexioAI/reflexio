@@ -1,6 +1,11 @@
 """Test configuration — delegates to shared reflexio.test_support module."""
 
+import errno
+import json
+import math
 import os
+import shutil
+import sqlite3
 import sys
 import tempfile
 from collections.abc import Iterator
@@ -117,6 +122,76 @@ def pytest_configure(config):
     configure_llm_mock(config)
 
 
+def pytest_runtest_logreport(report: pytest.TestReport) -> None:
+    """Include fixture costs in mutation scheduling, only during statistics."""
+    if os.environ.get("MUTANT_UNDER_TEST") != "stats" or report.when not in (
+        "setup",
+        "teardown",
+    ):
+        return
+    from mutmut.state import state
+
+    state().duration_by_test[report.nodeid] += report.duration
+
+
+@pytest.hookimpl(hookwrapper=True, tryfirst=True)
+def pytest_runtest_teardown(
+    item: pytest.Item, nextitem: pytest.Item | None
+) -> Iterator[None]:
+    """Attribute calls made while fixtures drain to their own test, not the next."""
+    yield
+    if os.environ.get("MUTANT_UNDER_TEST") != "stats":
+        return
+    from mutmut.state import state
+
+    stats = state()
+    for function in stats._stats:
+        stats.tests_by_mangled_function_name[function].add(
+            item.nodeid.removeprefix("mutants/")
+        )
+    stats._stats.clear()
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo):
+    """Scratch exhaustion is infrastructure failure, never a mutation kill."""
+    yield
+    if "MUTANT_UNDER_TEST" not in os.environ or call.excinfo is None:
+        return
+    pending: list[BaseException | None] = [call.excinfo.value]
+    seen: set[int] = set()
+    while pending:
+        error = pending.pop()
+        if error is None or id(error) in seen:
+            continue
+        seen.add(id(error))
+        if (isinstance(error, OSError) and error.errno == errno.ENOSPC) or (
+            isinstance(error, sqlite3.OperationalError)
+            and getattr(error, "sqlite_errorcode", None) == sqlite3.SQLITE_FULL
+        ):
+            pytest.exit("Mutation temporary storage exhausted", returncode=35)
+        if isinstance(error, BaseExceptionGroup):
+            pending.extend(error.exceptions)
+        pending.extend((error.__cause__, error.__context__))
+
+
+@pytest.hookimpl(hookwrapper=True, tryfirst=True)
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> Iterator[None]:
+    """Remove this session's owned scratch before mutant workers use os._exit."""
+    yield
+    if "MUTANT_UNDER_TEST" not in os.environ:
+        return
+    factory = getattr(session.config, "_tmp_path_factory", None)
+    if not isinstance(factory, pytest.TempPathFactory):
+        return
+    owned = factory._basetemp
+    if owned is not None:
+        try:
+            shutil.rmtree(owned)
+        except OSError:
+            pytest.exit("Mutation temporary storage cleanup failed", returncode=35)
+
+
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     """Classify path-based test tiers before ``-m`` selection is evaluated."""
     for item in items:
@@ -125,6 +200,30 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
             item.add_marker(pytest.mark.e2e)
         elif path.name.endswith(("_integration.py", "_integration_test.py")):
             item.add_marker(pytest.mark.integration)
+
+    # Each mutant uses pytest -x. Run quick checks first without dropping any
+    # selected tests; survivors still run the complete associated test set.
+    if "__mutmut_" not in os.environ.get("MUTANT_UNDER_TEST", ""):
+        return
+    try:
+        durations = json.loads((PROJECT_ROOT / "mutmut-stats.json").read_text())[
+            "duration_by_test"
+        ]
+    except (OSError, ValueError, KeyError, TypeError):
+        return
+    if not isinstance(durations, dict):
+        return
+    measured = [durations.get(item.nodeid, math.inf) for item in items]
+    try:
+        invalid = any(
+            not isinstance(value, (int, float)) or value < 0 or math.isnan(value)
+            for value in measured
+        )
+    except OverflowError:
+        return
+    if invalid:
+        return
+    items.sort(key=lambda item: (durations.get(item.nodeid, math.inf), item.nodeid))
 
 
 def pytest_unconfigure(config):
@@ -169,6 +268,18 @@ def _reset_runtime_services() -> Iterator[None]:
     reset_services()
     yield
     reset_services()
+    # Local schedulers capture a test's context and storage. Stop them before
+    # the next test; otherwise they keep polling deleted SQLite directories
+    # and mutmut records their utility calls against unrelated tests.
+    scheduler_module = sys.modules.get(
+        "reflexio.server.services.playbook.aggregation_scheduler"
+    )
+    if scheduler_module is not None:
+        for scheduler in list(scheduler_module._LOCAL_SCHEDULERS.values()):
+            scheduler.stop(timeout_seconds=5)
+            assert not scheduler.is_running(), (
+                "test-owned aggregation scheduler did not stop"
+            )
     for var in _OSS_TEST_POLLUTING_ENV_VARS:
         os.environ.pop(var, None)
 

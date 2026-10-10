@@ -456,6 +456,16 @@ plus the skill bundles, method documentation and committed `.env.example`
 template used during test collection and CLI contract checks. Actual `.env`
 files and developer credentials are not copied into mutation workspaces.
 
+Mutation workers exit via `os._exit`. The mutation-only pytest hooks therefore
+remove each session's factory-owned temporary directory after fixture teardown,
+and record fixture-drain calls against the originating test. Uncaught ENOSPC or
+SQLITE_FULL (including wrapped causes and nested exception groups) exits with
+infrastructure status 35, so scratch exhaustion cannot count as a killed mutant.
+Ordinary pytest temporary file retention is unchanged. Real-engine lifecycle
+controls live in
+`tests/scripts/test_mutation_scratch.py`.
+
+
 The test bootstrap adds the directory immediately above `tests/` to the import
 path. During mutation testing this is `mutants/`, not the original checkout;
 importing original sources hides generated mutants from coverage. The bootstrap
