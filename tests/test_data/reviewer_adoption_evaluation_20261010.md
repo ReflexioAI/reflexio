@@ -38,8 +38,8 @@ This focused set contains five positive controls and six artifact/absence
 controls. All 25 v1.6 accepted positives preserved the supplied guidance; all
 15 revisions removed unavailable-artifact claims and preserved the supported
 preference. All 15 absence controls rejected. An independent review checked all
-55 v1.6 outputs. A non-persisted retry explanation overclaimed success; it did
-not change accepted playbook text.
+55 v1.6 outputs. A review-note explanation overclaimed success; accepted content, trigger and
+rationale were unchanged.
 
 The subsequent broader v1.6 development diagnosis was stopped after 107 outputs
 when its preregistered label gate failed. For the existing unavailable-artifact
@@ -59,8 +59,10 @@ contract remain unchanged. Independent policy review cleared development
 evaluation, not activation. V1.7 subsequently failed the workflow gate below.
 Inactive v1.8 clarified requested-workflow atomicity but failed the artifact
 label gate below. Inactive v1.9 consolidates the procedure into a shorter
-prompt while preserving fatal gates, revisions and workflows. It requires
-fresh repeated qualification; no previous version qualifies it.
+prompt while preserving fatal gates, revisions and workflows. It failed the
+persisted-rationale gate recorded below. The current inactive candidate is
+v1.10, which separates retained-core rationale from review diagnostics. It
+requires fresh repeated qualification; no previous version qualifies it.
 
 Before activation: finish development and inspect every saved survivor; pass the
 unchanged candidate on independently classified private production windows and
@@ -192,3 +194,23 @@ retained-core rationale from review diagnostics and requires fresh qualification
 The holdout remains untouched.
 
 - Stopped v1.9 report byte SHA-256: `8003891358a52433baacd977a33dec81274e888eee973b9a6a471e63f5bfe26b`.
+
+## Completed v1.10 priority development checks
+
+Three existing development cases were paired for five repeats each: artifact
+rejection, supported weekly delivery, and revision of a language preference with
+an unsupported artifact claim. Both arms made all 15 expected decisions. V1.10
+selected all 15 expected reason codes; v1.3 selected 8/15. Neither had call errors.
+All five v1.10 localization revisions retained formal Spanish, removed artifact
+claims, and used plain-language rationales supported by retained evidence. The
+artifact cases contain diagnostic availability wording; uncued development,
+private production, fallback, holdout and full-pipeline gates remain pending.
+
+Both arms now use the strengthened persisted-prose guard. This compares prompt
+versions under identical new validation; it is not a replay of production's
+unchanged v1.3 prompt plus its previous validation implementation.
+
+- Priority launch source: `04d9322ef939bb144ea9d9417a5bfc8829ff3c97`.
+- Priority cases SHA-256: `844edb769ec6d595d7954912e4c17c1ed826cb602e4a00170481b17fa89d09bf`.
+- Priority report byte SHA-256: `87d98401be520702470409f38488133105ff8bbcb001a8d8bc2f0e6f47db8326`.
+- Reviewer v1.10 template content digest: `19cc47b7a23c35b82d31f526e3d586c490cacf7b2e8f0a3155636bc14226cd4c`.
