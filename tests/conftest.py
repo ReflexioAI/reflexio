@@ -119,6 +119,18 @@ def pytest_configure(config):
     configure_llm_mock(config)
 
 
+def pytest_runtest_logreport(report: pytest.TestReport) -> None:
+    """Include fixture costs in mutation scheduling, only during statistics."""
+    if os.environ.get("MUTANT_UNDER_TEST") != "stats" or report.when not in (
+        "setup",
+        "teardown",
+    ):
+        return
+    from mutmut.state import state
+
+    state().duration_by_test[report.nodeid] += report.duration
+
+
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     """Classify path-based test tiers before ``-m`` selection is evaluated."""
     for item in items:

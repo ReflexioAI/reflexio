@@ -33,10 +33,11 @@ def test_mutmut_loads_current_configuration(monkeypatch):
     )
 
 
+@pytest.mark.parametrize("cost", ["call", "fixtures"])
 @pytest.mark.parametrize("hash_seed", [0, 6])
 @pytest.mark.parametrize("malformed", [False, True], ids=["measured", "huge-int"])
 def test_actual_engine_orders_fast_checks_and_keeps_survivor_tests(
-    tmp_path, malformed, hash_seed
+    tmp_path, malformed, hash_seed, cost
 ):
     """A full mutant test set stays intact while pytest -x fails fast."""
     engine = shutil.which("mutmut")
@@ -50,14 +51,14 @@ def test_actual_engine_orders_fast_checks_and_keeps_survivor_tests(
     # Execute the exact production hook in the real engine, without importing
     # unrelated server/native runtimes into this portable mutation canary.
     conftest = (root / "tests/conftest.py").read_text()
-    hook = next(
-        node
+    hooks = [
+        ast.get_source_segment(conftest, node)
         for node in ast.parse(conftest).body
         if isinstance(node, ast.FunctionDef)
-        and node.name == "pytest_collection_modifyitems"
-    )
-    hook_source = ast.get_source_segment(conftest, hook)
-    assert hook_source is not None
+        and node.name in ("pytest_collection_modifyitems", "pytest_runtest_logreport")
+    ]
+    assert len(hooks) == 2 and all(hooks)
+    hook_source = "\n\n".join(source for source in hooks if source is not None)
     (tests / "conftest.py").write_text(
         "import json, math, os\nimport pytest\nfrom pathlib import Path\n"
         "PROJECT_ROOT = Path(__file__).resolve().parent.parent\n" + hook_source + "\n"
@@ -105,6 +106,18 @@ def test_z_fast():
     assert increment(1) == 2
 """
     )
+    if cost == "fixtures":
+        source = (tests / "test_number.py").read_text()
+        source = source.replace("import time", "import time\nimport pytest")
+        source = source.replace(
+            "def test_a_slow():",
+            "@pytest.fixture\ndef slow_setup():\n    time.sleep(0.06)\n"
+            "    yield\n    time.sleep(0.06)\n\ndef test_a_slow(slow_setup):",
+        ).replace("    time.sleep(0.05)\n", "")
+        source = source.replace(
+            "def test_z_fast():\n", "def test_z_fast():\n    time.sleep(0.01)\n"
+        )
+        (tests / "test_number.py").write_text(source)
     (tmp_path / "pyproject.toml").write_text(
         '[tool.mutmut]\nprocess_isolation = "forkserver"\n'
         'source_paths = ["number.py"]\n'
@@ -121,6 +134,11 @@ def test_z_fast():
             env={**os.environ, "PYTHONHASHSEED": str(hash_seed)},
         )
         assert result.returncode == 0, result.stdout + result.stderr
+    if cost == "fixtures":
+        timing = json.loads((tmp_path / "mutants/mutmut-stats.json").read_text())[
+            "duration_by_test"
+        ]
+        assert timing["tests/test_number.py::test_a_slow"] >= 0.11
     stats = json.loads((tmp_path / "mutants/mutmut-cicd-stats.json").read_text())
     assert stats["killed"] > 0 and stats["survived"] > 0
     assert stats["killed"] + stats["survived"] == stats["total"]
