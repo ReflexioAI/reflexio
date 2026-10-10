@@ -9,6 +9,9 @@ Snapshots are limited to 128 threads, 12 frames per thread and 64 KiB of ASCII
 text, with at most one snapshot per process per minute. Completed requests
 cancel their diagnostic task; diagnostic failures do not replace responses.
 The observer does not interrupt work or change timeout or billing behavior.
+Emission is best-effort while the event loop remains responsive. The snapshot
+covers process threads; it does not map each thread to the correlation ID or
+capture suspended async coroutines. A missing snapshot does not rule out a stall.
 
 ## Table of Contents
 

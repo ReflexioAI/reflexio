@@ -6,6 +6,7 @@ import logging
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from starlette.responses import Response
 
 from reflexio.server import middleware
 from reflexio.server import slow_request_diagnostics as diagnostics
@@ -89,3 +90,70 @@ def test_concurrent_diagnostics_are_rate_limited(monkeypatch, caplog):
     with caplog.at_level(logging.WARNING):
         asyncio.run(run())
     assert sum("event=slow_request_stacks" in r.message for r in caplog.records) == 1
+
+
+@pytest.mark.parametrize("outcome", ["exception", "timeout", "cancelled"])
+def test_watchdog_cleanup_on_unsuccessful_requests(monkeypatch, outcome):
+    from starlette.requests import Request
+
+    monkeypatch.setattr(diagnostics, "SLOW_SECONDS", 60)
+    if outcome == "timeout":
+        monkeypatch.setattr(middleware, "REQUEST_TIMEOUT_SECONDS", 0.01)
+    tasks = []
+
+    async def tracked_watchdog(path, correlation_id):
+        tasks.append(asyncio.current_task())
+        await diagnostics.watch_slow_request(path, correlation_id)
+
+    monkeypatch.setattr(middleware, "watch_slow_request", tracked_watchdog)
+
+    async def handler(request):
+        await asyncio.sleep(0)
+        if outcome == "exception":
+            raise RuntimeError("original handler failure")
+        if outcome == "cancelled":
+            raise asyncio.CancelledError
+        await asyncio.sleep(60)
+        return Response()
+
+    async def run():
+        request = Request(
+            {
+                "type": "http",
+                "method": "DELETE",
+                "path": "/api/account",
+                "query_string": b"",
+            }
+        )
+        observer = TimeoutMiddleware(FastAPI())
+        if outcome == "timeout":
+            response = await observer.dispatch(request, handler)
+            assert response.status_code == 504
+            assert b'"reason":"backstop_timeout"' in response.body
+        elif outcome == "exception":
+            with pytest.raises(RuntimeError, match="original handler failure"):
+                await observer.dispatch(request, handler)
+        else:
+            with pytest.raises(asyncio.CancelledError):
+                await observer.dispatch(request, handler)
+        assert len(tasks) == 1
+        assert tasks[0].cancelled()
+
+    asyncio.run(run())
+
+
+def test_unwatched_http_route_creates_no_watchdog(monkeypatch):
+    def forbidden_watchdog(*args):
+        raise AssertionError("unwatched route created a diagnostic task")
+
+    monkeypatch.setattr(middleware, "watch_slow_request", forbidden_watchdog)
+    app = FastAPI()
+    app.add_middleware(TimeoutMiddleware)
+
+    @app.get("/health")
+    async def health():
+        return {"healthy": True}
+
+    with TestClient(app) as client:
+        response = client.get("/health")
+    assert response.status_code == 200
