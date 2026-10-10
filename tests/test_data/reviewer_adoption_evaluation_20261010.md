@@ -455,3 +455,55 @@ on MiniMax. No holdout calls or default/model activation occurred.
 - Launch OSS source: `6f38d6c421270c767e49bb03ab245ab68fce460b`.
 - Diagnostic driver byte SHA-256: `7745f0d3edc83664173cbe22e2542875f67796d273e5e373e0f2184cabe5331e`.
 - Stopped report byte SHA-256: `216f757a41a98cd7d6af8b49d230c47d03cf8b09fe1afb843234c773e94cdd3c`.
+
+## Evidence-first contract: incomplete GLM failure
+
+The same frozen v1.14 contract was compared with v1.3 using GLM-5.2,
+temperature 0.7, serial alternating arms and five planned repeats on each of
+the five priority cases. No fallback, seed override or outer transport retry
+was used. Launch code, prompts and input hashes remained unchanged through
+documentation-only commits. This is a provider-specific contract diagnostic,
+not qualification of the MiniMax primary or an exact historical replay.
+
+The run stopped after 34 final outputs: 17 candidate and 17 baseline, zero
+final call errors and one interrupted empty checkpoint, out of 50 planned
+outputs. Candidate decisions and reason codes each matched 16/17 frozen
+oracles; baseline decisions matched 12/17 and codes 1/17. These partial scores
+do not override the semantic gates. Independent inspection cleared all five
+retail revisions, five procedure revisions and five fatal absence rejections.
+The first parameter revision remained ambiguous/unverified: a dynamic
+configured-value reading is possible, but saved content and rationale can
+promote a single task selection into a standing value. The next repeat rejected
+the entire parameter candidate and lost the preregistered useful selected-value
+core. It failed the healthy-control gate; the oracle was not edited to fit the
+rejection. This is a survival failure, not an invented saved fact. The unseen
+artifact case was not reached.
+
+All 17 candidate input hashes, retained references and 40 exact own-source
+excerpts were independently verified; rejected candidates retained no excerpts,
+references or revisions. Two absence-rejection explanations contained imprecise
+chronology/source descriptions. They generated no surviving rule, but remain
+diagnostic quality findings rather than being described as wholly grounded.
+
+Both arms use the existing client's one same-model structured-response repair
+inside a logical reviewer call. Thus logical output counts are not provider
+completion counts. The candidate needed five successful repairs (one validation
+failure and four parse failures following 8192-token responses); the baseline
+needed one successful parse repair following an 8192-token response. Logs record
+22 completed candidate provider requests and 18 baseline requests, plus one
+interrupted candidate request. Across logged completed requests, estimated costs
+were $0.532 and $0.360, and summed provider durations were 1397 and 948 seconds,
+respectively. These are small-sample diagnostic totals, exclude the interrupted
+request and other overhead, and do not establish production capacity. Replay
+JSON retains final outcomes but does not separately expose repair attempts;
+the private provider log is preserved alongside the stopped bundle.
+
+Neither provider qualifies v1.14. Broader development, private coverage,
+untouched holdout and full staging-pipeline gates remain pending. The default
+reviewer and production provider remain unchanged; no activation occurred.
+
+- Launch enterprise source: `75d3f57281572fc6226a96ee56c6aaa53f397b63`.
+- Launch OSS source: `6f38d6c421270c767e49bb03ab245ab68fce460b`.
+- Diagnostic driver byte SHA-256: `7745f0d3edc83664173cbe22e2542875f67796d273e5e373e0f2184cabe5331e`.
+- Stopped report byte SHA-256: `e89959c4ce5bb25f5795cb488e83eac7cb8b489b157bfd3638384e0420a41151`.
+- Provider log byte SHA-256: `81290dd1a8f8fe9352ef1c2c7b5b3cde6445d0211b7b3d15410ecc4a94cc2278`.
