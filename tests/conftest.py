@@ -170,6 +170,8 @@ def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo):
             and getattr(error, "sqlite_errorcode", None) == sqlite3.SQLITE_FULL
         ):
             pytest.exit("Mutation temporary storage exhausted", returncode=35)
+        if isinstance(error, BaseExceptionGroup):
+            pending.extend(error.exceptions)
         pending.extend((error.__cause__, error.__context__))
 
 

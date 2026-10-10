@@ -13,7 +13,17 @@ import pytest
 
 @pytest.mark.parametrize(
     "mode",
-    ["mutation", "normal", "sqlite-full", "enospc", "teardown", "cleanup-failure"],
+    [
+        "mutation",
+        "normal",
+        "sqlite-full",
+        "enospc",
+        "teardown",
+        "cleanup-failure",
+        "grouped-sqlite-full",
+        "grouped-enospc",
+        "grouped-ordinary",
+    ],
 )
 def test_actual_engine_scratch_lifecycle(tmp_path: Path, mode: str):
     root = Path(__file__).resolve().parents[2]
@@ -97,6 +107,70 @@ def test_identity(tmp_path):
         )
         test_source += "\ndef test_unrelated():\n    pass\n"
         (tests / "test_number.py").write_text(test_source)
+    if mode.startswith("grouped-"):
+        test_source = (
+            (tests / "test_number.py")
+            .read_text()
+            .replace(
+                "def test_identity(tmp_path):",
+                "def test_identity(tmp_path, grouped_failures):",
+            )
+        )
+        test_source += """
+@pytest.fixture
+def grouped_failures(request):
+    def ordinary():
+        if "__mutmut_" in os.environ.get("MUTANT_UNDER_TEST", ""):
+            # A non-Exception leaf makes pytest's aggregate a BaseExceptionGroup.
+            raise SystemExit("ordinary finalizer failure")
+
+    def nested():
+        if "__mutmut_" not in os.environ.get("MUTANT_UNDER_TEST", ""):
+            return
+        mode = os.environ["SCRATCH_CONTROL"]
+        if mode == "grouped-sqlite-full":
+            try:
+                with sqlite3.connect(":memory:") as db:
+                    db.execute("PRAGMA max_page_count=2")
+                    db.execute("CREATE TABLE scratch (value BLOB)")
+                    db.execute("INSERT INTO scratch VALUES (?)", (b"x" * 65536,))
+            except sqlite3.OperationalError as error:
+                assert error.sqlite_errorcode == sqlite3.SQLITE_FULL
+                resource = error
+        elif mode == "grouped-enospc":
+            resource = OSError(errno.ENOSPC, "full")
+        else:
+            resource = ValueError("ordinary nested failure")
+        raise ExceptionGroup("nested finalizer failures", [resource])
+
+    request.addfinalizer(ordinary)
+    request.addfinalizer(nested)
+"""
+        (tests / "test_number.py").write_text(test_source)
+        with (tests / "conftest.py").open("a") as stream:
+            stream.write(
+                """
+import json
+from pathlib import Path
+
+@pytest.hookimpl(hookwrapper=True, tryfirst=True, specname="pytest_runtest_makereport")
+def pytest_runtest_makereport_group_witness(item, call):
+    if call.excinfo is not None and isinstance(call.excinfo.value, BaseExceptionGroup):
+        group = call.excinfo.value
+        leaves = group.exceptions
+        witness = {
+            "group": type(group).__name__,
+            "members": [type(error).__name__ for error in leaves],
+            "nested": [type(error).__name__ for member in leaves
+                       if isinstance(member, BaseExceptionGroup)
+                       for error in member.exceptions],
+        }
+        path = Path(__file__).resolve().parents[1] / "group-witness.jsonl"
+        with path.open("a") as stream:
+            stream.write(json.dumps(witness) + "\\n")
+    yield
+"""
+            )
     (project / "pyproject.toml").write_text(
         '[tool.mutmut]\nprocess_isolation = "forkserver"\n'
         'source_paths = ["number.py"]\n'
@@ -140,9 +214,38 @@ def test_identity(tmp_path):
     else:
         assert not retained, "os._exit workers must not accumulate test databases"
     stats = json.loads((project / "mutants/mutmut-cicd-stats.json").read_text())
-    if mode in ("sqlite-full", "enospc", "cleanup-failure"):
+    if mode.startswith("grouped-"):
+        witnesses = [
+            json.loads(line)
+            for line in (project / "mutants/group-witness.jsonl")
+            .read_text()
+            .splitlines()
+        ]
+        assert witnesses
+        expected = {
+            "grouped-sqlite-full": "OperationalError",
+            "grouped-enospc": "OSError",
+            "grouped-ordinary": "ValueError",
+        }[mode]
+        assert all(witness["group"] == "BaseExceptionGroup" for witness in witnesses)
+        assert all(
+            set(witness["members"]) == {"SystemExit", "ExceptionGroup"}
+            for witness in witnesses
+        )
+        assert all(witness["nested"] == [expected] for witness in witnesses)
+    if mode in (
+        "sqlite-full",
+        "enospc",
+        "cleanup-failure",
+        "grouped-sqlite-full",
+        "grouped-enospc",
+    ):
         assert stats["suspicious"] > 0
         assert stats["killed"] == 0
+        if mode.startswith("grouped-"):
+            assert stats["suspicious"] == stats["total"]
+    elif mode == "grouped-ordinary":
+        assert stats["killed"] > 0 and stats["suspicious"] == 0
     else:
         assert stats["killed"] > 0 and stats["survived"] > 0
         assert stats["suspicious"] == 0
