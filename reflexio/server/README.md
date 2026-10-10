@@ -1,6 +1,15 @@
 # /reflexio/server
 Description: FastAPI backend server that processes user interactions to generate profiles, extract playbooks, and evaluate agent success
 
+`slow_request_diagnostics.py` observes `/api/search_profiles` and `/api/account`
+through the existing timeout middleware. After 20 seconds it emits
+`event=slow_request_stacks` with the route, correlation ID and thread frame
+locations. It omits local values, source lines, request bodies and credentials.
+Snapshots are limited to 128 threads, 12 frames per thread and 64 KiB of ASCII
+text, with at most one snapshot per process per minute. Completed requests
+cancel their diagnostic task; diagnostic failures do not replace responses.
+The observer does not interrupt work or change timeout or billing behavior.
+
 ## Table of Contents
 
 `background_work.py` exposes a neutral worker-context marker for deployments

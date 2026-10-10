@@ -9,6 +9,7 @@ import-time constant or an env var — so this extraction is behavior-preserving
 import asyncio
 import logging
 import os
+from contextlib import suppress
 
 from anyio.to_thread import current_default_thread_limiter
 from fastapi import Request, status
@@ -17,6 +18,10 @@ from starlette.responses import Response
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from reflexio.server.correlation import correlation_id_var, generate_correlation_id
+from reflexio.server.slow_request_diagnostics import (
+    DIAGNOSTIC_PATHS,
+    watch_slow_request,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -215,11 +220,17 @@ class TimeoutMiddleware(BaseHTTPMiddleware):
         """
         from starlette.responses import JSONResponse
 
+        path = route_relative_path(request.scope)
         timeout = backstop_for(
-            route_relative_path(request.scope),
+            path,
             request.query_params.get("wait_for_response", "").lower() == "true",
         )
 
+        watchdog = (
+            asyncio.create_task(watch_slow_request(path, correlation_id_var.get()))
+            if path in DIAGNOSTIC_PATHS
+            else None
+        )
         try:
             return await asyncio.wait_for(call_next(request), timeout=timeout)
         except TimeoutError:
@@ -236,6 +247,12 @@ class TimeoutMiddleware(BaseHTTPMiddleware):
                     "correlation_id": correlation_id_var.get(),
                 },
             )
+        finally:
+            if watchdog is not None:
+                watchdog.cancel()
+                # Diagnostic failure must never replace the request's result.
+                with suppress(asyncio.CancelledError, Exception):
+                    await watchdog
 
 
 class _RequestBodyTooLargeError(Exception):

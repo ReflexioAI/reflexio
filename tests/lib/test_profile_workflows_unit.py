@@ -34,7 +34,7 @@ from reflexio.server.services.profile.components.extractor import (
 
 
 @pytest.fixture
-def reflexio_with_config(temp_storage, ensure_mock_env):
+def reflexio_with_config(temp_storage, ensure_mock_env, monkeypatch):
     """Create Reflexio instance with proper extractor configuration.
 
     Note: Depends on ensure_mock_env to ensure the mock mode env var is set
@@ -50,6 +50,12 @@ def reflexio_with_config(temp_storage, ensure_mock_env):
 
     # Extra safety: verify env var is set before creating Reflexio
     os.environ["MOCK_LLM_RESPONSE"] = "true"
+    # Keep deferred tagging inside this fixture's lifetime regardless of the
+    # developer's IS_TEST_ENV. Retain the real callback and drain assertion.
+    monkeypatch.setattr(
+        "reflexio.server.services.tagging.tagging_scheduler._EFFECTIVE_DELAY_SECONDS",
+        0,
+    )
 
     org_id = "test_org"
     config = Config(storage_config=StorageConfigSQLite())
