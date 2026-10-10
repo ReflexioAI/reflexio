@@ -5,8 +5,11 @@ production change is justified by the completed measurements below.
 
 ## Frozen coverage
 
-The public synthetic corpus contains 66 cases / 67 candidates: 38 development
-cases and 28 held-out cases / 29 candidates, spanning 25 domain categories.
+The original frozen public corpus contains 66 cases / 67 candidates: 38
+development cases and 28 held-out cases / 29 candidates across 25 domain categories.
+After private development diagnosis, two new synthetic development controls were
+added: the current corpus has 68 cases / 69 candidates, 40 development cases and
+the unchanged 28-case / 29-candidate holdout across 26 domain categories.
 It includes the earlier 17 controls, 12 cross-domain manifest positives,
 artifact-versus-absence boundaries with and without diagnostic wording, supported
 workflows, subtraction, agent-controlled tool responses, evidence isolation,
@@ -61,8 +64,10 @@ Inactive v1.8 clarified requested-workflow atomicity but failed the artifact
 label gate below. Inactive v1.9 consolidates the procedure into a shorter
 prompt while preserving fatal gates, revisions and workflows. It failed the
 persisted-rationale gate recorded below. The current inactive candidate is
-v1.10, which separates retained-core rationale from review diagnostics. It
-requires fresh repeated qualification; no previous version qualifies it.
+v1.11, which additionally enforces subtraction-only revision and checks each
+negative clause for its own evidence. V1.10 failed the private semantic gate
+recorded below. V1.11 requires fresh repeated qualification; no previous version
+qualifies it.
 
 Before activation: finish development and inspect every saved survivor; pass the
 unchanged candidate on independently classified private production windows and
@@ -214,3 +219,23 @@ unchanged v1.3 prompt plus its previous validation implementation.
 - Priority cases SHA-256: `844edb769ec6d595d7954912e4c17c1ed826cb602e4a00170481b17fa89d09bf`.
 - Priority report byte SHA-256: `87d98401be520702470409f38488133105ff8bbcb001a8d8bc2f0e6f47db8326`.
 - Reviewer v1.10 template content digest: `19cc47b7a23c35b82d31f526e3d586c490cacf7b2e8f0a3155636bc14226cd4c`.
+
+## Failed v1.10 private development diagnosis
+
+The private priority run was stopped after 24 saved outputs, with no call errors
+before interruption (two additional checkpoints represent interrupted calls).
+Independent inspection of eight treatment outputs found that a retail revision
+added an unsupported fallback branch and QA revisions retained no-reconfirmation
+prohibitions unsupported by the retained evidence. Grounded cores survived, but
+full revised guidance was unsafe. Three retail repetitions also differed from
+the preregistered speculative reason label. Oracles remain unchanged. This
+incomplete run cannot qualify v1.10, despite its perfect focused synthetic score.
+All private text stays outside the repository.
+
+- Stopped private report byte SHA-256: `637ef2b0ac6910ef33de9450bf664cf52d8ba4f317ee9ed338240032ead5c961`.
+- Expanded development corpus byte SHA-256: `998255ffba588c558d0e56f49f09e989f12a47fd444e0a24a6ad6de0a832a08d`.
+- Unchanged held-out split canonical SHA-256: `87b0e112987d3e0d6b320b6d85fce52409b195b01c15ecc78ec0cfbaa2da6b34`.
+
+V1.11 is inactive and unmeasured. Its new development oracles require independent
+inspection before model calls. Full affected tests for the guard/v1.10 source:
+712 passed with low-priority controls enabled; no skips. Activation remains gated.

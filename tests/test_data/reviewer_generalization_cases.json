@@ -2250,5 +2250,94 @@
         ]
       }
     ]
+  },
+  {
+    "id": "development-supported-procedure-not-negative-preference",
+    "provenance": "Synthetic development control added after private diagnosis of unsupported no-reconfirmation restrictions; not customer data.",
+    "agent_context": "An assistant that performs user requests using tools and remembers reusable user guidance.",
+    "turns": [
+      {
+        "role": "User",
+        "content": "For future appointments, ask me the appointment type and duration together, then use my choices to make the booking."
+      },
+      {
+        "role": "Agent",
+        "content": "What type of appointment and what duration?"
+      },
+      {
+        "role": "User",
+        "content": "A consultation, 30 minutes."
+      },
+      {
+        "role": "Agent",
+        "content": "I used those choices to book the consultation."
+      }
+    ],
+    "candidates": [
+      {
+        "content": "For future appointments, ask the appointment type and duration together, then book using the supplied choices. Never ask for confirmation again.",
+        "trigger": "When arranging an appointment for this user",
+        "rationale": "The user requested the combined question and use of their choices. Successful use of the choices means they do not want confirmation.",
+        "evidence": [
+          1,
+          2,
+          3,
+          4
+        ],
+        "decision": "revise",
+        "reason_code": null,
+        "preserve": [
+          "ask appointment type and duration together",
+          "use supplied choices when booking"
+        ],
+        "remove": [
+          "never ask for confirmation again",
+          "infer a no-confirmation preference from successful answer use"
+        ]
+      }
+    ],
+    "existing": [],
+    "split": "development",
+    "domain": "scheduling"
+  },
+  {
+    "id": "development-repair-no-invented-fallback",
+    "provenance": "Synthetic development control added after private diagnosis of added escalation/fallback branches; not customer data.",
+    "agent_context": "An assistant that performs user requests using tools and remembers reusable user guidance.",
+    "turns": [
+      {
+        "role": "Agent",
+        "content": "Use the Cancel button to open the cancellation form."
+      },
+      {
+        "role": "User",
+        "content": "That button does not open the cancellation form. Please stop directing me to it."
+      }
+    ],
+    "candidates": [
+      {
+        "content": "When guiding this user through cancellation, stop directing them to the button they reported as broken. Escalate to an administrator and switch to a phone cancellation if escalation fails.",
+        "trigger": "When guiding this user through the same cancellation flow",
+        "rationale": "The user rejected the broken-button advice. Escalation and phone cancellation are remaining options.",
+        "evidence": [
+          1,
+          2
+        ],
+        "decision": "revise",
+        "reason_code": "speculative",
+        "preserve": [
+          "stop directing this user to the reported broken cancellation button"
+        ],
+        "remove": [
+          "administrator escalation",
+          "phone cancellation",
+          "an escalation-failure branch",
+          "any newly invented alternative path"
+        ]
+      }
+    ],
+    "existing": [],
+    "split": "development",
+    "domain": "support-navigation"
   }
 ]
