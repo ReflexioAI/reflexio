@@ -44,6 +44,8 @@ class AgentSuccessGenerationServiceConfig:
     source: str | None = None
     trajectory_through_request_id: str | None = None
     trajectory_interaction_count: int | None = None
+    #: PostgreSQL snapshot from the actual input read, never the result write.
+    trajectory_visibility_snapshot: str | None = None
 
 
 class AgentSuccessEvaluationService(
@@ -94,6 +96,7 @@ class AgentSuccessEvaluationService(
             source=request.source,
             trajectory_through_request_id=request.trajectory_through_request_id,
             trajectory_interaction_count=request.trajectory_interaction_count,
+            trajectory_visibility_snapshot=request.trajectory_visibility_snapshot,
         )
 
     def _load_extractor_config(self) -> AgentSuccessConfig | None:

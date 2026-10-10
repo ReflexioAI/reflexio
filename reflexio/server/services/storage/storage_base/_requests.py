@@ -1,12 +1,22 @@
 from abc import abstractmethod
+from dataclasses import dataclass
 from typing import Literal
 
-from reflexio.models.api_schema.domain import Request
+from reflexio.models.api_schema.domain import Interaction, Request
 from reflexio.models.api_schema.internal_schema import (
     RequestInteractionDataModel,
     SessionDescriptor,
     SessionFirstRequest,
 )
+
+
+@dataclass(frozen=True)
+class SessionJudgmentInputs:
+    """Actual judge inputs and their database visibility snapshot, if supported."""
+
+    requests: list[Request]
+    interactions: list[Interaction]
+    visibility_snapshot: str | None = None
 
 
 class RequestMixin:

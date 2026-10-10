@@ -35,6 +35,9 @@ from reflexio.server.services.agent_success_evaluation.service import (
     AgentSuccessEvaluationService,
 )
 from reflexio.server.services.extractor_config_utils import get_extractor_name
+from reflexio.server.services.storage.storage_base._requests import (
+    SessionJudgmentInputs,
+)
 from reflexio.server.services.storage.storage_base.evaluation_state_keys import (
     build_agent_success_marker_key,
 )
@@ -220,8 +223,22 @@ def run_group_evaluation(
         )
 
     # 4. Fetch interactions for all requests
-    request_ids = [r.request_id for r in requests]
-    all_interactions = storage.get_interactions_by_request_ids(request_ids)  # type: ignore[reportOptionalMemberAccess]
+    # Reload both input sets together after cheap admission checks. Enterprise
+    # supplies one read-only RR snapshot, closed before the paid judge runs.
+    inputs = _load_judgment_inputs(
+        storage, requests, user_id, session_id, through_request_id
+    )
+    requests = inputs.requests
+    all_interactions = inputs.interactions
+    if not requests:
+        return GroupEvaluationOutcome("not_applicable", "skipped")
+    if (
+        not force_regenerate
+        and not cutover_judging
+        and int(datetime.now(UTC).timestamp()) - max(r.created_at for r in requests)
+        < _EFFECTIVE_DELAY_SECONDS
+    ):
+        return GroupEvaluationOutcome("skipped", "skipped")
     if not all_interactions:
         _eval_health.record_skip(SkipReason.NO_INTERACTIONS)
         logger.info("No interactions found for session %s, skipping", session_id)
@@ -302,6 +319,7 @@ def run_group_evaluation(
         request_interaction_data_models=request_interaction_data_models,
         trajectory_through_request_id=judged_through_request_id,
         trajectory_interaction_count=len(all_interactions),
+        trajectory_visibility_snapshot=inputs.visibility_snapshot,
     )
 
     evaluation_service = AgentSuccessEvaluationService(
@@ -381,6 +399,23 @@ def run_group_evaluation(
         llm_client=llm_client,
         force_regenerate=force_regenerate,
         run_retrieved_learning=run_retrieved_learning,
+    )
+
+
+def _load_judgment_inputs(
+    storage: Any,
+    requests: list[Request],
+    user_id: str,
+    session_id: str,
+    through_request_id: str | None,
+) -> SessionJudgmentInputs:
+    if getattr(type(storage), "load_session_judgment_inputs", None) is None:
+        return SessionJudgmentInputs(
+            requests,
+            storage.get_interactions_by_request_ids([r.request_id for r in requests]),
+        )
+    return storage.load_session_judgment_inputs(
+        user_id, session_id, through_request_id=through_request_id
     )
 
 

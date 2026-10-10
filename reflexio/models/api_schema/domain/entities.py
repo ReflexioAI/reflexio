@@ -933,6 +933,8 @@ class AgentSuccessEvaluationResult(BaseModel):
     trajectory_through_request_id: str | None = None
     #: How many interactions the judge saw in that prefix.
     trajectory_interaction_count: int | None = Field(default=None, ge=0)
+    #: PostgreSQL snapshot from the actual input read, never the result write.
+    trajectory_visibility_snapshot: str | None = None
 
 
 class RetrievedLearningEvaluationResult(BaseModel):

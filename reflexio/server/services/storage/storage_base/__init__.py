@@ -28,7 +28,7 @@ from ._extras import ExtrasMixin
 from ._lineage import EntityType, LineageEventMixin
 from ._operations import OperationMixin
 from ._playbook import AGGREGATE_REASON_PREFIX
-from ._requests import RequestMixin
+from ._requests import RequestMixin, SessionJudgmentInputs
 from ._session_outcomes import (
     OutcomePrefixPrecondition,
     SessionOutcomeContext,
@@ -71,6 +71,22 @@ class BaseStorage(
     BaseStorageCore,
 ):
     """Base class for storage."""
+
+    def load_session_judgment_inputs(
+        self, user_id: str, session_id: str, *, through_request_id: str | None = None
+    ) -> SessionJudgmentInputs:
+        """Load judge inputs; transactional backends supply their read snapshot."""
+        requests = (
+            self.get_requests_by_session(user_id, session_id)
+            if through_request_id is None
+            else self.get_requests_by_session(
+                user_id, session_id, through_request_id=through_request_id
+            )
+        )
+        return SessionJudgmentInputs(
+            requests,
+            self.get_interactions_by_request_ids([r.request_id for r in requests]),
+        )
 
     def _is_lineage_tombstone(self, entity_type: EntityType, entity_id: str) -> bool:
         """Return True when the entity row is a tombstone (merged_into or superseded_by set).

@@ -16,6 +16,9 @@ from reflexio.server.services.agent_success_evaluation.runner import (
     run_group_evaluation,
 )
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
+from reflexio.server.services.storage.storage_base._requests import (
+    SessionJudgmentInputs,
+)
 
 _SERVICE = (
     "reflexio.server.services.agent_success_evaluation.runner"
@@ -238,3 +241,30 @@ def test_whole_session_stamp_is_last_request_with_same_second_tie(
     ]
     assert judged.trajectory_through_request_id == "b"
     assert judged.trajectory_interaction_count == 3
+
+
+def test_runner_carries_actual_input_snapshot_instead_of_persistence_state() -> None:
+    class SnapshotStorage:
+        def get_agent_success_evaluation_result_ids(self, **_kwargs) -> list[int]:
+            return []
+
+        def get_requests_by_session(self, *_args, **_kwargs):
+            return [_request("before", _now() - 10_000)]
+
+        def load_session_judgment_inputs(self, *_args, **_kwargs):
+            return SessionJudgmentInputs(
+                [_request("actual", _now() - 10_000)],
+                [_interaction(1, "actual", _now() - 10_000)],
+                "12:15:13",
+            )
+
+    outcome, captured = _run(
+        SnapshotStorage(), force_regenerate=True, through_request_id="actual"
+    )
+    assert outcome.agent_success_status == "complete"  # type: ignore[attr-defined]
+    assert len(captured) == 1
+    assert captured[0].trajectory_visibility_snapshot == "12:15:13"
+    assert captured[0].trajectory_through_request_id == "actual"
+    assert [
+        row.request.request_id for row in captured[0].request_interaction_data_models
+    ] == ["actual"]

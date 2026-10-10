@@ -291,6 +291,7 @@ class AgentSuccessEvaluator:
                 self.service_config.trajectory_through_request_id
             ),
             trajectory_interaction_count=self.service_config.trajectory_interaction_count,
+            trajectory_visibility_snapshot=self.service_config.trajectory_visibility_snapshot,
         )
 
     @staticmethod
