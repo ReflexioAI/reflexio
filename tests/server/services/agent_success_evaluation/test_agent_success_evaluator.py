@@ -481,6 +481,8 @@ class TestCorrectionCount:
     ):
         service_config.trajectory_through_request_id = "req2"
         service_config.trajectory_interaction_count = 4
+        service_config.trajectory_visibility_snapshot = "12:15:13"
+        service_config.trajectory_gc_epoch = 7
         evaluator = AgentSuccessEvaluator(
             request_context=request_context,
             llm_client=mock_llm_client,
@@ -498,3 +500,5 @@ class TestCorrectionCount:
 
         assert result.trajectory_through_request_id == "req2"
         assert result.trajectory_interaction_count == 4
+        assert result.trajectory_visibility_snapshot == "12:15:13"
+        assert result.trajectory_gc_epoch == 7
