@@ -473,6 +473,13 @@ regression exercises both layouts in isolated processes with distinct packages.
 
 ### Qualifying reviewer reason-code precedence (#428)
 
+The follow-up [adoption protocol](tests/test_data/reviewer_adoption_protocol.md)
+defines development/held-out coverage, semantic oracles and activation gates.
+Use `--cases tests/test_data/reviewer_generalization_cases.json --split development`
+or `--split holdout` to select one split. Survival-only controls allow acceptance
+or a grounded revision and have no exact reason-label oracle; `code_expected`
+is their separate label denominator. Inspect saved content as well as scores.
+
 See the [2026-10-10 qualification report](tests/test_data/reviewer_reason_evaluation_20261010.md)
 for pinned sources, repeated real-model results, observed regressions and activation limits.
 
