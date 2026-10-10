@@ -231,6 +231,9 @@ def run_group_evaluation(
     requests = inputs.requests
     all_interactions = inputs.interactions
     if not requests:
+        _eval_health.record_skip(
+            SkipReason.CUTOVER_NOT_FOUND if cutover_judging else SkipReason.NO_REQUESTS
+        )
         return GroupEvaluationOutcome("not_applicable", "skipped")
     if (
         not force_regenerate
@@ -238,6 +241,7 @@ def run_group_evaluation(
         and int(datetime.now(UTC).timestamp()) - max(r.created_at for r in requests)
         < _EFFECTIVE_DELAY_SECONDS
     ):
+        _eval_health.record_skip(SkipReason.NOT_YET_COMPLETE)
         return GroupEvaluationOutcome("skipped", "skipped")
     if not all_interactions:
         _eval_health.record_skip(SkipReason.NO_INTERACTIONS)

@@ -270,3 +270,69 @@ def test_runner_carries_actual_input_snapshot_instead_of_persistence_state() -> 
     assert [
         row.request.request_id for row in captured[0].request_interaction_data_models
     ] == ["actual"]
+
+
+@pytest.mark.parametrize(
+    ("arrival", "cutover", "reason", "status"),
+    [
+        (True, None, SkipReason.NOT_YET_COMPLETE, "skipped"),
+        (False, None, SkipReason.NO_REQUESTS, "not_applicable"),
+        (False, "before", SkipReason.CUTOVER_NOT_FOUND, "not_applicable"),
+    ],
+)
+def test_snapshot_reload_records_skip_without_starting_paid_evaluation(
+    arrival: bool,
+    cutover: str | None,
+    reason: SkipReason,
+    status: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    health = _eval_health.EvalHealth()
+    monkeypatch.setattr(_eval_health, "_HEALTH", health)
+    before = _request("before", _now() - 10_000)
+
+    class ChangingStorage:
+        def __init__(self) -> None:
+            self.admitted = False
+            self.reloaded = False
+
+        def get_requests_by_session(self, *_args, **_kwargs) -> list[Request]:
+            self.admitted = True
+            return [before]
+
+        def get_operation_state(self, *_args, **_kwargs) -> None:
+            return None
+
+        def load_session_judgment_inputs(
+            self, *_args, **_kwargs
+        ) -> SessionJudgmentInputs:
+            assert self.admitted
+            self.reloaded = True
+            # The cheap admission saw an idle request; the owned input reload
+            # sees either a newly arrived request or the removed prefix.
+            requests = [before, _request("arrived", _now())] if arrival else []
+            return SessionJudgmentInputs(
+                requests, [_interaction(1, "before", before.created_at)], "12:15:13", 7
+            )
+
+    storage = ChangingStorage()
+    context = MagicMock()
+    context.storage = storage
+    with patch(_SERVICE) as service_cls:
+        outcome = run_group_evaluation(
+            org_id="org",
+            user_id=USER,
+            session_id=SESSION,
+            agent_version="v1",
+            source="published",
+            request_context=context,
+            llm_client=MagicMock(),
+            run_retrieved_learning=False,
+            through_request_id=cutover,
+        )
+
+    assert storage.admitted and storage.reloaded
+    assert outcome.agent_success_status == status
+    service_cls.assert_not_called()
+    assert health.get_status()["skip_counts"][reason.value] == 1
+    assert sum(health.get_status()["skip_counts"].values()) == 1
