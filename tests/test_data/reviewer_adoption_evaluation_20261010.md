@@ -6,7 +6,7 @@ production change is justified by the completed measurements below.
 ## Frozen coverage
 
 The public synthetic corpus contains 66 cases / 67 candidates: 38 development
-cases and 28 held-out cases / 29 candidates, spanning 24 domain categories.
+cases and 28 held-out cases / 29 candidates, spanning 25 domain categories.
 It includes the earlier 17 controls, 12 cross-domain manifest positives,
 artifact-versus-absence boundaries with and without diagnostic wording, supported
 workflows, subtraction, agent-controlled tool responses, evidence isolation,
