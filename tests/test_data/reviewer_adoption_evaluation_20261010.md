@@ -57,8 +57,10 @@ covered by the fatal absence gate; internal-status proof of value remains
 distinct. Subject ownership, decision order, revision boundaries and the output
 contract remain unchanged. Independent policy review cleared development
 evaluation, not activation. V1.7 subsequently failed the workflow gate below.
-Inactive v1.8 clarifies requested-workflow atomicity while retaining these
-artifact/status distinctions; it requires fresh repeated qualification.
+Inactive v1.8 clarified requested-workflow atomicity but failed the artifact
+label gate below. Inactive v1.9 consolidates the procedure into a shorter
+prompt while preserving fatal gates, revisions and workflows. It requires
+fresh repeated qualification; no previous version qualifies it.
 
 Before activation: finish development and inspect every saved survivor; pass the
 unchanged candidate on independently classified private production windows and
@@ -130,3 +132,28 @@ content/trigger/rationale; no customer text is included here.
 | 20 | `da6859883aa3564f3abcd45256abe98ebeed70f896bc907c61463dfd0a47be4b` |
 | 21 | `787e614648d6de919df9d5762512bc16b95a0acbfb4568f7cacf9ec1646afca2` |
 | 22 | `33146a58a63bf0ede7bed5d5e77350f73959c77bbb8780a519dbf3fd88d1bf83` |
+
+## Failed v1.8 development diagnosis
+
+The targeted run stopped after 34 saved outputs with no call errors. The
+weekly workflow accepted unchanged in all five repeats. The unavailable-artifact
+control rejected in every repeat, but chose unsupported_evidence in repeats
+0, 2 and 4 instead of unseen_artifact. This fails the declared specificity gate.
+These are complete per-case repeats inside an incomplete broader run, not an
+aggregate qualification claim. V1.8 remains inactive.
+
+- V1.8 launch source: `478f49e70a579086da3a1fb08ce94d25abfd3c89`.
+- V1.8 group 0 case SHA-256: `31b02e1db47ff1850122aa7ab0e7c59aba66b62229cf399bfa76f5efe80bfde4`.
+- V1.8 group 1 case SHA-256: `3e3ca69b893a6e09cbaf1b9dc197dffc039ad5d58c2690d8e8a3aa8e91044835`.
+- Reviewer v1.8 template content digest: `bf10fbceb3ee8c4d3e27a913d34351c3c7ed95cdd1cc4a20d8cb22f747ec6830`.
+
+## Production inference scope
+
+Read-only ECS inspection found production task revision 231 and release
+`1f1c59f38e1e2f8f04d60255636c2e8a0102cb42`, with OSS gitlink
+`512dbc8ec4b5d64c88973aee542828411c951773`. That source defaults generation
+to MiniMax-M3; effective configuration for all three sampled orgs also resolves
+to MiniMax-M3 with no explicit generation override. This verifies source/default
+and configuration resolution, not a live inference trace. Production configures
+a `zai/glm-5.2` fallback; the MiniMax-only runs do not qualify fallback behavior.
+That gap must be addressed before a production activation claim.
