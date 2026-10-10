@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -30,6 +31,69 @@ def test_mutmut_loads_current_configuration(monkeypatch):
     assert all(
         path.exists()
         for path in (Path("reflexio/"), Path("skills/"), Path("docs/lib/methods/"))
+    )
+
+
+def test_actual_mutation_workspace_collects_repository_script_tests(
+    tmp_path, monkeypatch
+):
+    """Relocated collection must retain imports and data of the selected corpus."""
+    from mutmut.configuration import config, reset_config
+    from mutmut.utils.file_utils import copy_also_copy_files
+
+    root = Path(__file__).resolve().parents[2]
+    monkeypatch.chdir(root)
+    reset_config()
+    settings = config()
+    inputs = {Path("scripts"), *settings.also_copy, *settings.source_paths}
+    for relative in sorted(inputs):
+        source = root / relative
+        destination = tmp_path / relative
+        if not source.exists() or destination.exists():
+            continue
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if source.is_dir():
+            shutil.copytree(source, destination)
+        else:
+            shutil.copy2(source, destination)
+    monkeypatch.chdir(tmp_path)
+    reset_config()
+    try:
+        (tmp_path / "mutants").mkdir()
+        copy_also_copy_files()
+    finally:
+        reset_config()
+    child_env = os.environ.copy()
+    for key in ("PYTEST_ADDOPTS", "PYTEST_PLUGINS", "PYTHONPATH", "MUTANT_UNDER_TEST"):
+        child_env.pop(key, None)
+    child = (
+        "import os, sys\nfrom pathlib import Path\n"
+        "original = Path(sys.argv[1]).resolve()\n"
+        "sys.path[:] = [p for p in sys.path if Path(p or os.getcwd()).resolve() != original]\n"
+        "from mutmut.utils.file_utils import setup_source_paths\n"
+        "setup_source_paths()\nos.chdir('mutants')\n"
+        "import pytest\n"
+        "code = pytest.main(['-o', 'addopts=', '--collect-only', '-q', "
+        "'tests/scripts/test_review_reason_evaluation.py'])\n"
+        "if code == 0:\n"
+        "    from scripts import evaluate_review_reason_codes as evaluation\n"
+        "    expected = (Path.cwd() / 'scripts/evaluate_review_reason_codes.py').resolve()\n"
+        "    assert Path(evaluation.__file__).resolve() == expected, "
+        "'script imported outside mutation workspace'\n"
+        "raise SystemExit(code)\n"
+    )
+    result = subprocess.run(  # noqa: S603 - fixed isolated pytest collection
+        [sys.executable, "-c", child, str(root)],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env=child_env,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (
+        "test_paired_evaluation_uses_real_reviewer_and_counts_errors_separately"
+        in result.stdout
     )
 
 
