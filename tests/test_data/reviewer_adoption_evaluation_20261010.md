@@ -567,3 +567,61 @@ has not been called. Customer evidence and raw results remain owner-only.
 - Probe receipt byte SHA-256: `e7dad71a3f417775ab0c415c2d0b575d0cc009dd0015fe9b0dede9d10d9a2247`.
 - Stopped bundle byte SHA-256: `2eda7d0bd8e3a62dd501ab81ecafead40997449c20c47e3253c72771b75c37d4`.
 - Private log byte SHA-256: `569ab271ec6235c87c384264b78268793b582de8f9d1dfe62d7e24fe6d4d00f1`.
+
+## Concise rationale/notes: v1.16 stopped on a frozen-label disagreement
+
+Inactive v1.16 keeps the v1.15 evidence contract, fatal gates, useful-core rules
+and explicit GLM high/enabled/8192 profile. Revised rationales should give only a
+concise own-evidence basis. Conversation retelling is omitted from rationale and
+review reason: reason is persisted in survivor notes, so qualification audits
+notes alongside content, trigger and rationale. Required workflow sequence remains
+in content/trigger. No original oracle, source pool or held-out input was edited.
+
+The five priority controls again scheduled five serial alternating repeats per
+arm, temperature 0.7, no fallback, seed override or outer transport retry. The
+runner stopped automatically on the fourth retail candidate's reason label,
+after seven final outputs (four candidate, three baseline; three complete pairs).
+It returned `unsupported_causality`, while the frozen oracle expected `speculative`.
+All four candidate decisions matched; frozen reason labels matched 3/4. There
+were zero final reviewer errors, measurement errors, repairs or interruptions.
+
+Independent semantic inspection cleared all four candidate outputs, including
+persisted notes. They retained the supported failed-channel correction and
+removed the unsupported continuation, acknowledgment requirement and benefit.
+No unsupported or ambiguous additional follow-up event was found. All 15 exact
+own-source excerpts and final retained references were verified. Some reasons
+and rationales still counted or narrated supported events despite the concise
+wording. This is an instruction-following limitation, not an invented event.
+
+Two independent original-first taxonomy reviews found that the frozen expected
+label misses a higher-priority defect already present in the original candidate:
+a claimed emotional benefit of acknowledgment that the source does not establish.
+Under unchanged precedence, this is `unsupported_causality`, which comes before
+the invented escalation extension's `speculative` defect. The fourth output
+followed this priority; the first three did not. Preserve the original stopped
+run and its 3/4 legacy score rather than change its oracle or retrospectively
+call it a pass. Any corrected label needs independent, versioned preregistration
+before a new comparison. This exposes both an oracle defect and inconsistent
+model prioritization; it does not establish unsafe surviving guidance.
+
+The four candidate calls used four provider requests, 263.236 seconds of recorded
+logical wall time and estimated cost $0.118691. The three baseline calls used three
+requests, 94.951 seconds and $0.042922. Every completed call retained full timing,
+usage and cost observations and verified its frozen dispatch settings. Unequal
+small samples do not qualify general latency/cost performance. The other four
+priority cases, broader development/private coverage, untouched holdout and
+staging pipeline were not reached. v1.16 remains inactive and unqualified.
+
+Implementation gates passed 503 affected OSS tests, 19 enterprise replay tests,
+16 overlapping version/policy checks after final wording, Ruff and Pyright (zero
+errors/warnings). Local correctness, architecture, privacy, verification and
+policy/docs review cleared P0/P1. Both wording findings were fixed and reviewed
+before calls. All four OSS installed-artifact checks passed at the implementation
+head. The 68-case corpus and 28-case holdout hashes remain unchanged.
+
+- Launch enterprise source: `c8e467bbba080036b38a432b4ca4c679ee954012`.
+- Launch OSS source: `be8e3ae983afb7dc313a5d627507c62469231542`.
+- Prompt byte SHA-256: `d6576f0a277d683df1dc5e7837bfadf12627847ac11433d04ab8ffdf617ac532`.
+- Driver byte SHA-256: `9bd0f9f97fad4bcd20b20ffce3361251eca73ac398178b32f02e07e64bee3e3d`.
+- Stopped bundle byte SHA-256: `2ef0aff9fb3afd95885fc3af74fafd2df520aeaf824b127818e716aac470a602`.
+- Private log byte SHA-256: `5c935fb697c3959e60e7603f072c8b9d8b0c0f290ae5359a7ffc2fea1b0c0d6b`.
