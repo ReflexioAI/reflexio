@@ -481,7 +481,9 @@ or a grounded revision and have no exact reason-label oracle; `code_expected`
 is their separate label denominator. Inspect saved content as well as scores.
 The inactive v1.7.0 candidate clarifies unavailable artifact claims versus using
 record omissions as proof of absence. It also keeps internal-status proof of
-value distinct. It needs fresh qualification; v1.6 results do not qualify v1.7.
+value distinct. It failed a workflow preservation control. Inactive v1.8 clarifies the atomicity
+of preparation and delivery of one requested result; it requires fresh
+qualification. Earlier-version results cannot qualify it.
 
 See the [2026-10-10 qualification report](tests/test_data/reviewer_reason_evaluation_20261010.md)
 for pinned sources, repeated real-model results, observed regressions and activation limits.
