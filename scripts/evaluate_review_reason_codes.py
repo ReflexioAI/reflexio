@@ -8,6 +8,7 @@ quality from the synthetic cases alone; see developer.md for the rollout gate.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -127,14 +128,29 @@ def evaluate(
     client: LiteLLMClient,
     repeats: int,
     checkpoint: Path | None = None,
+    *,
+    candidate_version: str = "1.4.0",
 ) -> dict:
+    if candidate_version not in ("1.4.0", "1.5.0"):
+        raise ValueError("candidate_version must be 1.4.0 or 1.5.0")
     if not cases:
         raise ValueError("cases must be nonempty")
     if repeats < 1:
         raise ValueError("repeats must be positive")
+    prompt_identities = {
+        version: PromptManager(
+            version_override={"playbook_candidate_review": version}
+        ).get_prompt_template_identity("playbook_candidate_review")
+        for version in ("1.3.0", candidate_version)
+    }
     prepared = {case.id: prepare_case(case) for case in cases}
     rows = []
     errors = []
+    case_hash = hashlib.sha256(
+        json.dumps(
+            [case.model_dump(mode="json") for case in cases], sort_keys=True
+        ).encode()
+    ).hexdigest()
 
     def save_progress() -> None:
         if checkpoint is not None:
@@ -143,6 +159,9 @@ def evaluate(
                     {
                         "complete": False,
                         "model": client.config.model,
+                        "cases_sha256": case_hash,
+                        "candidate_version": candidate_version,
+                        "prompt_identities": prompt_identities,
                         "rows": rows,
                         "errors": errors,
                     },
@@ -154,7 +173,11 @@ def evaluate(
         sessions, candidates, existing = prepared[case.id]
         for repeat in range(repeats):
             # Alternate order to reduce time/order effects; no arm-specific model settings.
-            versions = ("1.3.0", "1.4.0") if repeat % 2 == 0 else ("1.4.0", "1.3.0")
+            versions = (
+                ("1.3.0", candidate_version)
+                if repeat % 2 == 0
+                else (candidate_version, "1.3.0")
+            )
             for version in versions:
                 context = cast(
                     RequestContext,
@@ -222,7 +245,7 @@ def evaluate(
                 )
     summary = {}
     expected_count = sum(len(case.candidates) for case in cases) * repeats
-    for version in ("1.3.0", "1.4.0"):
+    for version in ("1.3.0", candidate_version):
         arm = [row for row in rows if row["version"] == version]
         summary[version] = {
             "expected": expected_count,
@@ -235,6 +258,9 @@ def evaluate(
         "complete": True,
         "model": client.config.model,
         "temperature": client.config.temperature,
+        "cases_sha256": case_hash,
+        "candidate_version": candidate_version,
+        "prompt_identities": prompt_identities,
         "repeats": repeats,
         "summary": summary,
         "rows": rows,
@@ -249,6 +275,9 @@ def main() -> int:
         "--expected-model",
         required=True,
         help="Assert the automatically resolved generation model; does not select a model",
+    )
+    parser.add_argument(
+        "--candidate-version", choices=("1.4.0", "1.5.0"), default="1.4.0"
     )
     parser.add_argument("--repeats", type=int, default=2)
     parser.add_argument("--out", type=Path, required=True)
@@ -266,7 +295,9 @@ def main() -> int:
             f"Generation resolves to {actual_model}, not expected {args.expected_model}; "
             "--expected-model checks role resolution and does not select a model"
         )
-    report = evaluate(cases, client, args.repeats, args.out)
+    report = evaluate(
+        cases, client, args.repeats, args.out, candidate_version=args.candidate_version
+    )
     args.out.write_text(json.dumps(report, indent=2))
     print(json.dumps(report["summary"], indent=2))
     return 1 if report["errors"] else 0

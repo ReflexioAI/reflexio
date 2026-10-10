@@ -183,3 +183,72 @@ def test_every_frozen_case_can_be_prepared_before_paid_calls():
         assert len(candidates) == len(case.candidates)
         assert len(existing) == len(case.existing)
         assert all(item.request_id == case.id for item in existing)
+
+
+@pytest.mark.parametrize("candidate_version", ["1.4.0", "1.5.0"])
+def test_candidate_version_selection_preserves_baseline_and_report_identity(
+    candidate_version,
+):
+    case = next(
+        case for case in load_cases(DEFAULT_CASES) if case.id == "positive-preference"
+    )
+    client = MagicMock()
+    client.config = LiteLLMConfig(model="test-model", fallback_models=[])
+    client.generate_chat_response.return_value = PlaybookCandidateReviewOutput(
+        decisions=[
+            CandidateReviewDecision(
+                id="C1",
+                decision="accept",
+                reason_code="grounded_useful",
+                evidence_ids=["C1-E1"],
+            )
+        ]
+    )
+    report = evaluate([case], client, 1, candidate_version=candidate_version)
+    assert set(report["summary"]) == {"1.3.0", candidate_version}
+    assert report["candidate_version"] == candidate_version
+    assert (
+        report["prompt_identities"][candidate_version]["active_version"]
+        == candidate_version
+    )
+    prompts = [
+        str(call.args[0]) for call in client.generate_chat_response.call_args_list
+    ]
+    assert ("**Independent lessons:**" in prompts[1]) == (candidate_version == "1.5.0")
+    changed_case = case.model_copy(deep=True)
+    changed_case.turns[0].content += " Changed evidence."
+    changed = evaluate([changed_case], client, 1, candidate_version=candidate_version)
+    assert report["cases_sha256"] != changed["cases_sha256"]
+
+
+def test_invalid_candidate_version_fails_before_calls():
+    client = MagicMock()
+    with pytest.raises(ValueError, match="candidate_version"):
+        evaluate(load_cases(DEFAULT_CASES), client, 1, candidate_version="1.3.0")
+    client.generate_chat_response.assert_not_called()
+
+
+def test_clarified_prompt_preserves_fatal_gates_revision_policy_and_active_default():
+    manager = PromptManager()
+    assert manager.get_active_version("playbook_candidate_review") == "1.3.0"
+    values: dict[str, str] = dict.fromkeys(
+        (
+            "agent_context_prompt",
+            "playbook_definition",
+            "tool_context",
+            "interaction_context",
+            "artifact_availability",
+            "candidates",
+            "existing_playbooks",
+        ),
+        "",
+    )
+    old = manager.render_prompt("playbook_candidate_review", values)
+    clarified = PromptManager(
+        version_override={"playbook_candidate_review": "1.5.0"}
+    ).render_prompt("playbook_candidate_review", values)
+    assert (
+        clarified.split("## Reason-code precedence")[0]
+        == old.split("## Output rules")[0]
+    )
+    assert clarified.split("## Output rules")[1] == old.split("## Output rules")[1]

@@ -463,12 +463,20 @@ reason code: ownership, absence, unseen artifact, causality, internal status,
 speculation, other unsupported facts, duplicate, generic, late trigger, compound.
 Accepted candidates use `grounded_useful`; revisions label the defect removed.
 This preserves the measured subject gate and the fatal-code/revision distinction.
+The separate inactive v1.5.0 candidate clarifies the measured disagreements:
+independent future tasks are compound even when stated together, necessary
+steps of one supported procedure stay together, internal-status proof has
+precedence over unsupported causality, and invented future instructions are
+speculative rather than unsupported factual attributes. Grounded preferences
+still require a duplication and scope check before acceptance. v1.3.0 and
+v1.4.0 remain byte-for-byte unchanged.
 
 Run the paired evaluation with a real provider key exported in the shell:
 
 ```bash
 uv run python scripts/evaluate_review_reason_codes.py \
-  --expected-model minimax/MiniMax-M3 --repeats 2 --out /tmp/reason-codes.json
+  --expected-model minimax/MiniMax-M3 --candidate-version 1.5.0 \
+  --repeats 5 --out /tmp/reason-codes.json
 ```
 
 Both arms see the same frozen cases, chronology, model, temperature and empty
@@ -477,16 +485,22 @@ call errors; its report keeps expected, processed and error counts separate.
 `--expected-model` checks the generation model resolved from the normal provider
 configuration; it does not select or override that model. A mismatch fails
 before paid calls. Export only the intended provider's key for the documented
-MiniMax run. Reports retain revision content and evidence IDs for manual
+MiniMax run. The candidate-version flag selects the inactive treatment; the
+baseline remains v1.3.0. Reports hash the input cases and both prompt templates,
+and retain revision content and evidence IDs for manual
 inspection of useful-core preservation; correct decision/code labels alone
 cannot establish revision quality.
-The corpus covers every label plus accepted and revisable controls in reporting
-and code-review contexts. It is synthetic except for a publicly reported
+The corpus covers every label plus accepted and revisable controls in reporting,
+code-review, translation, troubleshooting and upload contexts. The v1.5 evaluation
+is a new matched comparison: two formerly ambiguous inputs were clarified and
+three boundary controls added. Do not aggregate these scores with the original
+14-case measurements. Run repeated paired disagreement cases and positive
+controls first, then repeat the full frozen corpus without editing the prompt. It is synthetic except for a publicly reported
 candidate shape from #428; it is not the original production candidate pool.
 Do not use lexical similarity to group candidates or equate label consistency
 with correct accept/revise/reject decisions.
 
-Before activating v1.4.0, require matched, error-free processing and improved
+Before activating either experimental candidate, require matched, error-free processing and improved
 label accuracy without loss of decision accuracy or any positive-control
 survivors. Inspect each mismatch and the model's explanation, rather than
 hiding losses in aggregate totals. Then qualify against the original frozen
