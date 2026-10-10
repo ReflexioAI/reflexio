@@ -499,3 +499,93 @@ def test_resumable_agent_resume_uses_persisted_step_budget(
     assert stored.status == AgentRunStatus.FAILED
     assert stored.max_steps_remaining == 0
     assert stored.last_error == "Extraction agent did not finish: max_steps"
+
+
+def _claimed_resume(
+    storage, run_id: str
+) -> tuple[AgentRunRecord, PendingToolCallRecord]:
+    """A run claimed by ``worker_1`` for a resume on one resolved answer."""
+    run = storage.create_agent_run(_agent_run(run_id))
+    scope = human_feedback_scope("org_1")
+    now = datetime.now(UTC)
+    question = f"What does {run_id} need?"
+    pending = storage.create_pending_tool_call(
+        PendingToolCallRecord(
+            id=f"ptc_{run_id}",
+            org_id="org_1",
+            user_id="user_1",
+            scope=scope,
+            scope_hash=build_scope_hash(scope),
+            tool_name="ask_human",
+            dedup_key=build_pending_tool_call_dedup_key(
+                tool_name="ask_human", question_text=question
+            ),
+            status=PendingToolCallStatus.PENDING,
+            question_text=question,
+            expires_at=now + timedelta(hours=1),
+            cache_until=now + timedelta(minutes=5),
+        )
+    )
+    storage.attach_run_tool_dependency(
+        RunToolDependencyRecord(run_id=run.id, pending_tool_call_id=pending.id)
+    )
+    storage.update_agent_run_status(run.id, AgentRunStatus.FINALIZED_PENDING_TOOL)
+    resolved = storage.resolve_pending_tool_call(
+        pending.id,
+        result={"answer": "ECS"},
+        resolved_at=now,
+        valid_for_seconds=3600,
+    )
+    assert resolved is not None
+    claimed = storage.claim_ready_agent_run(
+        org_id=run.binding.org_id, worker_id="worker_1", now=now
+    )
+    assert claimed is not None and claimed.claimed_by == "worker_1"
+    return claimed, resolved
+
+
+@pytest.mark.parametrize("outcome", ["agent_completed", "failed"])
+def test_a_stale_resume_worker_cannot_finish_a_reclaimed_run(
+    monkeypatch, storage, tool_call_completion, outcome: str
+):
+    """Terminal writes of a resume are fenced on the CLAIM, not on status alone.
+
+    While worker_1's model call is in flight the run is requeued and claimed
+    again by worker_2, so it is back in ``resuming`` -- the status a status-only
+    fence accepts. worker_1 must neither commit its output nor fail the run.
+    """
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_CLI", raising=False)
+    claimed, resolved = _claimed_resume(storage, f"run_stale_{outcome}")
+    _make_tc, make_stop = tool_call_completion
+    response = make_stop(json.dumps({"profiles": []}))
+
+    def reclaim_then_answer(*args, **kwargs):
+        storage.update_agent_run_status(claimed.id, AgentRunStatus.RESUME_READY)
+        reclaimed = storage.claim_ready_agent_run(
+            org_id="org_1",
+            worker_id="worker_2",
+            now=datetime.now(UTC) + timedelta(seconds=5),
+        )
+        assert reclaimed is not None and reclaimed.claimed_by == "worker_2"
+        if outcome == "failed":
+            raise RuntimeError("provider failed")
+        return response
+
+    client = LiteLLMClient(LiteLLMConfig(model="claude-sonnet-4-6"))
+    agent = ResumableExtractionAgent(client=client, storage=storage)
+    with patch("litellm.completion", side_effect=reclaim_then_answer):
+        result = agent.resume(
+            run=claimed,
+            messages=[{"role": "user", "content": "resume extraction"}],
+            output_schema=StructuredProfilesOutput,
+            resolved_tool_calls=[resolved],
+        )
+
+    stored = storage.get_agent_run(claimed.id)
+    assert stored is not None
+    assert (stored.status, stored.claimed_by) == (AgentRunStatus.RESUMING, "worker_2")
+    assert stored.committed_output is None
+    assert stored.last_error is None
+    if outcome == "agent_completed":
+        assert result.finished_reason == "late_output_discarded"
