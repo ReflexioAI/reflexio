@@ -452,8 +452,14 @@ Results are in `mutants/mutmut-cicd-stats.json`. The old `--paths-to-mutate`
 option and `html` command are unsupported. The former feedback utility target
 was removed because that source module no longer exists. `also_copy` supplies
 the remaining package so selected mutated modules can import their dependencies,
-plus the skill bundles and method documentation used during test collection and
-contract checks.
+plus the skill bundles, method documentation and committed `.env.example`
+template used during test collection and CLI contract checks. Actual `.env`
+files and developer credentials are not copied into mutation workspaces.
+
+The test bootstrap adds the directory immediately above `tests/` to the import
+path. During mutation testing this is `mutants/`, not the original checkout;
+importing original sources hides generated mutants from coverage. The bootstrap
+regression exercises both layouts in isolated processes with distinct packages.
 
 ### Qualifying reviewer reason-code precedence (#428)
 
@@ -517,3 +523,5 @@ using the enterprise paired-review harness. That requires the normal
 production-read permissions. The synthetic corpus alone cannot justify a
 production-quality or original-defect-resolution claim. Re-measure after any
 prompt edit, preserving both fatal gates and useful revision cores.
+
+Mutation pytest bootstraps select an empty, owned temporary environment file before loading configuration or importing the server, preventing collection from creating a persistent user `.env`. Ordinary pytest retains its provider credential loading.

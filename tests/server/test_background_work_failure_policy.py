@@ -8,6 +8,8 @@ once it holds ``_ESCALATE_AFTER_FAILURES`` failures spanning at least
 from __future__ import annotations
 
 import logging
+import sys
+from uuid import uuid4
 
 import pytest
 
@@ -49,8 +51,12 @@ def clock(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _capture(caplog):
-    caplog.set_level(logging.DEBUG, logger=_LOGGER.name)
+def _capture(caplog, monkeypatch):
+    # A full-suite run installs DuplicateFilter on shared handlers. Fresh logger
+    # identities prevent earlier cases from rewriting this policy assertion.
+    logger = logging.getLogger(f"tests.background_failure_policy.{uuid4().hex}")
+    monkeypatch.setattr(sys.modules[__name__], "_LOGGER", logger)
+    caplog.set_level(logging.DEBUG, logger=logger.name)
 
 
 # --- rendering --------------------------------------------------------------
@@ -370,3 +376,20 @@ def test_detail_keeps_the_message_out_of_every_record(
     assert records[-1].levelno == logging.ERROR
     assert not records[-1].exc_info
     assert "error_class=" in records[-1].getMessage()
+
+
+def test_capture_does_not_inherit_other_policy_tests_duplicate_history(caplog):
+    from reflexio.cli.log_format import DuplicateFilter
+
+    message = "event=worker_failed scope=worker:org-1 org_id=o"
+    duplicate_filter = DuplicateFilter(window_seconds=0)
+    duplicate_filter._suppressed[
+        ("tests.background_failure_policy", "event=%s scope=%s%s%s")
+    ] = 6
+    _LOGGER.addFilter(duplicate_filter)
+    try:
+        record = _report(caplog, _raised(ValueError("bad row")))
+        assert record.getMessage() == message
+        assert record.exc_info and record.exc_info[1].args == ("bad row",)
+    finally:
+        _LOGGER.removeFilter(duplicate_filter)
