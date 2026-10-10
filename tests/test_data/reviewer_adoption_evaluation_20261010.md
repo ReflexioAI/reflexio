@@ -507,3 +507,63 @@ reviewer and production provider remain unchanged; no activation occurred.
 - Diagnostic driver byte SHA-256: `7745f0d3edc83664173cbe22e2542875f67796d273e5e373e0f2184cabe5331e`.
 - Stopped report byte SHA-256: `e89959c4ce5bb25f5795cb488e83eac7cb8b489b157bfd3638384e0420a41151`.
 - Provider log byte SHA-256: `81290dd1a8f8fe9352ef1c2c7b5b3cde6445d0211b7b3d15410ecc4a94cc2278`.
+
+## Task-local policy and explicit reasoning: incomplete v1.15 diagnostic
+
+Inactive v1.15 narrows configured-value guidance to the current task, forbids
+carrying a historical numeric choice into later sessions, and separates observed
+acknowledgment from its necessity or claimed benefit. The comparison additionally
+sets GLM-5.2 `high` reasoning and 8192 output tokens for both arms. A real outbound
+HTTP-body/structured-response probe verified this inference path. This compound
+policy/profile experiment cannot isolate a wording effect from the prior
+v1.14 default-profile run. Production's active v1.3 and provider remain unchanged.
+
+The same five frozen priority cases were scheduled for five serial alternating
+repeats (50 outputs), with temperature 0.7, no seed override, no fallback and no
+outer transport retry. The run stopped on the first case after three final
+outputs: two candidate and one baseline. Both candidate decisions/reason codes
+matched the original oracle; baseline decision matched but its reason code did
+not. Final reports contain zero reviewer errors and zero measurement errors.
+One additional baseline request was interrupted, produced no decision and has an
+incomplete-observation checkpoint. It is not a successful or failed model answer.
+
+Two independent semantic audits found the first candidate's content and trigger
+preserved the useful correction and removed the unsupported continuation,
+acknowledgment requirement and emotional-benefit claim. Its saved rationale,
+however, remained ambiguous about chronology: it can imply a further user report
+after the final recommendation, where none is retained. A narrower reading is
+possible, so this is an unverified survivor rather than a definitive fabricated
+event. The second candidate cleared semantic audit. Thus one candidate is grounded,
+one is unverified and none is classified as definitively unsafe. All eight exact
+supporting excerpts and retained references match their own frozen source units;
+provenance did not resolve the first rationale's ambiguity. It cannot count as a
+safe qualification result; no frozen oracle was changed to fit the output.
+The experiment remains unqualified, and the other four priority cases, broader
+development/private gates, untouched holdout and staging pipeline were not run.
+
+Every completed call verified its initial and repair settings before dispatch
+and retained complete lifecycle, timing, usage and cost observations. The two
+candidate outputs consumed three provider requests, including one successful
+parse repair; one initial response used 8192 output tokens. Token-limit equality
+alone does not prove truncation. Recorded candidate logical wall time totaled
+193.080 seconds and estimated cost $0.080027; the single baseline output used one
+request, no repair, 32.436 seconds and $0.016721. These unequal small samples are
+not a general latency/cost comparison, and exclude the interrupted request and
+any unobserved charges. Repair overhead is retained rather than hidden behind
+zero final-call errors.
+
+Implementation gates: 501 affected OSS tests and 19 enterprise replay tests
+passed, plus Ruff and Pyright. Independent correctness, privacy, verification
+and policy/docs review cleared P0/P1 and reverified two metrics P2 fixes: default
+repair token-limit drift and falsely complete observations without timing/usage.
+The four OSS installed-artifact checks passed at the implementation head.
+These checks establish implementation readiness, not semantic qualification.
+The 68-case corpus and 28-case holdout hashes remain unchanged and the holdout
+has not been called. Customer evidence and raw results remain owner-only.
+
+- Launch enterprise source: `0008e83830a451fa786dead9307d65a4be95b149`.
+- Launch OSS source: `ffe5470c8de8af707d73a240ca9587215496538e`.
+- Driver byte SHA-256: `8f65c1bc1ec3a3a8ac7f696c4645cb4670b7ab67632bcb882a80a5baefe1fdda`.
+- Probe receipt byte SHA-256: `e7dad71a3f417775ab0c415c2d0b575d0cc009dd0015fe9b0dede9d10d9a2247`.
+- Stopped bundle byte SHA-256: `2eda7d0bd8e3a62dd501ab81ecafead40997449c20c47e3253c72771b75c37d4`.
+- Private log byte SHA-256: `569ab271ec6235c87c384264b78268793b582de8f9d1dfe62d7e24fe6d4d00f1`.
