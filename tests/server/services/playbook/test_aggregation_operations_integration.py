@@ -727,3 +727,48 @@ def test_deleting_purged_current_skeleton_preserves_fresh_operation(storage, run
         storage.get_playbook_aggregation_operation(operation.operation_id).status
         == "succeeded"
     )
+
+
+@pytest.mark.parametrize("finalization_fails", [False, True])
+def test_explicit_finalization_does_not_reset_incremental_failure_scope(
+    storage, monkeypatch, finalization_fails
+):
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from reflexio.server import background_work
+    from reflexio.server.services.playbook import aggregation_operations as executor
+    from reflexio.server.services.playbook.aggregation_scheduler import (
+        _FinalizationReportedError,
+    )
+
+    storage.submit_playbook_aggregation_operation("finalize-recovery", "v1")
+    context = MagicMock(storage=storage, org_id="operations", configurator=MagicMock())
+    context.configurator.get_config.return_value.user_playbook_extractor_config = (
+        SimpleNamespace(aggregation_config=SimpleNamespace(min_cluster_size=1))
+    )
+    incremental = "playbook-aggregation-finalize:operations:project:v1"
+    explicit = "playbook-aggregation-operation-finalize:operations:project:v1"
+    streak = (1, 1.0, 1.0)
+    monkeypatch.setattr(
+        background_work, "_streaks", {incremental: streak, explicit: streak}
+    )
+    monkeypatch.setattr(background_work, "_classifier", lambda _exc: True)
+    monkeypatch.setattr(background_work, "_monotonic", lambda: 2.0)
+    if finalization_fails:
+        monkeypatch.setattr(
+            storage,
+            "finish_playbook_aggregation_claim",
+            MagicMock(side_effect=RuntimeError("finalization unavailable")),
+        )
+        with pytest.raises(_FinalizationReportedError):
+            executor.run_explicit_operation(
+                context, owner="worker", project_id="project"
+            )
+        assert background_work._streaks[explicit][0] == 2
+    else:
+        assert executor.run_explicit_operation(
+            context, owner="worker", project_id="project"
+        )
+        assert explicit not in background_work._streaks
+    assert background_work._streaks[incremental] == streak
