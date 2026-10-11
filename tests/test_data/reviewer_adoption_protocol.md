@@ -7,6 +7,17 @@ loss or an unsafe saved rule.
 
 ## Frozen coverage and scoring
 
+Inactive v1.22 prospectively clarifies two boundaries exposed by the stopped
+v1.21 MiniMax comparison. Unsupported claimed harm/delay is causal before
+speculation; removing that claim does not relabel its original defect. Reusing a
+task parameter requires explicit current-task assignment/availability in both
+content and trigger. Positive conditional use does not imply a no-reasking ban.
+Direct own-source restrictions and verified unnecessary reask/correction remain
+valid support; fatal gates and existing useful-core/subtraction rules are unchanged.
+Retain all prior trials and the unchanged five-case oracle, freeze a new profile,
+and require every candidate's semantic pass before the next call. This is a
+prospective protocol, not a qualification result or default activation.
+
 `reviewer_generalization_cases.json` separates development and held-out cases.
 It adds task-scoped unseen-artifact versus absence controls, supported multi-step
 workflows, safe subtraction, agent-controlled responses to tool failures,

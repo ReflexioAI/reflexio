@@ -67,7 +67,7 @@ call was interrupted with incomplete observations. Earlier requested-model
 labels do not establish the actual serving identity.
 
 Inactive v1.21 removes presence/absence explanations in favor of claim-level
-support judgments. It has no fresh qualification result yet. Evaluation now
+support judgments. Its fresh failed comparison is recorded above. Evaluation now
 requires returned identity observations for initial and repair calls, and
 future trials must stop on an unverified semantic verdict before further calls.
 Production evidence currently verifies the requested MiniMax-M3 reviewer route,
