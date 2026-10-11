@@ -174,3 +174,42 @@ pipeline remain subsequent gates. This experiment cannot activate a replacement.
 
 Supplemental boundary file SHA-256: `a9cbd9ed7afd6899f8c11691e30147e4926e49aa76765401c9b6df54ff5e11aa`. Its oracle must be independently
 reviewed before calls; the original corpus/holdout remain byte-identical.
+
+
+### Preregistered v1.19 saved-support-basis experiment (2026-10-11)
+
+Inactive v1.19 changes only the instructions for saved rationale and reason/notes.
+Rationale states the source-backed instruction, correction, limitation, current
+parameter or task prerequisite. Notes diagnose the removed claim and retained
+rule. Neither narrates historical agent application/execution. Verified actions
+still support content/trigger; these instructions must not remove supported
+workflow actions or reject merely announced-but-explicitly-authorized procedures.
+
+Before calls, independently review the three supplemental development oracles in
+`reviewer_saved_basis_cases.json`: two announced-only setup cases in separate
+domains, and a setup with an explicit successful action result. All require
+revision preserving explicit recurring input collection/use while removing an
+unsupported no-clarification prohibition. Their reason labels are deliberately
+unscored: this phase isolates decision/core preservation and saved-field grounding,
+not an exact reason-code boundary. Private oracle v2 still scores exact reasons.
+The original 68-case corpus, holdout, oracle and stopped reports remain unchanged.
+Supplemental fixture SHA-256:
+`06a48ca1c081f0028f1d0a52cd5d1ae64cf55cfcf4122d32f87c94e9a6bf5a8d`.
+
+Run three serial alternating repeats per arm per supplemental case against v1.3
+(18 expected outputs), with equal GLM-5.2 high/enabled/8192/.7, no fallback, seed
+override or outer retries. Check complete both-arm counts and measurements after
+each six-output case block; stop before the next block/private phase on failure.
+Require independently grounded content/trigger/rationale/reason-notes and exact
+own-source excerpts, preservation of authorized future actions, and no execution
+claim from an announcement or mere parameter supply.
+
+Only after all three controls clear, compare the same five private oracle-v2
+priority cases with five repeats per arm (50 expected outputs), now placing the
+previously failing setup case FIRST, then retail, absence, current-task parameter,
+and unseen artifact. Serial alternating arm order and per-output classification/
+measurement gates remain; stop on unsafe/unverified saved guidance. Oracle v2 SHA:
+`e97e913d4df0492090d7f3bf14351ab301ec3155855d99667fef2a952eff3fe4`.
+Drivers pin source/inputs and boundary receipts before private calls. Broader
+qualification, unchanged holdout, production-provider compatibility and staging
+remain subsequent gates; no activation follows from this focused experiment.

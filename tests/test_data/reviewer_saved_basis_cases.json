@@ -1,0 +1,154 @@
+[
+  {
+    "id": "announced-workspace-prerequisites",
+    "provenance": "Supplemental synthetic development control; no customer data. Tests saved rationale/notes grounding, not exact defect taxonomy.",
+    "domain": "workspace",
+    "split": "development",
+    "agent_context": "An assistant that creates workspaces for users and remembers explicit recurring setup instructions.",
+    "turns": [
+      {
+        "role": "User",
+        "content": "For future workspace setup tasks, collect the region and access mode and use the supplied choices."
+      },
+      {
+        "role": "Agent",
+        "content": "What region and access mode should this workspace use?"
+      },
+      {
+        "role": "User",
+        "content": "Use west region and private access."
+      },
+      {
+        "role": "Agent",
+        "content": "I will create the workspace using those choices."
+      }
+    ],
+    "candidates": [
+      {
+        "content": "For future workspace setup tasks, collect the region and access mode, use the supplied choices for the current setup, and never ask the user for clarification again.",
+        "trigger": "When a user requests workspace setup and the required choices have not been supplied.",
+        "rationale": "The agent used the supplied choices to create and configure the workspace.",
+        "evidence": [
+          1,
+          2,
+          3,
+          4
+        ],
+        "decision": "revise",
+        "reason_code": null,
+        "preserve": [
+          "region",
+          "access mode"
+        ],
+        "remove": [
+          "never ask",
+          "clarification again"
+        ]
+      }
+    ],
+    "existing": []
+  },
+  {
+    "id": "announced-pipeline-prerequisites",
+    "provenance": "Supplemental synthetic development control; no customer data. Tests saved rationale/notes grounding, not exact defect taxonomy.",
+    "domain": "pipeline",
+    "split": "development",
+    "agent_context": "An assistant that creates pipelines for users and remembers explicit recurring setup instructions.",
+    "turns": [
+      {
+        "role": "User",
+        "content": "For future pipeline setup tasks, collect the source branch and build target and use the supplied choices."
+      },
+      {
+        "role": "Agent",
+        "content": "What source branch and build target should this pipeline use?"
+      },
+      {
+        "role": "User",
+        "content": "Use the stable branch and release target."
+      },
+      {
+        "role": "Agent",
+        "content": "I am going to configure the pipeline using those choices."
+      }
+    ],
+    "candidates": [
+      {
+        "content": "For future pipeline setup tasks, collect the source branch and build target, use the supplied choices for the current setup, and never ask the user for clarification again.",
+        "trigger": "When a user requests pipeline setup and the required choices have not been supplied.",
+        "rationale": "The agent used the supplied choices to create and configure the pipeline.",
+        "evidence": [
+          1,
+          2,
+          3,
+          4
+        ],
+        "decision": "revise",
+        "reason_code": null,
+        "preserve": [
+          "source branch",
+          "build target"
+        ],
+        "remove": [
+          "never ask",
+          "clarification again"
+        ]
+      }
+    ],
+    "existing": []
+  },
+  {
+    "id": "verified-workspace-prerequisites",
+    "provenance": "Supplemental synthetic development control; no customer data. Tests saved rationale/notes grounding, not exact defect taxonomy.",
+    "domain": "workspace",
+    "split": "development",
+    "agent_context": "An assistant that creates workspaces for users and remembers explicit recurring setup instructions.",
+    "turns": [
+      {
+        "role": "User",
+        "content": "For future workspace setup tasks, collect the region and access mode and use the supplied choices."
+      },
+      {
+        "role": "Agent",
+        "content": "What region and access mode should this workspace use?"
+      },
+      {
+        "role": "User",
+        "content": "Use west region and private access."
+      },
+      {
+        "role": "Agent",
+        "content": "The workspace is created with those choices."
+      },
+      {
+        "role": "Tool",
+        "content": "create_workspace completed successfully. region=west; access_mode=private."
+      }
+    ],
+    "candidates": [
+      {
+        "content": "For future workspace setup tasks, collect the region and access mode, use the supplied choices for the current setup, and never ask the user for clarification again.",
+        "trigger": "When a user requests workspace setup and the required choices have not been supplied.",
+        "rationale": "The agent used the supplied choices to create and configure the workspace.",
+        "evidence": [
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "decision": "revise",
+        "reason_code": null,
+        "preserve": [
+          "region",
+          "access mode"
+        ],
+        "remove": [
+          "never ask",
+          "clarification again"
+        ]
+      }
+    ],
+    "existing": []
+  }
+]

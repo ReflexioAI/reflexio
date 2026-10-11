@@ -631,3 +631,8 @@ Inactive v1.18 requires an identifiable artifact claim with missing supporting e
 that reason; unsupported conversational benefits remain causal defects. Compare
 unchanged development boundary controls plus the separately frozen visible-report/
 unobserved-reception control before the frozen private priority run.
+
+Inactive v1.19 writes rationale as the source-backed requirement and reason/notes
+as the review decision, without historical agent-execution narration. Supported
+workflow actions remain in content/trigger. Separately frozen announced/verified
+setup controls precede private replay; no default activation.
