@@ -353,6 +353,7 @@ def test_turn_source_survives_fixture_loading_into_real_reviewer_payload(
         "1.21.0",
         "1.22.0",
         "1.23.0",
+        "1.24.0",
     ],
 )
 def test_candidate_version_selection_preserves_baseline_and_report_identity(
@@ -427,6 +428,7 @@ def test_candidate_version_selection_preserves_baseline_and_report_identity(
             "1.21.0",
             "1.22.0",
             "1.23.0",
+            "1.24.0",
         )
     )
     changed_case = case.model_copy(deep=True)

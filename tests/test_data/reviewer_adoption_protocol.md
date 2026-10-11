@@ -7,6 +7,38 @@ loss or an unsafe saved rule.
 
 ## Frozen coverage and scoring
 
+### Adoption objective and autonomous iteration
+
+Replace v1.3 only after the replacement fixes known survival, reason-precedence
+and saved-grounding failures, preserves valid instructions, and clears independent
+development/broader coverage, untouched holdout, production-model compatibility,
+staging, local Codex P0/P1 review and CI. A higher aggregate score cannot offset
+a supported-core loss, invented guidance or unverified result. Preserve failed
+trials and frozen labels rather than resuming, relabeling or weakening them.
+
+Inactive v1.24 consolidates useful-core eligibility into one rule before generic
+rejection. It explicitly admits the original task-specific supplied-parameter-use
+core under mandatory current-task availability narrowing, while rejecting an
+inferred standing numerical preference or unrelated replacement action. Generic
+rejection cannot override an already eligible conditional survivor. Fatal gates,
+own-source grounding, whole-workflow preservation, saved-notes limits and original
+defect precedence remain unchanged. No default activation is included.
+
+Preregister a fresh development preflight with the unchanged 17 cases plus the
+existing development `generic-summary` control: 18 cases and three repetitions
+per arm (108 outputs). Put the failed conditional-salvage control first, then
+generic-summary, the five clean positives, clean task parameter, direct no-reasking,
+standing value/unrelated replacement/tool-injection controls and prior contrasts.
+This ordering is a development diagnosis chosen before any v1.24 outputs, not
+holdout or comparative-improvement evidence. Freeze exact order and source/input/
+prompt/settings identities in a new private protocol. Use the same MiniMax-M3,
+0.7/8192/no explicit effort, baseline-first diagnostic order, no fallback/outer
+retry, reported response-model verification and per-candidate independent semantic
+stop gates as v1.23. Only a full pass permits the fresh alternating private
+comparison; the failed v1.23 reports, all input labels and holdout stay unchanged.
+
+### Preserved v1.23 development trial
+
 Inactive v1.23 separates fatal gates, identification of the original supported
 core, permitted subtraction/conditional narrowing, survival decision, and
 classification of the original removed defect. Future current-task availability

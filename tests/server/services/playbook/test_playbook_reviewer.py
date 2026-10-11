@@ -1276,6 +1276,7 @@ def test_evidence_first_survivor_requires_excerpts_and_final_evidence_ownership(
         "1.21.0",
         "1.22.0",
         "1.23.0",
+        "1.24.0",
     ],
 )
 def test_evidence_first_policy_is_separate_and_excerpts_are_not_persisted(
