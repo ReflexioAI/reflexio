@@ -37,6 +37,46 @@ retry, reported response-model verification and per-candidate independent semant
 stop gates as v1.23. Only a full pass permits the fresh alternating private
 comparison; the failed v1.23 reports, all input labels and holdout stay unchanged.
 
+### Prospective v1.28 shorter single-call reassessment
+
+The failed original-only mechanism probe does not justify another runtime stage.
+Inactive v1.28 instead consolidates the existing policy into one single-call
+procedure, removing repetitive prose/worked examples while retaining the assessed
+schema, all eleven original defect priorities and existing application guards.
+Independent architecture/necessity and adversarial/verification owners reviewed
+the actual prompt bytes for policy equivalence before any v1.28 calls.
+
+A standing value binding/default must be asserted by the original itself; an
+operation name/modifier is not a setting merely because any action could be
+represented by a flag/enum. Explicit future instructions remain eligible across
+kinds. Retain original task-input cores, complete procedures and collection
+branches; narrow unsupported carryover only, with current-task assignment/
+availability in content and trigger. Preserve source ownership, fatal gates,
+exact failed-repetition/no-reasking boundaries, grounded future defaults and
+saved-field limits. No classifier stage, public fields, migration or activation.
+
+Freeze the same unchanged 22 development controls and three paired repetitions:
+66 pairs / 132 logical arm outputs. Order before new outputs: supplied-input
+salvage first, unrelated operation second, standing default third, four newer
+photo-resize controls next, generic control, five existing positives, remaining
+three survival controls and remaining original contrasts in frozen order.
+Preserve every prior label, failed report, prompt file and model-unseen holdout.
+The short kind probe remains failed; full reviewer survival, grounding and code
+precedence must be tested afresh, not inferred from its twelve passing receipts.
+
+Use identical MiniMax-M3/.7/8192/no explicit effort settings, no seed override,
+fallback, outer retry or resume. Pin clean sources, driver, prompt, input/oracle
+hashes, preceding v1.27 failure and failed kind-probe manifest before calls.
+Observe every initial/repair provider request and serving identity. After each
+pair require complete both-arm measurements, correct replacement decisions/scored
+labels and independent hash-bound full semantic audit of assessment, retained
+core and all saved fields. Baseline semantic faults remain diagnostic; require
+all 66 replacement semantic passes. Fixed baseline-first order is diagnostic,
+not unbiased comparative improvement. Only then freeze the alternating private
+comparison; broader/healthy coverage, unchanged holdout, every reachable production
+model, faithful storage flows/staging, local Codex P0/P1 and CI remain later gates.
+Default remains v1.3; a shorter prompt is not qualification evidence.
+
 ### Preserved original-only kind hypothesis failure
 
 Before another runtime stage, test a short classifier on eight unchanged

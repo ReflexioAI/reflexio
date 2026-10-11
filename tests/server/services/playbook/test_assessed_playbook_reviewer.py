@@ -88,7 +88,7 @@ def _decide(response: AssessedReviewOutput, *, version: str = "1.26.0"):
     return reviewer, client, candidates, result
 
 
-@pytest.mark.parametrize("version", ["1.26.0", "1.27.0"])
+@pytest.mark.parametrize("version", ["1.26.0", "1.27.0", "1.28.0"])
 def test_original_conditional_core_is_preserved_without_persisting_assessment(version):
     reviewer, client, candidates, outcome = _decide(
         AssessedReviewOutput.model_validate(_response()), version=version
@@ -436,7 +436,7 @@ def test_original_core_consistency_contract(changes, valid):
 
 @pytest.mark.integration
 @pytest.mark.parametrize("report_only", [True, False])
-@pytest.mark.parametrize("version", ["1.3.0", "1.26.0"])
+@pytest.mark.parametrize("version", ["1.3.0", "1.26.0", "1.28.0"])
 def test_stored_review_uses_real_parser_and_only_projects_approved_fields(
     tmp_path, report_only, version
 ):
@@ -474,7 +474,7 @@ def test_stored_review_uses_real_parser_and_only_projects_approved_fields(
                 f"Grounded evidence {i}."
             )
         responses.append(
-            raw if version == "1.26.0" else {"decisions": raw["decisions"]}
+            raw if version in ("1.26.0", "1.28.0") else {"decisions": raw["decisions"]}
         )
     reviewer, transport, calls = _real_reviewer(responses)
     service = _service(storage)

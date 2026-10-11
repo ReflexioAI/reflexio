@@ -1,5 +1,6 @@
 """Evaluation accounting must not mistake call errors for rejections."""
 
+import hashlib
 import json
 from pathlib import Path
 from typing import cast
@@ -361,6 +362,7 @@ def test_turn_source_survives_fixture_loading_into_real_reviewer_payload(
         "1.25.0",
         "1.26.0",
         "1.27.0",
+        "1.28.0",
     ],
 )
 def test_candidate_version_selection_preserves_baseline_and_report_identity(
@@ -442,7 +444,7 @@ def test_candidate_version_selection_preserves_baseline_and_report_identity(
     )
     rows = report["rows"]
     assert rows[0]["original_assessments"] == []
-    if candidate_version in ("1.26.0", "1.27.0"):
+    if candidate_version in ("1.26.0", "1.27.0", "1.28.0"):
         assert rows[1]["original_assessments"] == [
             {
                 "id": "C1",
@@ -464,38 +466,49 @@ def test_candidate_version_selection_preserves_baseline_and_report_identity(
         report["prompt_identities"][candidate_version]["active_version"]
         == candidate_version
     )
-    prompts = [
-        str(call.args[0])
-        for call in cast(MagicMock, client.generate_chat_response).call_args_list
-    ]
-    assert ("**Independent lessons:**" in prompts[1]) == (
-        candidate_version
-        in (
-            "1.5.0",
-            "1.6.0",
-            "1.7.0",
-            "1.8.0",
-            "1.9.0",
-            "1.10.0",
-            "1.11.0",
-            "1.12.0",
-            "1.13.0",
-            "1.14.0",
-            "1.15.0",
-            "1.16.0",
-            "1.17.0",
-            "1.18.0",
-            "1.19.0",
-            "1.20.0",
-            "1.21.0",
-            "1.22.0",
-            "1.23.0",
-            "1.24.0",
-            "1.25.0",
-            "1.26.0",
-            "1.27.0",
+    if candidate_version in ("1.26.0", "1.27.0", "1.28.0"):
+        messages = (
+            cast(MagicMock, client.generate_chat_response).call_args_list[1].args[0]
         )
-    )
+        assert messages[0]["role"] == "system"
+        assert (
+            hashlib.sha256(messages[0]["content"].encode()).hexdigest()
+            == report["prompt_identities"][candidate_version]["template_content_digest"]
+        )
+    else:
+        prompts = [
+            str(call.args[0])
+            for call in cast(MagicMock, client.generate_chat_response).call_args_list
+        ]
+        assert ("**Independent lessons:**" in prompts[1]) == (
+            candidate_version
+            in (
+                "1.5.0",
+                "1.6.0",
+                "1.7.0",
+                "1.8.0",
+                "1.9.0",
+                "1.10.0",
+                "1.11.0",
+                "1.12.0",
+                "1.13.0",
+                "1.14.0",
+                "1.15.0",
+                "1.16.0",
+                "1.17.0",
+                "1.18.0",
+                "1.19.0",
+                "1.20.0",
+                "1.21.0",
+                "1.22.0",
+                "1.23.0",
+                "1.24.0",
+                "1.25.0",
+                "1.26.0",
+                "1.27.0",
+                "1.28.0",
+            )
+        )
     changed_case = case.model_copy(deep=True)
     changed_case.turns[0].content += " Changed evidence."
     changed = evaluate([changed_case], client, 1, candidate_version=candidate_version)
