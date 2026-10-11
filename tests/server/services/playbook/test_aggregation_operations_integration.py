@@ -639,3 +639,42 @@ def test_old_worker_failure_and_finish_cannot_touch_replacement(storage):
     storage.complete_playbook_aggregation_operation(
         operation.operation_id, replacement, {}
     )
+
+
+@pytest.mark.parametrize("running", [False, True])
+def test_deleting_purged_current_skeleton_preserves_fresh_operation(storage, running):
+    source = _seed_erasure_source(storage)
+    assert storage.purge_content(
+        entity_type="user_playbook", entity_id=str(source.user_playbook_id)
+    )
+    operation = storage.submit_playbook_aggregation_operation(
+        "after-purge-delete", "v1"
+    )
+    claim = claim_operation(storage, operation) if running else None
+    assert not storage.capture_playbook_aggregation_rerun_snapshot(
+        "v1", limit=10
+    ).user_playbooks
+    before = storage.get_playbook_aggregation_operation(operation.operation_id)
+    state_before = storage.conn.execute(
+        "SELECT state_version FROM playbook_aggregation_state WHERE agent_version='v1'"
+    ).fetchone()[0]
+    storage.conn.execute(
+        "DELETE FROM user_playbooks WHERE user_playbook_id=?",
+        (source.user_playbook_id,),
+    )
+    storage.conn.commit()
+    assert storage.get_playbook_aggregation_operation(operation.operation_id) == before
+    assert (
+        storage.conn.execute(
+            "SELECT state_version FROM playbook_aggregation_state WHERE agent_version='v1'"
+        ).fetchone()[0]
+        == state_before
+    )
+    if claim is None:
+        claim = claim_operation(storage, operation)
+    assert storage.validate_playbook_aggregation_claim(claim)
+    storage.complete_playbook_aggregation_operation(operation.operation_id, claim, {})
+    assert (
+        storage.get_playbook_aggregation_operation(operation.operation_id).status
+        == "succeeded"
+    )

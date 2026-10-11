@@ -289,6 +289,8 @@ Retiring or moving a current input invalidates the captured claim through the
 state-version fence; the operation can recover with a fresh claim. Removing an
 already excluded historical tombstone does not cancel unrelated work. These
 fences use database state rather than application-clock comparisons.
+Deleting an already purged empty source skeleton also leaves fresh operations
+unchanged, since those sources are excluded from their input snapshots.
 The still-owned worker records its retry and releases its lease after input
 state changes, preserving the newer scheduling state instead of waiting for
 lease expiry. A replaced worker cannot change the new worker's receipt or lease.

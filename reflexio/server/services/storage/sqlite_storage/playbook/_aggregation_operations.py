@@ -36,7 +36,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_aggregation_operation_active
     WHERE status IN ('queued','running','retrying');
 DROP TRIGGER IF EXISTS cancel_erased_aggregation_operations;
 CREATE TRIGGER cancel_erased_aggregation_operations BEFORE DELETE ON user_playbooks
-WHEN OLD.status IS NULL
+WHEN OLD.status IS NULL AND trim(OLD.content)<>''
 BEGIN
  UPDATE playbook_aggregation_state SET state_version=state_version+1,pending=1
  WHERE agent_version=OLD.agent_version AND EXISTS (
