@@ -5,6 +5,41 @@ production change is justified by the completed measurements below.
 
 ## Receipt-bound replay and model identity diagnostic — 2026-10-11
 
+### Fresh v1.22 MiniMax comparison: supported core lost
+
+The separately preregistered v1.22 comparison also stopped after one pair.
+Candidate output was `reject/unsupported_evidence`; the unchanged original
+oracle requires `revise/unsupported_causality`. Independent original-first audit
+found the supported conditional parameter-use core was lost. Requiring a value
+to be available for a future task is a scope condition, not an assertion that
+the same value historically carried between tasks. The persisted reject reason
+also borrowed supplemental chronology outside the candidate's own cited units.
+Semantic audit: zero pass, one fail. No survivor excerpts were emitted, so the
+reject wire contract passed while the semantic adoption gate failed.
+
+Both calls had complete reported MiniMax-M3 identity/timing/usage observations,
+one request each, zero repairs, and no final transport or measurement error.
+Baseline: 23.279 seconds, 3675 input/3834 output tokens, estimated $0.005673.
+Candidate: 44.336 seconds, 5930 input/4147 output tokens, estimated $0.007656.
+The two finalized reports and original classification error are preserved;
+there is no pending call. No semantic verdict was requested after the
+classification halt. No later priority case, broader coverage, holdout or
+staging qualification was run. Active/default remains v1.3.0.
+
+- Enterprise source: `c175afb6cf9eaad6aacf8e0e6095b01a5fc3fec7`.
+- OSS source: `e133cf2a32153c5d20350a8426edd8448341d338`.
+- Candidate prompt byte SHA-256: `7434849b5a7b713c1fce82445f9944300553ed6b96bdb0d5d208291ec7bf2d6f`.
+- Protocol byte SHA-256: `e671ee64574b468508d5023e29dc04a55abe8d6738b2c4d39dec448d0b06d072`.
+- Manifest byte SHA-256: `c33a540547d9907aada36f66d4cf5825f9173290b1d30746a8c5357630844940`.
+- Independent semantic audit byte SHA-256: `a3348ff4306558edd46b20944ad9c2290b2eb9c0d5f2ff82dd705584e8c71628`.
+
+The v1.21 explanation refinement did not establish correct causal labels or
+task scope; tightening v1.22 did not preserve the supported core. Neither
+candidate is qualified. Further changes need to separate conditional future
+scope from historical availability and causal classification from revision,
+then pass useful-core and unsupported-prohibition controls before another
+private comparison. Adding restrictions alone has not demonstrated improvement.
+
 ### Fresh v1.21 MiniMax comparison: stopped, unqualified
 
 A separately preregistered five-case, five-repeat comparison stopped after its
