@@ -38,8 +38,14 @@ DEFAULT_CASES = (
 )
 
 
+def _require_private_artifact_support() -> None:
+    if os.name != "posix" or not callable(getattr(os, "fchmod", None)):
+        raise RuntimeError("Private qualification artifacts require POSIX with fchmod")
+
+
 def _write_private_text(path: Path, text: str) -> None:
     """Keep raw revision and supporting-source artifacts owner-readable only."""
+    _require_private_artifact_support()
     descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
         os.fchmod(stream.fileno(), 0o600)
@@ -153,6 +159,8 @@ def evaluate(
     max_tokens: int | None = None,
     reasoning_effort: Literal["high", "none"] | None = None,
 ) -> dict:
+    if checkpoint is not None:
+        _require_private_artifact_support()
     if candidate_version not in (
         "1.4.0",
         "1.5.0",

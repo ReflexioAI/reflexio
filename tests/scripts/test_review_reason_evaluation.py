@@ -441,3 +441,30 @@ def test_report_writer_restricts_new_and_existing_files(tmp_path):
     _write_private_text(report, "second")
     assert stat.S_IMODE(report.stat().st_mode) == 0o600
     assert report.read_text() == "second"
+
+
+@pytest.mark.parametrize("unsupported", ["non_posix", "missing_fchmod"])
+@pytest.mark.parametrize("entrypoint", ["writer", "evaluate"])
+def test_private_artifacts_reject_unsupported_platform_before_calls_or_truncation(
+    tmp_path, monkeypatch, unsupported, entrypoint
+):
+    from types import SimpleNamespace
+
+    report = tmp_path / "existing.json"
+    report.write_bytes(b"preserved private receipt")
+    cases = load_cases(DEFAULT_CASES)[:1]
+    client = MagicMock()
+    client.config = LiteLLMConfig(model="test-model", fallback_models=[])
+    platform_os = SimpleNamespace(**vars(evaluation.os))
+    if unsupported == "non_posix":
+        platform_os.name = "nt"
+    else:
+        del platform_os.fchmod
+    monkeypatch.setattr(evaluation, "os", platform_os)
+    with pytest.raises(RuntimeError, match="POSIX.*fchmod"):
+        if entrypoint == "writer":
+            evaluation._write_private_text(report, "replacement")
+        else:
+            evaluate(cases, client, 1, checkpoint=report)
+    client.generate_chat_response.assert_not_called()
+    assert report.read_bytes() == b"preserved private receipt"

@@ -491,6 +491,11 @@ It becomes `Request.source` and reaches the reviewer's own-evidence metadata,
 so a generated/internal `User` turn can retain its producer provenance. Omitted
 `source` defaults to an empty string for existing fixtures; role alone does not
 establish direct user origin.
+Private qualification artifacts require POSIX with `fchmod` support. The CLI
+and evaluations with a checkpoint reject unsupported platforms before provider
+calls or opening/truncating reports. In-memory evaluation without a checkpoint
+does not require that filesystem capability. Unsupported-platform behavior is
+covered by simulated tests; native Windows execution has not been qualified.
 The inactive v1.7.0 candidate clarifies unavailable artifact claims versus using
 record omissions as proof of absence. It also keeps internal-status proof of
 value distinct. It failed a workflow preservation control. Inactive v1.8
