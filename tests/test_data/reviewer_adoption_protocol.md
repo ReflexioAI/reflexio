@@ -37,6 +37,52 @@ retry, reported response-model verification and per-candidate independent semant
 stop gates as v1.23. Only a full pass permits the fresh alternating private
 comparison; the failed v1.23 reports, all input labels and holdout stay unchanged.
 
+### Preserved v1.25 result and fresh v1.26 original-rule diagnostic
+
+v1.25 stopped after four paired reports (eight outputs). The conditional-salvage
+case passed all three repetitions and independent semantic audits. The next
+standing-value control failed its first repetition: it invented a conditional
+"use this number when assigned this number" replacement for an original inferred
+standing numerical preference. The final label was speculative, but revision was
+wrong; the frozen decision remains rejection. Three semantic passes and one
+failed decision gate do not qualify the other sixteen controls. All observations
+and reported identities were complete, with no API/parse errors or repair attempts.
+Terminal private manifest SHA-256:
+`6d95d81af4c445e9ee198146d27ff13042c1d03c1ad30bc572e75730a716dbfc`.
+No private/broader/holdout/model-compatibility/staging gate advanced.
+
+Inactive v1.26 adds one internal original-rule assessment per candidate before
+supporting excerpts and decisions. The strict decision response cannot silently
+coerce fatal contradictions or synthesize missing reason codes. It requires a
+JSON-null reason; notes fall back to the validated decision/code. Independent
+semantic audit still covers preserved original notes and revised rationale.
+Code validates assessment/outcome consistency and exact own original spans; it
+cannot prove the model's classification or eligibility judgment is correct.
+The original standing preference cannot be rescued by manufacturing a new
+conditional supplied-parameter action. Eligible standing preferences with explicit
+future support and valid complete procedures must still survive.
+
+Before calls, preregister the unchanged 18 development controls, three paired
+repetitions (108 expected outputs). Place the failed standing-value rejection
+first, conditional salvage second, unrelated-action rejection and generic third
+and fourth, then unchanged positive/workflow/fatal/causal/injection contrasts.
+Retain frozen decisions/reason labels, equal MiniMax-M3/.7/8192 settings, no seed,
+outer retries, fallback or resume. Model identity and every initial/repair request
+must be observed. Runtime's configured fallback behavior is unchanged; this
+single-model diagnostic does not qualify other models or overrides.
+
+After each pair, check complete measurements and candidate decisions/scored
+labels, then require an independent hash-bound semantic verdict before any next
+call. In addition to all saved fields, audit the assessment's ORIGINAL kind/span,
+source-backed core basis and full original-defect inventory. Reject model-invented
+eligibility, duplicate guidance, or replacement actions even if the structural
+validator accepts them. Null reason alone is not semantic qualification.
+Fixed baseline-first ordering is development diagnosis, not an unbiased
+comparative estimate. Only all 54 candidate semantic passes permit the separately
+frozen alternating five-private-case comparison. Broader/healthy coverage, unopened
+holdout, all reachable production model identities/semantics and faithful staging
+remain later gates. Preserve every failed report and oracle; default remains v1.3.
+
 ### Fresh v1.25 worked-contrast diagnostic
 
 The v1.24 preflight stopped on its first pair (two outputs). The candidate chose

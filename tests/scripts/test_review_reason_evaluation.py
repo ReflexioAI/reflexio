@@ -355,10 +355,12 @@ def test_turn_source_survives_fixture_loading_into_real_reviewer_payload(
         "1.23.0",
         "1.24.0",
         "1.25.0",
+        "1.26.0",
     ],
 )
 def test_candidate_version_selection_preserves_baseline_and_report_identity(
     candidate_version,
+    tmp_path,
 ):
     case = next(
         case for case in load_cases(DEFAULT_CASES) if case.id == "positive-preference"
@@ -375,6 +377,39 @@ def test_candidate_version_selection_preserves_baseline_and_report_identity(
     )
 
     def respond(*args, **kwargs):
+        from reflexio.server.services.playbook.components.reviewer import (
+            AssessedReviewOutput,
+        )
+
+        if kwargs["response_format"] is AssessedReviewOutput:
+            payload = json.loads(args[0][1]["content"])
+            return AssessedReviewOutput.model_validate(
+                {
+                    "assessments": [
+                        {
+                            "id": "C1",
+                            "original_rule_kind": "other",
+                            "original_rule_span": payload["candidates"][0]["content"][
+                                :600
+                            ],
+                            "supported_core_basis": "future_instruction",
+                            "defect_codes": [],
+                        }
+                    ],
+                    "supporting_evidence": [
+                        {
+                            "id": "C1",
+                            "excerpts": [
+                                {
+                                    "evidence_id": "C1-E1",
+                                    "text": case.turns[0].content[:600],
+                                }
+                            ],
+                        }
+                    ],
+                    "decisions": [accepted.decisions[0].model_dump(by_alias=True)],
+                }
+            )
         if kwargs["response_format"] is EvidenceFirstReviewOutput:
             return EvidenceFirstReviewOutput(
                 supporting_evidence=[
@@ -393,7 +428,28 @@ def test_candidate_version_selection_preserves_baseline_and_report_identity(
         return accepted
 
     client = observed_client(respond)
-    report = evaluate([case], client, 1, candidate_version=candidate_version)
+    report = evaluate(
+        [case],
+        client,
+        1,
+        candidate_version=candidate_version,
+        checkpoint=tmp_path / "checkpoint.json",
+    )
+    rows = report["rows"]
+    assert rows[0]["original_assessments"] == []
+    if candidate_version == "1.26.0":
+        assert rows[1]["original_assessments"] == [
+            {
+                "id": "C1",
+                "original_rule_kind": "other",
+                "original_rule_span": case.candidates[0].content[:600],
+                "supported_core_basis": "future_instruction",
+                "defect_codes": [],
+            }
+        ]
+    else:
+        assert rows[1]["original_assessments"] == []
+    assert json.loads((tmp_path / "checkpoint.json").read_text())["rows"] == rows
     assert report["errors"] == []
     assert report["measurement_errors"] == []
     assert all(arm["processed"] == 1 for arm in report["summary"].values())
@@ -431,6 +487,7 @@ def test_candidate_version_selection_preserves_baseline_and_report_identity(
             "1.23.0",
             "1.24.0",
             "1.25.0",
+            "1.26.0",
         )
     )
     changed_case = case.model_copy(deep=True)

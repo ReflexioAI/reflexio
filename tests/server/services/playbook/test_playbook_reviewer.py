@@ -15,6 +15,7 @@ from reflexio.models.api_schema.internal_schema import RequestInteractionDataMod
 from reflexio.server.llm.model_defaults import ModelRole
 from reflexio.server.prompt.prompt_manager import PromptManager
 from reflexio.server.services.playbook.components.reviewer import (
+    AssessedReviewOutput,
     CandidateEvidenceUnit,
     CandidateReviewDecision,
     CandidateRevision,
@@ -276,7 +277,11 @@ def _candidate(
     )
 
 
-def _reviewer(response: PlaybookCandidateReviewOutput | EvidenceFirstReviewOutput):
+def _reviewer(
+    response: PlaybookCandidateReviewOutput
+    | EvidenceFirstReviewOutput
+    | AssessedReviewOutput,
+):
     request_context = MagicMock()
     request_context.prompt_manager = PromptManager()
     client = MagicMock()

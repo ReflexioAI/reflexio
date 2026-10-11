@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from dataclasses import dataclass, field, replace
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -288,6 +289,74 @@ class EvidenceFirstReviewOutput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+OriginalDefectCode = Literal[
+    "not_agent_decision",
+    "absence_inference",
+    "unseen_artifact",
+    "internal_status",
+    "unsupported_causality",
+    "speculative",
+    "unsupported_evidence",
+    "redundant",
+    "generic",
+    "late_trigger",
+    "compound",
+]
+# Ordered original-defect precedence; provider array order is not precedence.
+_DEFECT_PRIORITY = get_args(OriginalDefectCode)
+
+
+class OriginalRuleAssessment(BaseModel):
+    """Transient model judgment about the ORIGINAL candidate, not its revision."""
+
+    candidate_id: str = Field(alias="id", min_length=1)
+    original_rule_kind: Literal[
+        "standing_value_preference", "supplied_parameter_use", "other"
+    ]
+    original_rule_span: str = Field(min_length=1, max_length=600)
+    supported_core_basis: Literal[
+        "future_instruction",
+        "necessary_procedure",
+        "correction_or_failure",
+        "supplied_parameter",
+        "none",
+    ]
+    defect_codes: list[OriginalDefectCode] = Field(max_length=len(_DEFECT_PRIORITY))
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+
+class AssessedReviewDecision(BaseModel):
+    """Strict experimental decision: no legacy synthesis or fatal coercion."""
+
+    candidate_id: str = Field(alias="id", min_length=1)
+    decision: Literal["accept", "revise", "reject"]
+    reason_code: PlaybookReviewReasonCode
+    evidence_ids: list[str] = Field(default_factory=list)
+    revision: CandidateRevision | None = None
+    # Required JSON null; the note writer uses the validated code instead.
+    reason: None
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+
+class AssessedReviewOutput(BaseModel):
+    assessments: list[OriginalRuleAssessment]
+    supporting_evidence: list[CandidateSupportingEvidence]
+    decisions: list[AssessedReviewDecision]
+
+    model_config = ConfigDict(extra="forbid")
+
+
+def _candidate_batch_digest(candidates: list[UserPlaybook]) -> str:
+    payload = [candidate.model_dump(mode="json") for candidate in candidates]
+    return hashlib.sha256(
+        json.dumps(
+            payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        ).encode()
+    ).hexdigest()
+
+
 @dataclass(frozen=True)
 class CandidateEvidenceUnit:
     """One validated evidence span exposed through a call-local unit id."""
@@ -313,6 +382,8 @@ class PlaybookReviewOutcome:
     # Only private evaluation artifacts may retain these. apply_decisions never
     # copies them into saved playbooks, notes, or public response models.
     supporting_evidence: list[CandidateSupportingEvidence] = field(default_factory=list)
+    assessments: list[OriginalRuleAssessment] = field(default_factory=list)
+    original_candidates_sha256: str | None = None
 
 
 def _append_review_note(
@@ -548,7 +619,13 @@ class PlaybookCandidateReviewer:
                     )
                 if decision.revision is None:
                     errors.append(f"decisions[{index}] revise requires revision")
-                elif contains_call_local_turn_ref(
+                else:
+                    errors.extend(
+                        f"decisions[{index}].revision.{name} must be nonblank"
+                        for name in ("content", "trigger", "rationale")
+                        if not getattr(decision.revision, name).strip()
+                    )
+                if decision.revision is not None and contains_call_local_turn_ref(
                     decision.revision.content,
                     decision.revision.trigger,
                     decision.revision.rationale,
@@ -624,6 +701,103 @@ class PlaybookCandidateReviewer:
                     f"decisions[{index}] supporting excerpts must belong to final retained evidence"
                 )
         return tuple(errors)
+
+    @staticmethod
+    def _assessed_validation_errors(
+        output: object,
+        units_by_candidate: dict[str, list[CandidateEvidenceUnit]],
+        originals: dict[str, UserPlaybook],
+    ) -> tuple[str, ...]:
+        if not isinstance(output, AssessedReviewOutput):
+            return ("review output has the wrong assessed structured type",)
+        errors: list[str] = []
+        assessments: dict[str, OriginalRuleAssessment] = {}
+        for index, assessment in enumerate(output.assessments):
+            candidate_id = assessment.candidate_id.strip()
+            original = originals.get(candidate_id)
+            if original is None or candidate_id in assessments:
+                errors.append(f"assessments[{index}] has unknown or repeated candidate")
+                continue
+            assessments[candidate_id] = assessment
+            span = assessment.original_rule_span
+            if not span.strip() or not any(
+                span in text for text in (original.content, original.trigger or "")
+            ):
+                errors.append(
+                    f"assessments[{index}] requires an exact nonblank original span"
+                )
+            if (
+                assessment.supported_core_basis == "supplied_parameter"
+                and assessment.original_rule_kind != "supplied_parameter_use"
+            ):
+                errors.append(
+                    f"assessments[{index}] supplied_parameter requires original supplied_parameter_use"
+                )
+            defects = assessment.defect_codes
+            eligible = assessment.supported_core_basis != "none"
+            if len(defects) != len(set(defects)):
+                errors.append(f"assessments[{index}] repeats a defect code")
+            if eligible and "generic" in defects:
+                errors.append(f"assessments[{index}] eligible core forbids generic")
+            if not eligible and (
+                not defects
+                or set(defects).issubset({"late_trigger", "compound", "redundant"})
+            ):
+                errors.append(
+                    f"assessments[{index}] no core requires an ineligibility defect"
+                )
+            if not eligible and "redundant" in defects:
+                errors.append(
+                    f"assessments[{index}] redundant requires an eligible core"
+                )
+        if set(assessments) != set(originals):
+            errors.append("missing original candidate assessments")
+        for index, decision in enumerate(output.decisions):
+            if (
+                decision.reason_code in _FATAL_REASON_CODES
+                and decision.decision != "reject"
+            ):
+                errors.append(f"decisions[{index}] fatal reason_code requires reject")
+            assessment = assessments.get(decision.candidate_id.strip())
+            if assessment is None:
+                errors.append(f"decisions[{index}] lacks own original assessment")
+                continue
+            defects = assessment.defect_codes
+            code = (
+                min(defects, key=_DEFECT_PRIORITY.index)
+                if defects
+                else "grounded_useful"
+            )
+            if decision.reason_code != code:
+                errors.append(
+                    f"decisions[{index}] code must match highest-priority original defect"
+                )
+            eligible = assessment.supported_core_basis != "none"
+            if code in _FATAL_REASON_CODES or not eligible:
+                allowed = {"reject"}
+            elif not defects:
+                allowed = {"accept"}
+            elif "redundant" in defects:
+                allowed = {"revise", "reject"}
+            else:
+                allowed = {"revise"}
+            if decision.decision not in allowed:
+                errors.append(
+                    f"decisions[{index}] decision contradicts original core and defects"
+                )
+        # Do not run legacy normalizers until fatal/assessment consistency passes.
+        if errors:
+            return tuple(errors)
+        evidence_output = EvidenceFirstReviewOutput(
+            supporting_evidence=output.supporting_evidence,
+            decisions=[
+                CandidateReviewDecision.model_validate(item.model_dump(by_alias=True))
+                for item in output.decisions
+            ],
+        )
+        return PlaybookCandidateReviewer._evidence_first_validation_errors(
+            evidence_output, units_by_candidate
+        )
 
     @staticmethod
     def _apply_decisions(
@@ -741,10 +915,15 @@ class PlaybookCandidateReviewer:
         decisions so ``apply_decisions`` never has to rebuild the prompt context
         (an O(window) walk) a second time.
         """
+        # Snapshot before inference: caller mutation cannot change the rule being
+        # assessed, its evidence, or the batch identity used at application.
+        candidates = [candidate.model_copy(deep=True) for candidate in candidates]
+        original_digest = _candidate_batch_digest(candidates)
         if not candidates:
             return PlaybookReviewOutcome(
                 output=PlaybookCandidateReviewOutput(decisions=[]),
                 units_by_candidate={},
+                original_candidates_sha256=original_digest,
             )
         coordinator = current_overflow_coordinator.get()
         if coordinator is not None and len(candidates) > 1:
@@ -856,6 +1035,7 @@ class PlaybookCandidateReviewer:
             )
         units_by_candidate = self._candidate_evidence_units(candidates, prompt_context)
         version = self.request_context.prompt_manager.get_active_version(self.PROMPT_ID)
+        assessed = version == "1.26.0"
         evidence_first = version in {
             "1.14.0",
             "1.15.0",
@@ -869,6 +1049,7 @@ class PlaybookCandidateReviewer:
             "1.23.0",
             "1.24.0",
             "1.25.0",
+            "1.26.0",
         }
         variables = {
             "agent_context_prompt": agent_context,
@@ -888,12 +1069,15 @@ class PlaybookCandidateReviewer:
         )
         messages = [*scope_messages, {"role": "user", "content": prompt}]
         response_format: (
-            type[PlaybookCandidateReviewOutput] | type[EvidenceFirstReviewOutput]
+            type[PlaybookCandidateReviewOutput]
+            | type[EvidenceFirstReviewOutput]
+            | type[AssessedReviewOutput]
         ) = PlaybookCandidateReviewOutput
         validator = self._validation_errors
+        payload: dict[str, Any] = {}
         if evidence_first:
             # Context and transcript text never enter the trusted policy message.
-            payload: dict[str, Any] = dict(variables)
+            payload = dict(variables)
             payload["own_evidence"] = {
                 candidate_id: [
                     {
@@ -913,6 +1097,30 @@ class PlaybookCandidateReviewer:
             ]
             response_format = EvidenceFirstReviewOutput
             validator = self._evidence_first_validation_errors
+        originals = {
+            f"C{index}": candidate for index, candidate in enumerate(candidates, 1)
+        }
+        if assessed:
+            payload["candidates"] = [
+                {
+                    "id": candidate_id,
+                    "content": candidate.content,
+                    "trigger": candidate.trigger,
+                    "rationale": candidate.rationale,
+                    "reader_angle": candidate.reader_angle,
+                }
+                for candidate_id, candidate in originals.items()
+            ]
+            messages[1]["content"] = json.dumps(payload, ensure_ascii=False)
+            response_format = AssessedReviewOutput
+
+            def validate_assessed(
+                value: object,
+                units: dict[str, list[CandidateEvidenceUnit]],
+            ) -> tuple[str, ...]:
+                return self._assessed_validation_errors(value, units, originals)
+
+            validator = validate_assessed
         inference_options: dict[str, Any] = {}
         if self.max_tokens is not None:
             inference_options["max_tokens"] = self.max_tokens
@@ -963,6 +1171,24 @@ class PlaybookCandidateReviewer:
             output = self.client.generate_chat_response(messages, **options)
         raw_output = output
         supporting_evidence: list[CandidateSupportingEvidence] = []
+        assessments: list[OriginalRuleAssessment] = []
+        if assessed:
+            errors = validator(output, units_by_candidate)
+            if errors:
+                raise ValueError("; ".join(errors))
+            if not isinstance(output, AssessedReviewOutput):
+                raise ValueError("Playbook reviewer returned the wrong assessed type")
+            assessments = output.assessments
+            output = EvidenceFirstReviewOutput(
+                supporting_evidence=output.supporting_evidence,
+                decisions=[
+                    CandidateReviewDecision.model_validate(
+                        item.model_dump(by_alias=True)
+                    )
+                    for item in output.decisions
+                ],
+            )
+            validator = self._evidence_first_validation_errors
         if evidence_first:
             errors = validator(output, units_by_candidate)
             if errors:
@@ -1013,6 +1239,8 @@ class PlaybookCandidateReviewer:
             output=output,
             units_by_candidate=units_by_candidate,
             supporting_evidence=supporting_evidence,
+            assessments=assessments,
+            original_candidates_sha256=original_digest,
         )
 
     def review(
@@ -1045,6 +1273,14 @@ class PlaybookCandidateReviewer:
         outcome: PlaybookReviewOutcome,
     ) -> list[UserPlaybook]:
         """Apply already-validated decisions without making another model call."""
+        if (
+            outcome.original_candidates_sha256 is not None
+            and _candidate_batch_digest(candidates)
+            != outcome.original_candidates_sha256
+        ):
+            raise ValueError(
+                "Reviewer outcome does not match the original candidate batch"
+            )
         return self._apply_decisions(
             candidates, outcome.output, outcome.units_by_candidate
         )
