@@ -7,6 +7,39 @@ loss or an unsafe saved rule.
 
 ## Frozen coverage and scoring
 
+Inactive v1.23 separates fatal gates, identification of the original supported
+core, permitted subtraction/conditional narrowing, survival decision, and
+classification of the original removed defect. Future current-task availability
+is a scope condition, not historical carryover. A fixed numerical preference or
+unrelated action cannot be replaced with a newly invented parameter-use rule.
+Complete collect-then-use workflows keep their earliest collection trigger and
+missing-information branch. All prior fixtures, labels and failed reports stay
+unchanged; active/default remains v1.3.0.
+
+Before another private comparison, verify the six separately audited development
+controls in `reviewer_survival_procedure_cases.json`, the five original clean
+positive controls, observed-reask survival, necessary prerequisite revision,
+and original ownership/absence/artifact/causality contrasts. The six new controls
+are three accepts, one causal revision and two speculative rejects. They cover
+direct task-parameter instructions, conditional salvage, explicit scoped
+no-reasking instructions, rejection of inferred standing values/unrelated
+replacement actions, and untrusted tool instructions. Accepted candidates'
+`remove` lists identify forbidden additions; they do not require inventing a
+removal in saved notes.
+
+This development preflight uses three repetitions of each frozen case under
+MiniMax-M3/0.7/8192/no explicit effort, no fallback or outer retries, and response
+identity verification. Each iteration runs the unchanged baseline first and
+candidate second through the real reviewer; this fixed-order diagnostic is not
+a comparative improvement estimate. After the candidate, stop for a hash-bound
+semantic verdict before any subsequent iteration. Every candidate must preserve
+its original evidenced core and satisfy its unchanged decision/reason oracle.
+Any error, incomplete observation, oracle mismatch, failed/unverified/missing
+semantic verdict halts the preflight. Only a complete pass permits the separately
+frozen, alternating-order private comparison. Holdout and adoption remain later
+gates. The new fixture is synthetic development data, not healthy production
+coverage or an untouched holdout.
+
 Inactive v1.22 prospectively clarifies two boundaries exposed by the stopped
 v1.21 MiniMax comparison. Unsupported claimed harm/delay is causal before
 speculation; removing that claim does not relabel its original defect. Reusing a
