@@ -37,6 +37,28 @@ retry, reported response-model verification and per-candidate independent semant
 stop gates as v1.23. Only a full pass permits the fresh alternating private
 comparison; the failed v1.23 reports, all input labels and holdout stay unchanged.
 
+### Preserved v1.26 original-rule diagnostic failure
+
+The fresh v1.26 gate stopped after six pairs (12 outputs). The standing numerical
+preference control passed all three replacement-arm semantic audits. The original
+conditional parameter-use core passed two repeats, then failed the third: the
+model classified use of an already supplied budget as a standing value preference
+with no core and added generic, producing rejection with the otherwise correct
+unsupported_causality code. The original candidate contains no fixed number;
+the number exists in its own source. Consistent structured fields did not make
+that semantic classification correct.
+
+Five independent replacement-arm semantic passes, zero terminal API/parse errors,
+one successful bounded baseline repair,
+and complete observed reported identities do not qualify the remaining controls.
+No private/broader/healthy/holdout/production-model/staging gate advanced; v1.26
+and the default remain unchanged. Preserve the original labels and terminal trial.
+Manifest SHA-256:
+`e8838b5f34227421359c9263f7189fd0752f37e385fbe71c9a417bfe10b76889`.
+Independent terminal semantic audit SHA-256:
+`6c35549ccdb3cfb3c2f85dcdb5a68ab7eee7d4714dad579e4b02a148131dac7e`.
+Tested sources: OSS `fe9386a6`, enterprise `e7d66a12`.
+
 ### Preserved v1.25 result and fresh v1.26 original-rule diagnostic
 
 v1.25 stopped after four paired reports (eight outputs). The conditional-salvage
