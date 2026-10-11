@@ -162,7 +162,7 @@ def run_explicit_operation(
     finally:
         heartbeat.stop()
         finalize_scope = (
-            f"playbook-aggregation-finalize:{context.org_id}:{project_id}:"
+            f"playbook-aggregation-operation-finalize:{context.org_id}:{project_id}:"
             f"{claim.agent_version}"
         )
         try:

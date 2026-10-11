@@ -404,7 +404,9 @@ full-sweep providers need no changes. Claims and execution are unchanged.
 Organization failure streaks belong to the scheduler. Explicit aggregation
 reports claim completion back to it, including contention, before executing work;
 operation and finalization failures keep their separate scopes. A failed claim
-does not reset the organization streak.
+does not reset the organization streak. Durable-operation finalization uses
+`playbook-aggregation-operation-finalize:`; incremental finalization uses
+`playbook-aggregation-finalize:` so one path cannot clear the other's failures.
 
 ## Operational health measurements
 
