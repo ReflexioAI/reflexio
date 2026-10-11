@@ -825,3 +825,85 @@ calls. Original corpus, holdout, oracle v2 and prior reports remain unchanged.
 - Private manifest byte SHA-256: `8a252ad84a813ced4f690fd4e6b15d6645ffa052947e7c2cf0ee23b1b99691ee`.
 - Private stopped bundle byte SHA-256: `24fd38e181c88118983edf8478f8e56bf03b328668bba697d2bedce72cb0ab25`.
 - Private log byte SHA-256: `47dbd0d71c715d76d11e198180a9a1c0609cc54bf3ae9307b37dce1e1bfcdf70`.
+
+
+### v1.20 claim-level diagnostics: grounded outputs, frozen-label disagreement
+
+Inactive v1.20 restricts reason/notes to the unsupported claim removed (if any)
+and supported rule retained. A lack of justification for a prohibition does not
+establish that an event or question was absent. Content/trigger actions, rationale
+support requirements, evidence contract and taxonomy precedence are unchanged.
+One separately frozen, independently adjudicated repeated-question control joins
+two unchanged announced/verified-action controls. The original corpus, untouched
+holdout, prospective oracle v2 and prior results remain unchanged.
+
+The development gate completed three paired repeats per control: 18 outputs,
+both arms' decisions correct 9/9, candidate scored labels 3/3 versus baseline
+0/3. Six outputs per arm have deliberately unscored labels. All nine candidate
+saved-field/core-preservation audits cleared, with 19 exact own-source excerpts
+and valid final references. One diagnostic distinguishes an unsupported FAILED
+re-ask from the visible pre-answer repeated question: grounded, but still a
+presentation-policy miss. Eighteen logical calls recorded 18 dispatches, zero
+repairs, final errors or measurement errors, and complete observations. Candidate
+calls used 353.433 seconds and estimated $0.135462; baseline used 249.781 seconds
+and $0.089896.
+
+The private priority run stopped automatically at exit 2 after 31 final outputs:
+16 candidate, 15 baseline, 15 complete pairs and one unpaired task-parameter
+candidate. The setup, causal-benefit and absence controls each completed five
+paired repeats. Two independent source-first audits cleared all 16 candidate
+saved outputs and their useful cores; 39 exact own-source excerpts and final
+references were verified. Candidate decisions match the frozen oracle 16/16,
+reason labels 15/16. Some supported narration misses the concise diagnostic
+instruction; semantic clearance does not imply perfect instruction compliance.
+
+| Completed private control | Candidate decision / label | Candidate semantic audit | Baseline decision / label | Baseline semantic audit |
+|---|---|---|---|---|
+| Setup, five pairs | 5/5; 5/5 | 5 grounded | 5/5; 0/5 | 5 unsafe/unverified survivors |
+| Causal benefit, five pairs | 5/5; 5/5 | 5 grounded | 5/5; 0/5 | 3 grounded; 2 unsafe survivors |
+| Absence inference, five pairs | 5/5; 5/5 | 5 grounded rejects | 0/5; 0/5 | 5 unsafe survivors |
+| Task parameter, one unpaired candidate | 1/1; 0/1 | 1 grounded | Not measured | Not measured |
+
+The task-parameter output revised correctly but selected `unsupported_causality`
+instead of frozen `speculative`. Both independent original-first audits find the
+original candidate also attributes delay/blocking to clarification without
+supporting evidence. Under the declared all-original-fields precedence, a causal
+defect precedes speculation; the unique expected label omitted that claim. The
+saved revision preserves conditional current-task parameter use and removes
+standing numeric defaults, cross-session transfer and unsupported prohibitions.
+This is a frozen-oracle disagreement, not a demonstrated unsafe survivor. Keep
+this run stopped and scored against its original oracle. Any label correction
+must be separately audited and preregistered for future calls; no retrospective
+passing result, selective retry or continuation is applied.
+
+All 31 logical calls have complete observations: 33 dispatches, two recovered
+candidate parse repairs, zero final call errors and zero measurement errors.
+Candidate calls used 1304.950 seconds and estimated $0.463525; baseline used
+843.504 seconds and $0.280567. There is no interrupted or pending call. The
+manifest remains incomplete, not interrupted, with its sole frozen-label gate
+error preserved. Task-parameter repeats beyond the first and the unseen-artifact
+control were not reached. Broader development/private coverage, unchanged
+holdout, production-provider compatibility and staging remain pending. Equal
+GLM-5.2 high/enabled/8192/.7 settings do not qualify MiniMax compatibility.
+Both arms use the shared strengthened label validator, so the baseline is not
+an exact replay of historical production code. No candidate is qualified or
+activated; active/default remains v1.3.
+
+Implementation passed 510 affected OSS tests, 19 enterprise replay tests and 24
+overlapping final policy/version checks. Ruff/Pyright passed with zero type
+errors/warnings. Scoped local P0/P1 reviews cleared before calls. These readiness
+checks do not replace semantic or adoption gates. Raw production inputs and
+outputs remain in owner-only private artifacts.
+
+- Launch enterprise source: `d4a389b087729b6300bd70df7f1ddd8d5f5d2271`.
+- Launch OSS source: `c995fd12e9170f610c9847b00a8a3d8d54a2e056`.
+- Prompt byte SHA-256: `38aef8e50c7f9d13a9796fc7f7df4f2cc5652a7e03a018a65c3483333dfed794`.
+- New supplemental fixture byte SHA-256: `30d1f63cbbf6cb99000075e6cb368ae27154bc8dfaa269a39db54fe3a39d5348`.
+- Development driver byte SHA-256: `7c554e6cbc45d649a5a89792b5e802715e5640c12f8841a38172939c1d0579f9`.
+- Private driver byte SHA-256: `454455bac34b53d2f86de057a41b72a255400b9b08692b8e38ede3be305510c7`.
+- Development manifest byte SHA-256: `806b1e4d805deaa4c417f61025f96a493c06dd5b0b8466b4424ec5cbc7d89772`.
+- Development bundle byte SHA-256: `ee5dfc3c5478359c9b7e9430cef0290b9ae4deb1b4cff06b82f907102ac1727b`.
+- Development log byte SHA-256: `bb1e1083d989297191476061a30fe1c82d85cacc713e93b9f42633c6240a8df4`.
+- Private manifest byte SHA-256: `1ae987f1b7cf6ed92846ee8fb8f873643fff7ead5e201f23f4090c5789d4ca32`.
+- Private stopped bundle byte SHA-256: `4b430d78a4f0272cd127e773517c0ecb21c3ce28e106ed5b038c06a6b5acc2af`.
+- Private log byte SHA-256: `66d7b3ca019544b6eedd8d93a752d089312525a5094f38777948668f8f88a79f`.
