@@ -653,3 +653,47 @@ these label defects; historical raw outputs and original scores remain preserved
 
 - Original oracle byte SHA-256: `0b74a51fef5abd5015b12191fd6c23b74cbd7e8ceec8b2b654ae80daf581ca16`.
 - Private audit proposal byte SHA-256: `fa95312231a2d8349237e1d9244827480a94f220a2cdca6683ac326c95629c15`.
+
+
+### v1.17 prospective oracle v2: precedence clarification stopped on classification
+
+Before calls, independently reviewed oracle v2 retained 21 unchanged-input private
+controls, quarantined one unresolved decision and scored 20 reasons. Five previously
+scored labels were corrected and two previously unscored labels were added; one
+reason remains deliberately unscored. Original oracle, prior scores and outputs
+remain unchanged. The inactive prompt clarifies that unsupported claimed future
+benefits are causal defects before generic speculative actions, while more-specific
+artifact/status defects retain their existing priority.
+
+The preregistered serial GLM-5.2 high/enabled/8192 comparison stopped automatically
+on its second candidate output: `unseen_artifact` disagreed with expected
+`unsupported_causality`. Three final outputs completed (two candidate, one baseline),
+with one complete pair. Candidate decisions matched 2/2 and reasons 1/2. No repair,
+final reviewer error, measurement error or manual interruption occurred. This is
+a classification-gate failure, not a semantic failure in the surviving guidance:
+independent audits cleared both saved content/trigger/rationale/reason-notes and
+verified eight exact own-source excerpts and all retained references. A second
+original-first audit confirmed that this candidate contains an unsupported causal
+benefit and no unavailable-artifact claim; the preregistered reason remains correct. The second
+rationale still narrates supported events despite the concise-basis instruction.
+
+Candidate calls used two provider requests, 138.562 seconds of logical wall time
+and estimated cost $0.056544; the baseline used one request, 32.768 seconds and
+$0.014547. These small unequal samples do not establish general performance.
+The four other priority controls, broader development/private qualification,
+untouched holdout and staging pipeline were not reached. v1.17 is inactive and
+unqualified; do not change the frozen oracle to accommodate the measured answer.
+
+Implementation gates passed 505 affected OSS tests and 19 enterprise replay tests,
+Ruff and Pyright (zero errors/warnings). Scoped local reviews cleared P0/P1 and
+verified the pre-call frozen-input hash guard fix before launch. The 68-case
+synthetic corpus and 28-case holdout hashes remain unchanged.
+
+- Launch enterprise source: `3e505451b8100e8fe069a78f726cab6db9665b6a`.
+- Launch OSS source: `19b3921f05608e75e75dfe321d4907b0f2d9f773`.
+- Prompt byte SHA-256: `ae9ac3f50b31fb5d8f0ddc50c2c7435808be488acb2d15b185c21d51a05ad61d`.
+- Prospective oracle v2 byte SHA-256: `e97e913d4df0492090d7f3bf14351ab301ec3155855d99667fef2a952eff3fe4`.
+- Driver byte SHA-256: `3b4409f3007b5a086e187df4a439146360ca5c4b1ce00161fa741b00f9ae56d5`.
+- Manifest byte SHA-256: `64520998020f4762219821d0ca5d9aa30038d6c6888b20633a2d442493d991f8`.
+- Stopped bundle byte SHA-256: `e845f19a608e0a856f5129ff56a11374eed4d4023692614ff3cf184ec379452e`.
+- Private log byte SHA-256: `21ecfab265cbe2b6450b2bdb399ad6ef2950c551f57aeb314823de2c1522d603`.
