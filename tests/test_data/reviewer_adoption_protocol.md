@@ -115,3 +115,30 @@ outer transport retries. Stop on an unsupported or unverified saved clause, lost
 healthy core, frozen-oracle mismatch, or invalid observation. Exact excerpts and
 correct labels alone do not qualify the result. Broader development/private,
 untouched holdout and staging gates follow only a successful focused comparison.
+
+## Approved corrected-oracle and benefit-precedence experiment
+
+Inactive v1.17 clarifies unsupported causal benefits (including prospective purpose
+claims) versus speculative actions under the existing ordered taxonomy. It changes
+no fatal gates, evidence contract, task-local guidance or inference defaults.
+Every original candidate field contributes to defect classification. Inspect
+content, trigger, rationale and persisted reason/notes for semantic grounding.
+
+Private oracle v2 is preregistered for prospective measurement only: 21 original
+source pools retained; one decision-ambiguous control quarantined. Five previously
+scored labels are corrected and two previously unscored labels become explicit.
+One remaining reason remains deliberately unscored. Both independent audits and
+the original oracle are retained; no historical score or output is replaced.
+The 68-case synthetic corpus and untouched holdout are byte-identical.
+
+- Original oracle SHA-256: `0b74a51fef5abd5015b12191fd6c23b74cbd7e8ceec8b2b654ae80daf581ca16`.
+- Independent audit SHA-256: `fa95312231a2d8349237e1d9244827480a94f220a2cdca6683ac326c95629c15`.
+- Prospective oracle v2 SHA-256: `e97e913d4df0492090d7f3bf14351ab301ec3155855d99667fef2a952eff3fe4`.
+
+Begin with the same five priority cases, five serial alternating repeats per arm,
+GLM-5.2 high/enabled/8192, temperature 0.7, no seed override/fallback/outer retry.
+The retail control now expects unsupported_causality before speculative; the other
+four priority oracles are unchanged. Stop on oracle mismatch, invalid observation,
+unsupported/ambiguous saved guidance or lost useful core. The unchanged candidate
+can proceed to broader development/private, holdout and staging only after all
+focused gates pass. This experiment does not qualify MiniMax or activate GLM.
