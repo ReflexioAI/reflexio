@@ -34,7 +34,13 @@ def run_explicit_operation(
     on_work_claimed: Callable[[RequestContext], None] | None = None,
     on_claim_completed: Callable[[], None] | None = None,
 ) -> bool:
-    """Return whether explicit work owns this scheduler turn (including contention)."""
+    """Return whether explicit work owns this scheduler turn (including contention).
+
+    Notify the scheduler immediately after the claim query returns, including
+    contention, so it can reset its org streak before execution or finalization.
+    A failed claim query does not notify it. Operation and explicit-finalization
+    outcomes retain their independent failure scopes here.
+    """
     from .aggregation_scheduler import (
         _REPAIR_INTERVAL_SECONDS,
         AGGREGATION_BACKLOG_RETRY_SECONDS,

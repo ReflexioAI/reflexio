@@ -224,9 +224,12 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
         Three units, three streaks. The org unit -- configuration, repair and
         the claim -- reports success here as soon as the claim returns,
         whatever the claimed run or its finalization then do; its failures
-        escape to ``_run_once``. The claimed run and its finalization report
-        both outcomes here under their own scopes. A context with aggregation
-        off or unsupported attempts nothing and reports nothing.
+        escape to ``_run_once``. Explicit work notifies this scheduler when
+        its claim query returns; its executor owns operation and explicit
+        finalization reporting. Incremental runs and finalization report here
+        under separate scopes. A context with aggregation off or unsupported
+        attempts nothing and reports nothing, unless it has admitted explicit
+        work to settle.
 
         Raises:
             _FinalizationReportedError: Finalization failed after being reported

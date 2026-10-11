@@ -612,30 +612,59 @@ def test_aggregation_trigger_replacement_is_atomic_across_connections(tmp_path) 
     ]
 
 
+@pytest.mark.parametrize(
+    ("ddl_name", "first_trigger", "second_trigger"),
+    [
+        (
+            "AGGREGATION_TRIGGER_DDL",
+            "capture_playbook_aggregation_hard_delete",
+            "retire_playbook_aggregation_cluster_on_agent_update",
+        ),
+        (
+            "AGGREGATION_OPERATIONS_DDL",
+            "cancel_erased_aggregation_operations",
+            "cancel_purged_aggregation_operations",
+        ),
+    ],
+)
 def test_aggregation_trigger_replacement_rolls_back_together(
-    tmp_path, monkeypatch: pytest.MonkeyPatch
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    ddl_name: str,
+    first_trigger: str,
+    second_trigger: str,
 ) -> None:
     store = _store(tmp_path)
-    broken_trigger_ddl = _aggregation.AGGREGATION_TRIGGER_DDL.replace(
-        "DROP TRIGGER IF EXISTS retire_playbook_aggregation_cluster_on_agent_update;",
+    # An older definition makes a partial commit observably different from rollback.
+    store.conn.execute(f"DROP TRIGGER {first_trigger}")
+    store.conn.execute(
+        f"CREATE TRIGGER {first_trigger} BEFORE DELETE ON user_playbooks "
+        "BEGIN SELECT 1; END"
+    )
+    store.conn.commit()
+    original_triggers = dict(
+        store.conn.execute("SELECT name,sql FROM sqlite_master WHERE type='trigger'")
+    )
+    trigger_ddl = getattr(_aggregation, ddl_name)
+    broken_trigger_ddl = trigger_ddl.replace(
+        f"DROP TRIGGER IF EXISTS {second_trigger};",
         "THIS IS NOT VALID SQL;",
     )
-    monkeypatch.setattr(_aggregation, "AGGREGATION_TRIGGER_DDL", broken_trigger_ddl)
+    assert broken_trigger_ddl != trigger_ddl
+    monkeypatch.setattr(_aggregation, ddl_name, broken_trigger_ddl)
 
     with pytest.raises(sqlite3.OperationalError):
         init_playbook_aggregation_tables(store.conn)
 
-    trigger_names = {
-        str(row[0])
-        for row in store.conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='trigger'"
+    assert not store.conn.in_transaction
+    assert (
+        dict(
+            store.conn.execute(
+                "SELECT name,sql FROM sqlite_master WHERE type='trigger'"
+            )
         )
-    }
-    assert {
-        "capture_playbook_aggregation_hard_delete",
-        "retire_playbook_aggregation_cluster_on_agent_update",
-        "retire_playbook_aggregation_cluster_on_agent_delete",
-    } <= trigger_names
+        == original_triggers
+    )
 
 
 def test_semantic_dispositions_are_unique_per_version_and_item(tmp_path) -> None:
