@@ -50,8 +50,9 @@ original-first oracle requires `revise/unsupported_causality`. The candidate
 discarded the permitted conditional supplied-parameter-use core as generic and
 misclassified the original blocking/delay claim after removing it. No formal
 semantic pass was requested for that mismatched output. The remaining controls
-and private comparison were not run. Every completed call had complete serving
-identity and observations; there were no API/parse errors or repair attempts.
+and private comparison were not run. Every completed call had complete reported
+response-model identity and observations; there were no API/parse errors or
+repair attempts.
 
 Preserve this failed development trial without resuming, relabeling or editing
 its inputs. v1.23 remains inactive and unqualified. Tested source was OSS
