@@ -657,7 +657,7 @@ def submit_playbook_aggregation_operation(
 ) -> PlaybookAggregationOperation:
     storage = publisher_api.get_reflexio(org_id=org_id).get_storage()
     if storage is None or not getattr(
-        storage, "supports_incremental_playbook_aggregation", False
+        storage, "supports_durable_playbook_aggregation_operations", False
     ):
         raise HTTPException(503, "Durable aggregation is unavailable on this storage")
     try:
@@ -678,13 +678,11 @@ def get_playbook_aggregation_operation(
     org_id: Annotated[str, Depends(default_get_org_id)],
 ) -> PlaybookAggregationOperation:
     storage = publisher_api.get_reflexio(org_id=org_id).get_storage()
-    if storage is None:
-        raise HTTPException(503, "Storage not configured")
+    if storage is None or not getattr(
+        storage, "supports_durable_playbook_aggregation_operations", False
+    ):
+        raise HTTPException(503, "Durable aggregation is unavailable on this storage")
     operation = storage.get_playbook_aggregation_operation(operation_id)
     if operation is None:
-        if not getattr(storage, "supports_incremental_playbook_aggregation", False):
-            raise HTTPException(
-                503, "Durable aggregation is unavailable on this storage"
-            )
         raise HTTPException(404, "Aggregation operation not found")
     return operation

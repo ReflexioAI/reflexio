@@ -170,3 +170,104 @@ def test_executor_terminal_zero_retry_exhaustion(storage, monkeypatch, outcome):
     assert current.status == ("succeeded" if outcome == "success" else "failed")
     assert current.error is None or "secret" not in current.error
     assert storage.next_playbook_aggregation_operation() is None
+
+
+def test_running_operation_is_recovered_after_process_restart(storage):
+    operation = storage.submit_playbook_aggregation_operation("crashed", "v1")
+    first = claim_operation(storage, operation)
+    storage.conn.execute("UPDATE playbook_aggregation_lease SET claim_expires_at=0")
+    storage.conn.commit()
+    reopened = SQLiteStorage(org_id="operations", db_path=storage.db_path)
+    try:
+        ready = reopened.next_playbook_aggregation_operation()
+        assert ready is not None and ready.status == "running"
+        second = claim_operation(reopened, ready)
+        assert second.fence > first.fence
+        receipt = reopened.get_playbook_aggregation_operation(operation.operation_id)
+        assert receipt is not None and receipt.attempts == 2
+        with pytest.raises(RuntimeError, match="lease lost"):
+            storage.complete_playbook_aggregation_operation(
+                operation.operation_id, first, {}
+            )
+        reopened.complete_playbook_aggregation_operation(
+            operation.operation_id, second, {}
+        )
+        receipt = reopened.get_playbook_aggregation_operation(operation.operation_id)
+        assert receipt is not None and receipt.status == "succeeded"
+    finally:
+        reopened.conn.close()
+
+
+def test_erasure_cancellation_rolls_back_a_late_output_transaction(storage):
+    # The delete trigger must invalidate a run computed from pre-erasure inputs.
+    from unittest.mock import patch
+
+    from reflexio.models.api_schema.service_schemas import UserPlaybook
+
+    with patch.object(storage, "_get_embedding", return_value=[0.0] * 512):
+        storage.save_user_playbooks(
+            [
+                UserPlaybook(
+                    request_id="source-request",
+                    user_id="user",
+                    agent_version="v1",
+                    playbook_name="test",
+                    content="input",
+                )
+            ]
+        )
+    item = storage.get_user_playbooks(user_id="user")[0]
+    operation = storage.submit_playbook_aggregation_operation("erased", "v1")
+    claim = claim_operation(storage, operation)
+    storage.conn.execute(
+        "DELETE FROM user_playbooks WHERE user_playbook_id=?", (item.user_playbook_id,)
+    )
+    storage.conn.commit()
+    storage.conn.execute("CREATE TABLE test_output (value TEXT)")
+    storage.conn.commit()
+    with pytest.raises(RuntimeError), storage.commit_scope():
+        storage.conn.execute(
+            "INSERT INTO test_output VALUES ('private derived output')"
+        )
+        storage.complete_playbook_aggregation_operation(
+            operation.operation_id, claim, {}
+        )
+    assert storage.conn.execute("SELECT count(*) FROM test_output").fetchone()[0] == 0
+    receipt = storage.get_playbook_aggregation_operation(operation.operation_id)
+    assert receipt.status == "failed" and receipt.error == "input_erased"
+
+
+def test_partial_results_are_not_success_and_claim_notification_is_scoped(
+    storage, monkeypatch
+):
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from reflexio.server.services.playbook import aggregation_operations as executor
+    from reflexio.server.services.playbook import aggregation_scheduler
+
+    operation = storage.submit_playbook_aggregation_operation("partial", "v1")
+    storage.supports_incremental_playbook_aggregation = False
+    context = MagicMock(storage=storage, org_id="operations", configurator=MagicMock())
+    context.configurator.get_config.return_value.user_playbook_extractor_config = (
+        SimpleNamespace(aggregation_config=SimpleNamespace(min_cluster_size=2))
+    )
+    aggregator = MagicMock()
+    aggregator.run.return_value = {"retryable_failures": 1}
+    monkeypatch.setattr(executor, "PlaybookAggregator", lambda **_kwargs: aggregator)
+    monkeypatch.setattr(
+        executor, "create_generation_litellm_client", lambda _context: MagicMock()
+    )
+    heartbeat = MagicMock(wraps=aggregation_scheduler.AggregationLeaseHeartbeat)
+    monkeypatch.setattr(aggregation_scheduler, "AggregationLeaseHeartbeat", heartbeat)
+    claimed = MagicMock()
+    assert executor.run_explicit_operation(
+        context, owner="worker", project_id="project", on_work_claimed=claimed
+    )
+    claimed.assert_called_once_with(context)
+    assert heartbeat.call_args.kwargs == {
+        "org_id": "operations",
+        "project_id": "project",
+    }
+    receipt = storage.get_playbook_aggregation_operation(operation.operation_id)
+    assert receipt.status == "retrying" and receipt.result is None

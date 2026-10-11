@@ -239,6 +239,19 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
         )
         if storage is None:
             return
+        org_id, project_id = self._repair_scope_key(context)
+        from reflexio.server.services.playbook.aggregation_operations import (
+            run_explicit_operation,
+        )
+
+        self._active_stage = "explicit_operation"
+        if run_explicit_operation(
+            context,
+            owner=f"explicit:{self._worker_id}",
+            project_id=project_id,
+            on_work_claimed=self._on_work_claimed,
+        ):
+            return
         if not getattr(storage, "supports_incremental_playbook_aggregation", False):
             blocked_reason = getattr(
                 storage, "playbook_aggregation_blocked_reason", None
@@ -250,13 +263,6 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
                     context.org_id,
                     blocked_reason,
                 )
-            return
-        org_id, project_id = self._repair_scope_key(context)
-        from reflexio.server.services.playbook.aggregation_operations import (
-            run_explicit_operation,
-        )
-
-        if run_explicit_operation(context, owner=f"explicit:{self._worker_id}"):
             return
         if playbook_config is None or playbook_config.aggregation_config is None:
             return

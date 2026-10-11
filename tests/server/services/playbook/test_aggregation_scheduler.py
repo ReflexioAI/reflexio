@@ -33,6 +33,21 @@ def _context(storage: Any) -> Any:
     )
 
 
+def test_incremental_only_adapter_never_reads_explicit_receipts() -> None:
+    storage = MagicMock(
+        supports_incremental_playbook_aggregation=True,
+        supports_durable_playbook_aggregation_operations=False,
+    )
+    storage.repair_playbook_aggregation_pending_state.return_value = []
+    storage.claim_due_playbook_aggregation.return_value = None
+    scheduler = aggregation_scheduler.PlaybookAggregationScheduler(
+        context_provider=lambda: []
+    )
+    scheduler._run_context(_context(storage))
+    storage.next_playbook_aggregation_operation.assert_not_called()
+    storage.claim_due_playbook_aggregation.assert_called_once()
+
+
 @pytest.mark.parametrize("callback_raises", [False, True])
 def test_scheduler_keeps_invalidation_and_clustering_budgets_separate(
     monkeypatch, caplog, callback_raises

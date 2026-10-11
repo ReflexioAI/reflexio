@@ -115,6 +115,11 @@ class PlaybookAggregationStoreMixin:
     storage database.  Callers must not use a sequence watermark for discovery.
     """
 
+    @property
+    def supports_durable_playbook_aggregation_operations(self) -> bool:
+        """Whether receipts and full rerun outputs share a fenced transaction."""
+        return False
+
     def submit_playbook_aggregation_operation(
         self, request_id: str, agent_version: str
     ) -> PlaybookAggregationOperation:

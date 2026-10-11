@@ -272,3 +272,13 @@ valid; transient generation failure retries (up to five attempts) rather than
 being mistaken for zero output. Restart recovery discovers persisted queued,
 running and retrying operations; completed operations are never resubmitted.
 Optional optimization/tagging is outside the successful receipt contract.
+
+Receipt support is advertised separately as
+`supports_durable_playbook_aggregation_operations` (false on the portable base,
+true on SQLite). Incremental aggregation support alone does not authorize these
+APIs. Disabling automatic incremental work does not hide existing receipts or
+prevent explicit full reruns. Heartbeats, claim notifications, retry reporting,
+and finalization retain the scheduler's organization/project scope. Incomplete
+aggregation results never become successful receipts. Erasing source user
+playbooks cancels active receipts, so a stale output transaction cannot commit
+derived output after that cancellation.
