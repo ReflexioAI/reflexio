@@ -545,6 +545,55 @@ def test_partial_results_are_not_success_and_claim_notification_is_scoped(
     assert receipt.status == "retrying" and receipt.result is None
 
 
+@pytest.mark.parametrize("claim_outcome", ["contended", "claimed", "failed"])
+def test_explicit_claim_resets_org_scope_only_after_claim_returns(
+    storage, monkeypatch, claim_outcome
+):
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from reflexio.server.services.playbook import aggregation_scheduler
+
+    operation = storage.submit_playbook_aggregation_operation("org-recovery", "v1")
+    if claim_outcome == "contended":
+        assert (
+            storage.claim_due_playbook_aggregation(
+                owner="other-worker", lease_seconds=300, agent_version="v1"
+            )
+            is not None
+        )
+    elif claim_outcome == "failed":
+        monkeypatch.setattr(
+            storage,
+            "claim_due_playbook_aggregation",
+            MagicMock(side_effect=RuntimeError("claim unavailable")),
+        )
+    context = MagicMock(storage=storage, org_id="operations", configurator=MagicMock())
+    # Claimed work fails configuration validation after organization recovery.
+    context.configurator.get_config.return_value.user_playbook_extractor_config = (
+        SimpleNamespace(aggregation_config=SimpleNamespace(min_cluster_size=1))
+    )
+    recovered = []
+    monkeypatch.setattr(aggregation_scheduler, "current_project_id", lambda: "project")
+    monkeypatch.setattr(
+        aggregation_scheduler, "report_background_success", recovered.append
+    )
+    scheduler = aggregation_scheduler.PlaybookAggregationScheduler(
+        context_provider=lambda: []
+    )
+    if claim_outcome == "failed":
+        with pytest.raises(RuntimeError, match="claim unavailable"):
+            scheduler._run_context(context)
+        assert recovered == []
+    else:
+        scheduler._run_context(context)
+        assert recovered == ["playbook-aggregation-org:operations:project"]
+        receipt = storage.get_playbook_aggregation_operation(operation.operation_id)
+        assert receipt.status == (
+            "queued" if claim_outcome == "contended" else "failed"
+        )
+
+
 def test_synchronous_rerun_cannot_bypass_explicit_lease_when_incremental_disabled(
     storage,
 ):

@@ -32,6 +32,7 @@ def run_explicit_operation(
     owner: str,
     project_id: str | None = None,
     on_work_claimed: Callable[[RequestContext], None] | None = None,
+    on_claim_completed: Callable[[], None] | None = None,
 ) -> bool:
     """Return whether explicit work owns this scheduler turn (including contention)."""
     from .aggregation_scheduler import (
@@ -58,12 +59,10 @@ def run_explicit_operation(
         lease_seconds=AGGREGATION_LEASE_SECONDS,
         agent_version=operation.agent_version,
     )
+    if on_claim_completed is not None:
+        on_claim_completed()
     if claim is None:
-        report_background_success(
-            f"playbook-aggregation-org:{context.org_id}:{project_id}"
-        )
         return True
-    report_background_success(f"playbook-aggregation-org:{context.org_id}:{project_id}")
     exhausted = operation.attempts >= 5
     heartbeat = AggregationLeaseHeartbeat(
         storage, claim, org_id=context.org_id, project_id=project_id
