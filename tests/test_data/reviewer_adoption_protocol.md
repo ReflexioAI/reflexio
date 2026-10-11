@@ -37,6 +37,43 @@ retry, reported response-model verification and per-candidate independent semant
 stop gates as v1.23. Only a full pass permits the fresh alternating private
 comparison; the failed v1.23 reports, all input labels and holdout stay unchanged.
 
+### Prospective matched-temperature v1.28 diagnostic
+
+Before another wording edit, test the SAME inactive v1.28 prompt with equal
+MiniMax-M3 temperature 0.2 in BOTH arms. This is a new configuration-specific
+hypothesis; lower temperature is not assumed deterministic or more accurate.
+MiniMax's official OpenAI-compatible M3 documentation lists temperature [0, 2]
+and recommends/defaults 1.0, not our selected 0.2:
+https://platform.minimax.io/docs/api-reference/text-openai-api . Actual initial/
+repair requests and reported model identity must still be observed. Documentation
+alone does not prove wire fidelity or semantic quality.
+
+Private measurement guards now accept an explicit frozen expected temperature,
+defaulting to 0.7 for existing callers. Each evaluator/replay snapshots it ONCE,
+reuses it across arms/batches/repairs and records that expectation in metadata.
+Drift blocks dispatch and cannot leave complete measurements. Meaningful local
+transport/observer tests cover matched 0.2, default/mismatched temperatures,
+nonfinite/invalid expectations, cross-arm/batch drift and repair drift before the
+second transport. Existing CLI configuration stays 0.7; 0.2 is programmatic
+private-driver input. Runtime reviewer/client settings and default remain unchanged.
+
+Freeze a new unique label/path before calls, with clean source, driver, identical
+v1.28 policy bytes, unchanged input/oracle hashes and failed 0.7 manifest pinned.
+Use the SAME 22 controls/order and three repeats: 66 pairs / 132 logical outputs.
+The driver checks its configured 0.2 before each invocation and every observed
+initial/repair temperature afterward. Both arms use M3/8192/no explicit effort,
+no seed/fallback/outer retry/resume; retain the same full independent per-pair
+semantic stop gate and require 66 replacement passes. Either-arm invalid/missing
+measurement stops; baseline semantic faults remain diagnostic. Preserve all failed
+trials, labels and model-unseen holdout.
+
+Do not combine this with previous stopped 0.7 outputs or claim an unbiased
+0.7-versus-0.2 effect. A pass would qualify only this diagnostic's prompt/settings/
+model configuration. A separately reviewed reviewer-specific runtime setting
+would still need full private/broader/healthy/holdout/model/storage/staging/review/
+CI gates before adoption; do not change global extraction temperature or activate
+from this focused result. A failure is preserved, with acceptance unchanged.
+
 ### Preserved v1.28 eligibility failure
 
 v1.28 stopped on its first pair (two logical outputs, two initial requests,

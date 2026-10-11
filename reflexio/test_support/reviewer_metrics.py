@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import re
 import threading
 import time
@@ -26,9 +27,18 @@ class ReviewCallMetrics(logging.Handler):
         effort: str | None,
         *,
         expected_response_model: str | None = None,
+        expected_temperature: float = 0.7,
     ):
         super().__init__()
         self.model = model
+        if (
+            isinstance(expected_temperature, bool)
+            or not math.isfinite(expected_temperature)
+            or not 0 <= expected_temperature <= 2
+        ):
+            raise ValueError("expected_temperature must be finite and within [0, 2]")
+        self.expected_temperature = expected_temperature
+        self.request_drifted = False
         self.expected_response_model = (
             model if expected_response_model is None else expected_response_model
         )
@@ -93,7 +103,8 @@ class ReviewCallMetrics(logging.Handler):
             )
         )
         self.data["observation_complete"] = bool(
-            self.data["timing_complete"]
+            not self.request_drifted
+            and self.data["timing_complete"]
             and self.data["usage_complete"]
             and self.data["model_identity_complete"]
         )
@@ -203,12 +214,13 @@ class ReviewCallMetrics(logging.Handler):
         if (
             params.get("model") != self.model
             or tuple(ladder) != (self.model,)
-            or params.get("temperature") != 0.7
+            or params.get("temperature") != self.expected_temperature
             or params.get("num_retries") != 0
             or not parse_structured
             or params.get("max_tokens") != self.effective_max_tokens
             or (params.get("extra_body") or {}) != expected_body
         ):
+            self.request_drifted = True
             raise ValueError("Reviewer inference request drifted from frozen settings")
         # Explicit allowlist: never serialize params, messages, headers or credentials.
         self.data["provider_requests"].append(

@@ -209,6 +209,7 @@ def evaluate(
         raise ValueError(
             "reasoning profile is qualified for the GLM-5.2 experiment only"
         )
+    expected_temperature = client.config.temperature
     prompt_identities = {
         version: PromptManager(
             version_override={"playbook_candidate_review": version}
@@ -281,6 +282,7 @@ def evaluate(
                     max_tokens,
                     reasoning_effort,
                     expected_response_model=expected_response_model,
+                    expected_temperature=expected_temperature,
                 )
                 reviewer = PlaybookCandidateReviewer(
                     request_context=context,
@@ -394,7 +396,7 @@ def evaluate(
     return {
         "complete": True,
         "model": client.config.model,
-        "temperature": client.config.temperature,
+        "temperature": expected_temperature,
         "cases_sha256": case_hash,
         "candidate_version": candidate_version,
         "prompt_identities": prompt_identities,

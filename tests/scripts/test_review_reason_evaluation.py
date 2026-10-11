@@ -699,3 +699,48 @@ def test_cli_reports_measurement_failure_and_forwards_explicit_response_identity
     )
     assert evaluation.main() == 1
     assert run.call_args.kwargs["expected_response_model"] == "reported-model"
+
+
+@pytest.mark.parametrize("drift", [False, True])
+def test_programmatic_temperature_is_frozen_across_evaluation_arms(drift):
+    case = next(
+        case for case in load_cases(DEFAULT_CASES) if case.id == "positive-preference"
+    )
+    accepted = PlaybookCandidateReviewOutput(
+        decisions=[
+            CandidateReviewDecision(
+                id="C1",
+                decision="accept",
+                reason_code="grounded_useful",
+                evidence_ids=["C1-E1"],
+            )
+        ]
+    )
+    client = observed_client(lambda *_, **__: accepted)
+    client.config.temperature = 0.2
+    original_transport = cast(MagicMock, client._completion_with_hard_timeout)
+
+    def transport(*args, **kwargs):
+        result = original_transport(*args, **kwargs)
+        if drift:
+            client.config.temperature = 0.7
+        return result
+
+    client._completion_with_hard_timeout = transport
+    report = evaluate([case], client, 1)
+    assert report["temperature"] == 0.2
+    if drift:
+        assert original_transport.call_count == 1
+        assert len(report["errors"]) == len(report["measurement_errors"]) == 1
+        assert report["summary"]["1.4.0"]["processed"] == 0
+        assert report["calls"][1]["provider_requests"] == []
+        assert not report["calls"][1]["observation_complete"]
+    else:
+        assert original_transport.call_count == 2
+        assert report["errors"] == report["measurement_errors"] == []
+        assert all(call["observation_complete"] for call in report["calls"])
+    assert all(
+        request["temperature"] == 0.2
+        for call in report["calls"]
+        for request in call["provider_requests"]
+    )

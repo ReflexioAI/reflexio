@@ -394,3 +394,77 @@ def test_authoritative_served_stamp_prevents_bridge_route_laundering(
     assert metrics.data["model_identity_complete"] is valid
     assert metrics.data["observation_complete"] is valid
     assert "_hidden_params" not in json.dumps(metrics.data)
+
+
+@pytest.mark.parametrize(
+    "expected,actual,valid", [(0.7, 0.2, False), (0.2, 0.2, True), (0.2, 0.7, False)]
+)
+def test_temperature_expectation_is_exact_before_dispatch(expected, actual, valid):
+    metrics = ReviewCallMetrics("model", 8192, None, expected_temperature=expected)
+    params = {
+        "model": "model",
+        "temperature": actual,
+        "num_retries": 0,
+        "max_tokens": 8192,
+    }
+    if valid:
+        metrics.guard(params, 125, ("model",), True)
+        assert metrics.data["provider_requests"][0]["temperature"] == expected
+    else:
+        with pytest.raises(ValueError, match="drifted"):
+            metrics.guard(params, 125, ("model",), True)
+        assert metrics.data["provider_requests"] == []
+
+
+@pytest.mark.parametrize(
+    "temperature", [float("nan"), float("inf"), float("-inf"), -0.1, 2.1, True]
+)
+def test_invalid_temperature_expectation_is_rejected(temperature):
+    with pytest.raises(ValueError, match="expected_temperature"):
+        ReviewCallMetrics("model", 8192, None, expected_temperature=temperature)
+
+
+def test_repair_temperature_drift_is_blocked_before_second_transport(monkeypatch):
+    from reflexio.server.llm.litellm_client import LiteLLMClientError
+
+    client = LiteLLMClient(
+        LiteLLMConfig(
+            model="test-model", temperature=0.2, fallback_models=[], max_retries=0
+        )
+    )
+    client._resolve_primary_model = MagicMock(return_value="test-model")
+    transport = MagicMock(
+        return_value=litellm.ModelResponse(
+            model="test-model",
+            choices=[
+                {
+                    "message": {"role": "assistant", "content": "not JSON"},
+                    "finish_reason": "stop",
+                }
+            ],
+            usage={"prompt_tokens": 20, "completion_tokens": 10, "total_tokens": 30},
+        )
+    )
+    monkeypatch.setattr(client, "_completion_with_hard_timeout", transport)
+    metrics = ReviewCallMetrics("test-model", 8192, None, expected_temperature=0.2)
+
+    def inject_repair_drift(params, *guard_args):
+        if metrics.data["provider_requests"]:
+            params["temperature"] = 0.7
+        return metrics.guard(params, *guard_args)
+
+    with pytest.raises(LiteLLMClientError), metrics, metrics.observe_responses(client):
+        client.generate_chat_response(
+            [{"role": "user", "content": "Return the structured value."}],
+            max_tokens=8192,
+            response_format=Result,
+            parse_structured_output=True,
+            structured_output_validator=lambda _: [],
+            provider_request_guard=inject_repair_drift,
+        )
+    assert transport.call_count == 1
+    assert len(metrics.data["provider_requests"]) == 1
+    assert metrics.data["provider_requests"][0]["temperature"] == 0.2
+    assert metrics.data["repair_attempts"] == 1
+    assert metrics.data["repair_successes"] == 0
+    assert metrics.data["observation_complete"] is False
