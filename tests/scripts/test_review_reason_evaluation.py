@@ -468,3 +468,43 @@ def test_private_artifacts_reject_unsupported_platform_before_calls_or_truncatio
             evaluate(cases, client, 1, checkpoint=report)
     client.generate_chat_response.assert_not_called()
     assert report.read_bytes() == b"preserved private receipt"
+
+
+def test_private_writer_replaces_symlink_without_touching_victim(tmp_path):
+    victim = tmp_path / "victim.json"
+    victim.write_text("original victim")
+    report = tmp_path / "report.json"
+    report.symlink_to(victim)
+    evaluation._write_private_text(report, "private replacement")
+    assert victim.read_text() == "original victim"
+    assert not report.is_symlink()
+    assert report.read_text() == "private replacement"
+    assert report.stat().st_mode & 0o777 == 0o600
+
+
+def test_private_writer_leaves_existing_open_descriptor_on_old_inode(tmp_path):
+    report = tmp_path / "report.json"
+    report.write_text("old public receipt")
+    report.chmod(0o666)
+    with report.open("r+") as previous:
+        evaluation._write_private_text(report, "new private receipt")
+        assert previous.read() == "old public receipt"
+        previous.seek(0)
+        previous.write("old inode modified")
+        previous.flush()
+        assert report.read_text() == "new private receipt"
+    assert report.stat().st_mode & 0o777 == 0o600
+
+
+def test_private_writer_cleans_temporary_file_if_replace_fails(tmp_path, monkeypatch):
+    report = tmp_path / "report.json"
+    report.write_text("preserved receipt")
+
+    def fail_replace(*_):
+        raise OSError("replacement failed")
+
+    monkeypatch.setattr(Path, "replace", fail_replace)
+    with pytest.raises(OSError, match="replacement failed"):
+        evaluation._write_private_text(report, "new private receipt")
+    assert report.read_text() == "preserved receipt"
+    assert list(tmp_path.iterdir()) == [report]

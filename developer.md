@@ -496,6 +496,10 @@ and evaluations with a checkpoint reject unsupported platforms before provider
 calls or opening/truncating reports. In-memory evaluation without a checkpoint
 does not require that filesystem capability. Unsupported-platform behavior is
 covered by simulated tests; native Windows execution has not been qualified.
+Report updates write an owner-only temporary file in the destination directory
+and atomically replace the destination. They never truncate an existing inode
+or follow a destination symlink, and failed replacements remove the temporary
+file while preserving the previous report.
 The inactive v1.7.0 candidate clarifies unavailable artifact claims versus using
 record omissions as proof of absence. It also keeps internal-status proof of
 value distinct. It failed a workflow preservation control. Inactive v1.8
