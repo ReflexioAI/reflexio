@@ -40,6 +40,28 @@ frozen, alternating-order private comparison. Holdout and adoption remain later
 gates. The new fixture is synthetic development data, not healthy production
 coverage or an untouched holdout.
 
+The frozen v1.23 development preflight stopped at the first conditional-salvage
+repetition after 19 paired reports (38 outputs and 38 provider requests). All
+five original clean positives and the explicit current-job parameter control
+passed all three repetitions: 18 candidate outputs also received independent,
+hash-bound semantic passes. On `conditional-salvage-original-parameter-core`,
+both baseline and candidate rejected with `speculative`; the unchanged,
+original-first oracle requires `revise/unsupported_causality`. The candidate
+discarded the permitted conditional supplied-parameter-use core as generic and
+misclassified the original blocking/delay claim after removing it. No formal
+semantic pass was requested for that mismatched output. The remaining controls
+and private comparison were not run. Every completed call had complete serving
+identity and observations; there were no API/parse errors or repair attempts.
+
+Preserve this failed development trial without resuming, relabeling or editing
+its inputs. v1.23 remains inactive and unqualified. Tested source was OSS
+`a9f913add74080e994e426f3a26464a630e7e636` and enterprise
+`f22e6a7ff498cab5d95963f1c5509745ec6fbe74`. Private protocol SHA-256:
+`bed261392752077b3cc99530f3e93e7259414b7461c9c2ec62ef29362d88d4e2`;
+terminal manifest SHA-256:
+`b2233de16ae8b18fa9680d30efc99cadd6228b7757c000c1f0d68ea086c2dc36`.
+Broader coverage, holdout, production compatibility and staging remain gated.
+
 Inactive v1.22 prospectively clarifies two boundaries exposed by the stopped
 v1.21 MiniMax comparison. Unsupported claimed harm/delay is causal before
 speculation; removing that claim does not relabel its original defect. Reusing a
