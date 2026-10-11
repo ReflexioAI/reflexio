@@ -37,6 +37,40 @@ retry, reported response-model verification and per-candidate independent semant
 stop gates as v1.23. Only a full pass permits the fresh alternating private
 comparison; the failed v1.23 reports, all input labels and holdout stay unchanged.
 
+### Fresh v1.25 worked-contrast diagnostic
+
+The v1.24 preflight stopped on its first pair (two outputs). The candidate chose
+the correct causal code but rejected the supported conditional core and claimed
+another task's parameter was not assigned. Own-source support for the earlier
+task does not prove absence of assignment for another task. No semantic pass
+was requested after the decision mismatch, and no later controls were run.
+Both completed calls had matching reported response-model identities and complete
+observations; no API/parse errors or repair attempts. Preserve this failed trial.
+Tested OSS source was `1a825c8c712e97bbfe7ebc9680e6dac528bbc8eb`, enterprise
+`1fe7e392caa6232bdd1dadae8fe895816cf4edb6`. Terminal manifest SHA-256:
+`94cc59e951c558a95dccd9ae69c0237532f3e130d23b6f6078eeaa016bf0b32f`.
+
+Inactive v1.25 adds a worked contrast in a separate domain: conditional use of
+an originally proposed supplied parameter can survive without proof of historical
+execution or carryover; a candidate containing only an inferred standing numerical
+preference cannot be replaced with that lesson. It demonstrates complete revised
+content, trigger, rationale and claim-level notes, with causal priority and no
+unsupported absence claims. This example is prompt instruction, not benchmark
+validation data. The output schema, model route, fatal gates and source contract
+are unchanged; no deterministic override forces a rejected rule to survive.
+
+Freeze a new private protocol for the same 18 unchanged development controls and
+three repeats per arm (108 outputs). Order conditional salvage, historical-value
+standing preference, unrelated-action replacement, generic-summary, five original
+clean positives, explicit current-job parameter, direct no-reasking, tool injection,
+observed reask, necessary prerequisite, ownership, absence, unseen artifact and
+causal contrast. This development order is chosen before any v1.25 output. Keep
+the same MiniMax-M3/.7/8192/no explicit effort and fixed baseline-first diagnostic
+order, observation/oracle checks and independent per-candidate semantic stop gates.
+No fallback, outer retry, resumption, relabeling or activation. A full pass alone
+permits the separately frozen alternating private comparison. All prior prompt
+versions, fixtures, labels, reports and holdout remain unchanged.
+
 ### Preserved v1.23 development trial
 
 Inactive v1.23 separates fatal gates, identification of the original supported
