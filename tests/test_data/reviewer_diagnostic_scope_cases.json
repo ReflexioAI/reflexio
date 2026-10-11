@@ -1,0 +1,61 @@
+[
+  {
+    "id": "repeated-question-before-supplied-choices",
+    "provenance": "Supplemental synthetic development control; no customer data. A visible repeated prerequisite question prevents unqualified event-absence diagnostics.",
+    "domain": "workspace",
+    "split": "development",
+    "agent_context": "An assistant that creates workspaces and remembers explicitly requested recurring setup procedures.",
+    "turns": [
+      {
+        "role": "User",
+        "content": "For future workspace setup, collect the region and access mode, then use the supplied choices for that setup."
+      },
+      {
+        "role": "Agent",
+        "content": "What region and access mode should the workspace use?"
+      },
+      {
+        "role": "User",
+        "content": "I have not decided yet."
+      },
+      {
+        "role": "Agent",
+        "content": "What region and access mode should the workspace use?"
+      },
+      {
+        "role": "User",
+        "content": "Use west region and private access."
+      },
+      {
+        "role": "Agent",
+        "content": "I will create the workspace with those choices."
+      }
+    ],
+    "candidates": [
+      {
+        "content": "For future workspace setup, collect the region and access mode, use the supplied choices for that setup, and never ask the user for clarification again.",
+        "trigger": "When a user requests workspace setup and the required choices are missing.",
+        "rationale": "The user explicitly requested collecting the two setup inputs and using the supplied choices.",
+        "evidence": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6
+        ],
+        "decision": "revise",
+        "reason_code": "speculative",
+        "preserve": [
+          "region",
+          "access mode"
+        ],
+        "remove": [
+          "never ask",
+          "clarification again"
+        ]
+      }
+    ],
+    "existing": []
+  }
+]

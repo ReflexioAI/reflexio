@@ -636,3 +636,7 @@ Inactive v1.19 writes rationale as the source-backed requirement and reason/note
 as the review decision, without historical agent-execution narration. Supported
 workflow actions remain in content/trigger. Separately frozen announced/verified
 setup controls precede private replay; no default activation.
+
+Inactive v1.20 keeps review notes about removed claims and retained rules, avoiding
+claims that questions/events were absent. Separately frozen repeated-question
+coverage precedes private replay; original benchmarks remain unchanged.

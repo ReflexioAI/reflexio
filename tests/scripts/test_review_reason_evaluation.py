@@ -262,6 +262,7 @@ def test_every_frozen_case_can_be_prepared_before_paid_calls():
         "1.17.0",
         "1.18.0",
         "1.19.0",
+        "1.20.0",
     ],
 )
 def test_candidate_version_selection_preserves_baseline_and_report_identity(
@@ -332,6 +333,7 @@ def test_candidate_version_selection_preserves_baseline_and_report_identity(
             "1.17.0",
             "1.18.0",
             "1.19.0",
+            "1.20.0",
         )
     )
     changed_case = case.model_copy(deep=True)

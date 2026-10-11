@@ -213,3 +213,35 @@ measurement gates remain; stop on unsafe/unverified saved guidance. Oracle v2 SH
 Drivers pin source/inputs and boundary receipts before private calls. Broader
 qualification, unchanged holdout, production-provider compatibility and staging
 remain subsequent gates; no activation follows from this focused experiment.
+
+
+### Preregistered v1.20 claim-level diagnostics (2026-10-11)
+
+Inactive v1.20 narrows reason/notes to the unsupported claim removed and supported
+rule retained. It prohibits diagnostic event-absence assertions, historical
+question/reply sequences, counts and execution narratives. Rationale support-basis
+instructions, content/trigger actions, evidence contract and reason-code priority
+remain unchanged. The claim lacks justification; this does not establish that a
+question or event was absent. Preserve v1.19's stopped result and all oracles.
+
+Before calls, independently adjudicate the new synthetic repeated-question control
+in `reviewer_diagnostic_scope_cases.json` (SHA-256 `30d1f63cbbf6cb99000075e6cb368ae27154bc8dfaa269a39db54fe3a39d5348`).
+It preserves explicit recurring input collection/current-choice use, removes the
+unsupported no-clarification ban, and scores `revise/speculative`. A visibly
+repeated question before supplied answers makes an unqualified no-recorded-reask
+diagnostic false. Pair it with the unchanged announced-workspace and verified-
+workspace controls from saved-basis fixture SHA
+`06a48ca1c081f0028f1d0a52cd5d1ae64cf55cfcf4122d32f87c94e9a6bf5a8d`.
+Those two retain unscored reason labels; the new control scores three candidate labels and three baseline labels.
+
+Run three serial alternating paired repeats per case (18 expected outputs) with
+identical GLM-5.2 high/enabled/8192/.7, no seed override/fallback/outer retries.
+Require complete both-arm counts/measurements, correct candidate decisions and
+scored labels, independently grounded saved fields and preserved workflow cores.
+Gate after each six-output block and before private calls. If all clear, repeat
+same frozen oracle-v2 five-case priority comparison (50 expected outputs), QA
+first then retail, absence, task parameter and unseen artifact; per-output
+classification/measurement gates and semantic stop rule remain. Original corpus,
+holdout and inputs are unchanged. Drivers pin fixture/pool hashes before calls
+and retain source/driver/report hashes. No activation or broader qualification
+is implied; production-provider compatibility and staging remain subsequent gates.

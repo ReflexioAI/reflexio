@@ -655,6 +655,7 @@ class PlaybookCandidateReviewer:
             "1.17.0",
             "1.18.0",
             "1.19.0",
+            "1.20.0",
         }
         variables = {
             "agent_context_prompt": agent_context,
