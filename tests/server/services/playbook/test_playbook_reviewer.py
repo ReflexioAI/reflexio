@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from typing import Any, Literal
 from unittest.mock import MagicMock
 
 import pytest
@@ -17,6 +18,7 @@ from reflexio.server.services.playbook.components.reviewer import (
     CandidateEvidenceUnit,
     CandidateReviewDecision,
     CandidateRevision,
+    EvidenceFirstReviewOutput,
     PlaybookCandidateEvidenceError,
     PlaybookCandidateReviewer,
     PlaybookCandidateReviewOutput,
@@ -72,7 +74,7 @@ def _candidate(
     )
 
 
-def _reviewer(response: PlaybookCandidateReviewOutput):
+def _reviewer(response: PlaybookCandidateReviewOutput | EvidenceFirstReviewOutput):
     request_context = MagicMock()
     request_context.prompt_manager = PromptManager()
     client = MagicMock()
@@ -273,6 +275,46 @@ def test_reviewer_fails_closed_when_candidate_accounting_is_incomplete():
         )
 
 
+@pytest.mark.parametrize("evidence_first", [False, True])
+def test_decide_rejects_unknown_candidate_even_with_complete_expected_decisions(
+    evidence_first,
+):
+    decisions = [
+        CandidateReviewDecision(
+            id=candidate_id,
+            decision="reject",
+            reason_code="speculative",
+            evidence_ids=[],
+        )
+        for candidate_id in ("C1", " C9 ")
+    ]
+    response = (
+        EvidenceFirstReviewOutput(decisions=decisions, supporting_evidence=[])
+        if evidence_first
+        else PlaybookCandidateReviewOutput(decisions=decisions)
+    )
+    reviewer, client = _reviewer(response)
+    if evidence_first:
+        reviewer.request_context.prompt_manager = PromptManager(
+            version_override={"playbook_candidate_review": "1.20.0"}
+        )
+    with pytest.raises(ValueError, match="unknown candidate_id"):
+        reviewer.decide(
+            candidates=[_candidate(201, "Grounded correction.", content="Lesson.")],
+            request_interaction_data_models=[
+                _interaction_model(201, "Grounded correction.")
+            ],
+            existing_playbooks=[],
+            agent_context="Test agent",
+            playbook_definition="Reusable user guidance",
+            tool_context="",
+        )
+    validate = client.generate_chat_response.call_args.kwargs[
+        "structured_output_validator"
+    ]
+    assert any("unknown candidate_id" in error for error in validate(response))
+
+
 def test_reviewer_can_reject_a_misclassified_correction():
     interaction = _interaction_model(211, "Do the work; do not just explain it.")
     candidate = _candidate(
@@ -336,7 +378,22 @@ def test_review_validation_rejects_new_evidence():
     assert "decisions[0] introduces unknown evidence" in errors
 
 
-def test_review_validation_rejects_local_turn_labels_in_revision_prose():
+@pytest.mark.parametrize(
+    "label",
+    [
+        "[T1]",
+        "T12",
+        "[C1-E1]",
+        "C12-E34",
+        "[C1]",
+        "c2-e3",
+        "(E1, E3)",
+        "[E2]",
+        "(E1 and E4)",
+        "[e2/e3]",
+    ],
+)
+def test_review_validation_rejects_local_turn_labels_in_revision_prose(label):
     units = {
         "C1": [
             CandidateEvidenceUnit(
@@ -357,7 +414,7 @@ def test_review_validation_rejects_local_turn_labels_in_revision_prose():
                 revision=CandidateRevision(
                     content="Keep the grounded procedure.",
                     trigger="When the condition occurs",
-                    rationale="The correction in [T1] supports it.",
+                    rationale=f"The correction in {label} supports it.",
                 ),
             )
         ]
@@ -366,6 +423,28 @@ def test_review_validation_rejects_local_turn_labels_in_revision_prose():
     errors = PlaybookCandidateReviewer._validation_errors(output, units)
 
     assert "decisions[0] revision contains call-local turn label" in errors
+
+
+@pytest.mark.parametrize(
+    "prose",
+    [
+        "Use product C1.",
+        "Select C12.",
+        "Use R2-D2.",
+        "Use ACE1.",
+        "Use product E1.",
+        "Select E3, then E4.",
+        "Use (E1 device).",
+        "Use SUM(E1, E3) to total the specified cells.",
+        "Use AVERAGE(E1/E3).",
+    ],
+)
+def test_call_local_reference_guard_preserves_non_label_identifiers(prose):
+    from reflexio.server.services.playbook.playbook_evidence import (
+        contains_call_local_turn_ref,
+    )
+
+    assert not contains_call_local_turn_ref(prose)
 
 
 def test_apply_decisions_uses_the_same_trimmed_candidate_id_as_validation():
@@ -874,3 +953,191 @@ def test_public_result_rejects_a_reason_code_nothing_can_emit():
                 "reason_code": "not_a_real_code",
             }
         )
+
+
+def _evidence_first_output(
+    *,
+    excerpt_id="C1-E1",
+    text="Use metric units.",
+    decision: Literal["accept", "revise", "reject"] = "accept",
+):
+    from reflexio.server.services.playbook.components.reviewer import (
+        CandidateSupportingEvidence,
+        EvidenceFirstReviewOutput,
+        SupportingExcerpt,
+    )
+
+    return EvidenceFirstReviewOutput(
+        supporting_evidence=[
+            CandidateSupportingEvidence(
+                id="C1", excerpts=[SupportingExcerpt(evidence_id=excerpt_id, text=text)]
+            )
+        ],
+        decisions=[
+            CandidateReviewDecision(
+                id="C1",
+                decision=decision,
+                reason_code="grounded_useful",
+                evidence_ids=["C1-E1"] if decision != "reject" else [],
+            )
+        ],
+    )
+
+
+@pytest.mark.parametrize(
+    "excerpt_id,text,decision,valid",
+    [
+        ("C1-E1", "Use metric units.", "accept", True),
+        ("C2-E1", "Use metric units.", "accept", False),
+        ("C1-E1", "Use imperial units.", "accept", False),
+        ("C1-E1", "   ", "accept", False),
+        ("C1-E1", "Use metric units.", "reject", False),
+    ],
+)
+def test_evidence_first_validates_own_exact_retained_excerpts(
+    excerpt_id, text, decision, valid
+):
+    output = _evidence_first_output(excerpt_id=excerpt_id, text=text, decision=decision)
+    units = {
+        "C1": [
+            CandidateEvidenceUnit(
+                evidence_id="C1-E1",
+                turn_ref="T1",
+                source_span="Use metric units.",
+                interaction_id=1,
+                role="user",
+                request_source="AgentGenerated",
+            )
+        ]
+    }
+    errors = PlaybookCandidateReviewer._evidence_first_validation_errors(output, units)
+    assert (not errors) == valid
+    assert all(text not in error for error in errors)
+    # Exact quoting never upgrades AgentGenerated evidence to direct-user origin.
+    assert units["C1"][0].request_source == "AgentGenerated"
+
+
+def test_evidence_first_survivor_requires_excerpts_and_final_evidence_ownership():
+    output = _evidence_first_output()
+    units = {
+        "C1": [
+            CandidateEvidenceUnit(
+                evidence_id="C1-E1",
+                turn_ref="T1",
+                source_span="Use metric units.",
+                interaction_id=1,
+            ),
+            CandidateEvidenceUnit(
+                evidence_id="C1-E2",
+                turn_ref="T2",
+                source_span="Keep the answer short.",
+                interaction_id=2,
+            ),
+        ]
+    }
+    output.decisions[0] = CandidateReviewDecision(
+        id="C1",
+        decision="revise",
+        reason_code="compound",
+        evidence_ids=["C1-E2"],
+        revision=CandidateRevision(
+            content="Keep answers short.",
+            trigger="Before answering",
+            rationale="The user requested brevity.",
+        ),
+    )
+    assert any(
+        "final retained evidence" in e
+        for e in PlaybookCandidateReviewer._evidence_first_validation_errors(
+            output, units
+        )
+    )
+    output.supporting_evidence = []
+    assert any(
+        "requires supporting excerpts" in e
+        for e in PlaybookCandidateReviewer._evidence_first_validation_errors(
+            output, units
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    "version", ["1.14.0", "1.15.0", "1.16.0", "1.17.0", "1.18.0", "1.19.0", "1.20.0"]
+)
+def test_evidence_first_policy_is_separate_and_excerpts_are_not_persisted(
+    caplog, version
+):
+    import json
+
+    from reflexio.server.services.playbook.components.reviewer import (
+        EvidenceFirstReviewOutput,
+    )
+
+    response = _evidence_first_output()
+    reviewer, client = _reviewer(response)
+    reviewer.request_context.prompt_manager = PromptManager(
+        version_override={"playbook_candidate_review": version}
+    )
+    candidate = _candidate(1, "Use metric units.", content="Use metric units.")
+    outcome = reviewer.decide(
+        candidates=[candidate],
+        request_interaction_data_models=[_interaction_model(1, "Use metric units.")],
+        existing_playbooks=[],
+        agent_context="UNTRUSTED_CONTEXT_CANARY",
+        playbook_definition="Reusable guidance",
+        tool_context="",
+    )
+    messages = client.generate_chat_response.call_args.args[0]
+    assert [message["role"] for message in messages] == ["system", "user"]
+    assert "UNTRUSTED_CONTEXT_CANARY" not in messages[0]["content"]
+    payload = json.loads(messages[1]["content"])
+    assert payload["own_evidence"]["C1"][0]["role"] == "user"
+    assert payload["own_evidence"]["C1"][0]["request_source"] == "test"
+    assert (
+        client.generate_chat_response.call_args.kwargs["response_format"]
+        is EvidenceFirstReviewOutput
+    )
+    assert len(outcome.supporting_evidence) == 1
+    survivor = reviewer.apply_decisions(candidates=[candidate], outcome=outcome)[0]
+    assert survivor.rationale == candidate.rationale
+    assert "supporting_evidence" not in survivor.model_dump()
+    assert "Use metric units." not in (survivor.notes or "")
+    assert "Use metric units." not in caplog.text
+    assert PromptManager().get_active_version("playbook_candidate_review") == "1.3.0"
+
+
+def test_reviewer_inference_overrides_are_local_and_preserve_validator():
+    response = _evidence_first_output()
+    normal, client = _reviewer(response)
+    normal.request_context.prompt_manager = PromptManager(
+        version_override={"playbook_candidate_review": "1.15.0"}
+    )
+    guard = MagicMock()
+    experimental = PlaybookCandidateReviewer(
+        request_context=normal.request_context,
+        llm_client=client,
+        max_tokens=8192,
+        reasoning_effort="high",
+        provider_request_guard=guard,
+    )
+    arguments: dict[str, Any] = {
+        "candidates": [_candidate(1, "Use metric units.", content="Use metric units.")],
+        "request_interaction_data_models": [_interaction_model(1, "Use metric units.")],
+        "existing_playbooks": [],
+        "agent_context": "",
+        "playbook_definition": "Reusable guidance",
+        "tool_context": "",
+    }
+    experimental.decide(**arguments)
+    options = client.generate_chat_response.call_args.kwargs
+    assert options["max_tokens"] == 8192
+    assert options["extra_body"] == {
+        "reasoning_effort": "high",
+        "thinking": {"type": "enabled"},
+    }
+    assert options["provider_request_guard"] is guard
+    assert options["max_retries"] == 0
+    assert callable(options["structured_output_validator"])
+    normal.decide(**arguments)
+    options = client.generate_chat_response.call_args.kwargs
+    assert not {"max_tokens", "extra_body", "provider_request_guard"} & options.keys()
