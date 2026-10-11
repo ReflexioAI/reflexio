@@ -37,6 +37,25 @@ retry, reported response-model verification and per-candidate independent semant
 stop gates as v1.23. Only a full pass permits the fresh alternating private
 comparison; the failed v1.23 reports, all input labels and holdout stay unchanged.
 
+### Preserved v1.27 first-pair semantic failure
+
+v1.27 stopped after its first pair (two logical outputs, three observed provider
+requests). Replacement classified the original supplied-budget action as a
+standing value preference with no core and rejected it. Its causal code and null
+reason were correct; the frozen decision remains revision preserving conditional
+current-task parameter use. Independent source-first audit confirmed the failure.
+Baseline retained unsafe session-based carryover, used uncited supplemental
+chronology in rationale and missed causal precedence. Its bounded repair succeeded.
+
+Zero replacement semantic passes, complete both-arm observations and reported
+identities, zero terminal API/parse errors, baseline one repair and replacement
+zero repairs. No later control or qualification gate advanced. Do not resume,
+relabel or activate this version. Default remains v1.3. Tested sources: OSS
+`ebf51686`, enterprise `ddbf90ff`. Failed manifest SHA-256:
+`4052c61222bdbba7256b9f8d79d2179dbe0b791425c26d91a932eb83e4c92cb3`.
+Independent terminal audit SHA-256:
+`721e67c02539c6a70561b891fb310bf311813ca4cdd964a718a2a873d1f00aca`.
+
 ### Fresh v1.27 original-action diagnostic
 
 Inactive v1.27 clarifies classification of the action already in original content
