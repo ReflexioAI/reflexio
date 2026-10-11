@@ -37,6 +37,26 @@ retry, reported response-model verification and per-candidate independent semant
 stop gates as v1.23. Only a full pass permits the fresh alternating private
 comparison; the failed v1.23 reports, all input labels and holdout stay unchanged.
 
+### Preserved v1.28 eligibility failure
+
+v1.28 stopped on its first pair (two logical outputs, two initial requests,
+zero repairs). It correctly identified the supplied-parameter original action
+and quoted an exact span, but selected no supported core and generic, then
+rejected. Its causal code and required null reason were correct; revision remains
+the frozen decision. Independent audit confirmed useful-core loss and missing
+speculative defects for the unsupported ban/carryover. Baseline also rejected
+the core despite a correct causal label. All measurements/identities were complete;
+no terminal API/parse errors. Zero replacement semantic passes; 65 pairs unrun.
+
+This separates the observed original-kind error from the remaining eligibility
+error in this output; it does not establish consistent kind accuracy or qualify
+another control. Preserve this stopped trial and all labels; no later gate or
+default activation. Tested source: OSS `46cdf863`, enterprise `0a40d7e4`.
+Failed manifest SHA-256:
+`172a9b7e68747424ece519696e1dbf96918a16c69aaab6afbdadaffb869ea001`.
+Independent terminal audit SHA-256:
+`22beac382192cb6512a427e5a60af7d72a3ab5dde4e7fa7bf5cdc9b34791a9d2`.
+
 ### Prospective v1.28 shorter single-call reassessment
 
 The failed original-only mechanism probe does not justify another runtime stage.
