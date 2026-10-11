@@ -29,6 +29,19 @@ Transport errors invalidate the affected matched comparison. If recovery is
 needed, rerun every repetition in both arms for the affected cases and retain
 the failed report; never select reruns by model answer.
 
+Observe the returned model identity on every initial and repair completion.
+The requested route alone does not establish which model served a call.
+Missing or unexpected identity invalidates qualification. Only an omitted
+provider prefix may be normalized; model revisions are not aliases. If a
+verified route intentionally reports a different identity, preregister that
+expected response identity separately and bind it into the shared trial profile.
+Never relabel earlier reports as verified after observing a later call.
+
+Before each subsequent candidate call, require a frozen semantic verdict for
+the previous candidate output, bound to its input, prompt and report hashes.
+Failure or an unverified scope claim stops the trial before further calls.
+Do not continue pending later review or use a replacement answer to clear it.
+
 ## Acceptance gates declared before measurement
 
 - Known failure and fatal-versus-revisable boundary cases make the expected

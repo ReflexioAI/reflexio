@@ -2,11 +2,13 @@
 
 import json
 from pathlib import Path
+from typing import cast
 from unittest.mock import MagicMock
 
+import litellm
 import pytest
 
-from reflexio.server.llm.litellm_client import LiteLLMConfig
+from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 from reflexio.server.prompt.prompt_manager import PromptManager
 from reflexio.server.services.playbook.components.reviewer import (
     CandidateReviewDecision,
@@ -25,12 +27,50 @@ from scripts.evaluate_review_reason_codes import (
 )
 
 
+def observed_client(respond, response_model="test-model"):
+    """Keep the actual transport/parser/metrics boundary with only provider I/O fake."""
+    client = LiteLLMClient(
+        LiteLLMConfig(model="test-model", fallback_models=[], max_retries=0)
+    )
+    client._resolve_primary_model = MagicMock(return_value="test-model")
+    pending = []
+
+    def transport(*_):
+        output = pending.pop(0)
+        if isinstance(output, Exception):
+            raise output
+        response = litellm.ModelResponse(
+            model="test-model",
+            choices=[
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": output.model_dump_json(),
+                    },
+                    "finish_reason": "stop",
+                }
+            ],
+            usage={"prompt_tokens": 20, "completion_tokens": 10, "total_tokens": 30},
+        )
+
+        response.model = response_model
+        return response
+
+    client._completion_with_hard_timeout = MagicMock(side_effect=transport)
+    original = client.generate_chat_response
+
+    def generate(*args, **kwargs):
+        pending.append(respond(*args, **kwargs))
+        return original(*args, **kwargs)
+
+    client.generate_chat_response = MagicMock(side_effect=generate)
+    return client
+
+
 def test_paired_evaluation_uses_real_reviewer_and_counts_errors_separately():
     case = next(
         case for case in load_cases(DEFAULT_CASES) if case.id == "positive-preference"
     )
-    client = MagicMock()
-    client.config = LiteLLMConfig(model="test-model", fallback_models=[])
     accepted = PlaybookCandidateReviewOutput(
         decisions=[
             CandidateReviewDecision(
@@ -41,10 +81,8 @@ def test_paired_evaluation_uses_real_reviewer_and_counts_errors_separately():
             )
         ]
     )
-    client.generate_chat_response.side_effect = [
-        accepted,
-        RuntimeError("provider failed"),
-    ]
+    outputs = iter([accepted, RuntimeError("provider failed")])
+    client = observed_client(lambda *_, **__: next(outputs))
     report = evaluate([case], client, 1)
     assert report["summary"]["1.3.0"] == {
         "expected": 1,
@@ -62,9 +100,10 @@ def test_paired_evaluation_uses_real_reviewer_and_counts_errors_separately():
         "code_expected": 1,
         "errors": 1,
     }
-    assert report["errors"][0]["error_type"] == "RuntimeError"
+    assert report["errors"][0]["error_type"] == "LiteLLMClientError"
     prompts = [
-        str(call.args[0]) for call in client.generate_chat_response.call_args_list
+        str(call.args[0])
+        for call in cast(MagicMock, client.generate_chat_response).call_args_list
     ]
     assert "## Reason-code precedence" not in prompts[0]
     assert "## Reason-code precedence" in prompts[1]
@@ -89,9 +128,7 @@ def test_survival_oracle_does_not_invent_reason_label_accuracy():
     )
     case.candidates[0].allowed_decisions = ["accept", "revise"]
     case.candidates[0].reason_code = None
-    client = MagicMock()
-    client.config = LiteLLMConfig(model="test-model", fallback_models=[])
-    client.generate_chat_response.return_value = PlaybookCandidateReviewOutput(
+    output = PlaybookCandidateReviewOutput(
         decisions=[
             CandidateReviewDecision(
                 id="C1",
@@ -106,7 +143,9 @@ def test_survival_oracle_does_not_invent_reason_label_accuracy():
             )
         ]
     )
+    client = observed_client(lambda *_, **__: output)
     report = evaluate([case], client, 1)
+    assert report["measurement_errors"] == []
     assert all(row["decision_correct"] for row in report["rows"])
     assert all(row["code_correct"] is None for row in report["rows"])
     assert all(arm["code_expected"] == 0 for arm in report["summary"].values())
@@ -156,9 +195,7 @@ def test_revision_evidence_and_normalized_ids_survive_real_reviewer_and_checkpoi
             )
         ]
     )
-    client = MagicMock()
-    client.config = LiteLLMConfig(model="test-model", fallback_models=[])
-    client.generate_chat_response.return_value = output
+    client = observed_client(lambda *_, **__: output)
     checkpoint = tmp_path / "checkpoint.json"
     report = evaluate([case], client, 1, checkpoint)
     assert not report["errors"]
@@ -263,8 +300,6 @@ def test_turn_source_survives_fixture_loading_into_real_reviewer_payload(
         reason_code="grounded_useful",
         evidence_ids=["C1-E1"],
     )
-    client = MagicMock()
-    client.config = LiteLLMConfig(model="test-model", fallback_models=[])
 
     def respond(*_, **options):
         if options["response_format"] is EvidenceFirstReviewOutput:
@@ -283,11 +318,12 @@ def test_turn_source_survives_fixture_loading_into_real_reviewer_payload(
             )
         return PlaybookCandidateReviewOutput(decisions=[decision])
 
-    client.generate_chat_response.side_effect = respond
+    client = observed_client(respond)
     report = evaluate([case], client, 1, candidate_version="1.20.0")
     assert report["errors"] == []
+    assert report["measurement_errors"] == []
     assert all(arm["processed"] == 1 for arm in report["summary"].values())
-    messages = client.generate_chat_response.call_args_list[1].args[0]
+    messages = cast(MagicMock, client.generate_chat_response).call_args_list[1].args[0]
     assert [message["role"] for message in messages] == ["system", "user"]
     evidence = json.loads(messages[1]["content"])["own_evidence"]["C1"][0]
     assert evidence["role"].casefold() == "user"
@@ -314,6 +350,7 @@ def test_turn_source_survives_fixture_loading_into_real_reviewer_payload(
         "1.18.0",
         "1.19.0",
         "1.20.0",
+        "1.21.0",
     ],
 )
 def test_candidate_version_selection_preserves_baseline_and_report_identity(
@@ -322,8 +359,6 @@ def test_candidate_version_selection_preserves_baseline_and_report_identity(
     case = next(
         case for case in load_cases(DEFAULT_CASES) if case.id == "positive-preference"
     )
-    client = MagicMock()
-    client.config = LiteLLMConfig(model="test-model", fallback_models=[])
     accepted = PlaybookCandidateReviewOutput(
         decisions=[
             CandidateReviewDecision(
@@ -353,9 +388,10 @@ def test_candidate_version_selection_preserves_baseline_and_report_identity(
             )
         return accepted
 
-    client.generate_chat_response.side_effect = respond
+    client = observed_client(respond)
     report = evaluate([case], client, 1, candidate_version=candidate_version)
     assert report["errors"] == []
+    assert report["measurement_errors"] == []
     assert all(arm["processed"] == 1 for arm in report["summary"].values())
     assert set(report["summary"]) == {"1.3.0", candidate_version}
     assert report["candidate_version"] == candidate_version
@@ -364,7 +400,8 @@ def test_candidate_version_selection_preserves_baseline_and_report_identity(
         == candidate_version
     )
     prompts = [
-        str(call.args[0]) for call in client.generate_chat_response.call_args_list
+        str(call.args[0])
+        for call in cast(MagicMock, client.generate_chat_response).call_args_list
     ]
     assert ("**Independent lessons:**" in prompts[1]) == (
         candidate_version
@@ -385,6 +422,7 @@ def test_candidate_version_selection_preserves_baseline_and_report_identity(
             "1.18.0",
             "1.19.0",
             "1.20.0",
+            "1.21.0",
         )
     )
     changed_case = case.model_copy(deep=True)
@@ -508,3 +546,72 @@ def test_private_writer_cleans_temporary_file_if_replace_fails(tmp_path, monkeyp
         evaluation._write_private_text(report, "new private receipt")
     assert report.read_text() == "preserved receipt"
     assert list(tmp_path.iterdir()) == [report]
+
+
+@pytest.mark.parametrize(
+    "reported,expected,valid",
+    [
+        (None, None, False),
+        ("another-model", None, False),
+        ("another-model", "another-model", True),
+    ],
+)
+def test_evaluation_cannot_qualify_missing_or_unexpected_reported_identity(
+    reported, expected, valid
+):
+    case = next(
+        case for case in load_cases(DEFAULT_CASES) if case.id == "positive-preference"
+    )
+    output = PlaybookCandidateReviewOutput(
+        decisions=[
+            CandidateReviewDecision(
+                id="C1",
+                decision="accept",
+                reason_code="grounded_useful",
+                evidence_ids=["C1-E1"],
+            )
+        ]
+    )
+    client = observed_client(lambda *_, **__: output, reported)
+    report = evaluate([case], client, 1, expected_response_model=expected)
+    assert report["errors"] == []
+    assert all(arm["processed"] == 1 for arm in report["summary"].values())
+    assert len(report["measurement_errors"]) == (0 if valid else 2)
+    assert all(call["model_identity_complete"] is valid for call in report["calls"])
+    assert report["inference_settings"]["expected_response_model"] == (
+        expected or "test-model"
+    )
+    assert all(
+        call["provider_responses"][0]["model"] == reported for call in report["calls"]
+    )
+
+
+def test_cli_reports_measurement_failure_and_forwards_explicit_response_identity(
+    monkeypatch, tmp_path
+):
+    client = MagicMock()
+    client._resolve_primary_model.return_value = "requested-model"
+    monkeypatch.setattr(evaluation, "LiteLLMClient", lambda _: client)
+    monkeypatch.setattr(evaluation, "assert_litellm_unpatched", lambda: None)
+    run = MagicMock(
+        return_value={
+            "summary": {},
+            "errors": [],
+            "measurement_errors": [{"error_type": "IncompleteProviderObservation"}],
+        }
+    )
+    monkeypatch.setattr(evaluation, "evaluate", run)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "evaluate",
+            "--expected-model",
+            "requested-model",
+            "--expected-response-model",
+            "reported-model",
+            "--out",
+            str(tmp_path / "report.json"),
+        ],
+    )
+    assert evaluation.main() == 1
+    assert run.call_args.kwargs["expected_response_model"] == "reported-model"

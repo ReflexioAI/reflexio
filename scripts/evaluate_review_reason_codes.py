@@ -165,6 +165,7 @@ def evaluate(
     candidate_version: str = "1.4.0",
     max_tokens: int | None = None,
     reasoning_effort: Literal["high", "none"] | None = None,
+    expected_response_model: str | None = None,
 ) -> dict:
     if checkpoint is not None:
         _require_private_artifact_support()
@@ -186,9 +187,10 @@ def evaluate(
         "1.18.0",
         "1.19.0",
         "1.20.0",
+        "1.21.0",
     ):
         raise ValueError(
-            "candidate_version must be 1.4.0, 1.5.0, 1.6.0, 1.7.0, 1.8.0, 1.9.0, 1.10.0, 1.11.0, 1.12.0, 1.13.0, 1.14.0, 1.15.0, 1.16.0, 1.17.0, 1.18.0, 1.19.0 or 1.20.0"
+            "candidate_version must be 1.4.0, 1.5.0, 1.6.0, 1.7.0, 1.8.0, 1.9.0, 1.10.0, 1.11.0, 1.12.0, 1.13.0, 1.14.0, 1.15.0, 1.16.0, 1.17.0, 1.18.0, 1.19.0, 1.20.0 or 1.21.0"
         )
     if not cases:
         raise ValueError("cases must be nonempty")
@@ -211,7 +213,15 @@ def evaluate(
     errors = []
     calls = []
     measurement_errors = []
-    settings = {"max_tokens": max_tokens, "reasoning_effort": reasoning_effort}
+    settings = {
+        "max_tokens": max_tokens,
+        "reasoning_effort": reasoning_effort,
+        "expected_response_model": (
+            client.config.model
+            if expected_response_model is None
+            else expected_response_model
+        ),
+    }
     case_hash = hashlib.sha256(
         json.dumps(
             [case.model_dump(mode="json") for case in cases], sort_keys=True
@@ -260,7 +270,10 @@ def evaluate(
                     ),
                 )
                 metrics = ReviewCallMetrics(
-                    client.config.model, max_tokens, reasoning_effort
+                    client.config.model,
+                    max_tokens,
+                    reasoning_effort,
+                    expected_response_model=expected_response_model,
                 )
                 reviewer = PlaybookCandidateReviewer(
                     request_context=context,
@@ -270,7 +283,7 @@ def evaluate(
                     provider_request_guard=metrics.guard,
                 )
                 try:
-                    with metrics:
+                    with metrics, metrics.observe_responses(client):
                         result = reviewer.decide(
                             candidates=candidates,
                             request_interaction_data_models=sessions,
@@ -393,6 +406,10 @@ def main() -> int:
         help="Assert the automatically resolved generation model; does not select a model",
     )
     parser.add_argument(
+        "--expected-response-model",
+        help="Freeze the provider-reported model identity (defaults to requested model); no version aliases",
+    )
+    parser.add_argument(
         "--candidate-version",
         choices=(
             "1.4.0",
@@ -412,6 +429,7 @@ def main() -> int:
             "1.18.0",
             "1.19.0",
             "1.20.0",
+            "1.21.0",
         ),
         default="1.4.0",
     )
@@ -450,6 +468,7 @@ def main() -> int:
         candidate_version=args.candidate_version,
         max_tokens=args.max_tokens,
         reasoning_effort=args.reasoning_effort,
+        expected_response_model=args.expected_response_model,
     )
     _write_private_text(args.out, json.dumps(report, indent=2))
     print(json.dumps(report["summary"], indent=2))

@@ -38,7 +38,7 @@ def test_real_client_repair_is_counted_and_safe_projection_is_private(monkeypatc
     log = logging.getLogger("reflexio.server.llm.litellm_client")
     previous = log.level
     metrics = ReviewCallMetrics("zai/glm-5.2", 8192, "high")
-    with metrics:
+    with metrics, metrics.observe_responses(client):
         result = client.generate_chat_response(
             [{"role": "user", "content": "PRIVATE_SOURCE_CANARY"}],
             max_tokens=8192,
@@ -122,13 +122,18 @@ def test_default_token_limit_is_frozen_across_repair():
 )
 def test_measurement_coverage_requires_timing_and_usage(timing, usage):
     metrics = ReviewCallMetrics("model", None, None)
-    with metrics:
+    client = MagicMock()
+    client._completion_with_hard_timeout.return_value = litellm.ModelResponse(
+        model="model"
+    )
+    with metrics, metrics.observe_responses(client):
         metrics.guard(
             {"model": "model", "temperature": 0.7, "num_retries": 0},
             125,
             ("model",),
             True,
         )
+        client._completion_with_hard_timeout({}, 125)
         metrics.log.info(
             "event=llm_request_end %s",
             "elapsed_seconds=0.1" if timing else "status=ok",
@@ -141,3 +146,251 @@ def test_measurement_coverage_requires_timing_and_usage(timing, usage):
     assert metrics.data["observation_complete"] is (timing and usage)
     assert metrics.data["estimated_cost_complete"] is False
     assert all("estimated_cost_usd" not in row for row in metrics.data["usage"])
+
+
+@pytest.mark.parametrize(
+    "models,expected,complete",
+    [
+        (["glm-5.2", "glm-5.2"], None, True),
+        (["glm-5.3", "glm-5.2"], None, False),
+        (["glm-5.2", "glm-5.3"], None, False),
+        ([None, "glm-5.2"], None, False),
+        (["glm-5.2", None], None, False),
+        (["glm-5.3", "glm-5.3"], "zai/glm-5.3", True),
+    ],
+)
+def test_every_initial_and_repair_response_must_match_frozen_identity(
+    monkeypatch, models, expected, complete
+):
+    client = LiteLLMClient(
+        LiteLLMConfig(model="zai/glm-5.2", fallback_models=[], max_retries=0)
+    )
+    responses = []
+    for model, content in zip(models, ["not JSON", '{"value": 5}'], strict=True):
+        response = litellm.ModelResponse(
+            model="placeholder",
+            choices=[
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": content,
+                        "reasoning_content": "PRIVATE_REASONING_CANARY",
+                    },
+                    "finish_reason": "stop",
+                }
+            ],
+            usage={"prompt_tokens": 20, "completion_tokens": 10, "total_tokens": 30},
+        )
+        response.model = model
+        responses.append(response)
+    transport = MagicMock(side_effect=responses)
+    monkeypatch.setattr(client, "_completion_with_hard_timeout", transport)
+    metrics = ReviewCallMetrics(
+        "zai/glm-5.2", 8192, "high", expected_response_model=expected
+    )
+    with metrics, metrics.observe_responses(client):
+        result = client.generate_chat_response(
+            [{"role": "user", "content": "PRIVATE_SOURCE_CANARY"}],
+            max_tokens=8192,
+            extra_body={"reasoning_effort": "high", "thinking": {"type": "enabled"}},
+            response_format=Result,
+            parse_structured_output=True,
+            structured_output_validator=lambda _: [],
+            provider_request_guard=metrics.guard,
+        )
+    assert result == Result(value=5)
+    assert transport.call_count == 2
+    assert client._completion_with_hard_timeout is transport
+    assert metrics.data["model_identity_complete"] is complete
+    assert metrics.data["observation_complete"] is complete
+    assert [row["model"] for row in metrics.data["provider_responses"]] == models
+    assert all(
+        row["choices"][0]["reasoning_chars"] == len("PRIVATE_REASONING_CANARY")
+        for row in metrics.data["provider_responses"]
+    )
+    assert "CANARY" not in json.dumps(metrics.data)
+
+
+def test_metadata_failure_preserves_original_response_and_restores_class_method():
+    class Response:
+        model = "model"
+
+        @property
+        def choices(self):
+            raise ValueError("PRIVATE_METADATA_CANARY")
+
+    response = Response()
+
+    class Client:
+        def _completion_with_hard_timeout(self, *_, **__):
+            return response
+
+    client = Client()
+    metrics = ReviewCallMetrics("model", None, None)
+    with metrics, metrics.observe_responses(client):
+        assert client._completion_with_hard_timeout({}, 1) is response
+    assert "_completion_with_hard_timeout" not in vars(client)
+    assert metrics.data["response_observation_errors"] == ["ValueError"]
+    assert metrics.data["model_identity_complete"] is False
+    assert "CANARY" not in json.dumps(metrics.data)
+
+
+def test_transport_exception_is_unchanged_and_restores_instance_override():
+    error = TimeoutError("PRIVATE_TRANSPORT_CANARY")
+    transport = MagicMock(side_effect=error)
+    client = MagicMock()
+    client._completion_with_hard_timeout = transport
+    metrics = ReviewCallMetrics("model", None, None)
+    with (
+        pytest.raises(TimeoutError) as caught,
+        metrics,
+        metrics.observe_responses(client),
+    ):
+        client._completion_with_hard_timeout({}, 1)
+    assert caught.value is error
+    assert transport.call_count == 1
+    assert client._completion_with_hard_timeout is transport
+    assert metrics.data["provider_responses"] == []
+    assert metrics.data["model_identity_complete"] is False
+    assert "CANARY" not in json.dumps(metrics.data)
+
+
+@pytest.mark.parametrize("failure", ["excess_choices", "metadata_append"])
+def test_malformed_or_unrecordable_metadata_never_replaces_received_response(failure):
+    response = litellm.ModelResponse(model="model")
+    if failure == "excess_choices":
+        response.choices *= 10000
+
+    class BrokenList(list):
+        def append(self, _):
+            raise RuntimeError("PRIVATE_APPEND_CANARY")
+
+    client = MagicMock()
+    original = MagicMock(return_value=response)
+    client._completion_with_hard_timeout = original
+    metrics = ReviewCallMetrics("model", None, None)
+    if failure == "metadata_append":
+        metrics.data["provider_responses"] = BrokenList()
+        metrics.data["response_observation_errors"] = BrokenList()
+    with metrics, metrics.observe_responses(client):
+        metrics.guard(
+            {"model": "model", "temperature": 0.7, "num_retries": 0},
+            125,
+            ("model",),
+            True,
+        )
+        assert client._completion_with_hard_timeout({}, 125) is response
+        metrics.log.info("event=llm_request_end elapsed_seconds=0.1")
+        metrics.log.info("Token usage - input: 2, output: 3, total: 5")
+    assert original.call_count == 1
+    assert client._completion_with_hard_timeout is original
+    assert metrics.response_observation_failed is True
+    assert metrics.data["model_identity_complete"] is False
+    assert metrics.data["observation_complete"] is False
+    assert "CANARY" not in json.dumps(metrics.data)
+
+
+@pytest.mark.parametrize(
+    "requested,public,hidden,expected,valid",
+    [
+        (
+            "claude-code/default",
+            "claude-code/default",
+            {},
+            "claude-code/default",
+            False,
+        ),
+        (
+            "claude-code/default",
+            "claude-code/default",
+            {"reflexio_provider": "claude-code"},
+            "claude-code/default",
+            False,
+        ),
+        (
+            "claude-code/default",
+            "claude-code/default",
+            {"reflexio_provider": "claude-code", "reflexio_served_provider": "zai"},
+            "claude-code/default",
+            False,
+        ),
+        (
+            "claude-code/default",
+            "claude-code/default",
+            {"reflexio_served_model": "glm-5.2"},
+            "glm-5.2",
+            False,
+        ),
+        (
+            "claude-code/default",
+            "claude-code/default",
+            {
+                "reflexio_served_provider": "private provider",
+                "reflexio_served_model": "glm-5.2",
+            },
+            "glm-5.2",
+            False,
+        ),
+        (
+            "claude-code/default",
+            "claude-code/default",
+            {
+                "reflexio_provider": "claude-code",
+                "reflexio_served_provider": "zai",
+                "reflexio_served_model": "glm-5.3",
+            },
+            "claude-code/default",
+            False,
+        ),
+        (
+            "claude-code/default",
+            "claude-code/default",
+            {
+                "reflexio_provider": "claude-code",
+                "reflexio_served_provider": "zai",
+                "reflexio_served_model": "glm-5.3",
+            },
+            "glm-5.3",
+            True,
+        ),
+        (
+            "zai/glm-5.2",
+            "zai/glm-5.2",
+            {"reflexio_served_model": "glm-5.3"},
+            "zai/glm-5.2",
+            False,
+        ),
+        (
+            "zai/glm-5.2",
+            "zai/glm-5.2",
+            {"reflexio_served_model": "glm-5.3"},
+            "glm-5.3",
+            True,
+        ),
+        ("zai/glm-5.2", "zai/glm-5.2", {"model": "glm-5.3"}, "zai/glm-5.2", True),
+    ],
+)
+def test_authoritative_served_stamp_prevents_bridge_route_laundering(
+    requested, public, hidden, expected, valid
+):
+    response = litellm.ModelResponse(model=public)
+    response._hidden_params.update(hidden)
+    client = MagicMock()
+    original = MagicMock(return_value=response)
+    client._completion_with_hard_timeout = original
+    metrics = ReviewCallMetrics(requested, None, None, expected_response_model=expected)
+    with metrics, metrics.observe_responses(client):
+        metrics.guard(
+            {"model": requested, "temperature": 0.7, "num_retries": 0},
+            125,
+            (requested,),
+            True,
+        )
+        assert client._completion_with_hard_timeout({}, 125) is response
+        metrics.log.info("event=llm_request_end elapsed_seconds=0.1")
+        metrics.log.info("Token usage - input: 2, output: 3, total: 5")
+    assert original.call_count == 1
+    assert client._completion_with_hard_timeout is original
+    assert metrics.data["model_identity_complete"] is valid
+    assert metrics.data["observation_complete"] is valid
+    assert "_hidden_params" not in json.dumps(metrics.data)

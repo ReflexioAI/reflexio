@@ -3,6 +3,41 @@
 Status: in progress. The active reviewer remains v1.3.0. No activation or
 production change is justified by the completed measurements below.
 
+## Receipt-bound replay and model identity diagnostic — 2026-10-11
+
+The receipt-bound v1.20 comparison is unqualified. It stopped after 30 completed
+outputs (15 candidate, 15 baseline) and one failed candidate call. That call
+failed structured parsing after both initial and repair attempts reached 8192
+output tokens. This suggests an output-budget problem but does not establish
+its cause. Original response finish metadata was not captured.
+
+All 15 candidate revisions preserved their supported cores. Twelve persisted
+explanations cleared semantic review; three could imply detail absence across
+the full retained conversation when that detail existed in supplemental
+chronology. Independent adjudication retained all three as unverified. No
+historical report or oracle was changed to turn the trial into a pass.
+
+A separate prospective diagnostic completed two calls with stop finish reasons,
+one per arm, without reproducing the structured-output failure. Both requested
+`zai/glm-5.2` and reported response model `zai/glm-5.3`. Further diagnostic
+calls were stopped because the routing equivalence is unverified; one in-flight
+call was interrupted with incomplete observations. Earlier requested-model
+labels do not establish the actual serving identity.
+
+Inactive v1.21 removes presence/absence explanations in favor of claim-level
+support judgments. It has no fresh qualification result yet. Evaluation now
+requires returned identity observations for initial and repair calls, and
+future trials must stop on an unverified semantic verdict before further calls.
+Production evidence currently verifies the requested MiniMax-M3 reviewer route,
+not the returned model identity. Broader coverage, untouched model holdout,
+production-provider and staging qualification remain pending.
+
+Private semantic audit byte SHA-256:
+`364462ee595318d508b1b8a743874d16dfc5ffd0e88c39eaf4eb683da4242807`.
+Independent note-scope adjudication byte SHA-256:
+`8dbbe51a504e1a2784e17b50507d4090547c7dc8caabd9206f9bdf33d239e79c`.
+Inputs and raw outputs remain in owner-only private storage.
+
 ## Frozen coverage
 
 The original frozen public corpus contains 66 cases / 67 candidates: 38
