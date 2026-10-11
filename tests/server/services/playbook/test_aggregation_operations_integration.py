@@ -237,6 +237,151 @@ def test_erasure_cancellation_rolls_back_a_late_output_transaction(storage):
     assert receipt.status == "failed" and receipt.error == "input_erased"
 
 
+@pytest.mark.parametrize("retire_after_snapshot", [False, True])
+@pytest.mark.parametrize("empty_content", [False, True])
+def test_lineage_preserving_erasure_fences_captured_private_inputs(
+    storage, retire_after_snapshot, empty_content
+):
+    from unittest.mock import patch
+
+    from reflexio.models.api_schema.domain.entities import LineageContext
+    from reflexio.models.api_schema.service_schemas import AgentPlaybook, UserPlaybook
+
+    with patch.object(storage, "_get_embedding", return_value=[0.1] * 512):
+        storage.save_user_playbooks(
+            [
+                UserPlaybook(
+                    request_id=f"source-{user}",
+                    user_id=user,
+                    agent_version="v1",
+                    playbook_name="test",
+                    content="" if empty_content else f"Private input from {user}",
+                    rationale=f"Private rationale from {user}",
+                )
+                for user in ("erased-user", "other-user")
+            ]
+        )
+    erased = storage.get_user_playbooks(user_id="erased-user")[0]
+    other = storage.get_user_playbooks(user_id="other-user")[0]
+    lineage = LineageContext(op_kind="merge", request_id="link", actor="test")
+    if not retire_after_snapshot:
+        # An inbound reference makes clear_user_data preserve the current
+        # survivor's skeleton and erase its body through UPDATE, not DELETE.
+        storage.merge_records(
+            entity_type="user_playbook",
+            survivor_id=str(erased.user_playbook_id),
+            source_ids=[str(other.user_playbook_id)],
+            context=lineage,
+        )
+    operation = storage.submit_playbook_aggregation_operation("captured-private", "v1")
+    claim = claim_operation(storage, operation)
+    snapshot = storage.capture_playbook_aggregation_rerun_snapshot("v1", limit=10)
+    captured = next(
+        item
+        for item in snapshot.user_playbooks
+        if item.user_playbook_id == erased.user_playbook_id
+    )
+    assert captured.rationale == erased.rationale
+    if retire_after_snapshot:
+        # A row captured while current remains relevant even if a later
+        # revision excludes it from subsequent snapshots before erasure.
+        assert storage.supersede_record(
+            entity_type="user_playbook",
+            incumbent_id=str(erased.user_playbook_id),
+            successor_id=str(other.user_playbook_id),
+            context=lineage,
+        )
+    counts = storage.clear_user_data("erased-user")
+    assert counts["purged_user_playbooks"] == 1
+    assert (
+        storage.conn.execute(
+            "SELECT content FROM user_playbooks WHERE user_playbook_id=?",
+            (erased.user_playbook_id,),
+        ).fetchone()[0]
+        == ""
+    )
+    with (
+        patch.object(storage, "_get_embedding", return_value=[0.1] * 512),
+        pytest.raises(RuntimeError),
+        storage.commit_scope(),
+    ):
+        storage.save_agent_playbooks(
+            [
+                AgentPlaybook(
+                    agent_version="v1",
+                    playbook_name="test",
+                    content=erased.rationale,
+                    embedding=[0.1] * 512,
+                )
+            ]
+        )
+        storage.complete_playbook_aggregation_operation(
+            operation.operation_id, claim, {}
+        )
+    assert storage.get_agent_playbooks() == []
+    receipt = storage.get_playbook_aggregation_operation(operation.operation_id)
+    if retire_after_snapshot:
+        assert receipt.status == "running"
+        assert not storage.validate_playbook_aggregation_claim(claim)
+        storage.conn.execute(
+            "UPDATE playbook_aggregation_lease SET claim_expires_at=unixepoch()-1"
+        )
+        storage.conn.commit()
+        replacement = claim_operation(storage, operation)
+        storage.complete_playbook_aggregation_operation(
+            operation.operation_id, replacement, {}
+        )
+        assert (
+            storage.get_playbook_aggregation_operation(operation.operation_id).status
+            == "succeeded"
+        )
+    else:
+        assert receipt.status == "failed" and receipt.error == "input_erased"
+
+
+@pytest.mark.parametrize("running", [False, True])
+def test_expired_excluded_tombstone_gc_does_not_cancel_operation(storage, running):
+    from unittest.mock import patch
+
+    from reflexio.models.api_schema.service_schemas import UserPlaybook
+
+    with patch.object(storage, "_get_embedding", return_value=[0.1] * 512):
+        storage.save_user_playbooks(
+            [
+                UserPlaybook(
+                    request_id="old-source",
+                    user_id="old-user",
+                    agent_version="v1",
+                    playbook_name="test",
+                    content="Excluded old input",
+                )
+            ]
+        )
+    storage.conn.execute("UPDATE user_playbooks SET status='superseded', retired_at=1")
+    storage.conn.commit()
+    operation = storage.submit_playbook_aggregation_operation("unrelated-gc", "v1")
+    claim = claim_operation(storage, operation) if running else None
+    assert (
+        storage.capture_playbook_aggregation_rerun_snapshot(
+            "v1", limit=10
+        ).user_playbooks
+        == ()
+    )
+    assert (
+        storage.gc_expired_tombstones(entity_type="user_playbook", older_than_epoch=2)
+        == 1
+    )
+    receipt = storage.get_playbook_aggregation_operation(operation.operation_id)
+    assert receipt.status == ("running" if running else "queued")
+    if claim is None:
+        claim = claim_operation(storage, operation)
+    storage.complete_playbook_aggregation_operation(operation.operation_id, claim, {})
+    assert (
+        storage.get_playbook_aggregation_operation(operation.operation_id).status
+        == "succeeded"
+    )
+
+
 def test_partial_results_are_not_success_and_claim_notification_is_scoped(
     storage, monkeypatch
 ):

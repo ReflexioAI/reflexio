@@ -283,8 +283,13 @@ APIs. Disabling automatic incremental work does not hide existing receipts or
 prevent explicit full reruns. Heartbeats, claim notifications, retry reporting,
 and finalization retain the scheduler's organization/project scope. Incomplete
 aggregation results never become successful receipts. Erasing source user
-playbooks cancels active receipts, so a stale output transaction cannot commit
-derived output after that cancellation. Synchronous full reruns use the same
+playbooks cancels active receipts on current-row deletion or content purge, so
+a stale output transaction cannot commit derived output after that erasure.
+Retiring or moving a current input invalidates the captured claim through the
+state-version fence; the operation can recover with a fresh claim. Removing an
+already excluded historical tombstone does not cancel unrelated work. These
+fences use database state rather than application-clock comparisons.
+Synchronous full reruns use the same
 lease when either incremental or durable-operation support is enabled. Explicit
 runs with missing source embeddings retry rather than declaring success for a
 partial corpus; mock-LLM mode continues to support keyless trigger clustering.

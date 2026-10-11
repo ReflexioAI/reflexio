@@ -33,11 +33,54 @@ CREATE TABLE IF NOT EXISTS playbook_aggregation_operations (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_aggregation_operation_active
     ON playbook_aggregation_operations(agent_version)
     WHERE status IN ('queued','running','retrying');
-CREATE TRIGGER IF NOT EXISTS cancel_erased_aggregation_operations BEFORE DELETE ON user_playbooks
-FOR EACH ROW BEGIN
+DROP TRIGGER IF EXISTS cancel_erased_aggregation_operations;
+CREATE TRIGGER cancel_erased_aggregation_operations BEFORE DELETE ON user_playbooks
+WHEN OLD.status IS NULL
+BEGIN
+ UPDATE playbook_aggregation_state SET state_version=state_version+1,pending=1
+ WHERE agent_version=OLD.agent_version AND EXISTS (
+  SELECT 1 FROM playbook_aggregation_operations
+  WHERE agent_version=OLD.agent_version AND status IN ('queued','running','retrying')
+ );
  UPDATE playbook_aggregation_operations SET status='failed',error='input_erased',
  completed_at=unixepoch(),updated_at=unixepoch(),next_attempt_at=NULL
  WHERE agent_version=OLD.agent_version AND status IN ('queued','running','retrying');
+END;
+DROP TRIGGER IF EXISTS cancel_purged_aggregation_operations;
+CREATE TRIGGER cancel_purged_aggregation_operations
+BEFORE UPDATE OF content,user_id,request_id,source,trigger,rationale,blocking_issue,
+source_interaction_ids,embedding,expanded_terms,tags,source_span,notes,reader_angle,
+governance_subject_ref ON user_playbooks
+WHEN OLD.status IS NULL AND NEW.content='' AND NEW.user_id IS NULL
+AND (OLD.content IS NOT NEW.content OR OLD.user_id IS NOT NEW.user_id
+ OR OLD.request_id IS NOT NEW.request_id OR OLD.source IS NOT NEW.source
+ OR OLD.trigger IS NOT NEW.trigger OR OLD.rationale IS NOT NEW.rationale
+ OR OLD.blocking_issue IS NOT NEW.blocking_issue
+ OR OLD.source_interaction_ids IS NOT NEW.source_interaction_ids
+ OR OLD.embedding IS NOT NEW.embedding OR OLD.expanded_terms IS NOT NEW.expanded_terms
+ OR OLD.tags IS NOT NEW.tags OR OLD.source_span IS NOT NEW.source_span
+ OR OLD.notes IS NOT NEW.notes OR OLD.reader_angle IS NOT NEW.reader_angle
+ OR OLD.governance_subject_ref IS NOT NEW.governance_subject_ref)
+BEGIN
+ UPDATE playbook_aggregation_state SET state_version=state_version+1,pending=1
+ WHERE agent_version=OLD.agent_version AND EXISTS (
+  SELECT 1 FROM playbook_aggregation_operations
+  WHERE agent_version=OLD.agent_version AND status IN ('queued','running','retrying')
+ );
+ UPDATE playbook_aggregation_operations SET status='failed',error='input_erased',
+ completed_at=unixepoch(),updated_at=unixepoch(),next_attempt_at=NULL
+ WHERE agent_version=OLD.agent_version AND status IN ('queued','running','retrying');
+END;
+DROP TRIGGER IF EXISTS fence_retired_aggregation_inputs;
+CREATE TRIGGER fence_retired_aggregation_inputs
+BEFORE UPDATE OF status,agent_version ON user_playbooks
+WHEN OLD.status IS NULL AND (NEW.status IS NOT NULL OR NEW.agent_version IS NOT OLD.agent_version)
+BEGIN
+ UPDATE playbook_aggregation_state SET state_version=state_version+1,pending=1
+ WHERE agent_version=OLD.agent_version AND EXISTS (
+  SELECT 1 FROM playbook_aggregation_operations
+  WHERE agent_version=OLD.agent_version AND status IN ('queued','running','retrying')
+ );
 END;
 """
 
