@@ -1,6 +1,8 @@
 """HTTP and handler clocks stay separate through dependencies and cancellation."""
 
 import asyncio
+import logging
+import re
 import threading
 from types import SimpleNamespace
 
@@ -8,6 +10,7 @@ import httpx
 import pytest
 from fastapi import FastAPI, HTTPException
 
+from reflexio.cli import log_format
 from reflexio.server import publish_timing as timing
 
 
@@ -21,9 +24,71 @@ def timing_enabled(monkeypatch):
     timing.reset_for_tests()
 
 
+def record_fields(record: logging.LogRecord) -> dict[str, str]:
+    """Parse timing fields after removing only the duplicate-filter suffix."""
+    message = re.sub(
+        r"(?: \[\+[0-9]+ similar suppressed in the last [0-9]+s\])+\Z",
+        "",
+        record.getMessage(),
+    )
+    return dict(part.split("=", 1) for part in message.split())
+
+
+def test_record_fields_preserves_payload_after_duplicate_filter(monkeypatch):
+    clock = iter((0, 1, 6))
+    monkeypatch.setattr(
+        log_format, "time", SimpleNamespace(monotonic=lambda: next(clock))
+    )
+    duplicate_filter = log_format.DuplicateFilter()
+
+    def record():
+        return logging.LogRecord(
+            timing._timing_logger.name,
+            logging.INFO,
+            __file__,
+            1,
+            "event=publish_timing total_ms=%s timing_id=%s",
+            ("3000", "request-timing"),
+            None,
+        )
+
+    assert duplicate_filter.filter(record())
+    assert not duplicate_filter.filter(record())
+    emitted = record()
+    assert duplicate_filter.filter(emitted)
+    assert emitted.getMessage().endswith(" [+1 similar suppressed in the last 5s]")
+    expected = {
+        "event": "publish_timing",
+        "total_ms": "3000",
+        "timing_id": "request-timing",
+    }
+    assert record_fields(emitted) == expected
+    # Multiple configured handlers can annotate the same emitted record.
+    emitted.msg += " [+2 similar suppressed in the last 10s]"
+    assert record_fields(emitted) == expected
+
+
+@pytest.mark.parametrize(
+    "trailer",
+    ["unexpected trailer", "[+1 similar suppressed in the last 5s] unexpected"],
+)
+def test_record_fields_rejects_unrecognized_trailers(trailer):
+    record = logging.LogRecord(
+        timing._timing_logger.name,
+        logging.INFO,
+        __file__,
+        1,
+        f"event=publish_timing total_ms=3000 {trailer}",
+        (),
+        None,
+    )
+    with pytest.raises(ValueError):
+        record_fields(record)
+
+
 def records(caplog, event):
     return [
-        dict(part.split("=", 1) for part in r.getMessage().split())
+        record_fields(r)
         for r in caplog.records
         if r.name == timing._timing_logger.name
         and r.getMessage().startswith(f"event={event} ")

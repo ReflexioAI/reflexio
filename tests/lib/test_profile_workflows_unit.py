@@ -50,8 +50,8 @@ def reflexio_with_config(temp_storage, ensure_mock_env, monkeypatch):
 
     # Extra safety: verify env var is set before creating Reflexio
     os.environ["MOCK_LLM_RESPONSE"] = "true"
-    # Keep deferred tagging inside this fixture's lifetime regardless of the
-    # developer's IS_TEST_ENV. Retain the real callback and drain assertion.
+    # Run real tagging and drain it before removing storage; the production
+    # debounce (15 seconds) exceeds this fixture's five-second drain budget.
     monkeypatch.setattr(
         "reflexio.server.services.tagging.tagging_scheduler._EFFECTIVE_DELAY_SECONDS",
         0,

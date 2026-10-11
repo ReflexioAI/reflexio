@@ -19,6 +19,7 @@ from reflexio.server.services.storage import retention_sweep
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 
 from .test_generation_service_publish_timing import _publish_request, _reflexio
+from .test_publish_http_timing import record_fields
 
 
 @pytest.fixture
@@ -90,7 +91,7 @@ def test_http_persists_without_sweeping_then_scheduler_enforces_caps(
             assert response.status_code == 200
             assert response.json()["success"] is True
             records = [
-                dict(part.split("=", 1) for part in record.getMessage().split())
+                record_fields(record)
                 for record in caplog.records
                 if record.name == publish_timing._timing_logger.name
                 and record.getMessage().startswith("event=publish_")

@@ -376,18 +376,20 @@ def test_eval_result_reads_can_omit_embeddings_without_changing_default(
     assert "embedding" not in selected_columns
 
 
+@pytest.mark.parametrize("evaluation_name", [None, "overall_success"])
 def test_targeted_eval_result_id_lookup(
     storage: BaseStorage,
+    evaluation_name: str | None,
 ) -> None:
-    _seed_eval_result(storage, "s1", "overall_success", agent_version="v1")
+    _seed_eval_result(storage, "s1", evaluation_name, agent_version="v1")
     _seed_eval_result(storage, "s1", "safety", agent_version="v1")
-    _seed_eval_result(storage, "s1", "overall_success", agent_version="v2")
-    _seed_eval_result(storage, "s2", "overall_success", agent_version="v1")
+    _seed_eval_result(storage, "s1", evaluation_name, agent_version="v2")
+    _seed_eval_result(storage, "s2", evaluation_name, agent_version="v1")
 
     ids = storage.get_agent_success_evaluation_result_ids(
         user_id="u1",
         session_id="s1",
-        evaluation_name="overall_success",
+        evaluation_name=evaluation_name,
         agent_version="v1",
     )
 
@@ -398,7 +400,7 @@ def test_targeted_eval_result_id_lookup(
         if r.result_id == ids[0]
     ][0]
     assert row.session_id == "s1"
-    assert row.evaluation_name == "overall_success"
+    assert row.evaluation_name == evaluation_name
     assert row.agent_version == "v1"
 
 
