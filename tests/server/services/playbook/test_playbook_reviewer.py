@@ -1021,7 +1021,7 @@ def test_evidence_first_survivor_requires_excerpts_and_final_evidence_ownership(
     )
 
 
-@pytest.mark.parametrize("version", ["1.14.0", "1.15.0", "1.16.0", "1.17.0"])
+@pytest.mark.parametrize("version", ["1.14.0", "1.15.0", "1.16.0", "1.17.0", "1.18.0"])
 def test_evidence_first_policy_is_separate_and_excerpts_are_not_persisted(
     caplog, version
 ):

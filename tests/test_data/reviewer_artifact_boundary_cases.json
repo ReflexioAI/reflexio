@@ -1,0 +1,41 @@
+[
+  {
+    "id": "visible-report-unobserved-reception",
+    "provenance": "Supplemental synthetic development boundary control; not customer data. Preregistered before v1.18 calls.",
+    "domain": "weekly-summary",
+    "split": "development",
+    "agent_context": "An assistant that writes weekly summaries and remembers explicit recurring format instructions.",
+    "turns": [
+      {
+        "role": "User",
+        "content": "For future weekly summaries, include a compact table of the project counts."
+      },
+      {
+        "role": "Agent",
+        "content": "Here is this week\u2019s summary:\n| Project | Count |\n| North | 12 |\n| South | 8 |"
+      }
+    ],
+    "candidates": [
+      {
+        "content": "Include a compact table of project counts in future weekly summaries because the user praised the last table for making every trend obvious.",
+        "trigger": "When preparing a future weekly summary",
+        "rationale": "The user requested this recurring format and praised the table in the last report.",
+        "evidence": [
+          1,
+          2
+        ],
+        "decision": "revise",
+        "reason_code": "unseen_artifact",
+        "preserve": [
+          "table",
+          "counts"
+        ],
+        "remove": [
+          "praised",
+          "every trend"
+        ]
+      }
+    ],
+    "existing": []
+  }
+]

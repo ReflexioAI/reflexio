@@ -142,3 +142,35 @@ four priority oracles are unchanged. Stop on oracle mismatch, invalid observatio
 unsupported/ambiguous saved guidance or lost useful core. The unchanged candidate
 can proceed to broader development/private, holdout and staging only after all
 focused gates pass. This experiment does not qualify MiniMax or activate GLM.
+
+
+### Preregistered v1.18 artifact-boundary experiment (2026-10-11)
+
+Inactive v1.18 changes only the applicability boundary of `unseen_artifact`: name
+the particular artifact/output and unavailable evidence for its claimed contents,
+properties, reception or result; contents may be available while reception is not.
+Missing evidence for a conversational action's benefit is insufficient to invoke
+that code; unsupported causal effects remain rule 5. Genuine unavailable-artifact
+claims retain priority. This is a hypothesis, not a proven cause of v1.17 failure.
+
+First compare v1.3/v1.18 on unchanged development controls
+`unseen-over-causality` and `causality-over-speculation`, plus separately frozen
+`reviewer_artifact_boundary_cases.json` (visible report/unobserved reception),
+three serial alternating repeats per arm per case (18 expected outputs). Require every candidate decision
+and reason correct, complete measurements and independent semantic inspection.
+The existing evaluator finishes a six-output case block before checking its
+classification gate; fail stops before the next case/private phase. No holdout
+calls or corpus edits. Same GLM-5.2 high/enabled/8192/.7 settings in both arms,
+zero outer retries/fallbacks/seed override; internal repairs recorded.
+
+Only after all three boundary controls clear, run the same frozen oracle-v2 five
+private priority cases with five repeats per arm (50 expected outputs), alternating
+serial arms and the existing fail-closed per-output gates. Preserve original
+oracle and v1.17 stopped reports; no retrospective rescoring or label relaxation.
+Oracle v2 SHA-256: `e97e913d4df0492090d7f3bf14351ab301ec3155855d99667fef2a952eff3fe4`.
+Each driver pins inputs before calls and records source/driver/report hashes.
+Broader coverage, unchanged holdout, production-provider compatibility and staging
+pipeline remain subsequent gates. This experiment cannot activate a replacement.
+
+Supplemental boundary file SHA-256: `a9cbd9ed7afd6899f8c11691e30147e4926e49aa76765401c9b6df54ff5e11aa`. Its oracle must be independently
+reviewed before calls; the original corpus/holdout remain byte-identical.

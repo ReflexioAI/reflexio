@@ -626,3 +626,8 @@ production-quality or original-defect-resolution claim. Re-measure after any
 prompt edit, preserving both fatal gates and useful revision cores.
 
 Mutation pytest bootstraps select an empty, owned temporary environment file before loading configuration or importing the server, preventing collection from creating a persistent user `.env`. Ordinary pytest retains its provider credential loading.
+
+Inactive v1.18 requires an identifiable artifact claim with missing supporting evidence before choosing
+that reason; unsupported conversational benefits remain causal defects. Compare
+unchanged development boundary controls plus the separately frozen visible-report/
+unobserved-reception control before the frozen private priority run.

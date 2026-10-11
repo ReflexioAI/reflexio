@@ -648,7 +648,7 @@ class PlaybookCandidateReviewer:
         )
         units_by_candidate = self._candidate_evidence_units(candidates, prompt_context)
         version = self.request_context.prompt_manager.get_active_version(self.PROMPT_ID)
-        evidence_first = version in {"1.14.0", "1.15.0", "1.16.0", "1.17.0"}
+        evidence_first = version in {"1.14.0", "1.15.0", "1.16.0", "1.17.0", "1.18.0"}
         variables = {
             "agent_context_prompt": agent_context,
             "playbook_definition": playbook_definition,
