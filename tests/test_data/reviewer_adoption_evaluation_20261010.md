@@ -32,6 +32,7 @@ staging qualification was run. Active/default remains v1.3.0.
 - Protocol byte SHA-256: `e671ee64574b468508d5023e29dc04a55abe8d6738b2c4d39dec448d0b06d072`.
 - Manifest byte SHA-256: `c33a540547d9907aada36f66d4cf5825f9173290b1d30746a8c5357630844940`.
 - Independent semantic audit byte SHA-256: `a3348ff4306558edd46b20944ad9c2290b2eb9c0d5f2ff82dd705584e8c71628`.
+- Independent diagnostic byte SHA-256: `51c66fb222b5c5200d96852ad8e0820e19ae37410528805ebefe245735cdaaa1`.
 
 The v1.21 explanation refinement did not establish correct causal labels or
 task scope; tightening v1.22 did not preserve the supported core. Neither
