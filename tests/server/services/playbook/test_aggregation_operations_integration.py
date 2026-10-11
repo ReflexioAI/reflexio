@@ -2,6 +2,7 @@
 
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
+from threading import Event
 
 import pytest
 
@@ -27,6 +28,124 @@ def claim_operation(storage, operation):
     assert claim is not None
     storage.begin_playbook_aggregation_operation(operation.operation_id, claim)
     return claim
+
+
+def _seed_erasure_source(storage):
+    from unittest.mock import patch
+
+    from reflexio.models.api_schema.service_schemas import UserPlaybook
+
+    with patch.object(storage, "_get_embedding", return_value=[0.1] * 512):
+        storage.save_user_playbooks(
+            [
+                UserPlaybook(
+                    request_id="private-source",
+                    user_id="user",
+                    agent_version="v1",
+                    playbook_name="test",
+                    content="Private input",
+                    trigger="Private workflow",
+                )
+            ]
+        )
+    return storage.get_user_playbooks(user_id="user")[0]
+
+
+def test_trigger_replacement_keeps_concurrent_erasure_fenced(storage):
+    import sqlite3
+
+    from reflexio.server.services.storage.sqlite_storage.playbook._aggregation import (
+        init_playbook_aggregation_tables,
+    )
+
+    source = _seed_erasure_source(storage)
+    operation = storage.submit_playbook_aggregation_operation("during-init", "v1")
+    claim = claim_operation(storage, operation)
+    reopened = SQLiteStorage(org_id=storage.org_id, db_path=storage.db_path)
+    paused = Event()
+    resume = Event()
+    timed_out = Event()
+
+    def pause_after_drop(statement):
+        if statement.strip().startswith(
+            "CREATE TRIGGER cancel_erased_aggregation_operations"
+        ):
+            paused.set()
+            if not resume.wait(10):
+                timed_out.set()
+
+    reopened.conn.set_trace_callback(pause_after_drop)
+    try:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            refresh = executor.submit(init_playbook_aggregation_tables, reopened.conn)
+            try:
+                assert paused.wait(5)
+                # At the exact DROP/CREATE boundary, another writer must be
+                # blocked by the transaction rather than erase an unfenced row.
+                storage.conn.execute("PRAGMA busy_timeout=0")
+                with pytest.raises(sqlite3.OperationalError, match="locked"):
+                    storage.conn.execute(
+                        "DELETE FROM user_playbooks WHERE user_playbook_id=?",
+                        (source.user_playbook_id,),
+                    )
+                storage.conn.rollback()
+            finally:
+                resume.set()
+            refresh.result(timeout=10)
+        assert not timed_out.is_set()
+        storage.conn.execute("PRAGMA busy_timeout=5000")
+        storage.conn.execute(
+            "DELETE FROM user_playbooks WHERE user_playbook_id=?",
+            (source.user_playbook_id,),
+        )
+        storage.conn.commit()
+        receipt = storage.get_playbook_aggregation_operation(operation.operation_id)
+        assert receipt.status == "failed" and receipt.error == "input_erased"
+        assert not storage.validate_playbook_aggregation_claim(claim)
+    finally:
+        resume.set()
+        reopened.conn.set_trace_callback(None)
+        reopened.conn.close()
+
+
+def test_failed_trigger_replacement_rolls_back_all_fences(storage, monkeypatch):
+    import sqlite3
+
+    from reflexio.server.services.storage.sqlite_storage.playbook import _aggregation
+
+    source = _seed_erasure_source(storage)
+    operation = storage.submit_playbook_aggregation_operation("failed-init", "v1")
+    claim = claim_operation(storage, operation)
+
+    def fence_definitions():
+        return {
+            row["name"]: row["sql"]
+            for row in storage.conn.execute(
+                "SELECT name,sql FROM sqlite_master WHERE type='trigger' "
+                "AND name IN ('cancel_erased_aggregation_operations',"
+                "'cancel_purged_aggregation_operations','fence_retired_aggregation_inputs')"
+            )
+        }
+
+    before = fence_definitions()
+    monkeypatch.setattr(
+        _aggregation,
+        "AGGREGATION_OPERATIONS_DDL",
+        _aggregation.AGGREGATION_OPERATIONS_DDL.replace(
+            "CREATE TRIGGER fence_retired_aggregation_inputs",
+            "CREATE TRIGGER fence_retired_aggregation_inputs BROKEN",
+        ),
+    )
+    with pytest.raises(sqlite3.OperationalError, match="BROKEN"):
+        _aggregation.init_playbook_aggregation_tables(storage.conn)
+    assert not storage.conn.in_transaction
+    assert fence_definitions() == before and len(before) == 3
+    assert storage.purge_content(
+        entity_type="user_playbook", entity_id=str(source.user_playbook_id)
+    )
+    receipt = storage.get_playbook_aggregation_operation(operation.operation_id)
+    assert receipt.status == "failed" and receipt.error == "input_erased"
+    assert not storage.validate_playbook_aggregation_claim(claim)
 
 
 def test_idempotent_submission_and_active_conflicts(storage):
@@ -442,3 +561,81 @@ def test_synchronous_rerun_cannot_bypass_explicit_lease_when_incremental_disable
     generation.llm_client = MagicMock()
     with pytest.raises(RuntimeError, match="already running"):
         generation.run_playbook_aggregation(agent_version="v1")
+
+
+@pytest.mark.parametrize("success", [False, True])
+def test_retired_snapshot_retries_and_releases_owned_lease_without_state_overwrite(
+    storage, success
+):
+    _seed_erasure_source(storage)
+    operation = storage.submit_playbook_aggregation_operation("retire-and-retry", "v1")
+    claim = claim_operation(storage, operation)
+    assert storage.capture_playbook_aggregation_rerun_snapshot(
+        "v1", limit=10
+    ).user_playbooks
+    storage.conn.execute("UPDATE user_playbooks SET status='superseded', retired_at=1")
+    storage.conn.execute(
+        "UPDATE playbook_aggregation_state SET pending=1, next_attempt_at=123, last_success_at=7"
+    )
+    storage.conn.commit()
+    state_sql = "SELECT state_version,pending,next_attempt_at,last_success_at FROM playbook_aggregation_state WHERE agent_version='v1'"
+    advanced = tuple(storage.conn.execute(state_sql).fetchone())
+    assert advanced[0] > claim.state_version
+    with pytest.raises(RuntimeError, match="lease lost"):
+        storage.complete_playbook_aggregation_operation(
+            operation.operation_id, claim, {}
+        )
+    storage.fail_playbook_aggregation_operation(
+        operation.operation_id, claim, error="execution_failed", retry_seconds=30
+    )
+    receipt = storage.get_playbook_aggregation_operation(operation.operation_id)
+    assert receipt.status == "retrying" and receipt.next_attempt_at is not None
+    assert not storage.finish_playbook_aggregation_claim(
+        claim,
+        success=success,
+        retry_after_seconds=30,
+        backlog_retry_after_seconds=0,
+        min_interval_seconds=0,
+    )
+    assert tuple(storage.conn.execute(state_sql).fetchone()) == advanced
+    assert (
+        storage.conn.execute(
+            "SELECT claim_owner FROM playbook_aggregation_lease WHERE singleton=1"
+        ).fetchone()[0]
+        is None
+    )
+    storage.conn.execute("UPDATE playbook_aggregation_operations SET next_attempt_at=0")
+    storage.conn.commit()
+    replacement = claim_operation(storage, operation)
+    assert replacement.fence > claim.fence
+    storage.complete_playbook_aggregation_operation(
+        operation.operation_id, replacement, {}
+    )
+    assert (
+        storage.get_playbook_aggregation_operation(operation.operation_id).status
+        == "succeeded"
+    )
+
+
+def test_old_worker_failure_and_finish_cannot_touch_replacement(storage):
+    operation = storage.submit_playbook_aggregation_operation("replacement", "v1")
+    old = claim_operation(storage, operation)
+    storage.conn.execute("UPDATE playbook_aggregation_lease SET claim_expires_at=0")
+    storage.conn.commit()
+    replacement = claim_operation(storage, operation)
+    storage.fail_playbook_aggregation_operation(
+        operation.operation_id, old, error="late", retry_seconds=None
+    )
+    assert not storage.finish_playbook_aggregation_claim(
+        old,
+        success=False,
+        retry_after_seconds=30,
+        backlog_retry_after_seconds=0,
+        min_interval_seconds=0,
+    )
+    receipt = storage.get_playbook_aggregation_operation(operation.operation_id)
+    assert receipt.status == "running"
+    assert storage.validate_playbook_aggregation_claim(replacement)
+    storage.complete_playbook_aggregation_operation(
+        operation.operation_id, replacement, {}
+    )

@@ -900,6 +900,11 @@ def test_http_admission_scheduler_and_receipt_survive_output_storage_restart(
     )
     facade = MagicMock()
     facade.get_storage.return_value = sqlite_storage
+    facade.request_context = request_context
+    monkeypatch.setattr(
+        "reflexio.server.routes.playbooks.ensure_local_playbook_aggregation_scheduler",
+        lambda _context: None,
+    )
     monkeypatch.setattr(
         "reflexio.server.routes.playbooks.publisher_api.get_reflexio",
         lambda **_kwargs: facade,

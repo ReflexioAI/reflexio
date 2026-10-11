@@ -205,8 +205,8 @@ COMMIT;
 
 
 def init_playbook_aggregation_tables(conn: sqlite3.Connection) -> None:
-    conn.executescript(AGGREGATION_DDL + AGGREGATION_OPERATIONS_DDL)
     try:
+        conn.executescript(AGGREGATION_DDL + AGGREGATION_OPERATIONS_DDL)
         conn.executescript(AGGREGATION_TRIGGER_DDL)
     except Exception:
         conn.rollback()
@@ -506,10 +506,10 @@ class PlaybookAggregationStoreMixin(AggregationOperationsMixin):
                     claim.state_version,
                 ),
             )
-            if cur.rowcount != 1:
-                if self._own_transaction():
-                    self.conn.rollback()
-                return False
+            state_updated = cur.rowcount == 1
+            # Input retirement can advance state while this lease remains ours.
+            # Leave that newer state untouched, but do not block all org work
+            # until lease expiry after the failed compare-and-swap.
             self.conn.execute(
                 "UPDATE playbook_aggregation_lease SET claim_owner=NULL, "
                 "claim_expires_at=NULL, agent_version=NULL WHERE singleton=1 "
@@ -518,7 +518,7 @@ class PlaybookAggregationStoreMixin(AggregationOperationsMixin):
             )
             if self._own_transaction():
                 self.conn.commit()
-            return True
+            return state_updated
 
     def stage_playbook_aggregation_intake(
         self, agent_version: str, *, limit: int, window_limit: int = 20_000

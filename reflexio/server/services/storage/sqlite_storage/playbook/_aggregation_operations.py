@@ -15,6 +15,7 @@ from reflexio.server.services.storage.storage_base.playbook import (
 )
 
 AGGREGATION_OPERATIONS_DDL = """
+BEGIN IMMEDIATE;
 CREATE TABLE IF NOT EXISTS playbook_aggregation_operations (
     operation_id TEXT PRIMARY KEY,
     request_id TEXT NOT NULL UNIQUE,
@@ -82,6 +83,7 @@ BEGIN
   WHERE agent_version=OLD.agent_version AND status IN ('queued','running','retrying')
  );
 END;
+COMMIT;
 """
 
 
@@ -98,6 +100,7 @@ class AggregationOperationsMixin:
     commit_scope: Any
     _lock: Any
     validate_playbook_aggregation_claim: Any
+    _aggregation_claim_is_live: Any
     schedule_playbook_aggregation: Any
 
     def submit_playbook_aggregation_operation(
@@ -206,7 +209,9 @@ class AggregationOperationsMixin:
         retry_seconds: int | None,
     ) -> None:
         with self.commit_scope():
-            if not self.validate_playbook_aggregation_claim(claim):
+            # A changed input state fences effects, but the still-owned worker
+            # must record retry timing without replacing a newer worker's receipt.
+            if not self._aggregation_claim_is_live(claim):
                 return
             self.conn.execute(
                 "UPDATE playbook_aggregation_operations SET status=?,error=?,updated_at=unixepoch(), "

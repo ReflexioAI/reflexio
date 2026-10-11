@@ -2861,7 +2861,9 @@ class ReflexioClient:
             request_id=request_id, agent_version=agent_version
         )
         response = self._make_request(
-            "POST", "/api/playbook_aggregation_operations", json=payload.model_dump()
+            "POST",
+            "/api/playbook_aggregation_operations",
+            json=payload.model_dump(mode="json"),
         )
         return PlaybookAggregationOperation.model_validate(response)
 

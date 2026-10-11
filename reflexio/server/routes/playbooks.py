@@ -74,6 +74,9 @@ from reflexio.server.auth import (
 from reflexio.server.cache import reflexio_cache
 from reflexio.server.rate_limit import limiter
 from reflexio.server.routes._common import _run_limited_api
+from reflexio.server.services.playbook.aggregation_scheduler import (
+    ensure_local_playbook_aggregation_scheduler,
+)
 from reflexio.server.services.playbook.review_service import new_review_run_id
 from reflexio.server.services.search_metering_worker import enqueue_search_metering
 
@@ -655,19 +658,28 @@ def submit_playbook_aggregation_operation(
     payload: SubmitPlaybookAggregationRequest,
     org_id: Annotated[str, Depends(default_get_org_id)],
 ) -> PlaybookAggregationOperation:
-    storage = publisher_api.get_reflexio(org_id=org_id).get_storage()
+    reflexio = publisher_api.get_reflexio(org_id=org_id)
+    try:
+        storage = reflexio.get_storage()
+    except RuntimeError as exc:
+        raise HTTPException(
+            503, "Durable aggregation is unavailable on this storage"
+        ) from exc
     if storage is None or not getattr(
         storage, "supports_durable_playbook_aggregation_operations", False
     ):
         raise HTTPException(503, "Durable aggregation is unavailable on this storage")
     try:
-        return storage.submit_playbook_aggregation_operation(
+        operation = storage.submit_playbook_aggregation_operation(
             payload.request_id, payload.agent_version
         )
     except AggregationOperationConflictError as exc:
         raise HTTPException(
             409, {"message": str(exc), "operation_id": exc.operation_id}
         ) from exc
+    if operation.status in {"queued", "running", "retrying"}:
+        ensure_local_playbook_aggregation_scheduler(reflexio.request_context)
+    return operation
 
 
 @router.get("/api/playbook_aggregation_operations/{operation_id}")
@@ -677,7 +689,13 @@ def get_playbook_aggregation_operation(
     operation_id: str,
     org_id: Annotated[str, Depends(default_get_org_id)],
 ) -> PlaybookAggregationOperation:
-    storage = publisher_api.get_reflexio(org_id=org_id).get_storage()
+    reflexio = publisher_api.get_reflexio(org_id=org_id)
+    try:
+        storage = reflexio.get_storage()
+    except RuntimeError as exc:
+        raise HTTPException(
+            503, "Durable aggregation is unavailable on this storage"
+        ) from exc
     if storage is None:
         raise HTTPException(503, "Durable aggregation is unavailable on this storage")
     try:
@@ -694,4 +712,8 @@ def get_playbook_aggregation_operation(
                 503, "Durable aggregation is unavailable on this storage"
             )
         raise HTTPException(404, "Aggregation operation not found")
+    if operation.status in {"queued", "running", "retrying"} and getattr(
+        storage, "supports_durable_playbook_aggregation_operations", False
+    ):
+        ensure_local_playbook_aggregation_scheduler(reflexio.request_context)
     return operation

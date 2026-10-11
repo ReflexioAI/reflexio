@@ -289,6 +289,9 @@ Retiring or moving a current input invalidates the captured claim through the
 state-version fence; the operation can recover with a fresh claim. Removing an
 already excluded historical tombstone does not cancel unrelated work. These
 fences use database state rather than application-clock comparisons.
+The still-owned worker records its retry and releases its lease after input
+state changes, preserving the newer scheduling state instead of waiting for
+lease expiry. A replaced worker cannot change the new worker's receipt or lease.
 Synchronous full reruns use the same
 lease when either incremental or durable-operation support is enabled. Explicit
 runs with missing source embeddings retry rather than declaring success for a
@@ -298,3 +301,12 @@ the same snapshot is reused for generation. Empty or whitespace-only source
 bodies are excluded before the snapshot limit, matching incremental intake, so
 erased lineage skeletons cannot block later work or displace surviving inputs.
 Mock-LLM mode continues to support keyless trigger clustering.
+
+SQLite replaces its erasure-fencing triggers in one immediate transaction, so
+concurrent connections cannot erase inputs between dropping and recreating a
+trigger. Failed replacement rolls back the previous trigger definitions.
+For local OSS apps whose organization is resolved from each request, durable
+admission and active receipt polling register that organization's local worker;
+polling can resume persisted work after process registration is lost. Terminal
+receipt reads do not start workers. Platform and self-host deployments retain
+their enterprise scheduler ownership.
