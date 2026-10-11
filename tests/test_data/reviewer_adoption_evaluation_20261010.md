@@ -697,3 +697,75 @@ synthetic corpus and 28-case holdout hashes remain unchanged.
 - Manifest byte SHA-256: `64520998020f4762219821d0ca5d9aa30038d6c6888b20633a2d442493d991f8`.
 - Stopped bundle byte SHA-256: `e845f19a608e0a856f5129ff56a11374eed4d4023692614ff3cf184ec379452e`.
 - Private log byte SHA-256: `21ecfab265cbe2b6450b2bdb399ad6ef2950c551f57aeb314823de2c1522d603`.
+
+
+### v1.18 artifact boundary: development passes, private semantic gate stops
+
+The preregistered inactive change requires an identified artifact/output and
+unavailable evidence for its claimed contents, properties, reception or result.
+Available contents do not establish reception. Missing general conversational
+benefits do not by themselves create an artifact claim. No fatal/useful-core or
+inference-profile changes were made. Two independent original-first reviews
+confirmed the new supplemental oracle before calls; the original corpus and
+holdout stayed byte-identical.
+
+All three boundary controls completed three paired serial repeats (18 outputs).
+Candidate decisions and reason codes matched 9/9; baseline decisions matched 9/9
+and reason codes 6/9. Independent semantic audit cleared all nine candidates:
+six correct rejects and three grounded revisions preserving the explicitly
+requested recurring format while removing invented reception/effect claims.
+Three retained own-source excerpts were exact. All 18 calls/dispatches had complete
+observations, zero repairs, final errors or measurement errors. Candidate calls
+used 194.692 logical seconds and estimated $0.076731; baseline 124.724 seconds
+and $0.041953. These small diagnostic samples do not qualify general performance.
+
+After this gate passed, the same pinned source ran the frozen private five-control
+comparison against oracle v2. It was deliberately interrupted at the semantic
+gate after 15 final outputs (eight candidate, seven baseline), seven complete
+pairs. Candidate decisions and labels matched 8/8. Retail cleared all five repeats;
+setup prerequisites cleared two. The third setup revision's rationale and notes
+can describe supplied choices as actually used, while the own record establishes
+an announcement, not verified execution. Two independent source-first reviewers
+classified this as UNVERIFIED under the strict gate: a narrow interpretation is
+possible, but cannot be adopted as a grounded pass. Content/trigger preserve the
+supported prerequisite core. This is not a reason-code or definitive fabricated-
+completion finding. Preserve the stopped run; do not resume on a charitable
+interpretation or change the frozen oracle.
+
+Private candidate grounding: seven clear, one unverified, zero definitive unsafe
+findings; 30 exact excerpts and all final references verified. The 15 completed
+logical calls recorded 16 dispatches, one recovered parse repair, zero final
+reviewer errors and zero measurement errors. The recovered call's first attempt
+reported 8192 output tokens; token-limit equality alone does not prove truncation.
+The interrupted next baseline call retained its own incomplete checkpoint: one
+started dispatch, 67.505 logical seconds, no final output/usage/cost and an
+`IncompleteProviderObservation`. This is additional to the completed-call totals;
+its unknown cost is not zero. The stopped manifest is incomplete/interrupted.
+
+Eight completed candidate calls used nine requests, 660.353 logical seconds and
+estimated $0.240126; seven completed baseline calls used seven requests, 317.436
+seconds and $0.107144. Independent baseline retail audit found one grounded
+survivor, three unsupported requirement survivors and one unverified outcome
+survivor across five repeats; decisions 5/5, labels 0/5. Candidate retail was
+5/5 grounded, decisions and labels. This supports a narrow comparative improvement,
+not generalization. Remaining absence, task-parameter and unseen-artifact private
+controls, broader coverage, untouched holdout, production-provider compatibility
+and staging were not reached. v1.18 remains inactive and unqualified.
+
+Implementation passed 507 affected OSS tests, 19 enterprise replay tests and 20
+overlapping final version/policy checks; Ruff/Pyright passed (zero type errors or
+warnings). Scoped local P0/P1 reviews cleared and reverified the artifact-reception
+boundary and complete-both-arm runner gate before source freeze/calls.
+
+- Launch enterprise source: `85ac41f35a187d1c7a303911c4f95d41f4adcace`.
+- Launch OSS source: `fa57ceb429d6af6a2fe7afd320130c55ae7e06e0`.
+- Prompt byte SHA-256: `32e927ce19453826006de1c9d2707d93836b15532e36d395aab799fe8b8e0107`.
+- Supplemental fixture byte SHA-256: `a9cbd9ed7afd6899f8c11691e30147e4926e49aa76765401c9b6df54ff5e11aa`.
+- Development driver byte SHA-256: `b4cef60f7e79aef5f3ddd94517c4250e0f5406ca15d46faba11f97144a03af52`.
+- Private driver byte SHA-256: `3cf812e6991aecbc8f1f622f12d0a91e76e0ace0c43770b168b997b81efec40d`.
+- Development manifest byte SHA-256: `7dddc432cf5dab91b2e2035ac3ead3d311fee0119ac67fbc426a5b67408721c3`.
+- Development bundle byte SHA-256: `5688e4445937b0d1593dd04da374e049b315b6dd780f4a11a908cd0adae7f156`.
+- Development log byte SHA-256: `eba85f3df08824b76500534fe3c4d788626f0508e0ff0ffdaedfdb09432ddd3c`.
+- Private manifest byte SHA-256: `485bcf7433b176f0748649dc25fa5c73db0831cd5bebba5870b7fb6c62adf2da`.
+- Private stopped bundle byte SHA-256: `04ff87d7877bda34963043a739968136dfa21825b71a112ac3c69ece86dae42e`.
+- Private log byte SHA-256: `07fe1794e26e4b9c22744922d4d9ba001c7bb6661b04d61cf8c448fc509ff20e`.
