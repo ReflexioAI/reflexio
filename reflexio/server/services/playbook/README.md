@@ -256,3 +256,59 @@ Inline consolidation always runs during generation (the legacy `deduplicator` fe
 
 - [Server README](../../README.md) -- FastAPI backend component overview
 - [Prompt Bank README](../../prompt/prompt_bank/README.md) -- versioned prompt template system used by playbook prompts
+
+
+## Durable explicit aggregation
+
+`aggregation_operations.py` executes persisted full-archive requests before the
+scheduler's automatic work. The POST/GET API and SDK return
+`PlaybookAggregationOperation` receipts from the shared schema module. Requests
+are idempotent within the organization/project and serialized with automatic and
+synchronous manual aggregation through the existing organization lease.
+
+The aggregator commits generated outputs, lineage, bookkeeping and the successful
+operation receipt in the same fenced storage transaction. Zero-output success is
+valid; transient generation failure retries (up to five attempts) rather than
+being mistaken for zero output. Restart recovery discovers persisted queued,
+running and retrying operations; completed operations are never resubmitted.
+Optional optimization/tagging is outside the successful receipt contract.
+
+Receipt support is advertised separately as
+`supports_durable_playbook_aggregation_operations` (false on the portable base,
+true on SQLite when sqlite-vec loaded). Fenced full reruns write vector-backed
+cluster state, so a missing extension blocks new operation admission. Existing
+receipts remain readable when execution support becomes unavailable.
+Incremental aggregation support alone does not authorize these
+APIs. Disabling automatic incremental work does not hide existing receipts or
+prevent explicit full reruns. Heartbeats, claim notifications, retry reporting,
+and finalization retain the scheduler's organization/project scope. Incomplete
+aggregation results never become successful receipts. Erasing source user
+playbooks cancels active receipts on current-row deletion or content purge, so
+a stale output transaction cannot commit derived output after that erasure.
+Retiring or moving a current input invalidates the captured claim through the
+state-version fence; the operation can recover with a fresh claim. Removing an
+already excluded historical tombstone does not cancel unrelated work. These
+fences use database state rather than application-clock comparisons.
+Deleting an already purged empty source skeleton also leaves fresh operations
+unchanged, since those sources are excluded from their input snapshots.
+The still-owned worker records its retry and releases its lease after input
+state changes, preserving the newer scheduling state instead of waiting for
+lease expiry. A replaced worker cannot change the new worker's receipt or lease.
+Synchronous full reruns use the same
+lease when either incremental or durable-operation support is enabled. Explicit
+runs with missing source embeddings retry rather than declaring success for a
+partial corpus, including when the corpus is below the count threshold.
+Readiness uses the bounded pre-compute snapshot before that threshold decision;
+the same snapshot is reused for generation. Empty or whitespace-only source
+bodies are excluded before the snapshot limit, matching incremental intake, so
+erased lineage skeletons cannot block later work or displace surviving inputs.
+Mock-LLM mode continues to support keyless trigger clustering.
+
+SQLite replaces its erasure-fencing triggers in one immediate transaction, so
+concurrent connections cannot erase inputs between dropping and recreating a
+trigger. Failed replacement rolls back the previous trigger definitions.
+For local OSS apps whose organization is resolved from each request, durable
+admission and active receipt polling register that organization's local worker;
+polling can resume persisted work after process registration is lost. Terminal
+receipt reads do not start workers. Platform and self-host deployments retain
+their enterprise scheduler ownership.

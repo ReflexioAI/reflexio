@@ -1,7 +1,7 @@
 """Playbook route handlers (extracted from api.py, Tier3 A2)."""
 
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Annotated, Any
 
 if TYPE_CHECKING:
     pass
@@ -10,9 +10,15 @@ from fastapi import (
     APIRouter,
     BackgroundTasks,
     Depends,
+    HTTPException,
     Request,
 )
 
+from reflexio.models.api_schema.aggregation_operations import (
+    AggregationOperationConflictError,
+    PlaybookAggregationOperation,
+    SubmitPlaybookAggregationRequest,
+)
 from reflexio.models.api_schema.retriever_schema import (
     GetAgentPlaybooksRequest,
     GetAgentPlaybooksViewResponse,
@@ -68,6 +74,9 @@ from reflexio.server.auth import (
 from reflexio.server.cache import reflexio_cache
 from reflexio.server.rate_limit import limiter
 from reflexio.server.routes._common import _run_limited_api
+from reflexio.server.services.playbook.aggregation_scheduler import (
+    ensure_local_playbook_aggregation_scheduler,
+)
 from reflexio.server.services.playbook.review_service import new_review_run_id
 from reflexio.server.services.search_metering_worker import enqueue_search_metering
 
@@ -640,3 +649,71 @@ def downgrade_all_user_playbooks_endpoint(
 
     # Call downgrade_all_user_playbooks with request
     return reflexio.downgrade_all_user_playbooks(request=request)
+
+
+@router.post("/api/playbook_aggregation_operations", status_code=202)
+@limiter.limit("10/minute")
+def submit_playbook_aggregation_operation(
+    request: Request,
+    payload: SubmitPlaybookAggregationRequest,
+    org_id: Annotated[str, Depends(default_get_org_id)],
+) -> PlaybookAggregationOperation:
+    reflexio = publisher_api.get_reflexio(org_id=org_id)
+    try:
+        storage = reflexio.get_storage()
+    except RuntimeError as exc:
+        raise HTTPException(
+            503, "Durable aggregation is unavailable on this storage"
+        ) from exc
+    if storage is None or not getattr(
+        storage, "supports_durable_playbook_aggregation_operations", False
+    ):
+        raise HTTPException(503, "Durable aggregation is unavailable on this storage")
+    try:
+        operation = storage.submit_playbook_aggregation_operation(
+            payload.request_id, payload.agent_version
+        )
+    except AggregationOperationConflictError as exc:
+        raise HTTPException(
+            409, {"message": str(exc), "operation_id": exc.operation_id}
+        ) from exc
+    if operation.status in {"queued", "running", "retrying"}:
+        ensure_local_playbook_aggregation_scheduler(reflexio.request_context)
+    return operation
+
+
+@router.get("/api/playbook_aggregation_operations/{operation_id}")
+@limiter.limit("120/minute")
+def get_playbook_aggregation_operation(
+    request: Request,
+    operation_id: str,
+    org_id: Annotated[str, Depends(default_get_org_id)],
+) -> PlaybookAggregationOperation:
+    reflexio = publisher_api.get_reflexio(org_id=org_id)
+    try:
+        storage = reflexio.get_storage()
+    except RuntimeError as exc:
+        raise HTTPException(
+            503, "Durable aggregation is unavailable on this storage"
+        ) from exc
+    if storage is None:
+        raise HTTPException(503, "Durable aggregation is unavailable on this storage")
+    try:
+        operation = storage.get_playbook_aggregation_operation(operation_id)
+    except NotImplementedError as exc:
+        raise HTTPException(
+            503, "Durable aggregation is unavailable on this storage"
+        ) from exc
+    if operation is None:
+        if not getattr(
+            storage, "supports_durable_playbook_aggregation_operations", False
+        ):
+            raise HTTPException(
+                503, "Durable aggregation is unavailable on this storage"
+            )
+        raise HTTPException(404, "Aggregation operation not found")
+    if operation.status in {"queued", "running", "retrying"} and getattr(
+        storage, "supports_durable_playbook_aggregation_operations", False
+    ):
+        ensure_local_playbook_aggregation_scheduler(reflexio.request_context)
+    return operation

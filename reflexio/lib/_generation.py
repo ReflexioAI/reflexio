@@ -77,7 +77,13 @@ class GenerationMixin(ReflexioBase):
         if storage is None:
             raise ValueError(STORAGE_NOT_CONFIGURED_MSG)
         claim = None
-        if getattr(storage, "supports_incremental_playbook_aggregation", False) is True:
+        if (
+            getattr(storage, "supports_incremental_playbook_aggregation", False) is True
+            or getattr(
+                storage, "supports_durable_playbook_aggregation_operations", False
+            )
+            is True
+        ):
             storage.schedule_playbook_aggregation(agent_version)
             claim = storage.claim_due_playbook_aggregation(
                 owner=f"admin-rerun:{uuid.uuid4().hex}",

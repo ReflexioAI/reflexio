@@ -237,9 +237,20 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
         playbook_config = getattr(
             context.configurator.get_config(), "user_playbook_extractor_config", None
         )
-        if playbook_config is None or playbook_config.aggregation_config is None:
-            return
         if storage is None:
+            return
+        org_id, project_id = self._repair_scope_key(context)
+        from reflexio.server.services.playbook.aggregation_operations import (
+            run_explicit_operation,
+        )
+
+        self._active_stage = "explicit_operation"
+        if run_explicit_operation(
+            context,
+            owner=f"explicit:{self._worker_id}",
+            project_id=project_id,
+            on_work_claimed=self._on_work_claimed,
+        ):
             return
         if not getattr(storage, "supports_incremental_playbook_aggregation", False):
             blocked_reason = getattr(
@@ -253,7 +264,8 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
                     blocked_reason,
                 )
             return
-        org_id, project_id = self._repair_scope_key(context)
+        if playbook_config is None or playbook_config.aggregation_config is None:
+            return
         repair_now = time.monotonic()
         # Keyed by (org, work scope) rather than by org alone. The enterprise
         # context provider yields the SAME RequestContext once per project, so

@@ -7,6 +7,7 @@ import sqlite3
 import threading
 from typing import Any
 
+from reflexio.server.services.storage.sqlite_storage._base import _row_to_user_playbook
 from reflexio.server.services.storage.storage_base.playbook import (
     AGGREGATION_INVALIDATION_RETENTION_SECONDS,
     AGGREGATION_RETRY_BASE_SECONDS,
@@ -18,6 +19,11 @@ from reflexio.server.services.storage.storage_base.playbook import (
     PlaybookAggregationInvalidation,
     PlaybookAggregationRebuildSample,
     PlaybookAggregationRerunSnapshot,
+)
+
+from ._aggregation_operations import (
+    AGGREGATION_OPERATIONS_DDL,
+    AggregationOperationsMixin,
 )
 
 AGGREGATION_DDL = """
@@ -199,8 +205,8 @@ COMMIT;
 
 
 def init_playbook_aggregation_tables(conn: sqlite3.Connection) -> None:
-    conn.executescript(AGGREGATION_DDL)
     try:
+        conn.executescript(AGGREGATION_DDL + AGGREGATION_OPERATIONS_DDL)
         conn.executescript(AGGREGATION_TRIGGER_DDL)
     except Exception:
         conn.rollback()
@@ -235,12 +241,16 @@ def init_playbook_aggregation_tables(conn: sqlite3.Connection) -> None:
     )
 
 
-class PlaybookAggregationStoreMixin:
+class PlaybookAggregationStoreMixin(AggregationOperationsMixin):
     conn: sqlite3.Connection
     _lock: threading.RLock
     _own_transaction: Any
     commit_scope: Any
     _has_sqlite_vec: bool
+
+    @property
+    def supports_durable_playbook_aggregation_operations(self) -> bool:
+        return self._has_sqlite_vec
 
     @property
     def supports_incremental_playbook_aggregation(self) -> bool:
@@ -496,10 +506,10 @@ class PlaybookAggregationStoreMixin:
                     claim.state_version,
                 ),
             )
-            if cur.rowcount != 1:
-                if self._own_transaction():
-                    self.conn.rollback()
-                return False
+            state_updated = cur.rowcount == 1
+            # Input retirement can advance state while this lease remains ours.
+            # Leave that newer state untouched, but do not block all org work
+            # until lease expiry after the failed compare-and-swap.
             self.conn.execute(
                 "UPDATE playbook_aggregation_lease SET claim_owner=NULL, "
                 "claim_expires_at=NULL, agent_version=NULL WHERE singleton=1 "
@@ -508,7 +518,7 @@ class PlaybookAggregationStoreMixin:
             )
             if self._own_transaction():
                 self.conn.commit()
-            return True
+            return state_updated
 
     def stage_playbook_aggregation_intake(
         self, agent_version: str, *, limit: int, window_limit: int = 20_000
@@ -746,13 +756,15 @@ class PlaybookAggregationStoreMixin:
             if own:
                 self.conn.execute("BEGIN")
             try:
-                playbooks = self.get_user_playbooks(  # type: ignore[attr-defined]
-                    limit=limit,
-                    agent_version=agent_version,
-                    status_filter=[None],
-                    include_embedding=True,
-                    max_user_playbook_id=2**63 - 1,
-                )
+                rows = self.conn.execute(
+                    "SELECT * FROM user_playbooks WHERE agent_version=? "
+                    "AND status IS NULL AND trim(content) <> '' "
+                    "ORDER BY user_playbook_id DESC LIMIT ?",
+                    (agent_version, limit),
+                ).fetchall()
+                playbooks = [
+                    _row_to_user_playbook(row, include_embedding=True) for row in rows
+                ]
                 invalidation_rows = self.conn.execute(
                     "SELECT invalidation_id FROM playbook_aggregation_invalidation "
                     "WHERE agent_version=? AND processed_at IS NULL "
