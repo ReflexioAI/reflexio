@@ -49,6 +49,7 @@ def _write_private_text(path: Path, text: str) -> None:
 class Turn(BaseModel):
     role: str
     content: str
+    source: str = ""
 
 
 class Candidate(BaseModel):
@@ -102,6 +103,7 @@ def prepare_case(
                 agent_version="eval",
                 session_id=case.id,
                 created_at=index,
+                source=turn.source,
             ),
             interactions=[
                 Interaction(

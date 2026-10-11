@@ -486,6 +486,11 @@ Use `--cases tests/test_data/reviewer_generalization_cases.json --split developm
 or `--split holdout` to select one split. Survival-only controls allow acceptance
 or a grounded revision and have no exact reason-label oracle; `code_expected`
 is their separate label denominator. Inspect saved content as well as scores.
+Synthetic fixture turns may specify `source` alongside `role` and `content`.
+It becomes `Request.source` and reaches the reviewer's own-evidence metadata,
+so a generated/internal `User` turn can retain its producer provenance. Omitted
+`source` defaults to an empty string for existing fixtures; role alone does not
+establish direct user origin.
 The inactive v1.7.0 candidate clarifies unavailable artifact claims versus using
 record omissions as proof of absence. It also keeps internal-status proof of
 value distinct. It failed a workflow preservation control. Inactive v1.8

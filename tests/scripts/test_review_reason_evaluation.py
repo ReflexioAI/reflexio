@@ -243,6 +243,57 @@ def test_every_frozen_case_can_be_prepared_before_paid_calls():
         assert all(item.request_id == case.id for item in existing)
 
 
+@pytest.mark.parametrize("source", [None, "AgentGenerated", "chat"])
+def test_turn_source_survives_fixture_loading_into_real_reviewer_payload(
+    tmp_path: Path, source: str | None
+):
+    raw = next(
+        case
+        for case in json.loads(DEFAULT_CASES.read_text())
+        if case["id"] == "positive-preference"
+    )
+    if source is not None:
+        raw["turns"][0]["source"] = source
+    fixture = tmp_path / "source-case.json"
+    fixture.write_text(json.dumps([raw]))
+    case = load_cases(fixture)[0]
+    decision = CandidateReviewDecision(
+        id="C1",
+        decision="accept",
+        reason_code="grounded_useful",
+        evidence_ids=["C1-E1"],
+    )
+    client = MagicMock()
+    client.config = LiteLLMConfig(model="test-model", fallback_models=[])
+
+    def respond(*_, **options):
+        if options["response_format"] is EvidenceFirstReviewOutput:
+            return EvidenceFirstReviewOutput(
+                supporting_evidence=[
+                    CandidateSupportingEvidence(
+                        id="C1",
+                        excerpts=[
+                            SupportingExcerpt(
+                                evidence_id="C1-E1", text=case.turns[0].content
+                            )
+                        ],
+                    )
+                ],
+                decisions=[decision],
+            )
+        return PlaybookCandidateReviewOutput(decisions=[decision])
+
+    client.generate_chat_response.side_effect = respond
+    report = evaluate([case], client, 1, candidate_version="1.20.0")
+    assert report["errors"] == []
+    assert all(arm["processed"] == 1 for arm in report["summary"].values())
+    messages = client.generate_chat_response.call_args_list[1].args[0]
+    assert [message["role"] for message in messages] == ["system", "user"]
+    evidence = json.loads(messages[1]["content"])["own_evidence"]["C1"][0]
+    assert evidence["role"].casefold() == "user"
+    assert evidence["request_source"] == (source or "")
+
+
 @pytest.mark.parametrize(
     "candidate_version",
     [
