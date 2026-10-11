@@ -37,6 +37,31 @@ retry, reported response-model verification and per-candidate independent semant
 stop gates as v1.23. Only a full pass permits the fresh alternating private
 comparison; the failed v1.23 reports, all input labels and holdout stay unchanged.
 
+### Preserved original-only kind hypothesis failure
+
+Before another runtime stage, test a short classifier on eight unchanged
+originals, with content/trigger alone versus the same content/trigger plus own
+sources. Two independent original-first kind oracles agreed before calls. This
+was action classification only, not reviewer eligibility/survival qualification
+or a faithful v1.27 baseline. Alternate arm order across three repetitions.
+
+The trial stopped after 13 logical outputs (13 initial requests, zero repairs).
+Twelve individually audited P1/P2 outputs passed: the supplied-budget action and
+historical numeric default each cleared three repetitions in both arms. The next
+original-only output misclassified insurance activation as a standing value
+preference rather than other. Its exact action span/schema/measurement were valid;
+recurring action scope alone does not fix a parameter value as a standing default.
+The frozen label and failed gate remain unchanged. Six of seven observed
+original-only outputs were correct; the required 24 original-only passes and
+48 valid paired outputs were not achieved. Thirty-five outputs were not run.
+
+Do not infer source leakage from this stopped trial, do not resume it, and do
+not add an unproven original-only runtime classifier stage. No downstream/full
+reviewer gate advanced or default changed. Failed manifest SHA-256:
+`082d6a5d7c8cae99dcca7e8f9bcce1dacda8c2f882f5d230040f891c35bc042f`.
+Independent terminal audit SHA-256:
+`7530f916a46651efbf92ba50b66451f83f589066d3dc0b6d739e818ae99bfa25`.
+
 ### Preserved v1.27 first-pair semantic failure
 
 v1.27 stopped after its first pair (two logical outputs, three observed provider
