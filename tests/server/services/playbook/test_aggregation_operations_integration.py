@@ -545,13 +545,16 @@ def test_partial_results_are_not_success_and_claim_notification_is_scoped(
     assert receipt.status == "retrying" and receipt.result is None
 
 
-@pytest.mark.parametrize("claim_outcome", ["contended", "claimed", "failed"])
+@pytest.mark.parametrize(
+    "claim_outcome", ["contended", "claimed", "failed", "finalization_failed"]
+)
 def test_explicit_claim_resets_org_scope_only_after_claim_returns(
     storage, monkeypatch, claim_outcome
 ):
     from types import SimpleNamespace
     from unittest.mock import MagicMock
 
+    from reflexio.server import background_work
     from reflexio.server.services.playbook import aggregation_scheduler
 
     operation = storage.submit_playbook_aggregation_operation("org-recovery", "v1")
@@ -573,25 +576,81 @@ def test_explicit_claim_resets_org_scope_only_after_claim_returns(
     context.configurator.get_config.return_value.user_playbook_extractor_config = (
         SimpleNamespace(aggregation_config=SimpleNamespace(min_cluster_size=1))
     )
-    recovered = []
-    monkeypatch.setattr(aggregation_scheduler, "current_project_id", lambda: "project")
-    monkeypatch.setattr(
-        aggregation_scheduler, "report_background_success", recovered.append
+    org_scope = "playbook-aggregation-org:operations:project"
+    other_project = "playbook-aggregation-org:operations:other-project"
+    other_org = "playbook-aggregation-org:other-org:project"
+    operation_scope = (
+        f"playbook-aggregation-operation:operations:project:{operation.operation_id}"
     )
+    finalize_scope = "playbook-aggregation-operation-finalize:operations:project:v1"
+    streak = (1, 1.0, 1.0)
+    monkeypatch.setattr(
+        background_work,
+        "_streaks",
+        dict.fromkeys(
+            (org_scope, other_project, other_org, operation_scope, finalize_scope),
+            streak,
+        ),
+    )
+    monkeypatch.setattr(background_work, "_classifier", lambda _exc: True)
+    monkeypatch.setattr(background_work, "_monotonic", lambda: 2.0)
+    monkeypatch.setattr(aggregation_scheduler, "current_project_id", lambda: "project")
+    begin_operation = storage.begin_playbook_aggregation_operation
+    before_execution = []
+
+    def begin_after_org_recovery(*args, **kwargs):
+        before_execution.append(
+            (
+                background_work._streaks.get(org_scope),
+                background_work._streaks.get(operation_scope),
+                background_work._streaks.get(finalize_scope),
+            )
+        )
+        return begin_operation(*args, **kwargs)
+
+    monkeypatch.setattr(
+        storage, "begin_playbook_aggregation_operation", begin_after_org_recovery
+    )
+    if claim_outcome == "finalization_failed":
+        monkeypatch.setattr(
+            storage,
+            "finish_playbook_aggregation_claim",
+            MagicMock(side_effect=RuntimeError("finalization unavailable")),
+        )
     scheduler = aggregation_scheduler.PlaybookAggregationScheduler(
         context_provider=lambda: []
     )
     if claim_outcome == "failed":
         with pytest.raises(RuntimeError, match="claim unavailable"):
             scheduler._run_context(context)
-        assert recovered == []
+        assert background_work._streaks[org_scope] == streak
     else:
-        scheduler._run_context(context)
-        assert recovered == ["playbook-aggregation-org:operations:project"]
+        if claim_outcome == "finalization_failed":
+            with pytest.raises(aggregation_scheduler._FinalizationReportedError):
+                scheduler._run_context(context)
+        else:
+            scheduler._run_context(context)
+        assert org_scope not in background_work._streaks
         receipt = storage.get_playbook_aggregation_operation(operation.operation_id)
         assert receipt.status == (
             "queued" if claim_outcome == "contended" else "failed"
         )
+    assert background_work._streaks[other_org] == streak
+    assert background_work._streaks[other_project] == streak
+    assert background_work._streaks[operation_scope][0] == (
+        2 if claim_outcome in {"claimed", "finalization_failed"} else 1
+    )
+    assert before_execution == (
+        [(None, streak, streak)]
+        if claim_outcome in {"claimed", "finalization_failed"}
+        else []
+    )
+    if claim_outcome == "finalization_failed":
+        assert background_work._streaks[finalize_scope][0] == 2
+    elif claim_outcome == "claimed":
+        assert finalize_scope not in background_work._streaks
+    else:
+        assert background_work._streaks[finalize_scope] == streak
 
 
 def test_synchronous_rerun_cannot_bypass_explicit_lease_when_incremental_disabled(
