@@ -401,6 +401,11 @@ An unavailable inventory returns `None` or raises; an empty inventory means
 there are no live scopes. Failed or interrupted scans never prune. Existing
 full-sweep providers need no changes. Claims and execution are unchanged.
 
+Organization failure streaks belong to the scheduler. Explicit aggregation
+reports claim completion back to it, including contention, before executing work;
+operation and finalization failures keep their separate scopes. A failed claim
+does not reset the organization streak.
+
 ## Operational health measurements
 
 `reflexio.server.operational_metrics` is an optional, vendor-neutral health sink.

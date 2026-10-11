@@ -586,6 +586,18 @@ def test_aggregation_trigger_replacement_is_atomic_across_connections(tmp_path) 
 
     assert observed == [
         (
+            "cancel_erased_aggregation_operations",
+            "cancel_erased_aggregation_operations",
+        ),
+        (
+            "cancel_purged_aggregation_operations",
+            "cancel_purged_aggregation_operations",
+        ),
+        (
+            "fence_retired_aggregation_inputs",
+            "fence_retired_aggregation_inputs",
+        ),
+        (
             "capture_playbook_aggregation_hard_delete",
             "capture_playbook_aggregation_hard_delete",
         ),

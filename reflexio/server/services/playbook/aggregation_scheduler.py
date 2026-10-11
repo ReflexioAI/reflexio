@@ -250,6 +250,9 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
             owner=f"explicit:{self._worker_id}",
             project_id=project_id,
             on_work_claimed=self._on_work_claimed,
+            on_claim_completed=lambda: report_background_success(
+                f"playbook-aggregation-org:{org_id}:{project_id}"
+            ),
         ):
             return
         if not getattr(storage, "supports_incremental_playbook_aggregation", False):
