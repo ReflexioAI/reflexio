@@ -37,6 +37,23 @@ retry, reported response-model verification and per-candidate independent semant
 stop gates as v1.23. Only a full pass permits the fresh alternating private
 comparison; the failed v1.23 reports, all input labels and holdout stay unchanged.
 
+### Preserved matched-temperature v1.28 failure
+
+The fresh equal-temperature0.2 trial stopped on its first pair. Replacement
+correctly identified the original supplied-input action, exact span, causal and
+speculative defects, highest causal code and null reason; it still chose no
+eligible core and rejection. Independent full audit confirms conditional core
+loss. Baseline also rejected. Two fully observed initial requests at0.2, zero
+repairs/API/parse errors and zero replacement semantic passes;65pairs unrun.
+
+The unchanged acceptance gate failed; do not resume or relabel it. No aggregate
+or causal0.7-versus0.2 claim follows, and no lower-temperature runtime setting or
+classifier stage is adopted. Tested sources: OSS `2b5ecdd3`, enterprise `d4ee97db`.
+Failed manifest SHA-256:
+`324bf8e6289c5c3f014fd54e1310b756836057c61d0882c099cb143e36cccd9a`.
+Independent terminal audit SHA-256:
+`0e84ff1dea1313284f0c7d149add07eb20b677ab2b60c2618d95ef7ae9b62363`.
+
 ### Prospective matched-temperature v1.28 diagnostic
 
 Before another wording edit, test the SAME inactive v1.28 prompt with equal
