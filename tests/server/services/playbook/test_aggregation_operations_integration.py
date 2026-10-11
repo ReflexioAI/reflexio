@@ -271,3 +271,21 @@ def test_partial_results_are_not_success_and_claim_notification_is_scoped(
     }
     receipt = storage.get_playbook_aggregation_operation(operation.operation_id)
     assert receipt.status == "retrying" and receipt.result is None
+
+
+def test_synchronous_rerun_cannot_bypass_explicit_lease_when_incremental_disabled(
+    storage,
+):
+    from unittest.mock import MagicMock
+
+    from reflexio.lib._generation import GenerationMixin
+
+    storage.supports_incremental_playbook_aggregation = False
+    assert storage.supports_durable_playbook_aggregation_operations is True
+    operation = storage.submit_playbook_aggregation_operation("exclusive", "v1")
+    claim_operation(storage, operation)
+    generation = object.__new__(GenerationMixin)
+    generation.request_context = MagicMock(storage=storage, org_id="operations")
+    generation.llm_client = MagicMock()
+    with pytest.raises(RuntimeError, match="already running"):
+        generation.run_playbook_aggregation(agent_version="v1")

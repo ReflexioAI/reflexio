@@ -732,3 +732,111 @@ def test_explicit_operation_receipt_commits_with_generated_outputs(
         assert len(sqlite_storage.get_agent_playbooks()) == 1
         assert sqlite_storage.get_lineage_events(request_id=operation.operation_id)
         assert sqlite_storage.next_playbook_aggregation_operation() is None
+
+
+@pytest.mark.parametrize("missing_embeddings", [1, 2])
+@pytest.mark.parametrize("mock_mode", [False, True])
+def test_explicit_rerun_retries_missing_embeddings_before_outputs(
+    sqlite_storage, request_context, monkeypatch, missing_embeddings, mock_mode
+):
+    from reflexio.server.services.playbook import aggregation_operations as executor
+
+    inputs = [
+        _seed_user_playbook(sqlite_storage, uid=i, org_id=request_context.org_id)
+        for i in (1, 2)
+    ]
+    sqlite_storage.conn.executemany(
+        "UPDATE user_playbooks SET embedding=NULL WHERE user_playbook_id=?",
+        [(item.user_playbook_id,) for item in inputs[:missing_embeddings]],
+    )
+    sqlite_storage.conn.commit()
+    monkeypatch.setenv("MOCK_LLM_RESPONSE", "true" if mock_mode else "false")
+    monkeypatch.setattr(
+        executor, "create_generation_litellm_client", lambda _context: MagicMock()
+    )
+    operation = sqlite_storage.submit_playbook_aggregation_operation(
+        "pending-embedding", "v0"
+    )
+    assert executor.run_explicit_operation(request_context, owner="test")
+    receipt = sqlite_storage.get_playbook_aggregation_operation(operation.operation_id)
+    assert receipt is not None
+    if mock_mode:
+        # Distinct triggers yield no eligible mock clusters; no vector is needed.
+        assert receipt.status == "succeeded" and receipt.result is not None
+    else:
+        assert receipt.status == "retrying" and receipt.result is None
+        assert receipt.error == "execution_failed"
+        assert receipt.next_attempt_at is not None
+    assert sqlite_storage.get_agent_playbooks() == []
+    assert sqlite_storage.get_lineage_events(request_id=operation.operation_id) == []
+
+
+def test_http_admission_scheduler_and_receipt_survive_output_storage_restart(
+    sqlite_storage, request_context, monkeypatch
+):
+    from fastapi.testclient import TestClient
+
+    from reflexio.server.api import create_app
+    from reflexio.server.services.playbook import aggregation_operations as executor
+    from reflexio.server.services.playbook.aggregation_scheduler import (
+        PlaybookAggregationScheduler,
+    )
+
+    inputs = [
+        _seed_user_playbook(sqlite_storage, uid=i, org_id=request_context.org_id)
+        for i in (1, 2)
+    ]
+    output = AgentPlaybook(
+        agent_version="v0",
+        content="Durable guidance",
+        playbook_name="default",
+        embedding=[0.1] * 512,
+    )
+    monkeypatch.setattr(PlaybookAggregator, "get_clusters", lambda *_args: {0: inputs})
+    monkeypatch.setattr(
+        PlaybookAggregator,
+        "_generate_playbooks_with_source_clusters",
+        lambda *_args, **_kwargs: [(output, inputs, None)],
+    )
+    monkeypatch.setattr(
+        executor, "create_generation_litellm_client", lambda _context: MagicMock()
+    )
+    facade = MagicMock()
+    facade.get_storage.return_value = sqlite_storage
+    monkeypatch.setattr(
+        "reflexio.server.routes.playbooks.publisher_api.get_reflexio",
+        lambda **_kwargs: facade,
+    )
+    app = create_app(get_org_id=lambda: request_context.org_id)
+    app.state.limiter.enabled = False
+    client = TestClient(app, headers={"User-Agent": "Mozilla/5.0"})
+    admitted = client.post(
+        "/api/playbook_aggregation_operations",
+        json={"request_id": "connected", "agent_version": "v0"},
+    )
+    assert admitted.status_code == 202
+    operation_id = admitted.json()["operation_id"]
+    assert admitted.json()["status"] == "queued"
+    PlaybookAggregationScheduler(context_provider=lambda: [request_context])._run_once()
+    polled = client.get(f"/api/playbook_aggregation_operations/{operation_id}")
+    assert polled.status_code == 200
+    assert polled.json()["status"] == "succeeded"
+    assert polled.json()["result"]["playbooks_generated"] == 1
+    assert len(sqlite_storage.get_agent_playbooks()) == 1
+    sqlite_storage.conn.close()
+    reopened = SQLiteStorage(
+        org_id=request_context.org_id, db_path=sqlite_storage.db_path
+    )
+    try:
+        facade.get_storage.return_value = reopened
+        assert (
+            client.get(f"/api/playbook_aggregation_operations/{operation_id}").json()[
+                "status"
+            ]
+            == "succeeded"
+        )
+        assert len(reopened.get_agent_playbooks()) == 1
+        assert reopened.get_lineage_events(request_id=operation_id)
+        assert reopened.next_playbook_aggregation_operation() is None
+    finally:
+        reopened.conn.close()

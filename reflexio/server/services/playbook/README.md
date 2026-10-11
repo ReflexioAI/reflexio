@@ -275,10 +275,16 @@ Optional optimization/tagging is outside the successful receipt contract.
 
 Receipt support is advertised separately as
 `supports_durable_playbook_aggregation_operations` (false on the portable base,
-true on SQLite). Incremental aggregation support alone does not authorize these
+true on SQLite when sqlite-vec loaded). Fenced full reruns write vector-backed
+cluster state, so a missing extension blocks new operation admission. Existing
+receipts remain readable when execution support becomes unavailable.
+Incremental aggregation support alone does not authorize these
 APIs. Disabling automatic incremental work does not hide existing receipts or
 prevent explicit full reruns. Heartbeats, claim notifications, retry reporting,
 and finalization retain the scheduler's organization/project scope. Incomplete
 aggregation results never become successful receipts. Erasing source user
 playbooks cancels active receipts, so a stale output transaction cannot commit
-derived output after that cancellation.
+derived output after that cancellation. Synchronous full reruns use the same
+lease when either incremental or durable-operation support is enabled. Explicit
+runs with missing source embeddings retry rather than declaring success for a
+partial corpus; mock-LLM mode continues to support keyless trigger clustering.

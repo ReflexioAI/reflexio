@@ -249,7 +249,7 @@ class PlaybookAggregationStoreMixin(AggregationOperationsMixin):
 
     @property
     def supports_durable_playbook_aggregation_operations(self) -> bool:
-        return True
+        return self._has_sqlite_vec
 
     @property
     def supports_incremental_playbook_aggregation(self) -> bool:

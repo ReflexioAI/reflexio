@@ -1570,6 +1570,12 @@ class PlaybookAggregator:
             }
             | {playbook_name}
         )
+        if (
+            self.explicit_operation_id is not None
+            and not env_bool("MOCK_LLM_RESPONSE", default=False)
+            and any(not item.embedding for item in user_playbooks)
+        ):
+            raise RuntimeError("explicit aggregation inputs have pending embeddings")
         clusters = self.get_clusters(user_playbooks, playbook_aggregator_config)
 
         # Determine which clusters changed (skip for rerun)
