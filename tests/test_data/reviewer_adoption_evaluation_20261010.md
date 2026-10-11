@@ -5,6 +5,48 @@ production change is justified by the completed measurements below.
 
 ## Receipt-bound replay and model identity diagnostic — 2026-10-11
 
+### Fresh v1.21 MiniMax comparison: stopped, unqualified
+
+A separately preregistered five-case, five-repeat comparison stopped after its
+first pair. Both final calls reported MiniMax-M3, passed identity/timing/usage
+measurement, and needed no repair. The candidate chose the expected `revise`
+decision but reported `speculative` instead of frozen `unsupported_causality`.
+Independent source-first review confirmed causal precedence for the original
+unsupported blocking/delay claim; the oracle remains unchanged.
+
+The candidate's saved fields contain no evidence-absence assertion, and its two
+supporting excerpts are exact own-source passages. However, its condition for
+reusing a recorded selection does not explicitly bind that selection to the
+current task. One semantic auditor retained this as unverified scope; another
+found an unsupported no-reasking restriction as well as the scope defect. Neither
+granted clearance. The driver stopped on the classification mismatch
+before requesting a semantic verdict. No later case, broader benchmark or
+holdout was run; the failed trial cannot be resumed or selectively retried.
+
+Baseline: 25.280 seconds, 3675 input/2764 output tokens, estimated $0.004384.
+Candidate: 31.822 seconds, 5795 input/6557 output tokens, estimated $0.009576.
+There are two complete reports, two provider requests, zero repairs, zero final
+transport errors, zero measurement errors, and no pending call. The manifest
+remains incomplete with its original classification gate error preserved.
+
+- Enterprise source: `43f834b820113de79d586e742c768a5506363699`.
+- OSS source: `c03b2951cbe953d07d23ff509879e69d5dcff50e`.
+- Candidate prompt byte SHA-256: `669f36619fb0ca5190cb0cb309a75141c6d9924603e38a6f64c2de140cf4e711`.
+- Protocol byte SHA-256: `0492b15d177ce11f7162de4cd5c12cc2c449c455581570d3314aeef7fe7f97e8`.
+- Manifest byte SHA-256: `0a56262c329a200e1baf4f79dc5b5c993fb06e4200a8c745b8a075ea22035498`.
+- Independent semantic audit byte SHA-256: `f8709884bb0b21a5c785a155635b0dfca4f6391c8a3f307f0072a61ae70210f7`.
+- Independent diagnostic byte SHA-256: `78fe83a446fd7c44e112176bf7fa8029f0ebf77a60980d75cad23a064544288c`.
+
+The synthetic MiniMax identity probe passed before this comparison. It verifies
+the tested route's reported identity, not historical production reviewer serving
+identity. Nine additional receipt-backed stored-learning controls were captured
+read-only and independently audited before any control model calls. Neither
+audit found a clean whole-candidate accept control; decision/reason boundaries
+remain under prospective reconciliation. These samples do not establish healthy
+production coverage. The candidate remains inactive and unqualified; default is
+v1.3.0. The next correction must clarify causal-label precedence and task-bound
+parameter reuse before a fresh comparison with unchanged labels.
+
 The receipt-bound v1.20 comparison is unqualified. It stopped after 30 completed
 outputs (15 candidate, 15 baseline) and one failed candidate call. That call
 failed structured parsing after both initial and repair attempts reached 8192
