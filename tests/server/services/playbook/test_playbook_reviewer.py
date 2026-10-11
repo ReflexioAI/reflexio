@@ -275,6 +275,46 @@ def test_reviewer_fails_closed_when_candidate_accounting_is_incomplete():
         )
 
 
+@pytest.mark.parametrize("evidence_first", [False, True])
+def test_decide_rejects_unknown_candidate_even_with_complete_expected_decisions(
+    evidence_first,
+):
+    decisions = [
+        CandidateReviewDecision(
+            id=candidate_id,
+            decision="reject",
+            reason_code="speculative",
+            evidence_ids=[],
+        )
+        for candidate_id in ("C1", " C9 ")
+    ]
+    response = (
+        EvidenceFirstReviewOutput(decisions=decisions, supporting_evidence=[])
+        if evidence_first
+        else PlaybookCandidateReviewOutput(decisions=decisions)
+    )
+    reviewer, client = _reviewer(response)
+    if evidence_first:
+        reviewer.request_context.prompt_manager = PromptManager(
+            version_override={"playbook_candidate_review": "1.20.0"}
+        )
+    with pytest.raises(ValueError, match="unknown candidate_id"):
+        reviewer.decide(
+            candidates=[_candidate(201, "Grounded correction.", content="Lesson.")],
+            request_interaction_data_models=[
+                _interaction_model(201, "Grounded correction.")
+            ],
+            existing_playbooks=[],
+            agent_context="Test agent",
+            playbook_definition="Reusable user guidance",
+            tool_context="",
+        )
+    validate = client.generate_chat_response.call_args.kwargs[
+        "structured_output_validator"
+    ]
+    assert any("unknown candidate_id" in error for error in validate(response))
+
+
 def test_reviewer_can_reject_a_misclassified_correction():
     interaction = _interaction_model(211, "Do the work; do not just explain it.")
     candidate = _candidate(
