@@ -7,6 +7,7 @@ import sqlite3
 import threading
 from typing import Any
 
+from reflexio.server.services.storage.sqlite_storage._base import _row_to_user_playbook
 from reflexio.server.services.storage.storage_base.playbook import (
     AGGREGATION_INVALIDATION_RETENTION_SECONDS,
     AGGREGATION_RETRY_BASE_SECONDS,
@@ -755,13 +756,15 @@ class PlaybookAggregationStoreMixin(AggregationOperationsMixin):
             if own:
                 self.conn.execute("BEGIN")
             try:
-                playbooks = self.get_user_playbooks(  # type: ignore[attr-defined]
-                    limit=limit,
-                    agent_version=agent_version,
-                    status_filter=[None],
-                    include_embedding=True,
-                    max_user_playbook_id=2**63 - 1,
-                )
+                rows = self.conn.execute(
+                    "SELECT * FROM user_playbooks WHERE agent_version=? "
+                    "AND status IS NULL AND trim(content) <> '' "
+                    "ORDER BY user_playbook_id DESC LIMIT ?",
+                    (agent_version, limit),
+                ).fetchall()
+                playbooks = [
+                    _row_to_user_playbook(row, include_embedding=True) for row in rows
+                ]
                 invalidation_rows = self.conn.execute(
                     "SELECT invalidation_id FROM playbook_aggregation_invalidation "
                     "WHERE agent_version=? AND processed_at IS NULL "

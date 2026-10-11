@@ -292,4 +292,9 @@ fences use database state rather than application-clock comparisons.
 Synchronous full reruns use the same
 lease when either incremental or durable-operation support is enabled. Explicit
 runs with missing source embeddings retry rather than declaring success for a
-partial corpus; mock-LLM mode continues to support keyless trigger clustering.
+partial corpus, including when the corpus is below the count threshold.
+Readiness uses the bounded pre-compute snapshot before that threshold decision;
+the same snapshot is reused for generation. Empty or whitespace-only source
+bodies are excluded before the snapshot limit, matching incremental intake, so
+erased lineage skeletons cannot block later work or displace surviving inputs.
+Mock-LLM mode continues to support keyless trigger clustering.

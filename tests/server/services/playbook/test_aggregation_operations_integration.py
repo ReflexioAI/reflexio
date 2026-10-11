@@ -276,12 +276,20 @@ def test_lineage_preserving_erasure_fences_captured_private_inputs(
     operation = storage.submit_playbook_aggregation_operation("captured-private", "v1")
     claim = claim_operation(storage, operation)
     snapshot = storage.capture_playbook_aggregation_rerun_snapshot("v1", limit=10)
-    captured = next(
-        item
-        for item in snapshot.user_playbooks
-        if item.user_playbook_id == erased.user_playbook_id
-    )
-    assert captured.rationale == erased.rationale
+    if empty_content:
+        # Empty bodies are excluded by the same predicate as incremental
+        # intake; their remaining identity/metadata still must be erased.
+        assert not any(
+            item.user_playbook_id == erased.user_playbook_id
+            for item in snapshot.user_playbooks
+        )
+    else:
+        captured = next(
+            item
+            for item in snapshot.user_playbooks
+            if item.user_playbook_id == erased.user_playbook_id
+        )
+        assert captured.rationale == erased.rationale
     if retire_after_snapshot:
         # A row captured while current remains relevant even if a later
         # revision excludes it from subsequent snapshots before erasure.

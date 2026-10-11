@@ -63,6 +63,7 @@ from reflexio.server.services.storage.storage_base.playbook import (
     PlaybookAggregationClaim,
     PlaybookAggregationClusterMatch,
     PlaybookAggregationRebuildSample,
+    PlaybookAggregationRerunSnapshot,
 )
 from reflexio.server.usage_metrics import record_usage_event
 from reflexio.server.work_scope import current_project_id
@@ -1412,6 +1413,24 @@ class PlaybookAggregator:
                 aggregation_start=aggregation_start,
             )
 
+        # Explicit receipts must not permanently acknowledge an incomplete
+        # corpus merely because the automatic count threshold is not met.
+        # Reuse this bounded snapshot later rather than reading the inputs twice.
+        max_playbooks = aggregator_clustering.max_clustering_playbooks()
+        rerun_snapshot: PlaybookAggregationRerunSnapshot | None = None
+        if self.explicit_operation_id is not None:
+            rerun_snapshot = self.storage.capture_playbook_aggregation_rerun_snapshot(  # type: ignore[attr-defined]
+                self.agent_version, limit=max_playbooks + 1
+            )
+            if len(rerun_snapshot.user_playbooks) > max_playbooks:
+                raise RuntimeError("full aggregation rerun exceeds the safety cap")
+            if not env_bool("MOCK_LLM_RESPONSE", default=False) and any(
+                not item.embedding for item in rerun_snapshot.user_playbooks
+            ):
+                raise RuntimeError(
+                    "explicit aggregation inputs have pending embeddings"
+                )
+
         # Check if we should run aggregation based on new playbooks count
         # For rerun, use all user playbooks (last_processed_id=0) to determine if aggregation is needed
         if not self._should_run_aggregation(
@@ -1500,13 +1519,15 @@ class PlaybookAggregator:
         # oversized org costs ~1 GB of resident floats before clustering is even
         # reached -- the cap has to be enforced ahead of the load, not just
         # inside get_clusters().
-        max_playbooks = aggregator_clustering.max_clustering_playbooks()
         rerun_invalidation_ids: list[int] = []
         if playbook_aggregator_request.rerun and self.aggregation_claim is not None:
-            rerun_snapshot = self.storage.capture_playbook_aggregation_rerun_snapshot(  # type: ignore[attr-defined]
-                self.agent_version,
-                limit=max_playbooks + 1,
-            )
+            if rerun_snapshot is None:
+                rerun_snapshot = (
+                    self.storage.capture_playbook_aggregation_rerun_snapshot(  # type: ignore[attr-defined]
+                        self.agent_version,
+                        limit=max_playbooks + 1,
+                    )
+                )
             user_playbooks = list(rerun_snapshot.user_playbooks)
             user_high_watermark = rerun_snapshot.user_high_watermark
             rerun_invalidation_ids = list(rerun_snapshot.invalidation_ids)
@@ -1570,12 +1591,6 @@ class PlaybookAggregator:
             }
             | {playbook_name}
         )
-        if (
-            self.explicit_operation_id is not None
-            and not env_bool("MOCK_LLM_RESPONSE", default=False)
-            and any(not item.embedding for item in user_playbooks)
-        ):
-            raise RuntimeError("explicit aggregation inputs have pending embeddings")
         clusters = self.get_clusters(user_playbooks, playbook_aggregator_config)
 
         # Determine which clusters changed (skip for rerun)
