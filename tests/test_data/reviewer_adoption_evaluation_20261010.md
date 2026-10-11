@@ -769,3 +769,59 @@ boundary and complete-both-arm runner gate before source freeze/calls.
 - Private manifest byte SHA-256: `485bcf7433b176f0748649dc25fa5c73db0831cd5bebba5870b7fb6c62adf2da`.
 - Private stopped bundle byte SHA-256: `04ff87d7877bda34963043a739968136dfa21825b71a112ac3c69ece86dae42e`.
 - Private log byte SHA-256: `07fe1794e26e4b9c22744922d4d9ba001c7bb6661b04d61cf8c448fc509ff20e`.
+
+
+### v1.19 saved support basis: execution ambiguity removed, notes scope stops
+
+Inactive v1.19 changes rationale/notes instructions to explain requirements and
+review decisions rather than historical agent execution. Supported actions remain
+in content/trigger. Three separately frozen, independently reviewed development
+controls (two announced-only tasks, one tool-confirmed action) completed three
+paired repeats each: 18 outputs; both arms' decisions matched 9/9. Exact reason
+labels were explicitly unscored. All nine candidate saved-field/core-preservation
+audits cleared; 27 exact own-source excerpts and final references were verified.
+The 18 logical calls recorded 19 dispatches, one recovered candidate parse repair
+and zero final or measurement errors. Candidate calls used 349.127 seconds and
+estimated $0.138230; baseline used 246.420 seconds and $0.092021, with complete
+observations.
+
+The private replay placed the previously failing setup case first. Five paired
+repeats completed (10 outputs): candidate decisions/labels matched 5/5; baseline
+decisions matched 5/5 and labels 0/5. All candidate content/triggers/rationales are
+grounded and no historical setup execution/application claim survived. Four
+outputs cleared all saved fields, but the fifth notes' unqualified denial of
+recorded re-asking is UNVERIFIED: the record includes a repeated prerequisite
+question before answers, while the supported distinction concerns re-asking after
+answers. Two independent source-first audits confirmed this scope ambiguity; do
+not qualify on a narrower charitable reading or change the oracle. One earlier
+notes output narrates a source-correct question sequence despite the concise
+instruction (style miss).
+
+Stop was deliberate at the semantic gate (exit 130), leaving an interrupted,
+incomplete manifest and a zero-output retail candidate checkpoint. The 10 completed
+logical calls recorded 10 dispatches, zero repairs, zero final/measurement errors,
+and 18 exact excerpts. The interrupted additional dispatch retained 59.790 seconds
+of logical time and an IncompleteProviderObservation; usage/cost remain unknown,
+not zero. Completed candidate calls used 357.353 seconds and estimated $0.128662;
+baseline used 227.943 seconds and $0.079803. Retail and other priority controls
+were not measured. This narrows the known execution defect in this sample, but
+v1.19 remains inactive and unqualified; broader coverage, unchanged holdout,
+production-provider compatibility and staging remain pending.
+
+Implementation passed 509 affected OSS and 19 enterprise tests, plus 22 overlapping
+final policy/version checks. Ruff/Pyright passed with zero type errors/warnings.
+Local scoped P0/P1 reviews cleared and reverified the policy-exception fix before
+calls. Original corpus, holdout, oracle v2 and prior reports remain unchanged.
+
+- Launch enterprise source: `6d7587926cc2eae26706a3a2335d73370924ddfe`.
+- Launch OSS source: `471b72bff53226a235fd6d022386f1dd0e19efda`.
+- Prompt byte SHA-256: `a252291b64cd1bb29c26a433a8638d715e0e58baf39adc44dead9fe36eb7cace`.
+- Supplemental fixture byte SHA-256: `06a48ca1c081f0028f1d0a52cd5d1ae64cf55cfcf4122d32f87c94e9a6bf5a8d`.
+- Development driver byte SHA-256: `250e495712d02bfcd9404e4f0a4c32f061e62fe5687ee29b2f9387f4c9369c9b`.
+- Private driver byte SHA-256: `f5af1d434a9a879292b8382782d97c596d418f782c54c44e566f30013ec87a06`.
+- Development manifest byte SHA-256: `ff732fba4bc3b632bf1c8e1c529c74bc26a8b6ccb41d5857a09157383af8b889`.
+- Development bundle byte SHA-256: `2784f25994a23ccf5a2a0868ab340bc81ba326d766ee96f0ac7e02a083b9ed87`.
+- Development log byte SHA-256: `68ee87e57f74443bfdc43e9617c4317cfdf1a35bbabde89e2b77ce168a0dda55`.
+- Private manifest byte SHA-256: `8a252ad84a813ced4f690fd4e6b15d6645ffa052947e7c2cf0ee23b1b99691ee`.
+- Private stopped bundle byte SHA-256: `24fd38e181c88118983edf8478f8e56bf03b328668bba697d2bedce72cb0ab25`.
+- Private log byte SHA-256: `47dbd0d71c715d76d11e198180a9a1c0609cc54bf3ae9307b37dce1e1bfcdf70`.
