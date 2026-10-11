@@ -65,10 +65,10 @@ def _response(
     }
 
 
-def _decide(response: AssessedReviewOutput):
+def _decide(response: AssessedReviewOutput, *, version: str = "1.26.0"):
     reviewer, client = _reviewer(response)
     reviewer.request_context.prompt_manager = PromptManager(
-        version_override={reviewer.PROMPT_ID: "1.26.0"}
+        version_override={reviewer.PROMPT_ID: version}
     )
     candidates = [
         _candidate(
@@ -88,9 +88,14 @@ def _decide(response: AssessedReviewOutput):
     return reviewer, client, candidates, result
 
 
-def test_original_conditional_core_is_preserved_without_persisting_assessment():
+@pytest.mark.parametrize("version", ["1.26.0", "1.27.0"])
+def test_original_conditional_core_is_preserved_without_persisting_assessment(version):
     reviewer, client, candidates, outcome = _decide(
-        AssessedReviewOutput.model_validate(_response())
+        AssessedReviewOutput.model_validate(_response()), version=version
+    )
+    assert (
+        reviewer.request_context.prompt_manager.get_active_version(reviewer.PROMPT_ID)
+        == version
     )
     survivors = reviewer.apply_decisions(candidates=candidates, outcome=outcome)
     assert len(survivors) == 1

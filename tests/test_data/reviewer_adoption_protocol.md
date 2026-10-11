@@ -37,6 +37,51 @@ retry, reported response-model verification and per-candidate independent semant
 stop gates as v1.23. Only a full pass permits the fresh alternating private
 comparison; the failed v1.23 reports, all input labels and holdout stay unchanged.
 
+### Fresh v1.27 original-action diagnostic
+
+Inactive v1.27 clarifies classification of the action already in original content
+and trigger. A default-only rule fixing an earlier choice for future tasks remains
+a standing value preference, even without an inline number. Otherwise an existing
+task-input-use action can survive removal of unsupported carryover, no-asking or
+benefit claims. Mixed rules retain only independently present useful actions;
+never manufacture a task-input action from a default-only draft. Conditional
+availability narrowing applies to unsupported carryover, not valid explicit future
+preferences, direct no-asking instructions or grounded missing-input branches.
+The v1.26 assessed schema, validator, repair/fallback and application guards remain.
+No default activation, persistence, public schema, environment or migration change.
+
+Before calls, two independent source-first reviewers agreed on four supplemental
+photo-resize controls in `reviewer_original_action_cases.json`: symbolic historical
+default rejection; valid conditional task-input acceptance; mixed input/default
+revision with causal precedence; and explicit fixed future-preference acceptance.
+Fixture SHA-256:
+`1f6920e8adcbd1a16ce72623d5e72264d38ac8ffc364e1cabd49e801f316eebc`.
+Original-only oracle hashes:
+`a9acbec666bf4b60510d12c7a364f3255c0040a84ff1b5292634fed9cb1074c5`,
+`641c1b3fe7c0a4eebaffdbddb500b448e37bc44391d5065d44b3c33489a1c44e`.
+These are development controls, not healthy production or holdout evidence. The
+prompt's batch-worker worked contrast is separate from these validation examples.
+
+Preregister a fresh clean pinned-source diagnostic with unchanged 18 controls
+plus these four: 22 cases × three repetitions = 66 pairs / 132 arm outputs. Put
+known salvage first, standing rejection second, four new controls next, unrelated
+and generic next, five existing positives, then remaining workflow/fatal/causal
+contrasts. Preserve all frozen decisions and reason labels, older prompt files,
+failed trial reports and model-unseen holdout. Use equal MiniMax-M3/.7/8192/no
+explicit effort settings, no seed override, fallback, outer retry or resume.
+Freeze source, driver, input, prompt and original-only oracle hashes before calls.
+
+After every pair require complete both-arm observations and model identities,
+correct replacement decisions/scored labels and an independent hash-bound audit
+of original kind/span, core basis, full defects, retained action and every saved
+field. Audit baseline faults as diagnostics; they need not pass semantically.
+Measurement failures in either arm stop. The gate requires all 66 replacement-arm
+semantic passes. Fixed baseline-first order is development diagnosis, not an
+unbiased improvement estimate. Only then preregister the fresh alternating private
+comparison. Broader/healthy coverage, unchanged holdout, production-model semantics
+and faithful staging remain later gates. Local tests and static review cannot
+substitute for any semantic gate.
+
 ### Preserved v1.26 original-rule diagnostic failure
 
 The fresh v1.26 gate stopped after six pairs (12 outputs). The standing numerical

@@ -271,8 +271,12 @@ def test_experimental_prompt_preserves_measured_subject_gate_and_default():
     assert new.split("## Output rules")[1] == old.split("## Output rules")[1]
 
 
-def test_every_frozen_case_can_be_prepared_before_paid_calls():
-    for case in load_cases(DEFAULT_CASES):
+@pytest.mark.parametrize(
+    "case_path",
+    [DEFAULT_CASES, DEFAULT_CASES.with_name("reviewer_original_action_cases.json")],
+)
+def test_every_frozen_case_can_be_prepared_before_paid_calls(case_path):
+    for case in load_cases(case_path):
         sessions, candidates, existing = prepare_case(case)
         assert len(sessions) == len(case.turns)
         assert len(candidates) == len(case.candidates)
@@ -356,6 +360,7 @@ def test_turn_source_survives_fixture_loading_into_real_reviewer_payload(
         "1.24.0",
         "1.25.0",
         "1.26.0",
+        "1.27.0",
     ],
 )
 def test_candidate_version_selection_preserves_baseline_and_report_identity(
@@ -437,7 +442,7 @@ def test_candidate_version_selection_preserves_baseline_and_report_identity(
     )
     rows = report["rows"]
     assert rows[0]["original_assessments"] == []
-    if candidate_version == "1.26.0":
+    if candidate_version in ("1.26.0", "1.27.0"):
         assert rows[1]["original_assessments"] == [
             {
                 "id": "C1",
@@ -488,6 +493,7 @@ def test_candidate_version_selection_preserves_baseline_and_report_identity(
             "1.24.0",
             "1.25.0",
             "1.26.0",
+            "1.27.0",
         )
     )
     changed_case = case.model_copy(deep=True)
