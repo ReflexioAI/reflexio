@@ -37,6 +37,48 @@ retry, reported response-model verification and per-candidate independent semant
 stop gates as v1.23. Only a full pass permits the fresh alternating private
 comparison; the failed v1.23 reports, all input labels and holdout stay unchanged.
 
+### Inactive v1.32: source-first revision procedure
+
+v1.31's failed comparison remains failed. v1.32 keeps its exact response schema,
+validators, one-call/repair path, source judgments and frozen model profile.
+It changes the procedure: inspect unsupported original behavioral modifiers and
+causal claims separately; establish source facts and the complete original core;
+then finalize core-dependent generic/redundant and the full original inventory
+before choosing code or drafting. Removing a causal explanation cannot establish
+support for a restriction. Direct own-source instruction or verified unnecessary
+reasking/correction remains necessary for a no-reasking restriction.
+
+The complete-use span identifies an independently grounded original action,
+excluding unsupported modifiers. It need not contain every separated workflow
+stage in one substring; own excerpts and final guidance must preserve all required
+stages and constraints. Drafting removes each unsupported continuation and binds
+scoped reuse to current-task assigned/available inputs in BOTH content and trigger.
+Grounded future fixed defaults remain intact, and use availability cannot precede
+a necessary collection stage. The final check covers the complete-use claim and
+every revised field. No new fields, extra call, phrase heuristic or data-specific
+branch is introduced; old policy bytes and active v1.3.0 stay unchanged.
+
+Three independent design/exact-prompt reviews cleared the prospective change,
+including the core-dependent ordering and separated-stage span boundary. This is
+a testable hypothesis, not evidence of semantic improvement. Freeze exact new
+source/policy identities and unchanged schema/oracles before fresh calls. All
+full22/contrast, broader/healthy, untouched holdout, reachable-model and actual
+product/storage/staging gates remain mandatory. The v1.31 observations do not
+qualify v1.32 or justify resuming a failed run.
+
+
+Local implementation checks passed: 1,118 full affected playbook/service/client/
+private-replay tests, including 34 isolated PostgreSQL replay-window checks. The
+three skipped optional mock-only tests passed separately, alongside 81 mock-schema
+compatibility tests (eight snapshots) and seven actual-native-parser recorder
+checks: 1,209 passing tests across those final runs, without counting overlapping
+focused tests twice. Ruff/formatting and six affected-file Pyright checks passed.
+Six legacy schemas plus the actual binary-input schema, all older prompt bytes
+and the active default were unchanged. Independent correctness, security and
+verification reviews and local Codex review found no remaining actionable findings.
+Codex's read-only environment could not run types/runtime tests; the receipts are
+root runs. These checks establish implementation behavior, not model accuracy.
+
 ### Inactive v1.31: original input applicability before eligibility
 
 The failed v1.30 comparison remains failed and immutable. v1.31 tests a simpler

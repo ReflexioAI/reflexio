@@ -45,15 +45,16 @@ def _decide_input(raw):
     return _decide(InputUseAssessedReviewOutput.model_validate(raw), version="1.31.0")
 
 
+@pytest.mark.parametrize("version", ["1.31.0", "1.32.0"])
 @pytest.mark.parametrize("value", [None, "true", "false", 0, 1, "missing"])
-def test_native_parser_repairs_non_boolean_or_missing_applicability(value):
+def test_native_parser_repairs_non_boolean_or_missing_applicability(value, version):
     good = _input_response()
     bad = deepcopy(good)
     if value == "missing":
         del bad["assessments"][0]["original_proposes_task_input_use"]
     else:
         bad["assessments"][0]["original_proposes_task_input_use"] = value
-    reviewer, transport, calls = _real_reviewer([bad, good], version="1.31.0")
+    reviewer, transport, calls = _real_reviewer([bad, good], version=version)
     with transport:
         outcome = _run_real(reviewer)
     assert len(calls) == 2
@@ -208,14 +209,15 @@ def test_nested_provenance_errors_name_real_fields_without_customer_text(field, 
     assert "source_parameter_facts" not in str(error.value)
 
 
+@pytest.mark.parametrize("version", ["1.31.0", "1.32.0"])
 @pytest.mark.parametrize("recover", [False, True])
-def test_native_exhaustion_retains_existing_bounded_fallback(recover):
+def test_native_exhaustion_retains_existing_bounded_fallback(recover, version):
     from reflexio.server.llm.litellm_client import StructuredOutputRepairError
 
     bad = _input_response(basis="none", decision="reject")
     responses = [bad, bad, _input_response()] if recover else [bad] * 4
     reviewer, transport, calls = _real_reviewer(
-        responses, version="1.31.0", fallback=True
+        responses, version=version, fallback=True
     )
     with transport:
         if recover:
@@ -242,7 +244,8 @@ def test_structural_validity_does_not_claim_true_semantic_applicability():
     assert outcome.assessments[0].model_dump(by_alias=True) == raw["assessments"][0]
 
 
-def test_explicit_future_fixed_default_survives_without_input_conditioning():
+@pytest.mark.parametrize("version", ["1.31.0", "1.32.0"])
+def test_explicit_future_fixed_default_survives_without_input_conditioning(version):
     from reflexio.server.prompt.prompt_manager import PromptManager
     from tests.server.services.playbook.test_playbook_reviewer import (
         _candidate,
@@ -272,7 +275,7 @@ def test_explicit_future_fixed_default_survives_without_input_conditioning():
     ]
     reviewer, _ = _reviewer(InputUseAssessedReviewOutput.model_validate(raw))
     reviewer.request_context.prompt_manager = PromptManager(
-        version_override={reviewer.PROMPT_ID: "1.31.0"}
+        version_override={reviewer.PROMPT_ID: version}
     )
     outcome = reviewer.decide(
         candidates=[candidate],

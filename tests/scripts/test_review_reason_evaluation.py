@@ -830,8 +830,11 @@ def test_private_evaluator_retains_positive_original_facts_on_fatal_reject(
     assert (tmp_path / "positive-facts.json").stat().st_mode & 0o777 == 0o600
 
 
+@pytest.mark.parametrize("version", ["1.31.0", "1.32.0"])
 @pytest.mark.parametrize("fatal", [False, True])
-def test_private_evaluator_roundtrips_actual_binary_nested_assessment(tmp_path, fatal):
+def test_private_evaluator_roundtrips_actual_binary_nested_assessment(
+    tmp_path, fatal, version
+):
     from reflexio.server.services.playbook.components.reviewer import (
         InputUseAssessedReviewOutput,
     )
@@ -880,10 +883,10 @@ def test_private_evaluator_roundtrips_actual_binary_nested_assessment(tmp_path, 
 
     path = tmp_path / "binary.json"
     report = evaluate(
-        [case], observed_client(respond), 1, candidate_version="1.31.0", checkpoint=path
+        [case], observed_client(respond), 1, candidate_version=version, checkpoint=path
     )
     assert report["errors"] == report["measurement_errors"] == []
-    assert report["candidate_version"] == "1.31.0"
+    assert report["candidate_version"] == version
     row = report["rows"][1]
     assert row["original_assessments"] == raw["assessments"]
     assert row["source_parameter_facts"] == []
