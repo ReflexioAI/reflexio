@@ -410,10 +410,13 @@ class RetentionMixin(ABC):
         A key with a dependent row (``RETENTION_CASCADES``) is kept back rather
         than cascaded: the cascade would delete that dependent without it ever
         being archived. It becomes deletable once its dependents age out first.
+
+        The dependents check runs FIRST. Both filters only remove keys and
+        neither writes, so the surviving set is the same in either order; but
+        the extraction-protection read is by far the costlier of the two, and
+        an aged request usually still has interactions, so most request keys
+        never need it.
         """
-        protect = getattr(self, "filter_extraction_retention", None)
-        if protect is not None:
-            keys = protect(target.name, keys)
         for cascade in RETENTION_CASCADES.get(target.name, ()):
             if not keys:
                 break
@@ -427,6 +430,9 @@ class RetentionMixin(ABC):
                 )
             }
             keys = [key for key in keys if key[0] not in held]
+        protect = getattr(self, "filter_extraction_retention", None)
+        if protect is not None and keys:
+            keys = protect(target.name, keys)
         return keys
 
     def gc_retired_optimization_jobs(
