@@ -37,6 +37,39 @@ retry, reported response-model verification and per-candidate independent semant
 stop gates as v1.23. Only a full pass permits the fresh alternating private
 comparison; the failed v1.23 reports, all input labels and holdout stay unchanged.
 
+### Inactive v1.33: preserve the original variable mechanism
+
+The v1.32 failure remains failed. v1.33 retains the exact native binary/nested
+schema, validators and one-call repair path. It clarifies the existing core and
+drafting instructions: the current task is the task where the learned rule is
+applied, not the particular historical evidence record. A recorded assignment
+proves supply; it cannot replace an original variable-input action with a sample
+value or a historical-job instruction. BOTH scoped-reuse content and its applicable
+trigger condition use on that task's assigned/available input. Independently
+grounded fixed instructions, bounds and mixed-workflow constraints remain intact;
+collection still precedes conditional use. No new action can be invented for a
+default-only or unrelated original. No categorical number guard, field, extra
+call, changed model profile or widened oracle is introduced. Earlier prompts and
+active v1.3.0 are unchanged.
+
+Three design/exact-prompt reviews cleared these prospective boundaries. The
+455 focused parser/repair/fallback, whole-workflow/fixed-default, stored review,
+client/private writer, compatibility and prompt-manager checks passed, including
+eight snapshots. These checks establish routing/contracts, not semantic accuracy.
+The prior wider v1.32 package result is not counted as a new v1.33 run. Freeze
+exact policy/source/driver identities and the unchanged source-only expectations
+before fresh calls. Full22/contrasts, broader/healthy coverage, unopened holdout,
+verified reachable models and actual product/storage/staging gates remain required.
+
+
+Seven native-parser recorder checks also passed on the new version. Ruff/formatting
+and six affected-file Pyright checks passed. All older policy bytes, six legacy
+response schemas and the native binary-input schema stayed unchanged. Independent
+correctness/security/verification and local Codex reviews found no remaining
+actionable findings. Codex could not execute runtime/types in its read-only
+sandbox; root runs supply those receipts. These 462 focused checks do not establish
+model accuracy or count as full product/storage/staging qualification.
+
 ### Preserved v1.32 variable-core failure
 
 The fresh full22 comparison stopped at its first pair. Both requests completed

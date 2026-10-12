@@ -1310,7 +1310,7 @@ class PlaybookCandidateReviewer:
             )
         units_by_candidate = self._candidate_evidence_units(candidates, prompt_context)
         version = self.request_context.prompt_manager.get_active_version(self.PROMPT_ID)
-        input_use_assessed = version in {"1.31.0", "1.32.0"}
+        input_use_assessed = version in {"1.31.0", "1.32.0", "1.33.0"}
         parameter_assessed = version in {"1.29.0", "1.30.0"}
         assessed = version in {
             "1.26.0",
@@ -1320,6 +1320,7 @@ class PlaybookCandidateReviewer:
             "1.30.0",
             "1.31.0",
             "1.32.0",
+            "1.33.0",
         }
         evidence_first = version in {
             "1.14.0",
@@ -1341,6 +1342,7 @@ class PlaybookCandidateReviewer:
             "1.30.0",
             "1.31.0",
             "1.32.0",
+            "1.33.0",
         }
         variables = {
             "agent_context_prompt": agent_context,
