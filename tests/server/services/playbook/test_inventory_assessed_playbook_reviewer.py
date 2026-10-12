@@ -184,8 +184,9 @@ def test_new_raw_contract_retains_bounded_native_fallback(recover):
 
 
 @pytest.mark.parametrize("repair", [False, True, "exhaust"])
+@pytest.mark.parametrize("version", ["1.40.0", "1.41.0"])
 def test_native_validator_observes_actual_raw_type_without_retired_fields(
-    monkeypatch, repair
+    monkeypatch, repair, version
 ):
     from reflexio.server.llm.litellm_client import StructuredOutputRepairError
     from reflexio.server.services.playbook.components.reviewer import (
@@ -198,7 +199,7 @@ def test_native_validator_observes_actual_raw_type_without_retired_fields(
         "SOURCE_ONLY_FOREIGN_ACTION"
     )
     replies = [bad, bad] if repair == "exhaust" else [bad, good] if repair else [good]
-    reviewer, transport, calls = _real_reviewer(replies, version="1.40.0")
+    reviewer, transport, calls = _real_reviewer(replies, version=version)
     generate = reviewer.client.generate_chat_response
     observations = []
     projected = []

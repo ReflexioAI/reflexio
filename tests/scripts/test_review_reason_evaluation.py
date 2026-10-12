@@ -843,6 +843,7 @@ def test_private_evaluator_retains_positive_original_facts_on_fatal_reject(
         "1.38.0",
         "1.39.0",
         "1.40.0",
+        "1.41.0",
     ],
 )
 @pytest.mark.parametrize("fatal", [False, True])
@@ -889,12 +890,12 @@ def test_private_evaluator_roundtrips_actual_binary_nested_assessment(
         {"decisions": raw["decisions"]}
     )
 
-    if version == "1.40.0":
+    if version in {"1.40.0", "1.41.0"}:
         del raw["assessments"][0]["original_rule_span"]
         del raw["decisions"][0]["reason_code"]
     output_type = (
         InventoryAssessedReviewOutput
-        if version == "1.40.0"
+        if version in {"1.40.0", "1.41.0"}
         else InputUseAssessedReviewOutput
     )
 
@@ -920,7 +921,7 @@ def test_private_evaluator_roundtrips_actual_binary_nested_assessment(
     assert json.loads(path.read_text())["rows"] == report["rows"]
     assert path.stat().st_mode & 0o777 == 0o600
 
-    if version == "1.40.0":
+    if version in {"1.40.0", "1.41.0"}:
         assert report["calls"][1]["raw_inventory_output"] == raw
         assert "raw_inventory_output" not in report["calls"][0]
         assert all("raw_inventory_output" not in r for r in report["rows"])
@@ -931,3 +932,96 @@ def test_private_evaluator_roundtrips_actual_binary_nested_assessment(
             "reason_code"
             not in report["calls"][1]["raw_inventory_output"]["decisions"][0]
         )
+
+
+def test_full_and_compact_arms_keep_native_raw_output_and_truthful_accounting(tmp_path):
+    from reflexio.server.services.playbook.components.reviewer import (
+        InventoryAssessedReviewOutput,
+    )
+    from tests.server.services.playbook.test_inventory_assessed_playbook_reviewer import (
+        _inventory_response,
+    )
+
+    raw = _inventory_response()
+    case = evaluation.Case(
+        id="full-compact-accounting",
+        provenance="Synthetic native paired accounting regression",
+        agent_context="Image assistant",
+        turns=[evaluation.Turn(role="user", content="Use width 800.")],
+        candidates=[
+            evaluation.Candidate(
+                content="Use the supplied width; never ask again because it causes delays.",
+                trigger="When resizing an image",
+                rationale="Unverified original extension",
+                evidence=[1],
+                decision="revise",
+                reason_code="unsupported_causality",
+            )
+        ],
+    )
+
+    def respond(*_, **options):
+        assert options["response_format"] is InventoryAssessedReviewOutput
+        return InventoryAssessedReviewOutput.model_validate(raw)
+
+    path = tmp_path / "full-compact.json"
+    report = evaluate(
+        [case],
+        observed_client(respond),
+        2,
+        checkpoint=path,
+        baseline_version="1.40.0",
+        candidate_version="1.41.0",
+    )
+    assert report["errors"] == report["measurement_errors"] == []
+    assert report["baseline_version"] == "1.40.0"
+    assert (
+        set(report["prompt_identities"])
+        == set(report["summary"])
+        == {
+            "1.40.0",
+            "1.41.0",
+        }
+    )
+    assert [c["version"] for c in report["calls"]] == [
+        "1.40.0",
+        "1.41.0",
+        "1.41.0",
+        "1.40.0",
+    ]
+    assert all(c["raw_inventory_output"] == raw for c in report["calls"])
+    assert all(c["observation_complete"] for c in report["calls"])
+    assert all(c["repair_attempts"] == 0 for c in report["calls"])
+    assert all(
+        arm["expected"] == arm["processed"] == 2 for arm in report["summary"].values()
+    )
+    assert len(report["rows"]) == 4
+    assert all("raw_inventory_output" not in r for r in report["rows"])
+    checkpoint = json.loads(path.read_text())
+    assert checkpoint["baseline_version"] == "1.40.0"
+    assert checkpoint["rows"] == report["rows"]
+    assert path.stat().st_mode & 0o777 == 0o600
+
+
+@pytest.mark.parametrize(
+    ("baseline", "candidate"),
+    [("1.41.0", "1.40.0"), ("1.40.0", "1.40.0")],
+)
+def test_invalid_paired_arms_fail_before_preparation_or_provider_io(
+    monkeypatch, baseline, candidate
+):
+    prepare = MagicMock(
+        side_effect=AssertionError("must fail before source preparation")
+    )
+    monkeypatch.setattr(evaluation, "prepare_case", prepare)
+    client = MagicMock()
+    with pytest.raises(ValueError, match="baseline"):
+        evaluate(
+            load_cases(DEFAULT_CASES),
+            client,
+            1,
+            baseline_version=baseline,
+            candidate_version=candidate,
+        )
+    prepare.assert_not_called()
+    client.generate_chat_response.assert_not_called()

@@ -163,6 +163,7 @@ def evaluate(
     checkpoint: Path | None = None,
     *,
     candidate_version: str = "1.4.0",
+    baseline_version: str = "1.3.0",
     max_tokens: int | None = None,
     reasoning_effort: Literal["high", "none"] | None = None,
     expected_response_model: str | None = None,
@@ -207,10 +208,15 @@ def evaluate(
         "1.38.0",
         "1.39.0",
         "1.40.0",
+        "1.41.0",
     ):
         raise ValueError(
-            "candidate_version must be 1.4.0, 1.5.0, 1.6.0, 1.7.0, 1.8.0, 1.9.0, 1.10.0, 1.11.0, 1.12.0, 1.13.0, 1.14.0, 1.15.0, 1.16.0, 1.17.0, 1.18.0, 1.19.0, 1.20.0, 1.21.0, 1.22.0, 1.23.0, 1.24.0, 1.25.0, 1.26.0, 1.27.0, 1.28.0, 1.29.0, 1.30.0, 1.31.0, 1.32.0, 1.33.0, 1.34.0, 1.35.0, 1.36.0, 1.37.0, 1.38.0, 1.39.0 or 1.40.0"
+            "candidate_version must be 1.4.0, 1.5.0, 1.6.0, 1.7.0, 1.8.0, 1.9.0, 1.10.0, 1.11.0, 1.12.0, 1.13.0, 1.14.0, 1.15.0, 1.16.0, 1.17.0, 1.18.0, 1.19.0, 1.20.0, 1.21.0, 1.22.0, 1.23.0, 1.24.0, 1.25.0, 1.26.0, 1.27.0, 1.28.0, 1.29.0, 1.30.0, 1.31.0, 1.32.0, 1.33.0, 1.34.0, 1.35.0, 1.36.0, 1.37.0, 1.38.0, 1.39.0, 1.40.0 or 1.41.0"
         )
+    if baseline_version not in ("1.3.0", "1.40.0"):
+        raise ValueError("baseline_version must be 1.3.0 or 1.40.0")
+    if baseline_version == candidate_version:
+        raise ValueError("baseline and candidate versions must differ")
     if not cases:
         raise ValueError("cases must be nonempty")
     if repeats < 1:
@@ -226,7 +232,7 @@ def evaluate(
         version: PromptManager(
             version_override={"playbook_candidate_review": version}
         ).get_prompt_template_identity("playbook_candidate_review")
-        for version in ("1.3.0", candidate_version)
+        for version in (baseline_version, candidate_version)
     }
     prepared = {case.id: prepare_case(case) for case in cases}
     rows = []
@@ -258,6 +264,7 @@ def evaluate(
                         "model": client.config.model,
                         "cases_sha256": case_hash,
                         "candidate_version": candidate_version,
+                        "baseline_version": baseline_version,
                         "prompt_identities": prompt_identities,
                         "rows": rows,
                         "errors": errors,
@@ -274,9 +281,9 @@ def evaluate(
         for repeat in range(repeats):
             # Alternate order to reduce time/order effects; no arm-specific model settings.
             versions = (
-                ("1.3.0", candidate_version)
+                (baseline_version, candidate_version)
                 if repeat % 2 == 0
-                else (candidate_version, "1.3.0")
+                else (candidate_version, baseline_version)
             )
             for version in versions:
                 context = cast(
@@ -399,7 +406,7 @@ def evaluate(
                 )
     summary = {}
     expected_count = sum(len(case.candidates) for case in cases) * repeats
-    for version in ("1.3.0", candidate_version):
+    for version in (baseline_version, candidate_version):
         arm = [row for row in rows if row["version"] == version]
         summary[version] = {
             "expected": expected_count,
@@ -420,6 +427,7 @@ def evaluate(
         "temperature": expected_temperature,
         "cases_sha256": case_hash,
         "candidate_version": candidate_version,
+        "baseline_version": baseline_version,
         "prompt_identities": prompt_identities,
         "repeats": repeats,
         "summary": summary,
@@ -484,6 +492,7 @@ def main() -> int:
             "1.38.0",
             "1.39.0",
             "1.40.0",
+            "1.41.0",
         ),
         default="1.4.0",
     )
