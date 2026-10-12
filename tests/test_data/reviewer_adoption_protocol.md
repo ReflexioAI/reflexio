@@ -82,6 +82,43 @@ halt and independent complete semantic audit. Broader/healthy coverage, unopened
 holdout, every reachable production model and actual product/storage/staging
 validation precede adoption. Local checks and CI do not qualify model semantics.
 
+### Preserved v1.31 revision-grounding failure
+
+The fresh full22 comparison stopped at its first independently audited pair.
+The candidate correctly classified original input use, established supply,
+selected a supplied-input core and revised with causal precedence and null reason.
+It nevertheless retained the unsupported no-reasking restriction, omitted explicit
+current-task assignment/availability in both content and trigger, omitted the
+required original `speculative` defect, and claimed complete correspondence for
+an action span containing the unsupported restriction. Correct choice/code and
+structural validity do not establish faithful retained guidance.
+
+Both arms were fully measured: two initial provider requests and one candidate
+semantic repair, all completed with finish=stop at M3/0.7/8192/120s plus 5s grace.
+The initial native validator rejected a source quotation placed in an original
+parameter-span field; the repair fixed that provenance error and passed structural
+validation. It did not fix the behavioral grounding errors above. Zero candidate
+semantic passes; 65 pairs/130 logical attempts remain unrun. No run resume,
+retroactive label change, aggregate improvement or adoption is justified.
+The three contrasts and all broader/holdout/model/product/staging gates remain.
+
+Evaluated sources: OSS `8344f2d5`, parent `a7fdfccc`; inactive policy byte hash
+`b236da5c17e80f7aaccd50082739a23346606be4f6c6126c93a07ce683a6bd25`;
+schema `2c6b8f6d38e3701bf78a02de9b6541252710cb71dbcb83d01073a7c51677129a`.
+Joint pre-output expectations
+`b8bd246d927edf74222398aa215658fd023ffca42236d9c30dd819af654754d0`;
+protocol `84d174ee01878b48355ebe2b2a25671c80f35072a16cf071e01567e2334b35bd`;
+manifest `7fd3f005a41cc906ff6aba4c4e6ac09367f183212d7f5eaec178d73ec37b783a`;
+independent fail verdict
+`6a14d43075151b6e98a67f8bcb80cf899c04cc8a120f44db883911539b6a27e7`;
+controller terminal receipt
+`2b88ecdbbe95a08c508bbce778c520985abccd5dbd6ba953a9cb85feba5b8e7d`.
+All selected exact-head CI passed; the implementation's 1,187 tests and code
+review do not qualify model decisions. Seven actual-native-parser observer checks
+passed separately; deliberately suppressing validator errors broke both native
+repair/exhaustion tests. The recorder preserved the actual failure rather than
+manufacturing a valid result. Active/default v1.3.0 remains unchanged.
+
 ### Preserved v1.30 original-input classification failure
 
 The fresh unchanged full22 comparison stopped on its first conditional-budget
