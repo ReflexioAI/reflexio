@@ -45,7 +45,7 @@ def _decide_input(raw):
     return _decide(InputUseAssessedReviewOutput.model_validate(raw), version="1.31.0")
 
 
-@pytest.mark.parametrize("version", ["1.31.0", "1.32.0", "1.33.0", "1.34.0"])
+@pytest.mark.parametrize("version", ["1.31.0", "1.32.0", "1.33.0", "1.34.0", "1.35.0"])
 @pytest.mark.parametrize("value", [None, "true", "false", 0, 1, "missing"])
 def test_native_parser_repairs_non_boolean_or_missing_applicability(value, version):
     good = _input_response()
@@ -209,7 +209,7 @@ def test_nested_provenance_errors_name_real_fields_without_customer_text(field, 
     assert "source_parameter_facts" not in str(error.value)
 
 
-@pytest.mark.parametrize("version", ["1.31.0", "1.32.0", "1.33.0", "1.34.0"])
+@pytest.mark.parametrize("version", ["1.31.0", "1.32.0", "1.33.0", "1.34.0", "1.35.0"])
 @pytest.mark.parametrize("recover", [False, True])
 def test_native_exhaustion_retains_existing_bounded_fallback(recover, version):
     from reflexio.server.llm.litellm_client import StructuredOutputRepairError
@@ -244,7 +244,7 @@ def test_structural_validity_does_not_claim_true_semantic_applicability():
     assert outcome.assessments[0].model_dump(by_alias=True) == raw["assessments"][0]
 
 
-@pytest.mark.parametrize("version", ["1.31.0", "1.32.0", "1.33.0", "1.34.0"])
+@pytest.mark.parametrize("version", ["1.31.0", "1.32.0", "1.33.0", "1.34.0", "1.35.0"])
 def test_explicit_future_fixed_default_survives_without_input_conditioning(version):
     from reflexio.server.prompt.prompt_manager import PromptManager
     from tests.server.services.playbook.test_playbook_reviewer import (
@@ -293,3 +293,55 @@ def test_explicit_future_fixed_default_survives_without_input_conditioning(versi
     )
     assert isinstance(outcome.assessments[0], OriginalInputUseAssessment)
     assert outcome.assessments[0].input_facts is None
+
+
+@pytest.mark.parametrize("field", ["original_parameter_spans", "original_use_span"])
+@pytest.mark.parametrize("recover", [False, True])
+@pytest.mark.parametrize("version", ["1.29.0", "1.35.0"])
+def test_source_only_span_repair_identifies_actual_field_without_blame_or_disclosure(
+    field, recover, version
+):
+    from reflexio.server.llm.litellm_client import StructuredOutputRepairError
+
+    good = _parameter_response() if version == "1.29.0" else _input_response()
+    bad = deepcopy(good)
+    facts = (
+        bad["source_parameter_facts"][0]
+        if version == "1.29.0"
+        else bad["assessments"][0]["input_facts"]
+    )
+    facts[field] = (
+        ["Use width 800."] if field == "original_parameter_spans" else "Use width 800."
+    )
+    path = (
+        (
+            "source_parameter_facts[0]"
+            if version == "1.29.0"
+            else "assessments[0].input_facts"
+        )
+        + "."
+        + field
+        + ("[0]" if field == "original_parameter_spans" else "")
+    )
+    sibling = (
+        "original_use_span"
+        if field == "original_parameter_spans"
+        else "original_parameter_spans"
+    )
+    reviewer, transport, calls = _real_reviewer(
+        [bad, good if recover else bad], version=version
+    )
+    with transport:
+        if recover:
+            outcome = _run_real(reviewer)
+            assert outcome.output.decisions[0].decision == "revise"
+        else:
+            with pytest.raises(StructuredOutputRepairError) as error:
+                _run_real(reviewer)
+            assert error.value.validation_errors == (
+                f"{path} requires an exact nonblank substring of own original content/trigger, maximum 600 characters",
+            )
+    assert len(calls) == 2
+    repair = str(calls[1]["messages"])
+    assert path in repair
+    assert path.rsplit(".", 1)[0] + "." + sibling + " requires" not in repair

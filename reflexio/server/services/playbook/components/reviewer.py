@@ -988,17 +988,24 @@ class PlaybookCandidateReviewer:
         spans = fact.original_parameter_spans or []
         if len(spans) != len(set(spans)):
             errors.append(f"{label} repeats an original parameter span")
+        original_spans = [
+            (f"original_parameter_spans[{index}]", span)
+            for index, span in enumerate(spans)
+        ]
         if fact.original_use_span is not None:
-            spans = [*spans, fact.original_use_span]
-        if any(
-            not span.strip()
-            or len(span) > 600
-            or not any(
-                span in text for text in (original.content, original.trigger or "")
-            )
-            for span in spans
-        ):
-            errors.append(f"{label} requires exact nonblank original spans")
+            original_spans.append(("original_use_span", fact.original_use_span))
+        for span_field, span in original_spans:
+            if (
+                not span.strip()
+                or len(span) > 600
+                or not any(
+                    span in text for text in (original.content, original.trigger or "")
+                )
+            ):
+                errors.append(
+                    f"{label}.{span_field} requires an exact nonblank substring of own "
+                    "original content/trigger, maximum 600 characters"
+                )
         for name, excerpts in (
             ("supply_excerpts", fact.supply_excerpts),
             ("use_excerpts", fact.use_excerpts),
@@ -1310,7 +1317,13 @@ class PlaybookCandidateReviewer:
             )
         units_by_candidate = self._candidate_evidence_units(candidates, prompt_context)
         version = self.request_context.prompt_manager.get_active_version(self.PROMPT_ID)
-        input_use_assessed = version in {"1.31.0", "1.32.0", "1.33.0", "1.34.0"}
+        input_use_assessed = version in {
+            "1.31.0",
+            "1.32.0",
+            "1.33.0",
+            "1.34.0",
+            "1.35.0",
+        }
         parameter_assessed = version in {"1.29.0", "1.30.0"}
         assessed = version in {
             "1.26.0",
@@ -1322,6 +1335,7 @@ class PlaybookCandidateReviewer:
             "1.32.0",
             "1.33.0",
             "1.34.0",
+            "1.35.0",
         }
         evidence_first = version in {
             "1.14.0",
@@ -1345,6 +1359,7 @@ class PlaybookCandidateReviewer:
             "1.32.0",
             "1.33.0",
             "1.34.0",
+            "1.35.0",
         }
         variables = {
             "agent_context_prompt": agent_context,
