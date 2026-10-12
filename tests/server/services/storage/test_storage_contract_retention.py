@@ -826,6 +826,52 @@ def test_age_expiry_budget_is_not_spent_on_held_back_rows(
     assert {interaction.interaction_id for interaction in remaining} == {1, 2, 4, 5}
 
 
+def test_age_expiry_checks_dependents_before_extraction_protection(
+    storage: BaseStorage,
+) -> None:
+    """Held-back keys never reach the (costly) protect read; the result is the
+    intersection either order would give.
+
+    req1: has a young interaction. req2: free. req3: protected. req4: both.
+    """
+    now = int(datetime.now(UTC).timestamp())
+    old = now - 40 * _DAY
+    for i in range(1, 5):
+        storage.add_request(_make_request(f"req{i}", old + i))
+    storage.add_user_interaction("u1", _make_interaction(1, "req1", now - _DAY))
+    storage.add_user_interaction("u1", _make_interaction(4, "req4", now - _DAY))
+    seen: list[set[Any]] = []
+
+    def protect(target: str, keys: list[tuple[Any, ...]]) -> list[Any]:
+        seen.append({key[0] for key in keys})
+        return [key for key in keys if key[0] not in {"req3", "req4"}]
+
+    archiver = _RecordingArchiver()
+    with patch.object(
+        type(storage), "filter_extraction_retention", side_effect=protect
+    ):
+        result = _expire(storage, "requests", now - 30 * _DAY, archiver)
+
+    assert (result.eligible, result.deleted) == (1, 1)
+    assert archiver.ids("requests", "request_id") == {"req2"}
+    assert seen == [{"req2", "req3"}]
+
+
+def test_age_expiry_skips_protection_when_dependents_hold_every_key(
+    storage: BaseStorage,
+) -> None:
+    now = int(datetime.now(UTC).timestamp())
+    storage.add_request(_make_request("req1", now - 40 * _DAY))
+    storage.add_user_interaction("u1", _make_interaction(1, "req1", now - _DAY))
+
+    with patch.object(
+        type(storage), "filter_extraction_retention", side_effect=AssertionError
+    ):
+        result = _expire(storage, "requests", now - 30 * _DAY, _RecordingArchiver())
+
+    assert (result.eligible, result.deleted) == (0, 0)
+
+
 def test_age_expiry_keeps_a_row_upserted_mid_archive(storage: BaseStorage) -> None:
     """Only the archived version may be deleted; an upsert during the upload
     leaves a row whose current contents were never archived."""
