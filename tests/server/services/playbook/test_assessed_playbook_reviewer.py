@@ -460,6 +460,7 @@ def test_original_core_consistency_contract(changes, valid):
         "1.34.0",
         "1.35.0",
         "1.36.0",
+        "1.37.0",
     ],
 )
 def test_stored_review_uses_real_parser_and_only_projects_approved_fields(
@@ -507,6 +508,7 @@ def test_stored_review_uses_real_parser_and_only_projects_approved_fields(
             "1.34.0",
             "1.35.0",
             "1.36.0",
+            "1.37.0",
         ):
             fact = _inapplicable_fact()
             if i in (2, 3):
@@ -524,7 +526,15 @@ def test_stored_review_uses_real_parser_and_only_projects_approved_fields(
                     ],
                 )
             raw["source_parameter_facts"] = [fact]
-        if version in ("1.31.0", "1.32.0", "1.33.0", "1.34.0", "1.35.0", "1.36.0"):
+        if version in (
+            "1.31.0",
+            "1.32.0",
+            "1.33.0",
+            "1.34.0",
+            "1.35.0",
+            "1.36.0",
+            "1.37.0",
+        ):
             from tests.server.services.playbook.test_input_use_assessed_playbook_reviewer import (
                 _as_input_response,
             )
@@ -544,6 +554,7 @@ def test_stored_review_uses_real_parser_and_only_projects_approved_fields(
                 "1.34.0",
                 "1.35.0",
                 "1.36.0",
+                "1.37.0",
             )
             else {"decisions": raw["decisions"]}
         )
@@ -1050,7 +1061,17 @@ def test_partial_supply_status_contradiction_repairs_without_forcing_eligibility
 
 @pytest.mark.parametrize(
     "version",
-    ["1.29.0", "1.30.0", "1.31.0", "1.32.0", "1.33.0", "1.34.0", "1.35.0", "1.36.0"],
+    [
+        "1.29.0",
+        "1.30.0",
+        "1.31.0",
+        "1.32.0",
+        "1.33.0",
+        "1.34.0",
+        "1.35.0",
+        "1.36.0",
+        "1.37.0",
+    ],
 )
 def test_complete_collect_then_use_preserves_multiple_inputs_and_earliest_trigger(
     version,
@@ -1087,7 +1108,15 @@ def test_complete_collect_then_use_preserves_multiple_inputs_and_earliest_trigge
         "rationale": "The user requested collecting both dimensions and using them for this image.",
     }
     raw["decisions"][0]["revision"] = revision
-    if version in ("1.31.0", "1.32.0", "1.33.0", "1.34.0", "1.35.0", "1.36.0"):
+    if version in (
+        "1.31.0",
+        "1.32.0",
+        "1.33.0",
+        "1.34.0",
+        "1.35.0",
+        "1.36.0",
+        "1.37.0",
+    ):
         from tests.server.services.playbook.test_input_use_assessed_playbook_reviewer import (
             _as_input_response,
         )

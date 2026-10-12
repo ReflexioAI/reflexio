@@ -1324,6 +1324,7 @@ class PlaybookCandidateReviewer:
             "1.34.0",
             "1.35.0",
             "1.36.0",
+            "1.37.0",
         }
         parameter_assessed = version in {"1.29.0", "1.30.0"}
         assessed = version in {
@@ -1338,6 +1339,7 @@ class PlaybookCandidateReviewer:
             "1.34.0",
             "1.35.0",
             "1.36.0",
+            "1.37.0",
         }
         evidence_first = version in {
             "1.14.0",
@@ -1363,6 +1365,7 @@ class PlaybookCandidateReviewer:
             "1.34.0",
             "1.35.0",
             "1.36.0",
+            "1.37.0",
         }
         variables = {
             "agent_context_prompt": agent_context,
