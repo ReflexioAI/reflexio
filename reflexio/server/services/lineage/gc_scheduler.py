@@ -16,6 +16,14 @@ org's config. Each tick evaluates every org independently.
 One org's failure never stalls the loop; errors are captured as anomalies
 and the loop continues to the next org.
 
+A tick in which work genuinely FAILED is retried sooner (bounded; see
+``_FAILED_TICK_RETRY_SECONDS``). An org that only ran out of its per-org time
+budget does not fail the tick: it is logged as ``org_sweep_timeout`` and, if it
+times out again on the next tick, escalated as
+``lineage.gc.org_sweep_timeout_repeat``. A timed-out org's thread keeps running
+in the background; a failure it records after its own tick ended is ignored
+rather than charged to the tick then running.
+
 Note: the poll interval is always taken from ``lineage_gc.poll_interval_seconds``
 even when only ``expiry_reclamation`` or ``governance_retention`` is enabled;
 all sweep classes share that cadence.
@@ -271,6 +279,12 @@ class LineageGCScheduler(ThreadedScheduler):
         # relying on the GIL to make `|=` atomic.
         self._tick_had_failure = False
         self._failure_lock = threading.Lock()
+        # Bumped at the start of every tick. An org worker records the
+        # generation it was submitted under in `_worker_generation`, so a
+        # straggler -- a timed-out org thread Python cannot kill -- that fails
+        # after its tick ended cannot mark a LATER tick failed.
+        self._tick_generation = 0
+        self._worker_generation = threading.local()
         # Consecutive ticks that ended in failure, to bound the fast retry.
         self._consecutive_failed_ticks = 0
 
@@ -617,19 +631,30 @@ class LineageGCScheduler(ThreadedScheduler):
             org_ids (list[str]): Org IDs to process in this tick.
             max_workers (int): Bounded fan-out width (1 = serial).
         """
+        generation = self._tick_generation
+
+        def _sweep_in_generation(org_id: str) -> None:
+            self._worker_generation.value = generation
+            try:
+                self._sweep_org(org_id)
+            finally:
+                del self._worker_generation.value
+
         timed_out = iterate_orgs_bounded(
             org_ids,
-            self._sweep_org,
+            _sweep_in_generation,
             max_workers=max_workers,
             per_org_timeout_seconds=_ORG_SWEEP_TIMEOUT_SECONDS,
             stop_event=self._stop_event,
         )
-        if timed_out:
-            # An org that ran out of budget did NOT finish its sweeps, so this
-            # tick is not clean. Recorded here rather than in the straggler
-            # thread, which may still be running and would otherwise land its
-            # failure in a LATER tick's state.
-            self._record_tick_failure()
+        # A timeout does NOT fail the tick. The fast retry re-sweeps the WHOLE
+        # fleet, and one slow org would otherwise buy every org three extra
+        # passes a day -- while the timed-out thread is still running, so a
+        # retry 300s later only stacks a second sweep on the same slow org.
+        # Visibility comes from `org_sweep_timeout` (WARNING, in the fan-out)
+        # and, for an org that times out on consecutive ticks, the anomaly
+        # below. A straggler that later FAILS is kept out of the next tick's
+        # state by the generation check in `_record_tick_failure`.
         for org_id in set(timed_out) & self._prior_timeout_orgs:
             capture_anomaly("lineage.gc.org_sweep_timeout_repeat", org_id=org_id)
         self._prior_timeout_orgs = set(timed_out)
@@ -766,8 +791,25 @@ class LineageGCScheduler(ThreadedScheduler):
                 report_background_success(f"lineage-always-global-sweep:{sweep_key}")
 
     def _record_tick_failure(self) -> None:
-        """Mark this tick as having failed work, from any fan-out worker."""
+        """Mark this tick as having failed work, from any fan-out worker.
+
+        A call from an org worker submitted under an earlier tick (a straggler
+        that outlived its timeout) is ignored: its failure was already reported
+        at the call site, and it says nothing about the tick now running.
+        """
+        worker_generation = getattr(self._worker_generation, "value", None)
         with self._failure_lock:
+            if (
+                worker_generation is not None
+                and worker_generation != self._tick_generation
+            ):
+                logger.info(
+                    "event=lineage_gc_stale_tick_failure_ignored "
+                    "worker_generation=%d current_generation=%d",
+                    worker_generation,
+                    self._tick_generation,
+                )
+                return
             self._tick_had_failure = True
 
     def _next_interval(self, poll_interval: float) -> float:
@@ -815,7 +857,9 @@ class LineageGCScheduler(ThreadedScheduler):
         return max(fast, _MIN_POLL_SECONDS)
 
     def _run_once(self) -> float:
-        self._tick_had_failure = False
+        with self._failure_lock:
+            self._tick_generation += 1
+            self._tick_had_failure = False
         self._run_always_global_sweeps()
         poll_interval = _DEFAULT_POLL_INTERVAL_SECONDS
         try:
