@@ -4,6 +4,8 @@ import time
 
 import pytest
 
+from reflexio.server.services.operation_state_utils import OperationStateManager
+
 pytestmark = pytest.mark.integration
 
 
@@ -247,11 +249,11 @@ class TestPendingRequestQueue:
         )
 
     def test_acquire_records_started_at_for_the_shared_reader(self, storage):
-        """``acquire_simple_lock`` reads ``started_at``, defaulting to 0.
+        """Staleness is measured from ``started_at``, so acquire must stamp it.
 
-        A held lock written without it computes ``now - 0`` and is therefore
-        always stale, so the shared reader would steal a lock this backend
-        considers held. The two must agree on the payload, not just the flag.
+        The Postgres RPC reads a missing ``started_at`` as 0, so a held lock
+        written without it is always stale there and any contender would steal
+        it. Every backend must agree on the payload, not just the flag.
         """
         storage.try_acquire_in_progress_lock("svc_started_at", "req_1")
         state = self._state(storage, "svc_started_at")
@@ -259,3 +261,67 @@ class TestPendingRequestQueue:
         assert state.get("in_progress") is True
         assert isinstance(state.get("started_at"), int)
         assert state["started_at"] > 0
+
+
+# ---------------------------------------------------------------------------
+# TestSimpleLock
+# ---------------------------------------------------------------------------
+
+
+class TestSimpleLock:
+    """Contract: ``acquire_simple_lock`` is mutually exclusive on real storage.
+
+    Regression: the old implementation read the wrapped
+    ``{"operation_state": {...}}`` record as if it were the state itself, so
+    ``in_progress`` was never seen and every acquire succeeded.
+    """
+
+    def _mgr(self, storage):
+        return OperationStateManager(storage, "org_simple", "storage_table_cleanup")
+
+    def test_held_lock_refuses_second_manager_until_released(self, storage):
+        first, second = self._mgr(storage), self._mgr(storage)
+
+        assert first.acquire_simple_lock(stale_seconds=600) is True
+        assert second.acquire_simple_lock(stale_seconds=600) is False
+
+        first.release_simple_lock()
+        assert second.acquire_simple_lock(stale_seconds=600) is True
+
+    def test_stale_holder_is_taken_over(self, storage):
+        first, second = self._mgr(storage), self._mgr(storage)
+        assert first.acquire_simple_lock(stale_seconds=600) is True
+
+        key = "storage_table_cleanup::org_simple::lock"
+        record = storage.get_operation_state(key)
+        assert record is not None
+        state = record["operation_state"]
+        state["started_at"] = int(time.time()) - 10_000
+        storage.upsert_operation_state(key, state)
+
+        assert second.acquire_simple_lock(stale_seconds=600) is True
+
+    def test_non_owner_release_does_not_free_the_lock(self, storage):
+        first, second, third = (
+            self._mgr(storage),
+            self._mgr(storage),
+            self._mgr(storage),
+        )
+        assert first.acquire_simple_lock(stale_seconds=600) is True
+        assert second.acquire_simple_lock(stale_seconds=600) is False
+
+        # A refused manager's release, and a stale ex-holder's release after a
+        # takeover, must both leave the current holder's lock in place.
+        second.release_simple_lock()
+        assert third.acquire_simple_lock(stale_seconds=600) is False
+
+        key = "storage_table_cleanup::org_simple::lock"
+        record = storage.get_operation_state(key)
+        assert record is not None
+        state = record["operation_state"]
+        state["started_at"] = int(time.time()) - 10_000
+        storage.upsert_operation_state(key, state)
+        assert third.acquire_simple_lock(stale_seconds=600) is True
+
+        first.release_simple_lock()
+        assert second.acquire_simple_lock(stale_seconds=600) is False

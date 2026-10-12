@@ -10,6 +10,7 @@ Consolidates 5 use cases:
 
 import logging
 import time
+import uuid
 from datetime import UTC, datetime
 from typing import Any
 
@@ -42,6 +43,7 @@ class OperationStateManager:
         self.storage = storage
         self.org_id = org_id
         self.service_name = service_name
+        self._simple_lock_token: str | None = None
 
     # ── Key Builders (private) ──
 
@@ -857,10 +859,21 @@ class OperationStateManager:
     # (Non-queuing lock for cleanup operations)
 
     def acquire_simple_lock(self, stale_seconds: int = 300) -> bool:
-        """Acquire a simple non-queuing lock.
+        """Atomically acquire a simple non-queuing lock.
 
-        Checks if a lock is already held. If the lock is stale (older than
-        stale_seconds), it will be overridden.
+        Delegates to ``storage.try_acquire_in_progress_lock`` with a fresh
+        per-acquire token, so check-and-take is one atomic storage operation
+        rather than a read followed by a blind write. A lock whose holder took
+        it ``stale_seconds`` or more ago (measured from the holder's
+        ``started_at``, boundary inclusive) is taken over.
+
+        Behaviour differences from the queuing ``acquire_lock`` primitive it
+        shares: a refused acquire is still appended to the row's
+        ``pending_request_queue`` by storage, but nothing drains it here — the
+        next successful acquire resets the queue and ``release_simple_lock``
+        replaces the whole state, so entries are bounded by contention within
+        one hold. Storage does not report whether an acquire took over a stale
+        holder, so no separate stale-override log is emitted.
 
         Args:
             stale_seconds: Seconds after which a lock is considered stale
@@ -868,33 +881,35 @@ class OperationStateManager:
         Returns:
             bool: True if lock acquired, False if another operation holds it
         """
-        state_key = self._lock_key()
-        state = self.storage.get_operation_state(state_key)
-        current_time = int(time.time())
-
-        if state and state.get("in_progress", False):
-            started_at = state.get("started_at", 0)
-            if current_time - started_at < stale_seconds:
-                logger.info(
-                    "Skipping %s - another operation is in progress", self.service_name
-                )
-                return False
-            logger.warning(
-                "Stale %s lock detected (started %d seconds ago), proceeding",
-                self.service_name,
-                current_time - started_at,
-            )
-
-        # Acquire lock
-        self.storage.upsert_operation_state(
-            state_key, {"in_progress": True, "started_at": current_time}
+        token = str(uuid.uuid4())
+        result = self.storage.try_acquire_in_progress_lock(
+            self._lock_key(), token, stale_lock_seconds=stale_seconds
         )
+        if not result.get("acquired"):
+            logger.info(
+                "Skipping %s - another operation is in progress", self.service_name
+            )
+            return False
+        self._simple_lock_token = token
         return True
 
     def release_simple_lock(self) -> None:
-        """Release the simple lock."""
-        state_key = self._lock_key()
-        self.storage.upsert_operation_state(
-            state_key,
+        """Release the simple lock if this manager still owns it.
+
+        A no-op when this manager never acquired the lock. If another
+        operation took the lock over as stale, it is left untouched.
+        """
+        token = self._simple_lock_token
+        if token is None:
+            return
+        self._simple_lock_token = None
+        released = self.storage.clear_in_progress_lock_if_owner(
+            self._lock_key(),
+            token,
             {"in_progress": False, "completed_at": int(time.time())},
         )
+        if not released:
+            logger.warning(
+                "%s lock was taken over before release; leaving it to the new holder",
+                self.service_name,
+            )

@@ -6,7 +6,6 @@ extractor bookmark, aggregator bookmark, and simple lock.
 """
 
 import logging
-import time
 from datetime import UTC, datetime
 from unittest.mock import MagicMock
 
@@ -916,53 +915,43 @@ class TestAggregatorBookmark:
 class TestSimpleLock:
     """Tests for simple lock methods."""
 
-    def test_acquire_simple_lock_no_existing(self, manager, mock_storage):
-        mock_storage.get_operation_state.return_value = None
+    def test_acquire_simple_lock_uses_atomic_primitive(self, manager, mock_storage):
+        mock_storage.try_acquire_in_progress_lock.return_value = {"acquired": True}
 
-        result = manager.acquire_simple_lock()
-        assert result is True
+        assert manager.acquire_simple_lock(stale_seconds=600) is True
 
-        key, state = mock_storage.upsert_operation_state.call_args[0]
+        call = mock_storage.try_acquire_in_progress_lock.call_args
+        key, token = call.args
         assert key == "test_service::org_123::lock"
-        assert state["in_progress"] is True
-        assert "started_at" in state
-
-    def test_acquire_simple_lock_already_held(self, manager, mock_storage):
-        mock_storage.get_operation_state.return_value = {
-            "in_progress": True,
-            "started_at": int(time.time()),
-        }
-
-        result = manager.acquire_simple_lock()
-        assert result is False
+        assert token
+        assert call.kwargs == {"stale_lock_seconds": 600}
         mock_storage.upsert_operation_state.assert_not_called()
 
-    def test_acquire_simple_lock_stale(self, manager, mock_storage):
-        mock_storage.get_operation_state.return_value = {
-            "in_progress": True,
-            "started_at": int(time.time()) - 600,
-        }
+    def test_acquire_simple_lock_refused(self, manager, mock_storage):
+        mock_storage.try_acquire_in_progress_lock.return_value = {"acquired": False}
 
-        result = manager.acquire_simple_lock(stale_seconds=300)
-        assert result is True
-        mock_storage.upsert_operation_state.assert_called_once()
+        assert manager.acquire_simple_lock() is False
+        manager.release_simple_lock()
+        mock_storage.clear_in_progress_lock_if_owner.assert_not_called()
 
-    def test_acquire_simple_lock_not_in_progress(self, manager, mock_storage):
-        mock_storage.get_operation_state.return_value = {
-            "in_progress": False,
-            "completed_at": int(time.time()) - 10,
-        }
+    def test_release_simple_lock_clears_with_acquire_token(self, manager, mock_storage):
+        mock_storage.try_acquire_in_progress_lock.return_value = {"acquired": True}
+        manager.acquire_simple_lock()
+        token = mock_storage.try_acquire_in_progress_lock.call_args.args[1]
 
-        result = manager.acquire_simple_lock()
-        assert result is True
-
-    def test_release_simple_lock(self, manager, mock_storage):
         manager.release_simple_lock()
 
-        key, state = mock_storage.upsert_operation_state.call_args[0]
+        key, owner, state = mock_storage.clear_in_progress_lock_if_owner.call_args.args
         assert key == "test_service::org_123::lock"
+        assert owner == token
         assert state["in_progress"] is False
         assert "completed_at" in state
+        mock_storage.upsert_operation_state.assert_not_called()
+
+    def test_release_simple_lock_without_acquire_is_noop(self, manager, mock_storage):
+        manager.release_simple_lock()
+        mock_storage.clear_in_progress_lock_if_owner.assert_not_called()
+        mock_storage.upsert_operation_state.assert_not_called()
 
 
 # ===============================
