@@ -830,7 +830,9 @@ def test_private_evaluator_retains_positive_original_facts_on_fatal_reject(
     assert (tmp_path / "positive-facts.json").stat().st_mode & 0o777 == 0o600
 
 
-@pytest.mark.parametrize("version", ["1.31.0", "1.32.0", "1.33.0", "1.34.0", "1.35.0"])
+@pytest.mark.parametrize(
+    "version", ["1.31.0", "1.32.0", "1.33.0", "1.34.0", "1.35.0", "1.36.0"]
+)
 @pytest.mark.parametrize("fatal", [False, True])
 def test_private_evaluator_roundtrips_actual_binary_nested_assessment(
     tmp_path, fatal, version
