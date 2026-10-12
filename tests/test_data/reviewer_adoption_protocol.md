@@ -37,6 +37,40 @@ retry, reported response-model verification and per-candidate independent semant
 stop gates as v1.23. Only a full pass permits the fresh alternating private
 comparison; the failed v1.23 reports, all input labels and holdout stay unchanged.
 
+### Inactive v1.30: classify the complete original action
+
+v1.30 reuses the exact v1.29 response schema and validators. Its sole policy
+change clarifies that counts, deadlines, recipients, formats and sequences can
+constrain complete procedures without being their sole original action.
+Operation wording alone still cannot turn a scalar default into a workflow;
+complete procedures using supplied task inputs retain input-use classification.
+All eligibility, defect priority, fatal, own-source and saved-grounding rules
+remain unchanged. v1.3.0 remains active; the new version is unqualified.
+
+A fresh unchanged full22 development gate remains mandatory: three paired
+repetitions per case, 66 pairs/132 logical attempts, frozen M3/0.7/8192 profile,
+no outer retry/resume, source-first independent audits and first-failure halt.
+Before any v1.30 outputs, separately preregister three new development controls:
+operation-wrapped historical scalar default, explicit future scalar default,
+and an unsupported multi-input operation with only one input supplied. Keep
+old22 labels/order untouched; run each new contrast for three paired repetitions
+(9 pairs/18 logical attempts). Both gates must pass before focused qualification.
+The new synthetic inputs are `reviewer_operation_parameter_cases.json`, SHA-256
+`7372a8b95e8351ad5bdb0e3c2dabc82bf6248af30f93adfba383b33a31cfc552`.
+Two independent source-first reviewers cleared all three complete oracles before
+calls: historical default rejects as speculative, explicit future default accepts,
+and a real width operand inside an unsupported ratio/square-resize operation stays
+partial and rejects without a manufactured width-setting replacement. The partial
+case tests unsupported surrounding action, not missing height as the sole defect.
+Private oracle SHA-256
+`0d5ae35c23494f296323c348f53c51cbfdf8e31f2c796ecab83bb5594eb121e2`.
+Native parser tests establish response selection, validation, bounded repairs
+and application; only real source-first model audits establish semantic success.
+No larger contract, budget or thinking-mode change is included. Another
+subtype-only failure requires reassessing whether the emitted taxonomy is needed
+before another prompt patch. Broader healthy cases, untouched holdout, reachable
+production models and actual product/storage/staging gates still precede adoption.
+
 ### Preserved v1.29 completion failure
 
 The M3/0.7/8192/no-explicit-effort trial stopped on its first pair. The candidate
@@ -58,6 +92,42 @@ independent audit `dcbf54b6f7d6657eac40a72f3a6bfc8b434886cc5bf49181202833d8a58e1
 Keep this trial, all earlier failures and oracles unchanged. Investigate completion
 limits separately before further semantic qualification. No runtime budget change,
 activation or later gate follows from the failed run; v1.3.0 remains active.
+
+### Preserved v1.29 positive and validation-detail probes
+
+Fresh diagnostic probes kept the v1.29 policy/schema and M3/0.7/8192 profile.
+Sources: OSS `6a69140e`, parent `d8f9979e`. Independent pre-output expectations:
+`4935b7b6aea587df90441a9f68e4e57cea638ae6605ed7c641ed041395594adc`.
+Neither probe substitutes for the full 22-case gate.
+
+The five-positive probe passed all three totals-first repeats, then stopped on
+the first upload-procedure repeat: initial and one repair returned completed
+JSON but exhausted structural validation. The specific offending fields were
+not retained. Four pairs attempted, seven outputs validated, three candidate
+passes independently receipted, eleven provider requests fully observed;
+eleven pairs unrun.
+Protocol `c4f48c120aa6b1d62931b9865db841ea06ddefb73099c156bf20990f729a6f7f`;
+manifest `e3c8d3e4beec1c0d7190283157c9ad69020af6948fb1ecf6133a4325994ced55`;
+audit `f450c5ae10bd509072542efb6e1f3c72ff7543e6e0344fcc24db3b05b3f27254`.
+
+A fresh upload-only probe used a verified observational validator wrapper:
+same parsed inputs, returned error objects, requests and exception identity;
+only typed synthetic fields and checks captured privately, no raw response or
+model thinking. Five offline native parser tests passed; deliberately hiding
+validation errors failed identity regressions. Both arms then completed their
+first response with no repair or structural errors. The candidate preserved the
+entire grounded retry-and-report guidance, code, quotes and null reason, but
+misclassified the complete procedure as `standing_value_preference` rather than
+the preregistered `other`. Its fixed retry count constrains the procedure; it is
+not its sole original action. The previous structural failure was not reproduced
+or explained. Two provider requests fully observed, zero full candidate passes,
+two pairs unrun.
+Protocol `3407ba27c748958a2dd5798ad30fb87e5235aa835bbcfe62c000f30ac9ea7de7`;
+manifest `4773521e32ba1cdde0e21391c76d781fe4f7a5eee915a726d8fec28700e9230a`;
+verdict `0978d54605f0954edd91017ba688e91449a9514ccf378c45764092fc0bc6010c`;
+audit `7588807acd7356b38328cb68659e7b38ed7eef8c0ea7b664e354af9b9cc36656`.
+Preserve both failed probes and original labels. No activation, budget change,
+aggregate improvement claim or later qualification follows.
 
 ### Inactive v1.29: supplied-input facts and complete action correspondence
 

@@ -364,6 +364,7 @@ def test_turn_source_survives_fixture_loading_into_real_reviewer_payload(
         "1.27.0",
         "1.28.0",
         "1.29.0",
+        "1.30.0",
     ],
 )
 def test_candidate_version_selection_preserves_baseline_and_report_identity(
@@ -403,7 +404,7 @@ def test_candidate_version_selection_preserves_baseline_and_report_identity(
                 {
                     **(
                         {"source_parameter_facts": [_inapplicable_fact()]}
-                        if candidate_version == "1.29.0"
+                        if candidate_version in ("1.29.0", "1.30.0")
                         else {}
                     ),
                     "assessments": [
@@ -458,7 +459,7 @@ def test_candidate_version_selection_preserves_baseline_and_report_identity(
     )
     rows = report["rows"]
     assert rows[0]["original_assessments"] == []
-    if candidate_version in ("1.26.0", "1.27.0", "1.28.0", "1.29.0"):
+    if candidate_version in ("1.26.0", "1.27.0", "1.28.0", "1.29.0", "1.30.0"):
         assert rows[1]["original_assessments"] == [
             {
                 "id": "C1",
@@ -480,7 +481,7 @@ def test_candidate_version_selection_preserves_baseline_and_report_identity(
         report["prompt_identities"][candidate_version]["active_version"]
         == candidate_version
     )
-    if candidate_version in ("1.26.0", "1.27.0", "1.28.0", "1.29.0"):
+    if candidate_version in ("1.26.0", "1.27.0", "1.28.0", "1.29.0", "1.30.0"):
         messages = (
             cast(MagicMock, client.generate_chat_response).call_args_list[1].args[0]
         )
@@ -522,6 +523,7 @@ def test_candidate_version_selection_preserves_baseline_and_report_identity(
                 "1.27.0",
                 "1.28.0",
                 "1.29.0",
+                "1.30.0",
             )
         )
     changed_case = case.model_copy(deep=True)
@@ -535,7 +537,7 @@ def test_candidate_version_selection_preserves_baseline_and_report_identity(
 
     assert rows[0]["source_parameter_facts"] == []
     assert rows[1]["source_parameter_facts"] == (
-        [_inapplicable_fact()] if candidate_version == "1.29.0" else []
+        [_inapplicable_fact()] if candidate_version in ("1.29.0", "1.30.0") else []
     )
 
 
@@ -770,7 +772,10 @@ def test_programmatic_temperature_is_frozen_across_evaluation_arms(drift):
     )
 
 
-def test_private_evaluator_retains_positive_original_facts_on_fatal_reject(tmp_path):
+@pytest.mark.parametrize("candidate_version", ["1.29.0", "1.30.0"])
+def test_private_evaluator_retains_positive_original_facts_on_fatal_reject(
+    tmp_path, candidate_version
+):
     from reflexio.server.services.playbook.components.reviewer import (
         ParameterAssessedReviewOutput,
     )
@@ -813,7 +818,7 @@ def test_private_evaluator_retains_positive_original_facts_on_fatal_reject(tmp_p
         [case],
         observed_client(respond),
         1,
-        candidate_version="1.29.0",
+        candidate_version=candidate_version,
         checkpoint=tmp_path / "positive-facts.json",
     )
     assert report["errors"] == report["measurement_errors"] == []

@@ -443,7 +443,7 @@ def test_original_core_consistency_contract(changes, valid):
 
 @pytest.mark.integration
 @pytest.mark.parametrize("report_only", [True, False])
-@pytest.mark.parametrize("version", ["1.3.0", "1.26.0", "1.28.0", "1.29.0"])
+@pytest.mark.parametrize("version", ["1.3.0", "1.26.0", "1.28.0", "1.29.0", "1.30.0"])
 def test_stored_review_uses_real_parser_and_only_projects_approved_fields(
     tmp_path, report_only, version
 ):
@@ -480,7 +480,7 @@ def test_stored_review_uses_real_parser_and_only_projects_approved_fields(
             raw["supporting_evidence"][0]["excerpts"][0]["text"] = (
                 f"Grounded evidence {i}."
             )
-        if version == "1.29.0":
+        if version in ("1.29.0", "1.30.0"):
             fact = _inapplicable_fact()
             if i in (2, 3):
                 raw["assessments"][0]["original_rule_kind"] = "supplied_parameter_use"
@@ -499,7 +499,7 @@ def test_stored_review_uses_real_parser_and_only_projects_approved_fields(
             raw["source_parameter_facts"] = [fact]
         responses.append(
             raw
-            if version in ("1.26.0", "1.28.0", "1.29.0")
+            if version in ("1.26.0", "1.28.0", "1.29.0", "1.30.0")
             else {"decisions": raw["decisions"]}
         )
     reviewer, transport, calls = _real_reviewer(responses)
@@ -781,12 +781,13 @@ def _parameter_response(**changes) -> dict[str, Any]:
     return raw
 
 
-def _decide_parameter(raw):
-    return _decide(ParameterAssessedReviewOutput.model_validate(raw), version="1.29.0")
+def _decide_parameter(raw, version="1.29.0"):
+    return _decide(ParameterAssessedReviewOutput.model_validate(raw), version=version)
 
 
 @pytest.mark.parametrize("generic", [False, True])
-def test_complete_supplied_action_cannot_claim_no_core(generic):
+@pytest.mark.parametrize("version", ["1.29.0", "1.30.0"])
+def test_complete_supplied_action_cannot_claim_no_core(generic, version):
     raw = _parameter_response(
         basis="none",
         defects=["unsupported_causality", "generic"]
@@ -797,7 +798,7 @@ def test_complete_supplied_action_cannot_claim_no_core(generic):
     with pytest.raises(
         ValueError, match="complete supplied-input action requires an eligible core"
     ):
-        _decide_parameter(raw)
+        _decide_parameter(raw, version)
 
 
 @pytest.mark.parametrize(
@@ -809,9 +810,12 @@ def test_complete_supplied_action_cannot_claim_no_core(generic):
         "correction_or_failure",
     ],
 )
-def test_complete_supplied_action_preserves_independently_justified_basis(basis):
+@pytest.mark.parametrize("version", ["1.29.0", "1.30.0"])
+def test_complete_supplied_action_preserves_independently_justified_basis(
+    basis, version
+):
     reviewer, client, candidates, outcome = _decide_parameter(
-        _parameter_response(basis=basis)
+        _parameter_response(basis=basis), version
     )
     assert (
         client.generate_chat_response.call_args.kwargs["response_format"]
@@ -837,17 +841,19 @@ def test_true_partial_supply_does_not_force_complete_action_eligibility(correspo
 
 
 @pytest.mark.parametrize("fatal", ["not_agent_decision", "absence_inference"])
-def test_fatal_reject_keeps_original_facts_without_final_evidence(fatal):
+@pytest.mark.parametrize("version", ["1.29.0", "1.30.0"])
+def test_fatal_reject_keeps_original_facts_without_final_evidence(fatal, version):
     raw = _parameter_response(
         basis="none", defects=[fatal], decision="reject", code=fatal
     )
-    _, _, _, outcome = _decide_parameter(raw)
+    _, _, _, outcome = _decide_parameter(raw, version)
     assert outcome.source_parameter_facts[0].use_correspondence == "complete"
     assert outcome.output.decisions[0].evidence_ids == []
     assert outcome.supporting_evidence == []
 
 
-def test_standing_future_instruction_needs_no_current_input_assignment():
+@pytest.mark.parametrize("version", ["1.29.0", "1.30.0"])
+def test_standing_future_instruction_needs_no_current_input_assignment(version):
     raw = _response(
         kind="standing_value_preference",
         basis="future_instruction",
@@ -856,7 +862,7 @@ def test_standing_future_instruction_needs_no_current_input_assignment():
         code="grounded_useful",
     )
     raw["source_parameter_facts"] = [_inapplicable_fact()]
-    _, _, _, outcome = _decide_parameter(raw)
+    _, _, _, outcome = _decide_parameter(raw, version)
     assert outcome.output.decisions[0].decision == "accept"
 
 
@@ -910,20 +916,22 @@ def test_parameter_fact_accounting_rejects_missing_or_repeated_entries(section):
         ("use_correspondence", "partial_or_unrelated"),
     ],
 )
+@pytest.mark.parametrize("version", ["1.29.0", "1.30.0"])
 def test_invalid_parameter_fact_provenance_or_field_consistency_is_private(
-    field, value
+    field, value, version
 ):
     raw = _parameter_response()
     raw["source_parameter_facts"][0][field] = value
     with pytest.raises(ValueError) as exc:
-        _decide_parameter(raw)
+        _decide_parameter(raw, version)
     assert "PRIVATE_FOREIGN" not in str(exc.value)
 
 
-def test_v129_real_parser_repairs_contradiction_without_altering_supply_fact():
+@pytest.mark.parametrize("version", ["1.29.0", "1.30.0"])
+def test_v129_real_parser_repairs_contradiction_without_altering_supply_fact(version):
     bad = _parameter_response(basis="none", decision="reject")
     good = _parameter_response()
-    reviewer, transport, calls = _real_reviewer([bad, good], version="1.29.0")
+    reviewer, transport, calls = _real_reviewer([bad, good], version=version)
     with transport:
         outcome = _run_real(reviewer)
     assert len(calls) == 2
@@ -942,13 +950,16 @@ def test_v129_real_parser_repairs_contradiction_without_altering_supply_fact():
 
 
 @pytest.mark.parametrize("recover", [False, True])
-def test_v129_real_parser_exhaustion_uses_existing_bounded_fallback(recover, caplog):
+@pytest.mark.parametrize("version", ["1.29.0", "1.30.0"])
+def test_v129_real_parser_exhaustion_uses_existing_bounded_fallback(
+    recover, caplog, version
+):
     from reflexio.server.llm.litellm_client import StructuredOutputRepairError
 
     bad = _parameter_response(basis="none", decision="reject")
     responses = [bad, bad, _parameter_response()] if recover else [bad] * 4
     reviewer, transport, calls = _real_reviewer(
-        responses, version="1.29.0", fallback=True
+        responses, version=version, fallback=True
     )
     with transport:
         if recover:
@@ -962,7 +973,10 @@ def test_v129_real_parser_exhaustion_uses_existing_bounded_fallback(recover, cap
     assert "Use width 800." not in caplog.text
 
 
-def test_partial_supply_status_contradiction_repairs_without_forcing_eligibility():
+@pytest.mark.parametrize("version", ["1.29.0", "1.30.0"])
+def test_partial_supply_status_contradiction_repairs_without_forcing_eligibility(
+    version,
+):
     from copy import deepcopy
 
     good = _parameter_response(basis="none", decision="reject")
@@ -980,8 +994,8 @@ def test_partial_supply_status_contradiction_repairs_without_forcing_eligibility
     with pytest.raises(
         ValueError, match="partial supplied input requires established supply"
     ):
-        _decide_parameter(bad)
-    reviewer, transport, calls = _real_reviewer([bad, good], version="1.29.0")
+        _decide_parameter(bad, version)
+    reviewer, transport, calls = _real_reviewer([bad, good], version=version)
     with transport:
         outcome = _run_real(reviewer)
     assert len(calls) == 2
@@ -989,7 +1003,10 @@ def test_partial_supply_status_contradiction_repairs_without_forcing_eligibility
     assert outcome.source_parameter_facts[0].supply_status == "established"
 
 
-def test_complete_collect_then_use_preserves_multiple_inputs_and_earliest_trigger():
+@pytest.mark.parametrize("version", ["1.29.0", "1.30.0"])
+def test_complete_collect_then_use_preserves_multiple_inputs_and_earliest_trigger(
+    version,
+):
     source1 = "Ask me for width and height."
     source2 = "Use width 800 and height 600 to resize this image."
     core = (
@@ -1024,7 +1041,7 @@ def test_complete_collect_then_use_preserves_multiple_inputs_and_earliest_trigge
     raw["decisions"][0]["revision"] = revision
     reviewer, _ = _reviewer(ParameterAssessedReviewOutput.model_validate(raw))
     reviewer.request_context.prompt_manager = PromptManager(
-        version_override={reviewer.PROMPT_ID: "1.29.0"}
+        version_override={reviewer.PROMPT_ID: version}
     )
     outcome = reviewer.decide(
         candidates=[candidate],
