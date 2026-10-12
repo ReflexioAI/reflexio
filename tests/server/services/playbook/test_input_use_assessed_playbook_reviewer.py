@@ -46,7 +46,8 @@ def _decide_input(raw):
 
 
 @pytest.mark.parametrize(
-    "version", ["1.31.0", "1.32.0", "1.33.0", "1.34.0", "1.35.0", "1.36.0", "1.37.0"]
+    "version",
+    ["1.31.0", "1.32.0", "1.33.0", "1.34.0", "1.35.0", "1.36.0", "1.37.0", "1.38.0"],
 )
 @pytest.mark.parametrize("value", [None, "true", "false", 0, 1, "missing"])
 def test_native_parser_repairs_non_boolean_or_missing_applicability(value, version):
@@ -212,7 +213,8 @@ def test_nested_provenance_errors_name_real_fields_without_customer_text(field, 
 
 
 @pytest.mark.parametrize(
-    "version", ["1.31.0", "1.32.0", "1.33.0", "1.34.0", "1.35.0", "1.36.0", "1.37.0"]
+    "version",
+    ["1.31.0", "1.32.0", "1.33.0", "1.34.0", "1.35.0", "1.36.0", "1.37.0", "1.38.0"],
 )
 @pytest.mark.parametrize("recover", [False, True])
 def test_native_exhaustion_retains_existing_bounded_fallback(recover, version):
@@ -249,7 +251,8 @@ def test_structural_validity_does_not_claim_true_semantic_applicability():
 
 
 @pytest.mark.parametrize(
-    "version", ["1.31.0", "1.32.0", "1.33.0", "1.34.0", "1.35.0", "1.36.0", "1.37.0"]
+    "version",
+    ["1.31.0", "1.32.0", "1.33.0", "1.34.0", "1.35.0", "1.36.0", "1.37.0", "1.38.0"],
 )
 def test_explicit_future_fixed_default_survives_without_input_conditioning(version):
     from reflexio.server.prompt.prompt_manager import PromptManager
@@ -303,7 +306,7 @@ def test_explicit_future_fixed_default_survives_without_input_conditioning(versi
 
 @pytest.mark.parametrize("field", ["original_parameter_spans", "original_use_span"])
 @pytest.mark.parametrize("recover", [False, True])
-@pytest.mark.parametrize("version", ["1.29.0", "1.35.0", "1.36.0", "1.37.0"])
+@pytest.mark.parametrize("version", ["1.29.0", "1.35.0", "1.36.0", "1.37.0", "1.38.0"])
 def test_source_only_span_repair_identifies_actual_field_without_blame_or_disclosure(
     field, recover, version
 ):
