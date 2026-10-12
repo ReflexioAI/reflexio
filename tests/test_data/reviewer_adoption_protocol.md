@@ -37,6 +37,33 @@ retry, reported response-model verification and per-candidate independent semant
 stop gates as v1.23. Only a full pass permits the fresh alternating private
 comparison; the failed v1.23 reports, all input labels and holdout stay unchanged.
 
+### Preserved v1.30 original-input classification failure
+
+The fresh unchanged full22 comparison stopped on its first conditional-budget
+pair. Both requests completed valid JSON and passed structural checks with zero
+repairs. The candidate classified the original supplied-budget action as `other`,
+reported input facts as `not_applicable`, selected `none` plus `generic`, and
+rejected instead of preserving the useful current-task conditional input-use core.
+It also omitted the speculative no-reasking/carryover extensions from inventory.
+Causal primary code, null reason and exact original span were correct. Those
+correct fields do not compensate for lost guidance. No token-exhaustion cause or
+comparative improvement is established by this fresh semantic failure.
+
+Two logical attempts and two initial provider requests were fully observed at
+M3/0.7/8192/120s plus 5s grace. Zero candidate passes; 65 pairs/130 attempts unrun.
+The separate three-contrast trial remains registered but unrun; later gates stay
+closed. Preserve all frozen inputs/oracles and the failed run.
+Sources: OSS `3c0985df`, parent `798bccd7`; policy byte hash
+`bdfed5c8c0efbbf8b56e80711f51e3720397992e20bd1240c7546ec5e1fe6228`;
+schema `79af65772cc5ed7f42553b090762420b39c4d50c00834c1519e3f3890d5af899`.
+Joint pre-output expectations
+`4e168120be39b5e15173c56beb1d2678dab8da811e547e7c140aa73e5d3bc359`;
+protocol `f955b3d692362812030240530074685888f92d13c844d6308a1806b71cfe8ff9`;
+manifest `7bb7cf222dc351a5012dd5870022149dd39e918f1fc7001632b3021cce5b06ae`;
+independent audit `2ffb0aeadb9df209e32e0bc77f0e47e714b2c356a056c097b1b8c79d283599b4`.
+Selected CI passed on these exact heads; 389 local checks and code review passed.
+Those checks establish implementation behavior, not semantic qualification.
+
 ### Inactive v1.30: classify the complete original action
 
 v1.30 reuses the exact v1.29 response schema and validators. Its sole policy
