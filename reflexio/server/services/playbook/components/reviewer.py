@@ -7,6 +7,7 @@ import json
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
+from functools import partial
 from typing import Any, Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
@@ -458,10 +459,49 @@ class InventoryAssessedReviewOutput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class PrimaryRuleAssessment(BaseModel):
+    """Untrusted original-core and primary-defect judgment, not a certificate."""
+
+    candidate_id: str = Field(alias="id", min_length=1)
+    original_proposes_task_input_use: StrictBool
+    input_facts: TaskInputFacts | None
+    supported_core_basis: Literal[
+        "future_instruction",
+        "necessary_procedure",
+        "correction_or_failure",
+        "supplied_parameter",
+        "none",
+    ]
+    primary_defect: OriginalDefectCode | None
+    duplicates_existing_core: StrictBool
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+
+class PrimaryAssessedReviewOutput(BaseModel):
+    """Distinct inactive contract; secondary taxonomy is not model output."""
+
+    assessments: list[PrimaryRuleAssessment]
+    supporting_evidence: list[CandidateSupportingEvidence]
+    decisions: list[InventoryReviewDecision]
+
+    model_config = ConfigDict(extra="forbid")
+
+
 def _highest_priority_original_code(
     defects: list[OriginalDefectCode],
 ) -> PlaybookReviewReasonCode:
     return min(defects, key=_DEFECT_PRIORITY.index) if defects else "grounded_useful"
+
+
+def _allowed_original_decisions(
+    *, eligible: bool, has_defect: bool, fatal: bool, duplicate: bool
+) -> set[str]:
+    if fatal or not eligible:
+        return {"reject"}
+    if not has_defect:
+        return {"accept"}
+    return {"revise", "reject"} if duplicate else {"revise"}
 
 
 def _candidate_batch_digest(candidates: list[UserPlaybook]) -> str:
@@ -499,11 +539,15 @@ class PlaybookReviewOutcome:
     # copies them into saved playbooks, notes, or public response models.
     supporting_evidence: list[CandidateSupportingEvidence] = field(default_factory=list)
     assessments: list[
-        OriginalRuleAssessment | OriginalInputUseAssessment | InventoryRuleAssessment
+        OriginalRuleAssessment
+        | OriginalInputUseAssessment
+        | InventoryRuleAssessment
+        | PrimaryRuleAssessment
     ] = field(default_factory=list)
     original_candidates_sha256: str | None = None
     source_parameter_facts: list[SourceParameterFact] = field(default_factory=list)
     inventory_output: InventoryAssessedReviewOutput | None = None
+    primary_output: PrimaryAssessedReviewOutput | None = None
 
 
 def _append_review_note(
@@ -858,13 +902,14 @@ class PlaybookCandidateReviewer:
     def _original_assessment_errors(
         assessment: OriginalRuleAssessment
         | OriginalInputUseAssessment
-        | InventoryRuleAssessment,
+        | InventoryRuleAssessment
+        | PrimaryRuleAssessment,
         original: UserPlaybook,
         index: int,
     ) -> tuple[str, ...]:
         """Original provenance and core/inventory consistency, without projection."""
         errors: list[str] = []
-        if not isinstance(assessment, InventoryRuleAssessment):
+        if not isinstance(assessment, (InventoryRuleAssessment, PrimaryRuleAssessment)):
             span = assessment.original_rule_span
             if not span.strip() or not any(
                 span in text for text in (original.content, original.trigger or "")
@@ -875,7 +920,12 @@ class PlaybookCandidateReviewer:
         applicable = (
             assessment.original_proposes_task_input_use
             if isinstance(
-                assessment, (OriginalInputUseAssessment, InventoryRuleAssessment)
+                assessment,
+                (
+                    OriginalInputUseAssessment,
+                    InventoryRuleAssessment,
+                    PrimaryRuleAssessment,
+                ),
             )
             else assessment.original_rule_kind == "supplied_parameter_use"
         )
@@ -884,15 +934,46 @@ class PlaybookCandidateReviewer:
                 "original task-input use"
                 if isinstance(
                     assessment,
-                    (OriginalInputUseAssessment, InventoryRuleAssessment),
+                    (
+                        OriginalInputUseAssessment,
+                        InventoryRuleAssessment,
+                        PrimaryRuleAssessment,
+                    ),
                 )
                 else "original supplied_parameter_use"
             )
             errors.append(
                 f"assessments[{index}] supplied_parameter requires {requirement}"
             )
-        defects = assessment.defect_codes
         eligible = assessment.supported_core_basis != "none"
+        if isinstance(assessment, PrimaryRuleAssessment):
+            primary = assessment.primary_defect
+            if eligible and primary == "generic":
+                errors.append(f"assessments[{index}] eligible core forbids generic")
+            if not eligible and primary in (
+                None,
+                "late_trigger",
+                "compound",
+                "redundant",
+            ):
+                errors.append(
+                    f"assessments[{index}] no core requires an ineligibility defect"
+                )
+            if not eligible and assessment.duplicates_existing_core:
+                errors.append(
+                    f"assessments[{index}] duplicate requires an eligible core"
+                )
+            if primary == "redundant" and not assessment.duplicates_existing_core:
+                errors.append(f"assessments[{index}] redundant requires a duplicate")
+            if assessment.duplicates_existing_core and (
+                primary is None
+                or _DEFECT_PRIORITY.index(primary) > _DEFECT_PRIORITY.index("redundant")
+            ):
+                errors.append(
+                    f"assessments[{index}] duplicate contradicts primary priority"
+                )
+            return tuple(errors)
+        defects = assessment.defect_codes
         if len(defects) != len(set(defects)):
             errors.append(f"assessments[{index}] repeats a defect code")
         if eligible and "generic" in defects:
@@ -912,7 +993,8 @@ class PlaybookCandidateReviewer:
     def _assessment_consistency_errors(
         output: AssessedReviewOutput
         | InputUseAssessedReviewOutput
-        | InventoryAssessedReviewOutput,
+        | InventoryAssessedReviewOutput
+        | PrimaryAssessedReviewOutput,
         units_by_candidate: dict[str, list[CandidateEvidenceUnit]],
         originals: dict[str, UserPlaybook],
     ) -> tuple[str, ...]:
@@ -921,7 +1003,8 @@ class PlaybookCandidateReviewer:
             str,
             OriginalRuleAssessment
             | OriginalInputUseAssessment
-            | InventoryRuleAssessment,
+            | InventoryRuleAssessment
+            | PrimaryRuleAssessment,
         ] = {}
         for index, assessment in enumerate(output.assessments):
             candidate_id = assessment.candidate_id.strip()
@@ -948,8 +1031,15 @@ class PlaybookCandidateReviewer:
             if assessment is None:
                 errors.append(f"decisions[{index}] lacks own original assessment")
                 continue
-            defects = assessment.defect_codes
-            code = _highest_priority_original_code(defects)
+            if isinstance(assessment, PrimaryRuleAssessment):
+                code = assessment.primary_defect or "grounded_useful"
+                has_defect = assessment.primary_defect is not None
+                duplicate = assessment.duplicates_existing_core
+            else:
+                defects = assessment.defect_codes
+                code = _highest_priority_original_code(defects)
+                has_defect = bool(defects)
+                duplicate = "redundant" in defects
             if (
                 not isinstance(decision, InventoryReviewDecision)
                 and decision.reason_code != code
@@ -958,14 +1048,12 @@ class PlaybookCandidateReviewer:
                     f"decisions[{index}] code must match highest-priority original defect"
                 )
             eligible = assessment.supported_core_basis != "none"
-            if code in _FATAL_REASON_CODES or not eligible:
-                allowed = {"reject"}
-            elif not defects:
-                allowed = {"accept"}
-            elif "redundant" in defects:
-                allowed = {"revise", "reject"}
-            else:
-                allowed = {"revise"}
+            allowed = _allowed_original_decisions(
+                eligible=eligible,
+                has_defect=has_defect,
+                fatal=code in _FATAL_REASON_CODES,
+                duplicate=duplicate,
+            )
             if decision.decision not in allowed:
                 errors.append(
                     f"decisions[{index}] decision contradicts original core and defects"
@@ -973,7 +1061,9 @@ class PlaybookCandidateReviewer:
         # Do not run legacy normalizers until fatal/assessment consistency passes.
         if errors:
             return tuple(errors)
-        if isinstance(output, InventoryAssessedReviewOutput):
+        if isinstance(
+            output, (InventoryAssessedReviewOutput, PrimaryAssessedReviewOutput)
+        ):
             return PlaybookCandidateReviewer._decision_support_validation_errors(
                 output.decisions, output.supporting_evidence, units_by_candidate
             )
@@ -1031,7 +1121,9 @@ class PlaybookCandidateReviewer:
                     label,
                     assessment.original_rule_kind == "supplied_parameter_use",
                     assessment.supported_core_basis,
-                    assessment.defect_codes,
+                    bool(
+                        set(assessment.defect_codes).intersection(_FATAL_REASON_CODES)
+                    ),
                 )
             )
         if seen != set(originals):
@@ -1046,7 +1138,7 @@ class PlaybookCandidateReviewer:
         label: str,
         applicable: bool,
         supported_core_basis: str,
-        defect_codes: list[OriginalDefectCode],
+        has_fatal_defect: bool,
     ) -> tuple[str, ...]:
         errors: list[str] = []
         if applicable:
@@ -1122,7 +1214,7 @@ class PlaybookCandidateReviewer:
             supplied
             and complete
             and applicable
-            and not set(defect_codes).intersection(_FATAL_REASON_CODES)
+            and not has_fatal_defect
             and supported_core_basis == "none"
         ):
             errors.append(
@@ -1152,7 +1244,9 @@ class PlaybookCandidateReviewer:
 
     @staticmethod
     def _task_input_assessment_errors(
-        assessments: Sequence[OriginalInputUseAssessment | InventoryRuleAssessment],
+        assessments: Sequence[
+            OriginalInputUseAssessment | InventoryRuleAssessment | PrimaryRuleAssessment
+        ],
         units_by_candidate: dict[str, list[CandidateEvidenceUnit]],
         originals: dict[str, UserPlaybook],
     ) -> tuple[str, ...]:
@@ -1180,7 +1274,11 @@ class PlaybookCandidateReviewer:
                     label,
                     True,
                     assessment.supported_core_basis,
-                    assessment.defect_codes,
+                    assessment.primary_defect in _FATAL_REASON_CODES
+                    if isinstance(assessment, PrimaryRuleAssessment)
+                    else bool(
+                        set(assessment.defect_codes).intersection(_FATAL_REASON_CODES)
+                    ),
                 )
             )
             if assessment.supported_core_basis == "supplied_parameter" and (
@@ -1211,6 +1309,51 @@ class PlaybookCandidateReviewer:
         )
 
     @staticmethod
+    def _primary_assessed_validation_errors(
+        output: object,
+        units_by_candidate: dict[str, list[CandidateEvidenceUnit]],
+        originals: dict[str, UserPlaybook],
+        *,
+        has_existing_playbooks: bool,
+    ) -> tuple[str, ...]:
+        if not isinstance(output, PrimaryAssessedReviewOutput):
+            return ("review output has the wrong primary-assessed structured type",)
+        errors = PlaybookCandidateReviewer._task_input_assessment_errors(
+            output.assessments, units_by_candidate, originals
+        )
+        if errors:
+            return errors
+        errors = PlaybookCandidateReviewer._assessment_consistency_errors(
+            output, units_by_candidate, originals
+        )
+        if not has_existing_playbooks:
+            errors += tuple(
+                f"assessments[{index}]: duplicate requires existing playbook context"
+                for index, assessment in enumerate(output.assessments)
+                if assessment.duplicates_existing_core
+            )
+        return errors
+
+    @staticmethod
+    def _project_primary_decisions(
+        output: PrimaryAssessedReviewOutput,
+    ) -> list[CandidateReviewDecision]:
+        """Project the validated claim; this does not prove its semantic priority."""
+        primary_by_candidate = {
+            a.candidate_id.strip(): a.primary_defect for a in output.assessments
+        }
+        return [
+            CandidateReviewDecision.model_validate(
+                {
+                    **d.model_dump(by_alias=True),
+                    "reason_code": primary_by_candidate[d.candidate_id.strip()]
+                    or "grounded_useful",
+                }
+            )
+            for d in output.decisions
+        ]
+
+    @staticmethod
     def _project_inventory_decisions(
         output: InventoryAssessedReviewOutput,
     ) -> list[CandidateReviewDecision]:
@@ -1234,13 +1377,25 @@ class PlaybookCandidateReviewer:
         output: AssessedReviewOutput
         | ParameterAssessedReviewOutput
         | InputUseAssessedReviewOutput
-        | InventoryAssessedReviewOutput,
-    ) -> tuple[EvidenceFirstReviewOutput, InventoryAssessedReviewOutput | None]:
+        | InventoryAssessedReviewOutput
+        | PrimaryAssessedReviewOutput,
+    ) -> tuple[
+        EvidenceFirstReviewOutput,
+        InventoryAssessedReviewOutput | PrimaryAssessedReviewOutput | None,
+    ]:
         """Project already validated raw decisions; retain the actual new raw output."""
-        inventory_output = (
-            output if isinstance(output, InventoryAssessedReviewOutput) else None
+        raw_output = (
+            output
+            if isinstance(
+                output, (InventoryAssessedReviewOutput, PrimaryAssessedReviewOutput)
+            )
+            else None
         )
-        if isinstance(output, InventoryAssessedReviewOutput):
+        if isinstance(output, PrimaryAssessedReviewOutput):
+            public_decisions = PlaybookCandidateReviewer._project_primary_decisions(
+                output
+            )
+        elif isinstance(output, InventoryAssessedReviewOutput):
             public_decisions = PlaybookCandidateReviewer._project_inventory_decisions(
                 output
             )
@@ -1251,7 +1406,7 @@ class PlaybookCandidateReviewer:
             ]
         return EvidenceFirstReviewOutput(
             supporting_evidence=output.supporting_evidence, decisions=public_decisions
-        ), inventory_output
+        ), raw_output
 
     @staticmethod
     def _apply_decisions(
@@ -1489,6 +1644,7 @@ class PlaybookCandidateReviewer:
             )
         units_by_candidate = self._candidate_evidence_units(candidates, prompt_context)
         version = self.request_context.prompt_manager.get_active_version(self.PROMPT_ID)
+        primary_assessed = version == "1.42.0"
         inventory_assessed = version in {"1.40.0", "1.41.0"}
         input_use_assessed = version in {
             "1.31.0",
@@ -1519,6 +1675,7 @@ class PlaybookCandidateReviewer:
             "1.39.0",
             "1.40.0",
             "1.41.0",
+            "1.42.0",
         }
         evidence_first = version in {
             "1.14.0",
@@ -1549,6 +1706,7 @@ class PlaybookCandidateReviewer:
             "1.39.0",
             "1.40.0",
             "1.41.0",
+            "1.42.0",
         }
         variables = {
             "agent_context_prompt": agent_context,
@@ -1574,6 +1732,7 @@ class PlaybookCandidateReviewer:
             | type[ParameterAssessedReviewOutput]
             | type[InputUseAssessedReviewOutput]
             | type[InventoryAssessedReviewOutput]
+            | type[PrimaryAssessedReviewOutput]
         ) = PlaybookCandidateReviewOutput
         validator = self._validation_errors
         payload: dict[str, Any] = {}
@@ -1615,7 +1774,9 @@ class PlaybookCandidateReviewer:
             ]
             messages[1]["content"] = json.dumps(payload, ensure_ascii=False)
             response_format = (
-                InventoryAssessedReviewOutput
+                PrimaryAssessedReviewOutput
+                if primary_assessed
+                else InventoryAssessedReviewOutput
                 if inventory_assessed
                 else InputUseAssessedReviewOutput
                 if input_use_assessed
@@ -1625,6 +1786,10 @@ class PlaybookCandidateReviewer:
             )
 
             validation_methods = {
+                PrimaryAssessedReviewOutput: partial(
+                    self._primary_assessed_validation_errors,
+                    has_existing_playbooks=bool(existing_playbooks),
+                ),
                 InventoryAssessedReviewOutput: self._inventory_assessed_validation_errors,
                 InputUseAssessedReviewOutput: self._input_use_assessed_validation_errors,
                 ParameterAssessedReviewOutput: self._parameter_assessed_validation_errors,
@@ -1692,8 +1857,10 @@ class PlaybookCandidateReviewer:
             OriginalRuleAssessment
             | OriginalInputUseAssessment
             | InventoryRuleAssessment
+            | PrimaryRuleAssessment
         ] = []
         inventory_output: InventoryAssessedReviewOutput | None = None
+        primary_output: PrimaryAssessedReviewOutput | None = None
         source_parameter_facts: list[SourceParameterFact] = []
         if assessed:
             errors = validator(output, units_by_candidate)
@@ -1708,11 +1875,16 @@ class PlaybookCandidateReviewer:
                     ParameterAssessedReviewOutput,
                     InputUseAssessedReviewOutput,
                     InventoryAssessedReviewOutput,
+                    PrimaryAssessedReviewOutput,
                 ),
             ):
                 raise ValueError("Playbook reviewer returned the wrong assessed type")
             assessments = list(output.assessments)
-            output, inventory_output = self._validated_assessed_projection(output)
+            output, raw_assessed_output = self._validated_assessed_projection(output)
+            if isinstance(raw_assessed_output, InventoryAssessedReviewOutput):
+                inventory_output = raw_assessed_output
+            elif isinstance(raw_assessed_output, PrimaryAssessedReviewOutput):
+                primary_output = raw_assessed_output
             validator = self._evidence_first_validation_errors
         if evidence_first:
             errors = validator(output, units_by_candidate)
@@ -1767,6 +1939,7 @@ class PlaybookCandidateReviewer:
             assessments=assessments,
             source_parameter_facts=source_parameter_facts,
             inventory_output=inventory_output,
+            primary_output=primary_output,
             original_candidates_sha256=original_digest,
         )
 

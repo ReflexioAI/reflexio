@@ -465,6 +465,9 @@ def test_original_core_consistency_contract(changes, valid):
         "1.37.0",
         "1.38.0",
         "1.39.0",
+        "1.40.0",
+        "1.41.0",
+        "1.42.0",
     ],
 )
 def test_stored_review_uses_real_parser_and_only_projects_approved_fields(
@@ -515,6 +518,9 @@ def test_stored_review_uses_real_parser_and_only_projects_approved_fields(
             "1.37.0",
             "1.38.0",
             "1.39.0",
+            "1.40.0",
+            "1.41.0",
+            "1.42.0",
         ):
             fact = _inapplicable_fact()
             if i in (2, 3):
@@ -542,12 +548,24 @@ def test_stored_review_uses_real_parser_and_only_projects_approved_fields(
             "1.37.0",
             "1.38.0",
             "1.39.0",
+            "1.40.0",
+            "1.41.0",
+            "1.42.0",
         ):
             from tests.server.services.playbook.test_input_use_assessed_playbook_reviewer import (
                 _as_input_response,
             )
 
             raw = _as_input_response(raw)
+        if version in {"1.40.0", "1.41.0", "1.42.0"}:
+            for item in raw["assessments"]:
+                item.pop("original_rule_span")
+                if version == "1.42.0":
+                    defects = item.pop("defect_codes")
+                    item["primary_defect"] = defects[0] if defects else None
+                    item["duplicates_existing_core"] = False
+            for item in raw["decisions"]:
+                item.pop("reason_code")
         responses.append(
             raw
             if version
@@ -565,6 +583,9 @@ def test_stored_review_uses_real_parser_and_only_projects_approved_fields(
                 "1.37.0",
                 "1.38.0",
                 "1.39.0",
+                "1.40.0",
+                "1.41.0",
+                "1.42.0",
             )
             else {"decisions": raw["decisions"]}
         )
@@ -613,6 +634,8 @@ def test_stored_review_uses_real_parser_and_only_projects_approved_fields(
         )
         assert successor.content == responses[1]["decisions"][0]["revision"]["content"]
         assert "assessments" not in successor.model_dump()
+        assert "primary_output" not in successor.model_dump()
+        assert "duplicates_existing_core" not in successor.model_dump()
         assert "source_parameter_facts" not in successor.model_dump()
         assert "Grounded evidence 2." not in (successor.notes or "")
 
