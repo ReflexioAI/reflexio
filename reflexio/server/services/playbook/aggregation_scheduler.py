@@ -176,10 +176,12 @@ class PlaybookAggregationScheduler(ThreadedScheduler):
         poll_interval_seconds: float = _POLL_SECONDS,
         leader_gate: LeaderGate | None = None,
         worker_id: str | None = None,
+        start_gate: Callable[[], bool] | None = None,
     ) -> None:
         super().__init__(
             thread_name="reflexio-playbook-aggregation-scheduler",
             leader_gate=leader_gate,
+            start_gate=start_gate,
         )
         self._context_provider = context_provider
         self._scope_inventory_provider = scope_inventory_provider

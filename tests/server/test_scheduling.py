@@ -10,6 +10,7 @@ from __future__ import annotations
 import threading
 import time
 
+from reflexio.server import scheduling
 from reflexio.server.scheduling import ThreadedScheduler
 
 
@@ -177,8 +178,10 @@ def test_stop_timeout_keeps_thread_reference_and_blocks_double_start() -> None:
 class _TickCounter(ThreadedScheduler):
     """Ticks fast; records tick count so tests can assert gating."""
 
-    def __init__(self, *, leader_gate=None) -> None:
-        super().__init__(thread_name="tick-counter", leader_gate=leader_gate)
+    def __init__(self, *, leader_gate=None, start_gate=None) -> None:
+        super().__init__(
+            thread_name="tick-counter", leader_gate=leader_gate, start_gate=start_gate
+        )
         self.ticks = 0
 
     def _run_once(self) -> float:
@@ -347,3 +350,75 @@ def test_stop_between_loop_condition_and_wake_clear_exits_promptly():
     finally:
         release.set()
         scheduler.stop(timeout_seconds=2)
+
+
+class TestStartGate:
+    """``start_gate`` holds only the FIRST tick; ``None`` keeps today's start."""
+
+    def test_gate_holds_first_tick_until_open_then_is_never_polled_again(
+        self, monkeypatch
+    ) -> None:
+        monkeypatch.setattr(scheduling, "_START_GATE_POLL_SECONDS", 0.005)
+        is_open = threading.Event()
+        polls: list[bool] = []
+
+        def gate() -> bool:
+            polls.append(is_open.is_set())
+            return is_open.is_set()
+
+        sched = _TickCounter(start_gate=gate)
+        sched.start()
+        try:
+            assert _wait_until(lambda: len(polls) >= 5), "gate was not polled"
+            assert sched.ticks == 0, "ticked while the start gate was shut"
+            is_open.set()
+            assert _wait_until(lambda: sched.ticks >= 2), "never ticked once open"
+            polls_after_open = len(polls)
+            assert _wait_until(lambda: sched.ticks >= 10)
+            assert len(polls) == polls_after_open, "gate re-polled after opening"
+        finally:
+            sched.stop(timeout_seconds=2.0)
+
+    def test_stop_interrupts_the_hold_without_ticking(self) -> None:
+        # Default 5s poll: a stop that did not interrupt the wait would block.
+        sched = _TickCounter(start_gate=lambda: False)
+        sched.start()
+        assert _wait_until(sched.is_running)
+        started = time.monotonic()
+        sched.stop(timeout_seconds=2.0)
+        assert time.monotonic() - started < 1.0, "stop waited out the hold poll"
+        assert sched.is_running() is False
+        assert sched.ticks == 0
+
+    def test_overridden_loop_is_held_and_never_entered_when_stopped(
+        self, monkeypatch
+    ) -> None:
+        monkeypatch.setattr(scheduling, "_START_GATE_POLL_SECONDS", 0.005)
+        entered = threading.Event()
+        polled = threading.Event()
+
+        class _BespokeLoop(ThreadedScheduler):
+            def _run_loop(self) -> None:
+                entered.set()
+
+        def gate() -> bool:
+            polled.set()
+            return False
+
+        sched = _BespokeLoop(thread_name="bespoke", start_gate=gate)
+        sched.start()
+        assert polled.wait(timeout=2.0)
+        sched.stop(timeout_seconds=2.0)
+        assert not entered.is_set(), "a stopped, held scheduler entered its loop"
+
+    def test_raising_gate_fails_open(self, caplog) -> None:
+        def gate() -> bool:
+            raise RuntimeError("boom")
+
+        sched = _TickCounter(start_gate=gate)
+        sched.start()
+        try:
+            assert _wait_until(lambda: sched.ticks >= 1), "raising gate blocked"
+        finally:
+            sched.stop(timeout_seconds=2.0)
+        assert "scheduler_start_gate_failed_open" in caplog.text
