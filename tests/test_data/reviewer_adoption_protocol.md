@@ -37,6 +37,28 @@ retry, reported response-model verification and per-candidate independent semant
 stop gates as v1.23. Only a full pass permits the fresh alternating private
 comparison; the failed v1.23 reports, all input labels and holdout stay unchanged.
 
+### Preserved v1.29 completion failure
+
+The M3/0.7/8192/no-explicit-effort trial stopped on its first pair. The candidate
+initial response and one bounded parse repair each used 8192 output tokens,
+reported `finish_reason: length` and had only two content characters. Both failed
+JSON parsing; the candidate returned no validated decision or factual assessment.
+This is a completion/repair failure, not a scored semantic decision or improvement.
+
+One baseline output was validated. Two logical reviews were attempted with three
+fully observed provider requests (baseline initial, candidate initial and repair),
+one repair attempt and zero repair successes. All model/parameter observations
+were complete. There were zero candidate semantic passes and 65 unrun pairs.
+The baseline again rejected the supported conditional core, diagnostically.
+
+Frozen sources: OSS `b1c46c42`, parent `dac2700e`. Protocol SHA-256
+`66f1f6812f6e2916df074fdc9a81659b72942a5a013c9321a87f4389fbbd60a8`;
+terminal manifest `f6cf71695eae52136fd9a831cfd26a146055ec324fbd612166819a473121abd1`;
+independent audit `dcbf54b6f7d6657eac40a72f3a6bfc8b434886cc5bf49181202833d8a58e1d44`.
+Keep this trial, all earlier failures and oracles unchanged. Investigate completion
+limits separately before further semantic qualification. No runtime budget change,
+activation or later gate follows from the failed run; v1.3.0 remains active.
+
 ### Inactive v1.29: supplied-input facts and complete action correspondence
 
 The v1.28 trials remain failed and immutable. v1.29 tests a distinct internal
