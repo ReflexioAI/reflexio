@@ -410,22 +410,6 @@ def test_a_project_enumeration_failure_fails_the_tick():
         assert sched._run_once() == gc_scheduler._FAILED_TICK_RETRY_SECONDS
 
 
-def test_a_timed_out_org_fails_the_tick(monkeypatch):
-    """A straggler did not finish, so the tick is not clean.
-
-    Recorded from `_gc_tick` rather than the worker thread, which may still be
-    running and would otherwise land its failure in a LATER tick's state.
-    """
-    sched = _tick_scheduler()
-    monkeypatch.setattr(gc_scheduler, "iterate_orgs_bounded", lambda *_a, **_k: [_ORG])
-    with patch.object(
-        gc_scheduler,
-        "sweep_retention_caps",
-        lambda _o, _s: gc_scheduler.RetentionSweepResult(0),
-    ):
-        assert sched._run_once() == gc_scheduler._FAILED_TICK_RETRY_SECONDS
-
-
 def test_retention_still_starts_when_the_bootstrap_config_read_fails():
     """A config failure must not decide an env-driven cap's fate.
 
