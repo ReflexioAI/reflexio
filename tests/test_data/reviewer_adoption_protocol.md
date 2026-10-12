@@ -37,6 +37,47 @@ retry, reported response-model verification and per-candidate independent semant
 stop gates as v1.23. Only a full pass permits the fresh alternating private
 comparison; the failed v1.23 reports, all input labels and holdout stay unchanged.
 
+### Preserved v1.32 variable-core failure
+
+The fresh full22 comparison stopped at its first pair. Both requests completed
+valid JSON, fully measured at the frozen M3/0.7/8192/120s plus 5s grace profile,
+with zero repairs and no native validation errors. The candidate identified
+original variable-input use, established complete supply/action correspondence,
+quoted its independently supported use span, selected the supplied-input basis,
+and recorded the full causal plus speculative original inventory. The unsupported
+no-reasking/causal clauses were removed; causal primary code and null reason were
+correct. These observed fields do not qualify the full retained guidance.
+
+The revision became “For this query-run job, use the supplied budget of 20 units.”
+with trigger “When preparing this query-run job with the supplied budget”. This
+hard-binds the original variable mechanism to the recorded assignment/job rather
+than retaining conditional use of the task's assigned/available input where the
+rule is applied. A source assignment proves supply, not a fixed reusable value
+or historical-job lesson. The frozen variable core and BOTH-field current-task
+assignment/availability conditions were already required and remain unchanged.
+This does not ban grounded fixed future preferences, bounds or workflow constraints.
+
+Zero semantic passes; 65 pairs/130 logical attempts remain unrun. No resume,
+label change or comparative/aggregate improvement is justified. Sources: OSS
+`1d54a728`, parent `c3a62683`; policy byte hash
+`28db2b54d2c23bdb96b39ae07658bb52d1f06b9db74c615a5ac75e016b475d79`;
+unchanged schema
+`2c6b8f6d38e3701bf78a02de9b6541252710cb71dbcb83d01073a7c51677129a`.
+Joint pre-output expectations
+`3adf89d129d10b9f585a5d767d1bf4d7514ff8411de4b9532b622f3c69d1692c`;
+protocol `d48051fa9636bab0a185160e15c7b6c75b5e13f74583758db6e6c72aa52f2c6a`;
+manifest `6dffb2c4a1fb18a7a872388f428e52ed5f1575b077c85c163e9cd2f8311df28f`;
+independent fail verdict
+`97c6144c6f61fbb3f685145cc6e88591b3ba609d4b859935e5ce679a71def144`;
+controller terminal receipt
+`c93a11236cef753eec513b88cf2c9a3c807093876eb855b3655fde79c0f51a99`.
+All selected exact-head CI and 1,209 local implementation/recorder checks passed.
+Those results do not establish model accuracy; broader, holdout, reachable-model
+and actual product/storage/staging gates stay closed. The next prospective wording
+correction distinguishes the task at application from its historical source and
+preserves the original variable reference; it is reviewed but unimplemented.
+Active v1.3.0 is unchanged.
+
 ### Inactive v1.32: source-first revision procedure
 
 v1.31's failed comparison remains failed. v1.32 keeps its exact response schema,
