@@ -37,6 +37,38 @@ retry, reported response-model verification and per-candidate independent semant
 stop gates as v1.23. Only a full pass permits the fresh alternating private
 comparison; the failed v1.23 reports, all input labels and holdout stay unchanged.
 
+### Inactive v1.34: claim kind and factual evidence scope
+
+The v1.33 failure remains failed. v1.34 keeps its native binary/nested schema,
+validators and one-call repair path. It clarifies two existing policy sections:
+unsupported behavioral requirements/restrictions are speculative, not another
+factual attribute; separate original factual claims can still have
+unsupported_evidence. Rationale describes what the source actually specified/
+supplied at its evidenced scope. Conditional reusable guidance does not prove
+repeated assignments or executions. Explicit recurring instructions remain
+instructions/preferences rather than proof of repeated events. Grounded support
+must not be replaced by a behavioral tautology. Causal/fatal precedence, original
+variable mechanisms, fixed numerical preferences/constraints and complete
+collection/use workflows stay unchanged. There is no new field, call, model
+profile, literal/quantifier heuristic or widened label. Active v1.3.0 is unchanged.
+
+Three design/exact-prompt reviews cleared these prospective distinctions. The
+470 focused parser/repair/fallback, workflow/fixed-default, stored review/client/
+private writer, prompt-manager and compatibility checks passed, including eight
+snapshots. These checks establish contracts/routing, not semantic correctness.
+Freeze exact source/policy/driver identities and the unchanged source-only
+expectations before calls. All full22/contrast, broader/healthy, untouched holdout,
+verified reachable-model and actual product/storage/staging gates remain required.
+
+
+Seven actual-native-parser recorder checks passed separately, for 477 focused
+checks total. Ruff/formatting and six affected-file Pyright checks passed. All
+older prompt bytes, six legacy schemas and the native binary-input schema stayed
+unchanged. Independent correctness/security/verification and local Codex review
+found no remaining actionable findings. Codex could not run tests/types in its
+read-only sandbox; root runs supply those receipts. Earlier wider package results
+are not counted here. No model/product/staging qualification follows.
+
 ### Preserved v1.33 factual-rationale and inventory failure
 
 The first fresh full22 pair completed valid JSON with two measured initial
