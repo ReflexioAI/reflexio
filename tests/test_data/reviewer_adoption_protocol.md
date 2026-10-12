@@ -37,6 +37,50 @@ retry, reported response-model verification and per-candidate independent semant
 stop gates as v1.23. Only a full pass permits the fresh alternating private
 comparison; the failed v1.23 reports, all input labels and holdout stay unchanged.
 
+### Preserved v1.33 factual-rationale and inventory failure
+
+The first fresh full22 pair completed valid JSON with two measured initial
+requests, zero repairs and no native validation errors at the unchanged M3/0.7/
+8192/120s plus 5s grace profile. The candidate retained variable input use in its
+content/trigger without a historical sample-value/job replay. Original input
+applicability, own supplied/complete facts, supported independent use span,
+eligible input core, causal priority and null reason were correct. Unsupported
+no-reasking and causal guidance were removed. These fields alone do not qualify
+the complete result.
+
+The saved rationale asserted “The user supplies a budget for each query-run job.”
+Own evidence records one assignment, not recurring supply. Conditional reusable
+behavior is not evidence that its conditions hold for every future job. The
+original inventory was causal plus unsupported_evidence and omitted the required
+speculative behavior defect; factual-attribute labeling cannot replace that
+unsupported behavioral restriction. Both failures violate unchanged pre-output
+judgments. The independent audit accepts semantically scoped supplied-input use
+without demanding a literal availability keyword; it does not relax rationale
+scope or original inventory.
+
+Zero semantic passes; 65 pairs/130 logical attempts unrun. Preserve the failure
+without resume, widened labels or comparative/aggregate improvement claims.
+Evaluated sources: OSS `7534218f`, parent `ed46c265`; policy byte hash
+`52706a24fa617939604052a37320d025c2318e799c0931b40524676b19877379`;
+unchanged schema
+`2c6b8f6d38e3701bf78a02de9b6541252710cb71dbcb83d01073a7c51677129a`.
+Joint pre-output expectations
+`5beb325521921ab7af4311cf39229cababd8a1941922644bb090f659e2998b63`;
+protocol `3a4e0288ce59823b62376cab3e7fe1db965ce3e1697cde4c5542812742aead3a`;
+manifest `9c9412ec64f2e11920fd509b070a7e3eaed1b2f403cd1657f099713f3d8cc4b2`;
+independent fail verdict
+`db4681d71281d5d55654b1329145ca390efa9b3542674c34a17881f1b7852e49`;
+controller terminal receipt
+`a4aecb91307907e3bcc0d44bfa2be955193ded4b49d200c1f3e77d45d2f9b2d9`.
+Selected exact-head CI, local Codex review and 462 focused checks passed; they do
+not establish model accuracy. All full22/contrast, broader/healthy, untouched
+holdout, reachable-model and actual product/storage/staging gates remain.
+The next reviewed, unimplemented correction distinguishes unsupported normative
+requirements from factual attributes and separates factual rationale scope from
+conditional application scope. Fixed future instructions, numerical constraints,
+legitimate restrictions and complete workflows remain protected. Active v1.3.0
+and production behavior are unchanged.
+
 ### Inactive v1.33: preserve the original variable mechanism
 
 The v1.32 failure remains failed. v1.33 retains the exact native binary/nested
