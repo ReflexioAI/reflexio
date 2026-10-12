@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any, Literal, get_args
 
@@ -417,6 +418,52 @@ class InputUseAssessedReviewOutput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class InventoryRuleAssessment(BaseModel):
+    """Original judgment without a redundant generic original-text echo."""
+
+    candidate_id: str = Field(alias="id", min_length=1)
+    original_proposes_task_input_use: StrictBool
+    input_facts: TaskInputFacts | None
+    supported_core_basis: Literal[
+        "future_instruction",
+        "necessary_procedure",
+        "correction_or_failure",
+        "supplied_parameter",
+        "none",
+    ]
+    defect_codes: list[OriginalDefectCode] = Field(max_length=len(_DEFECT_PRIORITY))
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+
+class InventoryReviewDecision(BaseModel):
+    """Strict raw decision; its public code is derived after full validation."""
+
+    candidate_id: str = Field(alias="id", min_length=1)
+    decision: Literal["accept", "revise", "reject"]
+    evidence_ids: list[str] = Field(default_factory=list)
+    revision: CandidateRevision | None = None
+    reason: None
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+
+class InventoryAssessedReviewOutput(BaseModel):
+    """Distinct inactive contract; no older response schema is changed."""
+
+    assessments: list[InventoryRuleAssessment]
+    supporting_evidence: list[CandidateSupportingEvidence]
+    decisions: list[InventoryReviewDecision]
+
+    model_config = ConfigDict(extra="forbid")
+
+
+def _highest_priority_original_code(
+    defects: list[OriginalDefectCode],
+) -> PlaybookReviewReasonCode:
+    return min(defects, key=_DEFECT_PRIORITY.index) if defects else "grounded_useful"
+
+
 def _candidate_batch_digest(candidates: list[UserPlaybook]) -> str:
     payload = [candidate.model_dump(mode="json") for candidate in candidates]
     return hashlib.sha256(
@@ -451,11 +498,12 @@ class PlaybookReviewOutcome:
     # Only private evaluation artifacts may retain these. apply_decisions never
     # copies them into saved playbooks, notes, or public response models.
     supporting_evidence: list[CandidateSupportingEvidence] = field(default_factory=list)
-    assessments: list[OriginalRuleAssessment | OriginalInputUseAssessment] = field(
-        default_factory=list
-    )
+    assessments: list[
+        OriginalRuleAssessment | OriginalInputUseAssessment | InventoryRuleAssessment
+    ] = field(default_factory=list)
     original_candidates_sha256: str | None = None
     source_parameter_facts: list[SourceParameterFact] = field(default_factory=list)
+    inventory_output: InventoryAssessedReviewOutput | None = None
 
 
 def _append_review_note(
@@ -657,10 +705,19 @@ class PlaybookCandidateReviewer:
     ) -> tuple[str, ...]:
         if not isinstance(output, PlaybookCandidateReviewOutput):
             return ("review output has the wrong structured type",)
+        return PlaybookCandidateReviewer._decision_validation_errors(
+            output.decisions, units_by_candidate
+        )
+
+    @staticmethod
+    def _decision_validation_errors(
+        decisions: Sequence[CandidateReviewDecision | InventoryReviewDecision],
+        units_by_candidate: dict[str, list[CandidateEvidenceUnit]],
+    ) -> tuple[str, ...]:
         expected_ids = set(units_by_candidate)
         seen_ids: set[str] = set()
         errors: list[str] = []
-        for index, decision in enumerate(output.decisions):
+        for index, decision in enumerate(decisions):
             candidate_id = decision.candidate_id.strip()
             if candidate_id not in expected_ids:
                 errors.append(f"decisions[{index}] has unknown candidate_id")
@@ -728,12 +785,23 @@ class PlaybookCandidateReviewer:
     ) -> tuple[str, ...]:
         if not isinstance(output, EvidenceFirstReviewOutput):
             return ("review output has the wrong evidence-first structured type",)
-        decisions = PlaybookCandidateReviewOutput(decisions=output.decisions)
+        return PlaybookCandidateReviewer._decision_support_validation_errors(
+            output.decisions, output.supporting_evidence, units_by_candidate
+        )
+
+    @staticmethod
+    def _decision_support_validation_errors(
+        decisions: Sequence[CandidateReviewDecision | InventoryReviewDecision],
+        supporting_evidence: list[CandidateSupportingEvidence],
+        units_by_candidate: dict[str, list[CandidateEvidenceUnit]],
+    ) -> tuple[str, ...]:
         errors = list(
-            PlaybookCandidateReviewer._validation_errors(decisions, units_by_candidate)
+            PlaybookCandidateReviewer._decision_validation_errors(
+                decisions, units_by_candidate
+            )
         )
         supports: dict[str, CandidateSupportingEvidence] = {}
-        for index, support in enumerate(output.supporting_evidence):
+        for index, support in enumerate(supporting_evidence):
             candidate_id = support.candidate_id.strip()
             if candidate_id not in units_by_candidate or candidate_id in supports:
                 errors.append(
@@ -755,7 +823,7 @@ class PlaybookCandidateReviewer:
                     errors.append(
                         f"supporting_evidence[{index}] has invalid own-source excerpt"
                     )
-        for index, decision in enumerate(output.decisions):
+        for index, decision in enumerate(decisions):
             support = supports.get(decision.candidate_id.strip())
             if decision.decision == "reject":
                 if support is not None:
@@ -787,20 +855,16 @@ class PlaybookCandidateReviewer:
         )
 
     @staticmethod
-    def _assessment_consistency_errors(
-        output: AssessedReviewOutput | InputUseAssessedReviewOutput,
-        units_by_candidate: dict[str, list[CandidateEvidenceUnit]],
-        originals: dict[str, UserPlaybook],
+    def _original_assessment_errors(
+        assessment: OriginalRuleAssessment
+        | OriginalInputUseAssessment
+        | InventoryRuleAssessment,
+        original: UserPlaybook,
+        index: int,
     ) -> tuple[str, ...]:
+        """Original provenance and core/inventory consistency, without projection."""
         errors: list[str] = []
-        assessments: dict[str, OriginalRuleAssessment | OriginalInputUseAssessment] = {}
-        for index, assessment in enumerate(output.assessments):
-            candidate_id = assessment.candidate_id.strip()
-            original = originals.get(candidate_id)
-            if original is None or candidate_id in assessments:
-                errors.append(f"assessments[{index}] has unknown or repeated candidate")
-                continue
-            assessments[candidate_id] = assessment
+        if not isinstance(assessment, InventoryRuleAssessment):
             span = assessment.original_rule_span
             if not span.strip() or not any(
                 span in text for text in (original.content, original.trigger or "")
@@ -808,45 +872,75 @@ class PlaybookCandidateReviewer:
                 errors.append(
                     f"assessments[{index}] requires an exact nonblank original span"
                 )
-            applicable = (
-                assessment.original_proposes_task_input_use
-                if isinstance(assessment, OriginalInputUseAssessment)
-                else assessment.original_rule_kind == "supplied_parameter_use"
+        applicable = (
+            assessment.original_proposes_task_input_use
+            if isinstance(
+                assessment, (OriginalInputUseAssessment, InventoryRuleAssessment)
             )
-            if (
-                assessment.supported_core_basis == "supplied_parameter"
-                and not applicable
-            ):
-                requirement = (
-                    "original task-input use"
-                    if isinstance(assessment, OriginalInputUseAssessment)
-                    else "original supplied_parameter_use"
+            else assessment.original_rule_kind == "supplied_parameter_use"
+        )
+        if assessment.supported_core_basis == "supplied_parameter" and not applicable:
+            requirement = (
+                "original task-input use"
+                if isinstance(
+                    assessment,
+                    (OriginalInputUseAssessment, InventoryRuleAssessment),
                 )
-                errors.append(
-                    f"assessments[{index}] supplied_parameter requires {requirement}"
+                else "original supplied_parameter_use"
+            )
+            errors.append(
+                f"assessments[{index}] supplied_parameter requires {requirement}"
+            )
+        defects = assessment.defect_codes
+        eligible = assessment.supported_core_basis != "none"
+        if len(defects) != len(set(defects)):
+            errors.append(f"assessments[{index}] repeats a defect code")
+        if eligible and "generic" in defects:
+            errors.append(f"assessments[{index}] eligible core forbids generic")
+        if not eligible and (
+            not defects
+            or set(defects).issubset({"late_trigger", "compound", "redundant"})
+        ):
+            errors.append(
+                f"assessments[{index}] no core requires an ineligibility defect"
+            )
+        if not eligible and "redundant" in defects:
+            errors.append(f"assessments[{index}] redundant requires an eligible core")
+        return tuple(errors)
+
+    @staticmethod
+    def _assessment_consistency_errors(
+        output: AssessedReviewOutput
+        | InputUseAssessedReviewOutput
+        | InventoryAssessedReviewOutput,
+        units_by_candidate: dict[str, list[CandidateEvidenceUnit]],
+        originals: dict[str, UserPlaybook],
+    ) -> tuple[str, ...]:
+        errors: list[str] = []
+        assessments: dict[
+            str,
+            OriginalRuleAssessment
+            | OriginalInputUseAssessment
+            | InventoryRuleAssessment,
+        ] = {}
+        for index, assessment in enumerate(output.assessments):
+            candidate_id = assessment.candidate_id.strip()
+            original = originals.get(candidate_id)
+            if original is None or candidate_id in assessments:
+                errors.append(f"assessments[{index}] has unknown or repeated candidate")
+                continue
+            assessments[candidate_id] = assessment
+            errors.extend(
+                PlaybookCandidateReviewer._original_assessment_errors(
+                    assessment, original, index
                 )
-            defects = assessment.defect_codes
-            eligible = assessment.supported_core_basis != "none"
-            if len(defects) != len(set(defects)):
-                errors.append(f"assessments[{index}] repeats a defect code")
-            if eligible and "generic" in defects:
-                errors.append(f"assessments[{index}] eligible core forbids generic")
-            if not eligible and (
-                not defects
-                or set(defects).issubset({"late_trigger", "compound", "redundant"})
-            ):
-                errors.append(
-                    f"assessments[{index}] no core requires an ineligibility defect"
-                )
-            if not eligible and "redundant" in defects:
-                errors.append(
-                    f"assessments[{index}] redundant requires an eligible core"
-                )
+            )
         if set(assessments) != set(originals):
             errors.append("missing original candidate assessments")
         for index, decision in enumerate(output.decisions):
             if (
-                decision.reason_code in _FATAL_REASON_CODES
+                not isinstance(decision, InventoryReviewDecision)
+                and decision.reason_code in _FATAL_REASON_CODES
                 and decision.decision != "reject"
             ):
                 errors.append(f"decisions[{index}] fatal reason_code requires reject")
@@ -855,12 +949,11 @@ class PlaybookCandidateReviewer:
                 errors.append(f"decisions[{index}] lacks own original assessment")
                 continue
             defects = assessment.defect_codes
-            code = (
-                min(defects, key=_DEFECT_PRIORITY.index)
-                if defects
-                else "grounded_useful"
-            )
-            if decision.reason_code != code:
+            code = _highest_priority_original_code(defects)
+            if (
+                not isinstance(decision, InventoryReviewDecision)
+                and decision.reason_code != code
+            ):
                 errors.append(
                     f"decisions[{index}] code must match highest-priority original defect"
                 )
@@ -880,6 +973,10 @@ class PlaybookCandidateReviewer:
         # Do not run legacy normalizers until fatal/assessment consistency passes.
         if errors:
             return tuple(errors)
+        if isinstance(output, InventoryAssessedReviewOutput):
+            return PlaybookCandidateReviewer._decision_support_validation_errors(
+                output.decisions, output.supporting_evidence, units_by_candidate
+            )
         evidence_output = EvidenceFirstReviewOutput(
             supporting_evidence=output.supporting_evidence,
             decisions=[
@@ -1046,7 +1143,21 @@ class PlaybookCandidateReviewer:
                 output, units_by_candidate, originals
             )
         )
-        for index, assessment in enumerate(output.assessments):
+        errors.extend(
+            PlaybookCandidateReviewer._task_input_assessment_errors(
+                output.assessments, units_by_candidate, originals
+            )
+        )
+        return tuple(errors)
+
+    @staticmethod
+    def _task_input_assessment_errors(
+        assessments: Sequence[OriginalInputUseAssessment | InventoryRuleAssessment],
+        units_by_candidate: dict[str, list[CandidateEvidenceUnit]],
+        originals: dict[str, UserPlaybook],
+    ) -> tuple[str, ...]:
+        errors: list[str] = []
+        for index, assessment in enumerate(assessments):
             candidate_id = assessment.candidate_id.strip()
             original = originals.get(candidate_id)
             if original is None:
@@ -1080,6 +1191,67 @@ class PlaybookCandidateReviewer:
                     f"{label} supplied_parameter requires established supply and complete correspondence"
                 )
         return tuple(errors)
+
+    @staticmethod
+    def _inventory_assessed_validation_errors(
+        output: object,
+        units_by_candidate: dict[str, list[CandidateEvidenceUnit]],
+        originals: dict[str, UserPlaybook],
+    ) -> tuple[str, ...]:
+        if not isinstance(output, InventoryAssessedReviewOutput):
+            return ("review output has the wrong inventory-assessed structured type",)
+        # Every raw fact/provenance and decision check precedes public construction.
+        errors = PlaybookCandidateReviewer._task_input_assessment_errors(
+            output.assessments, units_by_candidate, originals
+        )
+        if errors:
+            return errors
+        return PlaybookCandidateReviewer._assessment_consistency_errors(
+            output, units_by_candidate, originals
+        )
+
+    @staticmethod
+    def _project_inventory_decisions(
+        output: InventoryAssessedReviewOutput,
+    ) -> list[CandidateReviewDecision]:
+        inventories = {
+            a.candidate_id.strip(): a.defect_codes for a in output.assessments
+        }
+        return [
+            CandidateReviewDecision.model_validate(
+                {
+                    **d.model_dump(by_alias=True),
+                    "reason_code": _highest_priority_original_code(
+                        inventories[d.candidate_id.strip()]
+                    ),
+                }
+            )
+            for d in output.decisions
+        ]
+
+    @staticmethod
+    def _validated_assessed_projection(
+        output: AssessedReviewOutput
+        | ParameterAssessedReviewOutput
+        | InputUseAssessedReviewOutput
+        | InventoryAssessedReviewOutput,
+    ) -> tuple[EvidenceFirstReviewOutput, InventoryAssessedReviewOutput | None]:
+        """Project already validated raw decisions; retain the actual new raw output."""
+        inventory_output = (
+            output if isinstance(output, InventoryAssessedReviewOutput) else None
+        )
+        if isinstance(output, InventoryAssessedReviewOutput):
+            public_decisions = PlaybookCandidateReviewer._project_inventory_decisions(
+                output
+            )
+        else:
+            public_decisions = [
+                CandidateReviewDecision.model_validate(item.model_dump(by_alias=True))
+                for item in output.decisions
+            ]
+        return EvidenceFirstReviewOutput(
+            supporting_evidence=output.supporting_evidence, decisions=public_decisions
+        ), inventory_output
 
     @staticmethod
     def _apply_decisions(
@@ -1317,6 +1489,7 @@ class PlaybookCandidateReviewer:
             )
         units_by_candidate = self._candidate_evidence_units(candidates, prompt_context)
         version = self.request_context.prompt_manager.get_active_version(self.PROMPT_ID)
+        inventory_assessed = version == "1.40.0"
         input_use_assessed = version in {
             "1.31.0",
             "1.32.0",
@@ -1344,6 +1517,7 @@ class PlaybookCandidateReviewer:
             "1.37.0",
             "1.38.0",
             "1.39.0",
+            "1.40.0",
         }
         evidence_first = version in {
             "1.14.0",
@@ -1372,6 +1546,7 @@ class PlaybookCandidateReviewer:
             "1.37.0",
             "1.38.0",
             "1.39.0",
+            "1.40.0",
         }
         variables = {
             "agent_context_prompt": agent_context,
@@ -1396,6 +1571,7 @@ class PlaybookCandidateReviewer:
             | type[AssessedReviewOutput]
             | type[ParameterAssessedReviewOutput]
             | type[InputUseAssessedReviewOutput]
+            | type[InventoryAssessedReviewOutput]
         ) = PlaybookCandidateReviewOutput
         validator = self._validation_errors
         payload: dict[str, Any] = {}
@@ -1437,28 +1613,29 @@ class PlaybookCandidateReviewer:
             ]
             messages[1]["content"] = json.dumps(payload, ensure_ascii=False)
             response_format = (
-                InputUseAssessedReviewOutput
+                InventoryAssessedReviewOutput
+                if inventory_assessed
+                else InputUseAssessedReviewOutput
                 if input_use_assessed
                 else ParameterAssessedReviewOutput
                 if parameter_assessed
                 else AssessedReviewOutput
             )
 
-            def validate_assessed(
-                value: object,
-                units: dict[str, list[CandidateEvidenceUnit]],
-            ) -> tuple[str, ...]:
-                if input_use_assessed:
-                    return self._input_use_assessed_validation_errors(
-                        value, units, originals
-                    )
-                if parameter_assessed:
-                    return self._parameter_assessed_validation_errors(
-                        value, units, originals
-                    )
-                return self._assessed_validation_errors(value, units, originals)
+            validation_methods = {
+                InventoryAssessedReviewOutput: self._inventory_assessed_validation_errors,
+                InputUseAssessedReviewOutput: self._input_use_assessed_validation_errors,
+                ParameterAssessedReviewOutput: self._parameter_assessed_validation_errors,
+                AssessedReviewOutput: self._assessed_validation_errors,
+            }
+            validate_assessed = validation_methods[response_format]
 
-            validator = validate_assessed
+            def validate_original(
+                value: object, units: dict[str, list[CandidateEvidenceUnit]]
+            ) -> tuple[str, ...]:
+                return validate_assessed(value, units, originals)
+
+            validator = validate_original
         inference_options: dict[str, Any] = {}
         if self.max_tokens is not None:
             inference_options["max_tokens"] = self.max_tokens
@@ -1509,7 +1686,12 @@ class PlaybookCandidateReviewer:
             output = self.client.generate_chat_response(messages, **options)
         raw_output = output
         supporting_evidence: list[CandidateSupportingEvidence] = []
-        assessments: list[OriginalRuleAssessment | OriginalInputUseAssessment] = []
+        assessments: list[
+            OriginalRuleAssessment
+            | OriginalInputUseAssessment
+            | InventoryRuleAssessment
+        ] = []
+        inventory_output: InventoryAssessedReviewOutput | None = None
         source_parameter_facts: list[SourceParameterFact] = []
         if assessed:
             errors = validator(output, units_by_candidate)
@@ -1523,19 +1705,12 @@ class PlaybookCandidateReviewer:
                     AssessedReviewOutput,
                     ParameterAssessedReviewOutput,
                     InputUseAssessedReviewOutput,
+                    InventoryAssessedReviewOutput,
                 ),
             ):
                 raise ValueError("Playbook reviewer returned the wrong assessed type")
             assessments = list(output.assessments)
-            output = EvidenceFirstReviewOutput(
-                supporting_evidence=output.supporting_evidence,
-                decisions=[
-                    CandidateReviewDecision.model_validate(
-                        item.model_dump(by_alias=True)
-                    )
-                    for item in output.decisions
-                ],
-            )
+            output, inventory_output = self._validated_assessed_projection(output)
             validator = self._evidence_first_validation_errors
         if evidence_first:
             errors = validator(output, units_by_candidate)
@@ -1589,6 +1764,7 @@ class PlaybookCandidateReviewer:
             supporting_evidence=supporting_evidence,
             assessments=assessments,
             source_parameter_facts=source_parameter_facts,
+            inventory_output=inventory_output,
             original_candidates_sha256=original_digest,
         )
 

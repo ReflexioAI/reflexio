@@ -206,9 +206,10 @@ def evaluate(
         "1.37.0",
         "1.38.0",
         "1.39.0",
+        "1.40.0",
     ):
         raise ValueError(
-            "candidate_version must be 1.4.0, 1.5.0, 1.6.0, 1.7.0, 1.8.0, 1.9.0, 1.10.0, 1.11.0, 1.12.0, 1.13.0, 1.14.0, 1.15.0, 1.16.0, 1.17.0, 1.18.0, 1.19.0, 1.20.0, 1.21.0, 1.22.0, 1.23.0, 1.24.0, 1.25.0, 1.26.0, 1.27.0, 1.28.0, 1.29.0, 1.30.0, 1.31.0, 1.32.0, 1.33.0, 1.34.0, 1.35.0, 1.36.0, 1.37.0, 1.38.0 or 1.39.0"
+            "candidate_version must be 1.4.0, 1.5.0, 1.6.0, 1.7.0, 1.8.0, 1.9.0, 1.10.0, 1.11.0, 1.12.0, 1.13.0, 1.14.0, 1.15.0, 1.16.0, 1.17.0, 1.18.0, 1.19.0, 1.20.0, 1.21.0, 1.22.0, 1.23.0, 1.24.0, 1.25.0, 1.26.0, 1.27.0, 1.28.0, 1.29.0, 1.30.0, 1.31.0, 1.32.0, 1.33.0, 1.34.0, 1.35.0, 1.36.0, 1.37.0, 1.38.0, 1.39.0 or 1.40.0"
         )
     if not cases:
         raise ValueError("cases must be nonempty")
@@ -341,6 +342,10 @@ def evaluate(
                             }
                         )
                     save_progress()
+                if result.inventory_output is not None:
+                    calls[-1]["raw_inventory_output"] = (
+                        result.inventory_output.model_dump(mode="json", by_alias=True)
+                    )
                 expected = {
                     f"C{index}": candidate
                     for index, candidate in enumerate(case.candidates, 1)
@@ -478,6 +483,7 @@ def main() -> int:
             "1.37.0",
             "1.38.0",
             "1.39.0",
+            "1.40.0",
         ),
         default="1.4.0",
     )

@@ -11,6 +11,7 @@ from reflexio.server.services.playbook.components.reviewer import (
     AssessedReviewDecision,
     AssessedReviewOutput,
     InputUseAssessedReviewOutput,
+    InventoryAssessedReviewOutput,
     ParameterAssessedReviewOutput,
 )
 from tests.server.services.playbook.test_playbook_reviewer import (
@@ -70,7 +71,8 @@ def _response(
 def _decide(
     response: AssessedReviewOutput
     | ParameterAssessedReviewOutput
-    | InputUseAssessedReviewOutput,
+    | InputUseAssessedReviewOutput
+    | InventoryAssessedReviewOutput,
     *,
     version: str = "1.26.0",
 ):

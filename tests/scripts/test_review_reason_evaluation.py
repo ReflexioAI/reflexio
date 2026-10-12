@@ -842,6 +842,7 @@ def test_private_evaluator_retains_positive_original_facts_on_fatal_reject(
         "1.37.0",
         "1.38.0",
         "1.39.0",
+        "1.40.0",
     ],
 )
 @pytest.mark.parametrize("fatal", [False, True])
@@ -850,6 +851,7 @@ def test_private_evaluator_roundtrips_actual_binary_nested_assessment(
 ):
     from reflexio.server.services.playbook.components.reviewer import (
         InputUseAssessedReviewOutput,
+        InventoryAssessedReviewOutput,
     )
     from tests.server.services.playbook.test_input_use_assessed_playbook_reviewer import (
         _input_response,
@@ -887,10 +889,19 @@ def test_private_evaluator_roundtrips_actual_binary_nested_assessment(
         {"decisions": raw["decisions"]}
     )
 
+    if version == "1.40.0":
+        del raw["assessments"][0]["original_rule_span"]
+        del raw["decisions"][0]["reason_code"]
+    output_type = (
+        InventoryAssessedReviewOutput
+        if version == "1.40.0"
+        else InputUseAssessedReviewOutput
+    )
+
     def respond(*_, **options):
         return (
-            InputUseAssessedReviewOutput.model_validate(raw)
-            if options["response_format"] is InputUseAssessedReviewOutput
+            output_type.model_validate(raw)
+            if options["response_format"] is output_type
             else legacy
         )
 
@@ -908,3 +919,15 @@ def test_private_evaluator_roundtrips_actual_binary_nested_assessment(
         assert row["supporting_evidence"] == row["evidence_ids"] == []
     assert json.loads(path.read_text())["rows"] == report["rows"]
     assert path.stat().st_mode & 0o777 == 0o600
+
+    if version == "1.40.0":
+        assert report["calls"][1]["raw_inventory_output"] == raw
+        assert "raw_inventory_output" not in report["calls"][0]
+        assert all("raw_inventory_output" not in r for r in report["rows"])
+        assert row["reason_code"] == (
+            "absence_inference" if fatal else "unsupported_causality"
+        )
+        assert (
+            "reason_code"
+            not in report["calls"][1]["raw_inventory_output"]["decisions"][0]
+        )
