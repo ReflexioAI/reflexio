@@ -363,6 +363,7 @@ def test_turn_source_survives_fixture_loading_into_real_reviewer_payload(
         "1.26.0",
         "1.27.0",
         "1.28.0",
+        "1.29.0",
     ],
 )
 def test_candidate_version_selection_preserves_baseline_and_report_identity(
@@ -386,12 +387,25 @@ def test_candidate_version_selection_preserves_baseline_and_report_identity(
     def respond(*args, **kwargs):
         from reflexio.server.services.playbook.components.reviewer import (
             AssessedReviewOutput,
+            ParameterAssessedReviewOutput,
         )
 
-        if kwargs["response_format"] is AssessedReviewOutput:
+        if kwargs["response_format"] in (
+            AssessedReviewOutput,
+            ParameterAssessedReviewOutput,
+        ):
             payload = json.loads(args[0][1]["content"])
-            return AssessedReviewOutput.model_validate(
+            from tests.server.services.playbook.test_assessed_playbook_reviewer import (
+                _inapplicable_fact,
+            )
+
+            return kwargs["response_format"].model_validate(
                 {
+                    **(
+                        {"source_parameter_facts": [_inapplicable_fact()]}
+                        if candidate_version == "1.29.0"
+                        else {}
+                    ),
                     "assessments": [
                         {
                             "id": "C1",
@@ -444,7 +458,7 @@ def test_candidate_version_selection_preserves_baseline_and_report_identity(
     )
     rows = report["rows"]
     assert rows[0]["original_assessments"] == []
-    if candidate_version in ("1.26.0", "1.27.0", "1.28.0"):
+    if candidate_version in ("1.26.0", "1.27.0", "1.28.0", "1.29.0"):
         assert rows[1]["original_assessments"] == [
             {
                 "id": "C1",
@@ -466,7 +480,7 @@ def test_candidate_version_selection_preserves_baseline_and_report_identity(
         report["prompt_identities"][candidate_version]["active_version"]
         == candidate_version
     )
-    if candidate_version in ("1.26.0", "1.27.0", "1.28.0"):
+    if candidate_version in ("1.26.0", "1.27.0", "1.28.0", "1.29.0"):
         messages = (
             cast(MagicMock, client.generate_chat_response).call_args_list[1].args[0]
         )
@@ -507,12 +521,22 @@ def test_candidate_version_selection_preserves_baseline_and_report_identity(
                 "1.26.0",
                 "1.27.0",
                 "1.28.0",
+                "1.29.0",
             )
         )
     changed_case = case.model_copy(deep=True)
     changed_case.turns[0].content += " Changed evidence."
     changed = evaluate([changed_case], client, 1, candidate_version=candidate_version)
     assert report["cases_sha256"] != changed["cases_sha256"]
+
+    from tests.server.services.playbook.test_assessed_playbook_reviewer import (
+        _inapplicable_fact,
+    )
+
+    assert rows[0]["source_parameter_facts"] == []
+    assert rows[1]["source_parameter_facts"] == (
+        [_inapplicable_fact()] if candidate_version == "1.29.0" else []
+    )
 
 
 def test_invalid_candidate_version_fails_before_calls():
@@ -744,3 +768,58 @@ def test_programmatic_temperature_is_frozen_across_evaluation_arms(drift):
         for call in report["calls"]
         for request in call["provider_requests"]
     )
+
+
+def test_private_evaluator_retains_positive_original_facts_on_fatal_reject(tmp_path):
+    from reflexio.server.services.playbook.components.reviewer import (
+        ParameterAssessedReviewOutput,
+    )
+    from tests.server.services.playbook.test_assessed_playbook_reviewer import (
+        _parameter_response,
+    )
+
+    raw = _parameter_response(
+        basis="none",
+        defects=["absence_inference"],
+        decision="reject",
+        code="absence_inference",
+    )
+    case = evaluation.Case(
+        id="positive-fact-fatal-reject",
+        provenance="Synthetic writer boundary regression",
+        agent_context="Image assistant",
+        turns=[evaluation.Turn(role="user", content="Use width 800.")],
+        candidates=[
+            evaluation.Candidate(
+                content="Use the supplied width; missing logs prove resize did not happen.",
+                trigger="When resizing an image",
+                rationale="An unsupported absence claim",
+                evidence=[1],
+                decision="reject",
+                reason_code="absence_inference",
+            )
+        ],
+    )
+    legacy = PlaybookCandidateReviewOutput.model_validate(
+        {"decisions": raw["decisions"]}
+    )
+
+    def respond(*_, **options):
+        if options["response_format"] is ParameterAssessedReviewOutput:
+            return ParameterAssessedReviewOutput.model_validate(raw)
+        return legacy
+
+    report = evaluate(
+        [case],
+        observed_client(respond),
+        1,
+        candidate_version="1.29.0",
+        checkpoint=tmp_path / "positive-facts.json",
+    )
+    assert report["errors"] == report["measurement_errors"] == []
+    rows = report["rows"]
+    assert rows[0]["source_parameter_facts"] == []
+    assert rows[1]["source_parameter_facts"] == raw["source_parameter_facts"]
+    assert rows[1]["evidence_ids"] == rows[1]["supporting_evidence"] == []
+    assert json.loads((tmp_path / "positive-facts.json").read_text())["rows"] == rows
+    assert (tmp_path / "positive-facts.json").stat().st_mode & 0o777 == 0o600

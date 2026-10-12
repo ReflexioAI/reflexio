@@ -348,6 +348,33 @@ class AssessedReviewOutput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class SourceParameterFact(BaseModel):
+    """Transient model assertions; exact provenance is not semantic proof."""
+
+    candidate_id: str = Field(alias="id", min_length=1)
+    supply_status: Literal["established", "not_established", "not_applicable"]
+    original_parameter_spans: list[str] | None = Field(min_length=1, max_length=16)
+    supply_excerpts: list[SupportingExcerpt] | None = Field(min_length=1, max_length=16)
+    use_correspondence: Literal[
+        "complete", "partial_or_unrelated", "not_established", "not_applicable"
+    ]
+    original_use_span: str | None = Field(min_length=1, max_length=600)
+    use_excerpts: list[SupportingExcerpt] | None = Field(min_length=1, max_length=16)
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+
+class ParameterAssessedReviewOutput(BaseModel):
+    """Distinct v1.29 envelope: supply/scope facts precede eligibility."""
+
+    source_parameter_facts: list[SourceParameterFact]
+    assessments: list[OriginalRuleAssessment]
+    supporting_evidence: list[CandidateSupportingEvidence]
+    decisions: list[AssessedReviewDecision]
+
+    model_config = ConfigDict(extra="forbid")
+
+
 def _candidate_batch_digest(candidates: list[UserPlaybook]) -> str:
     payload = [candidate.model_dump(mode="json") for candidate in candidates]
     return hashlib.sha256(
@@ -384,6 +411,7 @@ class PlaybookReviewOutcome:
     supporting_evidence: list[CandidateSupportingEvidence] = field(default_factory=list)
     assessments: list[OriginalRuleAssessment] = field(default_factory=list)
     original_candidates_sha256: str | None = None
+    source_parameter_facts: list[SourceParameterFact] = field(default_factory=list)
 
 
 def _append_review_note(
@@ -800,6 +828,125 @@ class PlaybookCandidateReviewer:
         )
 
     @staticmethod
+    def _parameter_assessed_validation_errors(
+        output: object,
+        units_by_candidate: dict[str, list[CandidateEvidenceUnit]],
+        originals: dict[str, UserPlaybook],
+    ) -> tuple[str, ...]:
+        if not isinstance(output, ParameterAssessedReviewOutput):
+            return ("review output has the wrong parameter-assessed structured type",)
+        assessed_output = AssessedReviewOutput(
+            assessments=output.assessments,
+            supporting_evidence=output.supporting_evidence,
+            decisions=output.decisions,
+        )
+        errors = list(
+            PlaybookCandidateReviewer._assessed_validation_errors(
+                assessed_output, units_by_candidate, originals
+            )
+        )
+        assessments = {item.candidate_id.strip(): item for item in output.assessments}
+        seen: set[str] = set()
+        for index, fact in enumerate(output.source_parameter_facts):
+            label = f"source_parameter_facts[{index}]"
+            candidate_id = fact.candidate_id.strip()
+            original = originals.get(candidate_id)
+            assessment = assessments.get(candidate_id)
+            if original is None or candidate_id in seen:
+                errors.append(f"{label} has unknown or repeated candidate")
+                continue
+            seen.add(candidate_id)
+            if assessment is None:
+                errors.append(f"{label} lacks own original assessment")
+                continue
+            applicable = assessment.original_rule_kind == "supplied_parameter_use"
+            if applicable:
+                if (
+                    fact.supply_status == "not_applicable"
+                    or fact.use_correspondence == "not_applicable"
+                ):
+                    errors.append(f"{label} input-use facts cannot be not_applicable")
+            elif (
+                fact.supply_status != "not_applicable"
+                or fact.use_correspondence != "not_applicable"
+            ):
+                errors.append(f"{label} non-input-use facts must be not_applicable")
+            supplied = fact.supply_status == "established"
+            complete = fact.use_correspondence == "complete"
+            if fact.use_correspondence == "partial_or_unrelated" and not supplied:
+                errors.append(
+                    f"{label} partial supplied input requires established supply"
+                )
+            if supplied != (
+                fact.original_parameter_spans is not None
+                and fact.supply_excerpts is not None
+            ) or (
+                not supplied
+                and (
+                    fact.original_parameter_spans is not None
+                    or fact.supply_excerpts is not None
+                )
+            ):
+                errors.append(f"{label} supply fields contradict supply_status")
+            if complete != (
+                fact.original_use_span is not None and fact.use_excerpts is not None
+            ) or (
+                not complete
+                and (
+                    fact.original_use_span is not None or fact.use_excerpts is not None
+                )
+            ):
+                errors.append(f"{label} use fields contradict use_correspondence")
+            spans = fact.original_parameter_spans or []
+            if len(spans) != len(set(spans)):
+                errors.append(f"{label} repeats an original parameter span")
+            if fact.original_use_span is not None:
+                spans = [*spans, fact.original_use_span]
+            if any(
+                not span.strip()
+                or len(span) > 600
+                or not any(
+                    span in text for text in (original.content, original.trigger or "")
+                )
+                for span in spans
+            ):
+                errors.append(f"{label} requires exact nonblank original spans")
+            own_units = {
+                unit.evidence_id: unit.source_span
+                for unit in units_by_candidate.get(candidate_id, [])
+            }
+            for name, excerpts in (
+                ("supply_excerpts", fact.supply_excerpts),
+                ("use_excerpts", fact.use_excerpts),
+            ):
+                quotes = excerpts or []
+                pairs = [(quote.evidence_id, quote.text) for quote in quotes]
+                if len(pairs) != len(set(pairs)):
+                    errors.append(f"{label} {name} repeats a source excerpt")
+                if any(
+                    not quote.text.strip()
+                    or quote.evidence_id not in own_units
+                    or quote.text not in own_units[quote.evidence_id]
+                    for quote in quotes
+                ):
+                    errors.append(
+                        f"{label} {name} requires exact nonblank own excerpts"
+                    )
+            if (
+                supplied
+                and complete
+                and applicable
+                and not set(assessment.defect_codes).intersection(_FATAL_REASON_CODES)
+                and assessment.supported_core_basis == "none"
+            ):
+                errors.append(
+                    f"{label} complete supplied-input action requires an eligible core"
+                )
+        if seen != set(originals):
+            errors.append("missing original candidate source parameter facts")
+        return tuple(errors)
+
+    @staticmethod
     def _apply_decisions(
         candidates: list[UserPlaybook],
         output: PlaybookCandidateReviewOutput,
@@ -1035,7 +1182,8 @@ class PlaybookCandidateReviewer:
             )
         units_by_candidate = self._candidate_evidence_units(candidates, prompt_context)
         version = self.request_context.prompt_manager.get_active_version(self.PROMPT_ID)
-        assessed = version in {"1.26.0", "1.27.0", "1.28.0"}
+        parameter_assessed = version == "1.29.0"
+        assessed = version in {"1.26.0", "1.27.0", "1.28.0", "1.29.0"}
         evidence_first = version in {
             "1.14.0",
             "1.15.0",
@@ -1052,6 +1200,7 @@ class PlaybookCandidateReviewer:
             "1.26.0",
             "1.27.0",
             "1.28.0",
+            "1.29.0",
         }
         variables = {
             "agent_context_prompt": agent_context,
@@ -1074,6 +1223,7 @@ class PlaybookCandidateReviewer:
             type[PlaybookCandidateReviewOutput]
             | type[EvidenceFirstReviewOutput]
             | type[AssessedReviewOutput]
+            | type[ParameterAssessedReviewOutput]
         ) = PlaybookCandidateReviewOutput
         validator = self._validation_errors
         payload: dict[str, Any] = {}
@@ -1114,12 +1264,20 @@ class PlaybookCandidateReviewer:
                 for candidate_id, candidate in originals.items()
             ]
             messages[1]["content"] = json.dumps(payload, ensure_ascii=False)
-            response_format = AssessedReviewOutput
+            response_format = (
+                ParameterAssessedReviewOutput
+                if parameter_assessed
+                else AssessedReviewOutput
+            )
 
             def validate_assessed(
                 value: object,
                 units: dict[str, list[CandidateEvidenceUnit]],
             ) -> tuple[str, ...]:
+                if parameter_assessed:
+                    return self._parameter_assessed_validation_errors(
+                        value, units, originals
+                    )
                 return self._assessed_validation_errors(value, units, originals)
 
             validator = validate_assessed
@@ -1174,11 +1332,16 @@ class PlaybookCandidateReviewer:
         raw_output = output
         supporting_evidence: list[CandidateSupportingEvidence] = []
         assessments: list[OriginalRuleAssessment] = []
+        source_parameter_facts: list[SourceParameterFact] = []
         if assessed:
             errors = validator(output, units_by_candidate)
             if errors:
                 raise ValueError("; ".join(errors))
-            if not isinstance(output, AssessedReviewOutput):
+            if isinstance(output, ParameterAssessedReviewOutput):
+                source_parameter_facts = output.source_parameter_facts
+            if not isinstance(
+                output, (AssessedReviewOutput, ParameterAssessedReviewOutput)
+            ):
                 raise ValueError("Playbook reviewer returned the wrong assessed type")
             assessments = output.assessments
             output = EvidenceFirstReviewOutput(
@@ -1242,6 +1405,7 @@ class PlaybookCandidateReviewer:
             units_by_candidate=units_by_candidate,
             supporting_evidence=supporting_evidence,
             assessments=assessments,
+            source_parameter_facts=source_parameter_facts,
             original_candidates_sha256=original_digest,
         )
 

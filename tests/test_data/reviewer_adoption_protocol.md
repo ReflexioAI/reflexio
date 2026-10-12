@@ -37,6 +37,58 @@ retry, reported response-model verification and per-candidate independent semant
 stop gates as v1.23. Only a full pass permits the fresh alternating private
 comparison; the failed v1.23 reports, all input labels and holdout stay unchanged.
 
+### Inactive v1.29: supplied-input facts and complete action correspondence
+
+The v1.28 trials remain failed and immutable. v1.29 tests a distinct internal
+response contract in the same single reviewer call and bounded repair path.
+It reports factual input supply separately from complete ORIGINAL action support,
+before reporting eligibility. No default activation or qualification is implied.
+
+`source_parameter_facts` has exactly one item per original candidate, including
+rejects. `supply_status` is `established`, `not_established`, or `not_applicable`.
+Established supply requires exact original parameter spans plus exact own-source
+excerpts. `use_correspondence` is `complete`, `partial_or_unrelated`,
+`not_established`, or `not_applicable`. Complete correspondence requires an exact
+original action span plus own-source excerpts supporting all required inputs,
+action and constraints of an independently present complete original action.
+Partial/unrelated correspondence requires honest established supply, but does
+not force eligibility: an operand does not authorize its surrounding operation.
+Nonpositive fields are null; lack of support does not assert absence in fact.
+Non-input-use kinds require both statuses to be not applicable.
+
+When supply is established, correspondence complete and original kind
+`supplied_parameter_use`, a nonfatal assessment cannot report basis `none` or include
+`generic` in `defect_codes`. Any independently justified eligible basis is allowed, preserving
+necessary complete collect/use workflows. Fatal gates still reject and may
+carry positive transient original facts with no final evidence IDs/support item.
+Grounded standing future defaults remain eligible through future instructions.
+Do not infer semantic facts in code, overwrite judgments, or invent an input-use
+clause by clipping an incidental operand from an unsupported larger operation.
+
+These are model assertions, not semantic proof. Exact quotes and consistent
+fields cannot prove matching parameters or complete action support; independent
+source-first audits must still check every retained claim and saved field.
+Facts live only in transient outcomes and owner-only synthetic/private replay
+rows, never public review responses, saved guidance, notes or application logs.
+Earlier response types and prompt bytes remain unchanged; v1.3.0 remains active.
+
+Before model calls, verify actual parsing, bounded repair/fallback exhaustion,
+complete and partial input boundaries, fatal overrides, complete multi-input
+workflow preservation, private per-candidate rows and public/persistence
+projection. Kill the complete-input consistency check and verify a regression
+fails; broaden it to partial correspondence and verify that also fails.
+
+The prospective focused trial returns to MiniMax-M3/0.7/8192/no explicit effort,
+with the same unchanged 22 cases/order, three paired repeats, 66 pairs and 132
+expected outputs. Pin new source/prompt/driver plus frozen input/oracle and all
+failed-trial hashes before calls; no fallback, seed, outer retries or resume.
+Independently audit both-arm measurements and replacement semantics after each
+pair, including factual supply/scope assertions. Require all 66 replacement
+passes; stop on the first failed gate. Baseline faults remain diagnostic.
+No cross-temperature causal claim or changed oracle follows. Private failures,
+broader/healthy controls, model-unseen holdout, every reachable production model,
+full storage/product/staging flows, local Codex P0/P1 and CI remain later gates.
+
 ### Preserved matched-temperature v1.28 failure
 
 The fresh equal-temperature0.2 trial stopped on its first pair. Replacement

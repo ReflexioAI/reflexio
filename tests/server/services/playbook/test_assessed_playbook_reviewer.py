@@ -10,6 +10,7 @@ from reflexio.server.prompt.prompt_manager import PromptManager
 from reflexio.server.services.playbook.components.reviewer import (
     AssessedReviewDecision,
     AssessedReviewOutput,
+    ParameterAssessedReviewOutput,
 )
 from tests.server.services.playbook.test_playbook_reviewer import (
     _candidate,
@@ -65,7 +66,11 @@ def _response(
     }
 
 
-def _decide(response: AssessedReviewOutput, *, version: str = "1.26.0"):
+def _decide(
+    response: AssessedReviewOutput | ParameterAssessedReviewOutput,
+    *,
+    version: str = "1.26.0",
+):
     reviewer, client = _reviewer(response)
     reviewer.request_context.prompt_manager = PromptManager(
         version_override={reviewer.PROMPT_ID: version}
@@ -176,7 +181,9 @@ def test_outcome_cannot_be_applied_to_mutated_original_candidate():
         reviewer.apply_decisions(candidates=candidates, outcome=outcome)
 
 
-def _real_reviewer(responses: list[dict[str, Any]], *, fallback: bool = False):
+def _real_reviewer(
+    responses: list[dict[str, Any]], *, fallback: bool = False, version: str = "1.26.0"
+):
     import json
     from contextlib import contextmanager
     from unittest.mock import patch
@@ -194,7 +201,7 @@ def _real_reviewer(responses: list[dict[str, Any]], *, fallback: bool = False):
     reviewer, _ = _reviewer(AssessedReviewOutput.model_validate(_response()))
     reviewer.client = client
     reviewer.request_context.prompt_manager = PromptManager(
-        version_override={reviewer.PROMPT_ID: "1.26.0"}
+        version_override={reviewer.PROMPT_ID: version}
     )
     calls: list[dict[str, Any]] = []
 
@@ -436,7 +443,7 @@ def test_original_core_consistency_contract(changes, valid):
 
 @pytest.mark.integration
 @pytest.mark.parametrize("report_only", [True, False])
-@pytest.mark.parametrize("version", ["1.3.0", "1.26.0", "1.28.0"])
+@pytest.mark.parametrize("version", ["1.3.0", "1.26.0", "1.28.0", "1.29.0"])
 def test_stored_review_uses_real_parser_and_only_projects_approved_fields(
     tmp_path, report_only, version
 ):
@@ -473,8 +480,27 @@ def test_stored_review_uses_real_parser_and_only_projects_approved_fields(
             raw["supporting_evidence"][0]["excerpts"][0]["text"] = (
                 f"Grounded evidence {i}."
             )
+        if version == "1.29.0":
+            fact = _inapplicable_fact()
+            if i in (2, 3):
+                raw["assessments"][0]["original_rule_kind"] = "supplied_parameter_use"
+                fact.update(
+                    supply_status="established",
+                    original_parameter_spans=[originals[i - 1].content],
+                    supply_excerpts=[
+                        {"evidence_id": "C1-E1", "text": f"Grounded evidence {i}."}
+                    ],
+                    use_correspondence="complete",
+                    original_use_span=originals[i - 1].content,
+                    use_excerpts=[
+                        {"evidence_id": "C1-E1", "text": f"Grounded evidence {i}."}
+                    ],
+                )
+            raw["source_parameter_facts"] = [fact]
         responses.append(
-            raw if version in ("1.26.0", "1.28.0") else {"decisions": raw["decisions"]}
+            raw
+            if version in ("1.26.0", "1.28.0", "1.29.0")
+            else {"decisions": raw["decisions"]}
         )
     reviewer, transport, calls = _real_reviewer(responses)
     service = _service(storage)
@@ -497,7 +523,9 @@ def test_stored_review_uses_real_parser_and_only_projects_approved_fields(
     assert len(calls) == 3
     serialized = response.model_dump(mode="json")
     assert all(
-        "assessments" not in item and "supporting_evidence" not in item
+        "assessments" not in item
+        and "supporting_evidence" not in item
+        and "source_parameter_facts" not in item
         for item in serialized["results"]
     )
     current = storage.get_user_playbooks(status_filter=[None])
@@ -519,6 +547,7 @@ def test_stored_review_uses_real_parser_and_only_projects_approved_fields(
         )
         assert successor.content == responses[1]["decisions"][0]["revision"]["content"]
         assert "assessments" not in successor.model_dump()
+        assert "source_parameter_facts" not in successor.model_dump()
         assert "Grounded evidence 2." not in (successor.notes or "")
 
 
@@ -722,3 +751,294 @@ def test_real_mixed_batch_cannot_borrow_original_rule_or_evidence(damage):
                 reviewer.apply_decisions(
                     candidates=list(reversed(candidates)), outcome=outcome
                 )
+
+
+def _inapplicable_fact(candidate_id: str = "C1") -> dict[str, Any]:
+    return {
+        "id": candidate_id,
+        "supply_status": "not_applicable",
+        "original_parameter_spans": None,
+        "supply_excerpts": None,
+        "use_correspondence": "not_applicable",
+        "original_use_span": None,
+        "use_excerpts": None,
+    }
+
+
+def _parameter_response(**changes) -> dict[str, Any]:
+    raw = _response(**changes)
+    raw["source_parameter_facts"] = [
+        {
+            "id": "C1",
+            "supply_status": "established",
+            "original_parameter_spans": ["supplied width"],
+            "supply_excerpts": [{"evidence_id": "C1-E1", "text": "Use width 800."}],
+            "use_correspondence": "complete",
+            "original_use_span": "Use the supplied width",
+            "use_excerpts": [{"evidence_id": "C1-E1", "text": "Use width 800."}],
+        }
+    ]
+    return raw
+
+
+def _decide_parameter(raw):
+    return _decide(ParameterAssessedReviewOutput.model_validate(raw), version="1.29.0")
+
+
+@pytest.mark.parametrize("generic", [False, True])
+def test_complete_supplied_action_cannot_claim_no_core(generic):
+    raw = _parameter_response(
+        basis="none",
+        defects=["unsupported_causality", "generic"]
+        if generic
+        else ["unsupported_causality"],
+        decision="reject",
+    )
+    with pytest.raises(
+        ValueError, match="complete supplied-input action requires an eligible core"
+    ):
+        _decide_parameter(raw)
+
+
+@pytest.mark.parametrize(
+    "basis",
+    [
+        "supplied_parameter",
+        "future_instruction",
+        "necessary_procedure",
+        "correction_or_failure",
+    ],
+)
+def test_complete_supplied_action_preserves_independently_justified_basis(basis):
+    reviewer, client, candidates, outcome = _decide_parameter(
+        _parameter_response(basis=basis)
+    )
+    assert (
+        client.generate_chat_response.call_args.kwargs["response_format"]
+        is ParameterAssessedReviewOutput
+    )
+    assert len(outcome.source_parameter_facts) == 1
+    saved = reviewer.apply_decisions(candidates=candidates, outcome=outcome)[0]
+    assert "source_parameter_facts" not in saved.model_dump()
+    assert "Use width 800." not in (saved.notes or "")
+    assert "source_parameter_facts" not in outcome.output.model_dump()
+
+
+@pytest.mark.parametrize("correspondence", ["partial_or_unrelated", "not_established"])
+def test_true_partial_supply_does_not_force_complete_action_eligibility(correspondence):
+    raw = _parameter_response(basis="none", decision="reject")
+    fact = raw["source_parameter_facts"][0]
+    fact.update(
+        use_correspondence=correspondence, original_use_span=None, use_excerpts=None
+    )
+    _, _, _, outcome = _decide_parameter(raw)
+    assert outcome.source_parameter_facts[0].supply_status == "established"
+    assert outcome.output.decisions[0].decision == "reject"
+
+
+@pytest.mark.parametrize("fatal", ["not_agent_decision", "absence_inference"])
+def test_fatal_reject_keeps_original_facts_without_final_evidence(fatal):
+    raw = _parameter_response(
+        basis="none", defects=[fatal], decision="reject", code=fatal
+    )
+    _, _, _, outcome = _decide_parameter(raw)
+    assert outcome.source_parameter_facts[0].use_correspondence == "complete"
+    assert outcome.output.decisions[0].evidence_ids == []
+    assert outcome.supporting_evidence == []
+
+
+def test_standing_future_instruction_needs_no_current_input_assignment():
+    raw = _response(
+        kind="standing_value_preference",
+        basis="future_instruction",
+        defects=[],
+        decision="accept",
+        code="grounded_useful",
+    )
+    raw["source_parameter_facts"] = [_inapplicable_fact()]
+    _, _, _, outcome = _decide_parameter(raw)
+    assert outcome.output.decisions[0].decision == "accept"
+
+
+@pytest.mark.parametrize(
+    "section",
+    [
+        "source_parameter_facts",
+        "original_parameter_spans",
+        "supply_excerpts",
+        "use_excerpts",
+    ],
+)
+def test_parameter_fact_accounting_rejects_missing_or_repeated_entries(section):
+    raw = _parameter_response()
+    for missing in (True, False):
+        from copy import deepcopy
+
+        changed = deepcopy(raw)
+        target = (
+            changed
+            if section == "source_parameter_facts"
+            else changed["source_parameter_facts"][0]
+        )
+        target[section] = [] if missing else [*target[section], target[section][0]]
+        with pytest.raises(ValueError):
+            _decide_parameter(changed)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("id", "PRIVATE_FOREIGN_FACT_CANARY"),
+        ("original_parameter_spans", ["PRIVATE_FOREIGN_SPAN_CANARY"]),
+        ("original_parameter_spans", ["  "]),
+        ("original_parameter_spans", ["x" * 601]),
+        ("original_use_span", "PRIVATE_FOREIGN_ACTION_CANARY"),
+        ("original_use_span", "  "),
+        ("supply_excerpts", [{"evidence_id": "C2-E1", "text": "Use width 800."}]),
+        (
+            "supply_excerpts",
+            [{"evidence_id": "C1-E1", "text": "PRIVATE_FOREIGN_QUOTE_CANARY"}],
+        ),
+        ("use_excerpts", [{"evidence_id": "C1-E1", "text": "  "}]),
+        ("supply_status", "not_applicable"),
+        ("use_correspondence", "not_applicable"),
+        ("original_parameter_spans", None),
+        ("supply_excerpts", None),
+        ("original_use_span", None),
+        ("use_excerpts", None),
+        ("supply_status", "not_established"),
+        ("use_correspondence", "partial_or_unrelated"),
+    ],
+)
+def test_invalid_parameter_fact_provenance_or_field_consistency_is_private(
+    field, value
+):
+    raw = _parameter_response()
+    raw["source_parameter_facts"][0][field] = value
+    with pytest.raises(ValueError) as exc:
+        _decide_parameter(raw)
+    assert "PRIVATE_FOREIGN" not in str(exc.value)
+
+
+def test_v129_real_parser_repairs_contradiction_without_altering_supply_fact():
+    bad = _parameter_response(basis="none", decision="reject")
+    good = _parameter_response()
+    reviewer, transport, calls = _real_reviewer([bad, good], version="1.29.0")
+    with transport:
+        outcome = _run_real(reviewer)
+    assert len(calls) == 2
+    assert (
+        outcome.source_parameter_facts[0].model_dump(by_alias=True)
+        == good["source_parameter_facts"][0]
+    )
+    assert outcome.output.decisions[0].decision == "revise"
+    assert list(ParameterAssessedReviewOutput.model_fields) == [
+        "source_parameter_facts",
+        "assessments",
+        "supporting_evidence",
+        "decisions",
+    ]
+    assert "source_parameter_facts" not in AssessedReviewOutput.model_fields
+
+
+@pytest.mark.parametrize("recover", [False, True])
+def test_v129_real_parser_exhaustion_uses_existing_bounded_fallback(recover, caplog):
+    from reflexio.server.llm.litellm_client import StructuredOutputRepairError
+
+    bad = _parameter_response(basis="none", decision="reject")
+    responses = [bad, bad, _parameter_response()] if recover else [bad] * 4
+    reviewer, transport, calls = _real_reviewer(
+        responses, version="1.29.0", fallback=True
+    )
+    with transport:
+        if recover:
+            assert _run_real(reviewer).output.decisions[0].decision == "revise"
+        else:
+            with pytest.raises(StructuredOutputRepairError):
+                _run_real(reviewer)
+    assert [call["model"] for call in calls] == ["primary-model", "primary-model"] + [
+        "fallback-model"
+    ] * (1 if recover else 2)
+    assert "Use width 800." not in caplog.text
+
+
+def test_partial_supply_status_contradiction_repairs_without_forcing_eligibility():
+    from copy import deepcopy
+
+    good = _parameter_response(basis="none", decision="reject")
+    good["source_parameter_facts"][0].update(
+        use_correspondence="partial_or_unrelated",
+        original_use_span=None,
+        use_excerpts=None,
+    )
+    bad = deepcopy(good)
+    bad["source_parameter_facts"][0].update(
+        supply_status="not_established",
+        original_parameter_spans=None,
+        supply_excerpts=None,
+    )
+    with pytest.raises(
+        ValueError, match="partial supplied input requires established supply"
+    ):
+        _decide_parameter(bad)
+    reviewer, transport, calls = _real_reviewer([bad, good], version="1.29.0")
+    with transport:
+        outcome = _run_real(reviewer)
+    assert len(calls) == 2
+    assert outcome.output.decisions[0].decision == "reject"
+    assert outcome.source_parameter_facts[0].supply_status == "established"
+
+
+def test_complete_collect_then_use_preserves_multiple_inputs_and_earliest_trigger():
+    source1 = "Ask me for width and height."
+    source2 = "Use width 800 and height 600 to resize this image."
+    core = (
+        "Collect the width and height, then resize the image using both supplied values"
+    )
+    candidate = _candidate(
+        101, source1, content=core + "; never ask again because it causes delays."
+    )
+    candidate.source_interaction_ids = [101, 102]
+    candidate.source_span = source1 + "\n\n" + source2
+    raw = _parameter_response(
+        basis="necessary_procedure", defects=["unsupported_causality", "speculative"]
+    )
+    quotes = [
+        {"evidence_id": "C1-E1", "text": source1},
+        {"evidence_id": "C1-E2", "text": source2},
+    ]
+    raw["source_parameter_facts"][0].update(
+        original_parameter_spans=["width", "height"],
+        supply_excerpts=[quotes[1]],
+        original_use_span=core,
+        use_excerpts=quotes,
+    )
+    raw["assessments"][0]["original_rule_span"] = core
+    raw["supporting_evidence"][0]["excerpts"] = quotes
+    raw["decisions"][0]["evidence_ids"] = ["C1-E1", "C1-E2"]
+    revision = {
+        "content": core + " for the current image.",
+        "trigger": "When preparing to resize an image, before collecting its dimensions",
+        "rationale": "The user requested collecting both dimensions and using them for this image.",
+    }
+    raw["decisions"][0]["revision"] = revision
+    reviewer, _ = _reviewer(ParameterAssessedReviewOutput.model_validate(raw))
+    reviewer.request_context.prompt_manager = PromptManager(
+        version_override={reviewer.PROMPT_ID: "1.29.0"}
+    )
+    outcome = reviewer.decide(
+        candidates=[candidate],
+        request_interaction_data_models=[
+            _interaction_model(101, source1),
+            _interaction_model(102, source2),
+        ],
+        existing_playbooks=[],
+        agent_context="Image assistant",
+        playbook_definition="Future image guidance",
+        tool_context="",
+    )
+    saved = reviewer.apply_decisions(candidates=[candidate], outcome=outcome)[0]
+    assert saved.content == revision["content"]
+    assert saved.trigger == revision["trigger"]
+    assert saved.source_interaction_ids == [101, 102]
+    assert outcome.assessments[0].supported_core_basis == "necessary_procedure"

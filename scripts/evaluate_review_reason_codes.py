@@ -195,9 +195,10 @@ def evaluate(
         "1.26.0",
         "1.27.0",
         "1.28.0",
+        "1.29.0",
     ):
         raise ValueError(
-            "candidate_version must be 1.4.0, 1.5.0, 1.6.0, 1.7.0, 1.8.0, 1.9.0, 1.10.0, 1.11.0, 1.12.0, 1.13.0, 1.14.0, 1.15.0, 1.16.0, 1.17.0, 1.18.0, 1.19.0, 1.20.0, 1.21.0, 1.22.0, 1.23.0, 1.24.0, 1.25.0, 1.26.0, 1.27.0 or 1.28.0"
+            "candidate_version must be 1.4.0, 1.5.0, 1.6.0, 1.7.0, 1.8.0, 1.9.0, 1.10.0, 1.11.0, 1.12.0, 1.13.0, 1.14.0, 1.15.0, 1.16.0, 1.17.0, 1.18.0, 1.19.0, 1.20.0, 1.21.0, 1.22.0, 1.23.0, 1.24.0, 1.25.0, 1.26.0, 1.27.0, 1.28.0 or 1.29.0"
         )
     if not cases:
         raise ValueError("cases must be nonempty")
@@ -347,6 +348,11 @@ def evaluate(
                             "reason_code": decision.reason_code,
                             "reason": decision.reason,
                             "evidence_ids": list(decision.evidence_ids),
+                            "source_parameter_facts": [
+                                fact.model_dump(mode="json", by_alias=True)
+                                for fact in result.source_parameter_facts
+                                if fact.candidate_id.strip() == candidate_id
+                            ],
                             "original_assessments": [
                                 assessment.model_dump(mode="json", by_alias=True)
                                 for assessment in result.assessments
@@ -451,6 +457,7 @@ def main() -> int:
             "1.26.0",
             "1.27.0",
             "1.28.0",
+            "1.29.0",
         ),
         default="1.4.0",
     )
