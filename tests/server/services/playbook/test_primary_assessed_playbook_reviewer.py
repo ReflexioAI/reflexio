@@ -68,12 +68,15 @@ def _run_primary(
 
 
 @pytest.mark.parametrize("repair", [False, True, "exhaust"])
-def test_actual_primary_raw_type_repair_and_projection_order(monkeypatch, repair):
+@pytest.mark.parametrize("version", ["1.42.0", "1.43.0"])
+def test_actual_primary_raw_type_repair_and_projection_order(
+    monkeypatch, repair, version
+):
     good = _primary_response()
     bad = deepcopy(good)
     bad["assessments"][0]["primary_defect"] = "generic"
     replies = [bad, bad] if repair == "exhaust" else [bad, good] if repair else [good]
-    reviewer, transport, calls = _real_reviewer(replies, version="1.42.0")
+    reviewer, transport, calls = _real_reviewer(replies, version=version)
     generate = reviewer.client.generate_chat_response
     public_validate = CandidateReviewDecision.model_validate
     observed, projected, returned = [], [], []
@@ -145,7 +148,10 @@ def test_actual_primary_raw_type_repair_and_projection_order(monkeypatch, repair
         "repeated-id",
     ],
 )
-def test_raw_errors_require_repair_before_any_public_decision(monkeypatch, fault):
+@pytest.mark.parametrize("version", ["1.42.0", "1.43.0"])
+def test_raw_errors_require_repair_before_any_public_decision(
+    monkeypatch, fault, version
+):
     good = _primary_response()
     bad = deepcopy(good)
     assessment = bad["assessments"][0]
@@ -167,7 +173,7 @@ def test_raw_errors_require_repair_before_any_public_decision(monkeypatch, fault
         assessment["id"] = "C2"
     else:
         bad["assessments"].append(deepcopy(assessment))
-    reviewer, transport, calls = _real_reviewer([bad, good], version="1.42.0")
+    reviewer, transport, calls = _real_reviewer([bad, good], version=version)
     validate = CandidateReviewDecision.model_validate
     stages = []
 
@@ -195,13 +201,14 @@ def test_raw_errors_require_repair_before_any_public_decision(monkeypatch, fault
         ("late_trigger", True, "revise", False),
     ],
 )
+@pytest.mark.parametrize("version", ["1.42.0", "1.43.0"])
 def test_duplicate_rejection_preserves_higher_primary(
-    primary, duplicate, decision, valid
+    primary, duplicate, decision, valid, version
 ):
     raw = _primary_response(primary=primary, duplicate=duplicate, decision=decision)
     good = _primary_response()
     reviewer, transport, calls = _real_reviewer(
-        [raw] if valid else [raw, good], version="1.42.0"
+        [raw] if valid else [raw, good], version=version
     )
     with transport:
         _, outcome = _run_primary(reviewer, duplicate=duplicate)
@@ -212,14 +219,15 @@ def test_duplicate_rejection_preserves_higher_primary(
 
 
 @pytest.mark.parametrize("value", [None, "false", 0, "missing"])
-def test_duplicate_flag_is_required_and_strict_in_native_parser(value):
+@pytest.mark.parametrize("version", ["1.42.0", "1.43.0"])
+def test_duplicate_flag_is_required_and_strict_in_native_parser(value, version):
     good = _primary_response()
     bad = deepcopy(good)
     if value == "missing":
         del bad["assessments"][0]["duplicates_existing_core"]
     else:
         bad["assessments"][0]["duplicates_existing_core"] = value
-    reviewer, transport, calls = _real_reviewer([bad, good], version="1.42.0")
+    reviewer, transport, calls = _real_reviewer([bad, good], version=version)
     with transport:
         _, outcome = _run_primary(reviewer)
     assert len(calls) == 2 and outcome.primary_output is not None
@@ -227,8 +235,9 @@ def test_duplicate_flag_is_required_and_strict_in_native_parser(value):
 
 @pytest.mark.parametrize("exhaust", [False, True])
 @pytest.mark.parametrize("foreign_id", [False, True])
+@pytest.mark.parametrize("version", ["1.42.0", "1.43.0"])
 def test_empty_existing_context_cannot_authorize_duplicate_rejection(
-    monkeypatch, exhaust, foreign_id
+    monkeypatch, exhaust, foreign_id, version
 ):
     bad = _primary_response(duplicate=True, decision="reject")
     private_canary = "UNTRUSTED_PRIVATE_CANDIDATE_ID_CANARY"
@@ -236,7 +245,7 @@ def test_empty_existing_context_cannot_authorize_duplicate_rejection(
         bad["assessments"][0]["id"] = private_canary
     good = _primary_response()
     reviewer, transport, calls = _real_reviewer(
-        [bad, bad] if exhaust else [bad, good], version="1.42.0"
+        [bad, bad] if exhaust else [bad, good], version=version
     )
     generate = reviewer.client.generate_chat_response
     public_validate = CandidateReviewDecision.model_validate
@@ -285,11 +294,12 @@ def test_empty_existing_context_cannot_authorize_duplicate_rejection(
 
 
 @pytest.mark.parametrize("recover", [False, True])
-def test_primary_contract_retains_bounded_native_fallback(recover):
+@pytest.mark.parametrize("version", ["1.42.0", "1.43.0"])
+def test_primary_contract_retains_bounded_native_fallback(recover, version):
     bad = _primary_response(basis="none", decision="reject")
     responses = [bad, bad, _primary_response()] if recover else [bad] * 4
     reviewer, transport, calls = _real_reviewer(
-        responses, version="1.42.0", fallback=True
+        responses, version=version, fallback=True
     )
     with transport:
         if recover:
@@ -303,7 +313,8 @@ def test_primary_contract_retains_bounded_native_fallback(recover):
     ] * (1 if recover else 2)
 
 
-def test_partial_operand_supply_does_not_manufacture_a_clipped_action():
+@pytest.mark.parametrize("version", ["1.42.0", "1.43.0"])
+def test_partial_operand_supply_does_not_manufacture_a_clipped_action(version):
     raw = _primary_response(primary="speculative", basis="none", decision="reject")
     raw["assessments"][0]["input_facts"].update(
         original_parameter_spans=["width"],
@@ -311,7 +322,7 @@ def test_partial_operand_supply_does_not_manufacture_a_clipped_action():
         original_use_span=None,
         use_excerpts=None,
     )
-    reviewer, transport, calls = _real_reviewer([raw], version="1.42.0")
+    reviewer, transport, calls = _real_reviewer([raw], version=version)
     with transport:
         candidates, outcome = _run_primary(
             reviewer, content="Use the supplied width and height to resize the image."
@@ -321,9 +332,10 @@ def test_partial_operand_supply_does_not_manufacture_a_clipped_action():
     assert reviewer.apply_decisions(candidates=candidates, outcome=outcome) == []
 
 
-def test_null_primary_preserves_an_already_scoped_supported_original():
+@pytest.mark.parametrize("version", ["1.42.0", "1.43.0"])
+def test_null_primary_preserves_an_already_scoped_supported_original(version):
     raw = _primary_response(primary=None, decision="accept")
-    reviewer, transport, calls = _real_reviewer([raw], version="1.42.0")
+    reviewer, transport, calls = _real_reviewer([raw], version=version)
     with transport:
         candidates, outcome = _run_primary(
             reviewer,
@@ -347,8 +359,9 @@ def test_null_primary_preserves_an_already_scoped_supported_original():
         ("speculative", True, "duplicate requires an eligible core"),
     ],
 )
+@pytest.mark.parametrize("version", ["1.42.0", "1.43.0"])
 def test_no_core_primary_guards_repair_before_projection(
-    monkeypatch, primary, duplicate, error
+    monkeypatch, primary, duplicate, error, version
 ):
     good = _primary_response(
         primary="speculative",
@@ -360,7 +373,7 @@ def test_no_core_primary_guards_repair_before_projection(
     bad["assessments"][0].update(
         primary_defect=primary, duplicates_existing_core=duplicate
     )
-    reviewer, transport, calls = _real_reviewer([bad, good], version="1.42.0")
+    reviewer, transport, calls = _real_reviewer([bad, good], version=version)
     generate = reviewer.client.generate_chat_response
     validate = CandidateReviewDecision.model_validate
     errors, stages = [], []
@@ -398,14 +411,17 @@ def test_no_core_primary_guards_repair_before_projection(
 
 
 @pytest.mark.parametrize("primary", ["generic", "speculative"])
-def test_no_core_with_explaining_primary_can_reject_without_input_facts(primary):
+@pytest.mark.parametrize("version", ["1.42.0", "1.43.0"])
+def test_no_core_with_explaining_primary_can_reject_without_input_facts(
+    primary, version
+):
     raw = _primary_response(
         primary=primary,
         kind="standing_value_preference",
         basis="none",
         decision="reject",
     )
-    reviewer, transport, calls = _real_reviewer([raw], version="1.42.0")
+    reviewer, transport, calls = _real_reviewer([raw], version=version)
     with transport:
         _, outcome = _run_primary(
             reviewer,

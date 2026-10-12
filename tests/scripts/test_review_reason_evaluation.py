@@ -845,6 +845,7 @@ def test_private_evaluator_retains_positive_original_facts_on_fatal_reject(
         "1.40.0",
         "1.41.0",
         "1.42.0",
+        "1.43.0",
     ],
 )
 @pytest.mark.parametrize("fatal", [False, True])
@@ -892,18 +893,18 @@ def test_private_evaluator_roundtrips_actual_binary_nested_assessment(
         {"decisions": raw["decisions"]}
     )
 
-    if version in {"1.40.0", "1.41.0", "1.42.0"}:
+    if version in {"1.40.0", "1.41.0", "1.42.0", "1.43.0"}:
         del raw["assessments"][0]["original_rule_span"]
         del raw["decisions"][0]["reason_code"]
-    if version == "1.42.0":
+    if version in {"1.42.0", "1.43.0"}:
         a = raw["assessments"][0]
         a["primary_defect"] = a.pop("defect_codes")[0]
         a["duplicates_existing_core"] = False
     output_type = (
         PrimaryAssessedReviewOutput
-        if version == "1.42.0"
+        if version in {"1.42.0", "1.43.0"}
         else InventoryAssessedReviewOutput
-        if version in {"1.40.0", "1.41.0", "1.42.0"}
+        if version in {"1.40.0", "1.41.0", "1.42.0", "1.43.0"}
         else InputUseAssessedReviewOutput
     )
 
@@ -929,9 +930,11 @@ def test_private_evaluator_roundtrips_actual_binary_nested_assessment(
     assert json.loads(path.read_text())["rows"] == report["rows"]
     assert path.stat().st_mode & 0o777 == 0o600
 
-    if version in {"1.40.0", "1.41.0", "1.42.0"}:
+    if version in {"1.40.0", "1.41.0", "1.42.0", "1.43.0"}:
         raw_field = (
-            "raw_primary_output" if version == "1.42.0" else "raw_inventory_output"
+            "raw_primary_output"
+            if version in {"1.42.0", "1.43.0"}
+            else "raw_inventory_output"
         )
         assert report["calls"][1][raw_field] == raw
         assert raw_field not in report["calls"][0]
@@ -1011,7 +1014,10 @@ def test_full_and_compact_arms_keep_native_raw_output_and_truthful_accounting(tm
     assert path.stat().st_mode & 0o777 == 0o600
 
 
-def test_inventory_and_primary_pair_uses_actual_native_types_and_raw_once(tmp_path):
+@pytest.mark.parametrize("candidate_version", ["1.42.0", "1.43.0"])
+def test_inventory_and_primary_pair_uses_actual_native_types_and_raw_once(
+    tmp_path, candidate_version
+):
     from tests.server.services.playbook.test_assessed_playbook_reviewer import (
         _real_reviewer,
     )
@@ -1050,30 +1056,32 @@ def test_inventory_and_primary_pair_uses_actual_native_types_and_raw_once(tmp_pa
             2,
             checkpoint=path,
             baseline_version="1.40.0",
-            candidate_version="1.42.0",
+            candidate_version=candidate_version,
         )
     assert report["errors"] == report["measurement_errors"] == []
     assert len(calls) == 4
     assert [c["version"] for c in report["calls"]] == [
         "1.40.0",
-        "1.42.0",
-        "1.42.0",
+        candidate_version,
+        candidate_version,
         "1.40.0",
     ]
     for call in report["calls"]:
         field = (
             "raw_primary_output"
-            if call["version"] == "1.42.0"
+            if call["version"] == candidate_version
             else "raw_inventory_output"
         )
-        assert call[field] == (primary if call["version"] == "1.42.0" else inventory)
+        assert call[field] == (
+            primary if call["version"] == candidate_version else inventory
+        )
         assert call["observation_complete"] and call["repair_attempts"] == 0
     assert all(
         "raw_primary_output" not in row and "raw_inventory_output" not in row
         for row in report["rows"]
     )
     assert all(s["expected"] == s["processed"] == 2 for s in report["summary"].values())
-    assert set(report["prompt_identities"]) == {"1.40.0", "1.42.0"}
+    assert set(report["prompt_identities"]) == {"1.40.0", candidate_version}
     assert json.loads(path.read_text())["calls"] == report["calls"]
     assert path.stat().st_mode & 0o777 == 0o600
 
