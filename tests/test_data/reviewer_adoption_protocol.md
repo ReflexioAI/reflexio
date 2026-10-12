@@ -37,6 +37,51 @@ retry, reported response-model verification and per-candidate independent semant
 stop gates as v1.23. Only a full pass permits the fresh alternating private
 comparison; the failed v1.23 reports, all input labels and holdout stay unchanged.
 
+### Inactive v1.31: original input applicability before eligibility
+
+The failed v1.30 comparison remains failed and immutable. v1.31 tests a simpler
+single-call response: one original assessment per candidate, ordered as `id`,
+required strict JSON boolean `original_proposes_task_input_use`, exact original
+span, required nullable `input_facts`, core basis and full original defect list.
+It asks what CONTENT/TRIGGER already propose, before source support or usefulness.
+It removes the standing-versus-other response distinction, which runtime guards
+did not use. This is a hypothesis; false applicability can still pass structural
+checks and wrongly lose a core, so independent source-first gates remain mandatory.
+
+True requires nested facts; false requires null facts and cannot use the
+`supplied_parameter` basis. Nested facts omit the redundant candidate ID and
+`not_applicable` statuses. They preserve factual supply, complete/partial action
+correspondence and exact own-original/source quotes. Complete established nonfatal
+input use requires an eligible core; conversely `supplied_parameter` requires
+established supply AND complete correspondence. Other independently justified
+bases can remain eligible without actual current supplied values. Partial inputs
+do not force an unsupported larger operation to survive. Fatal defects still
+reject, even with positive transient facts. Source-based future defaults and full
+collection/use procedures remain eligible without invented replacement actions.
+
+Small shared validators check real old/new records and actual field paths; no
+old kind or flat fact is manufactured for new records. The private writers retain
+actual nested assessment JSON under the existing version tag. Legacy flat facts
+remain empty for the new contract because its facts are nested, not because the
+model reported no supply. Public results and saved guidance/notes contain only
+validated decisions/revisions. Old schemas, prompts and behavior remain unchanged;
+the new reverse-basis guard applies only to v1.31. v1.3.0 remains active.
+
+Before implementation, independent reviewers checked the new binary expectations
+against ORIGINAL content/trigger and previously source-adjudicated expected kinds,
+not any failed model output. Full22 maps to seven true/fifteen false; the separate
+three contrasts map false/false/true. All old decision/code/core/grounding oracles
+are unchanged. Prospective mapping SHA-256
+`0d674c705a92476d838c60d55d18cdc3ebdb96297f8a72685b201286fe93d5d0`;
+independent clearance
+`77ff4a46bc080e944c9031b90809a341b538afe296379097264c71e087e507e3`.
+Preregister new pinned policy/schema/source/driver identities before any calls.
+Both unchanged full22 x3 (66 pairs/132 attempts) and three contrasts x3 (9 pairs/
+18 attempts) remain mandatory at the frozen M3/0.7/8192 profile, with first-failure
+halt and independent complete semantic audit. Broader/healthy coverage, unopened
+holdout, every reachable production model and actual product/storage/staging
+validation precede adoption. Local checks and CI do not qualify model semantics.
+
 ### Preserved v1.30 original-input classification failure
 
 The fresh unchanged full22 comparison stopped on its first conditional-budget

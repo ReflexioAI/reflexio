@@ -828,3 +828,67 @@ def test_private_evaluator_retains_positive_original_facts_on_fatal_reject(
     assert rows[1]["evidence_ids"] == rows[1]["supporting_evidence"] == []
     assert json.loads((tmp_path / "positive-facts.json").read_text())["rows"] == rows
     assert (tmp_path / "positive-facts.json").stat().st_mode & 0o777 == 0o600
+
+
+@pytest.mark.parametrize("fatal", [False, True])
+def test_private_evaluator_roundtrips_actual_binary_nested_assessment(tmp_path, fatal):
+    from reflexio.server.services.playbook.components.reviewer import (
+        InputUseAssessedReviewOutput,
+    )
+    from tests.server.services.playbook.test_input_use_assessed_playbook_reviewer import (
+        _input_response,
+    )
+
+    raw = (
+        _input_response(
+            basis="none",
+            defects=["absence_inference"],
+            decision="reject",
+            code="absence_inference",
+        )
+        if fatal
+        else _input_response()
+    )
+    case = evaluation.Case(
+        id="binary-fact-writer",
+        provenance="Synthetic private report regression",
+        agent_context="Image assistant",
+        turns=[evaluation.Turn(role="user", content="Use width 800.")],
+        candidates=[
+            evaluation.Candidate(
+                content="Use the supplied width; missing logs prove resize did not happen."
+                if fatal
+                else "Use the supplied width; never ask again because it causes delays.",
+                trigger="When resizing an image",
+                rationale="Unverified original extension",
+                evidence=[1],
+                decision="reject" if fatal else "revise",
+                reason_code="absence_inference" if fatal else "unsupported_causality",
+            )
+        ],
+    )
+    legacy = PlaybookCandidateReviewOutput.model_validate(
+        {"decisions": raw["decisions"]}
+    )
+
+    def respond(*_, **options):
+        return (
+            InputUseAssessedReviewOutput.model_validate(raw)
+            if options["response_format"] is InputUseAssessedReviewOutput
+            else legacy
+        )
+
+    path = tmp_path / "binary.json"
+    report = evaluate(
+        [case], observed_client(respond), 1, candidate_version="1.31.0", checkpoint=path
+    )
+    assert report["errors"] == report["measurement_errors"] == []
+    assert report["candidate_version"] == "1.31.0"
+    row = report["rows"][1]
+    assert row["original_assessments"] == raw["assessments"]
+    assert row["source_parameter_facts"] == []
+    assert row["reason"] is None
+    if fatal:
+        assert row["supporting_evidence"] == row["evidence_ids"] == []
+    assert json.loads(path.read_text())["rows"] == report["rows"]
+    assert path.stat().st_mode & 0o777 == 0o600

@@ -20,6 +20,7 @@ from reflexio.server.services.playbook.components.reviewer import (
     CandidateReviewDecision,
     CandidateRevision,
     EvidenceFirstReviewOutput,
+    InputUseAssessedReviewOutput,
     ParameterAssessedReviewOutput,
     PlaybookCandidateEvidenceError,
     PlaybookCandidateReviewer,
@@ -282,7 +283,8 @@ def _reviewer(
     response: PlaybookCandidateReviewOutput
     | EvidenceFirstReviewOutput
     | AssessedReviewOutput
-    | ParameterAssessedReviewOutput,
+    | ParameterAssessedReviewOutput
+    | InputUseAssessedReviewOutput,
 ):
     request_context = MagicMock()
     request_context.prompt_manager = PromptManager()
