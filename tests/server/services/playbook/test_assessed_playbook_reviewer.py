@@ -462,6 +462,7 @@ def test_original_core_consistency_contract(changes, valid):
         "1.36.0",
         "1.37.0",
         "1.38.0",
+        "1.39.0",
     ],
 )
 def test_stored_review_uses_real_parser_and_only_projects_approved_fields(
@@ -511,6 +512,7 @@ def test_stored_review_uses_real_parser_and_only_projects_approved_fields(
             "1.36.0",
             "1.37.0",
             "1.38.0",
+            "1.39.0",
         ):
             fact = _inapplicable_fact()
             if i in (2, 3):
@@ -537,6 +539,7 @@ def test_stored_review_uses_real_parser_and_only_projects_approved_fields(
             "1.36.0",
             "1.37.0",
             "1.38.0",
+            "1.39.0",
         ):
             from tests.server.services.playbook.test_input_use_assessed_playbook_reviewer import (
                 _as_input_response,
@@ -559,6 +562,7 @@ def test_stored_review_uses_real_parser_and_only_projects_approved_fields(
                 "1.36.0",
                 "1.37.0",
                 "1.38.0",
+                "1.39.0",
             )
             else {"decisions": raw["decisions"]}
         )
@@ -1076,6 +1080,7 @@ def test_partial_supply_status_contradiction_repairs_without_forcing_eligibility
         "1.36.0",
         "1.37.0",
         "1.38.0",
+        "1.39.0",
     ],
 )
 def test_complete_collect_then_use_preserves_multiple_inputs_and_earliest_trigger(
@@ -1122,6 +1127,7 @@ def test_complete_collect_then_use_preserves_multiple_inputs_and_earliest_trigge
         "1.36.0",
         "1.37.0",
         "1.38.0",
+        "1.39.0",
     ):
         from tests.server.services.playbook.test_input_use_assessed_playbook_reviewer import (
             _as_input_response,
