@@ -746,6 +746,15 @@ def reconcile_playbooks(
             "Existing playbooks require unique persisted identities"
         )
     storage = consolidator.request_context.storage
+    canonical_subject = storage.governance_subject_ref_for_user(user_id)
+    if any(
+        row.governance_subject_ref is not None
+        and row.governance_subject_ref != canonical_subject
+        for row in [*new_rows, *existing_rows]
+    ):
+        raise AuditedConsolidationAbstainedError(
+            "Playbook governance subject differs from the trusted owner identity"
+        )
     sources: dict[int, Any] = {}
     interactions: dict[int, Any] = {}
     bounded_quotes = _overflow_quotes(new_rows)
@@ -825,6 +834,7 @@ def reconcile_playbooks(
         session["messages"].append(
             {
                 "turn": interaction_id,
+                "created_at": interactions[interaction_id].created_at,
                 "role": source.role,
                 "content": "\n\n".join(source.evidence_texts),
                 "request_source": source.request_source,
@@ -847,7 +857,17 @@ def reconcile_playbooks(
             }
         )
     for session in sessions_by_id.values():
-        session["messages"].sort(key=lambda message: message["turn"])
+        session["messages"].sort(
+            key=lambda message: (message["created_at"], message["turn"])
+        )
+    sessions = sorted(
+        sessions_by_id.values(),
+        key=lambda session: (
+            session["messages"][0]["created_at"],
+            session["messages"][0]["turn"],
+            session["id"],
+        ),
+    )
 
     def input_row(key: str, row: UserPlaybook) -> dict:
         return {
@@ -868,7 +888,7 @@ def reconcile_playbooks(
     payload = {
         "new": [input_row(key, row) for key, row in new.items()],
         "existing": [input_row(key, row) for key, row in existing.items()],
-        "sessions": list(sessions_by_id.values()),
+        "sessions": sessions,
         "context_is_reference_excerpt": True,
     }
     engine = Reconciler(consolidator.client, consolidator.model_name)
@@ -891,7 +911,6 @@ def reconcile_playbooks(
         for attribute in (
             "status",
             "blocking_issue",
-            "governance_subject_ref",
         ):
             values = [getattr(row, attribute) for row in members]
             if any(value != values[0] for value in values):
@@ -915,6 +934,7 @@ def reconcile_playbooks(
             row = members[0].model_copy(
                 update={
                     "user_playbook_id": 0,
+                    "governance_subject_ref": canonical_subject,
                     "created_at": int(datetime.now(UTC).timestamp()),
                     "request_id": generation_request_id,
                     "content": output.content,

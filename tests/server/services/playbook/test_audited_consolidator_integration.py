@@ -129,8 +129,11 @@ def isolated_presentation():
 
 @pytest.mark.parametrize("expert", [False, True])
 def test_dispatch_preserves_pending_metadata_and_each_output_evidence(
-    consolidator, storage, expert, isolated_presentation
+    consolidator, storage, expert, isolated_presentation, monkeypatch
 ):
+    monkeypatch.setattr(
+        storage, "governance_subject_ref_for_user", lambda _user_id: "owner-subject"
+    )
     interaction_id = source(storage, expert=expert)
     ref = {"session_id": "evidence", "turn": interaction_id}
     outputs = [
@@ -154,6 +157,7 @@ def test_dispatch_preserves_pending_metadata_and_each_output_evidence(
         ]
     }
     old = row(ids=[999999], persisted_id=123, status=Status.PENDING)
+    old.governance_subject_ref = "owner-subject"
     calls = []
     answers = iter([decisions, {"findings": []}])
 
@@ -193,6 +197,7 @@ def test_dispatch_preserves_pending_metadata_and_each_output_evidence(
         for saved in rows
     )
     assert all(saved.source == "agent" for saved in rows)
+    assert all(saved.governance_subject_ref == "owner-subject" for saved in rows)
     audit_payload = json.loads(calls[1]["messages"][1]["content"])
     assert audit_payload["existing"][0]["evidence_refs"] == []
     if expert:
@@ -246,6 +251,118 @@ def test_missing_new_evidence_abstains_without_unaudited_independent_shortcut(
                 existing_playbooks=[],
             )
         provider.assert_not_called()
+
+
+def test_supplied_governance_subject_cannot_override_trusted_storage_owner(
+    consolidator, storage
+):
+    interaction_id = source(storage)
+    incumbent = row(ids=[interaction_id], persisted_id=123)
+    incumbent.governance_subject_ref = "other-subject"
+    with patch.object(consolidator.client, "_completion_with_hard_timeout") as provider:
+        with pytest.raises(AuditedConsolidationAbstainedError, match="trusted owner"):
+            consolidator.deduplicate(
+                [[row(ids=[interaction_id])]],
+                generation_request_id="generation",
+                user_id="owner",
+                agent_version="v1",
+                existing_playbooks=[incumbent],
+            )
+        provider.assert_not_called()
+
+
+@pytest.mark.parametrize("same_request", [False, True])
+def test_backfilled_event_chronology_is_independent_of_citation_ids(
+    consolidator, storage, same_request
+):
+    storage.add_request(
+        Request(
+            request_id="newer",
+            user_id="owner",
+            session_id="session",
+            agent_version="v1",
+            source="agent",
+            created_at=200,
+        )
+    )
+    storage.add_user_interaction(
+        "owner",
+        Interaction(
+            user_id="owner", request_id="newer", created_at=200, content="Use format B."
+        ),
+    )
+    newer_id = storage.get_interactions_by_request_ids(["newer"])[0].interaction_id
+    older_request = "newer" if same_request else "older"
+    if not same_request:
+        storage.add_request(
+            Request(
+                request_id=older_request,
+                user_id="owner",
+                session_id="session",
+                agent_version="v1",
+                source="agent",
+                created_at=100,
+            )
+        )
+    storage.add_user_interaction(
+        "owner",
+        Interaction(
+            user_id="owner",
+            request_id=older_request,
+            created_at=100,
+            content="Use format A.",
+        ),
+    )
+    older_id = max(
+        item.interaction_id
+        for item in storage.get_interactions_by_request_ids([older_request])
+    )
+    assert older_id > newer_id
+    requests = []
+    answers = iter(
+        [
+            {
+                "decisions": [
+                    {
+                        "kind": "create",
+                        "new_ids": ["NEW-0"],
+                        "reason": "latest correction",
+                        "outputs": [
+                            {
+                                "trigger": "when formatting",
+                                "content": "Use format B.",
+                                "rationale": "See cited evidence.",
+                                "evidence_refs": [
+                                    {"session_id": "newer", "turn": newer_id}
+                                ],
+                            }
+                        ],
+                    }
+                ]
+            },
+            {"findings": []},
+        ]
+    )
+
+    def complete(params, _timeout):
+        requests.append(params)
+        return response(next(answers))
+
+    with patch.object(
+        consolidator.client, "_completion_with_hard_timeout", side_effect=complete
+    ):
+        consolidator.deduplicate(
+            [[row(ids=[newer_id, older_id])]],
+            generation_request_id="generation",
+            user_id="owner",
+            agent_version="v1",
+            existing_playbooks=[],
+        )
+    for request in requests:
+        sessions = json.loads(request["messages"][1]["content"])["sessions"]
+        messages = [message for session in sessions for message in session["messages"]]
+        assert [message["turn"] for message in messages] == [older_id, newer_id]
+        assert [message["created_at"] for message in messages] == [100, 200]
 
 
 def test_existing_only_remove_reaches_audited_engine(consolidator, storage):
