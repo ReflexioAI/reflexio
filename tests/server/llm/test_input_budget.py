@@ -224,6 +224,8 @@ def test_isolated_capacity_classifier_does_not_guess_from_code_or_message(
     assert snapshot.input_capacity_exceeded is classified
     if "fork" not in multiprocessing.get_all_start_methods():
         pytest.skip("This isolated error fixture uses a real forked worker")
+    process_context = multiprocessing.get_context("fork")
+    monkeypatch.setattr(module.multiprocessing, "get_context", lambda: process_context)
 
     def reject_worker(params, result_queue):
         result_queue.put(("error", snapshot))

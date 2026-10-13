@@ -121,6 +121,7 @@ class EmbeddingRequest(BaseModel):
     input: str | list[str]
     dimensions: int | None = Field(default=None, gt=0)
     priority: Literal["interactive", "bulk"] = "bulk"
+    purpose: Literal["document", "query"] = "document"
     timeout_ms: int = Field(default=30_000, gt=0, le=600_000)
 
 
@@ -173,8 +174,10 @@ def _validate_embedding_width(
                 )
 
 
-def _warm_reranker(runner: CrossEncoderRunner, require_ready: bool) -> None:
-    if reranker_enabled() and not runner.prewarm() and require_ready:
+def _warm_reranker(
+    runner: CrossEncoderRunner, require_ready: bool, *, enabled: bool = True
+) -> None:
+    if enabled and reranker_enabled() and not runner.prewarm() and require_ready:
         raise RuntimeError("CPU inference reranker failed its startup readiness check")
 
 
@@ -213,6 +216,17 @@ async def _until_disconnected(
     return result
 
 
+def _model_health(
+    model_contract: Callable[[], Mapping[str, str | int]] | None,
+    query_only: bool,
+) -> dict[str, str | int]:
+    if model_contract is None:
+        raise HTTPException(
+            status_code=503, detail="Pinned model identity is not configured"
+        )
+    return {**model_contract(), "workload": "query" if query_only else "shared"}
+
+
 def create_embedding_app(
     default_model: str | None = None,
     *,
@@ -233,8 +247,15 @@ def create_embedding_app(
     ]
     | None = None,
     inference_shutdown: Callable[[], None] | None = None,
+    query_only: bool = False,
+    model_contract: Callable[[], Mapping[str, str | int]] | None = None,
 ) -> FastAPI:
-    """Create the embedding daemon app and optionally register external encoders."""
+    """Create a daemon with optional encoders and their pinned vector identity.
+
+    Isolated query routing requires ``model_contract`` to report the actual
+    encoder's model, immutable revision and dimensions. Workload is derived
+    from this app's admission policy, never from the supplied metadata.
+    """
     effective_encoders = dict(model_encoders or {})
     effective_fixed_dimensions = dict(fixed_dimensions or {})
     effective_allowed_models = (
@@ -258,17 +279,20 @@ def create_embedding_app(
             except Exception:
                 logger.exception("Failed to warm embedding model %s", default_model)
                 raise
-        _warm_reranker(runner, require_ready=inference_submit is not None)
+        _warm_reranker(
+            runner, require_ready=inference_submit is not None, enabled=not query_only
+        )
         logger.info(
             "event=inference_service_ready configured_model=%s "
             "configured_reranker_model=%s embedding_device=%s "
-            "reranker_device=%s reranker_ready=%s hf_offline=%s",
+            "reranker_device=%s reranker_ready=%s hf_offline=%s workload=%s",
             default_model,
             reranker_model,
             os.environ.get("NOMIC_EMBED_DEVICE", "cpu"),
             os.environ.get("REFLEXIO_RERANK_DEVICE", "cpu"),
-            runner.ready(),
+            not query_only and runner.ready(),
             os.environ.get("HF_HUB_OFFLINE", "0"),
+            "query" if query_only else "shared",
         )
         try:
             yield
@@ -278,6 +302,10 @@ def create_embedding_app(
 
     embedding_app = FastAPI(title="Reflexio Embedding Service", lifespan=lifespan)
 
+    embedding_app.get("/health/model", name="health_model")(
+        lambda: _model_health(model_contract, query_only)
+    )
+
     @embedding_app.get("/health")
     def health() -> dict[str, Any]:
         """Health check endpoint."""
@@ -286,14 +314,14 @@ def create_embedding_app(
             "active_model": _ACTIVE_MODEL,
             "configured_model": default_model,
             "configured_reranker_model": reranker_model,
-            "reranker_enabled": reranker_enabled(),
-            "reranker_ready": runner.ready(),
+            "reranker_enabled": not query_only and reranker_enabled(),
+            "reranker_ready": not query_only and runner.ready(),
         }
 
     @embedding_app.get("/health/rerank", response_model=RerankHealthResponse)
     def rerank_health(response: Response) -> RerankHealthResponse:
         """Report reranker readiness without affecting embedding health."""
-        enabled = reranker_enabled()
+        enabled = not query_only and reranker_enabled()
         ready = enabled and runner.ready()
         if not ready:
             response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
@@ -309,6 +337,14 @@ def create_embedding_app(
         request: EmbeddingRequest, http_request: Request
     ) -> EmbeddingResponse:
         """Create embeddings using the daemon's single active local model."""
+        if query_only and (
+            request.purpose != "query"
+            or (isinstance(request.input, list) and len(request.input) != 1)
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail="Query worker accepts one explicitly marked query only",
+            )
         if request.model not in effective_allowed_models:
             raise HTTPException(
                 status_code=400,
@@ -338,7 +374,7 @@ def create_embedding_app(
                 inference_submit(
                     encoder or (lambda chunk: _encode_texts_now(request.model, chunk)),
                     texts,
-                    request.priority,
+                    "interactive" if query_only else request.priority,
                     request.timeout_ms,
                     1,
                 ),
@@ -370,7 +406,7 @@ def create_embedding_app(
             raise HTTPException(
                 status_code=400, detail=f"Unsupported model: {request.model}"
             )
-        if not reranker_enabled():
+        if query_only or not reranker_enabled():
             raise HTTPException(
                 status_code=503,
                 detail="Reranking is disabled by REFLEXIO_RERANK_ENABLED",

@@ -1,9 +1,45 @@
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 
 from reflexio.server.llm import embedding_service
 from reflexio.server.llm.embedding_service import create_embedding_app
+
+
+@pytest.mark.parametrize("query_only", [False, True])
+def test_factory_exposes_pinned_identity_and_actual_workload(monkeypatch, query_only):
+    monkeypatch.setenv("REFLEXIO_RERANK_ENABLED", "false")
+    identity = {
+        "model": "custom/pinned",
+        "revision": "immutable-revision",
+        "dimensions": 2,
+        "workload": "untrusted-metadata",
+    }
+    app = create_embedding_app(
+        default_model="custom/pinned",
+        allowed_models={"custom/pinned"},
+        model_encoders={"custom/pinned": lambda texts: [[1.0, 0.0] for _ in texts]},
+        fixed_dimensions={"custom/pinned": 2},
+        model_contract=lambda: identity,
+        query_only=query_only,
+    )
+    with TestClient(app) as client:
+        response = client.get("/health/model")
+    assert response.status_code == 200
+    assert response.json() == {
+        **identity,
+        "workload": "query" if query_only else "shared",
+    }
+    assert identity["workload"] == "untrusted-metadata"
+
+
+def test_factory_does_not_invent_an_unconfigured_revision(monkeypatch):
+    monkeypatch.setenv("REFLEXIO_RERANK_ENABLED", "false")
+    with TestClient(create_embedding_app()) as client:
+        response = client.get("/health/model")
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Pinned model identity is not configured"
 
 
 def test_health_exposes_configured_model(monkeypatch) -> None:

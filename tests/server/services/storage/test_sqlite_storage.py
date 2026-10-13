@@ -1390,7 +1390,7 @@ def test_embedding_input_formatting_is_model_specific():
     """MiniLM stays raw while Nomic receives its asymmetric task prefixes."""
     captured_texts = []
 
-    def mock_llm_get_embedding(text, model, dimensions):
+    def mock_llm_get_embedding(text, model, dimensions, *, purpose):
         captured_texts.append(text)
         return [0.0] * 512
 
@@ -1428,7 +1428,7 @@ def test_embedding_input_formatting_is_model_specific():
 def test_embedding_unavailable_degrades_to_empty_vector():
     """Embedding service outages should not block storage writes/search."""
 
-    def mock_llm_get_embedding(text, model, dimensions):  # noqa: ARG001
+    def mock_llm_get_embedding(text, model, dimensions, *, purpose):  # noqa: ARG001
         raise EmbeddingUnavailableError("service down")
 
     with (

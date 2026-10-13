@@ -492,3 +492,23 @@ consequence of the default `window_size` of 10: a brand-new user's first window
 needs ten eligible interactions before anything is extracted, so a single publish
 legitimately returns uncovered. Pass `force_extraction` when you need that publish
 extracted on its own.
+
+### Optional isolated query embeddings
+
+Deployments may set `REFLEXIO_QUERY_EMBEDDING_SERVICE_URL` to a separate query-only
+worker. The ordinary embedding endpoint continues to handle stored documents
+and reranking. `LiteLLMClient.get_embedding` and `get_embeddings` accept a
+keyword-only `purpose="query"`; the default is `"document"`. Storage supplies
+this purpose explicitly, independently of text prefixes or request priority.
+Cloud embedding models retain their normal provider route. Both local endpoints
+must advertise identical immutable model, revision and dimension contracts at
+`/health/model`, and the query endpoint must advertise `workload="query"`. An
+empty query URL retains shared routing. Changing an endpoint's model requires
+restarting API workers; a failed query endpoint never fails over to shared CPU.
+
+When constructing workers with `create_embedding_app`, supply a `model_contract`
+callback returning the loaded encoder's `model`, pinned `revision`, and
+`dimensions` on both apps. The factory exposes `/health/model` and derives
+`workload` from `query_only`. Without that callback it returns 503 rather than
+inventing a revision. Additional metadata such as device and thread count can
+be returned by the callback.

@@ -25,7 +25,7 @@ foreign members, Tier-1b idiom) is added.
 
 import logging
 from functools import lru_cache
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 import litellm
 import tiktoken
@@ -255,7 +255,12 @@ class EmbeddingMixin:
         return self._default_embedding_model
 
     def get_embedding(
-        self, text: str, model: str | None = None, dimensions: int | None = None
+        self,
+        text: str,
+        model: str | None = None,
+        dimensions: int | None = None,
+        *,
+        purpose: Literal["document", "query"] = "document",
     ) -> list[float]:
         """
         Get embedding vector for the given text.
@@ -278,13 +283,17 @@ class EmbeddingMixin:
         Raises:
             LiteLLMClientError: If embedding generation fails.
         """
-        return self._embed_texts([text], model, dimensions, batch=False)[0]
+        return self._embed_texts(
+            [text], model, dimensions, batch=False, purpose=purpose
+        )[0]
 
     def get_embeddings(
         self,
         texts: list[str],
         model: str | None = None,
         dimensions: int | None = None,
+        *,
+        purpose: Literal["document", "query"] = "document",
     ) -> list[list[float]]:
         """
         Get embedding vectors for multiple texts in a single API call.
@@ -305,7 +314,9 @@ class EmbeddingMixin:
         """
         if not texts:
             return []
-        return self._embed_texts(list(texts), model, dimensions, batch=True)
+        return self._embed_texts(
+            list(texts), model, dimensions, batch=True, purpose=purpose
+        )
 
     def _embed_texts(
         self,
@@ -314,6 +325,7 @@ class EmbeddingMixin:
         dimensions: int | None,
         *,
         batch: bool,
+        purpose: Literal["document", "query"] = "document",
     ) -> list[list[float]]:
         """Shared embedding dispatch for ``get_embedding`` and ``get_embeddings``.
 
@@ -343,7 +355,7 @@ class EmbeddingMixin:
             raise EmbeddingUnavailableError("Embedding provider is disabled")
         if should_use_embedding_service(embedding_model):
             return get_service_embeddings(
-                texts, model=embedding_model, dimensions=dimensions
+                texts, model=embedding_model, dimensions=dimensions, purpose=purpose
             )
 
         if embedding_model.startswith("local/"):

@@ -3233,6 +3233,7 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                 ),
                 self.embedding_model_name,
                 self.embedding_dimensions,
+                purpose=purpose,
             )
         except EmbeddingUnavailableError as exc:
             logger.warning(
