@@ -104,7 +104,9 @@ in real mode to preserve its saved output, source coverage and consumed quota.
 
 New protected passes ask the model to select IDs for bounded original snippets;
 the server copies their exact text. Every selected ID becomes a separate
-quotation bound to one original field. Unknown IDs and record-capacity
+quotation bound to one original field. A contained range can narrow one shown
+snippet; an offsetless field ID resolves only when it names one shown snippet.
+Canonical source offsets are retained. Unknown or ambiguous IDs and record-capacity
 overflow cannot become saved receipts or publish output. Existing v1 quotation
 receipts remain reusable under their original source and quota checks.
 

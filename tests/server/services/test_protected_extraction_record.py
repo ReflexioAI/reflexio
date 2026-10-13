@@ -255,7 +255,7 @@ def test_reference_selection_preserves_every_character_and_copies_escaped_source
     ]
     assert _protected_validator(ProtectedRecord(), pieces)(copied) == []
     selected.evidence[0] = selected.evidence[0].model_copy(
-        update={"evidence_refs": ("i1:content:0:4",)}
+        update={"evidence_refs": ("i1:content:0:1025",)}
     )
     with pytest.raises(ValueError, match="visible snippet"):
         _selection_update(selected, pieces)
@@ -636,3 +636,41 @@ def test_expanded_selection_limit_feedback_never_copies_source_content():
     assert validator(selected) == [
         "Select at most 128 individual snippets per evidence field."
     ]
+
+
+def test_contained_selection_copies_original_range_and_rejects_unshown_tail():
+    source = SourceSpan(1, "r", "User", "content", 20, 38, "Do not deploy yet.")
+    selected = ProtectedRecordSelection(
+        evidence=[
+            EvidenceSelection(
+                kind="instruction",
+                evidence_refs=("i1:content:20:33",),
+            )
+        ]
+    )
+    copied = _selection_update(selected, (source,))
+    assert copied.evidence[0].quote == source.text[:13]
+    assert copied.evidence[0].evidence_refs == ("i1:content:20:33",)
+    selected.evidence[0] = selected.evidence[0].model_copy(
+        update={"evidence_refs": ("i1:content:20:39",)},
+    )
+    with pytest.raises(ValueError, match="wholly contained"):
+        _selection_update(selected, (source,))
+
+
+def test_offsetless_field_id_requires_one_visible_snippet_and_keeps_canonical_offsets():
+    source = SourceSpan(1, "r", "Assistant", "tools_used[0]", 20, 26, "failed")
+    selected = ProtectedRecordSelection(
+        evidence=[
+            EvidenceSelection(
+                kind="outcome",
+                evidence_refs=("i1:tools_used[0]",),
+            )
+        ]
+    )
+    copied = _selection_update(selected, (source,))
+    assert copied.evidence[0].quote == source.text
+    assert copied.evidence[0].evidence_refs == (source.evidence_ref,)
+    other = SourceSpan(1, "r", "Assistant", "tools_used[0]", 30, 39, "succeeded")
+    with pytest.raises(ValueError, match="visible snippet"):
+        _selection_update(selected, (source, other))

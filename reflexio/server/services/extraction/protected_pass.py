@@ -15,6 +15,7 @@ from reflexio.server.services.extraction.input_preparation import (
     ExtractionInputBudgetExceededError,
     PreparedExtractionInput,
     SourceSpan,
+    resolve_evidence_span,
 )
 from reflexio.server.services.extraction.overflow_coordinator import (
     OverflowCoordinator,
@@ -102,6 +103,10 @@ def _selection_update(
     existing: ProtectedRecord | None = None,
 ) -> ProtectedRecordUpdate:
     by_ref = {span.evidence_ref: span for span in visible_spans}
+    fields: dict[str, list[SourceSpan]] = {}
+    for source in by_ref.values():
+        fields.setdefault(f"i{source.interaction_id}:{source.field}", []).append(source)
+    by_ref.update({ref: spans[0] for ref, spans in fields.items() if len(spans) == 1})
     result: dict[str, list[dict[str, Any]]] = {"evidence": [], "candidate_evidence": []}
     already_shown = {
         (item.evidence_refs, item.quote)
@@ -110,19 +115,30 @@ def _selection_update(
     errors = []
     for field in result:
         for index, item in enumerate(getattr(selection, field)):
-            if any(ref not in by_ref for ref in item.evidence_refs):
+            try:
+                for ref in item.evidence_refs:
+                    if ref not in by_ref:
+                        # A range may narrow one displayed snippet, but may not
+                        # cross its boundary or expose unshown original text.
+                        by_ref[ref] = resolve_evidence_span(ref, visible_spans)
+            except ValueError:
                 errors.append(
-                    f"{field}[{index}]: select only the exact visible snippet IDs."
+                    f"{field}[{index}]: select visible snippet IDs or ranges "
+                    "wholly contained in one visible snippet."
                 )
                 continue
             for ref in item.evidence_refs:
-                if field == "evidence" and ((ref,), by_ref[ref].text) in already_shown:
+                source = by_ref[ref]
+                if (
+                    field == "evidence"
+                    and ((source.evidence_ref,), source.text) in already_shown
+                ):
                     continue
                 result[field].append(
                     {
                         **item.model_dump(),
-                        "evidence_refs": (ref,),
-                        "quote": by_ref[ref].text,
+                        "evidence_refs": (source.evidence_ref,),
+                        "quote": source.text,
                     }
                 )
     if errors:
