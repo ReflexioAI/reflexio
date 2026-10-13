@@ -35,6 +35,7 @@ import math
 import struct
 from collections.abc import Iterator
 from contextlib import contextmanager
+from typing import Literal
 from unittest.mock import patch
 
 from reflexio.models.config_schema import EMBEDDING_DIMENSIONS
@@ -97,6 +98,7 @@ def patch_embeddings() -> Iterator[None]:
         dimensions: int | None,
         *,
         batch: bool,  # noqa: ARG001 - signature parity with the real method
+        purpose: Literal["document", "query"] = "document",  # noqa: ARG001 - signature parity
     ) -> list[list[float]]:
         return [deterministic_embedding(text, dimensions) for text in texts]
 
