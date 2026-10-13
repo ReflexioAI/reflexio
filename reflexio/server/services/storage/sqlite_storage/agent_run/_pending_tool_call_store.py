@@ -551,6 +551,7 @@ class SQLitePendingToolCallStoreMixin:
                 UPDATE _agent_runs
                 SET status = ?, updated_at = ?
                 WHERE status IN (?, ?)
+                  AND json_type(generation_request_snapshot, '$.overflow') IS NULL
                   AND EXISTS (
                     SELECT 1
                     FROM _run_tool_dependencies d

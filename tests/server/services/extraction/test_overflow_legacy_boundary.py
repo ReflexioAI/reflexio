@@ -157,7 +157,9 @@ def test_public_corrected_consumed_answer_keeps_protocol_parent_out_of_legacy_wo
     )
     assert response.status_code == 200
     corrected = storage.get_agent_run(run.id)
-    assert corrected.status == AgentRunStatus.RESUME_READY
+    assert corrected.status == (
+        AgentRunStatus.FINALIZED if protocol else AgentRunStatus.RESUME_READY
+    )
     assert corrected.committed_output == before.committed_output
     dependency = storage.list_run_tool_dependencies(run.id)[0]
     assert dependency.consumed_at is None
