@@ -325,3 +325,97 @@ def test_usage_checkpoint_failure_never_dispatches_an_extra_fallback(monkeypatch
         extraction_usage_observer.reset(token)
     assert dispatch.call_count == 1
     assert observer.call_count == 1
+
+
+@pytest.mark.parametrize(
+    "model,maximum",
+    [
+        ("gpt-4o", 16384),
+        ("anthropic/claude-sonnet-4-20250514", 64000),
+        ("gemini/gemini-2.5-flash", 65536),
+    ],
+)
+def test_native_worker_none_cap_is_explicit_before_actual_scoped_dispatch(
+    counter, monkeypatch, model, maximum
+):
+    from types import SimpleNamespace
+
+    from reflexio.server.llm.input_budget import extraction_provider_guard
+    from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
+
+    monkeypatch.setattr(
+        "reflexio.server.llm.input_budget.litellm.get_model_info",
+        Mock(return_value={"max_input_tokens": 1048576, "max_output_tokens": maximum}),
+    )
+    client = LiteLLMClient(
+        LiteLLMConfig(model=model, max_tokens=None, fallback_models=[])
+    )
+    response = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(content="ok", tool_calls=None, refusal=None),
+                finish_reason="stop",
+            )
+        ],
+        usage=None,
+        model=model,
+        _hidden_params={},
+    )
+    dispatch = Mock(return_value=response)
+    monkeypatch.setattr(client, "_completion_with_hard_timeout", dispatch)
+    # Ordinary calls retain the provider's existing uncapped request behavior.
+    ordinary = client._build_completion_params(
+        [{"role": "user", "content": "evidence"}]
+    )[0]
+    assert "max_tokens" not in ordinary and "max_completion_tokens" not in ordinary
+    reserve = Mock()
+    token = extraction_provider_guard.set(
+        extraction_request_guard(
+            context_limits={model: 1048576}, reserve_attempt=reserve
+        )
+    )
+    try:
+        assert (
+            client.generate_chat_response([{"role": "user", "content": "evidence"}])
+            == "ok"
+        )
+    finally:
+        extraction_provider_guard.reset(token)
+    assert dispatch.call_args.args[0]["max_tokens"] == maximum
+    reserve.assert_called_once()
+    assert client.config.max_tokens is None
+
+
+@pytest.mark.parametrize(
+    "override", [{"max_tokens": 4096}, {"max_completion_tokens": 12000}]
+)
+def test_explicit_output_caps_are_not_replaced_by_native_metadata(override):
+    from reflexio.server.llm.input_budget import supply_extraction_output_reservation
+
+    request = {
+        "model": "unknown-model",
+        "api_base": "https://custom.invalid",
+        **override,
+    }
+    supply_extraction_output_reservation(request)
+    assert request == {
+        "model": "unknown-model",
+        "api_base": "https://custom.invalid",
+        **override,
+    }
+
+
+def test_custom_none_output_cap_cannot_inherit_native_maximum(counter, monkeypatch):
+    from reflexio.server.llm.input_budget import supply_extraction_output_reservation
+
+    lookup = Mock(return_value={"max_output_tokens": 16384})
+    monkeypatch.setattr(
+        "reflexio.server.llm.input_budget.litellm.get_model_info", lookup
+    )
+    with pytest.raises(
+        InputBudgetConfigurationError, match="explicit output reservation"
+    ):
+        supply_extraction_output_reservation(
+            params(max_tokens=None, api_base="https://custom.invalid")
+        )
+    lookup.assert_not_called()

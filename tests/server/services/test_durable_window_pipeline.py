@@ -3847,3 +3847,201 @@ def test_adopted_legacy_output_reaches_complete_publication_with_verified_eviden
             ) is None
             assert any("ProfileDeduplicationOutput" in name for name in schemas)
     assert storage.get_agent_run(run.id).committed_output == run.committed_output
+
+
+@pytest.mark.parametrize(
+    "failure", ["guard", "budget", "quota", "suspend", "checkpoint", "lease"]
+)
+def test_profile_consolidation_control_failure_preserves_extracted_window_without_publication(
+    pipeline, monkeypatch, failure
+):
+    import json
+    from types import SimpleNamespace
+
+    from reflexio.lib._base import create_generation_litellm_client
+    from reflexio.server.llm._litellm_types import ProviderRequestGuardError
+    from reflexio.server.llm.input_budget import InputBudgetExceededError
+    from reflexio.server.services.durable_learning.window_executor import WindowExecutor
+    from reflexio.server.services.extraction.overflow_coordinator import (
+        OverflowSuspendedError,
+        current_overflow_coordinator,
+    )
+    from reflexio.server.services.profile.components.consolidator import (
+        ProfileDeduplicationOutput,
+    )
+    from reflexio.server.services.storage.storage_base._extraction_stream import (
+        LeaseLostError,
+        OverflowAttemptBudgetExceededError,
+        OverflowCheckpointConflictError,
+    )
+
+    engine, _, http = pipeline
+    monkeypatch.setenv("MOCK_LLM_RESPONSE", "false")
+    monkeypatch.setenv("REFLEXIO_EXTRACTION_OVERFLOW_ENABLED", "true")
+    monkeypatch.setenv(
+        "REFLEXIO_LLM_CONTEXT_LIMITS_JSON",
+        '{"minimax/MiniMax-M3":1000000,"gpt-4o":65536}',
+    )
+    data = payload("profile-consolidation-stop", force=True)
+    quote = "The user prefers concise explanations with clear examples."
+    for item in data["interaction_data_list"]:
+        item["content"] = quote
+    assert http.post("/api/publish_interaction", json=data).json()["success"]
+    storage = engine.get_storage()
+    user, token = storage.claim_extraction("guard-consolidation", 300)
+    window = storage.prepare_extraction(user, token)
+    assert window is not None
+    executor = WindowExecutor(
+        engine.request_context, create_generation_litellm_client(engine.request_context)
+    )
+    error = {
+        "guard": ProviderRequestGuardError,
+        "budget": InputBudgetExceededError,
+        "quota": OverflowAttemptBudgetExceededError,
+        "suspend": OverflowSuspendedError,
+        "checkpoint": OverflowCheckpointConflictError,
+        "lease": LeaseLostError,
+    }[failure]("Injected stop after full source coverage")
+    monkeypatch.setattr(
+        storage, "_get_embedding", lambda *_args, **_kwargs: [0.1] * 512
+    )
+    monkeypatch.setattr(storage, "_expand_document", lambda *_args, **_kwargs: None)
+
+    def respond(params, hard_timeout):
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content=json.dumps(
+                            {
+                                "profiles": [
+                                    {
+                                        "content": "The user prefers concise explanations.",
+                                        "time_to_live": "infinity",
+                                        "source_span": quote,
+                                    }
+                                ]
+                            }
+                        ),
+                        tool_calls=None,
+                        refusal=None,
+                    ),
+                    finish_reason="stop",
+                )
+            ],
+            usage=SimpleNamespace(
+                prompt_tokens=100,
+                completion_tokens=20,
+                total_tokens=120,
+                cache_read_input_tokens=0,
+                cache_creation_input_tokens=0,
+            ),
+            model="minimax/MiniMax-M3",
+            _hidden_params={"custom_llm_provider": "minimax"},
+        )
+
+    dispatch = Mock(side_effect=respond)
+    monkeypatch.setattr(executor.client, "_completion_with_hard_timeout", dispatch)
+    generate = executor.client.generate_chat_response_with_provenance
+    checkpoints = []
+
+    def fail_consolidation(*args, **kwargs):
+        if kwargs.get("response_format") is ProfileDeduplicationOutput:
+            coordinator = current_overflow_coordinator.get()
+            assert coordinator is not None
+            coordinator.require_full_source_coverage()
+            checkpoints.append(coordinator.checkpoint)
+            raise error
+        return generate(*args, **kwargs)
+
+    monkeypatch.setattr(
+        executor.client, "generate_chat_response_with_provenance", fail_consolidation
+    )
+    writes = {}
+    for name in (
+        "add_user_profile",
+        "save_extraction_outcome",
+        "complete_extraction",
+        "update_operation_state",
+        "upsert_operation_state",
+    ):
+        spy = Mock(wraps=getattr(storage, name))
+        monkeypatch.setattr(storage, name, spy)
+        writes[name] = spy
+    billing = Mock(wraps=executor._billing_snapshot)
+    monkeypatch.setattr(executor, "_billing_snapshot", billing)
+    with patch("reflexio.server.metering_events.record_extraction_tokens") as bill:
+        with pytest.raises(type(error)) as caught:
+            executor.execute(window, token)
+        assert caught.value is error
+        bill.assert_not_called()
+    billing.assert_not_called()
+    for write in writes.values():
+        write.assert_not_called()
+    assert storage.count_all_profiles() == 0
+    assert (
+        storage.extraction_status(window.user_id, "profile-consolidation-stop")[
+            "status"
+        ]
+        != "done"
+    )
+    assert len(checkpoints) == 1 and checkpoints[0]["stage"] == "extracted"
+    parent = storage.get_agent_run(f"window:{window.window_id}")
+    assert parent.committed_output is not None
+    assert (
+        parent.generation_request_snapshot["overflow"]["checkpoint"] == checkpoints[0]
+    )
+    with storage._stream_sql(read_only=True) as db:
+        cursor = db.query(
+            "SELECT completed_seq FROM extraction_cursors WHERE user_id=? AND kind=?",
+            (user, "profile"),
+        )[0]
+        saved = db.query(
+            "SELECT completed,outcome,effects FROM extraction_windows WHERE window_id=?",
+            (window.window_id,),
+        )[0]
+    assert cursor["completed_seq"] == 0
+    assert (
+        not saved["completed"] and saved["outcome"] is None and saved["effects"] is None
+    )
+    # The durable raw result remains readable for a later turn, not abandoned.
+    assert parent.committed_output["output"]["profiles"][0]["source_span"] == quote
+    assert dispatch.call_count == 1
+
+
+@pytest.mark.parametrize(
+    "failure", ["guard", "quota", "checkpoint", "lease", "operational"]
+)
+def test_dedup_embedding_fallback_preserves_control_errors(failure):
+    from types import SimpleNamespace
+
+    from reflexio.server.llm._litellm_types import ProviderRequestGuardError
+    from reflexio.server.services.deduplication_utils import (
+        resolve_dedup_query_embeddings,
+    )
+    from reflexio.server.services.storage.storage_base._extraction_stream import (
+        LeaseLostError,
+        OverflowAttemptBudgetExceededError,
+        OverflowCheckpointConflictError,
+    )
+
+    error = {
+        "guard": ProviderRequestGuardError,
+        "quota": OverflowAttemptBudgetExceededError,
+        "checkpoint": OverflowCheckpointConflictError,
+        "lease": LeaseLostError,
+        "operational": RuntimeError,
+    }[failure]("embedding failure")
+    storage = SimpleNamespace(
+        embedding_model_name="fixture", _get_embedding=Mock(side_effect=error)
+    )
+    if failure == "operational":
+        assert resolve_dedup_query_embeddings(
+            storage, Mock(), ["query"], entity_label="Profile"
+        ) == [None]
+    else:
+        with pytest.raises(type(error)) as caught:
+            resolve_dedup_query_embeddings(
+                storage, Mock(), ["query"], entity_label="Profile"
+            )
+        assert caught.value is error

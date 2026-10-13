@@ -132,3 +132,8 @@ and the remaining child step count before the next model turn; retries reuse
 that continuation. A pending human/tool dependency suspends the child, and its
 protocol wake-up/resume routing still needs integration. Custom extraction/gate
 templates that omit the complete prepared source fail before provider dispatch.
+
+Native overflow requests without a configured output cap explicitly request the
+model's advertised output maximum before admission. Configured caps are preserved;
+custom endpoints require their own positive request/client cap and context
+capacity declaration. Other calls retain their original provider defaults.

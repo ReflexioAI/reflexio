@@ -67,6 +67,33 @@ def declared_context_limits(raw: str) -> dict[str, int]:
     return value
 
 
+def supply_extraction_output_reservation(params: dict[str, Any]) -> None:
+    """Bound uncapped native requests without replacing configured output caps.
+
+    Reserve and request the advertised native output maximum. Custom endpoints
+    must supply their own cap; another deployment's metadata is not authority.
+    """
+    if (
+        params.get("max_completion_tokens") is not None
+        or params.get("max_tokens") is not None
+    ):
+        return
+    if params.get("api_base") or params.get("base_url"):
+        raise InputBudgetConfigurationError(
+            "Custom endpoint requires an explicit output reservation"
+        )
+    try:
+        maximum = litellm.get_model_info(params["model"]).get("max_output_tokens")
+    except Exception as exc:
+        raise InputBudgetConfigurationError(
+            "Effective output reservation is required"
+        ) from exc
+    if type(maximum) is not int or maximum <= 0:
+        raise InputBudgetConfigurationError("Effective output reservation is required")
+    key = "max_completion_tokens" if "max_completion_tokens" in params else "max_tokens"
+    params[key] = maximum
+
+
 def check_request_input_budget(
     params: Mapping[str, Any],
     *,

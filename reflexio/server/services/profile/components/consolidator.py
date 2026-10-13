@@ -23,6 +23,7 @@ from reflexio.server.llm.litellm_client import (
     StructuredOutputRepairError,
 )
 from reflexio.server.services.deduplication_utils import (
+    EXTRACTION_CONTROL_ERRORS,
     BaseDeduplicator,
     format_dedup_timestamp,
     parse_item_id,
@@ -485,6 +486,8 @@ class ProfileConsolidator(BaseDeduplicator):
                     if profile.profile_id and profile.profile_id not in seen_ids:
                         seen_ids.add(profile.profile_id)
                         existing_profiles.append(profile)
+            except EXTRACTION_CONTROL_ERRORS:
+                raise
             except Exception as e:  # noqa: PERF203
                 logger.warning(
                     "Failed to search existing profiles for query %d: %s", i, e
@@ -610,6 +613,10 @@ class ProfileConsolidator(BaseDeduplicator):
                 return _strip_deletion_markers(new_profiles), [], []
 
             dedup_output = response
+        except EXTRACTION_CONTROL_ERRORS:
+            # Admission, quota, suspension and ownership are publication
+            # barriers, not transient errors eligible for best-effort output.
+            raise
         except Exception as e:
             # Graceful degradation: dedup is best-effort — on any failure
             # (commonly a transient minimax timeout/overload) keep the profiles

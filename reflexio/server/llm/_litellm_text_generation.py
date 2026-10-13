@@ -78,6 +78,7 @@ from reflexio.server.llm.image_utils import (
 from reflexio.server.llm.input_budget import (
     extraction_provider_guard,
     extraction_usage_observer,
+    supply_extraction_output_reservation,
 )
 from reflexio.server.llm.llm_utils import is_pydantic_model
 from reflexio.server.llm.model_defaults import (
@@ -901,6 +902,10 @@ class TextGenerationMixin:
         params["messages"] = self._apply_prompt_caching(
             params["messages"], params["model"]
         )
+        # Apply only to scoped extraction, after endpoint/caller resolution.
+        # Every fallback rung is rebuilt independently and reserves its own cap.
+        if extraction_provider_guard.get() is not None:
+            supply_extraction_output_reservation(params)
         # Apply after caller overrides and the seed temperature override.
         apply_model_request_policy(params)
 
