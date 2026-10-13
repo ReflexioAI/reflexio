@@ -408,9 +408,8 @@ class PlaybookGenerationService(
         Flattens + ``dedupe_and_drop_empty``, runs the deduplicator (its 2nd
         LLM call + reads of existing rows), assigns ``source``/``status``, and
         **precomputes embeddings** on the survivors. Returns a
-        :class:`PlaybookWritePlan` for the persist half, or ``None`` when there
-        is nothing to write (matching the pre-split ``if all_playbooks:`` gate,
-        which suppressed save/lineage/schedulers alike). Issues no
+        :class:`PlaybookWritePlan` for the persist half, including retirement-only
+        plans, or ``None`` when there are neither survivors nor retirements. Issues no
         ``save_user_playbooks``/``merge_records``/``supersede_*`` — the write is
         the persist half's job (compute is write-free).
         """
@@ -569,13 +568,20 @@ class PlaybookGenerationService(
         all_playbooks = deduplicated_playbooks
 
         # Set status and source for all entries
-        for playbook in all_playbooks:
-            playbook.status = Status.PENDING if self.output_pending_status else None
-            playbook.source = self.service_config.source  # type: ignore[reportOptionalMemberAccess]
+        for index, playbook in enumerate(all_playbooks):
+            playbook.status = (
+                Status.PENDING
+                if self.output_pending_status
+                else playbook.status
+                if index in consolidator.lineage_sources_by_output_index
+                else None
+            )
+            if index not in consolidator.lineage_sources_by_output_index:
+                playbook.source = self.service_config.source  # type: ignore[reportOptionalMemberAccess]
 
         logger.info("All user playbook entries: %s", all_playbooks)
 
-        if not all_playbooks:
+        if not all_playbooks and not existing_ids_to_delete:
             return None
 
         logger.info(
@@ -587,7 +593,8 @@ class PlaybookGenerationService(
 
         # Precompute embeddings on the survivors (compute-side, NO DB write). The
         # persist half passes skip_embedding=True so no embedding runs in the fence.
-        self.storage.precompute_user_playbook_embeddings(all_playbooks)  # type: ignore[reportOptionalMemberAccess]
+        if all_playbooks:
+            self.storage.precompute_user_playbook_embeddings(all_playbooks)  # type: ignore[reportOptionalMemberAccess]
 
         lineage_contexts: list[LineageContext] = []
         from reflexio.server.services.extraction.overflow_coordinator import (
@@ -612,6 +619,11 @@ class PlaybookGenerationService(
                         "consolidator"
                         if index in consolidated_output_indices
                         else "extractor"
+                    ),
+                    source_ids=(
+                        consolidator.lineage_sources_by_output_index.get(index, [])
+                        if index in consolidated_output_indices
+                        else []
                     ),
                     request_id=generation_request_id,
                     model_name=provenance.model_name if provenance else None,
@@ -642,14 +654,13 @@ class PlaybookGenerationService(
         ``emit_generation_side_effects`` (durable / ``.run()``) or right after
         persist in ``_finalize_extracted_items`` (resume/manual).
         """
-        if not plan.new_playbooks:
-            return
         try:
-            self.storage.save_user_playbooks(  # type: ignore[reportOptionalMemberAccess]
-                plan.new_playbooks,
-                skip_embedding=True,
-                lineage_contexts=plan.lineage_contexts,
-            )
+            if plan.new_playbooks:
+                self.storage.save_user_playbooks(  # type: ignore[reportOptionalMemberAccess]
+                    plan.new_playbooks,
+                    skip_embedding=True,
+                    lineage_contexts=plan.lineage_contexts,
+                )
             self._apply_consolidation_lineage(
                 plan.new_playbooks,
                 plan.merge_groups,
@@ -872,9 +883,11 @@ class PlaybookGenerationService(
         ``storage.merge_records`` so each becomes a MERGED tombstone pointing at
         its survivor with a ``merge`` lineage event (``resolve_current`` then
         follows the pointer). Any archived id NOT covered by a merge group
-        (e.g. a ``differentiate`` split source, which has no single survivor) is
+        (e.g. a multiple-output Replace or an existing-only Remove) is
         soft-superseded in place so the dead source content stays auditable for
-        point-in-time attribution reads.
+        point-in-time attribution reads. Each replacement output's create event
+        independently links to its consumed sources; no arbitrary merge target
+        is selected for a split.
 
         Args:
             saved_playbooks: The just-persisted entries (survivor ids assigned).
