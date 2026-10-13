@@ -17,6 +17,7 @@ from reflexio.server.services.profile.profile_generation_service_utils import (
 )
 from reflexio.server.services.storage.storage_base._extraction_stream import (
     OverflowCheckpointConflictError,
+    validate_extraction_overflow_manifest,
 )
 from tests.server.services.test_durable_window_pipeline import _overflow_coordinator
 from tests.server.services.test_durable_window_pipeline import (
@@ -32,6 +33,18 @@ USAGE = {
     "cache_read_input_tokens": 0,
     "cache_write_input_tokens": 0,
 }
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("version", True), ("version", 1.0), ("attempt_limit", 128.0)],
+)
+def test_protocol_header_requires_integer_literals(field, value):
+    manifest = OverflowCoordinator.initial_manifest("source")
+    assert validate_extraction_overflow_manifest(manifest) is manifest
+    manifest[field] = value
+    with pytest.raises(OverflowCheckpointConflictError, match="overflow marker"):
+        validate_extraction_overflow_manifest(manifest)
 
 
 @pytest.mark.parametrize(

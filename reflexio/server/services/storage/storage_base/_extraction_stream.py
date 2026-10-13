@@ -126,9 +126,11 @@ def validate_extraction_overflow_manifest(manifest: Any) -> dict[str, Any]:
 
     if (
         not isinstance(manifest, dict)
-        or manifest.get("version") != 1
+        or type(manifest.get("version")) is not int
+        or manifest["version"] != 1
         or not isinstance(manifest.get("source_digest"), str)
-        or manifest.get("attempt_limit") != 128
+        or type(manifest.get("attempt_limit")) is not int
+        or manifest["attempt_limit"] != 128
         or type(manifest.get("revision")) is not int
         or not isinstance(manifest.get("attempts"), list)
     ):
