@@ -1925,7 +1925,7 @@ class PlaybookCandidateReviewer:
                 }
                 for candidate_id, candidate in originals.items()
             ]
-            messages[1]["content"] = json.dumps(payload, ensure_ascii=False)
+            messages[-1]["content"] = json.dumps(payload, ensure_ascii=False)
             response_format = (
                 PrimaryAssessedReviewOutput
                 if primary_assessed

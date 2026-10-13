@@ -1,5 +1,6 @@
 """Protected review outcomes retain their actual child records and batch binding."""
 
+import json
 from copy import deepcopy
 from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock
@@ -20,6 +21,9 @@ from reflexio.server.services.extraction.protected_record import (
     ProtectedRecord,
     ProtectedRecordUpdate,
 )
+from reflexio.server.services.playbook.components.overflow_evidence import (
+    EVIDENCE_SCOPE_POLICY,
+)
 from reflexio.server.services.playbook.components.reviewer import (
     PlaybookCandidateReviewOutput,
 )
@@ -35,7 +39,10 @@ from tests.server.services.playbook.test_primary_assessed_playbook_reviewer impo
 
 
 @pytest.mark.parametrize("version", ["1.3.0", "1.47.0", "1.48.0", "1.49.0", "1.50.0"])
-def test_protected_combined_review_binds_originals_and_preserves_children(version):
+@pytest.mark.parametrize("decision", ["accept", "revise"])
+def test_protected_combined_review_binds_originals_and_preserves_children(
+    version, decision
+):
     groups = [_interaction_model(i, "Use width 800.") for i in (101, 102)]
     prepared = prepare_extraction_input(groups, user_id="user-1")
     spans = tuple(span for chunk in prepared.chunks for span in chunk.spans)
@@ -84,7 +91,14 @@ def test_protected_combined_review_binds_originals_and_preserves_children(versio
             }
         ]
     }
-    raw = baseline if version == "1.3.0" else _primary_response()
+    raw = (
+        baseline
+        if version == "1.3.0"
+        else _primary_response(
+            primary=None if decision == "accept" else "unsupported_causality",
+            decision=decision,
+        )
+    )
     coordinator.completed_step = Mock(
         return_value={
             "output": raw,
@@ -92,6 +106,7 @@ def test_protected_combined_review_binds_originals_and_preserves_children(versio
         }
     )
     coordinator.complete_step = Mock()
+    coordinator.step_key = Mock(wraps=coordinator.step_key)
     reviewer, client = _reviewer(PlaybookCandidateReviewOutput.model_validate(baseline))
     reviewer.request_context.prompt_manager = PromptManager(
         version_override={reviewer.PROMPT_ID: version}
@@ -126,8 +141,12 @@ def test_protected_combined_review_binds_originals_and_preserves_children(versio
             ["C1-E1"],
             ["C2-E1"],
         ]
+        # Protected recovery publishes only unchanged accepts, including when
+        # the reviewer emits an otherwise validated revision.
+        expected_survivors = 2 if version == "1.3.0" or decision == "accept" else 0
         assert (
-            len(reviewer.apply_decisions(candidates=candidates, outcome=outcome)) == 2
+            len(reviewer.apply_decisions(candidates=candidates, outcome=outcome))
+            == expected_survivors
         )
         mutated = deepcopy(candidates)
         mutated[0].notes = "Changed after review"
@@ -137,6 +156,22 @@ def test_protected_combined_review_binds_originals_and_preserves_children(versio
         assert not client.generate_chat_response.called
         assert not client.generate_chat_response_with_provenance.called
         if version != "1.3.0":
+            review_calls = [
+                call
+                for call in coordinator.step_key.call_args_list
+                if call.args[0] == "review-v1"
+            ]
+            assert len(review_calls) == 2
+            for call in review_calls:
+                messages = call.args[1]["messages"]
+                assert [message["role"] for message in messages] == [
+                    "system",
+                    "system",
+                    "user",
+                ]
+                assert messages[1]["content"] == EVIDENCE_SCOPE_POLICY
+                payload = json.loads(messages[-1]["content"])
+                assert payload["candidates"][0]["rationale"] == candidates[0].rationale
             assert outcome.primary_output is None
             for child in outcome.child_outcomes:
                 assert child.primary_output is not None
