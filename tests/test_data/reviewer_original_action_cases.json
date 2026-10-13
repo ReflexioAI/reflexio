@@ -1,0 +1,139 @@
+[
+  {
+    "id": "historical-reference-only-default",
+    "provenance": "Prospective synthetic development control for original action versus historical default; independently adjudicate before model calls. Not customer data or holdout.",
+    "domain": "portrait_resizing",
+    "split": "development",
+    "agent_context": "The agent configures portrait resizing jobs using each job's width setting.",
+    "turns": [
+      {
+        "role": "User",
+        "content": "For this portrait resize job, set the width to 640 pixels."
+      }
+    ],
+    "candidates": [
+      {
+        "content": "Always use the width selected for this portrait as the default for all future portrait resize jobs.",
+        "trigger": "When configuring any future portrait resize job",
+        "rationale": "The user has a standing preference for the width selected for this portrait.",
+        "evidence": [
+          1
+        ],
+        "decision": "reject",
+        "reason_code": "speculative",
+        "preserve": [],
+        "remove": [
+          "fixed historical-choice default",
+          "inferred standing preference",
+          "replacement task-input-use lesson"
+        ]
+      }
+    ],
+    "existing": []
+  },
+  {
+    "id": "conditional-original-task-input",
+    "provenance": "Prospective synthetic development control for original action versus historical default; independently adjudicate before model calls. Not customer data or holdout.",
+    "domain": "portrait_resizing",
+    "split": "development",
+    "agent_context": "The agent configures portrait resizing jobs using each job's width setting.",
+    "turns": [
+      {
+        "role": "User",
+        "content": "For this portrait resize job, set the width to 640 pixels."
+      }
+    ],
+    "candidates": [
+      {
+        "content": "For a portrait resize job whose width is assigned and available for that job, use that assigned width.",
+        "trigger": "When preparing a portrait resize job with its own assigned width available",
+        "rationale": "The user supplied a width for the portrait resize job.",
+        "evidence": [
+          1
+        ],
+        "decision": "accept",
+        "reason_code": "grounded_useful",
+        "preserve": [
+          "original current-job assigned width use",
+          "assignment and availability condition"
+        ],
+        "remove": [
+          "standing historical width",
+          "historical execution claim"
+        ]
+      }
+    ],
+    "existing": []
+  },
+  {
+    "id": "mixed-task-input-and-default-extension",
+    "provenance": "Prospective synthetic development control for original action versus historical default; independently adjudicate before model calls. Not customer data or holdout.",
+    "domain": "portrait_resizing",
+    "split": "development",
+    "agent_context": "The agent configures portrait resizing jobs using each job's width setting.",
+    "turns": [
+      {
+        "role": "User",
+        "content": "For this portrait resize job, set the width to 640 pixels."
+      }
+    ],
+    "candidates": [
+      {
+        "content": "For a portrait resize job, use the width supplied for that job. If a new job has no assigned width, carry the previous portrait's width forward without asking again because asking again blocks resizing and delays the user.",
+        "trigger": "When preparing a portrait resize job after a previous width choice was recorded",
+        "rationale": "Using the assigned width and carrying the old width forward without questions prevents blocking and delay.",
+        "evidence": [
+          1
+        ],
+        "decision": "revise",
+        "reason_code": "unsupported_causality",
+        "preserve": [
+          "original task-input width use",
+          "explicit current-task assignment and availability in content and trigger"
+        ],
+        "remove": [
+          "old-width fallback",
+          "no-reasking prohibition",
+          "blocking or delay benefit",
+          "inferred standing width"
+        ]
+      }
+    ],
+    "existing": []
+  },
+  {
+    "id": "explicit-future-fixed-width-preference",
+    "provenance": "Prospective synthetic development control for original action versus historical default; independently adjudicate before model calls. Not customer data or holdout.",
+    "domain": "portrait_resizing",
+    "split": "development",
+    "agent_context": "The agent configures portrait resizing jobs using each job's width setting.",
+    "turns": [
+      {
+        "role": "User",
+        "content": "For all my future portrait resize jobs, always use a width of 640 pixels."
+      }
+    ],
+    "candidates": [
+      {
+        "content": "Always use a width of 640 pixels for this user's future portrait resize jobs.",
+        "trigger": "When configuring a future portrait resize job for this user",
+        "rationale": "The user explicitly requested a fixed width of 640 pixels for future portrait resize jobs.",
+        "evidence": [
+          1
+        ],
+        "decision": "accept",
+        "reason_code": "grounded_useful",
+        "preserve": [
+          "fixed width of 640 pixels",
+          "future standing preference",
+          "unconditional instruction within the specified future task scope"
+        ],
+        "remove": [
+          "new current-assignment condition",
+          "new parameter-use replacement"
+        ]
+      }
+    ],
+    "existing": []
+  }
+]

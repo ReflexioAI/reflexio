@@ -1,12 +1,15 @@
 """Evaluation accounting must not mistake call errors for rejections."""
 
+import hashlib
 import json
 from pathlib import Path
+from typing import cast
 from unittest.mock import MagicMock
 
+import litellm
 import pytest
 
-from reflexio.server.llm.litellm_client import LiteLLMConfig
+from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 from reflexio.server.prompt.prompt_manager import PromptManager
 from reflexio.server.services.playbook.components.reviewer import (
     CandidateReviewDecision,
@@ -25,12 +28,50 @@ from scripts.evaluate_review_reason_codes import (
 )
 
 
+def observed_client(respond, response_model="test-model"):
+    """Keep the actual transport/parser/metrics boundary with only provider I/O fake."""
+    client = LiteLLMClient(
+        LiteLLMConfig(model="test-model", fallback_models=[], max_retries=0)
+    )
+    client._resolve_primary_model = MagicMock(return_value="test-model")
+    pending = []
+
+    def transport(*_):
+        output = pending.pop(0)
+        if isinstance(output, Exception):
+            raise output
+        response = litellm.ModelResponse(
+            model="test-model",
+            choices=[
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": output.model_dump_json(),
+                    },
+                    "finish_reason": "stop",
+                }
+            ],
+            usage={"prompt_tokens": 20, "completion_tokens": 10, "total_tokens": 30},
+        )
+
+        response.model = response_model
+        return response
+
+    client._completion_with_hard_timeout = MagicMock(side_effect=transport)
+    original = client.generate_chat_response
+
+    def generate(*args, **kwargs):
+        pending.append(respond(*args, **kwargs))
+        return original(*args, **kwargs)
+
+    client.generate_chat_response = MagicMock(side_effect=generate)
+    return client
+
+
 def test_paired_evaluation_uses_real_reviewer_and_counts_errors_separately():
     case = next(
         case for case in load_cases(DEFAULT_CASES) if case.id == "positive-preference"
     )
-    client = MagicMock()
-    client.config = LiteLLMConfig(model="test-model", fallback_models=[])
     accepted = PlaybookCandidateReviewOutput(
         decisions=[
             CandidateReviewDecision(
@@ -41,10 +82,8 @@ def test_paired_evaluation_uses_real_reviewer_and_counts_errors_separately():
             )
         ]
     )
-    client.generate_chat_response.side_effect = [
-        accepted,
-        RuntimeError("provider failed"),
-    ]
+    outputs = iter([accepted, RuntimeError("provider failed")])
+    client = observed_client(lambda *_, **__: next(outputs))
     report = evaluate([case], client, 1)
     assert report["summary"]["1.3.0"] == {
         "expected": 1,
@@ -62,9 +101,10 @@ def test_paired_evaluation_uses_real_reviewer_and_counts_errors_separately():
         "code_expected": 1,
         "errors": 1,
     }
-    assert report["errors"][0]["error_type"] == "RuntimeError"
+    assert report["errors"][0]["error_type"] == "LiteLLMClientError"
     prompts = [
-        str(call.args[0]) for call in client.generate_chat_response.call_args_list
+        str(call.args[0])
+        for call in cast(MagicMock, client.generate_chat_response).call_args_list
     ]
     assert "## Reason-code precedence" not in prompts[0]
     assert "## Reason-code precedence" in prompts[1]
@@ -89,9 +129,7 @@ def test_survival_oracle_does_not_invent_reason_label_accuracy():
     )
     case.candidates[0].allowed_decisions = ["accept", "revise"]
     case.candidates[0].reason_code = None
-    client = MagicMock()
-    client.config = LiteLLMConfig(model="test-model", fallback_models=[])
-    client.generate_chat_response.return_value = PlaybookCandidateReviewOutput(
+    output = PlaybookCandidateReviewOutput(
         decisions=[
             CandidateReviewDecision(
                 id="C1",
@@ -106,7 +144,9 @@ def test_survival_oracle_does_not_invent_reason_label_accuracy():
             )
         ]
     )
+    client = observed_client(lambda *_, **__: output)
     report = evaluate([case], client, 1)
+    assert report["measurement_errors"] == []
     assert all(row["decision_correct"] for row in report["rows"])
     assert all(row["code_correct"] is None for row in report["rows"])
     assert all(arm["code_expected"] == 0 for arm in report["summary"].values())
@@ -156,9 +196,7 @@ def test_revision_evidence_and_normalized_ids_survive_real_reviewer_and_checkpoi
             )
         ]
     )
-    client = MagicMock()
-    client.config = LiteLLMConfig(model="test-model", fallback_models=[])
-    client.generate_chat_response.return_value = output
+    client = observed_client(lambda *_, **__: output)
     checkpoint = tmp_path / "checkpoint.json"
     report = evaluate([case], client, 1, checkpoint)
     assert not report["errors"]
@@ -234,8 +272,12 @@ def test_experimental_prompt_preserves_measured_subject_gate_and_default():
     assert new.split("## Output rules")[1] == old.split("## Output rules")[1]
 
 
-def test_every_frozen_case_can_be_prepared_before_paid_calls():
-    for case in load_cases(DEFAULT_CASES):
+@pytest.mark.parametrize(
+    "case_path",
+    [DEFAULT_CASES, DEFAULT_CASES.with_name("reviewer_original_action_cases.json")],
+)
+def test_every_frozen_case_can_be_prepared_before_paid_calls(case_path):
+    for case in load_cases(case_path):
         sessions, candidates, existing = prepare_case(case)
         assert len(sessions) == len(case.turns)
         assert len(candidates) == len(case.candidates)
@@ -263,8 +305,6 @@ def test_turn_source_survives_fixture_loading_into_real_reviewer_payload(
         reason_code="grounded_useful",
         evidence_ids=["C1-E1"],
     )
-    client = MagicMock()
-    client.config = LiteLLMConfig(model="test-model", fallback_models=[])
 
     def respond(*_, **options):
         if options["response_format"] is EvidenceFirstReviewOutput:
@@ -283,11 +323,12 @@ def test_turn_source_survives_fixture_loading_into_real_reviewer_payload(
             )
         return PlaybookCandidateReviewOutput(decisions=[decision])
 
-    client.generate_chat_response.side_effect = respond
+    client = observed_client(respond)
     report = evaluate([case], client, 1, candidate_version="1.20.0")
     assert report["errors"] == []
+    assert report["measurement_errors"] == []
     assert all(arm["processed"] == 1 for arm in report["summary"].values())
-    messages = client.generate_chat_response.call_args_list[1].args[0]
+    messages = cast(MagicMock, client.generate_chat_response).call_args_list[1].args[0]
     assert [message["role"] for message in messages] == ["system", "user"]
     evidence = json.loads(messages[1]["content"])["own_evidence"]["C1"][0]
     assert evidence["role"].casefold() == "user"
@@ -314,16 +355,25 @@ def test_turn_source_survives_fixture_loading_into_real_reviewer_payload(
         "1.18.0",
         "1.19.0",
         "1.20.0",
+        "1.21.0",
+        "1.22.0",
+        "1.23.0",
+        "1.24.0",
+        "1.25.0",
+        "1.26.0",
+        "1.27.0",
+        "1.28.0",
+        "1.29.0",
+        "1.30.0",
     ],
 )
 def test_candidate_version_selection_preserves_baseline_and_report_identity(
     candidate_version,
+    tmp_path,
 ):
     case = next(
         case for case in load_cases(DEFAULT_CASES) if case.id == "positive-preference"
     )
-    client = MagicMock()
-    client.config = LiteLLMConfig(model="test-model", fallback_models=[])
     accepted = PlaybookCandidateReviewOutput(
         decisions=[
             CandidateReviewDecision(
@@ -336,6 +386,52 @@ def test_candidate_version_selection_preserves_baseline_and_report_identity(
     )
 
     def respond(*args, **kwargs):
+        from reflexio.server.services.playbook.components.reviewer import (
+            AssessedReviewOutput,
+            ParameterAssessedReviewOutput,
+        )
+
+        if kwargs["response_format"] in (
+            AssessedReviewOutput,
+            ParameterAssessedReviewOutput,
+        ):
+            payload = json.loads(args[0][1]["content"])
+            from tests.server.services.playbook.test_assessed_playbook_reviewer import (
+                _inapplicable_fact,
+            )
+
+            return kwargs["response_format"].model_validate(
+                {
+                    **(
+                        {"source_parameter_facts": [_inapplicable_fact()]}
+                        if candidate_version in ("1.29.0", "1.30.0")
+                        else {}
+                    ),
+                    "assessments": [
+                        {
+                            "id": "C1",
+                            "original_rule_kind": "other",
+                            "original_rule_span": payload["candidates"][0]["content"][
+                                :600
+                            ],
+                            "supported_core_basis": "future_instruction",
+                            "defect_codes": [],
+                        }
+                    ],
+                    "supporting_evidence": [
+                        {
+                            "id": "C1",
+                            "excerpts": [
+                                {
+                                    "evidence_id": "C1-E1",
+                                    "text": case.turns[0].content[:600],
+                                }
+                            ],
+                        }
+                    ],
+                    "decisions": [accepted.decisions[0].model_dump(by_alias=True)],
+                }
+            )
         if kwargs["response_format"] is EvidenceFirstReviewOutput:
             return EvidenceFirstReviewOutput(
                 supporting_evidence=[
@@ -353,9 +449,31 @@ def test_candidate_version_selection_preserves_baseline_and_report_identity(
             )
         return accepted
 
-    client.generate_chat_response.side_effect = respond
-    report = evaluate([case], client, 1, candidate_version=candidate_version)
+    client = observed_client(respond)
+    report = evaluate(
+        [case],
+        client,
+        1,
+        candidate_version=candidate_version,
+        checkpoint=tmp_path / "checkpoint.json",
+    )
+    rows = report["rows"]
+    assert rows[0]["original_assessments"] == []
+    if candidate_version in ("1.26.0", "1.27.0", "1.28.0", "1.29.0", "1.30.0"):
+        assert rows[1]["original_assessments"] == [
+            {
+                "id": "C1",
+                "original_rule_kind": "other",
+                "original_rule_span": case.candidates[0].content[:600],
+                "supported_core_basis": "future_instruction",
+                "defect_codes": [],
+            }
+        ]
+    else:
+        assert rows[1]["original_assessments"] == []
+    assert json.loads((tmp_path / "checkpoint.json").read_text())["rows"] == rows
     assert report["errors"] == []
+    assert report["measurement_errors"] == []
     assert all(arm["processed"] == 1 for arm in report["summary"].values())
     assert set(report["summary"]) == {"1.3.0", candidate_version}
     assert report["candidate_version"] == candidate_version
@@ -363,34 +481,64 @@ def test_candidate_version_selection_preserves_baseline_and_report_identity(
         report["prompt_identities"][candidate_version]["active_version"]
         == candidate_version
     )
-    prompts = [
-        str(call.args[0]) for call in client.generate_chat_response.call_args_list
-    ]
-    assert ("**Independent lessons:**" in prompts[1]) == (
-        candidate_version
-        in (
-            "1.5.0",
-            "1.6.0",
-            "1.7.0",
-            "1.8.0",
-            "1.9.0",
-            "1.10.0",
-            "1.11.0",
-            "1.12.0",
-            "1.13.0",
-            "1.14.0",
-            "1.15.0",
-            "1.16.0",
-            "1.17.0",
-            "1.18.0",
-            "1.19.0",
-            "1.20.0",
+    if candidate_version in ("1.26.0", "1.27.0", "1.28.0", "1.29.0", "1.30.0"):
+        messages = (
+            cast(MagicMock, client.generate_chat_response).call_args_list[1].args[0]
         )
-    )
+        assert messages[0]["role"] == "system"
+        assert (
+            hashlib.sha256(messages[0]["content"].encode()).hexdigest()
+            == report["prompt_identities"][candidate_version]["template_content_digest"]
+        )
+    else:
+        prompts = [
+            str(call.args[0])
+            for call in cast(MagicMock, client.generate_chat_response).call_args_list
+        ]
+        assert ("**Independent lessons:**" in prompts[1]) == (
+            candidate_version
+            in (
+                "1.5.0",
+                "1.6.0",
+                "1.7.0",
+                "1.8.0",
+                "1.9.0",
+                "1.10.0",
+                "1.11.0",
+                "1.12.0",
+                "1.13.0",
+                "1.14.0",
+                "1.15.0",
+                "1.16.0",
+                "1.17.0",
+                "1.18.0",
+                "1.19.0",
+                "1.20.0",
+                "1.21.0",
+                "1.22.0",
+                "1.23.0",
+                "1.24.0",
+                "1.25.0",
+                "1.26.0",
+                "1.27.0",
+                "1.28.0",
+                "1.29.0",
+                "1.30.0",
+            )
+        )
     changed_case = case.model_copy(deep=True)
     changed_case.turns[0].content += " Changed evidence."
     changed = evaluate([changed_case], client, 1, candidate_version=candidate_version)
     assert report["cases_sha256"] != changed["cases_sha256"]
+
+    from tests.server.services.playbook.test_assessed_playbook_reviewer import (
+        _inapplicable_fact,
+    )
+
+    assert rows[0]["source_parameter_facts"] == []
+    assert rows[1]["source_parameter_facts"] == (
+        [_inapplicable_fact()] if candidate_version in ("1.29.0", "1.30.0") else []
+    )
 
 
 def test_invalid_candidate_version_fails_before_calls():
@@ -508,3 +656,560 @@ def test_private_writer_cleans_temporary_file_if_replace_fails(tmp_path, monkeyp
         evaluation._write_private_text(report, "new private receipt")
     assert report.read_text() == "preserved receipt"
     assert list(tmp_path.iterdir()) == [report]
+
+
+@pytest.mark.parametrize(
+    "reported,expected,valid",
+    [
+        (None, None, False),
+        ("another-model", None, False),
+        ("another-model", "another-model", True),
+    ],
+)
+def test_evaluation_cannot_qualify_missing_or_unexpected_reported_identity(
+    reported, expected, valid
+):
+    case = next(
+        case for case in load_cases(DEFAULT_CASES) if case.id == "positive-preference"
+    )
+    output = PlaybookCandidateReviewOutput(
+        decisions=[
+            CandidateReviewDecision(
+                id="C1",
+                decision="accept",
+                reason_code="grounded_useful",
+                evidence_ids=["C1-E1"],
+            )
+        ]
+    )
+    client = observed_client(lambda *_, **__: output, reported)
+    report = evaluate([case], client, 1, expected_response_model=expected)
+    assert report["errors"] == []
+    assert all(arm["processed"] == 1 for arm in report["summary"].values())
+    assert len(report["measurement_errors"]) == (0 if valid else 2)
+    assert all(call["model_identity_complete"] is valid for call in report["calls"])
+    assert report["inference_settings"]["expected_response_model"] == (
+        expected or "test-model"
+    )
+    assert all(
+        call["provider_responses"][0]["model"] == reported for call in report["calls"]
+    )
+
+
+def test_cli_reports_measurement_failure_and_forwards_explicit_response_identity(
+    monkeypatch, tmp_path
+):
+    client = MagicMock()
+    client._resolve_primary_model.return_value = "requested-model"
+    monkeypatch.setattr(evaluation, "LiteLLMClient", lambda _: client)
+    monkeypatch.setattr(evaluation, "assert_litellm_unpatched", lambda: None)
+    run = MagicMock(
+        return_value={
+            "summary": {},
+            "errors": [],
+            "measurement_errors": [{"error_type": "IncompleteProviderObservation"}],
+        }
+    )
+    monkeypatch.setattr(evaluation, "evaluate", run)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "evaluate",
+            "--expected-model",
+            "requested-model",
+            "--expected-response-model",
+            "reported-model",
+            "--out",
+            str(tmp_path / "report.json"),
+        ],
+    )
+    assert evaluation.main() == 1
+    assert run.call_args.kwargs["expected_response_model"] == "reported-model"
+
+
+@pytest.mark.parametrize("drift", [False, True])
+def test_programmatic_temperature_is_frozen_across_evaluation_arms(drift):
+    case = next(
+        case for case in load_cases(DEFAULT_CASES) if case.id == "positive-preference"
+    )
+    accepted = PlaybookCandidateReviewOutput(
+        decisions=[
+            CandidateReviewDecision(
+                id="C1",
+                decision="accept",
+                reason_code="grounded_useful",
+                evidence_ids=["C1-E1"],
+            )
+        ]
+    )
+    client = observed_client(lambda *_, **__: accepted)
+    client.config.temperature = 0.2
+    original_transport = cast(MagicMock, client._completion_with_hard_timeout)
+
+    def transport(*args, **kwargs):
+        result = original_transport(*args, **kwargs)
+        if drift:
+            client.config.temperature = 0.7
+        return result
+
+    client._completion_with_hard_timeout = transport
+    report = evaluate([case], client, 1)
+    assert report["temperature"] == 0.2
+    if drift:
+        assert original_transport.call_count == 1
+        assert len(report["errors"]) == len(report["measurement_errors"]) == 1
+        assert report["summary"]["1.4.0"]["processed"] == 0
+        assert report["calls"][1]["provider_requests"] == []
+        assert not report["calls"][1]["observation_complete"]
+    else:
+        assert original_transport.call_count == 2
+        assert report["errors"] == report["measurement_errors"] == []
+        assert all(call["observation_complete"] for call in report["calls"])
+    assert all(
+        request["temperature"] == 0.2
+        for call in report["calls"]
+        for request in call["provider_requests"]
+    )
+
+
+@pytest.mark.parametrize("candidate_version", ["1.29.0", "1.30.0"])
+def test_private_evaluator_retains_positive_original_facts_on_fatal_reject(
+    tmp_path, candidate_version
+):
+    from reflexio.server.services.playbook.components.reviewer import (
+        ParameterAssessedReviewOutput,
+    )
+    from tests.server.services.playbook.test_assessed_playbook_reviewer import (
+        _parameter_response,
+    )
+
+    raw = _parameter_response(
+        basis="none",
+        defects=["absence_inference"],
+        decision="reject",
+        code="absence_inference",
+    )
+    case = evaluation.Case(
+        id="positive-fact-fatal-reject",
+        provenance="Synthetic writer boundary regression",
+        agent_context="Image assistant",
+        turns=[evaluation.Turn(role="user", content="Use width 800.")],
+        candidates=[
+            evaluation.Candidate(
+                content="Use the supplied width; missing logs prove resize did not happen.",
+                trigger="When resizing an image",
+                rationale="An unsupported absence claim",
+                evidence=[1],
+                decision="reject",
+                reason_code="absence_inference",
+            )
+        ],
+    )
+    legacy = PlaybookCandidateReviewOutput.model_validate(
+        {"decisions": raw["decisions"]}
+    )
+
+    def respond(*_, **options):
+        if options["response_format"] is ParameterAssessedReviewOutput:
+            return ParameterAssessedReviewOutput.model_validate(raw)
+        return legacy
+
+    report = evaluate(
+        [case],
+        observed_client(respond),
+        1,
+        candidate_version=candidate_version,
+        checkpoint=tmp_path / "positive-facts.json",
+    )
+    assert report["errors"] == report["measurement_errors"] == []
+    rows = report["rows"]
+    assert rows[0]["source_parameter_facts"] == []
+    assert rows[1]["source_parameter_facts"] == raw["source_parameter_facts"]
+    assert rows[1]["evidence_ids"] == rows[1]["supporting_evidence"] == []
+    assert json.loads((tmp_path / "positive-facts.json").read_text())["rows"] == rows
+    assert (tmp_path / "positive-facts.json").stat().st_mode & 0o777 == 0o600
+
+
+@pytest.mark.parametrize(
+    "version",
+    [
+        "1.31.0",
+        "1.32.0",
+        "1.33.0",
+        "1.34.0",
+        "1.35.0",
+        "1.36.0",
+        "1.37.0",
+        "1.38.0",
+        "1.39.0",
+        "1.40.0",
+        "1.41.0",
+        "1.42.0",
+        "1.43.0",
+        "1.44.0",
+        "1.45.0",
+        "1.46.0",
+        "1.47.0",
+        "1.48.0",
+        "1.49.0",
+        "1.50.0",
+    ],
+)
+@pytest.mark.parametrize("fatal", [False, True])
+def test_private_evaluator_roundtrips_actual_binary_nested_assessment(
+    tmp_path, fatal, version
+):
+    from reflexio.server.services.playbook.components.reviewer import (
+        InputUseAssessedReviewOutput,
+        InventoryAssessedReviewOutput,
+        PrimaryAssessedReviewOutput,
+    )
+    from tests.server.services.playbook.test_input_use_assessed_playbook_reviewer import (
+        _input_response,
+    )
+
+    raw = (
+        _input_response(
+            basis="none",
+            defects=["absence_inference"],
+            decision="reject",
+            code="absence_inference",
+        )
+        if fatal
+        else _input_response()
+    )
+    case = evaluation.Case(
+        id="binary-fact-writer",
+        provenance="Synthetic private report regression",
+        agent_context="Image assistant",
+        turns=[evaluation.Turn(role="user", content="Use width 800.")],
+        candidates=[
+            evaluation.Candidate(
+                content="Use the supplied width; missing logs prove resize did not happen."
+                if fatal
+                else "Use the supplied width; never ask again because it causes delays.",
+                trigger="When resizing an image",
+                rationale="Unverified original extension",
+                evidence=[1],
+                decision="reject" if fatal else "revise",
+                reason_code="absence_inference" if fatal else "unsupported_causality",
+            )
+        ],
+    )
+    legacy = PlaybookCandidateReviewOutput.model_validate(
+        {"decisions": raw["decisions"]}
+    )
+
+    if version in {
+        "1.40.0",
+        "1.41.0",
+        "1.42.0",
+        "1.43.0",
+        "1.44.0",
+        "1.45.0",
+        "1.46.0",
+        "1.47.0",
+        "1.48.0",
+        "1.49.0",
+        "1.50.0",
+    }:
+        del raw["assessments"][0]["original_rule_span"]
+        del raw["decisions"][0]["reason_code"]
+    if version in {
+        "1.42.0",
+        "1.43.0",
+        "1.44.0",
+        "1.45.0",
+        "1.46.0",
+        "1.47.0",
+        "1.48.0",
+        "1.49.0",
+        "1.50.0",
+    }:
+        a = raw["assessments"][0]
+        a["primary_defect"] = a.pop("defect_codes")[0]
+        a["duplicates_existing_core"] = False
+    output_type = (
+        PrimaryAssessedReviewOutput
+        if version
+        in {
+            "1.42.0",
+            "1.43.0",
+            "1.44.0",
+            "1.45.0",
+            "1.46.0",
+            "1.47.0",
+            "1.48.0",
+            "1.49.0",
+            "1.50.0",
+        }
+        else InventoryAssessedReviewOutput
+        if version
+        in {
+            "1.40.0",
+            "1.41.0",
+            "1.42.0",
+            "1.43.0",
+            "1.44.0",
+            "1.45.0",
+            "1.46.0",
+            "1.47.0",
+            "1.48.0",
+            "1.49.0",
+            "1.50.0",
+        }
+        else InputUseAssessedReviewOutput
+    )
+
+    def respond(*_, **options):
+        return (
+            output_type.model_validate(raw)
+            if options["response_format"] is output_type
+            else legacy
+        )
+
+    path = tmp_path / "binary.json"
+    client = observed_client(respond)
+    if version in ("1.48.0", "1.49.0", "1.50.0"):
+        client.config.temperature = 0.0
+    report = evaluate([case], client, 1, candidate_version=version, checkpoint=path)
+    assert report["errors"] == report["measurement_errors"] == []
+    assert report["candidate_version"] == version
+    row = report["rows"][1]
+    assert row["original_assessments"] == raw["assessments"]
+    assert row["source_parameter_facts"] == []
+    assert row["reason"] is None
+    if fatal:
+        assert row["supporting_evidence"] == row["evidence_ids"] == []
+    assert json.loads(path.read_text())["rows"] == report["rows"]
+    assert path.stat().st_mode & 0o777 == 0o600
+
+    if version in {
+        "1.40.0",
+        "1.41.0",
+        "1.42.0",
+        "1.43.0",
+        "1.44.0",
+        "1.45.0",
+        "1.46.0",
+        "1.47.0",
+        "1.48.0",
+        "1.49.0",
+        "1.50.0",
+    }:
+        raw_field = (
+            "raw_primary_output"
+            if version
+            in {
+                "1.42.0",
+                "1.43.0",
+                "1.44.0",
+                "1.45.0",
+                "1.46.0",
+                "1.47.0",
+                "1.48.0",
+                "1.49.0",
+                "1.50.0",
+            }
+            else "raw_inventory_output"
+        )
+        assert report["calls"][1][raw_field] == raw
+        assert raw_field not in report["calls"][0]
+        assert all(raw_field not in r for r in report["rows"])
+        assert row["reason_code"] == (
+            "absence_inference" if fatal else "unsupported_causality"
+        )
+        assert "reason_code" not in report["calls"][1][raw_field]["decisions"][0]
+
+
+def test_full_and_compact_arms_keep_native_raw_output_and_truthful_accounting(tmp_path):
+    from reflexio.server.services.playbook.components.reviewer import (
+        InventoryAssessedReviewOutput,
+    )
+    from tests.server.services.playbook.test_inventory_assessed_playbook_reviewer import (
+        _inventory_response,
+    )
+
+    raw = _inventory_response()
+    case = evaluation.Case(
+        id="full-compact-accounting",
+        provenance="Synthetic native paired accounting regression",
+        agent_context="Image assistant",
+        turns=[evaluation.Turn(role="user", content="Use width 800.")],
+        candidates=[
+            evaluation.Candidate(
+                content="Use the supplied width; never ask again because it causes delays.",
+                trigger="When resizing an image",
+                rationale="Unverified original extension",
+                evidence=[1],
+                decision="revise",
+                reason_code="unsupported_causality",
+            )
+        ],
+    )
+
+    def respond(*_, **options):
+        assert options["response_format"] is InventoryAssessedReviewOutput
+        return InventoryAssessedReviewOutput.model_validate(raw)
+
+    path = tmp_path / "full-compact.json"
+    report = evaluate(
+        [case],
+        observed_client(respond),
+        2,
+        checkpoint=path,
+        baseline_version="1.40.0",
+        candidate_version="1.41.0",
+    )
+    assert report["errors"] == report["measurement_errors"] == []
+    assert report["baseline_version"] == "1.40.0"
+    assert (
+        set(report["prompt_identities"])
+        == set(report["summary"])
+        == {
+            "1.40.0",
+            "1.41.0",
+        }
+    )
+    assert [c["version"] for c in report["calls"]] == [
+        "1.40.0",
+        "1.41.0",
+        "1.41.0",
+        "1.40.0",
+    ]
+    assert all(c["raw_inventory_output"] == raw for c in report["calls"])
+    assert all(c["observation_complete"] for c in report["calls"])
+    assert all(c["repair_attempts"] == 0 for c in report["calls"])
+    assert all(
+        arm["expected"] == arm["processed"] == 2 for arm in report["summary"].values()
+    )
+    assert len(report["rows"]) == 4
+    assert all("raw_inventory_output" not in r for r in report["rows"])
+    checkpoint = json.loads(path.read_text())
+    assert checkpoint["baseline_version"] == "1.40.0"
+    assert checkpoint["rows"] == report["rows"]
+    assert path.stat().st_mode & 0o777 == 0o600
+
+
+@pytest.mark.parametrize(
+    "candidate_version",
+    [
+        "1.42.0",
+        "1.43.0",
+        "1.44.0",
+        "1.45.0",
+        "1.46.0",
+        "1.47.0",
+        "1.48.0",
+        "1.49.0",
+        "1.50.0",
+    ],
+)
+def test_inventory_and_primary_pair_uses_actual_native_types_and_raw_once(
+    tmp_path, candidate_version
+):
+    from tests.server.services.playbook.test_assessed_playbook_reviewer import (
+        _real_reviewer,
+    )
+    from tests.server.services.playbook.test_inventory_assessed_playbook_reviewer import (
+        _inventory_response,
+    )
+    from tests.server.services.playbook.test_primary_assessed_playbook_reviewer import (
+        _primary_response,
+    )
+
+    inventory, primary = _inventory_response(), _primary_response()
+    case = evaluation.Case(
+        id="inventory-primary-native",
+        provenance="Synthetic native paired schema regression",
+        agent_context="Image assistant",
+        turns=[evaluation.Turn(role="user", content="Use width 800.")],
+        candidates=[
+            evaluation.Candidate(
+                content="Use the supplied width; never ask again because it causes delays.",
+                trigger="When resizing an image",
+                rationale="Unverified original extension",
+                evidence=[1],
+                decision="revise",
+                reason_code="unsupported_causality",
+            )
+        ],
+    )
+    reviewer, transport, calls = _real_reviewer(
+        [inventory, primary, primary, inventory], version="1.40.0"
+    )
+    path = tmp_path / "paired.json"
+    if candidate_version in ("1.48.0", "1.49.0", "1.50.0"):
+        reviewer.client.config.temperature = 0.0
+    with transport:
+        report = evaluate(
+            [case],
+            reviewer.client,
+            2,
+            checkpoint=path,
+            baseline_version="1.40.0",
+            candidate_version=candidate_version,
+        )
+    assert report["errors"] == report["measurement_errors"] == []
+    assert len(calls) == 4
+    assert [c["version"] for c in report["calls"]] == [
+        "1.40.0",
+        candidate_version,
+        candidate_version,
+        "1.40.0",
+    ]
+    for call in report["calls"]:
+        field = (
+            "raw_primary_output"
+            if call["version"] == candidate_version
+            else "raw_inventory_output"
+        )
+        assert call[field] == (
+            primary if call["version"] == candidate_version else inventory
+        )
+        assert call["observation_complete"] and call["repair_attempts"] == 0
+    assert all(
+        "raw_primary_output" not in row and "raw_inventory_output" not in row
+        for row in report["rows"]
+    )
+    assert all(s["expected"] == s["processed"] == 2 for s in report["summary"].values())
+    assert set(report["prompt_identities"]) == {"1.40.0", candidate_version}
+    assert json.loads(path.read_text())["calls"] == report["calls"]
+    assert path.stat().st_mode & 0o777 == 0o600
+
+
+@pytest.mark.parametrize(
+    ("baseline", "candidate"),
+    [("1.41.0", "1.40.0"), ("1.40.0", "1.40.0")],
+)
+def test_invalid_paired_arms_fail_before_preparation_or_provider_io(
+    monkeypatch, baseline, candidate
+):
+    prepare = MagicMock(
+        side_effect=AssertionError("must fail before source preparation")
+    )
+    monkeypatch.setattr(evaluation, "prepare_case", prepare)
+    client = MagicMock()
+    with pytest.raises(ValueError, match="baseline"):
+        evaluate(
+            load_cases(DEFAULT_CASES),
+            client,
+            1,
+            baseline_version=baseline,
+            candidate_version=candidate,
+        )
+    prepare.assert_not_called()
+    client.generate_chat_response.assert_not_called()
+
+
+@pytest.mark.parametrize("version", ["1.48.0", "1.49.0", "1.50.0"])
+@pytest.mark.parametrize("temperature", [0.2, 0.7])
+def test_primary_rejects_unregistered_temperature_before_either_arm(
+    temperature, version
+):
+    case = load_cases(DEFAULT_CASES)[0]
+    client = observed_client(lambda *_, **__: None)
+    client.config.temperature = temperature
+    with pytest.raises(ValueError, match="temperature"):
+        evaluate([case], client, 1, candidate_version=version)
+    assert cast(MagicMock, client._completion_with_hard_timeout).call_count == 0

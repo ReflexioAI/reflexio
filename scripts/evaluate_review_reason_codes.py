@@ -156,18 +156,16 @@ def prepare_case(
     return sessions, candidates, existing
 
 
-def evaluate(
+def _validate_evaluation_arguments(
     cases: list[Case],
     client: LiteLLMClient,
     repeats: int,
-    checkpoint: Path | None = None,
-    *,
-    candidate_version: str = "1.4.0",
-    max_tokens: int | None = None,
-    reasoning_effort: Literal["high", "none"] | None = None,
-) -> dict:
-    if checkpoint is not None:
-        _require_private_artifact_support()
+    candidate_version: str,
+    baseline_version: str,
+    max_tokens: int | None,
+    reasoning_effort: Literal["high", "none"] | None,
+) -> None:
+    """Reject unsupported or unequal inference profiles before either arm runs."""
     if candidate_version not in (
         "1.4.0",
         "1.5.0",
@@ -186,10 +184,44 @@ def evaluate(
         "1.18.0",
         "1.19.0",
         "1.20.0",
+        "1.21.0",
+        "1.22.0",
+        "1.23.0",
+        "1.24.0",
+        "1.25.0",
+        "1.26.0",
+        "1.27.0",
+        "1.28.0",
+        "1.29.0",
+        "1.30.0",
+        "1.31.0",
+        "1.32.0",
+        "1.33.0",
+        "1.34.0",
+        "1.35.0",
+        "1.36.0",
+        "1.37.0",
+        "1.38.0",
+        "1.39.0",
+        "1.40.0",
+        "1.41.0",
+        "1.42.0",
+        "1.43.0",
+        "1.44.0",
+        "1.45.0",
+        "1.46.0",
+        "1.47.0",
+        "1.48.0",
+        "1.49.0",
+        "1.50.0",
     ):
         raise ValueError(
-            "candidate_version must be 1.4.0, 1.5.0, 1.6.0, 1.7.0, 1.8.0, 1.9.0, 1.10.0, 1.11.0, 1.12.0, 1.13.0, 1.14.0, 1.15.0, 1.16.0, 1.17.0, 1.18.0, 1.19.0 or 1.20.0"
+            "candidate_version must be an experimental reviewer version from 1.4.0 through 1.50.0"
         )
+    if baseline_version not in ("1.3.0", "1.40.0"):
+        raise ValueError("baseline_version must be 1.3.0 or 1.40.0")
+    if baseline_version == candidate_version:
+        raise ValueError("baseline and candidate versions must differ")
     if not cases:
         raise ValueError("cases must be nonempty")
     if repeats < 1:
@@ -200,18 +232,59 @@ def evaluate(
         raise ValueError(
             "reasoning profile is qualified for the GLM-5.2 experiment only"
         )
+    if (
+        candidate_version in ("1.48.0", "1.49.0", "1.50.0")
+        and client.config.temperature != 0.0
+    ):
+        raise ValueError(
+            "v1.48.0/v1.49.0/v1.50.0 paired evaluation requires temperature=0 for both arms"
+        )
+
+
+def evaluate(
+    cases: list[Case],
+    client: LiteLLMClient,
+    repeats: int,
+    checkpoint: Path | None = None,
+    *,
+    candidate_version: str = "1.4.0",
+    baseline_version: str = "1.3.0",
+    max_tokens: int | None = None,
+    reasoning_effort: Literal["high", "none"] | None = None,
+    expected_response_model: str | None = None,
+) -> dict:
+    if checkpoint is not None:
+        _require_private_artifact_support()
+    _validate_evaluation_arguments(
+        cases,
+        client,
+        repeats,
+        candidate_version,
+        baseline_version,
+        max_tokens,
+        reasoning_effort,
+    )
+    expected_temperature = client.config.temperature
     prompt_identities = {
         version: PromptManager(
             version_override={"playbook_candidate_review": version}
         ).get_prompt_template_identity("playbook_candidate_review")
-        for version in ("1.3.0", candidate_version)
+        for version in (baseline_version, candidate_version)
     }
     prepared = {case.id: prepare_case(case) for case in cases}
     rows = []
     errors = []
     calls = []
     measurement_errors = []
-    settings = {"max_tokens": max_tokens, "reasoning_effort": reasoning_effort}
+    settings = {
+        "max_tokens": max_tokens,
+        "reasoning_effort": reasoning_effort,
+        "expected_response_model": (
+            client.config.model
+            if expected_response_model is None
+            else expected_response_model
+        ),
+    }
     case_hash = hashlib.sha256(
         json.dumps(
             [case.model_dump(mode="json") for case in cases], sort_keys=True
@@ -228,6 +301,7 @@ def evaluate(
                         "model": client.config.model,
                         "cases_sha256": case_hash,
                         "candidate_version": candidate_version,
+                        "baseline_version": baseline_version,
                         "prompt_identities": prompt_identities,
                         "rows": rows,
                         "errors": errors,
@@ -244,9 +318,9 @@ def evaluate(
         for repeat in range(repeats):
             # Alternate order to reduce time/order effects; no arm-specific model settings.
             versions = (
-                ("1.3.0", candidate_version)
+                (baseline_version, candidate_version)
                 if repeat % 2 == 0
-                else (candidate_version, "1.3.0")
+                else (candidate_version, baseline_version)
             )
             for version in versions:
                 context = cast(
@@ -260,7 +334,11 @@ def evaluate(
                     ),
                 )
                 metrics = ReviewCallMetrics(
-                    client.config.model, max_tokens, reasoning_effort
+                    client.config.model,
+                    max_tokens,
+                    reasoning_effort,
+                    expected_response_model=expected_response_model,
+                    expected_temperature=expected_temperature,
                 )
                 reviewer = PlaybookCandidateReviewer(
                     request_context=context,
@@ -270,7 +348,7 @@ def evaluate(
                     provider_request_guard=metrics.guard,
                 )
                 try:
-                    with metrics:
+                    with metrics, metrics.observe_responses(client):
                         result = reviewer.decide(
                             candidates=candidates,
                             request_interaction_data_models=sessions,
@@ -308,6 +386,14 @@ def evaluate(
                             }
                         )
                     save_progress()
+                if result.inventory_output is not None:
+                    calls[-1]["raw_inventory_output"] = (
+                        result.inventory_output.model_dump(mode="json", by_alias=True)
+                    )
+                if result.primary_output is not None:
+                    calls[-1]["raw_primary_output"] = result.primary_output.model_dump(
+                        mode="json", by_alias=True
+                    )
                 expected = {
                     f"C{index}": candidate
                     for index, candidate in enumerate(case.candidates, 1)
@@ -325,6 +411,16 @@ def evaluate(
                             "reason_code": decision.reason_code,
                             "reason": decision.reason,
                             "evidence_ids": list(decision.evidence_ids),
+                            "source_parameter_facts": [
+                                fact.model_dump(mode="json", by_alias=True)
+                                for fact in result.source_parameter_facts
+                                if fact.candidate_id.strip() == candidate_id
+                            ],
+                            "original_assessments": [
+                                assessment.model_dump(mode="json", by_alias=True)
+                                for assessment in result.assessments
+                                if assessment.candidate_id.strip() == candidate_id
+                            ],
                             "supporting_evidence": [
                                 support.model_dump(mode="json", by_alias=True)
                                 for support in result.supporting_evidence
@@ -351,7 +447,7 @@ def evaluate(
                 )
     summary = {}
     expected_count = sum(len(case.candidates) for case in cases) * repeats
-    for version in ("1.3.0", candidate_version):
+    for version in (baseline_version, candidate_version):
         arm = [row for row in rows if row["version"] == version]
         summary[version] = {
             "expected": expected_count,
@@ -369,9 +465,10 @@ def evaluate(
     return {
         "complete": True,
         "model": client.config.model,
-        "temperature": client.config.temperature,
+        "temperature": expected_temperature,
         "cases_sha256": case_hash,
         "candidate_version": candidate_version,
+        "baseline_version": baseline_version,
         "prompt_identities": prompt_identities,
         "repeats": repeats,
         "summary": summary,
@@ -393,6 +490,10 @@ def main() -> int:
         help="Assert the automatically resolved generation model; does not select a model",
     )
     parser.add_argument(
+        "--expected-response-model",
+        help="Freeze the provider-reported model identity (defaults to requested model); no version aliases",
+    )
+    parser.add_argument(
         "--candidate-version",
         choices=(
             "1.4.0",
@@ -412,6 +513,36 @@ def main() -> int:
             "1.18.0",
             "1.19.0",
             "1.20.0",
+            "1.21.0",
+            "1.22.0",
+            "1.23.0",
+            "1.24.0",
+            "1.25.0",
+            "1.26.0",
+            "1.27.0",
+            "1.28.0",
+            "1.29.0",
+            "1.30.0",
+            "1.31.0",
+            "1.32.0",
+            "1.33.0",
+            "1.34.0",
+            "1.35.0",
+            "1.36.0",
+            "1.37.0",
+            "1.38.0",
+            "1.39.0",
+            "1.40.0",
+            "1.41.0",
+            "1.42.0",
+            "1.43.0",
+            "1.44.0",
+            "1.45.0",
+            "1.46.0",
+            "1.47.0",
+            "1.48.0",
+            "1.49.0",
+            "1.50.0",
         ),
         default="1.4.0",
     )
@@ -450,6 +581,7 @@ def main() -> int:
         candidate_version=args.candidate_version,
         max_tokens=args.max_tokens,
         reasoning_effort=args.reasoning_effort,
+        expected_response_model=args.expected_response_model,
     )
     _write_private_text(args.out, json.dumps(report, indent=2))
     print(json.dumps(report["summary"], indent=2))

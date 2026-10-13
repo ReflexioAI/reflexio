@@ -15,10 +15,14 @@ from reflexio.models.api_schema.internal_schema import RequestInteractionDataMod
 from reflexio.server.llm.model_defaults import ModelRole
 from reflexio.server.prompt.prompt_manager import PromptManager
 from reflexio.server.services.playbook.components.reviewer import (
+    AssessedReviewOutput,
     CandidateEvidenceUnit,
     CandidateReviewDecision,
     CandidateRevision,
     EvidenceFirstReviewOutput,
+    InputUseAssessedReviewOutput,
+    InventoryAssessedReviewOutput,
+    ParameterAssessedReviewOutput,
     PlaybookCandidateEvidenceError,
     PlaybookCandidateReviewer,
     PlaybookCandidateReviewOutput,
@@ -276,7 +280,14 @@ def _candidate(
     )
 
 
-def _reviewer(response: PlaybookCandidateReviewOutput | EvidenceFirstReviewOutput):
+def _reviewer(
+    response: PlaybookCandidateReviewOutput
+    | EvidenceFirstReviewOutput
+    | AssessedReviewOutput
+    | ParameterAssessedReviewOutput
+    | InputUseAssessedReviewOutput
+    | InventoryAssessedReviewOutput,
+):
     request_context = MagicMock()
     request_context.prompt_manager = PromptManager()
     client = MagicMock()
@@ -1264,7 +1275,21 @@ def test_evidence_first_survivor_requires_excerpts_and_final_evidence_ownership(
 
 
 @pytest.mark.parametrize(
-    "version", ["1.14.0", "1.15.0", "1.16.0", "1.17.0", "1.18.0", "1.19.0", "1.20.0"]
+    "version",
+    [
+        "1.14.0",
+        "1.15.0",
+        "1.16.0",
+        "1.17.0",
+        "1.18.0",
+        "1.19.0",
+        "1.20.0",
+        "1.21.0",
+        "1.22.0",
+        "1.23.0",
+        "1.24.0",
+        "1.25.0",
+    ],
 )
 def test_evidence_first_policy_is_separate_and_excerpts_are_not_persisted(
     caplog, version

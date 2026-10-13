@@ -3,6 +3,119 @@
 Status: in progress. The active reviewer remains v1.3.0. No activation or
 production change is justified by the completed measurements below.
 
+## Receipt-bound replay and model identity diagnostic — 2026-10-11
+
+### Fresh v1.22 MiniMax comparison: supported core lost
+
+The separately preregistered v1.22 comparison also stopped after one pair.
+Candidate output was `reject/unsupported_evidence`; the unchanged original
+oracle requires `revise/unsupported_causality`. Independent original-first audit
+found the supported conditional parameter-use core was lost. Requiring a value
+to be available for a future task is a scope condition, not an assertion that
+the same value historically carried between tasks. The persisted reject reason
+also borrowed supplemental chronology outside the candidate's own cited units.
+Semantic audit: zero pass, one fail. No survivor excerpts were emitted, so the
+reject wire contract passed while the semantic adoption gate failed.
+
+Both calls had complete reported MiniMax-M3 identity/timing/usage observations,
+one request each, zero repairs, and no final transport or measurement error.
+Baseline: 23.279 seconds, 3675 input/3834 output tokens, estimated $0.005673.
+Candidate: 44.336 seconds, 5930 input/4147 output tokens, estimated $0.007656.
+The two finalized reports and original classification error are preserved;
+there is no pending call. No semantic verdict was requested after the
+classification halt. No later priority case, broader coverage, holdout or
+staging qualification was run. Active/default remains v1.3.0.
+
+- Enterprise source: `c175afb6cf9eaad6aacf8e0e6095b01a5fc3fec7`.
+- OSS source: `e133cf2a32153c5d20350a8426edd8448341d338`.
+- Candidate prompt byte SHA-256: `7434849b5a7b713c1fce82445f9944300553ed6b96bdb0d5d208291ec7bf2d6f`.
+- Protocol byte SHA-256: `e671ee64574b468508d5023e29dc04a55abe8d6738b2c4d39dec448d0b06d072`.
+- Manifest byte SHA-256: `c33a540547d9907aada36f66d4cf5825f9173290b1d30746a8c5357630844940`.
+- Independent semantic audit byte SHA-256: `a3348ff4306558edd46b20944ad9c2290b2eb9c0d5f2ff82dd705584e8c71628`.
+- Independent diagnostic byte SHA-256: `51c66fb222b5c5200d96852ad8e0820e19ae37410528805ebefe245735cdaaa1`.
+
+The v1.21 explanation refinement did not establish correct causal labels or
+task scope; tightening v1.22 did not preserve the supported core. Neither
+candidate is qualified. Further changes need to separate conditional future
+scope from historical availability and causal classification from revision,
+then pass useful-core and unsupported-prohibition controls before another
+private comparison. Adding restrictions alone has not demonstrated improvement.
+
+### Fresh v1.21 MiniMax comparison: stopped, unqualified
+
+A separately preregistered five-case, five-repeat comparison stopped after its
+first pair. Both final calls reported MiniMax-M3, passed identity/timing/usage
+measurement, and needed no repair. The candidate chose the expected `revise`
+decision but reported `speculative` instead of frozen `unsupported_causality`.
+Independent source-first review confirmed causal precedence for the original
+unsupported blocking/delay claim; the oracle remains unchanged.
+
+The candidate's saved fields contain no evidence-absence assertion, and its two
+supporting excerpts are exact own-source passages. However, its condition for
+reusing a recorded selection does not explicitly bind that selection to the
+current task. One semantic auditor retained this as unverified scope; another
+found an unsupported no-reasking restriction as well as the scope defect. Neither
+granted clearance. The driver stopped on the classification mismatch
+before requesting a semantic verdict. No later case, broader benchmark or
+holdout was run; the failed trial cannot be resumed or selectively retried.
+
+Baseline: 25.280 seconds, 3675 input/2764 output tokens, estimated $0.004384.
+Candidate: 31.822 seconds, 5795 input/6557 output tokens, estimated $0.009576.
+There are two complete reports, two provider requests, zero repairs, zero final
+transport errors, zero measurement errors, and no pending call. The manifest
+remains incomplete with its original classification gate error preserved.
+
+- Enterprise source: `43f834b820113de79d586e742c768a5506363699`.
+- OSS source: `c03b2951cbe953d07d23ff509879e69d5dcff50e`.
+- Candidate prompt byte SHA-256: `669f36619fb0ca5190cb0cb309a75141c6d9924603e38a6f64c2de140cf4e711`.
+- Protocol byte SHA-256: `0492b15d177ce11f7162de4cd5c12cc2c449c455581570d3314aeef7fe7f97e8`.
+- Manifest byte SHA-256: `0a56262c329a200e1baf4f79dc5b5c993fb06e4200a8c745b8a075ea22035498`.
+- Independent semantic audit byte SHA-256: `f8709884bb0b21a5c785a155635b0dfca4f6391c8a3f307f0072a61ae70210f7`.
+- Independent diagnostic byte SHA-256: `78fe83a446fd7c44e112176bf7fa8029f0ebf77a60980d75cad23a064544288c`.
+
+The synthetic MiniMax identity probe passed before this comparison. It verifies
+the tested route's reported identity, not historical production reviewer serving
+identity. Nine additional receipt-backed stored-learning controls were captured
+read-only and independently audited before any control model calls. Neither
+audit found a clean whole-candidate accept control; decision/reason boundaries
+remain under prospective reconciliation. These samples do not establish healthy
+production coverage. The candidate remains inactive and unqualified; default is
+v1.3.0. The next correction must clarify causal-label precedence and task-bound
+parameter reuse before a fresh comparison with unchanged labels.
+
+The receipt-bound v1.20 comparison is unqualified. It stopped after 30 completed
+outputs (15 candidate, 15 baseline) and one failed candidate call. That call
+failed structured parsing after both initial and repair attempts reached 8192
+output tokens. This suggests an output-budget problem but does not establish
+its cause. Original response finish metadata was not captured.
+
+All 15 candidate revisions preserved their supported cores. Twelve persisted
+explanations cleared semantic review; three could imply detail absence across
+the full retained conversation when that detail existed in supplemental
+chronology. Independent adjudication retained all three as unverified. No
+historical report or oracle was changed to turn the trial into a pass.
+
+A separate prospective diagnostic completed two calls with stop finish reasons,
+one per arm, without reproducing the structured-output failure. Both requested
+`zai/glm-5.2` and reported response model `zai/glm-5.3`. Further diagnostic
+calls were stopped because the routing equivalence is unverified; one in-flight
+call was interrupted with incomplete observations. Earlier requested-model
+labels do not establish the actual serving identity.
+
+Inactive v1.21 removes presence/absence explanations in favor of claim-level
+support judgments. Its fresh failed comparison is recorded above. Evaluation now
+requires returned identity observations for initial and repair calls, and
+future trials must stop on an unverified semantic verdict before further calls.
+Production evidence currently verifies the requested MiniMax-M3 reviewer route,
+not the returned model identity. Broader coverage, untouched model holdout,
+production-provider and staging qualification remain pending.
+
+Private semantic audit byte SHA-256:
+`364462ee595318d508b1b8a743874d16dfc5ffd0e88c39eaf4eb683da4242807`.
+Independent note-scope adjudication byte SHA-256:
+`8dbbe51a504e1a2784e17b50507d4090547c7dc8caabd9206f9bdf33d239e79c`.
+Inputs and raw outputs remain in owner-only private storage.
+
 ## Frozen coverage
 
 The original frozen public corpus contains 66 cases / 67 candidates: 38
