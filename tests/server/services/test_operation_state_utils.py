@@ -953,6 +953,28 @@ class TestSimpleLock:
         mock_storage.clear_in_progress_lock_if_owner.assert_not_called()
         mock_storage.upsert_operation_state.assert_not_called()
 
+    @pytest.mark.parametrize("released", [True, False])
+    def test_failed_release_retries_same_owner_until_definitive_result(
+        self, manager, mock_storage, released
+    ):
+        assert manager.acquire_simple_lock() is True
+        token = mock_storage.try_acquire_in_progress_lock.call_args.args[1]
+        mock_storage.clear_in_progress_lock_if_owner.side_effect = [
+            RuntimeError("temporary storage failure"),
+            released,
+        ]
+
+        with pytest.raises(RuntimeError, match="temporary storage failure"):
+            manager.release_simple_lock()
+        manager.release_simple_lock()
+        manager.release_simple_lock()
+
+        calls = mock_storage.clear_in_progress_lock_if_owner.call_args_list
+        assert len(calls) == 2
+        assert all(
+            call.args[:2] == ("test_service::org_123::lock", token) for call in calls
+        )
+
 
 # ===============================
 # Use Case 6: Cancellation

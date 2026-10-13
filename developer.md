@@ -392,6 +392,13 @@ The sweep still protects unfinished extraction inputs, overlap context and
 retention holds; caps may be exceeded between sweeps. Publishing acknowledges
 the durable admission transaction and does not wait for this housekeeping.
 
+Cleanup's simple lock is acquired atomically and released only with its holder's
+token. If storage raises during release, the manager retains that token for an
+explicit retry. A definitive release result forgets the token, including when a
+stale takeover means the original holder no longer owns the lock. Retrying after
+a lost commit response therefore cannot clear a successor's lock. The retention
+sweep itself still attempts release once; this does not add automatic retries.
+
 ### Sparse aggregation discovery
 
 `PlaybookAggregationScheduler` accepts an optional `scope_inventory_provider`.

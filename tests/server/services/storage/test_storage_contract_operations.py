@@ -288,6 +288,72 @@ class TestSimpleLock:
         first.release_simple_lock()
         assert second.acquire_simple_lock(stale_seconds=600) is True
 
+    @pytest.mark.parametrize("committed", [False, True])
+    def test_failed_release_can_retry_on_real_storage(
+        self, storage, monkeypatch, committed
+    ):
+        holder, contender = self._mgr(storage), self._mgr(storage)
+        assert holder.acquire_simple_lock() is True
+        clear = storage.clear_in_progress_lock_if_owner
+        owners = []
+
+        def fail_once(key, owner, state):
+            owners.append(owner)
+            if len(owners) == 1:
+                if committed:
+                    assert clear(key, owner, state) is True
+                raise RuntimeError("lost release response")
+            return clear(key, owner, state)
+
+        monkeypatch.setattr(storage, "clear_in_progress_lock_if_owner", fail_once)
+        with pytest.raises(RuntimeError, match="lost release response"):
+            holder.release_simple_lock()
+        holder.release_simple_lock()
+        holder.release_simple_lock()
+
+        assert len(owners) == 2 and owners[0] == owners[1]
+        assert contender.acquire_simple_lock() is True
+
+    @pytest.mark.parametrize("committed", [False, True])
+    def test_release_retry_preserves_successor_on_real_storage(
+        self, storage, monkeypatch, committed
+    ):
+        holder, successor, contender = (
+            self._mgr(storage),
+            self._mgr(storage),
+            self._mgr(storage),
+        )
+        assert holder.acquire_simple_lock() is True
+        clear = storage.clear_in_progress_lock_if_owner
+        owners = []
+
+        def fail_once(key, owner, state):
+            owners.append(owner)
+            if len(owners) == 1:
+                if committed:
+                    assert clear(key, owner, state) is True
+                raise RuntimeError("lost release response")
+            return clear(key, owner, state)
+
+        monkeypatch.setattr(storage, "clear_in_progress_lock_if_owner", fail_once)
+        with pytest.raises(RuntimeError, match="lost release response"):
+            holder.release_simple_lock()
+        key = "storage_table_cleanup::org_simple::lock"
+        record = storage.get_operation_state(key)
+        assert record is not None
+        state = record["operation_state"]
+        state["started_at"] = int(time.time()) - 10_000
+        storage.upsert_operation_state(key, state)
+        assert successor.acquire_simple_lock() is True
+        successor_record = storage.get_operation_state(key)
+
+        holder.release_simple_lock()
+        holder.release_simple_lock()
+
+        assert len(owners) == 2 and owners[0] == owners[1]
+        assert storage.get_operation_state(key) == successor_record
+        assert contender.acquire_simple_lock() is False
+
     def test_stale_holder_is_taken_over(self, storage):
         first, second = self._mgr(storage), self._mgr(storage)
         assert first.acquire_simple_lock(stale_seconds=600) is True
