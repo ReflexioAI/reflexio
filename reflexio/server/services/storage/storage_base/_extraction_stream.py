@@ -1065,7 +1065,11 @@ class ExtractionStreamStore:
                 )
             snapshot = decoded(rows[0]["generation_request_snapshot"])
             existing = snapshot.get("overflow")
-            if existing is not None:
+            if "overflow" in snapshot:
+                if not isinstance(existing, dict):
+                    raise OverflowCheckpointConflictError(
+                        "Invalid extraction overflow marker"
+                    )
                 if existing.get("source_digest") != source_digest:
                     raise OverflowCheckpointConflictError(
                         "Extraction source binding changed"

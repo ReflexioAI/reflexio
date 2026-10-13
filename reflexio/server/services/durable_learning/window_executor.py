@@ -171,6 +171,24 @@ class WindowExecutor:
         # computation finished before its persistence retry.
         return manifest is None and window.outcome is not None
 
+    @staticmethod
+    def _overflow_manifest(known: AgentRunRecord | None) -> dict[str, Any] | None:
+        if known is None or "overflow" not in known.generation_request_snapshot:
+            return None
+        manifest = known.generation_request_snapshot["overflow"]
+        # A damaged protocol marker is still protocol work. Never adopt it
+        # as legacy work or replace its durable attempt journal.
+        if (
+            not isinstance(manifest, dict)
+            or manifest.get("version") != 1
+            or not isinstance(manifest.get("source_digest"), str)
+            or manifest.get("attempt_limit") != 128
+            or type(manifest.get("revision")) is not int
+            or not isinstance(manifest.get("attempts"), list)
+        ):
+            raise InputBudgetConfigurationError("Invalid extraction overflow marker")
+        return manifest
+
     def _coordinator(
         self,
         window: Window,
@@ -180,7 +198,7 @@ class WindowExecutor:
         config: Any,
     ) -> OverflowCoordinator | None:
         known = self.storage.get_agent_run(f"window:{window.window_id}")
-        manifest = known.generation_request_snapshot.get("overflow") if known else None
+        manifest = self._overflow_manifest(known)
         groups = service.service_config.window_interactions
         if self._bypass_overflow_admission(window, known, manifest, groups):
             return None

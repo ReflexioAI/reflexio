@@ -66,7 +66,10 @@ human authorship or approval. Frozen version 1/2 plans keep their prior framing
 and receipts.
 
 Any `overflow` key in a parent snapshot excludes it from legacy retry,
-finalization, discovery and selected recovery. Corrections to consumed answers
+finalization, discovery and selected recovery. A null or malformed marker also
+blocks native window execution, even when the feature is disabled or mock/image
+handling would otherwise bypass admission; it cannot reset the attempt journal.
+Corrections to consumed answers
 after protocol completion remain durable and unconsumed; automatic recomputation
 of these completed protocol runs is currently unsupported. The original output
 and attempt journal remain intact.
