@@ -216,6 +216,17 @@ async def _until_disconnected(
     return result
 
 
+def _model_health(
+    model_contract: Callable[[], Mapping[str, str | int]] | None,
+    query_only: bool,
+) -> dict[str, str | int]:
+    if model_contract is None:
+        raise HTTPException(
+            status_code=503, detail="Pinned model identity is not configured"
+        )
+    return {**model_contract(), "workload": "query" if query_only else "shared"}
+
+
 def create_embedding_app(
     default_model: str | None = None,
     *,
@@ -237,8 +248,14 @@ def create_embedding_app(
     | None = None,
     inference_shutdown: Callable[[], None] | None = None,
     query_only: bool = False,
+    model_contract: Callable[[], Mapping[str, str | int]] | None = None,
 ) -> FastAPI:
-    """Create the embedding daemon app and optionally register external encoders."""
+    """Create a daemon with optional encoders and their pinned vector identity.
+
+    Isolated query routing requires ``model_contract`` to report the actual
+    encoder's model, immutable revision and dimensions. Workload is derived
+    from this app's admission policy, never from the supplied metadata.
+    """
     effective_encoders = dict(model_encoders or {})
     effective_fixed_dimensions = dict(fixed_dimensions or {})
     effective_allowed_models = (
@@ -284,6 +301,10 @@ def create_embedding_app(
                 inference_shutdown()
 
     embedding_app = FastAPI(title="Reflexio Embedding Service", lifespan=lifespan)
+
+    embedding_app.get("/health/model", name="health_model")(
+        lambda: _model_health(model_contract, query_only)
+    )
 
     @embedding_app.get("/health")
     def health() -> dict[str, Any]:
