@@ -1008,8 +1008,7 @@ def test_historical_consolidation_scans_complete_source_and_replays_without_call
     )
     from reflexio.server.services.playbook.components.overflow_consolidation import (
         ConsolidationVerification,
-        HistoricalQuote,
-        HistoricalScan,
+        HistoricalScanSelection,
         verified_consolidation_decisions,
     )
 
@@ -1096,26 +1095,29 @@ def test_historical_consolidation_scans_complete_source_and_replays_without_call
             provenance, RunTokenTotals(prompt_tokens=100, completion_tokens=10)
         )
         payload_data = json.loads(kwargs["messages"][-1]["content"])
-        if kwargs["response_format"] is HistoricalScan:
+        if kwargs["response_format"] is HistoricalScanSelection:
             chunk = payload_data["chunk"]
             primary_ranges.append((chunk["primary_start"], chunk["primary_end"]))
-            assert chunk["text"] == old_text[chunk["start"] : chunk["end"]]
+            assert (
+                "".join(item["text"] for item in chunk["snippets"])
+                == old_text[chunk["start"] : chunk["end"]]
+            )
             assert payload_data["author_role"] == "unknown"
-            quotes = []
             quote = "Deployment needs separate approval."
-            if quote in chunk["text"]:
-                start = old_text.index(quote)
-                quotes.append(
-                    HistoricalQuote(start=start, end=start + len(quote), text=quote)
-                )
-            result = HistoricalScan(coverage="complete", quotes=quotes)
+            result = HistoricalScanSelection(
+                coverage="complete",
+                snippet_ids=[
+                    item["snippet_id"]
+                    for item in chunk["snippets"]
+                    if quote in item["text"]
+                ],
+            )
             assert kwargs["structured_output_validator"](result) == []
         else:
             assert kwargs["response_format"] is ConsolidationVerification
-            assert (
-                payload_data["historical_evidence"][0]["quotes"][-1]["text"]
-                == "Deployment needs separate approval."
-            )
+            assert payload_data["historical_evidence"][0]["quotes"][-1][
+                "text"
+            ].endswith("Deployment needs separate approval.")
             assert old_text not in kwargs["messages"][-1]["content"]
             result = ConsolidationVerification(
                 verdict=verdict, reason="fixture verdict"

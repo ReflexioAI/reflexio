@@ -223,6 +223,15 @@ the combined decisions before applying the original storage models. Equal source
 bytes share source geometry; row-specific semantic receipts, fingerprints and
 original source IDs remain distinct. Unsafe or insufficient evidence blocks
 publication. Final row locks protect scope, status, content and evidence changes.
+Missing historical scan receipts now use lossless bounded original snippets:
+the model selects displayed IDs, and the server copies exact text and absolute
+character ranges into the existing quotation receipt format. Every primary and
+neighbor character remains visible, author role stays unknown, and earlier
+quotations cannot be removed. Physical quoted coverage avoids saving repeated
+neighbor evidence. Conservative snippet costs guide selection within the unchanged
+2048-token carrier limit; insufficient coverage or capacity blocks publication.
+Valid v1 quotation receipts remain reusable without provider calls; missing work
+and new receipts use a separate v2 key bound to the complete presentation and schema.
 
 Inline consolidation always runs during generation (the legacy `deduplicator` feature flag is retired). The enterprise repo additionally ships a **scheduled second-pass job** (`reflexio_ext/server/services/playbook_reconsolidation/`) that re-runs consolidation daily over already-persisted rows — user playbooks per `(user_id, agent_version)` and agent playbooks per `agent_version` — by rendering each duplicate group as NEW candidates against an empty EXISTING side via `_consolidation_decisions`, then tombstoning merged sources with `merge_records` lineage.
 
