@@ -1,8 +1,8 @@
 """Client disconnects must not surface as ``RuntimeError: No response returned.``
 
-Sentry PYTHON-FASTAPI-ZA: on ``POST /api/search`` a client that hung up while
-the endpoint was still working made ``SearchRuntimeMiddleware`` return without
-sending ``http.response.start`` (deliberately -- nobody is listening). Any
+On ``POST /api/search`` a client that hung up while the endpoint was still
+working made ``SearchRuntimeMiddleware`` return without sending
+``http.response.start`` (deliberately -- nobody is listening). Any
 Starlette ``BaseHTTPMiddleware`` stacked above it then raised
 ``RuntimeError("No response returned.")`` from ``call_next``, logged as a 500.
 These tests drive the real ``create_app`` middleware stack with raw ASGI so a
