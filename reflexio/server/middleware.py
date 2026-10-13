@@ -170,7 +170,7 @@ class BotProtectionMiddleware:
     Pure ASGI rather than ``BaseHTTPMiddleware``: the latter raises
     ``RuntimeError("No response returned.")`` whenever the downstream app ends
     without starting a response, which is the legitimate outcome of a client
-    disconnect (Sentry PYTHON-FASTAPI-ZA).
+    disconnect.
     """
 
     def __init__(self, app: ASGIApp) -> None:
@@ -354,9 +354,9 @@ class SecurityHeadersMiddleware:
 
     Pure ASGI rather than ``BaseHTTPMiddleware``, which raises
     ``RuntimeError("No response returned.")`` when a client disconnect makes the
-    downstream app end without a response (Sentry PYTHON-FASTAPI-ZA). Headers
-    are added on ``http.response.start``; a request that never starts a response
-    simply returns.
+    downstream app end without a response. Headers are added on
+    ``http.response.start``; a request that never starts a response simply
+    returns.
     """
 
     def __init__(self, app: ASGIApp) -> None:
