@@ -43,6 +43,7 @@ from reflexio.server.auth import (
     default_get_org_id,
 )
 from reflexio.server.cache import reflexio_cache
+from reflexio.server.extensions import get_service
 from reflexio.server.llm.rerank.common import CrossEncoderUnavailableError
 from reflexio.server.rate_limit import limiter
 from reflexio.server.routes._common import _run_limited_api
@@ -51,8 +52,11 @@ from reflexio.server.services.retrieval_experiment import (
     active_retrieval_experiment_assignment,
 )
 from reflexio.server.services.search_exposure import (
+    SEARCH_EXPOSURE_RECEIPT_ISSUER,
     SearchExposureBatch,
     issue_search_exposure_receipts,
+    record_search_exposures,
+    validate_search_exposure_batch,
 )
 from reflexio.server.services.search_metering_worker import enqueue_search_metering
 from reflexio.server.services.search_observer import (
@@ -260,18 +264,25 @@ def search_user_playbooks_endpoint(
             experiment=assignment,
         )
         if caller_type == "production_agent":
-            receipts = issue_search_exposure_receipts(
-                SearchExposureBatch(
-                    org_id=org_id,
-                    request_id=payload.request_id,
-                    session_id=payload.session_id,
-                    interaction_id=None,
-                    user_id=payload.user_id,
-                    user_playbooks=tuple(response.user_playbooks),
-                )
+            batch = SearchExposureBatch(
+                org_id=org_id,
+                request_id=payload.request_id,
+                session_id=payload.session_id,
+                interaction_id=None,
+                user_id=payload.user_id,
+                user_playbooks=tuple(response.user_playbooks),
             )
-            for playbook in resp.user_playbooks:
-                playbook.exposure_receipt = receipts.get(playbook.user_playbook_id)
+            validate_search_exposure_batch(batch)
+            if get_service(SEARCH_EXPOSURE_RECEIPT_ISSUER) is None:
+                # Enterprise retains synchronous recording until it installs
+                # receipt issuance and publication ingestion together.
+                if response.success and response.user_playbooks and storage is not None:
+                    with search_runtime.search_exposure_scope(org_id, storage):
+                        record_search_exposures(batch)
+            else:
+                receipts = issue_search_exposure_receipts(batch)
+                for playbook in resp.user_playbooks:
+                    playbook.exposure_receipt = receipts.get(playbook.user_playbook_id)
     enqueue_search_metering(
         org_id=org_id,
         caller_type=caller_type,
@@ -489,9 +500,23 @@ def unified_search_endpoint(
                 user_id=payload.user_id,
                 user_playbooks=tuple(response.user_playbooks),
             )
-            receipts = issue_search_exposure_receipts(exposure_batch)
-            for playbook in resp.user_playbooks:
-                playbook.exposure_receipt = receipts.get(playbook.user_playbook_id)
+            validate_search_exposure_batch(exposure_batch)
+            if get_service(SEARCH_EXPOSURE_RECEIPT_ISSUER) is None:
+                # Served-state writes keep the existing acceptance boundary;
+                # recorder-less OSS remains a supported no-op configuration.
+                if response.success:
+
+                    def record_exposures() -> None:
+                        with profile_step("search.exposure"):
+                            record_search_exposures(exposure_batch)
+
+                    search_runtime.on_response_accepted(
+                        "exposure", record_exposures, order=0
+                    )
+            else:
+                receipts = issue_search_exposure_receipts(exposure_batch)
+                for playbook in resp.user_playbooks:
+                    playbook.exposure_receipt = receipts.get(playbook.user_playbook_id)
         search_runtime.checkpoint()
         meter = partial(
             enqueue_search_metering,

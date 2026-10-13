@@ -419,12 +419,17 @@ class DeduplicationConfig(BaseModel):
     performs the final duplicate decision.
 
     Args:
+        strategy: Select legacy four-action or independently audited three-action consolidation.
         search_threshold: Minimum similarity score for deduplication candidates
             (0.0-1.0), independent from user-facing retrieval defaults.
         search_top_k: Maximum number of existing playbooks to retrieve per new playbook.
-        max_unified_content_chars: Soft cap on a unified playbook's content length.
+        max_unified_content_chars: Legacy strategy's soft cap on unified content.
     """
 
+    strategy: Literal["legacy", "audited"] = Field(
+        default="legacy",
+        description="Playbook consolidation strategy. audited uses Create/Replace/Remove with independent audit; legacy restores the existing four actions.",
+    )
     search_threshold: float = Field(
         default=0.4,
         ge=0.0,
@@ -444,7 +449,7 @@ class DeduplicationConfig(BaseModel):
         default=1200,
         gt=0,
         description=(
-            "Soft cap on a unified playbook's content length; unify that would "
+            "Legacy strategy soft cap on a unified playbook's content length; unify that would "
             "exceed it should prefer differentiate/keep-separate. Enforced as a "
             "warning-only backstop in the consolidator apply path."
         ),

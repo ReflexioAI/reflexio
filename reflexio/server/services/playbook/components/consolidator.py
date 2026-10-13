@@ -565,6 +565,7 @@ class PlaybookConsolidator(BaseDeduplicator):
         self._dedup_config = dedup_config or DeduplicationConfig()
         self.model_provenance: ModelProvenance | None = None
         self.consolidated_output_indices: set[int] = set()
+        self.lineage_sources_by_output_index: dict[int, list[str]] = {}
 
     def _get_prompt_id(self) -> str:
         """Get the prompt ID for playbook consolidation."""
@@ -1015,6 +1016,7 @@ class PlaybookConsolidator(BaseDeduplicator):
         )
         self.model_provenance = None
         self.consolidated_output_indices = set()
+        self.lineage_sources_by_output_index = {}
         if agent_version is None:
             raise TypeError("agent_version is required")
 
@@ -1033,7 +1035,9 @@ class PlaybookConsolidator(BaseDeduplicator):
             if isinstance(result, list):
                 new_playbooks.extend(result)
 
-        if not new_playbooks:
+        if not new_playbooks and not (
+            self._dedup_config.strategy == "audited" and existing_playbooks
+        ):
             return [], [], []
 
         # Retrieve existing entries via hybrid search, unless an earlier stage in
@@ -1048,6 +1052,20 @@ class PlaybookConsolidator(BaseDeduplicator):
         )
 
         remember_historical_playbooks(existing_playbooks)
+        if self._dedup_config.strategy == "audited":
+            from reflexio.server.services.playbook.components.reconciliation import (
+                reconcile_playbooks,
+            )
+
+            return reconcile_playbooks(
+                self,
+                new_playbooks,
+                existing_playbooks,
+                user_id=user_id,
+                agent_version=agent_version,
+                generation_request_id=generation_request_id,
+            )
+
         # Evidence-validated first-pass candidates need no probabilistic
         # consolidation when there is no existing retrieval match. Exact
         # same-batch duplicates were already removed before this component; the

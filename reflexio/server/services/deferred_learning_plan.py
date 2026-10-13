@@ -125,10 +125,13 @@ class PlaybookWritePlan:
         new_playbooks: New playbook rows with ``source``/``status`` set and
             ``.embedding`` precomputed in compute. Survivor ids are assigned by
             ``save_user_playbooks`` in persist, before lineage reads them.
-        superseded_ids: ALL archived existing ids (merge sources + leftovers)
-            routed through ``_apply_consolidation_lineage``.
+        superseded_ids: ALL retired existing ids (merge sources + leftovers)
+            routed through ``_apply_consolidation_lineage`` even when there are
+            no new rows. A removal-only plan must cross the commit fence.
         merge_groups: ``(survivor_index_into_new_playbooks, source_existing_ids)``
-            per dedup merge group.
+            per single-survivor merge. Multiple-output replacements have no
+            single merge target: their sources are soft-superseded and each
+            output's create lineage context retains all consumed existing IDs.
     """
 
     request_id: str

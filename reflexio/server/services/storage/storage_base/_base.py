@@ -59,6 +59,14 @@ class BaseStorageCore(ABC):  # noqa: B024
             base_dir = LOCAL_STORAGE_PATH
         self.base_dir = base_dir
 
+    def governance_subject_ref_for_user(self, user_id: str) -> str | None:  # noqa: ARG002
+        """Resolve a trusted owner identity; OSS has no governance subject refs.
+
+        Managed storage overrides this using its existing owner/tenant resolver.
+        Callers must never infer this identity from a supplied learning row.
+        """
+        return None
+
     # Migrate
     def migrate(self) -> bool:
         """Handle migration to transform the storage to the latest format.

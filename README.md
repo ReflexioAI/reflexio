@@ -245,6 +245,25 @@ the configured models and extraction gates determine which artifacts are produce
 - Clusters similar entries and aggregates with LLM (with change detection to skip unchanged clusters)
 - Approval workflow: review and approve/reject agent playbooks
 
+An extractor can opt into the independently audited consolidator with
+`UserPlaybookExtractorConfig.deduplication_config.strategy="audited"`.
+It drafts Create/Replace/Remove decisions, audits the complete proposed memory,
+and repairs affected decisions before saving. Replace can produce multiple
+playbooks. One 24-request allowance covers draft, read-only searches, audits,
+repairs and provider fallback attempts. Exhaustion or failed audits preserve
+committed memory; drafts are never saved as a fallback. Durable continuation
+retains bounded tool history and validation-repair progress within each stage,
+as well as validated stage results, without resetting the request allowance.
+
+The default `"legacy"` keeps the existing four-action behavior and is the rollback
+setting. First audited rollouts require new candidates with persisted, owner-scoped
+source evidence. Expert examples with persisted source observations are supported;
+manual and older extraction flows without that evidence should explicitly retain
+`"legacy"`. Missing new evidence causes audited consolidation to abstain. Missing
+historical evidence alone does not invalidate an existing playbook. The offline
+component comparison supports this method choice, but does not establish online
+task improvement; measure that separately after rollout.
+
 [Read more about agent playbooks →](https://www.reflexio.ai/docs/concepts/agent-playbook)
 
 ### Expert Learning
