@@ -80,6 +80,12 @@ outputs or that quoted context; scanning the full source does not make its
 unshown remainder valid prompt evidence. Profile publication keeps canonical
 quotation, notes and reader-perspective fields through consolidation.
 
+New image-bearing windows keep the established native multimodal path. Existing
+textual manifests cannot switch protocols or erase quota. Configuration failures
+remain visible and retry with existing backoff after correction; capacity/quota
+failures stay held. Full human answers that exceed the complete-prompt target
+fail before dispatch without clipping, publication or an automatic retry loop.
+
 ### Resume discovery
 
 

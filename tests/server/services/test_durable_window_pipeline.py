@@ -34,7 +34,7 @@ def _prepared_presentation_text() -> str:
 
 
 @pytest.mark.parametrize("configuration_error", [False, True])
-def test_input_budget_failure_reports_failed_without_replaying_or_losing_inputs(
+def test_input_budget_failure_reports_failed_without_immediate_replay_or_losing_inputs(
     pipeline, monkeypatch, configuration_error
 ):
     from reflexio.server.llm._litellm_types import ProviderRequestGuardError
@@ -42,8 +42,15 @@ def test_input_budget_failure_reports_failed_without_replaying_or_losing_inputs(
         InputBudgetConfigurationError,
         InputBudgetExceededError,
     )
+    from reflexio.server.services.storage.sqlite_storage._extraction_stream import (
+        SQLiteStreamSQL,
+    )
 
     engine, worker, client = pipeline
+    storage = engine.get_storage()
+    with storage._stream_sql(read_only=True) as db:
+        started = db.now()
+    monkeypatch.setattr(SQLiteStreamSQL, "now", lambda _: started)
     monkeypatch.setenv("MOCK_LLM_RESPONSE", "false")
     monkeypatch.setenv("REFLEXIO_EXTRACTION_OVERFLOW_ENABLED", "true")
     dispatch = Mock(

@@ -476,20 +476,33 @@ class ExtractionStreamStore:
     def fail_extraction_input_budget(
         self, window: Window, token: str, reason: str
     ) -> None:
-        """Hold an incomplete window for explicit recovery, without futile retries."""
+        """Retry correctable configuration; hold capacity failures without replay."""
         if reason not in {"input_budget_exceeded", "input_budget_configuration_error"}:
             raise ValueError("Unknown extraction input failure reason")
         if window.project_id != (current_project_id() or ""):
             raise LeaseLostError("Extraction project scope changed")
         with self._stream_sql() as db:
             self._fence(db, window.user_id, token)
+            retry_at = float("inf")
+            if reason == "input_budget_configuration_error":
+                rows = db.query(
+                    f"SELECT attempts FROM {db.table('extraction_cursors')} "
+                    "WHERE user_id=? AND kind=? AND project_id=? AND window_id=? LIMIT 1",
+                    (window.user_id, window.kind, window.project_id, window.window_id),
+                )
+                if not rows:
+                    raise LeaseLostError(
+                        "Extraction configuration retry lost its active cursor"
+                    )
+                attempts = int(rows[0]["attempts"]) + 1
+                retry_at = db.now() + min(300, 2 ** min(attempts - 1, 9))
             updated = db.query(
                 f"UPDATE {db.table('extraction_cursors')} SET attempts=attempts+1,retry_at=?,last_error=?,last_turn=? "
                 "WHERE user_id=? AND kind=? AND project_id=? AND window_id=? AND EXISTS ("
                 f"SELECT 1 FROM {db.table('extraction_windows')} w WHERE w.window_id=? AND w.completed=0 AND w.invalidated=0) "
                 "RETURNING window_id",
                 (
-                    float("inf"),
+                    retry_at,
                     reason,
                     db.now(),
                     window.user_id,
@@ -501,8 +514,8 @@ class ExtractionStreamStore:
             )
             if not updated:
                 raise LeaseLostError("Extraction input failure lost its active window")
-            # Keep saved outputs and quota for explicit recovery, while removing
-            # the orphan-running signal for a window deliberately held here.
+            # Keep saved outputs and quota. Configuration retries cannot reset
+            # frozen source/policy contracts; an unchanged mismatch stays failed.
             db.query(
                 f"UPDATE {db.table('_agent_runs')} SET status='failed',last_error=?,updated_at=? "
                 "WHERE id=? AND org_id=? AND user_id=? AND status IN ('running','agent_completed','failed')",

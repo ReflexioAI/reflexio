@@ -143,6 +143,7 @@ class WindowExecutor:
         window: Window,
         known: AgentRunRecord | None,
         manifest: dict[str, Any] | None,
+        groups: list[RequestInteractionDataModel],
     ) -> bool:
         if env_bool("MOCK_LLM_RESPONSE", default=False):
             if known is not None:
@@ -153,6 +154,18 @@ class WindowExecutor:
                 )
             # Simulations have no provider input to budget. Keep their established
             # mock extraction/persistence behavior without admitting a protocol.
+            return True
+        if any(
+            item.interacted_image_url or item.image_encoding
+            for group in groups
+            for item in group.interactions
+        ):
+            if manifest is not None:
+                raise InputBudgetConfigurationError(
+                    "Admitted textual extraction cannot consume image evidence"
+                )
+            # Preserve the established multimodal prompt and evidence contract.
+            # Text-only span witnesses cannot prove facts learned from images.
             return True
         # Enabling admission cannot strand a validated legacy write plan whose
         # computation finished before its persistence retry.
@@ -168,7 +181,8 @@ class WindowExecutor:
     ) -> OverflowCoordinator | None:
         known = self.storage.get_agent_run(f"window:{window.window_id}")
         manifest = known.generation_request_snapshot.get("overflow") if known else None
-        if self._bypass_overflow_admission(window, known, manifest):
+        groups = service.service_config.window_interactions
+        if self._bypass_overflow_admission(window, known, manifest, groups):
             return None
         if manifest is None and not env_bool(
             "REFLEXIO_EXTRACTION_OVERFLOW_ENABLED", default=False
@@ -181,7 +195,6 @@ class WindowExecutor:
                     "Failed legacy extraction needs explicit recovery; historical quota is unknown"
                 )
             return None
-        groups = service.service_config.window_interactions
         # Freeze this geometry before any provider work. Existing checkpoints
         # retain their original partition and cannot reclaim consumed slots.
         chunk_tokens = manifest.get("input_chunk_tokens", 8192) if manifest else 10000
