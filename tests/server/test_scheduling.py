@@ -422,3 +422,22 @@ class TestStartGate:
         finally:
             sched.stop(timeout_seconds=2.0)
         assert "scheduler_start_gate_failed_open" in caplog.text
+
+    def test_gate_that_opens_ends_the_failed_open_streak(
+        self, transient_failure_classifier
+    ) -> None:
+        from reflexio.server import background_work
+
+        scope = "start-gate-tick-counter"
+
+        def raising() -> bool:
+            raise transient_failure_classifier("rollout drop")
+
+        for gate, streak_expected in ((raising, True), (lambda: True, False)):
+            sched = _TickCounter(start_gate=gate)
+            sched.start()
+            try:
+                assert _wait_until(lambda s=sched: s.ticks >= 1)
+            finally:
+                sched.stop(timeout_seconds=2.0)
+            assert (scope in background_work._streaks) is streak_expected

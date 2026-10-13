@@ -47,6 +47,7 @@ from typing import Protocol
 from reflexio.server.background_work import (
     background_work,
     report_background_failure,
+    report_background_success,
 )
 
 logger = logging.getLogger(__name__)
@@ -150,6 +151,9 @@ class ThreadedScheduler:
         while not self._stop_event.is_set():
             try:
                 if gate():
+                    # A gate that opened cleanly ends this scheduler's
+                    # failed-open streak; without it blips days apart page.
+                    report_background_success(f"start-gate-{self._thread_name}")
                     return True
             except Exception as exc:
                 report_background_failure(
