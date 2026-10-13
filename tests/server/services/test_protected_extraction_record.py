@@ -13,6 +13,7 @@ from reflexio.server.services.extraction.input_preparation import (
 from reflexio.server.services.extraction.protected_pass import (
     _merge_candidate_evidence,
     _protected_validator,
+    _selection_repair_scope,
     _selection_spans,
     _selection_update,
     _selection_validator,
@@ -676,3 +677,153 @@ def test_offsetless_field_id_requires_one_visible_snippet_and_keeps_canonical_of
     other = SourceSpan(1, "r", "Assistant", "tools_used[0]", 30, 39, "succeeded")
     with pytest.raises(ValueError, match="visible snippet"):
         _selection_update(selected, (source, other))
+
+
+def test_multiref_shared_quote_covers_constituents_and_contained_ranges():
+    first = SourceSpan(1, "r", "User", "content", 0, 8, "Prepare ")
+    second = SourceSpan(1, "r", "User", "content", 8, 17, "only now.")
+    existing = ProtectedRecord().merge(
+        ProtectedRecordUpdate(
+            evidence=[
+                ProtectedEvidence(
+                    kind="instruction",
+                    evidence_refs=(first.evidence_ref, second.evidence_ref),
+                    quote=first.text + second.text,
+                ),
+            ]
+        ),
+        visible_spans=(first, second),
+    )
+    selected = ProtectedRecordSelection(
+        evidence=[
+            EvidenceSelection(
+                kind="instruction",
+                evidence_refs=(first.evidence_ref, "i1:content:8:12"),
+            )
+        ]
+    )
+    assert _selection_update(selected, (first, second), existing).evidence == []
+
+
+def test_quoted_coverage_union_preserves_new_text_between_old_excerpts():
+    whole = span(1, "failed BEFORE succeeded")
+    first = SourceSpan(1, "r", "User", "content", 0, 6, "failed")
+    second = SourceSpan(1, "r", "User", "content", 14, 23, "succeeded")
+    existing = ProtectedRecord().merge(
+        ProtectedRecordUpdate(
+            evidence=[
+                ProtectedEvidence(
+                    kind="outcome",
+                    evidence_refs=(first.evidence_ref,),
+                    quote=first.text,
+                ),
+                ProtectedEvidence(
+                    kind="outcome",
+                    evidence_refs=(second.evidence_ref,),
+                    quote=second.text,
+                ),
+            ]
+        ),
+        visible_spans=(whole,),
+    )
+    selected = ProtectedRecordSelection(
+        evidence=[
+            EvidenceSelection(
+                kind="outcome",
+                evidence_refs=(whole.evidence_ref,),
+            )
+        ]
+    )
+    assert (
+        _selection_update(selected, (whole,), existing).evidence[0].quote == whole.text
+    )
+
+
+@pytest.mark.parametrize("failure", ["capacity", "parse", "fallback"])
+def test_capacity_correction_is_bounded_and_exhaustion_stays_typed(failure):
+    from unittest.mock import Mock
+
+    from reflexio.server.llm._litellm_types import LiteLLMClientError
+    from reflexio.server.llm.input_budget import (
+        InputBudgetExceededError,
+        extraction_provider_guard,
+    )
+
+    reservation = Mock()
+    original = extraction_provider_guard.set(reservation)
+    oversized = Mock(side_effect=InputBudgetExceededError("record capacity"))
+    output = ProtectedRecordSelection()
+    try:
+        with (
+            pytest.raises(InputBudgetExceededError, match="record capacity"),
+            _selection_repair_scope(oversized) as validate,
+        ):
+            guard = extraction_provider_guard.get()
+            assert guard is not None
+            guard({}, 10, ("primary", "fallback"), True)
+            assert "2048-token" in validate(output)[0]
+            guard({}, 10, ("primary", "fallback"), True)
+            if failure == "capacity":
+                validate(output)
+            elif failure == "parse":
+                raise LiteLLMClientError("Correction did not parse")
+            else:
+                guard({}, 10, ("primary", "fallback"), True)
+        assert reservation.call_count == 2
+        assert extraction_provider_guard.get() is reservation
+    finally:
+        extraction_provider_guard.reset(original)
+
+
+def test_capacity_correction_can_accept_a_smaller_selection():
+    from unittest.mock import Mock
+
+    from reflexio.server.llm.input_budget import (
+        InputBudgetExceededError,
+        extraction_provider_guard,
+    )
+
+    reservation = Mock()
+    original = extraction_provider_guard.set(reservation)
+    validator = Mock(side_effect=[InputBudgetExceededError("record capacity"), []])
+    try:
+        with _selection_repair_scope(validator) as validate:
+            guard = extraction_provider_guard.get()
+            assert guard is not None
+            guard({}, 10, ("primary",), True)
+            assert validate(ProtectedRecordSelection())
+            guard({}, 10, ("primary",), True)
+            assert validate(ProtectedRecordSelection()) == []
+        assert reservation.call_count == 2
+        assert extraction_provider_guard.get() is reservation
+    finally:
+        extraction_provider_guard.reset(original)
+
+
+def test_capacity_correction_cannot_swallow_deadline_or_lease_guard():
+    from unittest.mock import Mock
+
+    from reflexio.server.llm._litellm_types import ProviderRequestGuardError
+    from reflexio.server.llm.input_budget import (
+        InputBudgetExceededError,
+        extraction_provider_guard,
+    )
+
+    reservation = Mock(side_effect=[None, ProviderRequestGuardError("lease lost")])
+    original = extraction_provider_guard.set(reservation)
+    try:
+        with (
+            pytest.raises(ProviderRequestGuardError, match="lease lost"),
+            _selection_repair_scope(
+                Mock(side_effect=InputBudgetExceededError("record capacity"))
+            ) as validate,
+        ):
+            guard = extraction_provider_guard.get()
+            assert guard is not None
+            guard({}, 10, ("primary",), True)
+            validate(ProtectedRecordSelection())
+            guard({}, 10, ("primary",), True)
+        assert reservation.call_count == 2
+        assert extraction_provider_guard.get() is reservation
+    finally:
+        extraction_provider_guard.reset(original)

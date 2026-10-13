@@ -34,6 +34,129 @@ def _old(identity):
     )
 
 
+def test_rebuilt_proposal_reuses_receipt_across_clock_and_unrelated_witness_changes(
+    monkeypatch,
+):
+    from dataclasses import asdict
+    from datetime import UTC, datetime
+    from unittest.mock import MagicMock
+
+    from reflexio.models.api_schema.domain import entities
+    from reflexio.models.config_schema import PlaybookConfig
+    from reflexio.server.llm._litellm_types import ModelProvenance
+    from reflexio.server.services.extraction.overflow_coordinator import (
+        OverflowCoordinator,
+        current_overflow_coordinator,
+    )
+    from reflexio.server.services.playbook.components.extractor import PlaybookExtractor
+    from reflexio.server.services.playbook.components.overflow_consolidation import (
+        _cached_proposal,
+    )
+    from reflexio.server.services.playbook.components.overflow_evidence import (
+        historical_playbook_digest,
+    )
+    from reflexio.server.services.playbook.playbook_service_utils import (
+        StructuredPlaybookContent,
+    )
+    from reflexio.server.services.playbook.service import (
+        PlaybookGenerationServiceConfig,
+    )
+
+    old = _old(51).model_copy(
+        update={"created_at": 1000, "content": "Require approval before deploying."}
+    )
+    checkpoint = {"historical_playbooks": {"51": historical_playbook_digest(old)}}
+    receipts = {}
+    keys = []
+    coordinator = SimpleNamespace(
+        source_digest="frozen-source",
+        checkpoint=checkpoint,
+        saved_run=SimpleNamespace(created_at=datetime(2026, 10, 1, 12, tzinfo=UTC)),
+        completed_step=receipts.get,
+        require_remaining_work=MagicMock(),
+    )
+
+    def step_key(stage, inputs):
+        key = OverflowCoordinator.step_key(
+            cast(OverflowCoordinator, coordinator), stage, inputs
+        )
+        keys.append(key)
+        return key
+
+    def complete_step(key, output, provenance):
+        receipts[key] = {"output": output, "model_provenance": asdict(provenance)}
+
+    coordinator.step_key = step_key
+    coordinator.complete_step = complete_step
+    extractor = PlaybookExtractor.__new__(PlaybookExtractor)
+    extractor.config = PlaybookConfig(extraction_definition_prompt="Fixture extraction")
+    extractor.service_config = PlaybookGenerationServiceConfig(
+        user_id="u", agent_version="v1", request_id="new", source="api"
+    )
+    owner = PlaybookConsolidator.__new__(PlaybookConsolidator)
+    owner.model_name = "fixture-model"
+    owner.model_provenance = ModelProvenance(
+        model_name="fixture-model", provider="fixture"
+    )
+    owner.request_context = MagicMock()
+    # Exercise the real formatter: NEW Last Modified is part of the real key.
+    owner.request_context.prompt_manager.render_prompt.side_effect = (
+        lambda _prompt_id, values: str(values)
+    )
+    output = PlaybookConsolidationOutput(
+        decisions=[RejectNewDecision(new_id="NEW-0", superseded_by_existing_id=0)]
+    )
+    provider = MagicMock(return_value=output)
+    monkeypatch.setattr(owner, "_consolidation_decisions", provider)
+    token = current_overflow_coordinator.set(cast(OverflowCoordinator, coordinator))
+    try:
+        prompts = []
+        for minute in (1, 20):
+            ambient = datetime(2026, 10, 1, 13, minute, tzinfo=UTC)
+            monkeypatch.setattr(
+                entities,
+                "datetime",
+                SimpleNamespace(now=lambda _, frozen=ambient: frozen),
+            )
+            candidate = extractor._build_user_playbook(
+                StructuredPlaybookContent(content="Require approval before deploying."),
+                source_interaction_ids=[7],
+            )
+            assert candidate is not None
+            prompts.append(owner._render_consolidation_prompt([candidate], [old]))
+            assert (
+                _cached_proposal(
+                    owner, cast(OverflowCoordinator, coordinator), [candidate], [old]
+                )
+                == output
+            )
+            checkpoint["historical_playbooks"]["999"] = "unrelated-history-witness"
+        assert prompts[0] == prompts[1]
+        assert keys[0] == keys[1]
+        assert provider.call_count == 1
+        assert coordinator.require_remaining_work.call_count == 1
+        assert len(receipts) == 1
+
+        # A selected OLD change is load-bearing, so it must never reuse the
+        # previous proposal even though unrelated witness additions are ignored.
+        changed = old.model_copy(
+            update={"content": "Require separate approval and tests."}
+        )
+        checkpoint["historical_playbooks"]["51"] = historical_playbook_digest(changed)
+        assert (
+            _cached_proposal(
+                owner, cast(OverflowCoordinator, coordinator), [candidate], [changed]
+            )
+            == output
+        )
+        assert keys[2] != keys[0]
+        assert provider.call_count == 2
+        assert coordinator.require_remaining_work.call_count == 2
+        assert len(receipts) == 2
+    finally:
+        current_overflow_coordinator.reset(token)
+
+
 def test_historical_neighbor_context_preserves_condition_across_unicode_boundary():
     text = "工具 🙂 result " * 6000
     ranges = _partition(text)

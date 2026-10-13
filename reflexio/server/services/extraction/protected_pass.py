@@ -1,14 +1,19 @@
 """Source-backed, checkpointed context preparation across all original chunks."""
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import replace
 from typing import Any
 
 import tiktoken
 from pydantic import BaseModel, ValidationError
 
-from reflexio.server.llm.input_budget import InputBudgetExceededError
+from reflexio.server.llm._litellm_types import LiteLLMClientError
+from reflexio.server.llm.input_budget import (
+    InputBudgetExceededError,
+    extraction_provider_guard,
+)
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.llm.model_defaults import ModelRole
 from reflexio.server.services.extraction.input_preparation import (
@@ -16,6 +21,7 @@ from reflexio.server.services.extraction.input_preparation import (
     PreparedExtractionInput,
     SourceSpan,
     resolve_evidence_span,
+    resolve_visible_quote,
 )
 from reflexio.server.services.extraction.overflow_coordinator import (
     OverflowCoordinator,
@@ -110,10 +116,16 @@ def _selection_update(
         fields.setdefault(f"i{source.interaction_id}:{source.field}", []).append(source)
     by_ref.update({ref: spans[0] for ref, spans in fields.items() if len(spans) == 1})
     result: dict[str, list[dict[str, Any]]] = {"evidence": [], "candidate_evidence": []}
-    already_shown = {
-        (item.evidence_refs, item.quote)
+    already_shown = tuple(
+        quoted
         for item in (existing or ProtectedRecord()).evidence
-    }
+        for quoted in resolve_visible_quote(
+            item.quote,
+            tuple(
+                resolve_evidence_span(ref, visible_spans) for ref in item.evidence_refs
+            ),
+        )
+    )
     errors = []
     for field in result:
         for index, item in enumerate(getattr(selection, field)):
@@ -131,11 +143,18 @@ def _selection_update(
                 continue
             for ref in item.evidence_refs:
                 source = by_ref[ref]
-                if (
-                    field == "evidence"
-                    and ((source.evidence_ref,), source.text) in already_shown
-                ):
-                    continue
+                if field == "evidence":
+                    covered_until = source.start
+                    for quoted in sorted(already_shown, key=lambda span: span.start):
+                        if (
+                            quoted.interaction_id == source.interaction_id
+                            and quoted.request_id == source.request_id
+                            and quoted.field == source.field
+                            and quoted.start <= covered_until
+                        ):
+                            covered_until = max(covered_until, quoted.end)
+                    if covered_until >= source.end:
+                        continue
                 result[field].append(
                     {
                         **item.model_dump(),
@@ -170,6 +189,54 @@ def _selection_validator(
         return validate_update(update)
 
     return validate
+
+
+@contextmanager
+def _selection_repair_scope(
+    validator: Callable[[BaseModel], list[str]],
+) -> Iterator[Callable[[BaseModel], list[str]]]:
+    """Allow one capacity correction, then hold without fallback or retry spend."""
+    previous_guard = extraction_provider_guard.get()
+    calls = 0
+    capacity_error: InputBudgetExceededError | None = None
+
+    def guard(
+        params: dict[str, Any],
+        hard_timeout: float,
+        ladder: tuple[str, ...],
+        structured: bool,
+    ) -> None:
+        nonlocal calls
+        if capacity_error is not None and calls >= 2:
+            raise capacity_error
+        if previous_guard is not None:
+            previous_guard(params, hard_timeout, ladder, structured)
+        calls += 1
+
+    def validate(output: BaseModel) -> list[str]:
+        nonlocal capacity_error
+        try:
+            return validator(output)
+        except InputBudgetExceededError as error:
+            if calls != 1 or capacity_error is not None:
+                raise
+            capacity_error = error
+            return [
+                "The NEW selections exceed the 2048-token shared or per-candidate "
+                "record limit. Preserve existing evidence and select fewer NEW "
+                "snippets within the displayed remaining capacity. Routine tool "
+                "results remain in the fully covered original chunks."
+            ]
+
+    token = extraction_provider_guard.set(guard)
+    try:
+        yield validate
+    except LiteLLMClientError as error:
+        if capacity_error is not None:
+            raise capacity_error from error
+        raise
+    finally:
+        extraction_provider_guard.reset(token)
 
 
 def _protected_validator(
@@ -398,14 +465,17 @@ def build_protected_record(
                 record, visible_spans, candidates, candidate_records, prepared=prepared
             )
 
-            with present_extraction_chunk(prepared, chunk, record):
+            with (
+                present_extraction_chunk(prepared, chunk, record),
+                _selection_repair_scope(
+                    _selection_validator(visible_spans, validate_update, shown_record)
+                ) as validate_selection,
+            ):
                 result = client.generate_chat_response_with_provenance(
                     messages=messages,
                     response_format=ProtectedRecordSelection,
                     model_role=ModelRole.EXTRACTION_AGENT,
-                    structured_output_validator=_selection_validator(
-                        visible_spans, validate_update, shown_record
-                    ),
+                    structured_output_validator=validate_selection,
                 )
             if not isinstance(result.value, ProtectedRecordSelection):
                 raise ValueError(

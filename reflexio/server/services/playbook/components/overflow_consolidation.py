@@ -428,9 +428,12 @@ def _cached_proposal(
             "existing_row_digests": [
                 historical_playbook_digest(row) for row in existing
             ],
-            "historical_witnesses": coordinator.checkpoint.get(
-                "historical_playbooks", {}
-            ),
+            "historical_witnesses": {
+                str(row.user_playbook_id): coordinator.checkpoint.get(
+                    "historical_playbooks", {}
+                ).get(str(row.user_playbook_id))
+                for row in existing
+            },
         },
     )
     saved = coordinator.completed_step(key)

@@ -109,6 +109,13 @@ snippet; an offsetless field ID resolves only when it names one shown snippet.
 Canonical source offsets are retained. Unknown or ambiguous IDs and record-capacity
 overflow cannot become saved receipts or publish output. Existing v1 quotation
 receipts remain reusable under their original source and quota checks.
+One capacity correction may select fewer new snippets; a failed correction
+remains a typed capacity hold and cannot spend fallback calls. Shared quotations
+already physically covered are reused without duplicating their record cost.
+Reconstructed playbooks retain the persisted parent's creation time, and each
+consolidation receipt binds only its participating historical witnesses. Resumed
+turns therefore reuse unchanged decisions as time passes or other history is read;
+the complete historical witness set still fences publication.
 
 Protected context exposes only its literal quotation at original source offsets.
 Final reconciliation and cached recovery reuse proof carried by registered child
