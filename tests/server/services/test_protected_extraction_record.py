@@ -1,6 +1,6 @@
 """Protected context never silently rewrites or invents original evidence."""
 
-from typing import Literal
+from typing import Any, Literal
 
 import pytest
 
@@ -13,12 +13,17 @@ from reflexio.server.services.extraction.input_preparation import (
 from reflexio.server.services.extraction.protected_pass import (
     _merge_candidate_evidence,
     _protected_validator,
+    _selection_spans,
+    _selection_update,
     build_protected_record,
 )
 from reflexio.server.services.extraction.protected_record import (
     CandidateEvidenceQuote,
+    CandidateEvidenceSelection,
+    EvidenceSelection,
     ProtectedEvidence,
     ProtectedRecord,
+    ProtectedRecordSelection,
     ProtectedRecordUpdate,
 )
 
@@ -162,6 +167,140 @@ def test_candidate_evidence_rejects_unknown_claim_or_invented_quote(claim, quote
     assert validator(candidate_update(source, claim, quote))
 
 
+def test_protected_repair_identifies_rephrased_and_unescaped_entries_without_source_text():
+    import json
+
+    instruction = span(1, "Prepare only; do not deploy.")
+    tool = span(2, json.dumps({"output": "first line\nsecond line"}))
+    valid = update(instruction)
+    valid.evidence.append(
+        ProtectedEvidence(
+            kind="instruction",
+            evidence_refs=(instruction.evidence_ref,),
+            quote="Prepare only and never deploy.",
+        )
+    )
+    valid.candidate_evidence.append(
+        CandidateEvidenceQuote(
+            candidate_ref="C1",
+            kind="outcome",
+            evidence_refs=(tool.evidence_ref,),
+            quote="first line\nsecond line",
+        )
+    )
+    validator = _protected_validator(
+        ProtectedRecord(), (instruction, tool), {"C1": {}}, {}
+    )
+    errors = validator(valid)
+    assert len(errors) == 2
+    assert errors[0].startswith("evidence[1]:")
+    assert errors[1].startswith("candidate_evidence[0]:")
+    assert "inner-JSON escaping" in errors[1]
+    assert all(
+        instruction.text not in error and tool.text not in error for error in errors
+    )
+    valid.evidence[1] = valid.evidence[1].model_copy(update={"quote": instruction.text})
+    valid.candidate_evidence[0] = valid.candidate_evidence[0].model_copy(
+        update={"quote": "first line\\nsecond line"}
+    )
+    assert validator(valid) == []
+
+
+def test_protected_repair_feedback_is_bounded_and_unknown_candidate_remains_rejected():
+    source = span(1, "Exact original evidence.")
+    proposed = ProtectedRecordUpdate(
+        evidence=[
+            ProtectedEvidence(
+                kind="instruction",
+                evidence_refs=(source.evidence_ref,),
+                quote="Invented",
+            )
+            for _ in range(12)
+        ]
+    )
+    validator = _protected_validator(ProtectedRecord(), (source,), {"C1": {}}, {})
+    errors = validator(proposed)
+    assert len(errors) == 8
+    assert errors[-1].startswith("evidence[7]:")
+    unknown = candidate_update(source, "C2")
+    assert validator(unknown) == [
+        "candidate_evidence[0].candidate_ref: use a provided claim ID."
+    ]
+
+
+def test_reference_selection_preserves_every_character_and_copies_escaped_source():
+    source = span(
+        1, 'Spelling stays as-is: correciton. {"output":"first\\nsecond"} 中文 ' * 40
+    )
+    pieces = _selection_spans((source,))
+    assert "".join(piece.text for piece in pieces) == source.text
+    assert pieces[0].start == source.start and pieces[-1].end == source.end
+    assert all(
+        left.end == right.start
+        for left, right in zip(pieces[:-1], pieces[1:], strict=True)
+    )
+    assert all(len(piece.text) <= 1024 for piece in pieces)
+    selected = ProtectedRecordSelection(
+        evidence=[
+            EvidenceSelection(
+                kind="correction",
+                evidence_refs=(pieces[0].evidence_ref, pieces[1].evidence_ref),
+            )
+        ]
+    )
+    copied = _selection_update(selected, pieces)
+    assert [item.quote for item in copied.evidence] == [
+        piece.text for piece in pieces[:2]
+    ]
+    assert _protected_validator(ProtectedRecord(), pieces)(copied) == []
+    selected.evidence[0] = selected.evidence[0].model_copy(
+        update={"evidence_refs": ("i1:content:0:4",)}
+    )
+    with pytest.raises(ValueError, match="visible snippet"):
+        _selection_update(selected, pieces)
+
+
+@pytest.mark.parametrize("invalid", ["unknown", "capacity"])
+def test_reference_selection_failure_cannot_freeze_receipts_or_checkpoint(invalid):
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    source = span(1, " x" * 5000)
+    prepared = PreparedExtractionInput("fixture", (PreparedChunk(0, (source,)),))
+    pieces = _selection_spans((source,))
+    refs = (
+        ("i999:content:0:10",)
+        if invalid == "unknown"
+        else tuple(piece.evidence_ref for piece in pieces[:8])
+    )
+    selection = ProtectedRecordSelection(
+        evidence=[EvidenceSelection(kind="instruction", evidence_refs=refs)]
+    )
+    coordinator = MagicMock()
+    coordinator.source_digest = prepared.source_digest
+    coordinator.provider_scope.return_value = nullcontext()
+    coordinator.completed_step.return_value = None
+    client = MagicMock()
+    client.generate_chat_response_with_provenance.return_value = SimpleNamespace(
+        value=selection, provenance=None
+    )
+    expected = (
+        ExtractionInputBudgetExceededError if invalid == "capacity" else ValueError
+    )
+    with pytest.raises(expected):
+        build_protected_record(
+            coordinator=coordinator,
+            prepared=prepared,
+            client=client,
+            extraction_criteria="Preserve constraints",
+            agent_context="",
+            minimum_following_attempts=1,
+        )
+    coordinator.complete_step.assert_not_called()
+    coordinator.save_checkpoint.assert_not_called()
+
+
 def test_candidate_capacity_failure_cannot_evict_saved_support():
     source = span(1, "The action is approved only for local staging.")
     claims = {"C1": {"content": "Scoped approval"}}
@@ -278,6 +417,10 @@ def test_invalid_shared_quote_view_never_freezes_a_receipt_or_checkpoint(
     client.generate_chat_response_with_provenance.return_value = SimpleNamespace(
         value=proposed, provenance=None
     )
+    if not cached:
+        # A quote-shaped value is no longer the live provider response contract.
+        # Invalid legacy receipts still take the precise ambiguity/capacity path.
+        expected = ValueError
     with pytest.raises(expected):
         build_protected_record(
             coordinator=coordinator,
@@ -292,3 +435,133 @@ def test_invalid_shared_quote_view_never_freezes_a_receipt_or_checkpoint(
     if cached:
         client.generate_chat_response_with_provenance.assert_not_called()
         coordinator.require_remaining_work.assert_not_called()
+
+
+@pytest.mark.parametrize("receipt", ["live", "v1", "v2"])
+def test_source_selection_receipts_copy_original_and_recover_without_dispatch(receipt):
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    source = span(1, 'Keep exact spelling and JSON: {"output":"a\\n b"}.')
+    prepared = PreparedExtractionInput("fixture", (PreparedChunk(0, (source,)),))
+    coordinator = MagicMock()
+    coordinator.source_digest = prepared.source_digest
+    coordinator.provider_scope.return_value = nullcontext()
+    coordinator.checkpoint = {}
+    saved = {"output": update(source).model_dump(mode="json")}
+    coordinator.completed_step.side_effect = (
+        [saved] if receipt == "v1" else [None, saved if receipt == "v2" else None]
+    )
+    client = MagicMock()
+    client.generate_chat_response_with_provenance.return_value = SimpleNamespace(
+        value=ProtectedRecordSelection(
+            evidence=[
+                EvidenceSelection(
+                    kind="correction", evidence_refs=(source.evidence_ref,)
+                )
+            ]
+        ),
+        provenance=None,
+    )
+    result = build_protected_record(
+        coordinator=coordinator,
+        prepared=prepared,
+        client=client,
+        extraction_criteria="Preserve constraints",
+        agent_context="",
+        minimum_following_attempts=1,
+    )
+    assert result.evidence[0].quote == source.text
+    assert result.evidence[0].evidence_refs == (source.evidence_ref,)
+    coordinator.save_checkpoint.assert_called_once()
+    if receipt == "live":
+        coordinator.complete_step.assert_called_once()
+        stored = coordinator.complete_step.call_args.args[1]
+        assert stored["evidence"][0]["quote"] == source.text
+        assert (
+            client.generate_chat_response_with_provenance.call_args.kwargs[
+                "response_format"
+            ]
+            is ProtectedRecordSelection
+        )
+    else:
+        client.generate_chat_response_with_provenance.assert_not_called()
+        coordinator.complete_step.assert_not_called()
+
+
+def test_selected_tool_fields_never_become_a_stitched_quotation():
+    first = SourceSpan(1, "r", "Assistant", "tools_used[0]", 0, 6, "failed")
+    second = SourceSpan(2, "r", "Assistant", "tools_used[1]", 0, 9, "succeeded")
+    selected = ProtectedRecordSelection(
+        evidence=[
+            EvidenceSelection(
+                kind="outcome",
+                evidence_refs=(first.evidence_ref, second.evidence_ref),
+            )
+        ]
+    )
+    copied = _selection_update(selected, (first, second))
+    assert [(item.quote, item.evidence_refs) for item in copied.evidence] == [
+        (first.text, (first.evidence_ref,)),
+        (second.text, (second.evidence_ref,)),
+    ]
+    assert _protected_validator(ProtectedRecord(), (first, second))(copied) == []
+
+
+@pytest.mark.parametrize("unshown", [False, True])
+def test_reused_shared_evidence_copies_only_shown_quote_not_surrounding_source(unshown):
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    quotation = "Do not deploy yet."
+    source = span(1, quotation + " Unshown private surrounding text.")
+    later = span(2, "Continue preparation.")
+    prepared = PreparedExtractionInput(
+        "fixture",
+        (
+            PreparedChunk(0, (source,)),
+            PreparedChunk(1, (later,)),
+        ),
+    )
+    coordinator = MagicMock()
+    coordinator.source_digest = prepared.source_digest
+    coordinator.provider_scope.return_value = nullcontext()
+    coordinator.checkpoint = {}
+    coordinator.completed_step.side_effect = [
+        {"output": update(source, quote=quotation).model_dump(mode="json")},
+        None,
+        None,
+    ]
+    client = MagicMock()
+    ref = source.evidence_ref if unshown else f"i1:content:0:{len(quotation)}"
+    client.generate_chat_response_with_provenance.return_value = SimpleNamespace(
+        value=ProtectedRecordSelection(
+            candidate_evidence=[
+                CandidateEvidenceSelection(
+                    candidate_ref="C1", kind="correction", evidence_refs=(ref,)
+                ),
+            ]
+        ),
+        provenance=None,
+    )
+    kwargs: dict[str, Any] = {
+        "coordinator": coordinator,
+        "prepared": prepared,
+        "client": client,
+        "extraction_criteria": "Approval scope",
+        "agent_context": "",
+        "minimum_following_attempts": 1,
+        "candidates": {"C1": {"content": "Prepare only"}},
+    }
+    if unshown:
+        with pytest.raises(ValueError, match="visible snippet"):
+            build_protected_record(**kwargs)
+        coordinator.complete_step.assert_not_called()
+        coordinator.save_checkpoint.assert_not_called()
+    else:
+        build_protected_record(**kwargs)
+        stored = coordinator.complete_step.call_args.args[1]["candidate_evidence"][0]
+        assert stored["quote"] == quotation
+        assert stored["evidence_refs"] == [ref]

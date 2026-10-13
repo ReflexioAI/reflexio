@@ -2311,9 +2311,6 @@ def test_protected_pass_keeps_scoped_approval_and_adverse_outcomes_on_replay(
                                             if index == 0
                                             else "uncertainty",
                                             "evidence_refs": [span.evidence_ref],
-                                            "quote": span.text,
-                                            "source_order": 99,
-                                            "role": "user",
                                         }
                                     ]
                                 }
@@ -3758,7 +3755,7 @@ def test_single_chunk_adopted_empty_output_scans_source_and_publishes(
 
     from reflexio.server.llm._litellm_types import ModelProvenance
     from reflexio.server.services.extraction.protected_record import (
-        ProtectedRecordUpdate,
+        ProtectedRecordSelection,
     )
 
     _, storage, window, token, executor, _, _, _, _, run = _saved_legacy_window(
@@ -3766,7 +3763,7 @@ def test_single_chunk_adopted_empty_output_scans_source_and_publishes(
     )
     scan = Mock(
         return_value=SimpleNamespace(
-            value=ProtectedRecordUpdate(), provenance=ModelProvenance()
+            value=ProtectedRecordSelection(), provenance=ModelProvenance()
         )
     )
     monkeypatch.setattr(executor.client, "generate_chat_response_with_provenance", scan)
@@ -3844,7 +3841,7 @@ def test_adopted_legacy_output_reaches_complete_publication_with_verified_eviden
         prompt = json.dumps(params["messages"], ensure_ascii=False)
         # MiniMax requests JSON-object mode; identify the actual template stage.
         if "Select original evidence needed" in prompt:
-            name = "ProtectedRecordUpdate"
+            name = "ProtectedRecordSelection"
         elif "reason_code" in prompt:
             name = (
                 "EvidenceFirstReviewOutput"
@@ -3854,7 +3851,7 @@ def test_adopted_legacy_output_reaches_complete_publication_with_verified_eviden
         elif "unique_ids" in prompt:
             name = "ProfileDeduplicationOutput"
         schemas.append(name)
-        if "ProtectedRecordUpdate" in name:
+        if "ProtectedRecordSelection" in name:
             result = {
                 "candidate_evidence": [
                     {
@@ -3865,9 +3862,11 @@ def test_adopted_legacy_output_reaches_complete_publication_with_verified_eviden
                             if failure == "out_of_source"
                             else span.evidence_ref
                         ],
-                        "quote": "not an original quotation"
-                        if failure == "nonquote"
-                        else span.text,
+                        **(
+                            {"quote": "not an original quotation"}
+                            if failure == "nonquote"
+                            else {}
+                        ),
                     }
                 ]
             }
