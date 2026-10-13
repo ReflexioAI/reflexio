@@ -98,7 +98,7 @@ def check_request_input_budget(
     params: Mapping[str, Any],
     *,
     context_limits: Mapping[str, int],
-    prompt_target: int = 32768,
+    prompt_target: int = 65536,
 ) -> int:
     """Check actual built params; return conservatively budgeted input tokens.
 
@@ -163,7 +163,7 @@ def extraction_request_guard(
     *,
     context_limits: Mapping[str, int],
     reserve_attempt: Callable[[], None],
-    prompt_target: int = 32768,
+    prompt_target: int = 65536,
 ) -> Callable[[dict[str, Any], float, tuple[str, ...], bool], None]:
     """Reserve durable quota only after request admission, before dispatch."""
 

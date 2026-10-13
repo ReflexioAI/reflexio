@@ -109,6 +109,8 @@ snippet; an offsetless field ID resolves only when it names one shown snippet.
 Canonical source offsets are retained. Unknown or ambiguous IDs and record-capacity
 overflow cannot become saved receipts or publish output. Existing v1 quotation
 receipts remain reusable under their original source and quota checks.
+Complete-prompt admission targets 65,536 budgeted tokens after the 20% counting
+margin, while reserving output and respecting each model's actual capacity.
 One capacity correction may select fewer new snippets; a failed correction
 remains a typed capacity hold and cannot spend fallback calls. Shared quotations
 already physically covered are reused without duplicating their record cost.
