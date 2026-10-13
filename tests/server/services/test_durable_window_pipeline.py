@@ -1683,7 +1683,7 @@ def test_overflow_checkpoint_quota_is_atomic_and_usage_is_immutable(pipeline):
         observed_attempt={
             "id": "attempt-1",
             "usage": usage,
-            "model_provenance": {"model": "fixture"},
+            "model_provenance": {"model_name": "fixture", "provider": None},
         },
         checkpoint={"stage": "protected-record"},
     )
@@ -1697,7 +1697,7 @@ def test_overflow_checkpoint_quota_is_atomic_and_usage_is_immutable(pipeline):
             observed_attempt={
                 "id": "attempt-1",
                 "usage": {**usage, "prompt_tokens": 0},
-                "model_provenance": {"model": "fixture"},
+                "model_provenance": {"model_name": "fixture", "provider": None},
             },
         )
     saved = storage.get_agent_run(

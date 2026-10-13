@@ -217,7 +217,13 @@ def test_existing_mixed_image_manifest_holds_without_reset_or_publication(
     manifest["attempts"] = [
         {
             "id": "spent-attempt",
-            "usage": {"prompt_tokens": 100, "completion_tokens": 20},
+            "usage": {
+                "prompt_tokens": 100,
+                "completion_tokens": 20,
+                "cache_read_input_tokens": 0,
+                "cache_write_input_tokens": 0,
+            },
+            "model_provenance": None,
         }
     ]
     manifest["checkpoint"]["completed_steps"] = {

@@ -69,6 +69,9 @@ Any `overflow` key in a parent snapshot excludes it from legacy retry,
 finalization, discovery and selected recovery. A null or malformed marker also
 blocks native window execution, even when the feature is disabled or mock/image
 handling would otherwise bypass admission; it cannot reset the attempt journal.
+The full saved attempt journal is validated both on load and under the locked
+provider reservation. Damaged usage or provenance cannot dispatch a paid call;
+reserved attempts with unknown usage remain consumed and are never refunded.
 Corrections to consumed answers
 after protocol completion remain durable and unconsumed; automatic recomputation
 of these completed protocol runs is currently unsupported. The original output

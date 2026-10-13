@@ -111,7 +111,16 @@ def test_public_corrected_consumed_answer_keeps_protocol_parent_out_of_legacy_wo
             "version": 1,
             "attempt_limit": 128,
             "attempts": [
-                {"id": "spent", "usage": {"prompt_tokens": 50, "completion_tokens": 10}}
+                {
+                    "id": "spent",
+                    "usage": {
+                        "prompt_tokens": 50,
+                        "completion_tokens": 10,
+                        "cache_read_input_tokens": 0,
+                        "cache_write_input_tokens": 0,
+                    },
+                    "model_provenance": None,
+                }
             ],
             "checkpoint": {
                 "stage": "extracted",

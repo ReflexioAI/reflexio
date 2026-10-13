@@ -49,6 +49,7 @@ from reflexio.server.services.storage.storage_base._extraction_stream import (
     OverflowAttemptBudgetExceededError,
     OverflowCheckpointConflictError,
     Window,
+    validate_extraction_overflow_manifest,
 )
 
 
@@ -93,13 +94,8 @@ class OverflowCoordinator:
         prepared: PreparedExtractionInput | None = None,
         agent_context: str = "",
     ):
-        if (
-            manifest.get("version") != 1
-            or manifest.get("source_digest") != source_digest
-            or manifest.get("attempt_limit") != 128
-            or type(manifest.get("revision")) is not int
-            or not isinstance(manifest.get("attempts"), list)
-        ):
+        validate_extraction_overflow_manifest(manifest)
+        if manifest.get("source_digest") != source_digest:
             raise OverflowCheckpointConflictError("Invalid extraction coordinator")
         if turn_seconds <= 0:
             raise ValueError("Extraction turn budget must be positive")
