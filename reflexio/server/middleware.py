@@ -13,6 +13,7 @@ from contextlib import suppress
 
 from anyio.to_thread import current_default_thread_limiter
 from fastapi import Request, status
+from starlette.datastructures import MutableHeaders
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.responses import Response
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
@@ -163,44 +164,53 @@ def _max_body_bytes_from_env() -> int:
     return max_bytes
 
 
-class BotProtectionMiddleware(BaseHTTPMiddleware):
-    """Middleware to detect and block suspicious bot-like requests."""
+class BotProtectionMiddleware:
+    """Middleware to detect and block suspicious bot-like requests.
 
-    async def dispatch(
-        self, request: Request, call_next: RequestResponseEndpoint
-    ) -> Response:
-        """Process request and block suspicious patterns.
+    Pure ASGI rather than ``BaseHTTPMiddleware``: the latter raises
+    ``RuntimeError("No response returned.")`` whenever the downstream app ends
+    without starting a response, which is the legitimate outcome of a client
+    disconnect (Sentry PYTHON-FASTAPI-ZA).
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """Block suspicious requests with a 403 JSON response.
 
         Args:
-            request (Request): The incoming request
-            call_next (RequestResponseEndpoint): Next middleware/handler in chain
-
-        Returns:
-            Response: The response from the next handler or a 403 JSON response
+            scope (Scope): The ASGI scope of the incoming request
+            receive (Receive): The ASGI receive channel
+            send (Send): The ASGI send channel
         """
         from starlette.responses import JSONResponse
 
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        request = Request(scope)
         user_agent = request.headers.get("user-agent", "").lower()
         path = request.url.path
 
         # Allow health check and root without user agent
         if path not in ALLOWED_EMPTY_UA_PATHS:
+            detail = None
             # Block requests with no user agent
             if not user_agent:
-                return JSONResponse(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    content={"detail": "Forbidden: Missing user agent"},
-                )
-
+                detail = "Forbidden: Missing user agent"
             # Block requests with suspicious user agents
-            for suspicious in SUSPICIOUS_USER_AGENTS:
-                if suspicious in user_agent:
-                    return JSONResponse(
-                        status_code=status.HTTP_403_FORBIDDEN,
-                        content={"detail": "Forbidden: Suspicious user agent"},
-                    )
+            elif any(suspicious in user_agent for suspicious in SUSPICIOUS_USER_AGENTS):
+                detail = "Forbidden: Suspicious user agent"
+            if detail is not None:
+                await JSONResponse(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    content={"detail": detail},
+                )(scope, receive, send)
+                return
 
-        return await call_next(request)
+        await self.app(scope, receive, send)
 
 
 class TimeoutMiddleware(BaseHTTPMiddleware):
@@ -311,52 +321,102 @@ class BodySizeLimitMiddleware:
             )(scope, receive, send)
 
 
-class SecurityHeadersMiddleware(BaseHTTPMiddleware):
-    """Attach conservative browser security headers to every response."""
+_HSTS_HEADER_VALUE = "max-age=31536000; includeSubDomains"
 
-    async def dispatch(
-        self, request: Request, call_next: RequestResponseEndpoint
-    ) -> Response:
-        response = await call_next(request)
-        response.headers["X-Content-Type-Options"] = "nosniff"
-        response.headers["X-Frame-Options"] = "DENY"
-        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+
+def _send_with_response_headers(send: Send, headers: dict[str, str]) -> Send:
+    """Wrap ``send`` so ``headers`` are set on the ``http.response.start`` message.
+
+    Setting replaces any value the app already chose, matching the previous
+    ``response.headers[name] = value`` assignment.
+
+    Args:
+        send (Send): The downstream-facing ASGI send channel
+        headers (dict[str, str]): Header names and values to set
+
+    Returns:
+        Send: A send channel that adds the headers to the response start
+    """
+
+    async def send_wrapper(message: Message) -> None:
+        if message["type"] == "http.response.start":
+            message.setdefault("headers", [])
+            response_headers = MutableHeaders(scope=message)
+            for name, value in headers.items():
+                response_headers[name] = value
+        await send(message)
+
+    return send_wrapper
+
+
+class SecurityHeadersMiddleware:
+    """Attach conservative browser security headers to every response.
+
+    Pure ASGI rather than ``BaseHTTPMiddleware``, which raises
+    ``RuntimeError("No response returned.")`` when a client disconnect makes the
+    downstream app end without a response (Sentry PYTHON-FASTAPI-ZA). Headers
+    are added on ``http.response.start``; a request that never starts a response
+    simply returns.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        request = Request(scope)
+        headers = {
+            "X-Content-Type-Options": "nosniff",
+            "X-Frame-Options": "DENY",
+            "Referrer-Policy": "strict-origin-when-cross-origin",
+        }
         if (
             request.url.scheme == "https"
             or request.headers.get("x-forwarded-proto", "").lower() == "https"
         ):
-            response.headers["Strict-Transport-Security"] = (
-                "max-age=31536000; includeSubDomains"
-            )
-        return response
+            headers["Strict-Transport-Security"] = _HSTS_HEADER_VALUE
+        await self.app(scope, receive, _send_with_response_headers(send, headers))
 
 
-class CorrelationIdMiddleware(BaseHTTPMiddleware):
+class CorrelationIdMiddleware:
     """Middleware that assigns a unique correlation ID to each request.
 
     The ID is stored in a ContextVar so it propagates to log records
     (via CorrelationIdFilter) and to ThreadPoolExecutor workers when
     ``contextvars.copy_context()`` is used.
+
+    Pure ASGI rather than ``BaseHTTPMiddleware`` for the same disconnect reason
+    as ``SecurityHeadersMiddleware``. The thread-pool snapshot is written to
+    ``scope["state"]``, which is the dict ``request.state`` reads from.
     """
 
-    async def dispatch(
-        self, request: Request, call_next: RequestResponseEndpoint
-    ) -> Response:
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         from reflexio.server.search_runtime import current
+
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
 
         search_scope = current()
         cid = search_scope.timing_id if search_scope else generate_correlation_id()
         correlation_id_var.set(cid)
+        state = scope.setdefault("state", {})
         try:
             stats = current_default_thread_limiter().statistics()
-            request.state.tp_borrowed = stats.borrowed_tokens
-            request.state.tp_total = stats.total_tokens
-            request.state.tp_waiting = stats.tasks_waiting
+            state["tp_borrowed"] = stats.borrowed_tokens
+            state["tp_total"] = stats.total_tokens
+            state["tp_waiting"] = stats.tasks_waiting
         except Exception as exc:  # noqa: BLE001
             logger.debug("Failed to snapshot threadpool limiter stats: %s", exc)
-            request.state.tp_borrowed = None
-            request.state.tp_total = None
-            request.state.tp_waiting = None
-        response = await call_next(request)
-        response.headers["X-Correlation-ID"] = cid
-        return response
+            state["tp_borrowed"] = None
+            state["tp_total"] = None
+            state["tp_waiting"] = None
+        await self.app(
+            scope, receive, _send_with_response_headers(send, {"X-Correlation-ID": cid})
+        )
