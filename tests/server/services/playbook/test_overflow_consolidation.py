@@ -244,6 +244,79 @@ def test_historical_selection_capacity_hold_never_saves_or_removes_prior_evidenc
     assert new_key not in receipts
 
 
+@pytest.mark.parametrize("corrected", [True, False])
+def test_historical_capacity_correction_preserves_prior_and_bounds_dispatch(corrected):
+    from reflexio.server.llm._litellm_types import CompletionResult, ModelProvenance
+    from reflexio.server.llm.input_budget import extraction_provider_guard
+    from reflexio.server.services.playbook.components.overflow_consolidation import (
+        HistoricalScanSelection,
+        _scan_history,
+        _scan_request,
+    )
+
+    prefix = "word " * 1700
+    text = prefix + "🙂Ω" * 512
+    prior = HistoricalQuote(start=0, end=len(prefix), text=prefix)
+    owner, coordinator, row, receipts = _history_fixture(text)
+    key = _scan_request(owner, coordinator, row, [], [], 0, len(prefix))[0]
+    saved = {"output": HistoricalScan(coverage="complete", quotes=[prior]).model_dump()}
+    receipts[key] = saved
+    upstream_guard = MagicMock()
+
+    def completion(**kwargs):
+        import json
+
+        body = json.loads(kwargs["messages"][1]["content"])
+        oversized = HistoricalScanSelection(
+            coverage="complete",
+            snippet_ids=[item["snippet_id"] for item in body["chunk"]["snippets"]],
+        )
+        guard = extraction_provider_guard.get()
+        assert guard is not None
+        guard({}, 10, ("fixture-model",), True)
+        feedback = kwargs["structured_output_validator"](oversized)
+        assert feedback and "remaining capacity" in feedback[0]
+        assert "🙂Ω" not in feedback[0]
+        guard({}, 10, ("fixture-model",), True)
+        output = (
+            HistoricalScanSelection(coverage="complete", snippet_ids=[])
+            if corrected
+            else oversized
+        )
+        assert kwargs["structured_output_validator"](output) == []
+        return CompletionResult(output, ModelProvenance(model_name="fixture-model"))
+
+    cast(
+        MagicMock, owner.client.generate_chat_response_with_provenance
+    ).side_effect = completion
+    token = extraction_provider_guard.set(upstream_guard)
+    try:
+        if corrected:
+            assert _scan_history(
+                owner,
+                coordinator,
+                row,
+                [(0, len(prefix)), (len(prefix), len(text))],
+                [],
+            ) == [prior]
+            assert len(receipts) == 2
+        else:
+            with pytest.raises(InputBudgetExceededError, match="carrier capacity"):
+                _scan_history(
+                    owner,
+                    coordinator,
+                    row,
+                    [(0, len(prefix)), (len(prefix), len(text))],
+                    [],
+                )
+            assert receipts == {key: saved}
+        assert receipts[key] == saved
+        assert upstream_guard.call_count == 2
+        assert extraction_provider_guard.get() is upstream_guard
+    finally:
+        extraction_provider_guard.reset(token)
+
+
 def test_historical_neighbor_reselection_uses_physical_quote_coverage():
     from reflexio.server.services.playbook.components.overflow_consolidation import (
         HistoricalScanSelection,

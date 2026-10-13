@@ -345,3 +345,8 @@ admission and active receipt polling register that organization's local worker;
 polling can resume persisted work after process registration is lost. Terminal
 receipt reads do not start workers. Platform and self-host deployments retain
 their enterprise scheduler ownership.
+
+Historical source selection uses the same one-correction capacity guard as original
+selection. An oversized selection can reduce only its new snippets once; retained
+quotations and the 2,048-token carrier ceiling remain fixed. A second over-capacity
+result stops with a typed hold before further fallback dispatch or a new receipt.

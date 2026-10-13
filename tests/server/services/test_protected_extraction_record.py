@@ -13,11 +13,11 @@ from reflexio.server.services.extraction.input_preparation import (
 from reflexio.server.services.extraction.protected_pass import (
     _merge_candidate_evidence,
     _protected_validator,
-    _selection_repair_scope,
     _selection_spans,
     _selection_update,
     _selection_validator,
     build_protected_record,
+    evidence_selection_repair_scope,
 )
 from reflexio.server.services.extraction.protected_record import (
     CandidateEvidenceQuote,
@@ -756,7 +756,7 @@ def test_capacity_correction_is_bounded_and_exhaustion_stays_typed(failure):
     try:
         with (
             pytest.raises(InputBudgetExceededError, match="record capacity"),
-            _selection_repair_scope(oversized) as validate,
+            evidence_selection_repair_scope(oversized) as validate,
         ):
             guard = extraction_provider_guard.get()
             assert guard is not None
@@ -787,7 +787,7 @@ def test_capacity_correction_can_accept_a_smaller_selection():
     original = extraction_provider_guard.set(reservation)
     validator = Mock(side_effect=[InputBudgetExceededError("record capacity"), []])
     try:
-        with _selection_repair_scope(validator) as validate:
+        with evidence_selection_repair_scope(validator) as validate:
             guard = extraction_provider_guard.get()
             assert guard is not None
             guard({}, 10, ("primary",), True)
@@ -814,7 +814,7 @@ def test_capacity_correction_cannot_swallow_deadline_or_lease_guard():
     try:
         with (
             pytest.raises(ProviderRequestGuardError, match="lease lost"),
-            _selection_repair_scope(
+            evidence_selection_repair_scope(
                 Mock(side_effect=InputBudgetExceededError("record capacity"))
             ) as validate,
         ):

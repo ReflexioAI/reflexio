@@ -15,7 +15,10 @@ EVIDENCE_SCOPE_POLICY = (
     "controls, and admission distinct from observed execution. A reusable rule "
     "must state the supported prerequisite and scope; narrow or reject it when "
     "those conditions are unavailable. Revision must not reverse or broaden a "
-    "supported condition."
+    "supported condition. Before returning a revision, check that content, trigger "
+    "and rationale agree on the exact conditions permitting or prohibiting action. "
+    "If the original excerpt does not establish those conditions, reject instead "
+    "of inventing a permission rule."
 )
 
 HISTORICAL_PLAYBOOK_FIELDS = (

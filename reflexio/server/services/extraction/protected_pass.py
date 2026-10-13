@@ -192,7 +192,7 @@ def _selection_validator(
 
 
 @contextmanager
-def _selection_repair_scope(
+def evidence_selection_repair_scope(
     validator: Callable[[BaseModel], list[str]],
 ) -> Iterator[Callable[[BaseModel], list[str]]]:
     """Allow one capacity correction, then hold without fallback or retry spend."""
@@ -222,8 +222,8 @@ def _selection_repair_scope(
                 raise
             capacity_error = error
             return [
-                "The NEW selections exceed the 2048-token shared or per-candidate "
-                "record limit. Preserve existing evidence and select fewer NEW "
+                "The NEW selections exceed the 2048-token evidence carrier "
+                "limit. Preserve existing evidence and select fewer NEW "
                 "snippets within the displayed remaining capacity. Routine tool "
                 "results remain in the fully covered original chunks."
             ]
@@ -467,7 +467,7 @@ def build_protected_record(
 
             with (
                 present_extraction_chunk(prepared, chunk, record),
-                _selection_repair_scope(
+                evidence_selection_repair_scope(
                     _selection_validator(visible_spans, validate_update, shown_record)
                 ) as validate_selection,
             ):

@@ -23,6 +23,9 @@ from reflexio.server.services.extraction.overflow_coordinator import OverflowCoo
 from reflexio.server.services.extraction.overflow_presentation import (
     protected_source_origins,
 )
+from reflexio.server.services.extraction.protected_pass import (
+    evidence_selection_repair_scope,
+)
 from reflexio.server.services.playbook.components.overflow_evidence import (
     EVIDENCE_SCOPE_POLICY,
     historical_playbook_digest,
@@ -383,19 +386,21 @@ def _scan_history(
         if saved is None:
             coordinator.require_remaining_work(1)
 
-            completion = owner.client.generate_chat_response_with_provenance(
-                messages=messages,
-                model=owner.model_name,
-                response_format=HistoricalScanSelection,
-                structured_output_validator=partial(
-                    _validate_selection_scan,
-                    prior=quotes,
-                    snippets=snippets,
-                    text=text,
-                    start=visible_start,
-                    end=visible_end,
-                ),
+            validator = partial(
+                _validate_selection_scan,
+                prior=quotes,
+                snippets=snippets,
+                text=text,
+                start=visible_start,
+                end=visible_end,
             )
+            with evidence_selection_repair_scope(validator) as validate_selection:
+                completion = owner.client.generate_chat_response_with_provenance(
+                    messages=messages,
+                    model=owner.model_name,
+                    response_format=HistoricalScanSelection,
+                    structured_output_validator=validate_selection,
+                )
             if not isinstance(completion.value, HistoricalScanSelection):
                 raise InputBudgetConfigurationError(
                     "Historical scan has unexpected output type"
