@@ -45,38 +45,38 @@ def judge_extraction_chunks(
                     raise InputBudgetConfigurationError(
                         "Extraction gate template omits prepared source"
                     )
-            if not prompt:
-                coordinator.require_remaining_work(minimum_after_positive)
-                return True
-            messages = [{"role": "user", "content": prompt}]
-            key = coordinator.step_key(
-                "gate-v1", {"model": model, "messages": messages}
-            )
-            saved = coordinator.completed_step(key)
-            if saved is None:
-                # Either all remaining votes are negative, or the current vote
-                # admits a full extraction. Both branches must remain feasible.
-                coordinator.require_remaining_work(
-                    max(len(prepared.chunks) - index, 1 + minimum_after_positive)
+                if not prompt:
+                    coordinator.require_remaining_work(minimum_after_positive)
+                    return True
+                messages = [{"role": "user", "content": prompt}]
+                key = coordinator.step_key(
+                    "gate-v1", {"model": model, "messages": messages}
                 )
-                result = client.generate_chat_response_with_provenance(
-                    messages=messages, model=model
-                )
-                if not isinstance(
-                    result.value, str
-                ) or result.value.strip().lower() not in {"true", "false"}:
-                    raise ValueError(
-                        "Extraction gate returned no valid boolean decision"
+                saved = coordinator.completed_step(key)
+                if saved is None:
+                    # Either all remaining votes are negative, or the current vote
+                    # admits a full extraction. Both branches must remain feasible.
+                    coordinator.require_remaining_work(
+                        max(len(prepared.chunks) - index, 1 + minimum_after_positive)
                     )
-                decision = result.value.strip().lower() == "true"
-                coordinator.complete_step(key, decision, result.provenance)
-            else:
-                decision = saved["output"]
-                if type(decision) is not bool:
-                    raise ValueError("Saved extraction gate decision is invalid")
-            if decision:
-                coordinator.require_remaining_work(minimum_after_positive)
-                return True
+                    result = client.generate_chat_response_with_provenance(
+                        messages=messages, model=model
+                    )
+                    if not isinstance(
+                        result.value, str
+                    ) or result.value.strip().lower() not in {"true", "false"}:
+                        raise ValueError(
+                            "Extraction gate returned no valid boolean decision"
+                        )
+                    decision = result.value.strip().lower() == "true"
+                    coordinator.complete_step(key, decision, result.provenance)
+                else:
+                    decision = saved["output"]
+                    if type(decision) is not bool:
+                        raise ValueError("Saved extraction gate decision is invalid")
+                if decision:
+                    coordinator.require_remaining_work(minimum_after_positive)
+                    return True
     checkpoint = coordinator.checkpoint
     checkpoint["source_coverage"] = [
         coordinator.candidate_key(chunk.text) for chunk in prepared.chunks

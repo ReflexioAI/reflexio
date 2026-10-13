@@ -1577,6 +1577,42 @@ def test_overflow_checkpoint_quota_is_atomic_and_usage_is_immutable(pipeline):
         f"window:{window.window_id}"
     ).generation_request_snapshot["overflow"]
     assert saved == manifest
+    checkpoint = {
+        **manifest["checkpoint"],
+        "output_schema_name": "StructuredProfilesOutput",
+    }
+    manifest = storage.checkpoint_extraction_overflow(
+        window,
+        token,
+        expected_revision=2,
+        source_digest="captured-source",
+        checkpoint=checkpoint,
+    )
+    parent = storage.get_agent_run(f"window:{window.window_id}")
+    assert (
+        parent.generation_request_snapshot["output_schema_name"]
+        == "StructuredProfilesOutput"
+    )
+    for invalid in (
+        {**checkpoint, "output_schema_name": "StructuredPlaybookList"},
+        {"stage": "protected-record"},
+    ):
+        with pytest.raises(
+            OverflowCheckpointConflictError, match="schema is immutable"
+        ):
+            storage.checkpoint_extraction_overflow(
+                window,
+                token,
+                expected_revision=3,
+                source_digest="captured-source",
+                checkpoint=invalid,
+            )
+    assert (
+        storage.get_agent_run(f"window:{window.window_id}").generation_request_snapshot[
+            "overflow"
+        ]
+        == manifest
+    )
     assert storage.count_all_profiles() == 0
     assert storage.pending_extraction_effects() == []
     assert storage.extraction_status("u", "overflow-checkpoint")["status"] != "done"
@@ -2004,7 +2040,14 @@ def test_chunk_gate_requires_complete_valid_negative_coverage(
             for vote in votes
         ]
     )
-    monkeypatch.setattr(client, "_completion_with_hard_timeout", dispatch)
+
+    def dispatch_with_source(*args, **kwargs):
+        presentation = current_overflow_presentation.get()
+        assert presentation is not None
+        assert presentation.chunk in prepared.chunks
+        return dispatch(*args, **kwargs)
+
+    monkeypatch.setattr(client, "_completion_with_hard_timeout", dispatch_with_source)
     coordinator = OverflowCoordinator(
         storage,
         window,
@@ -2744,6 +2787,11 @@ def test_http_overflow_human_answer_resumes_same_window_and_commits_once(
         assert len(pending) == 1 and pending[0]["status"] == "pending"
         parent_id = db.query("SELECT id FROM _agent_runs LIMIT 2")[0]["id"]
     parent = storage.get_agent_run(parent_id)
+    assert parent.generation_request_snapshot["output_schema_name"] == (
+        "StructuredReferencedExtractedPlaybookList"
+        if kind == "playbook"
+        else "StructuredProfilesOutput"
+    )
     assert parent.generation_request_snapshot["overflow"]["checkpoint"][
         "waiting_child"
     ]["pending_tool_call_ids"] == [pending[0]["id"]]

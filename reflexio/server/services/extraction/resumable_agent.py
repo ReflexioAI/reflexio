@@ -492,6 +492,15 @@ class ResumableExtractionAgent:
             or existing.binding != run.binding
         ):
             raise RuntimeError("Overflow extraction child parent binding changed")
+        checkpoint = coordinator.checkpoint
+        selected_schema = checkpoint.get("output_schema_name")
+        if selected_schema is not None and selected_schema != output_schema.__name__:
+            raise InputBudgetConfigurationError(
+                "Overflow extraction output schema changed"
+            )
+        if selected_schema is None:
+            checkpoint["output_schema_name"] = output_schema.__name__
+            coordinator.save_checkpoint(checkpoint)
         registry = ToolRegistry(list(extra_tools or []))
         key = coordinator.step_key(
             "extract-v1",

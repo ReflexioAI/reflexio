@@ -1233,6 +1233,28 @@ class ExtractionStreamStore:
                     raise OverflowCheckpointConflictError(
                         "Historical coverage cannot be changed, removed or exceed chunk capacity"
                     )
+                schema_name = checkpoint.get("output_schema_name")
+                previous_schema = manifest.get("checkpoint", {}).get(
+                    "output_schema_name"
+                )
+                parent_schema = snapshot.get("output_schema_name")
+                if (
+                    (previous_schema is not None and schema_name != previous_schema)
+                    or (
+                        schema_name is not None
+                        and (not isinstance(schema_name, str) or not schema_name)
+                    )
+                    or (
+                        schema_name is not None
+                        and parent_schema is not None
+                        and schema_name != parent_schema
+                    )
+                ):
+                    raise OverflowCheckpointConflictError(
+                        "Extraction output schema is immutable"
+                    )
+                if schema_name is not None:
+                    snapshot["output_schema_name"] = schema_name
                 manifest["checkpoint"] = checkpoint
             manifest["revision"] += 1
             db.query(
