@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import threading
 import time
@@ -20,11 +21,12 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from reflexio.server.env_utils import env_truthy, positive_int_env
+from reflexio.server.env_utils import env_str, env_truthy, positive_int_env
 from reflexio.server.search_runtime import (
     checkpoint,
     current,
     http_request_deadline,
+    increment,
     remaining,
 )
 from reflexio.server.tracing import profile_step
@@ -35,6 +37,9 @@ EmbeddingProviderMode = Literal["cloud", "local_service", "internal_service", "o
 
 _ENV_PROVIDER = "REFLEXIO_EMBEDDING_PROVIDER"
 _ENV_SERVICE_URL = "REFLEXIO_EMBEDDING_SERVICE_URL"
+_ENV_QUERY_URL = "REFLEXIO_QUERY_EMBEDDING_SERVICE_URL"
+_query_contract_cache: dict[tuple[int, str, str], tuple[str, str, int]] = {}
+_query_contract_lock = threading.Lock()
 _ENV_TIMEOUT_MS = "REFLEXIO_EMBEDDING_SERVICE_TIMEOUT_MS"
 _ENV_EMBEDDING_PORT = "EMBEDDING_PORT"
 _ENV_DAEMON_HOST = "REFLEXIO_EMBEDDING_DAEMON_HOST"
@@ -385,11 +390,106 @@ def should_use_embedding_service(model: str) -> bool:
     return embedding_provider_mode(model) in _SERVICE_MODES
 
 
+def query_embedding_service_url() -> str:
+    """Optional isolated query service; an empty value retains shared routing."""
+    return env_str(_ENV_QUERY_URL, "").rstrip("/")
+
+
+def _vector_contract(body: dict[str, Any], *, query: bool) -> tuple[str, str, int]:
+    model, revision, dimensions = (
+        body.get("model"),
+        body.get("revision"),
+        body.get("dimensions"),
+    )
+    if (
+        not isinstance(model, str)
+        or not model
+        or not isinstance(revision, str)
+        or not revision
+        or type(dimensions) is not int
+        or dimensions <= 0
+    ):
+        raise EmbeddingUnavailableError("Incomplete vector contract")
+    if not query and body.get("workload", "shared") != "shared":
+        raise EmbeddingUnavailableError("Document endpoint is not a shared worker")
+    if query and body.get("workload") != "query":
+        raise EmbeddingUnavailableError("Query endpoint is not a query-only worker")
+    return model, revision, dimensions
+
+
+def validate_query_embedding_service(
+    model: str,
+    dimensions: int | None,
+    *,
+    advertised: tuple[dict[str, Any], dict[str, Any]] | None = None,
+) -> str:
+    """Verify identical immutable vector contracts; never fail over to shared.
+
+    Readiness supplies fresh, bounded health responses. The request path caches
+    contracts by PID and both endpoints; a drift requires restarting the API.
+    """
+    query_url = query_embedding_service_url()
+    if not query_url:
+        return embedding_service_url()
+    shared_url = embedding_service_url()
+    if query_url == shared_url:
+        raise EmbeddingUnavailableError("Query embedding capacity must be separate")
+    key = (os.getpid(), shared_url, query_url)
+    contract = _query_contract_cache.get(key)
+    if contract is None or advertised is not None:
+        deadline = time.monotonic() + remaining(embedding_service_timeout_seconds())
+        if not _query_contract_lock.acquire(
+            timeout=remaining(max(0, deadline - time.monotonic()))
+        ):
+            raise EmbeddingUnavailableError("Query model contract discovery is busy")
+        try:
+            cached = _query_contract_cache.get(key)
+            if cached is not None and advertised is None:
+                contract = cached
+            else:
+                if advertised is None:
+                    bodies = []
+                    for endpoint in (shared_url, query_url):
+                        try:
+                            response = _http_client().get(
+                                endpoint + "/health/model",
+                                timeout=remaining(max(0, deadline - time.monotonic())),
+                            )
+                            response.raise_for_status()
+                            bodies.append(response.json())
+                        except (httpx.HTTPError, ValueError) as exc:
+                            raise EmbeddingUnavailableError(
+                                "Could not verify isolated query embedding contract"
+                            ) from exc
+                else:
+                    bodies = list(advertised)
+                if any(not isinstance(body, dict) for body in bodies):
+                    raise EmbeddingUnavailableError("Incomplete vector contract")
+                contract = _vector_contract(bodies[0], query=False)
+                if contract != _vector_contract(bodies[1], query=True):
+                    raise EmbeddingUnavailableError(
+                        "Query and document vector contracts differ"
+                    )
+                if cached is not None and cached != contract:
+                    raise EmbeddingUnavailableError(
+                        "Vector contract changed; restart API required"
+                    )
+                _query_contract_cache[key] = contract
+        finally:
+            _query_contract_lock.release()
+    if contract[0] != model or (dimensions is not None and contract[2] != dimensions):
+        raise EmbeddingUnavailableError(
+            "Query vector contract differs from requested model/dimensions"
+        )
+    return query_url
+
+
 def get_service_embeddings(
     texts: list[str],
     *,
     model: str,
     dimensions: int | None = None,
+    purpose: Literal["document", "query"] = "document",
 ) -> list[list[float]]:
     """Call the OpenAI-compatible embedding service.
 
@@ -416,12 +516,20 @@ def get_service_embeddings(
             f"Embedding service requested while {_ENV_PROVIDER}={mode}"
         )
 
-    url = f"{embedding_service_url(mode)}/v1/embeddings"
+    if purpose not in ("document", "query"):
+        raise ValueError("Embedding purpose must be document or query")
+    separate = purpose == "query" and bool(query_embedding_service_url())
+    base = (
+        validate_query_embedding_service(model, dimensions)
+        if separate
+        else embedding_service_url(mode)
+    )
+    url = f"{base}/v1/embeddings"
     timeout = embedding_service_timeout_seconds(mode)
 
     # Bound each request so a single large publish cannot exceed the client read
     # timeout: split into fixed-size chunks and concatenate the results in order.
-    chunk_size = _max_texts_per_request()
+    chunk_size = 1 if separate else _max_texts_per_request()
     embeddings: list[list[float]] = []
     for start in range(0, len(texts), chunk_size):
         chunk = texts[start : start + chunk_size]
@@ -433,6 +541,7 @@ def get_service_embeddings(
                 dimensions=dimensions,
                 timeout=timeout,
                 mode=mode,
+                purpose=purpose,
             )
         )
     return embeddings
@@ -446,11 +555,16 @@ def _post_embedding_batch(
     dimensions: int | None,
     timeout: float,
     mode: EmbeddingProviderMode,
+    purpose: Literal["document", "query"] = "document",
 ) -> list[list[float]]:
     """POST one bounded batch of texts to the embedding service."""
     payload: dict[str, Any] = {"model": model, "input": texts}
-    interactive = current() is not None or all(
-        text.startswith(("query: ", "search_query: ")) for text in texts
+    if purpose == "query" and query_embedding_service_url():
+        payload["purpose"] = "query"
+    interactive = (
+        purpose == "query"
+        or current() is not None
+        or all(text.startswith(("query: ", "search_query: ")) for text in texts)
     )
     payload["priority"] = "interactive" if interactive else "bulk"
     if not interactive:
@@ -469,7 +583,26 @@ def _post_embedding_batch(
             response = _http_client().post(url, json=payload, timeout=timeout)
             response.raise_for_status()
             body = response.json()
-            return _ordered_embeddings_from_response(body.get("data"), len(texts))
+            vectors = _ordered_embeddings_from_response(body.get("data"), len(texts))
+            if purpose == "query" and query_embedding_service_url():
+                expected = (
+                    dimensions
+                    or _query_contract_cache[
+                        (
+                            os.getpid(),
+                            embedding_service_url(mode),
+                            query_embedding_service_url(),
+                        )
+                    ][2]
+                )
+                if any(
+                    len(vector) != expected
+                    or not all(math.isfinite(value) for value in vector)
+                    for vector in vectors
+                ):
+                    raise ValueError("Query worker returned invalid vectors")
+                increment("search.embedding.query_worker")
+            return vectors
         except (
             httpx.ConnectError,
             httpx.ConnectTimeout,

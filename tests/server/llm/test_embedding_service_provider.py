@@ -248,7 +248,7 @@ def test_litellm_local_model_uses_http_provider(monkeypatch) -> None:
     calls: list[tuple[list[str], str]] = []
     monkeypatch.setattr(
         "reflexio.server.llm._litellm_embedding.get_service_embeddings",
-        lambda texts, *, model, dimensions: (  # noqa: ARG005
+        lambda texts, *, model, dimensions, purpose: (  # noqa: ARG005
             calls.append((texts, model)) or [[0.1, 0.2]]
         ),
     )
