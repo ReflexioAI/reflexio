@@ -432,3 +432,46 @@ def test_an_empty_provider_tick_does_not_clear_the_tick_streak(
     scheduler._run_once()
 
     assert "extraction-resume-tick" in background_work._streaks
+
+
+def test_start_gate_holds_the_first_sweep_with_no_storage_call(monkeypatch):
+    """A shut start gate defers the whole first tick: no context, no discovery."""
+    monkeypatch.setattr(resume_scheduler, "pending_tool_calls_enabled", lambda _c: True)
+    from reflexio.server import scheduling
+
+    monkeypatch.setattr(scheduling, "_START_GATE_POLL_SECONDS", 0.005)
+    drained = threading.Event()
+    monkeypatch.setattr(
+        resume_scheduler,
+        "ExtractionResumeWorker",
+        lambda **_kw: SimpleNamespace(drain=lambda **_k: drained.set() or 0),
+    )
+    factory = MagicMock(
+        side_effect=lambda org_id: _request_context(
+            org_id,
+            storage=SimpleNamespace(
+                list_resumable_work_org_ids=MagicMock(return_value=[]),
+                expire_pending_tool_calls=MagicMock(return_value=0),
+            ),
+        )
+    )
+    is_open = threading.Event()
+    polled = threading.Event()
+
+    def gate() -> bool:
+        polled.set()
+        return is_open.is_set()
+
+    scheduler = resume_scheduler.maybe_start_resume_scheduler(
+        cast(Callable[[str], RequestContext], factory),
+        bootstrap_org_id="org_1",
+        start_gate=gate,
+    )
+    try:
+        assert polled.wait(timeout=1.0)
+        assert not drained.wait(timeout=0.1)
+        factory.assert_not_called()
+        is_open.set()
+        assert drained.wait(timeout=1.0), "first sweep never ran once open"
+    finally:
+        scheduler.stop(timeout_seconds=1.0)

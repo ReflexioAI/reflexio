@@ -22,6 +22,11 @@ set of hooks so no observable behaviour changes:
 - ``leader_gate`` (optional): a fleet-coordination gate consulted before each
   tick; ``None`` (the default and the OSS-local case) preserves today's
   always-tick behavior byte-for-byte.
+- ``start_gate`` (optional): a zero-arg callable polled ONCE, before the first
+  tick, until it returns ``True``. It delays only the first tick (a deployment
+  uses it to keep a newly started process from duplicating fleet-wide work
+  another process is still doing); ``None`` (the default) starts ticking
+  immediately, exactly as before.
 
 A scheduler whose loop is materially different (e.g. a bounded-attempt retrier
 that waits *before* each attempt and exits on first success) may override
@@ -36,15 +41,22 @@ from __future__ import annotations
 
 import logging
 import threading
+from collections.abc import Callable
 from typing import Protocol
 
-from reflexio.server.background_work import background_work
+from reflexio.server.background_work import (
+    background_work,
+    report_background_failure,
+)
 
 logger = logging.getLogger(__name__)
 
 # How long a non-leader waits before re-checking the gate. Fixed (no interval
 # memoization): a follower that becomes leader starts ticking within <=60s.
 _FOLLOWER_POLL_SECONDS: float = 60.0
+
+# How often a held scheduler re-polls its ``start_gate`` before its first tick.
+_START_GATE_POLL_SECONDS: float = 5.0
 
 
 class LeaderGate(Protocol):
@@ -75,16 +87,25 @@ class ThreadedScheduler:
         thread_name (str): OS thread name for the daemon (aids debugging / logs).
         leader_gate (LeaderGate | None): Optional fleet-coordination gate
             consulted before each tick. Defaults to None (always tick).
+        start_gate (Callable[[], bool] | None): Optional gate polled every
+            ``_START_GATE_POLL_SECONDS`` before the FIRST tick until it returns
+            True; later ticks never consult it. Defaults to None (first tick
+            runs immediately).
     """
 
     def __init__(
-        self, *, thread_name: str, leader_gate: LeaderGate | None = None
+        self,
+        *,
+        thread_name: str,
+        leader_gate: LeaderGate | None = None,
+        start_gate: Callable[[], bool] | None = None,
     ) -> None:
         self._thread_name = thread_name
         self._stop_event = threading.Event()
         self._wake_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._leader_gate = leader_gate
+        self._start_gate = start_gate
 
     def start(self) -> None:
         """Start the daemon thread, unless it is gated off or already running.
@@ -108,7 +129,39 @@ class ThreadedScheduler:
 
     @background_work()
     def _run_background_loop(self) -> None:
-        self._run_loop()
+        if self._await_start_gate():
+            self._run_loop()
+
+    def _await_start_gate(self) -> bool:
+        """Hold until the start gate opens; return False if stopped first.
+
+        Lives outside :meth:`_run_loop` so a subclass that overrides the loop
+        wholesale is still held. A raising gate fails open (the tick runs) for
+        the same reason a raising leader gate does: a delayed first tick is
+        safe, a daemon that never starts is silent.
+
+        Returns:
+            bool: True once the gate is open (or absent); False when
+                :meth:`stop` was requested while holding.
+        """
+        gate = self._start_gate
+        if gate is None:
+            return True
+        while not self._stop_event.is_set():
+            try:
+                if gate():
+                    return True
+            except Exception as exc:
+                report_background_failure(
+                    logger,
+                    "scheduler_start_gate_failed_open",
+                    exc,
+                    scope=f"start-gate-{self._thread_name}",
+                    thread=self._thread_name,
+                )
+                return True
+            self._stop_event.wait(_START_GATE_POLL_SECONDS)
+        return False
 
     def stop(self, *, timeout_seconds: float = 5.0) -> None:
         """Signal the loop to stop and join the thread.

@@ -55,8 +55,11 @@ class ExtractionResumeScheduler(ThreadedScheduler):
         bootstrap_org_id: str,
         org_id_provider: Callable[[], list[str]] | None = None,
         max_runs_per_tick: int = 10,
+        start_gate: Callable[[], bool] | None = None,
     ) -> None:
-        super().__init__(thread_name="reflexio-extraction-resume-scheduler")
+        super().__init__(
+            thread_name="reflexio-extraction-resume-scheduler", start_gate=start_gate
+        )
         self.request_context_factory = request_context_factory
         self.bootstrap_org_id = bootstrap_org_id
         self.org_id_provider = org_id_provider
@@ -265,17 +268,22 @@ def maybe_start_resume_scheduler(
     *,
     bootstrap_org_id: str,
     org_id_provider: Callable[[], list[str]] | None = None,
+    start_gate: Callable[[], bool] | None = None,
 ) -> ExtractionResumeScheduler:
     """Start discovery; gate each organization's execution on its current config.
 
     A disabled bootstrap org must not disable recovery for other organizations
     or for a feature enabled after startup. Provider discovery runs before the
     bootstrap lookup, so an empty platform can safely wait for its first org.
+
+    ``start_gate`` (default None: tick at once) holds the first tick until it
+    returns True; see :class:`~reflexio.server.scheduling.ThreadedScheduler`.
     """
     scheduler = ExtractionResumeScheduler(
         request_context_factory=request_context_factory,
         bootstrap_org_id=bootstrap_org_id,
         org_id_provider=org_id_provider,
+        start_gate=start_gate,
     )
     scheduler.start()
     return scheduler

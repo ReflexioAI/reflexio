@@ -378,6 +378,7 @@ def create_app(  # noqa: C901
     profile: "DeploymentProfile | None" = None,
     durable_org_ids_provider: Callable[[], Iterable[str]] | None = None,
     resume_org_ids_provider: Callable[[], list[str]] | None = None,
+    resume_start_gate: Callable[[], bool] | None = None,
 ) -> FastAPI:
     """Factory to create a FastAPI app.
 
@@ -434,6 +435,12 @@ def create_app(  # noqa: C901
             authoritative, allowing a multi-tenant deployment to recover when the
             prior bootstrap org disappears and to discover work across data refs.
             The OSS default remains unchanged when no provider is supplied.
+        resume_start_gate: Optional zero-arg callable that holds the resume
+            scheduler's FIRST tick until it returns True (later ticks never
+            consult it). A multi-process deployment uses it to stop a newly
+            started process from repeating the fleet-wide resume sweep while
+            another process is still running it. When None (default) the
+            scheduler ticks immediately, exactly as before.
 
     Returns:
         Configured FastAPI application.
@@ -510,6 +517,7 @@ def create_app(  # noqa: C901
                     lambda org_id: RequestContext(org_id=org_id),
                     bootstrap_org_id=bootstrap_org_id,
                     org_id_provider=resume_org_ids_provider,
+                    start_gate=resume_start_gate,
                 )
                 # Register the missing-vector backfill sweep (opt-in via
                 # REFLEXIO_MISSING_VECTOR_BACKFILL_ENABLED) BEFORE starting the GC
