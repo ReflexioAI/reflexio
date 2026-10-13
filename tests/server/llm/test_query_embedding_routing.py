@@ -86,6 +86,38 @@ def test_unset_or_blank_query_url_retains_shared_routing(routing, monkeypatch):
     assert [(r.method, r.url.host) for r in calls] == [("POST", "shared")]
 
 
+def test_local_model_query_route_uses_default_shared_daemon(routing, monkeypatch):
+    calls, bodies = routing
+    monkeypatch.delenv("REFLEXIO_EMBEDDING_PROVIDER", raising=False)
+    monkeypatch.delenv("REFLEXIO_EMBEDDING_SERVICE_URL", raising=False)
+    monkeypatch.delenv("REFLEXIO_EMBEDDING_DAEMON_HOST", raising=False)
+    monkeypatch.setenv("EMBEDDING_PORT", "8072")
+    bodies["127.0.0.1"] = bodies["shared"]
+    assert provider.get_service_embeddings(
+        ["text"], model=MODEL, dimensions=2, purpose="query"
+    ) == [[1.0, 0.0]]
+    assert str(calls[0].url) == "http://127.0.0.1:8072/health/model"
+    assert calls[-1].method == "POST" and calls[-1].url.host == "query"
+
+
+def test_advertised_query_contract_lock_ignores_long_embedding_timeout(
+    routing, monkeypatch
+):
+    _, bodies = routing
+    monkeypatch.setenv("REFLEXIO_EMBEDDING_SERVICE_TIMEOUT_MS", "600000")
+    monkeypatch.setattr(provider, "_ADVERTISED_CAPABILITY_LOCK_SECONDS", 0.03)
+    provider._query_contract_lock.acquire()
+    try:
+        started = time.monotonic()
+        with pytest.raises(provider.EmbeddingUnavailableError, match="busy"):
+            provider.validate_query_embedding_service(
+                MODEL, 2, advertised=(bodies["shared"], bodies["query"])
+            )
+        assert time.monotonic() - started < 0.5
+    finally:
+        provider._query_contract_lock.release()
+
+
 @pytest.mark.parametrize(
     "field,value",
     [
@@ -157,6 +189,28 @@ def test_failed_query_never_retries_on_shared_worker(routing, monkeypatch):
         )
     client.post.assert_called_once()
     assert client.post.call_args.args[0] == "http://query/v1/embeddings"
+
+
+@pytest.mark.parametrize("vector", [[1.0], [float("nan"), 0.0], [0.0, float("inf")]])
+@pytest.mark.parametrize("dimensions", [2, None])
+def test_invalid_query_vectors_fail_without_shared_fallback_or_success_counter(
+    routing, monkeypatch, vector, dimensions
+):
+    provider.validate_query_embedding_service(MODEL, 2)
+    client = Mock()
+    response = Mock()
+    response.json.return_value = {"data": [{"index": 0, "embedding": vector}]}
+    client.post.return_value = response
+    counter = Mock()
+    monkeypatch.setattr(provider, "_http_client", lambda: client)
+    monkeypatch.setattr(provider, "increment", counter)
+    with pytest.raises(provider.EmbeddingUnavailableError):
+        provider.get_service_embeddings(
+            ["text"], model=MODEL, dimensions=dimensions, purpose="query"
+        )
+    client.post.assert_called_once()
+    assert client.post.call_args.args[0] == "http://query/v1/embeddings"
+    counter.assert_not_called()
 
 
 def test_query_worker_cannot_also_be_the_document_destination(routing):

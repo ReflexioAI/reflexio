@@ -422,6 +422,7 @@ def validate_query_embedding_service(
     dimensions: int | None,
     *,
     advertised: tuple[dict[str, Any], dict[str, Any]] | None = None,
+    deadline: float | None = None,
 ) -> str:
     """Verify identical immutable vector contracts; never fail over to shared.
 
@@ -429,17 +430,25 @@ def validate_query_embedding_service(
     contracts by PID and both endpoints; a drift requires restarting the API.
     """
     query_url = query_embedding_service_url()
+    mode = embedding_provider_mode(model)
     if not query_url:
-        return embedding_service_url()
-    shared_url = embedding_service_url()
+        return embedding_service_url(mode)
+    shared_url = embedding_service_url(mode)
     if query_url == shared_url:
         raise EmbeddingUnavailableError("Query embedding capacity must be separate")
     key = (os.getpid(), shared_url, query_url)
     contract = _query_contract_cache.get(key)
     if contract is None or advertised is not None:
-        deadline = time.monotonic() + remaining(embedding_service_timeout_seconds())
+        admission_seconds = (
+            _ADVERTISED_CAPABILITY_LOCK_SECONDS
+            if advertised is not None
+            else embedding_service_timeout_seconds(mode)
+        )
+        discovery_deadline = time.monotonic() + remaining(admission_seconds)
+        if deadline is not None:
+            discovery_deadline = min(discovery_deadline, deadline)
         if not _query_contract_lock.acquire(
-            timeout=remaining(max(0, deadline - time.monotonic()))
+            timeout=remaining(max(0, discovery_deadline - time.monotonic()))
         ):
             raise EmbeddingUnavailableError("Query model contract discovery is busy")
         try:
@@ -453,7 +462,9 @@ def validate_query_embedding_service(
                         try:
                             response = _http_client().get(
                                 endpoint + "/health/model",
-                                timeout=remaining(max(0, deadline - time.monotonic())),
+                                timeout=remaining(
+                                    max(0, discovery_deadline - time.monotonic())
+                                ),
                             )
                             response.raise_for_status()
                             bodies.append(response.json())
