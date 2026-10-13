@@ -167,17 +167,7 @@ def _selection_validator(
             return ["Select at most 128 individual snippets per evidence field."]
         except ValueError as error:
             return str(error).splitlines()
-        try:
-            return validate_update(update)
-        except InputBudgetExceededError:
-            # An oversized proposal may be corrected within the existing single
-            # structured-repair attempt; it is never accepted or persisted.
-            return [
-                "The NEW selections exceed the 2048-token shared or per-candidate "
-                "record limit. Preserve existing evidence and select fewer NEW "
-                "snippets within the displayed remaining capacity. Routine tool "
-                "results remain in the fully covered original chunks."
-            ]
+        return validate_update(update)
 
     return validate
 

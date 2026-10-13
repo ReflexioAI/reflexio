@@ -568,7 +568,7 @@ def test_reused_shared_evidence_copies_only_shown_quote_not_surrounding_source(u
         assert stored["evidence_refs"] == [ref]
 
 
-def test_oversized_selection_gets_repair_feedback_without_accepting_or_evicting():
+def test_oversized_selection_remains_a_terminal_budget_error_without_eviction():
     source = span(1, " x" * 5000)
     pieces = _selection_spans((source,))
     selected = ProtectedRecordSelection(
@@ -581,8 +581,10 @@ def test_oversized_selection_gets_repair_feedback_without_accepting_or_evicting(
     )
     record = ProtectedRecord()
     validator = _selection_validator(pieces, _protected_validator(record, pieces))
-    errors = validator(selected)
-    assert len(errors) == 1 and "2048-token" in errors[0]
+    from reflexio.server.llm.input_budget import InputBudgetExceededError
+
+    with pytest.raises(InputBudgetExceededError, match="record capacity"):
+        validator(selected)
     assert record.evidence == ()
     corrected = ProtectedRecordSelection(
         evidence=[
