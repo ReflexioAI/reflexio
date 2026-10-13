@@ -166,6 +166,37 @@ def set_leader_gate(gate: LeaderGate | None) -> None:
     _leader_gate_hook = gate
 
 
+# Injection seam: enterprise aligns the healthy cadence to a fixed daily slot.
+# None (OSS default) keeps "poll_interval_seconds after the tick ended", which
+# drifts the start time later by each tick's duration.
+_healthy_interval_provider_hook: Callable[[float], float] | None = None
+
+
+def set_healthy_interval_provider(
+    provider: Callable[[float], float] | None,
+) -> None:
+    """Register how long to wait after a healthy (or retries-exhausted) tick.
+
+    The provider receives the configured ``poll_interval_seconds`` and returns
+    the seconds to wait, e.g. the time until the next daily UTC slot, so the
+    sweep starts at the same wall-clock time every day instead of drifting by
+    each tick's duration. The failed-tick fast retry is never affected.
+    ``None`` (OSS default) clears the hook.
+
+    Args:
+        provider (Callable[[float], float] | None): Wait-seconds provider, or
+            ``None`` to clear.
+    """
+    global _healthy_interval_provider_hook  # noqa: PLW0603
+    _healthy_interval_provider_hook = provider
+
+
+def _healthy_interval(poll_interval: float) -> float:
+    provider = _healthy_interval_provider_hook
+    wait = provider(poll_interval) if provider is not None else poll_interval
+    return max(wait, _MIN_POLL_SECONDS)
+
+
 # Global sweeps run once per tick (for GLOBAL, non-tenant-scoped tables),
 # gated on expiry_reclamation.enabled. Each fn takes `now` (unix epoch) and
 # returns a deleted-row count. Enterprise registers its sweeps here at startup;
@@ -826,7 +857,7 @@ class LineageGCScheduler(ThreadedScheduler):
         """
         if not self._tick_had_failure:
             self._consecutive_failed_ticks = 0
-            return max(poll_interval, _MIN_POLL_SECONDS)
+            return _healthy_interval(poll_interval)
 
         self._consecutive_failed_ticks += 1
         # `min`, not the constant: `poll_interval_seconds` may legitimately be
@@ -847,7 +878,7 @@ class LineageGCScheduler(ThreadedScheduler):
                 "off to the configured interval; the per-org anomalies say why",
                 self._consecutive_failed_ticks,
             )
-            return max(poll_interval, _MIN_POLL_SECONDS)
+            return _healthy_interval(poll_interval)
 
         logger.warning(
             "event=lineage_gc_tick_retry_soon in=%.0fs consecutive=%d",
