@@ -154,3 +154,58 @@ def test_a_straggler_failing_late_does_not_fail_the_next_tick(fanout_scheduler):
         assert scheduler._run_once() == _DAY  # tick N+1: straggler ignored
     finally:
         release.set()
+
+
+# ---------------------------------------------------------------------------
+# Healthy-interval provider: enterprise aligns the daily sweep to a fixed UTC
+# slot, otherwise each day starts later by the previous tick's duration.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def aligned_scheduler():
+    scheduler = LineageGCScheduler(
+        request_context_factory=lambda _org: None,  # type: ignore[arg-type]
+        bootstrap_org_id="org-boot",
+    )
+    seen: list[float] = []
+
+    def provider(poll_interval: float) -> float:
+        seen.append(poll_interval)
+        return 1234.0
+
+    gc_scheduler.set_healthy_interval_provider(provider)
+    try:
+        yield scheduler, seen
+    finally:
+        gc_scheduler.set_healthy_interval_provider(None)
+
+
+def test_a_healthy_tick_waits_what_the_provider_says(aligned_scheduler):
+    scheduler, seen = aligned_scheduler
+    scheduler._tick_had_failure = False
+    assert scheduler._next_interval(_DAY) == 1234.0
+    assert seen == [_DAY]
+
+
+def test_a_failed_tick_still_takes_the_fast_retry_with_a_provider(aligned_scheduler):
+    scheduler, seen = aligned_scheduler
+    scheduler._tick_had_failure = True
+    assert scheduler._next_interval(_DAY) == gc_scheduler._FAILED_TICK_RETRY_SECONDS
+    assert seen == []
+
+
+def test_exhausted_retries_back_off_to_the_provider(aligned_scheduler):
+    scheduler, _seen = aligned_scheduler
+    scheduler._tick_had_failure = True
+    scheduler._consecutive_failed_ticks = gc_scheduler._MAX_CONSECUTIVE_FAST_RETRIES
+    assert scheduler._next_interval(_DAY) == 1234.0
+
+
+def test_no_provider_keeps_the_configured_interval():
+    scheduler = LineageGCScheduler(
+        request_context_factory=lambda _org: None,  # type: ignore[arg-type]
+        bootstrap_org_id="org-boot",
+    )
+    scheduler._tick_had_failure = False
+    assert scheduler._next_interval(_DAY) == _DAY
