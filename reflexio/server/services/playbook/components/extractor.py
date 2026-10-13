@@ -16,6 +16,10 @@ from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.llm.model_defaults import ModelRole, resolve_model_name
 from reflexio.server.llm.token_accounting import RunTokenTotals, sum_trace_tokens
 from reflexio.server.services.deferred_learning_plan import ExtractorBookmarkAdvance
+from reflexio.server.services.extraction.input_preparation import (
+    ExtractionInputBudgetExceededError,
+    SourceSpan,
+)
 from reflexio.server.services.extraction.outcome import ExtractionOutcome
 from reflexio.server.services.extraction.overflow_coordinator import (
     OverflowCoordinator,
@@ -108,36 +112,86 @@ def _adopted_playbook_schema(
     return schema
 
 
+def _fresh_candidate_record(
+    entry: StructuredPlaybookContent,
+    context: PlaybookPromptContext,
+    spans: tuple[SourceSpan, ...],
+) -> ProtectedRecord:
+    """Build the same exact, bounded carrier before admission and conversion."""
+    by_ref = {span.evidence_ref: span for span in spans}
+    quoted: list[ProtectedEvidence] = []
+    for raw_ref in entry.evidence_refs:
+        ref = raw_ref.strip()
+        span = by_ref.get(ref)
+        if span is None:
+            raise ValueError("Candidate references unavailable original source")
+        quoted.append(
+            ProtectedEvidence(kind="uncertainty", evidence_refs=(ref,), quote=span.text)
+        )
+    for item in entry.evidence:
+        source = context.evidence_sources[item.turn_ref.strip()]
+        quote = resolve_verbatim_source_span(
+            item.source_span.strip(), source.evidence_texts
+        )
+        matches = [
+            span
+            for span in spans
+            if span.interaction_id == source.interaction_id
+            and quote is not None
+            and quote in span.text
+        ]
+        if not matches or quote is None:
+            raise ValueError("Candidate quote lacks its original source")
+        quoted.extend(
+            ProtectedEvidence(
+                kind="uncertainty", evidence_refs=(span.evidence_ref,), quote=quote
+            )
+            for span in matches
+        )
+    record = ProtectedRecord().merge(
+        ProtectedRecordUpdate(evidence=quoted), visible_spans=spans
+    )
+    if not record.evidence:
+        raise ValueError("Candidate lacks bounded verified evidence")
+    return record
+
+
+def _fresh_output_validation_errors(
+    output: StructuredReferencedExtractedPlaybookList | StructuredExtractedPlaybookList,
+    context: PlaybookPromptContext,
+    spans: tuple[SourceSpan, ...],
+) -> list[str]:
+    errors = []
+    for index, raw_entry in enumerate(output.playbooks or []):
+        entry = as_playbook_content(raw_entry)
+        reason = candidate_rejection_reason(
+            entry, context.evidence_sources, context.evidence_units
+        )
+        if reason is None:
+            try:
+                _fresh_candidate_record(entry, context, spans)
+            except ExtractionInputBudgetExceededError:
+                reason = (
+                    "candidate_evidence_capacity_exceeded: retain complete support within "
+                    "the 2048-token evidence carrier. Use fewer references only when every "
+                    "clause remains supported, or shorter exact original quotations when "
+                    "the supplied schema permits them. Never truncate evidence or omit a "
+                    "supported candidate merely to satisfy the bound."
+                )
+        if reason is not None:
+            errors.append(f"playbooks[{index}]: {reason}")
+    return errors
+
+
 def _validate_legacy_evidence(
     output: StructuredPlaybookList, coordinator: OverflowCoordinator | None
 ) -> list[str]:
     if coordinator is None or coordinator.saved_run is None:
         raise InputBudgetConfigurationError("Saved playbook source is unavailable")
-    spans = tuple(
-        span
-        for chunk in coordinator.require_prepared().chunks
-        for span in (*chunk.neighbors, *chunk.spans)
-    )
-    by_ref = {span.evidence_ref: span for span in spans}
-    source_ids = set(coordinator.saved_run.binding.source_interaction_ids)
     for index, _entry in enumerate(output.playbooks, 1):
         if not _entry.has_content:
             return ["Saved candidate lacks usable content."]
-        record = ProtectedRecord.model_validate(
-            coordinator.checkpoint.get("candidate_evidence", {}).get(f"C{index}", {})
-        )
-        if not record.evidence:
-            return ["Saved candidate lacks verified original evidence."]
-        checked = ProtectedRecord().merge(
-            ProtectedRecordUpdate(evidence=list(record.evidence)),
-            visible_spans=spans,
-        )
-        if any(
-            by_ref[ref].interaction_id not in source_ids
-            for item in checked.evidence
-            for ref in item.evidence_refs
-        ):
-            return ["Saved candidate evidence is outside original attribution."]
+        coordinator.verified_adopted_record(index)
     return []
 
 
@@ -447,22 +501,39 @@ class PlaybookExtractor:
         ) -> list[str]:
             if legacy_output and isinstance(output, StructuredPlaybookList):
                 return _validate_legacy_evidence(output, coordinator)
+            if coordinator is None:
+                raise InputBudgetConfigurationError(
+                    "Overflow candidate validation lacks its coordinator"
+                )
             if not isinstance(
                 output,
                 StructuredReferencedExtractedPlaybookList
                 | StructuredExtractedPlaybookList,
             ):
                 return ["Return the supplied evidence-grounded playbook schema."]
-            return [
-                f"playbooks[{index}]: {reason}"
-                for index, entry in enumerate(output.playbooks or [])
-                if (
-                    reason := candidate_rejection_reason(
-                        entry, context.evidence_sources, context.evidence_units
+            if stored_schema is not None:
+                # Adopted receipts use their separately verified, bounded
+                # candidate_evidence record; never rebuild a fresh carrier from
+                # an older schema's potentially much longer source quotation.
+                return [
+                    f"playbooks[{index}]: {reason}"
+                    for index, entry in enumerate(output.playbooks or [])
+                    if (
+                        reason := candidate_rejection_reason(
+                            entry, context.evidence_sources, context.evidence_units
+                        )
                     )
-                )
-                is not None
-            ]
+                    is not None
+                ]
+            return _fresh_output_validation_errors(
+                output,
+                context,
+                tuple(
+                    span
+                    for chunk in coordinator.require_prepared().chunks
+                    for span in (*chunk.neighbors, *chunk.spans)
+                ),
+            )
 
         def overflow_call() -> OverflowExtractionCall:
             visible = build_playbook_prompt_context(
@@ -503,7 +574,11 @@ class PlaybookExtractor:
                         "approval, contradictions and uncertainty. Cite only visible original evidence. "
                         "For evidence_refs, use exact i<id>:<field>:<start>:<end> references shown "
                         "in prepared evidence, rather than coarse T labels. For explicit evidence "
-                        "quotations use the shown turn_ref and an exact original quotation."
+                        "quotations use the shown turn_ref and an exact original quotation. "
+                        "Each candidate's complete evidence carrier must fit 2048 tokens, "
+                        "including reference framing. Prefer exact short quotations when the "
+                        "supplied schema supports them; otherwise cite only references needed "
+                        "to support every clause, without dropping necessary evidence."
                     ),
                 }
             )
@@ -710,44 +785,12 @@ class PlaybookExtractor:
                             for chunk in coordinator.require_prepared().chunks
                             for span in (*chunk.neighbors, *chunk.spans)
                         )
-                        by_ref = {span.evidence_ref: span for span in spans}
-                        quoted = []
-                        for raw_ref in entry.evidence_refs:
-                            ref = raw_ref.strip()
-                            span = by_ref.get(ref)
-                            if span is None:
-                                raise ValueError(
-                                    "Candidate references unavailable original source"
-                                )
-                            quoted.append(
-                                ProtectedEvidence(
-                                    kind="uncertainty",
-                                    evidence_refs=(ref,),
-                                    quote=span.text,
-                                )
-                            )
-                        for item in entry.evidence:
-                            source = (evidence_sources or {})[item.turn_ref.strip()]
-                            matches = [
-                                span
-                                for span in spans
-                                if span.interaction_id == source.interaction_id
-                                and item.source_span in span.text
-                            ]
-                            if not matches:
-                                raise ValueError(
-                                    "Candidate quote lacks its original source"
-                                )
-                            quoted.extend(
-                                ProtectedEvidence(
-                                    kind="uncertainty",
-                                    evidence_refs=(span.evidence_ref,),
-                                    quote=item.source_span,
-                                )
-                                for span in matches
-                            )
-                        record = ProtectedRecord().merge(
-                            ProtectedRecordUpdate(evidence=quoted), visible_spans=spans
+                        record = _fresh_candidate_record(
+                            entry,
+                            PlaybookPromptContext(
+                                "", evidence_sources or {}, evidence_units or {}
+                            ),
+                            spans,
                         )
                     else:
                         record = ProtectedRecord.model_validate(

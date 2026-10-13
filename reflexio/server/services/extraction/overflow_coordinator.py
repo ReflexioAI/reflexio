@@ -38,7 +38,10 @@ from reflexio.server.services.extraction.input_preparation import (
     PreparedExtractionInput,
     repartition_extraction_input,
 )
-from reflexio.server.services.extraction.protected_record import ProtectedRecord
+from reflexio.server.services.extraction.protected_record import (
+    ProtectedRecord,
+    ProtectedRecordUpdate,
+)
 from reflexio.server.services.storage.storage_base import AgentRunRecord, BaseStorage
 from reflexio.server.services.storage.storage_base._extraction_stream import (
     OverflowAttemptBudgetExceededError,
@@ -158,6 +161,87 @@ class OverflowCoordinator:
             raise ProviderRequestGuardError(
                 "Extraction cannot publish without verified full source coverage"
             )
+
+    def verified_adopted_record(self, index: int) -> ProtectedRecord:
+        """Revalidate separate evidence under the original legacy run contract."""
+        self._require_adopted_contract()
+        record = ProtectedRecord.model_validate(
+            self.checkpoint.get("candidate_evidence", {}).get(f"C{index}", {})
+        )
+        return self._verify_adopted_record(record)
+
+    def _require_adopted_contract(self) -> None:
+        run = self.saved_run
+        schema = (
+            "StructuredProfilesOutput"
+            if self.window.kind == "profile"
+            else "StructuredPlaybookList"
+        )
+        if (
+            run is None
+            or run.committed_output is None
+            or run.id != f"window:{self.window.window_id}"
+            or run.binding.org_id != self.storage.org_id
+            or run.binding.user_id != self.window.user_id
+            or run.binding.extractor_kind != self.window.kind
+            or self.checkpoint.get("extraction_policy")
+            or run.generation_request_snapshot.get("output_schema_name")
+            not in ((schema, None) if self.window.kind == "profile" else (schema,))
+        ):
+            raise InputBudgetConfigurationError(
+                "Candidate lacks a scoped legacy adoption contract"
+            )
+        prepared = self.require_prepared()
+        coverage = [self.candidate_key(chunk.text) for chunk in prepared.chunks]
+        if self.checkpoint.get("protected_coverage") != coverage:
+            raise ProviderRequestGuardError(
+                "Adopted candidate lacks full original scan"
+            )
+
+    def _verify_adopted_record(self, record: ProtectedRecord) -> ProtectedRecord:
+        run = self.saved_run
+        if run is None:
+            raise InputBudgetConfigurationError("Saved adoption source is unavailable")
+        spans = tuple(
+            span
+            for chunk in self.require_prepared().chunks
+            for span in (*chunk.neighbors, *chunk.spans)
+        )
+        checked = ProtectedRecord().merge(
+            ProtectedRecordUpdate(evidence=list(record.evidence)), visible_spans=spans
+        )
+        by_ref = {span.evidence_ref: span for span in spans}
+        if not checked.evidence or any(
+            by_ref[ref].interaction_id not in run.binding.source_interaction_ids
+            for item in checked.evidence
+            for ref in item.evidence_refs
+        ):
+            raise ProviderRequestGuardError(
+                "Adopted candidate lacks original attributed quotations"
+            )
+        return checked
+
+    def is_verified_adopted_playbook(self, candidate: UserPlaybook) -> bool:
+        """Only this window's converted legacy candidates enter its normal reviewer."""
+        run = self.saved_run
+        record = self.candidate_records.get(self.playbook_key(candidate))
+        if (
+            run is None
+            or record is None
+            or self.window.kind != "playbook"
+            or run.generation_request_snapshot.get("output_schema_name")
+            != "StructuredPlaybookList"
+            or self.checkpoint.get("extraction_policy")
+            or candidate.user_id != run.binding.user_id
+            or candidate.request_id != run.binding.request_id
+            or candidate.agent_version != run.binding.agent_version
+            or candidate.source_interaction_ids != run.binding.source_interaction_ids
+        ):
+            return False
+        self.require_full_source_coverage()
+        self._require_adopted_contract()
+        self._verify_adopted_record(record)
+        return True
 
     @property
     def checkpoint(self) -> dict[str, Any]:

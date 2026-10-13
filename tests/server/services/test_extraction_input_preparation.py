@@ -10,6 +10,9 @@ from reflexio.models.api_schema.internal_schema import RequestInteractionDataMod
 from reflexio.models.api_schema.service_schemas import Interaction, Request, ToolUsed
 from reflexio.server.services.extraction.input_preparation import (
     ExtractionInputBudgetExceededError,
+    PreparedChunk,
+    SourceSpan,
+    _bounded_neighbor,
     prepare_extraction_input,
 )
 
@@ -97,6 +100,91 @@ def test_required_neighbors_keep_exact_source_offsets_and_full_primary_coverage(
         assert neighbor.text == text[neighbor.start : neighbor.end]
         assert len(encoding.encode(neighbor.render(), disallowed_special=())) <= 256
         assert len(encoding.encode(chunk.text, disallowed_special=())) <= 1800
+
+
+def test_required_neighbor_fits_complete_chunk_with_another_interaction_origin():
+    encoding = tiktoken.get_encoding("cl100k_base")
+    earlier = source("Earlier constraint 🙂 中文. " * 400)
+    earlier.session_id = "historical-session-" * 8
+    earlier.request.session_id = earlier.session_id
+    earlier.request.created_at = 946684800
+    earlier.interactions[0].created_at = 946771200
+    current = RequestInteractionDataModel(
+        session_id="active-session-" * 8,
+        request=Request(
+            request_id="current-request",
+            user_id="u",
+            session_id="active-session-" * 8,
+            created_at=946857600,
+        ),
+        interactions=[
+            Interaction(
+                interaction_id=8,
+                request_id="current-request",
+                user_id="u",
+                created_at=946944000,
+                content="",
+            )
+        ],
+    )
+    # Place the second primary source near the packing limit. Its predecessor
+    # has different origin metadata, so the complete source-map cost matters.
+    low, high, content = 1, 10000, ""
+    while low <= high:
+        count = (low + high) // 2
+        candidate_text = "current " * count
+        span = SourceSpan(
+            8,
+            "current-request",
+            current.interactions[0].role,
+            "content",
+            0,
+            len(candidate_text),
+            candidate_text,
+            2,
+            946944000,
+            946857600,
+            current.session_id,
+        )
+        tokens = len(encoding.encode(PreparedChunk(1, (span,)).text))
+        if tokens <= 9730:
+            content, low = candidate_text, count + 1
+        else:
+            high = count - 1
+    current.interactions[0].content = content
+    prepared = prepare_extraction_input(
+        [earlier, current],
+        user_id="u",
+        chunk_tokens=10000,
+        span_tokens=10000,
+        require_overlap=True,
+    )
+    assert len(prepared.chunks) == 2
+    first, second = prepared.chunks
+    # This fixture reproduces the bug: a legacy-render-bounded suffix does not
+    # fit after its previously absent dated/session origin is added to v2.
+    legacy_neighbor = _bounded_neighbor(first.spans[-1], encoding, 256)
+    assert (
+        len(encoding.encode(PreparedChunk(1, second.spans, (legacy_neighbor,)).text))
+        > 10000
+    )
+    assert "".join(span.text for span in first.spans) == earlier.interactions[0].content
+    assert "".join(span.text for span in second.spans) == content
+    assert len(second.neighbors) == 1
+    neighbor = second.neighbors[0]
+    assert neighbor.text
+    assert neighbor.interaction_id == 7
+    assert neighbor.end == len(earlier.interactions[0].content)
+    assert (
+        neighbor.text == earlier.interactions[0].content[neighbor.start : neighbor.end]
+    )
+    assert len(encoding.encode(neighbor.render())) <= 256
+    assert all(len(encoding.encode(chunk.text)) <= 10000 for chunk in prepared.chunks)
+    origins = json.loads(second.text)["sources"]
+    assert set(origins) == {"7", "8"}
+    assert origins["7"]["session_id"] == earlier.session_id
+    assert origins["8"]["session_id"] == current.session_id
+    assert origins["7"]["created_at"] != origins["8"]["created_at"]
 
 
 def test_source_replacement_changes_digest_and_foreign_owner_is_rejected():

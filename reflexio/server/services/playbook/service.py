@@ -489,10 +489,19 @@ class PlaybookGenerationService(
                         "Skipping normal candidate reviewer for legacy extraction prompt"
                     )
                 else:
+                    from reflexio.server.services.extraction.overflow_coordinator import (
+                        current_overflow_coordinator,
+                    )
+
+                    adoption = current_overflow_coordinator.get()
                     invalid_candidate_indexes = [
                         index
                         for index, playbook in enumerate(all_playbooks, start=1)
                         if not is_evidence_validated(playbook)
+                        and not (
+                            adoption is not None
+                            and adoption.is_verified_adopted_playbook(playbook)
+                        )
                     ]
                     if invalid_candidate_indexes:
                         raise RuntimeError(

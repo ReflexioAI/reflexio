@@ -486,6 +486,25 @@ class ProfileExtractor:
             else ()
         )
 
+        def validate_final(output: BaseModel) -> list[str]:
+            if (
+                coordinator is not None
+                and coordinator.saved_run is not None
+                and coordinator.saved_run.committed_output is not None
+                and not coordinator.checkpoint.get("extraction_policy")
+                and isinstance(output, StructuredProfilesOutput)
+            ):
+                for index, profile in enumerate(output.profiles or [], 1):
+                    coordinator.verified_adopted_record(index)
+                    if profile.source_span:
+                        errors = _profile_evidence_validation_errors(
+                            StructuredProfilesOutput(profiles=[profile]), all_spans
+                        )
+                        if errors:
+                            return errors
+                return []
+            return _profile_evidence_validation_errors(output, all_spans)
+
         result = run_resumable_extraction_agent(
             request_context=self.request_context,
             client=self.client,
@@ -502,11 +521,7 @@ class ProfileExtractor:
             output_schema=StructuredProfilesOutput,
             log_label="Profile extraction",
             overflow_call_factory=overflow_call if coordinator else None,
-            overflow_final_validator=(
-                lambda output: _profile_evidence_validation_errors(output, all_spans)
-            )
-            if coordinator
-            else None,
+            overflow_final_validator=validate_final if coordinator else None,
         )
         self._last_resumable_run_id = result.run_id
         self._last_resumable_token_totals = sum_trace_tokens(result.trace)

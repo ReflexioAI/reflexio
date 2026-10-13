@@ -28,9 +28,12 @@ def judge_extraction_chunks(
     """Retain configured domain prompts; errors never become negative votes."""
     if prepared.source_digest != coordinator.source_digest:
         raise ValueError("Extraction gate source binding changed")
-    minimum_after_positive = min(
-        minimum_after_positive, coordinator.unfinished_extraction_chunks(prepared)
-    )
+    unfinished = coordinator.unfinished_extraction_chunks(prepared)
+    # Preserve the caller's downstream reserve when new extraction is needed.
+    # Fully cached children let the pipeline derive its remaining cached stages;
+    # charging the fresh-run reserve would prevent recovery at exhausted quota.
+    follow_up = max(0, minimum_after_positive - len(prepared.chunks))
+    minimum_after_positive = unfinished + (follow_up if unfinished else 0)
     with coordinator.provider_scope():
         for index, chunk in enumerate(prepared.chunks):
             with present_extraction_chunk(prepared, chunk, record):

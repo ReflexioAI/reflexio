@@ -73,6 +73,152 @@ def _evidence_unit(
     )
 
 
+@pytest.mark.parametrize(
+    "quotation",
+    [
+        "  Deliver the “finished artifact” now.  ",
+        '  Deliver the "finished artifact" now.  ',
+    ],
+)
+def test_fresh_overflow_carrier_uses_the_validated_original_quotation(quotation):
+    from reflexio.server.services.extraction.input_preparation import SourceSpan
+    from reflexio.server.services.playbook.components.extractor import (
+        _fresh_candidate_record,
+        _fresh_output_validation_errors,
+    )
+    from reflexio.server.services.playbook.playbook_service_utils import (
+        PlaybookPromptContext,
+        StructuredExtractedPlaybookContent,
+        StructuredExtractedPlaybookList,
+    )
+
+    text = "Deliver the “finished artifact” now."
+    span = SourceSpan(7, "request-7", "user", "content", 0, len(text), text, 1)
+    context = PlaybookPromptContext(
+        "",
+        {"T1": PlaybookEvidenceSource(7, "request-7", (text,), role="user")},
+        {},
+    )
+    output = StructuredExtractedPlaybookList(
+        playbooks=[
+            StructuredExtractedPlaybookContent(
+                rationale="The user corrected what should be delivered.",
+                evidence_kind="correction",
+                trigger="When delivering an artifact",
+                content="Deliver the finished artifact.",
+                evidence=[
+                    StructuredPlaybookEvidence(turn_ref=" T1 ", source_span=quotation)
+                ],
+            )
+        ]
+    )
+    assert _fresh_output_validation_errors(output, context, (span,)) == []
+    record = _fresh_candidate_record(
+        # Domain conversion and validation share this exact carrier construction.
+        StructuredPlaybookContent(**output.playbooks[0].model_dump()),
+        context,
+        (span,),
+    )
+    assert len(record.evidence) == 1
+    assert record.evidence[0].quote == text
+    assert record.evidence[0].evidence_refs == (span.evidence_ref,)
+
+
+def test_fresh_overflow_capacity_reaches_repair_before_output_is_accepted(monkeypatch):
+    from reflexio.server.services.extraction.input_preparation import (
+        ExtractionInputBudgetExceededError,
+        SourceSpan,
+    )
+    from reflexio.server.services.playbook.components.extractor import (
+        _fresh_candidate_record,
+        _fresh_output_validation_errors,
+    )
+    from reflexio.server.services.playbook.playbook_evidence import as_playbook_content
+    from reflexio.server.services.playbook.playbook_service_utils import (
+        PlaybookPromptContext,
+    )
+
+    text = (
+        "Prepare only; separate approval is required for deployment."
+        + " evidence" * 490
+    )
+    spans = tuple(
+        SourceSpan(
+            index, f"request-{index}", "user", "content", 0, len(text), text, index
+        )
+        for index in range(1, 5)
+    )
+    context = PlaybookPromptContext(
+        "",
+        {
+            f"T{index}": PlaybookEvidenceSource(
+                span.interaction_id, span.request_id, (text,), role="user"
+            )
+            for index, span in enumerate(spans, 1)
+        },
+        {
+            span.evidence_ref: _evidence_unit(
+                span.evidence_ref, text, interaction_id=span.interaction_id
+            )
+            for span in spans
+        },
+    )
+    candidate = StructuredReferencedExtractedPlaybookContent(
+        rationale="Deployment approval is a separate decision.",
+        evidence_kind="correction",
+        trigger="When preparing deployment",
+        content="Prepare only and obtain separate approval before deployment.",
+        evidence_refs=[span.evidence_ref for span in spans],
+    )
+    output = StructuredReferencedExtractedPlaybookList(playbooks=[candidate])
+    errors = _fresh_output_validation_errors(output, context, spans)
+    assert len(errors) == 1
+    assert "candidate_evidence_capacity_exceeded" in errors[0]
+    assert "Never truncate evidence or omit a supported candidate" in errors[0]
+    with pytest.raises(ExtractionInputBudgetExceededError):
+        _fresh_candidate_record(as_playbook_content(candidate), context, spans)
+    # A bounded repair keeps the same candidate and complete quotation. These
+    # repeated sources each independently carry its entire supporting instruction.
+    repaired = candidate.model_copy(update={"evidence_refs": [spans[0].evidence_ref]})
+    repaired_output = StructuredReferencedExtractedPlaybookList(playbooks=[repaired])
+    assert _fresh_output_validation_errors(repaired_output, context, spans) == []
+    record = _fresh_candidate_record(as_playbook_content(repaired), context, spans)
+    assert record.evidence[0].quote == text
+    assert repaired.content == candidate.content
+    # Exercise the actual client's bounded semantic repair, replacing only the
+    # remote dispatch. The over-cap batch cannot become its successful result.
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    client = LiteLLMClient(
+        LiteLLMConfig(model="gpt-4o-mini", fallback_models=[], max_retries=0)
+    )
+    dispatch = MagicMock(
+        side_effect=[
+            make_structured_finish(output.model_dump(mode="json")),
+            make_structured_finish(repaired_output.model_dump(mode="json")),
+        ]
+    )
+    monkeypatch.setattr(client, "_completion_with_hard_timeout", dispatch)
+    result = client.generate_chat_response_with_provenance(
+        messages=[
+            {"role": "user", "content": "Extract the grounded preparation rule."}
+        ],
+        response_format=StructuredReferencedExtractedPlaybookList,
+        structured_output_validator=lambda value: _fresh_output_validation_errors(
+            StructuredReferencedExtractedPlaybookList.model_validate(value),
+            context,
+            spans,
+        ),
+    )
+    assert result.value == repaired_output
+    assert dispatch.call_count == 2
+    first_model = dispatch.call_args_list[0].args[0]["model"]
+    repaired_model = dispatch.call_args_list[1].args[0]["model"]
+    assert first_model == repaired_model
+    assert "candidate_evidence_capacity_exceeded" in str(
+        dispatch.call_args_list[1].args[0]["messages"]
+    )
+
+
 # ===============================
 # Fixtures
 # ===============================

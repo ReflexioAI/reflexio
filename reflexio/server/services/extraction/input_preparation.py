@@ -314,7 +314,13 @@ def prepare_extraction_input(
     for index in range(1, len(chunks)):
         neighbor = chunks[index - 1].spans[-1]
         if require_overlap:
-            neighbor = _bounded_neighbor(neighbor, encoding, overlap_tokens)
+            neighbor = _bounded_neighbor(
+                neighbor,
+                encoding,
+                overlap_tokens,
+                chunk=chunks[index],
+                chunk_tokens=chunk_tokens,
+            )
         cost = len(encoding.encode(neighbor.render(), disallowed_special=()))
         candidate = PreparedChunk(index, chunks[index].spans, (neighbor,))
         total = len(encoding.encode(candidate.text, disallowed_special=()))
@@ -328,7 +334,12 @@ def prepare_extraction_input(
 
 
 def _bounded_neighbor(
-    span: SourceSpan, encoding: tiktoken.Encoding, limit: int
+    span: SourceSpan,
+    encoding: tiktoken.Encoding,
+    limit: int,
+    *,
+    chunk: PreparedChunk | None = None,
+    chunk_tokens: int | None = None,
 ) -> SourceSpan:
     from dataclasses import replace
 
@@ -336,7 +347,18 @@ def _bounded_neighbor(
     while low <= high:
         middle = (low + high) // 2
         candidate = replace(span, start=middle, text=span.text[middle - span.start :])
-        if len(encoding.encode(candidate.render(), disallowed_special=())) <= limit:
+        fits = len(encoding.encode(candidate.render(), disallowed_special=())) <= limit
+        if fits and chunk is not None:
+            # A different interaction adds its complete origin (including dates
+            # and session) to the v2 source map. Bound the actual presentation,
+            # rather than assuming the legacy span rendering includes that cost.
+            rendered = PreparedChunk(chunk.index, chunk.spans, (candidate,)).text
+            fits = (
+                chunk_tokens is not None
+                and len(encoding.encode(rendered, disallowed_special=()))
+                <= chunk_tokens
+            )
+        if fits:
             chosen, high = candidate, middle - 1
         else:
             low = middle + 1
