@@ -48,6 +48,49 @@ _format_profile_timestamp = format_dedup_timestamp
 # are never persisted as facts.
 _DELETION_MARKER_PREFIX = "Requested removal of"
 
+# UserProfile.source_span remains text. Multiple stored values are explicitly
+# a collection, not a new claim that their concatenation was one original quote.
+_SOURCE_EVIDENCE_COLLECTION_PREFIX = (
+    "Original source evidence values (separate excerpts):\n"
+)
+
+
+def _merged_provenance(
+    profiles: list[UserProfile],
+) -> tuple[str | None, str | None, str | None]:
+    source_values = list(
+        dict.fromkeys(
+            profile.source_span for profile in profiles if profile.source_span
+        )
+    )
+    source_span = next(iter(source_values), None)
+    if len(source_values) > 1:
+        source_span = _SOURCE_EVIDENCE_COLLECTION_PREFIX + (
+            "\n\n--- Separate source evidence value ---\n\n".join(source_values)
+        )
+    note_values = list(
+        dict.fromkeys(profile.notes for profile in profiles if profile.notes)
+    )
+    angles = list(
+        dict.fromkeys(
+            profile.reader_angle for profile in profiles if profile.reader_angle
+        )
+    )
+    reader_angle = None
+    if len(angles) == 1 and all(
+        profile.reader_angle == angles[0] for profile in profiles
+    ):
+        reader_angle = angles[0]
+    elif angles:
+        # NEW members are not individually persisted, so keep their perspectives
+        # when no honest single angle survives. No collection parsing/escaping.
+        note_values.append(
+            "Contributing reader angles (no single perspective selected):\n"
+            + "\n".join(angles)
+        )
+    return source_span, "\n\n".join(note_values) or None, reader_angle
+
+
 # Deduplication search is bounded candidate generation for a second-stage LLM,
 # not user-facing retrieval. Keep its threshold independent from the active
 # embedding model's retrieval default so Nomic's stricter default does not hide
@@ -832,6 +875,9 @@ class ProfileConsolidator(BaseDeduplicator):
                     for source_id in profile.source_interaction_ids
                 )
             )
+            merged_source_span, merged_notes, reader_angle = _merged_provenance(
+                group_profiles_in_item_order
+            )
 
             # Determine TTL
             try:
@@ -857,6 +903,9 @@ class ProfileConsolidator(BaseDeduplicator):
                 status=template_profile.status,
                 extractor_names=merged_extractor_names,
                 source_interaction_ids=merged_source_interaction_ids,
+                source_span=merged_source_span,
+                notes=merged_notes,
+                reader_angle=reader_angle,
             )
             self.consolidated_output_indices.add(len(result_profiles))
             result_profiles.append(merged_profile)

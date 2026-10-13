@@ -19,6 +19,7 @@ from reflexio.server.services.deferred_learning_plan import ExtractorBookmarkAdv
 from reflexio.server.services.extraction.input_preparation import (
     ExtractionInputBudgetExceededError,
     SourceSpan,
+    resolve_evidence_span,
 )
 from reflexio.server.services.extraction.outcome import ExtractionOutcome
 from reflexio.server.services.extraction.overflow_coordinator import (
@@ -27,6 +28,7 @@ from reflexio.server.services.extraction.overflow_coordinator import (
 )
 from reflexio.server.services.extraction.overflow_pipeline import OverflowExtractionCall
 from reflexio.server.services.extraction.overflow_presentation import (
+    current_overflow_presentation,
     present_extraction_chunk,
 )
 from reflexio.server.services.extraction.protected_record import (
@@ -122,13 +124,18 @@ def _fresh_candidate_record(
     spans: tuple[SourceSpan, ...],
 ) -> ProtectedRecord:
     """Build the same exact, bounded carrier before admission and conversion."""
-    by_ref = {span.evidence_ref: span for span in spans}
     quoted: list[ProtectedEvidence] = []
     for raw_ref in entry.evidence_refs:
         ref = raw_ref.strip()
-        span = by_ref.get(ref)
-        if span is None:
-            raise ValueError("Candidate references unavailable original source")
+        span = resolve_evidence_span(ref, spans)
+        unit = context.evidence_units.get(ref)
+        if (
+            unit is None
+            or unit.interaction_id != span.interaction_id
+            or unit.request_id != span.request_id
+            or unit.source_span != span.text
+        ):
+            raise ValueError("Candidate references unavailable visible source")
         quoted.append(
             ProtectedEvidence(kind="uncertainty", evidence_refs=(ref,), quote=span.text)
         )
@@ -149,10 +156,9 @@ def _fresh_candidate_record(
                 or unit.request_id != source.request_id
             ):
                 continue
-            span = by_ref.get(unit.evidence_ref)
+            span = resolve_evidence_span(unit.evidence_ref, spans)
             if (
-                span is None
-                or span.interaction_id != unit.interaction_id
+                span.interaction_id != unit.interaction_id
                 or span.request_id != unit.request_id
                 or span.text != unit.source_span
             ):
@@ -188,6 +194,43 @@ def _fresh_candidate_record(
     if not record.evidence:
         raise ValueError("Candidate lacks bounded verified evidence")
     return record
+
+
+def _carried_playbook_context(
+    context: PlaybookPromptContext, spans: tuple[SourceSpan, ...]
+) -> PlaybookPromptContext:
+    """Narrow final visibility without changing original-source verification."""
+    sources = {}
+    units = {}
+    for span in spans:
+        turn = f"T{span.source_order}"
+        origin = context.evidence_sources.get(turn)
+        if (
+            origin is None
+            or origin.interaction_id != span.interaction_id
+            or origin.request_id != span.request_id
+        ):
+            raise InputBudgetConfigurationError(
+                "Carried playbook source binding changed"
+            )
+        previous = sources.get(turn)
+        sources[turn] = PlaybookEvidenceSource(
+            span.interaction_id,
+            span.request_id,
+            (*previous.evidence_texts, span.text) if previous else (span.text,),
+            role=origin.role,
+            request_source=origin.request_source,
+        )
+        units[span.evidence_ref] = PlaybookEvidenceUnit(
+            evidence_ref=span.evidence_ref,
+            turn_ref=turn,
+            source_span=span.text,
+            interaction_id=span.interaction_id,
+            request_id=span.request_id,
+            role=origin.role,
+            request_source=origin.request_source,
+        )
+    return PlaybookPromptContext(context.text, sources, units)
 
 
 def _fresh_output_validation_errors(
@@ -566,6 +609,13 @@ class PlaybookExtractor:
                     )
                     is not None
                 ]
+            if (
+                coordinator.carried_source_spans is not None
+                and current_overflow_presentation.get() is None
+            ):
+                context = _carried_playbook_context(
+                    context, coordinator.carried_source_spans
+                )
             return _fresh_output_validation_errors(
                 output,
                 context,
@@ -678,6 +728,10 @@ class PlaybookExtractor:
                     f"{result.finished_reason}"
                 )
             return []
+        if coordinator is not None and coordinator.carried_source_spans is not None:
+            prompt_context = _carried_playbook_context(
+                prompt_context, coordinator.carried_source_spans
+            )
         if (
             legacy_output
             and coordinator is not None

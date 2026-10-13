@@ -44,7 +44,15 @@ def test_input_budget_failure_reports_failed_without_replaying_or_losing_inputs(
     )
 
     engine, worker, client = pipeline
+    monkeypatch.setenv("MOCK_LLM_RESPONSE", "false")
     monkeypatch.setenv("REFLEXIO_EXTRACTION_OVERFLOW_ENABLED", "true")
+    dispatch = Mock(
+        side_effect=AssertionError("Guard failure must not reach a provider")
+    )
+    monkeypatch.setattr(
+        "reflexio.server.llm.litellm_client.LiteLLMClient._completion_with_hard_timeout",
+        dispatch,
+    )
     reason = (
         "input_budget_configuration_error"
         if configuration_error
@@ -78,6 +86,7 @@ def test_input_budget_failure_reports_failed_without_replaying_or_losing_inputs(
     assert run.generation_request_snapshot["overflow"]["attempts"] == []
     worker.drain_org("stream-test", 2, 300)
     assert compute.call_count == 1
+    dispatch.assert_not_called()
     assert storage.pending_extraction_effects() == []
 
 
@@ -559,8 +568,6 @@ def test_48_chunk_restart_counts_only_uncached_children(
 ):
     from dataclasses import replace
 
-    from pydantic import BaseModel
-
     from reflexio.server.llm._litellm_types import CompletionResult, ModelProvenance
     from reflexio.server.llm.tools import ToolLoopResult, ToolLoopTrace
     from reflexio.server.services.durable_learning.window_executor import (
@@ -585,9 +592,9 @@ def test_48_chunk_restart_counts_only_uncached_children(
     from reflexio.server.services.extraction.resumable_agent import (
         ResumableExtractionAgent,
     )
-
-    class Candidates(BaseModel):
-        profiles: list[str]
+    from reflexio.server.services.profile.profile_generation_service_utils import (
+        StructuredProfilesOutput,
+    )
 
     attempts = tuple(
         {"id": f"earlier-{i}", "usage": None, "model_provenance": None}
@@ -632,7 +639,7 @@ def test_48_chunk_restart_counts_only_uncached_children(
                 {"role": "system", "content": "contract"},
                 {"role": "user", "content": "<prepared-source>"},
             ],
-            "schema": Candidates.model_json_schema(),
+            "schema": StructuredProfilesOutput.model_json_schema(),
         },
     )
     checkpoint = coordinator.checkpoint
@@ -646,7 +653,7 @@ def test_48_chunk_restart_counts_only_uncached_children(
                 {"role": "system", "content": "contract"},
                 {"role": "user", "content": _prepared_presentation_text()},
             ],
-            schema=Candidates,
+            schema=StructuredProfilesOutput,
         )
 
     for chunk in prepared.chunks[:cached_children]:
@@ -656,7 +663,7 @@ def test_48_chunk_restart_counts_only_uncached_children(
             "extract-v1",
             {
                 "messages": call.messages,
-                "schema": Candidates.model_json_schema(),
+                "schema": StructuredProfilesOutput.model_json_schema(),
                 "tools": [],
             },
         )
@@ -664,7 +671,19 @@ def test_48_chunk_restart_counts_only_uncached_children(
         coordinator.complete_step(
             key,
             {
-                "output": {"profiles": ["shared lesson"] if reconcile_fault else []},
+                "output": StructuredProfilesOutput.model_validate(
+                    {
+                        "profiles": [
+                            {
+                                "content": "shared lesson",
+                                "time_to_live": "infinity",
+                                "source_span": chunk.spans[0].text,
+                            }
+                        ]
+                        if reconcile_fault
+                        else [],
+                    }
+                ).model_dump(mode="json"),
                 "trace": {"turns": [], "finished": True},
             },
             provenance,
@@ -699,7 +718,7 @@ def test_48_chunk_restart_counts_only_uncached_children(
             trace=ToolLoopTrace(finished=True),
             finished_reason="structured_output",
             messages=kwargs["messages"],
-            structured_output=Candidates(profiles=[]),
+            structured_output=StructuredProfilesOutput(profiles=[]),
             provenance=provenance,
         )
 
@@ -712,7 +731,20 @@ def test_48_chunk_restart_counts_only_uncached_children(
 
     def reconcile(**kwargs):
         coordinator._advance(reserve_attempt_id="reconciliation-after-127")
-        return CompletionResult(Candidates(profiles=["shared lesson"]), provenance)
+        return CompletionResult(
+            StructuredProfilesOutput.model_validate(
+                {
+                    "profiles": [
+                        {
+                            "content": "shared lesson",
+                            "time_to_live": "infinity",
+                            "source_span": prepared.chunks[0].spans[0].text,
+                        }
+                    ],
+                }
+            ),
+            provenance,
+        )
 
     reconciliation_client.generate_chat_response_with_provenance.side_effect = reconcile
 
@@ -767,8 +799,18 @@ def test_48_chunk_restart_counts_only_uncached_children(
                 minimum_after_positive=51,
             )
         result = extract()
-    assert result.output == Candidates(
-        profiles=["shared lesson"] if reconcile_fault else []
+    assert result.output == StructuredProfilesOutput.model_validate(
+        {
+            "profiles": [
+                {
+                    "content": "shared lesson",
+                    "time_to_live": "infinity",
+                    "source_span": prepared.chunks[0].spans[0].text,
+                }
+            ]
+            if reconcile_fault
+            else [],
+        }
     )
     assert (
         reconciliation_client.generate_chat_response_with_provenance.call_count
@@ -1299,14 +1341,14 @@ def test_cached_overflow_output_preserves_child_models_and_prompt_contract(
 ):
     from dataclasses import asdict, replace
 
-    from pydantic import BaseModel
-
     from reflexio.server.llm._litellm_types import ModelProvenance
     from reflexio.server.llm.input_budget import InputBudgetConfigurationError
     from reflexio.server.services.durable_learning.window_executor import (
         load_window_inputs,
     )
     from reflexio.server.services.extraction.input_preparation import (
+        PreparedChunk,
+        PreparedExtractionInput,
         prepare_extraction_input,
     )
     from reflexio.server.services.extraction.overflow_coordinator import (
@@ -1318,17 +1360,30 @@ def test_cached_overflow_output_preserves_child_models_and_prompt_contract(
     )
     from reflexio.server.services.extraction.overflow_presentation import (
         current_overflow_presentation,
+        present_extraction_chunk,
     )
     from reflexio.server.services.extraction.resumable_agent import (
         encode_committed_output,
     )
-
-    class Candidates(BaseModel):
-        profiles: list[str]
+    from reflexio.server.services.profile.components.extractor import (
+        _profile_evidence_validation_errors,
+    )
+    from reflexio.server.services.profile.profile_generation_service_utils import (
+        StructuredProfilesOutput,
+    )
 
     storage, window, token = _overflow_coordinator(pipeline, actual_source=True)
-    prepared = prepare_extraction_input(
+    original = prepare_extraction_input(
         load_window_inputs(storage, window), user_id=window.user_id
+    )
+    spans = tuple(span for chunk in original.chunks for span in chunk.spans)
+    midpoint = len(spans) // 2
+    prepared = PreparedExtractionInput(
+        original.source_digest,
+        (
+            PreparedChunk(0, spans[:midpoint]),
+            PreparedChunk(1, spans[midpoint:]),
+        ),
     )
     run = storage.get_agent_run(f"window:{window.window_id}")
     coordinator = OverflowCoordinator(
@@ -1340,7 +1395,23 @@ def test_cached_overflow_output_preserves_child_models_and_prompt_contract(
         context_limits={},
         prepared=prepared,
     )
-    output = Candidates(profiles=["first supported lesson", "second supported lesson"])
+    output = StructuredProfilesOutput.model_validate(
+        {
+            "profiles": [
+                {
+                    "content": "first supported lesson",
+                    "time_to_live": "infinity",
+                    "source_span": spans[0].text,
+                },
+                {
+                    "content": "second supported lesson",
+                    "time_to_live": "infinity",
+                    "source_span": spans[-1].text,
+                },
+            ]
+        }
+    )
+    assert output.profiles is not None
     child_models = {
         coordinator.candidate_key(candidate): asdict(ModelProvenance(model, "provider"))
         for candidate, model in zip(
@@ -1354,22 +1425,17 @@ def test_cached_overflow_output_preserves_child_models_and_prompt_contract(
                 {"role": "system", "content": "original contract"},
                 {"role": "user", "content": "<prepared-source>"},
             ],
-            "schema": Candidates.model_json_schema(),
+            "schema": StructuredProfilesOutput.model_json_schema(),
         },
     )
     checkpoint = coordinator.checkpoint
-    checkpoint.update(
-        candidate_models=child_models,
-        extraction_policy=policy,
-        source_coverage=[coordinator.candidate_key(c.text) for c in prepared.chunks],
-        stage="extracted",
-    )
+    checkpoint["extraction_policy"] = policy
     coordinator.save_checkpoint(checkpoint)
     coordinator.saved_run = replace(
         run,
         generation_request_snapshot={
             **run.generation_request_snapshot,
-            "output_schema_name": Candidates.__name__,
+            "output_schema_name": StructuredProfilesOutput.__name__,
         },
         committed_output=encode_committed_output(
             output, ModelProvenance("reconciler-Z", "provider")
@@ -1389,8 +1455,50 @@ def test_cached_overflow_output_preserves_child_models_and_prompt_contract(
                 },
                 {"role": "user", "content": presentation.text},
             ],
-            schema=Candidates,
+            schema=StructuredProfilesOutput,
+            validator=lambda value: _profile_evidence_validation_errors(
+                value, presentation.visible_spans
+            ),
         )
+
+    for chunk, candidate, model in zip(
+        prepared.chunks, output.profiles, ["child-X", "child-Y"], strict=True
+    ):
+        with present_extraction_chunk(prepared, chunk, coordinator.record):
+            call = build_call()
+        # Freeze the original call contract even in the changed-policy case;
+        # the cached final parent must still reject the changed prompt below.
+        original_messages = [
+            {"role": "system", "content": "original contract"},
+            call.messages[1],
+        ]
+        key = coordinator.step_key(
+            "extract-v1",
+            {
+                "messages": original_messages,
+                "schema": StructuredProfilesOutput.model_json_schema(),
+                "tools": [],
+            },
+        )
+        coordinator.register_extraction_child(chunk.text, key)
+        coordinator.complete_step(
+            key,
+            {
+                "output": StructuredProfilesOutput(profiles=[candidate]).model_dump(
+                    mode="json"
+                ),
+                "trace": {"turns": [], "finished": True},
+            },
+            ModelProvenance(model, "provider"),
+        )
+
+    checkpoint = coordinator.checkpoint
+    checkpoint.update(
+        candidate_models=child_models,
+        source_coverage=[coordinator.candidate_key(c.text) for c in prepared.chunks],
+        stage="extracted",
+    )
+    coordinator.save_checkpoint(checkpoint)
 
     execute = Mock(side_effect=AssertionError("Saved output must not dispatch models"))
     if changed_policy:
@@ -1413,6 +1521,14 @@ def test_cached_overflow_output_preserves_child_models_and_prompt_contract(
         )
         assert result.output == output
         assert coordinator.checkpoint["stage"] == "recovered"
+        assert coordinator.carried_source_spans is not None
+        assert {
+            (span.interaction_id, span.text)
+            for span in coordinator.carried_source_spans
+        } == {
+            (spans[0].interaction_id, spans[0].text),
+            (spans[-1].interaction_id, spans[-1].text),
+        }
     assert coordinator.checkpoint["candidate_models"] == child_models
     execute.assert_not_called()
 
@@ -3005,7 +3121,15 @@ def test_computed_outcome_survives_failed_commit_without_model_replay(
     assert storage.extraction_status("u", "recover")["reason"] == "retrying"
     monkeypatch.setattr(ProfileGenerationService, "persist_generation", original)
     if enable_before_retry:
+        monkeypatch.setenv("MOCK_LLM_RESPONSE", "false")
         monkeypatch.setenv("REFLEXIO_EXTRACTION_OVERFLOW_ENABLED", "true")
+    dispatch = Mock(
+        side_effect=AssertionError("Cached outcome must not reach a provider")
+    )
+    monkeypatch.setattr(
+        "reflexio.server.llm.litellm_client.LiteLLMClient._completion_with_hard_timeout",
+        dispatch,
+    )
     monkeypatch.setattr(
         ProfileGenerationService,
         "compute_generation",
@@ -3018,6 +3142,7 @@ def test_computed_outcome_survives_failed_commit_without_model_replay(
     assert worker.drain_org("stream-test", 1, 300) == 1
     assert storage.extraction_status("u", "recover")["status"] == "done"
     assert storage.count_all_profiles() > 0
+    dispatch.assert_not_called()
 
 
 def test_billing_retry_does_not_repeat_extraction(pipeline, monkeypatch):

@@ -351,11 +351,18 @@ class ProfileExtractor:
                 )
                 continue
 
-            # Get all custom features by excluding content and time_to_live
+            # Canonical provenance belongs on the profile, not in custom data.
             custom_features = {
                 k: v
                 for k, v in profile_content.items()
-                if k not in ["content", "time_to_live"]
+                if k
+                not in {
+                    "content",
+                    "time_to_live",
+                    "source_span",
+                    "notes",
+                    "reader_angle",
+                }
             }
 
             now_ts = int(datetime.now(UTC).timestamp())
@@ -372,6 +379,9 @@ class ProfileExtractor:
                 custom_features=custom_features or None,
                 extractor_names=None,
                 source_interaction_ids=profile_source_interaction_ids,
+                source_span=profile_content.get("source_span"),
+                notes=profile_content.get("notes"),
+                reader_angle=profile_content.get("reader_angle"),
             )
 
             new_profiles.append(added_profile)
@@ -503,7 +513,13 @@ class ProfileExtractor:
                         if errors:
                             return errors
                 return []
-            return _profile_evidence_validation_errors(output, all_spans)
+            spans = (
+                coordinator.carried_source_spans
+                if coordinator is not None
+                and coordinator.carried_source_spans is not None
+                else all_spans
+            )
+            return _profile_evidence_validation_errors(output, spans)
 
         result = run_resumable_extraction_agent(
             request_context=self.request_context,

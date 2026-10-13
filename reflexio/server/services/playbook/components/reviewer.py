@@ -18,6 +18,7 @@ from reflexio.server.llm._litellm_text_generation import ProviderRequestGuard
 from reflexio.server.llm._litellm_types import ModelProvenance
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.llm.model_defaults import ModelRole
+from reflexio.server.services.extraction.input_preparation import resolve_evidence_span
 from reflexio.server.services.extraction.overflow_coordinator import (
     current_overflow_coordinator,
 )
@@ -364,7 +365,6 @@ class PlaybookCandidateReviewer:
                 for chunk in coordinator.require_prepared().chunks
                 for span in (*chunk.neighbors, *chunk.spans)
             )
-            by_ref = {span.evidence_ref: span for span in spans}
             result: dict[str, list[CandidateEvidenceUnit]] = {}
             for index, candidate in enumerate(candidates, 1):
                 candidate_id = f"C{index}"
@@ -381,7 +381,7 @@ class PlaybookCandidateReviewer:
                 )
                 units = []
                 for item in checked.evidence:
-                    first = by_ref[item.evidence_refs[0]]
+                    first = resolve_evidence_span(item.evidence_refs[0], spans)
                     # Additional contradictions/scope context is shown separately;
                     # it cannot silently become this candidate's historical source.
                     if first.interaction_id not in candidate.source_interaction_ids:

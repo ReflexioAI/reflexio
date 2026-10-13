@@ -6,11 +6,14 @@ import pytest
 
 from reflexio.server.services.extraction.input_preparation import (
     ExtractionInputBudgetExceededError,
+    PreparedChunk,
+    PreparedExtractionInput,
     SourceSpan,
 )
 from reflexio.server.services.extraction.protected_pass import (
     _merge_candidate_evidence,
     _protected_validator,
+    build_protected_record,
 )
 from reflexio.server.services.extraction.protected_record import (
     CandidateEvidenceQuote,
@@ -131,7 +134,7 @@ def test_candidate_evidence_keeps_adverse_sources_without_expanding_whole_turn()
         "Tool",
         "tools_used[0]",
         0,
-        25,
+        len("Permission denied again."),
         "Permission denied again.",
         source_order=2,
     )
@@ -167,3 +170,125 @@ def test_candidate_capacity_failure_cannot_evict_saved_support():
     with pytest.raises(ExtractionInputBudgetExceededError):
         _merge_candidate_evidence(candidate_update(large), (large,), claims, records)
     assert records["C1"].evidence[0].quote == source.text
+
+
+def test_shared_protected_quote_ambiguity_repairs_before_receipt_freeze():
+    source = span(1, "First: same. Second: same.")
+    prepared = PreparedExtractionInput("fixture", (PreparedChunk(0, (source,)),))
+    validator = _protected_validator(ProtectedRecord(), (source,), prepared=prepared)
+    assert "one physical occurrence" in validator(update(source, quote="same"))[0]
+    assert validator(update(source, quote="First: same.")) == []
+    exact = update(source, quote="same")
+    start = source.text.index("same")
+    exact.evidence[0] = exact.evidence[0].model_copy(
+        update={"evidence_refs": (f"i1:content:{start}:{start + 4}",)}
+    )
+    assert validator(exact) == []
+    # Adopted candidate carriers preserve their existing coarse attribution.
+    assert validator(candidate_update(source, quote="same"))
+    candidate_validator = _protected_validator(
+        ProtectedRecord(), (source,), {"C1": {}}, {}, prepared=prepared
+    )
+    assert candidate_validator(candidate_update(source, quote="same")) == []
+
+
+def test_preexisting_ambiguous_shared_record_holds_before_a_new_repair_call():
+    from reflexio.server.services.extraction.overflow_presentation import (
+        ProtectedQuoteAmbiguityError,
+    )
+
+    source = span(1, "same same")
+    prepared = PreparedExtractionInput("fixture", (PreparedChunk(0, (source,)),))
+    frozen = ProtectedRecord().merge(
+        update(source, quote="same"), visible_spans=(source,)
+    )
+    with pytest.raises(ProtectedQuoteAmbiguityError):
+        _protected_validator(frozen, (source,), prepared=prepared)
+    assert frozen.evidence[0].quote == "same"
+
+
+def _shared_quote_view_capacity_fixture():
+    from reflexio.server.services.extraction.overflow_presentation import (
+        protected_quote_view,
+    )
+
+    quotes = [f"<specific-quotation-{index:03}>" for index in range(128)]
+    source = span(1, "x" * 10000 + " ".join(quotes))
+    prepared = PreparedExtractionInput("fixture", (PreparedChunk(0, (source,)),))
+    for count in range(1, 129):
+        proposed = ProtectedRecordUpdate(
+            evidence=[
+                ProtectedEvidence(
+                    kind="instruction",
+                    evidence_refs=(source.evidence_ref,),
+                    quote=quote,
+                )
+                for quote in quotes[:count]
+            ]
+        )
+        try:
+            merged = ProtectedRecord().merge(proposed, visible_spans=(source,))
+        except ExtractionInputBudgetExceededError:
+            break
+        try:
+            protected_quote_view(prepared, merged)
+        except ExtractionInputBudgetExceededError:
+            return source, prepared, proposed
+    pytest.fail("Fixture must exceed shown capacity while the stored record fits")
+
+
+def test_shared_quote_view_capacity_is_terminal_inside_structured_validation():
+    from reflexio.server.llm.input_budget import InputBudgetExceededError
+
+    source, prepared, proposed = _shared_quote_view_capacity_fixture()
+    record = ProtectedRecord()
+    with pytest.raises(InputBudgetExceededError, match="record capacity"):
+        _protected_validator(record, (source,), prepared=prepared)(proposed)
+    assert record.evidence == ()
+
+
+@pytest.mark.parametrize("cached", [False, True])
+@pytest.mark.parametrize("invalid", ["ambiguity", "capacity"])
+def test_invalid_shared_quote_view_never_freezes_a_receipt_or_checkpoint(
+    cached, invalid
+):
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from reflexio.server.services.extraction.overflow_presentation import (
+        ProtectedQuoteAmbiguityError,
+    )
+
+    if invalid == "capacity":
+        source, prepared, proposed = _shared_quote_view_capacity_fixture()
+        expected = ExtractionInputBudgetExceededError
+    else:
+        source = span(1, "same same")
+        prepared = PreparedExtractionInput("fixture", (PreparedChunk(0, (source,)),))
+        proposed = update(source, quote="same")
+        expected = ProtectedQuoteAmbiguityError
+    coordinator = MagicMock()
+    coordinator.source_digest = prepared.source_digest
+    coordinator.provider_scope.return_value = nullcontext()
+    coordinator.completed_step.return_value = (
+        {"output": proposed.model_dump(mode="json")} if cached else None
+    )
+    client = MagicMock()
+    client.generate_chat_response_with_provenance.return_value = SimpleNamespace(
+        value=proposed, provenance=None
+    )
+    with pytest.raises(expected):
+        build_protected_record(
+            coordinator=coordinator,
+            prepared=prepared,
+            client=client,
+            extraction_criteria="Keep explicit approvals.",
+            agent_context="Fixture",
+            minimum_following_attempts=1,
+        )
+    coordinator.complete_step.assert_not_called()
+    coordinator.save_checkpoint.assert_not_called()
+    if cached:
+        client.generate_chat_response_with_provenance.assert_not_called()
+        coordinator.require_remaining_work.assert_not_called()

@@ -36,7 +36,9 @@ from reflexio.server.llm.token_accounting import RunTokenTotals, sum_trace_token
 from reflexio.server.llm.tools import ToolLoopTrace
 from reflexio.server.services.extraction.input_preparation import (
     PreparedExtractionInput,
+    SourceSpan,
     repartition_extraction_input,
+    resolve_evidence_span,
 )
 from reflexio.server.services.extraction.protected_record import (
     ProtectedRecord,
@@ -121,6 +123,7 @@ class OverflowCoordinator:
             manifest.get("checkpoint", {}).get("protected_record", {})
         )
         self.candidate_models: dict[str, ModelProvenance | None] = {}
+        self.carried_source_spans: tuple[SourceSpan, ...] | None = None
         self.candidate_evidence_refs: dict[str, tuple[str, ...]] = {}
         self.candidate_records: dict[str, ProtectedRecord] = {}
         self.review_models: dict[str, ModelProvenance] = {}
@@ -210,9 +213,9 @@ class OverflowCoordinator:
         checked = ProtectedRecord().merge(
             ProtectedRecordUpdate(evidence=list(record.evidence)), visible_spans=spans
         )
-        by_ref = {span.evidence_ref: span for span in spans}
         if not checked.evidence or any(
-            by_ref[ref].interaction_id not in run.binding.source_interaction_ids
+            resolve_evidence_span(ref, spans).interaction_id
+            not in run.binding.source_interaction_ids
             for item in checked.evidence
             for ref in item.evidence_refs
         ):

@@ -8,7 +8,7 @@ Provider prompt budgets and protected-record judgement belong to the caller.
 import hashlib
 import json
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 
 import tiktoken
@@ -88,6 +88,98 @@ class SourceSpan:
         if self.session_id is not None:
             payload["session_id"] = self.session_id
         return payload
+
+
+def resolve_evidence_span(ref: str, approved: tuple[SourceSpan, ...]) -> SourceSpan:
+    """Resolve an exact original range or a verified contained subrange."""
+    try:
+        identity, field_and_offsets = ref.split(":", 1)
+        field, start_text, end_text = field_and_offsets.rsplit(":", 2)
+        if not identity.startswith("i"):
+            raise ValueError
+        interaction_id, start, end = int(identity[1:]), int(start_text), int(end_text)
+    except (ValueError, TypeError) as exc:
+        raise ValueError("Evidence reference lacks an exact original range") from exc
+    candidates = [
+        replace(
+            span,
+            start=start,
+            end=end,
+            text=span.text[start - span.start : end - span.start],
+        )
+        for span in approved
+        if span.interaction_id == interaction_id
+        and span.field == field
+        and span.start <= start < end <= span.end
+        and len(span.text) == span.end - span.start
+    ]
+    if not candidates or any(span != candidates[0] for span in candidates):
+        raise ValueError("Evidence range lacks consistent approved original source")
+    resolved = candidates[0]
+    if resolved.evidence_ref != ref:
+        raise ValueError("Evidence reference is not a canonical original range")
+    return resolved
+
+
+def resolve_visible_quote(
+    quote: str,
+    spans: tuple[SourceSpan, ...],
+    *,
+    turn_ref: str | None = None,
+    require_unique: bool = True,
+) -> tuple[SourceSpan, ...]:
+    """Return exact shown quotation slices, deduplicating physical overlaps."""
+    if not quote:
+        raise ValueError("Visible quotation must not be empty")
+    fields: dict[tuple[int, str, str], list[SourceSpan]] = {}
+    for span in spans:
+        if turn_ref is None or turn_ref == f"T{span.source_order}":
+            resolve_evidence_span(span.evidence_ref, (span,))
+            fields.setdefault(
+                (span.interaction_id, span.request_id, span.field), []
+            ).append(span)
+    matches: dict[tuple[int, str, str, int, int], list[SourceSpan]] = {}
+    for identity, offsets in fields.items():
+        runs: list[tuple[int, int, str]] = []
+        for span in sorted(offsets, key=lambda item: (item.start, -item.end)):
+            if not runs or span.start > runs[-1][1]:
+                runs.append((span.start, span.end, span.text))
+                continue
+            start, end, text = runs[-1]
+            overlap = min(end, span.end) - span.start
+            if (
+                text[span.start - start : span.start - start + overlap]
+                != span.text[:overlap]
+            ):
+                raise ValueError("Shown source disagrees at overlapping offsets")
+            runs[-1] = (start, max(end, span.end), text + span.text[overlap:])
+        for start, _, text in runs:
+            position = text.find(quote)
+            while position >= 0:
+                matches[
+                    (*identity, start + position, start + position + len(quote))
+                ] = offsets
+                position = text.find(quote, position + 1)
+    if not matches or (require_unique and len(matches) != 1):
+        raise ValueError("Visible quotation lacks one unique original occurrence")
+    pieces = []
+    for (_, _, _, position, end), originals in matches.items():
+        while position < end:
+            source = max(
+                (span for span in originals if span.start <= position < span.end),
+                key=lambda span: (span.end, -span.start, span.evidence_ref),
+            )
+            high = min(end, source.end)
+            pieces.append(
+                replace(
+                    source,
+                    start=position,
+                    end=high,
+                    text=source.text[position - source.start : high - source.start],
+                )
+            )
+            position = high
+    return tuple(pieces)
 
 
 @dataclass(frozen=True)

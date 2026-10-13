@@ -74,6 +74,12 @@ without admitting a provider-budget protocol. Switching an existing durable
 agent run to mock mode refuses computation before publication; resume that work
 in real mode to preserve its saved output, source coverage and consumed quota.
 
+Protected context exposes only its literal quotation at original source offsets.
+Final reconciliation and cached recovery reuse proof carried by registered child
+outputs or that quoted context; scanning the full source does not make its
+unshown remainder valid prompt evidence. Profile publication keeps canonical
+quotation, notes and reader-perspective fields through consolidation.
+
 ### Resume discovery
 
 

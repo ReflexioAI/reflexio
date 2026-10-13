@@ -18,7 +18,9 @@ from reflexio.server.services.extraction.overflow_coordinator import (
     OverflowCoordinator,
 )
 from reflexio.server.services.extraction.overflow_presentation import (
+    ProtectedQuoteAmbiguityError,
     present_extraction_chunk,
+    protected_quote_view,
 )
 from reflexio.server.services.extraction.protected_record import (
     ProtectedEvidence,
@@ -54,11 +56,18 @@ def _protected_validator(
     visible_spans: tuple[SourceSpan, ...],
     candidates: dict[str, Any] | None = None,
     candidate_records: dict[str, ProtectedRecord] | None = None,
+    *,
+    prepared: PreparedExtractionInput | None = None,
 ) -> Callable[[BaseModel], list[str]]:
+    if prepared is not None:
+        protected_quote_view(prepared, record)
+
     def validate(output: BaseModel) -> list[str]:
         try:
             update = ProtectedRecordUpdate.model_validate(output.model_dump())
-            record.merge(update, visible_spans=visible_spans)
+            merged = record.merge(update, visible_spans=visible_spans)
+            if prepared is not None:
+                protected_quote_view(prepared, merged)
             _merge_candidate_evidence(
                 update, visible_spans, candidates or {}, candidate_records or {}
             )
@@ -66,6 +75,12 @@ def _protected_validator(
             raise InputBudgetExceededError(
                 "Required protected evidence exceeds record capacity"
             ) from exc
+        except ProtectedQuoteAmbiguityError:
+            return [
+                "Quote enough exact original surrounding text to identify one physical "
+                "occurrence, or supply an exact contained evidence_ref for that occurrence. "
+                "Never paraphrase, evict prior evidence, or attach every matching occurrence."
+            ]
         except ValueError:
             return [
                 "Quote exact contiguous visible source evidence with valid references."
@@ -114,6 +129,7 @@ def build_protected_record(
     candidate_records: dict[str, ProtectedRecord] = {}
     with coordinator.provider_scope():
         for index, chunk in enumerate(prepared.chunks):
+            protected_quote_view(prepared, record)
             messages = [
                 {"role": "system", "content": PROTECTED_RECORD_INSTRUCTIONS},
                 {
@@ -144,6 +160,7 @@ def build_protected_record(
                 record = record.merge(
                     update, visible_spans=(*chunk.neighbors, *chunk.spans)
                 )
+                protected_quote_view(prepared, record)
                 candidate_records = _merge_candidate_evidence(
                     update,
                     (*chunk.neighbors, *chunk.spans),
@@ -162,7 +179,11 @@ def build_protected_record(
                     response_format=ProtectedRecordUpdate,
                     model_role=ModelRole.EXTRACTION_AGENT,
                     structured_output_validator=_protected_validator(
-                        record, visible_spans, candidates, candidate_records
+                        record,
+                        visible_spans,
+                        candidates,
+                        candidate_records,
+                        prepared=prepared,
                     ),
                 )
             if not isinstance(result.value, ProtectedRecordUpdate):
@@ -171,6 +192,7 @@ def build_protected_record(
                 )
             # Capacity failures are terminal; never evict an older quotation.
             merged = record.merge(result.value, visible_spans=visible_spans)
+            protected_quote_view(prepared, merged)
             candidate_records = _merge_candidate_evidence(
                 result.value, visible_spans, candidates or {}, candidate_records
             )

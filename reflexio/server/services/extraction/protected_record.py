@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from reflexio.server.services.extraction.input_preparation import (
     ExtractionInputBudgetExceededError,
     SourceSpan,
+    resolve_evidence_span,
 )
 
 
@@ -60,19 +61,22 @@ class ProtectedRecord(BaseModel):
         """Accept exact new quotations from this pass without rewriting history."""
         if max_tokens <= 0:
             raise ValueError("Protected record capacity must be positive")
-        by_ref = {span.evidence_ref: span for span in visible_spans}
         entries = list(self.evidence)
         seen = {(item.kind, item.evidence_refs, item.quote) for item in entries}
         for item in update.evidence:
-            spans = [by_ref.get(ref) for ref in item.evidence_refs]
-            if any(span is None for span in spans):
+            try:
+                verified = [
+                    resolve_evidence_span(ref, visible_spans)
+                    for ref in item.evidence_refs
+                ]
+            except ValueError as exc:
                 raise ValueError(
                     "Protected evidence must quote an original visible source span"
-                )
-            verified = [span for span in spans if span is not None]
+                ) from exc
             first = verified[0]
             if any(
                 span.interaction_id != first.interaction_id
+                or span.request_id != first.request_id
                 or span.field != first.field
                 or (index > 0 and verified[index - 1].end != span.start)
                 for index, span in enumerate(verified)

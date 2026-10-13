@@ -34,6 +34,9 @@ def test_overflow_review_preserves_original_roles_and_does_not_attribute_context
         OverflowCoordinator,
         current_overflow_coordinator,
     )
+    from reflexio.server.services.extraction.overflow_presentation import (
+        protected_quote_view,
+    )
     from reflexio.server.services.extraction.protected_record import (
         ProtectedEvidence,
         ProtectedRecord,
@@ -75,6 +78,8 @@ def test_overflow_review_preserves_original_roles_and_does_not_attribute_context
         ),
         visible_spans=spans,
     )
+    record, shown = protected_quote_view(prepared, record)
+    assert all(span.text in (instruction, failure) for span in shown)
     coordinator = OverflowCoordinator(
         MagicMock(),
         Window("w", "user-1", "playbook", "", 0, 2, [], {}, False, False),

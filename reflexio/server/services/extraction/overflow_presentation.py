@@ -4,15 +4,71 @@ import json
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
+from reflexio.server.llm.input_budget import InputBudgetConfigurationError
 from reflexio.server.services.extraction.input_preparation import (
     PreparedChunk,
     PreparedExtractionInput,
     SourceSpan,
+    resolve_evidence_span,
 )
-from reflexio.server.services.extraction.protected_record import ProtectedRecord
+from reflexio.server.services.extraction.protected_record import (
+    ProtectedRecord,
+    ProtectedRecordUpdate,
+)
+
+
+class ProtectedQuoteAmbiguityError(InputBudgetConfigurationError):
+    """A quotation needs a more specific original range before freezing."""
+
+
+def protected_quote_view(
+    prepared: PreparedExtractionInput, record: ProtectedRecord
+) -> tuple[ProtectedRecord, tuple[SourceSpan, ...]]:
+    """Expose only the literal quotation, with its exact original offsets."""
+    approved = tuple(
+        span for chunk in prepared.chunks for span in (*chunk.neighbors, *chunk.spans)
+    )
+    evidence = []
+    shown = {}
+    for item in record.evidence:
+        spans = [resolve_evidence_span(ref, approved) for ref in item.evidence_refs]
+        first = spans[0]
+        if any(
+            span.interaction_id != first.interaction_id
+            or span.request_id != first.request_id
+            or span.field != first.field
+            or (index > 0 and spans[index - 1].end != span.start)
+            for index, span in enumerate(spans)
+        ):
+            raise InputBudgetConfigurationError("Protected quotation source changed")
+        original = "".join(span.text for span in spans)
+        offset = original.find(item.quote)
+        if offset < 0 or original.find(item.quote, offset + 1) >= 0:
+            raise ProtectedQuoteAmbiguityError(
+                "Protected quotation lacks a unique original occurrence"
+            )
+        start, end = first.start + offset, first.start + offset + len(item.quote)
+        refs = []
+        for span in spans:
+            low, high = max(start, span.start), min(end, span.end)
+            if low >= high:
+                continue
+            piece = replace(
+                span,
+                start=low,
+                end=high,
+                text=span.text[low - span.start : high - span.start],
+            )
+            shown[piece.evidence_ref] = piece
+            refs.append(piece.evidence_ref)
+        evidence.append(item.model_copy(update={"evidence_refs": tuple(refs)}))
+    rendered = ProtectedRecord(evidence=tuple(evidence)).merge(
+        ProtectedRecordUpdate(), visible_spans=()
+    )
+    return rendered, tuple(shown.values())
 
 
 @dataclass(frozen=True)
@@ -27,17 +83,8 @@ class OverflowPresentation:
             span.evidence_ref: span
             for span in (*self.chunk.neighbors, *self.chunk.spans)
         }
-        protected_refs = {
-            ref for item in self.record.evidence for ref in item.evidence_refs
-        }
-        for chunk in self.prepared.chunks:
-            for span in (*chunk.neighbors, *chunk.spans):
-                if span.evidence_ref in protected_refs:
-                    selected[span.evidence_ref] = span
-        if not protected_refs <= selected.keys():
-            raise ValueError(
-                "Protected context references unavailable original evidence"
-            )
+        _, protected = protected_quote_view(self.prepared, self.record)
+        selected.update({span.evidence_ref: span for span in protected})
         return tuple(selected.values())
 
     @property
@@ -47,7 +94,9 @@ class OverflowPresentation:
             origin["turn_ref"] = f"T{origin['source_order']}"
         return json.dumps(
             {
-                "protected_record": self.record.model_dump(mode="json"),
+                "protected_record": protected_quote_view(self.prepared, self.record)[
+                    0
+                ].model_dump(mode="json"),
                 "original_chunk": original,
             },
             ensure_ascii=False,

@@ -15,15 +15,25 @@ from reflexio.server.llm.input_budget import InputBudgetConfigurationError
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.llm.model_defaults import ModelRole
 from reflexio.server.llm.tools import ToolLoopTrace
+from reflexio.server.services.extraction.input_preparation import (
+    SourceSpan,
+    resolve_evidence_span,
+    resolve_visible_quote,
+)
 from reflexio.server.services.extraction.overflow_coordinator import OverflowCoordinator
 from reflexio.server.services.extraction.overflow_presentation import (
     current_overflow_presentation,
     present_extraction_chunk,
+    protected_quote_view,
 )
+from reflexio.server.services.extraction.protected_record import ProtectedRecord
 from reflexio.server.services.extraction.resumable_agent import (
     AgentRunResult,
     decode_committed_output,
     encode_committed_output,
+)
+from reflexio.server.services.playbook.playbook_evidence import (
+    resolve_verbatim_source_span,
 )
 from reflexio.server.services.storage.storage_base import AgentRunStatus
 
@@ -33,6 +43,132 @@ class OverflowExtractionCall:
     messages: list[dict[str, Any]]
     schema: type[BaseModel]
     validator: Callable[[BaseModel], Sequence[str]] | None = None
+
+
+def _carried_evidence_errors(
+    output: BaseModel,
+    *,
+    field: str,
+    candidates: list[dict[str, Any]],
+    protected: ProtectedRecord,
+    protected_spans: tuple[SourceSpan, ...],
+) -> list[str]:
+    """Reconciliation can reuse shown proof, never discover unshown evidence."""
+    refs = {ref.strip() for item in candidates for ref in item.get("evidence_refs", [])}
+    quotes: dict[str, list[str]] = {}
+    profile_quotes = [
+        item["source_span"] for item in candidates if item.get("source_span")
+    ]
+    for item in candidates:
+        for evidence in item.get("evidence", []):
+            quotes.setdefault(evidence["turn_ref"].strip(), []).append(
+                evidence["source_span"]
+            )
+    by_ref = {span.evidence_ref: span for span in protected_spans}
+    for evidence in protected.evidence:
+        refs.update(evidence.evidence_refs)
+        first = by_ref[evidence.evidence_refs[0]]
+        quotes.setdefault(f"T{first.source_order}", []).append(evidence.quote)
+        profile_quotes.append(evidence.quote)
+    errors = []
+    for index, candidate in enumerate(output.model_dump(mode="json").get(field) or []):
+        if field == "profiles":
+            quote = candidate.get("source_span")
+            if not quote or not any(quote in shown for shown in profile_quotes):
+                errors.append(
+                    f"profiles[{index}]: cite one contiguous carried original quotation."
+                )
+        else:
+            if any(
+                ref.strip() not in refs for ref in candidate.get("evidence_refs", [])
+            ):
+                errors.append(
+                    f"playbooks[{index}]: cite only carried original evidence references."
+                )
+            if any(
+                not item.get("source_span")
+                or resolve_verbatim_source_span(
+                    item["source_span"].strip(),
+                    tuple(quotes.get(item.get("turn_ref", "").strip(), [])),
+                )
+                is None
+                for item in candidate.get("evidence", [])
+            ):
+                errors.append(
+                    f"playbooks[{index}]: cite a carried quotation from the same original turn."
+                )
+    return errors
+
+
+def _candidate_source_spans(
+    candidates: list[dict[str, Any]], field: str, visible: tuple[SourceSpan, ...]
+) -> tuple[SourceSpan, ...]:
+    """Retain only physical proof actually cited in each raw child call."""
+    selected = {}
+    for candidate in candidates:
+        if field == "profiles":
+            spans = resolve_visible_quote(
+                candidate["source_span"], visible, require_unique=False
+            )
+            selected.update({span.evidence_ref: span for span in spans})
+        else:
+            for ref in candidate.get("evidence_refs", []):
+                span = resolve_evidence_span(ref.strip(), visible)
+                selected[span.evidence_ref] = span
+            for item in candidate.get("evidence", []):
+                turn = item["turn_ref"].strip()
+                texts = tuple(
+                    span.text for span in visible if f"T{span.source_order}" == turn
+                )
+                quote = (
+                    resolve_verbatim_source_span(item["source_span"].strip(), texts)
+                    or item["source_span"]
+                )
+                spans = resolve_visible_quote(quote, visible, turn_ref=turn)
+                selected.update({span.evidence_ref: span for span in spans})
+    return tuple(selected.values())
+
+
+def _saved_raw_candidates(
+    coordinator: OverflowCoordinator,
+    field: str,
+    build_call: Callable[[], OverflowExtractionCall],
+) -> tuple[list[dict[str, Any]], tuple[SourceSpan, ...]]:
+    """Recover proof only from frozen children of the current prepared plan."""
+    candidates = []
+    selected = {}
+    checkpoint = coordinator.checkpoint
+    children = checkpoint.get("extraction_children", {})
+    receipts = checkpoint.get("completed_steps", {})
+    for chunk in coordinator.require_prepared().chunks:
+        contract = children.get(coordinator.candidate_key(chunk.text), {})
+        receipt = receipts.get(contract.get("key"))
+        if (
+            contract.get("policy") != checkpoint.get("extraction_policy")
+            or receipt is None
+        ):
+            raise ProviderRequestGuardError(
+                "Saved extraction child proof is unavailable"
+            )
+        with present_extraction_chunk(
+            coordinator.require_prepared(), chunk, coordinator.record
+        ):
+            call = build_call()
+            output = call.schema.model_validate(receipt["output"]["output"])
+            if call.validator is not None and call.validator(output):
+                raise ProviderRequestGuardError(
+                    "Saved child lacks visible original evidence"
+                )
+            presentation = current_overflow_presentation.get()
+            if presentation is None:
+                raise InputBudgetConfigurationError(
+                    "Saved child presentation is unavailable"
+                )
+            raw = output.model_dump(mode="json").get(field) or []
+            spans = _candidate_source_spans(raw, field, presentation.visible_spans)
+            selected.update({span.evidence_ref: span for span in spans})
+            candidates.extend(raw)
+    return candidates, tuple(selected.values())
 
 
 def _recover_saved_output(
@@ -59,19 +195,34 @@ def _recover_saved_output(
         raise InputBudgetConfigurationError("Saved extraction schema is incompatible")
     payload, cached_provenance = decode_committed_output(saved_run.committed_output)
     output = cached_call.schema.model_validate(payload)
-    if final_validator is not None and final_validator(output):
-        raise ProviderRequestGuardError("Saved candidates lack original evidence")
     coverage = [coordinator.candidate_key(chunk.text) for chunk in prepared.chunks]
     checkpoint = coordinator.checkpoint
     evidence = checkpoint.get("candidate_evidence", {})
     protocol_output = bool(checkpoint.get("extraction_policy"))
     if protocol_output:
+        protected, protected_spans = protected_quote_view(prepared, coordinator.record)
+        raw_candidates, raw_spans = _saved_raw_candidates(
+            coordinator, field, build_call
+        )
+        coordinator.carried_source_spans = (*raw_spans, *protected_spans)
+        if _carried_evidence_errors(
+            output,
+            field=field,
+            candidates=raw_candidates,
+            protected=protected,
+            protected_spans=protected_spans,
+        ):
+            raise ProviderRequestGuardError(
+                "Saved candidates exceed their carried evidence"
+            )
         with present_extraction_chunk(prepared, prepared.chunks[0], coordinator.record):
             current_policy = _extraction_policy(coordinator, cached_call)
         if current_policy != checkpoint["extraction_policy"]:
             raise InputBudgetConfigurationError(
                 "Extraction policy changed after checkpoint"
             )
+    if final_validator is not None and final_validator(output):
+        raise ProviderRequestGuardError("Saved candidates lack original evidence")
     if (protocol_output and checkpoint.get("source_coverage") != coverage) or (
         not protocol_output
         and (
@@ -131,6 +282,8 @@ def extract_overflow_window(
     if saved_run is not None and saved_run.committed_output is not None:
         return _recover_saved_output(coordinator, build_call, final_validator)
     candidates: list[dict[str, Any]] = []
+    carried = {}
+    coordinator.carried_source_spans = None
     models: dict[str, ModelProvenance] = {}
     schema: type[BaseModel] | None = None
     policy_key: str | None = None
@@ -159,6 +312,26 @@ def extract_overflow_window(
                 coordinator.unfinished_extraction_chunks(prepared, start=index)
             )
             result = execute_call(call)
+            if (
+                result.output is not None
+                and call.validator is not None
+                and call.validator(result.output)
+            ):
+                raise ProviderRequestGuardError(
+                    "Extraction child lacks visible original evidence"
+                )
+            if result.output is not None:
+                presentation = current_overflow_presentation.get()
+                if presentation is None:
+                    raise InputBudgetConfigurationError(
+                        "Extraction child presentation is unavailable"
+                    )
+                spans = _candidate_source_spans(
+                    result.output.model_dump(mode="json").get(field) or [],
+                    field,
+                    presentation.visible_spans,
+                )
+                carried.update({span.evidence_ref: span for span in spans})
         if result.output is None:
             raise ProviderRequestGuardError("Extraction chunk lacks completed output")
         for candidate in result.output.model_dump(mode="json").get(field) or []:
@@ -169,6 +342,21 @@ def extract_overflow_window(
             )
     if schema is None:
         raise InputBudgetConfigurationError("Extraction has no prepared chunks")
+    protected, protected_spans = protected_quote_view(prepared, coordinator.record)
+    coordinator.carried_source_spans = (*carried.values(), *protected_spans)
+
+    def validate_final(output: BaseModel) -> Sequence[str]:
+        return [
+            *(final_validator(output) if final_validator is not None else []),
+            *_carried_evidence_errors(
+                output,
+                field=field,
+                candidates=candidates,
+                protected=protected,
+                protected_spans=protected_spans,
+            ),
+        ]
+
     if not candidates:
         output = schema.model_validate({field: []})
         provenance = ModelProvenance()
@@ -191,7 +379,7 @@ def extract_overflow_window(
                 "role": "user",
                 "content": json.dumps(
                     {
-                        "protected_record": coordinator.record.model_dump(mode="json"),
+                        "protected_record": protected.model_dump(mode="json"),
                         "human_answers": coordinator.checkpoint.get(
                             "answer_witnesses", {}
                         ),
@@ -212,18 +400,22 @@ def extract_overflow_window(
                 messages=messages,
                 model_role=ModelRole.EXTRACTION_AGENT,
                 response_format=schema,
-                structured_output_validator=final_validator,
+                structured_output_validator=validate_final,
             )
             if not isinstance(response.value, schema):
                 raise ProviderRequestGuardError(
                     "Reconciliation lacks structured output"
                 )
             output, provenance = response.value, response.provenance
+            if validate_final(output):
+                raise ProviderRequestGuardError(
+                    "Reconciled candidates exceed their carried evidence"
+                )
             coordinator.complete_step(key, output.model_dump(mode="json"), provenance)
         else:
             output = schema.model_validate(saved["output"])
             provenance = ModelProvenance(**saved["model_provenance"])
-    if final_validator is not None and final_validator(output):
+    if validate_final(output):
         raise ProviderRequestGuardError("Reconciled candidates lack original evidence")
     checkpoint = coordinator.checkpoint
     checkpoint["candidate_models"] = {
