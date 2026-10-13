@@ -253,6 +253,20 @@ class RetrievedLearning(CapturesUnknownFields):
     exposure_receipt_digest: str | None = Field(
         default=None, pattern=r"^[0-9a-f]{64}$", exclude_if=lambda value: value is None
     )
+    _stored_receipt_identity: tuple[str, str, str | None] | None = PrivateAttr(
+        default=None
+    )
+
+    @classmethod
+    def from_stored_payload(cls, payload: dict) -> Self:
+        """Hydrate a database reference; HTTP input never receives this marker."""
+        reference = cls.model_validate(payload)
+        reference._stored_receipt_identity = (
+            reference.kind,
+            reference.learning_id,
+            reference.exposure_receipt_digest,
+        )
+        return reference
 
     def persistence_payload(self) -> dict:
         """Strip the submitted receipt, retaining only its server-derived digest."""
@@ -263,6 +277,16 @@ class RetrievedLearning(CapturesUnknownFields):
             data["exposure_receipt_digest"] = sha256(
                 self.exposure_receipt.encode("utf-8")
             ).hexdigest()
+        elif (
+            self.exposure_receipt_digest is not None
+            and (
+                self.kind,
+                self.learning_id,
+                self.exposure_receipt_digest,
+            )
+            == self._stored_receipt_identity
+        ):
+            data["exposure_receipt_digest"] = self.exposure_receipt_digest
         return data
 
 

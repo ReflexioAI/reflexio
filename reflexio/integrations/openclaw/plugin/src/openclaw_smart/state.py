@@ -529,12 +529,12 @@ def unpublished_slice(
                     turn["tools_used"] = pending_tools
                     pending_tools = []
                 retrieved: list[dict[str, str]] = []
-                seen: set[tuple[str, str, str]] = set()
+                seen: set[tuple[str, str, str | None]] = set()
                 for ref in pending_refs:
                     key = (
                         ref["kind"],
                         ref["learning_id"],
-                        ref.get("exposure_receipt", ""),
+                        ref.get("exposure_receipt"),
                     )
                     if key in seen:
                         continue

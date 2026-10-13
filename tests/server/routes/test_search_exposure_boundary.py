@@ -674,6 +674,21 @@ def test_observer_rebinds_captured_project_scope_on_the_worker() -> None:
     assert scope_var.get() is None
 
 
+@pytest.mark.parametrize("path", ["/api/search", "/api/search_user_playbooks"])
+@pytest.mark.parametrize(
+    "result", [None, [], {"11": "receipt"}, {11: None}, {11: "x" * 8_193}]
+)
+def test_malformed_issuer_result_preserves_search(path: str, result: Any) -> None:
+    issuer = MagicMock()
+    issuer.issue.return_value = result
+    register_service(SEARCH_EXPOSURE_RECEIPT_ISSUER, issuer)
+    with _search_results([_playbook(11, "First")]):
+        response = _client().post(path, json={"query": "answer", "user_id": "user-1"})
+    assert response.status_code == 200, response.text
+    issuer.issue.assert_called_once()
+    assert "test-receipt" not in response.text
+
+
 def test_receipt_issuance_cannot_accept_an_expired_response() -> None:
     """Signing has no durable side effect and cannot waive the search deadline."""
     import time
@@ -681,11 +696,12 @@ def test_receipt_issuance_cannot_accept_an_expired_response() -> None:
     from reflexio.server import search_runtime
 
     class DeadlineCrossingIssuer(_Issuer):
-        def issue(self, batch: Any) -> None:
-            super().issue(batch)
+        def issue(self, batch: Any) -> dict[int, str]:
+            receipts = super().issue(batch)
             scope = search_runtime.current()
             assert scope is not None
             scope.deadline = time.monotonic() - 1
+            return receipts
 
     issuer = DeadlineCrossingIssuer()
     register_service(SEARCH_EXPOSURE_RECEIPT_ISSUER, issuer)

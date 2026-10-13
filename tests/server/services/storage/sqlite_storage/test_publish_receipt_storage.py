@@ -37,3 +37,17 @@ def test_sqlite_strips_token_without_mutating_publish_input(tmp_path):
     assert stored[0]["exposure_receipt_digest"] == sha256(token.encode()).hexdigest()
     assert "exposure_receipt" not in stored[0]
     assert reference.exposure_receipt == token
+
+    hydrated = storage.get_user_interaction("alice")[0]
+    hydrated.content = "Edited answer"
+    storage.add_user_interactions_bulk("alice", [hydrated], embeddings_prepared=True)
+    rewritten = storage.get_user_interaction("alice")[0].retrieved_learnings[0]
+    assert rewritten.exposure_receipt_digest == sha256(token.encode()).hexdigest()
+    # A caller cannot confer database provenance through a JSON round trip.
+    submitted = RetrievedLearning.model_validate(rewritten.model_dump())
+    assert "exposure_receipt_digest" not in submitted.persistence_payload()
+    hydrated.retrieved_learnings[0].learning_id = "8"
+    assert (
+        "exposure_receipt_digest"
+        not in hydrated.retrieved_learnings[0].persistence_payload()
+    )

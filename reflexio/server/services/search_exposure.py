@@ -45,7 +45,16 @@ def issue_search_exposure_receipts(batch: SearchExposureBatch) -> dict[int, str]
     if issuer is None:
         return {}
     try:
-        return issuer.issue(batch)
+        receipts = issuer.issue(batch)
+        if not isinstance(receipts, dict) or any(
+            type(key) is not int
+            or key <= 0
+            or not isinstance(value, str)
+            or len(value) > 8_192
+            for key, value in receipts.items()
+        ):
+            raise TypeError("receipt issuer returned an invalid mapping")
+        return receipts
     except Exception:
         logger.exception("event=search_exposure_receipt_failed org_id=%s", batch.org_id)
         capture_anomaly("search_exposure.receipt_failed", org_id=batch.org_id)
