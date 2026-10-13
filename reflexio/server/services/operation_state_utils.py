@@ -898,16 +898,17 @@ class OperationStateManager:
 
         A no-op when this manager never acquired the lock. If another
         operation took the lock over as stale, it is left untouched.
+        A storage exception retains the ownership token so release can be retried.
         """
         token = self._simple_lock_token
         if token is None:
             return
-        self._simple_lock_token = None
         released = self.storage.clear_in_progress_lock_if_owner(
             self._lock_key(),
             token,
             {"in_progress": False, "completed_at": int(time.time())},
         )
+        self._simple_lock_token = None
         if not released:
             logger.warning(
                 "%s lock was taken over before release; leaving it to the new holder",
