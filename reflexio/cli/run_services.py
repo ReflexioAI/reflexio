@@ -259,7 +259,7 @@ def build_nextjs_service(
     """
     return ServiceConfig(
         name=name,
-        command=["npx", "next", "dev", "-p", str(ports[name])],
+        command=["npx", "next", "dev", "-H", "127.0.0.1", "-p", str(ports[name])],
         cwd=cwd,
     )
 

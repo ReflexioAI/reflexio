@@ -306,7 +306,7 @@ class TestBuildNextjsService:
 
     def test_correct_command(self) -> None:
         svc = build_nextjs_service("docs", {"docs": 3000}, cwd="public_docs")
-        assert svc.command == ["npx", "next", "dev", "-p", "3000"]
+        assert svc.command == ["npx", "next", "dev", "-H", "127.0.0.1", "-p", "3000"]
 
     def test_correct_cwd(self) -> None:
         svc = build_nextjs_service("docs", {"docs": 3000}, cwd="public_docs")

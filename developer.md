@@ -661,3 +661,10 @@ setup controls precede private replay; no default activation.
 Inactive v1.20 keeps review notes about removed claims and retained rules, avoiding
 claims that questions/events were absent. Separately frozen repeated-question
 coverage precedes private replay; original benchmarks remain unchanged.
+
+### Local docs network binding
+
+The docs server started by `reflexio services start` binds to `127.0.0.1`, just
+like the standalone backend. For remote browsing, forward the docs and backend
+ports through SSH; an API key is still required when configured. This does not
+change the bind address of production containers or custom embedded backend apps.
