@@ -68,7 +68,9 @@ def _run_primary(
 
 
 @pytest.mark.parametrize("repair", [False, True, "exhaust"])
-@pytest.mark.parametrize("version", ["1.42.0", "1.43.0", "1.44.0", "1.45.0", "1.46.0"])
+@pytest.mark.parametrize(
+    "version", ["1.42.0", "1.43.0", "1.44.0", "1.45.0", "1.46.0", "1.47.0"]
+)
 def test_actual_primary_raw_type_repair_and_projection_order(
     monkeypatch, repair, version
 ):
@@ -148,7 +150,9 @@ def test_actual_primary_raw_type_repair_and_projection_order(
         "repeated-id",
     ],
 )
-@pytest.mark.parametrize("version", ["1.42.0", "1.43.0", "1.44.0", "1.45.0", "1.46.0"])
+@pytest.mark.parametrize(
+    "version", ["1.42.0", "1.43.0", "1.44.0", "1.45.0", "1.46.0", "1.47.0"]
+)
 def test_raw_errors_require_repair_before_any_public_decision(
     monkeypatch, fault, version
 ):
@@ -201,7 +205,9 @@ def test_raw_errors_require_repair_before_any_public_decision(
         ("late_trigger", True, "revise", False),
     ],
 )
-@pytest.mark.parametrize("version", ["1.42.0", "1.43.0", "1.44.0", "1.45.0", "1.46.0"])
+@pytest.mark.parametrize(
+    "version", ["1.42.0", "1.43.0", "1.44.0", "1.45.0", "1.46.0", "1.47.0"]
+)
 def test_duplicate_rejection_preserves_higher_primary(
     primary, duplicate, decision, valid, version
 ):
@@ -219,7 +225,9 @@ def test_duplicate_rejection_preserves_higher_primary(
 
 
 @pytest.mark.parametrize("value", [None, "false", 0, "missing"])
-@pytest.mark.parametrize("version", ["1.42.0", "1.43.0", "1.44.0", "1.45.0", "1.46.0"])
+@pytest.mark.parametrize(
+    "version", ["1.42.0", "1.43.0", "1.44.0", "1.45.0", "1.46.0", "1.47.0"]
+)
 def test_duplicate_flag_is_required_and_strict_in_native_parser(value, version):
     good = _primary_response()
     bad = deepcopy(good)
@@ -235,7 +243,9 @@ def test_duplicate_flag_is_required_and_strict_in_native_parser(value, version):
 
 @pytest.mark.parametrize("exhaust", [False, True])
 @pytest.mark.parametrize("foreign_id", [False, True])
-@pytest.mark.parametrize("version", ["1.42.0", "1.43.0", "1.44.0", "1.45.0", "1.46.0"])
+@pytest.mark.parametrize(
+    "version", ["1.42.0", "1.43.0", "1.44.0", "1.45.0", "1.46.0", "1.47.0"]
+)
 def test_empty_existing_context_cannot_authorize_duplicate_rejection(
     monkeypatch, exhaust, foreign_id, version
 ):
@@ -294,7 +304,9 @@ def test_empty_existing_context_cannot_authorize_duplicate_rejection(
 
 
 @pytest.mark.parametrize("recover", [False, True])
-@pytest.mark.parametrize("version", ["1.42.0", "1.43.0", "1.44.0", "1.45.0", "1.46.0"])
+@pytest.mark.parametrize(
+    "version", ["1.42.0", "1.43.0", "1.44.0", "1.45.0", "1.46.0", "1.47.0"]
+)
 def test_primary_contract_retains_bounded_native_fallback(recover, version):
     bad = _primary_response(basis="none", decision="reject")
     responses = [bad, bad, _primary_response()] if recover else [bad] * 4
@@ -313,7 +325,9 @@ def test_primary_contract_retains_bounded_native_fallback(recover, version):
     ] * (1 if recover else 2)
 
 
-@pytest.mark.parametrize("version", ["1.42.0", "1.43.0", "1.44.0", "1.45.0", "1.46.0"])
+@pytest.mark.parametrize(
+    "version", ["1.42.0", "1.43.0", "1.44.0", "1.45.0", "1.46.0", "1.47.0"]
+)
 def test_partial_operand_supply_does_not_manufacture_a_clipped_action(version):
     raw = _primary_response(primary="speculative", basis="none", decision="reject")
     raw["assessments"][0]["input_facts"].update(
@@ -332,7 +346,9 @@ def test_partial_operand_supply_does_not_manufacture_a_clipped_action(version):
     assert reviewer.apply_decisions(candidates=candidates, outcome=outcome) == []
 
 
-@pytest.mark.parametrize("version", ["1.42.0", "1.43.0", "1.44.0", "1.45.0", "1.46.0"])
+@pytest.mark.parametrize(
+    "version", ["1.42.0", "1.43.0", "1.44.0", "1.45.0", "1.46.0", "1.47.0"]
+)
 def test_null_primary_preserves_an_already_scoped_supported_original(version):
     raw = _primary_response(primary=None, decision="accept")
     reviewer, transport, calls = _real_reviewer([raw], version=version)
@@ -359,7 +375,9 @@ def test_null_primary_preserves_an_already_scoped_supported_original(version):
         ("speculative", True, "duplicate requires an eligible core"),
     ],
 )
-@pytest.mark.parametrize("version", ["1.42.0", "1.43.0", "1.44.0", "1.45.0", "1.46.0"])
+@pytest.mark.parametrize(
+    "version", ["1.42.0", "1.43.0", "1.44.0", "1.45.0", "1.46.0", "1.47.0"]
+)
 def test_no_core_primary_guards_repair_before_projection(
     monkeypatch, primary, duplicate, error, version
 ):
@@ -411,7 +429,9 @@ def test_no_core_primary_guards_repair_before_projection(
 
 
 @pytest.mark.parametrize("primary", ["generic", "speculative"])
-@pytest.mark.parametrize("version", ["1.42.0", "1.43.0", "1.44.0", "1.45.0", "1.46.0"])
+@pytest.mark.parametrize(
+    "version", ["1.42.0", "1.43.0", "1.44.0", "1.45.0", "1.46.0", "1.47.0"]
+)
 def test_no_core_with_explaining_primary_can_reject_without_input_facts(
     primary, version
 ):

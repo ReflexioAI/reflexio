@@ -214,9 +214,10 @@ def evaluate(
         "1.44.0",
         "1.45.0",
         "1.46.0",
+        "1.47.0",
     ):
         raise ValueError(
-            "candidate_version must be an experimental reviewer version from 1.4.0 through 1.46.0"
+            "candidate_version must be an experimental reviewer version from 1.4.0 through 1.47.0"
         )
     if baseline_version not in ("1.3.0", "1.40.0"):
         raise ValueError("baseline_version must be 1.3.0 or 1.40.0")
@@ -507,6 +508,7 @@ def main() -> int:
             "1.44.0",
             "1.45.0",
             "1.46.0",
+            "1.47.0",
         ),
         default="1.4.0",
     )
