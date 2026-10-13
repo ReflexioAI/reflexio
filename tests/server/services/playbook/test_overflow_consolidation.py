@@ -2,6 +2,7 @@
 
 from types import SimpleNamespace
 from typing import cast
+from unittest.mock import MagicMock
 
 import pytest
 import tiktoken
@@ -32,6 +33,431 @@ def _old(identity):
     return UserPlaybook(
         user_playbook_id=identity, user_id="u", agent_version="v1", request_id="old"
     )
+
+
+def _history_fixture(text):
+    from dataclasses import asdict
+    from unittest.mock import MagicMock
+
+    from reflexio.server.services.extraction.overflow_coordinator import (
+        OverflowCoordinator,
+    )
+
+    receipts = {}
+    coordinator = SimpleNamespace(
+        source_digest="fixture-source",
+        completed_step=receipts.get,
+        require_remaining_work=MagicMock(),
+    )
+    coordinator.step_key = lambda stage, inputs: OverflowCoordinator.step_key(
+        cast(OverflowCoordinator, coordinator), stage, inputs
+    )
+    coordinator.complete_step = lambda key, output, provenance: receipts.update(
+        {key: {"output": output, "model_provenance": asdict(provenance)}}
+    )
+    owner = SimpleNamespace(model_name="fixture-model", client=MagicMock())
+    row = _old(51).model_copy(update={"source_span": text, "created_at": 1000})
+    return (
+        cast(PlaybookConsolidator, owner),
+        cast(OverflowCoordinator, coordinator),
+        row,
+        receipts,
+    )
+
+
+def test_historical_selection_display_is_lossless_and_server_copies_unicode_json():
+    import json
+
+    from reflexio.server.services.playbook.components.overflow_consolidation import (
+        HistoricalScanSelection,
+        _historical_scan_request,
+        _selection_scan,
+        _validate_selection_scan,
+    )
+
+    text = (
+        "Unshown prefix. " * 1000
+        + 'Exact "quote" 🙂\nΩ' * 100
+        + " Unshown tail." * 1000
+    )
+    owner, coordinator, row, _ = _history_fixture(text)
+    start = len("Unshown prefix. " * 1000)
+    _, messages, low, high, snippets = _historical_scan_request(
+        owner, coordinator, row, [], [], start, start + 1700
+    )
+    payload = json.loads(messages[1]["content"])
+    assert payload["author_role"] == "unknown"
+    assert payload["chunk"]["primary_start"] == start
+    assert low > 0 and high < len(text)
+    assert (
+        "".join(item["text"] for item in payload["chunk"]["snippets"]) == text[low:high]
+    )
+    assert all(len(quote.text) <= 1024 for quote in snippets.values())
+    identity = next(key for key, quote in snippets.items() if "🙂" in quote.text)
+    update = _selection_scan(
+        HistoricalScanSelection(coverage="complete", snippet_ids=[identity]), snippets
+    )
+    quote = update.quotes[0]
+    assert quote.text == text[quote.start : quote.end]
+    assert '"quote"' in quote.text and "🙂" in quote.text
+    unknown = HistoricalScanSelection(coverage="complete", snippet_ids=["h:0:10"])
+    feedback = _validate_selection_scan(
+        unknown, prior=[], snippets=snippets, text=text, start=low, end=high
+    )
+    assert feedback and "Unshown prefix" not in str(feedback)
+    with pytest.raises(ValueError, match="unshown"):
+        _selection_scan(unknown, snippets)
+
+
+@pytest.mark.parametrize("version", ["v1", "v2"])
+def test_historical_both_receipt_versions_are_reused_without_dispatch(version):
+    from reflexio.server.services.playbook.components.overflow_consolidation import (
+        SCAN_POLICY,
+        _historical_scan_request,
+        _remaining_history_calls,
+        _scan_history,
+        _scan_request,
+    )
+
+    text = 'Keep exact "quoted" Unicode 🙂 evidence.'
+    owner, coordinator, row, receipts = _history_fixture(text)
+    v1_key, v1_messages, _, _ = _scan_request(
+        owner, coordinator, row, [], [], 0, len(text)
+    )
+    assert v1_messages[0]["content"] == SCAN_POLICY
+    key = (
+        v1_key
+        if version == "v1"
+        else _historical_scan_request(owner, coordinator, row, [], [], 0, len(text))[0]
+    )
+    assert (key == v1_key) == (version == "v1")
+    quote = HistoricalQuote(start=0, end=len(text), text=text)
+    receipts[key] = {
+        "output": HistoricalScan(coverage="complete", quotes=[quote]).model_dump(),
+        "model_provenance": {"model_name": "fixture-model", "provider": None},
+    }
+    assert _remaining_history_calls(owner, coordinator, row, [(0, len(text))], []) == 0
+    assert _scan_history(owner, coordinator, row, [(0, len(text))], []) == [quote]
+    cast(
+        MagicMock, owner.client.generate_chat_response_with_provenance
+    ).assert_not_called()
+    cast(MagicMock, coordinator.require_remaining_work).assert_not_called()
+
+
+def test_historical_new_receipt_is_server_hydrated_and_retains_prior_quote():
+    import json
+
+    from reflexio.server.llm._litellm_types import CompletionResult, ModelProvenance
+    from reflexio.server.services.playbook.components.overflow_consolidation import (
+        HistoricalScanSelection,
+        _remaining_history_calls,
+        _scan_history,
+        _scan_request,
+    )
+
+    text = "Prior condition. " + 'New "condition" 🙂' * 80
+    owner, coordinator, row, receipts = _history_fixture(text)
+    boundary = len("Prior condition. ")
+    prior = HistoricalQuote(start=0, end=boundary, text=text[:boundary])
+    key = _scan_request(owner, coordinator, row, [], [], 0, boundary)[0]
+    receipts[key] = {
+        "output": HistoricalScan(coverage="complete", quotes=[prior]).model_dump()
+    }
+
+    def select(**kwargs):
+        assert kwargs["response_format"] is HistoricalScanSelection
+        payload = json.loads(kwargs["messages"][1]["content"])
+        assert payload["selected_quotes"] == [prior.model_dump()]
+        assert payload["remaining_carrier_tokens"] < 2048
+        identity = payload["chunk"]["snippets"][-1]["snippet_id"]
+        selected = HistoricalScanSelection(coverage="complete", snippet_ids=[identity])
+        assert kwargs["structured_output_validator"](selected) == []
+        return CompletionResult(selected, ModelProvenance(model_name="fixture-model"))
+
+    cast(
+        MagicMock, owner.client.generate_chat_response_with_provenance
+    ).side_effect = select
+    ranges = [(0, boundary), (boundary, len(text))]
+    assert _remaining_history_calls(owner, coordinator, row, ranges, []) == 1
+    quotes = _scan_history(owner, coordinator, row, ranges, [])
+    assert quotes[0] == prior and len(quotes) == 2
+    assert all(quote.text == text[quote.start : quote.end] for quote in quotes)
+    assert len(receipts) == 2
+    assert all(
+        "quotes" in receipt["output"] and "snippet_ids" not in receipt["output"]
+        for receipt in receipts.values()
+    )
+    assert _remaining_history_calls(owner, coordinator, row, ranges, []) == 0
+    assert _scan_history(owner, coordinator, row, ranges, []) == quotes
+    assert (
+        cast(MagicMock, owner.client.generate_chat_response_with_provenance).call_count
+        == 1
+    )
+
+
+def test_historical_selection_capacity_hold_never_saves_or_removes_prior_evidence():
+    from reflexio.server.llm._litellm_types import CompletionResult, ModelProvenance
+    from reflexio.server.services.playbook.components.overflow_consolidation import (
+        HistoricalScanSelection,
+        _historical_scan_request,
+        _scan_history,
+        _scan_request,
+        _validate_selection_scan,
+    )
+
+    prefix = "word " * 1700
+    text = prefix + "🙂Ω" * 512
+    prior = [HistoricalQuote(start=0, end=len(prefix), text=prefix)]
+    snippets = {
+        "shown": HistoricalQuote(
+            start=len(prefix), end=len(text), text=text[len(prefix) :]
+        )
+    }
+    with pytest.raises(InputBudgetExceededError, match="carrier capacity"):
+        _validate_selection_scan(
+            HistoricalScanSelection(coverage="complete", snippet_ids=["shown"]),
+            prior=prior,
+            snippets=snippets,
+            text=text,
+            start=len(prefix),
+            end=len(text),
+        )
+    assert prior == [HistoricalQuote(start=0, end=len(prefix), text=prefix)]
+    owner, coordinator, row, receipts = _history_fixture(text)
+    old_key = _scan_request(owner, coordinator, row, [], [], 0, len(prefix))[0]
+    saved = {"output": HistoricalScan(coverage="complete", quotes=prior).model_dump()}
+    receipts[old_key] = saved
+    new_key, _, _, _, shown = _historical_scan_request(
+        owner, coordinator, row, [], prior, len(prefix), len(text)
+    )
+    cast(
+        MagicMock, owner.client.generate_chat_response_with_provenance
+    ).return_value = CompletionResult(
+        HistoricalScanSelection(coverage="complete", snippet_ids=list(shown)),
+        ModelProvenance(model_name="fixture-model"),
+    )
+    with pytest.raises(InputBudgetExceededError, match="carrier capacity"):
+        _scan_history(
+            owner, coordinator, row, [(0, len(prefix)), (len(prefix), len(text))], []
+        )
+    assert receipts == {old_key: saved}
+    assert new_key not in receipts
+
+
+@pytest.mark.parametrize("corrected", [True, False])
+def test_historical_capacity_correction_preserves_prior_and_bounds_dispatch(corrected):
+    from reflexio.server.llm._litellm_types import CompletionResult, ModelProvenance
+    from reflexio.server.llm.input_budget import extraction_provider_guard
+    from reflexio.server.services.playbook.components.overflow_consolidation import (
+        HistoricalScanSelection,
+        _scan_history,
+        _scan_request,
+    )
+
+    prefix = "word " * 1700
+    text = prefix + "🙂Ω" * 512
+    prior = HistoricalQuote(start=0, end=len(prefix), text=prefix)
+    owner, coordinator, row, receipts = _history_fixture(text)
+    key = _scan_request(owner, coordinator, row, [], [], 0, len(prefix))[0]
+    saved = {"output": HistoricalScan(coverage="complete", quotes=[prior]).model_dump()}
+    receipts[key] = saved
+    upstream_guard = MagicMock()
+
+    def completion(**kwargs):
+        import json
+
+        body = json.loads(kwargs["messages"][1]["content"])
+        oversized = HistoricalScanSelection(
+            coverage="complete",
+            snippet_ids=[item["snippet_id"] for item in body["chunk"]["snippets"]],
+        )
+        guard = extraction_provider_guard.get()
+        assert guard is not None
+        guard({}, 10, ("fixture-model",), True)
+        feedback = kwargs["structured_output_validator"](oversized)
+        assert feedback and "remaining capacity" in feedback[0]
+        assert "🙂Ω" not in feedback[0]
+        guard({}, 10, ("fixture-model",), True)
+        output = (
+            HistoricalScanSelection(coverage="complete", snippet_ids=[])
+            if corrected
+            else oversized
+        )
+        assert kwargs["structured_output_validator"](output) == []
+        return CompletionResult(output, ModelProvenance(model_name="fixture-model"))
+
+    cast(
+        MagicMock, owner.client.generate_chat_response_with_provenance
+    ).side_effect = completion
+    token = extraction_provider_guard.set(upstream_guard)
+    try:
+        if corrected:
+            assert _scan_history(
+                owner,
+                coordinator,
+                row,
+                [(0, len(prefix)), (len(prefix), len(text))],
+                [],
+            ) == [prior]
+            assert len(receipts) == 2
+        else:
+            with pytest.raises(InputBudgetExceededError, match="carrier capacity"):
+                _scan_history(
+                    owner,
+                    coordinator,
+                    row,
+                    [(0, len(prefix)), (len(prefix), len(text))],
+                    [],
+                )
+            assert receipts == {key: saved}
+        assert receipts[key] == saved
+        assert upstream_guard.call_count == 2
+        assert extraction_provider_guard.get() is upstream_guard
+    finally:
+        extraction_provider_guard.reset(token)
+
+
+def test_historical_neighbor_reselection_uses_physical_quote_coverage():
+    from reflexio.server.services.playbook.components.overflow_consolidation import (
+        HistoricalScanSelection,
+        _selection_scan,
+    )
+
+    text = "Preserve approval. Keep the deadline."
+    prior = [
+        HistoricalQuote(start=0, end=18, text=text[:18]),
+        HistoricalQuote(start=18, end=len(text), text=text[18:]),
+    ]
+    snippets = {"neighbor": HistoricalQuote(start=2, end=25, text=text[2:25])}
+    selected = HistoricalScanSelection(coverage="complete", snippet_ids=["neighbor"])
+    assert _selection_scan(selected, snippets, prior).quotes == []
+    # A one-character gap must remain new evidence, even with equal text nearby.
+    gap = [prior[0].model_copy(update={"end": 17, "text": text[:17]}), prior[1]]
+    assert _selection_scan(selected, snippets, gap).quotes == [snippets["neighbor"]]
+    assert len(prior) == 2
+
+
+def test_rebuilt_proposal_reuses_receipt_across_clock_and_unrelated_witness_changes(
+    monkeypatch,
+):
+    from dataclasses import asdict
+    from datetime import UTC, datetime
+    from unittest.mock import MagicMock
+
+    from reflexio.models.api_schema.domain import entities
+    from reflexio.models.config_schema import PlaybookConfig
+    from reflexio.server.llm._litellm_types import ModelProvenance
+    from reflexio.server.services.extraction.overflow_coordinator import (
+        OverflowCoordinator,
+        current_overflow_coordinator,
+    )
+    from reflexio.server.services.playbook.components.extractor import PlaybookExtractor
+    from reflexio.server.services.playbook.components.overflow_consolidation import (
+        _cached_proposal,
+    )
+    from reflexio.server.services.playbook.components.overflow_evidence import (
+        historical_playbook_digest,
+    )
+    from reflexio.server.services.playbook.playbook_service_utils import (
+        StructuredPlaybookContent,
+    )
+    from reflexio.server.services.playbook.service import (
+        PlaybookGenerationServiceConfig,
+    )
+
+    old = _old(51).model_copy(
+        update={"created_at": 1000, "content": "Require approval before deploying."}
+    )
+    checkpoint = {"historical_playbooks": {"51": historical_playbook_digest(old)}}
+    receipts = {}
+    keys = []
+    coordinator = SimpleNamespace(
+        source_digest="frozen-source",
+        checkpoint=checkpoint,
+        saved_run=SimpleNamespace(created_at=datetime(2026, 10, 1, 12, tzinfo=UTC)),
+        completed_step=receipts.get,
+        require_remaining_work=MagicMock(),
+    )
+
+    def step_key(stage, inputs):
+        key = OverflowCoordinator.step_key(
+            cast(OverflowCoordinator, coordinator), stage, inputs
+        )
+        keys.append(key)
+        return key
+
+    def complete_step(key, output, provenance):
+        receipts[key] = {"output": output, "model_provenance": asdict(provenance)}
+
+    coordinator.step_key = step_key
+    coordinator.complete_step = complete_step
+    extractor = PlaybookExtractor.__new__(PlaybookExtractor)
+    extractor.config = PlaybookConfig(extraction_definition_prompt="Fixture extraction")
+    extractor.service_config = PlaybookGenerationServiceConfig(
+        user_id="u", agent_version="v1", request_id="new", source="api"
+    )
+    owner = PlaybookConsolidator.__new__(PlaybookConsolidator)
+    owner.model_name = "fixture-model"
+    owner.model_provenance = ModelProvenance(
+        model_name="fixture-model", provider="fixture"
+    )
+    owner.request_context = MagicMock()
+    # Exercise the real formatter: NEW Last Modified is part of the real key.
+    owner.request_context.prompt_manager.render_prompt.side_effect = (
+        lambda _prompt_id, values: str(values)
+    )
+    output = PlaybookConsolidationOutput(
+        decisions=[RejectNewDecision(new_id="NEW-0", superseded_by_existing_id=0)]
+    )
+    provider = MagicMock(return_value=output)
+    monkeypatch.setattr(owner, "_consolidation_decisions", provider)
+    token = current_overflow_coordinator.set(cast(OverflowCoordinator, coordinator))
+    try:
+        prompts = []
+        for minute in (1, 20):
+            ambient = datetime(2026, 10, 1, 13, minute, tzinfo=UTC)
+            monkeypatch.setattr(
+                entities,
+                "datetime",
+                SimpleNamespace(now=lambda _, frozen=ambient: frozen),
+            )
+            candidate = extractor._build_user_playbook(
+                StructuredPlaybookContent(content="Require approval before deploying."),
+                source_interaction_ids=[7],
+            )
+            assert candidate is not None
+            prompts.append(owner._render_consolidation_prompt([candidate], [old]))
+            assert (
+                _cached_proposal(
+                    owner, cast(OverflowCoordinator, coordinator), [candidate], [old]
+                )
+                == output
+            )
+            checkpoint["historical_playbooks"]["999"] = "unrelated-history-witness"
+        assert prompts[0] == prompts[1]
+        assert keys[0] == keys[1]
+        assert provider.call_count == 1
+        assert coordinator.require_remaining_work.call_count == 1
+        assert len(receipts) == 1
+
+        # A selected OLD change is load-bearing, so it must never reuse the
+        # previous proposal even though unrelated witness additions are ignored.
+        changed = old.model_copy(
+            update={"content": "Require separate approval and tests."}
+        )
+        checkpoint["historical_playbooks"]["51"] = historical_playbook_digest(changed)
+        assert (
+            _cached_proposal(
+                owner, cast(OverflowCoordinator, coordinator), [candidate], [changed]
+            )
+            == output
+        )
+        assert keys[2] != keys[0]
+        assert provider.call_count == 2
+        assert coordinator.require_remaining_work.call_count == 2
+        assert len(receipts) == 2
+    finally:
+        current_overflow_coordinator.reset(token)
 
 
 def test_historical_neighbor_context_preserves_condition_across_unicode_boundary():

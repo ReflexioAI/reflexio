@@ -17,11 +17,13 @@ from reflexio.server.services.extraction.input_preparation import (
     resolve_evidence_span,
 )
 
+EvidenceKind = Literal["instruction", "correction", "action", "outcome", "uncertainty"]
+
 
 class ProtectedEvidence(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    kind: Literal["instruction", "correction", "action", "outcome", "uncertainty"]
+    kind: EvidenceKind
     evidence_refs: tuple[str, ...] = Field(min_length=1, max_length=8)
     quote: str = Field(min_length=1)
     source_order: int = Field(default=0, ge=0)
@@ -37,6 +39,26 @@ class ProtectedRecordUpdate(BaseModel):
 
     evidence: list[ProtectedEvidence] = Field(default_factory=list, max_length=128)
     candidate_evidence: list[CandidateEvidenceQuote] = Field(
+        default_factory=list, max_length=128
+    )
+
+
+class EvidenceSelection(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    kind: EvidenceKind
+    evidence_refs: tuple[str, ...] = Field(min_length=1, max_length=8)
+
+
+class CandidateEvidenceSelection(EvidenceSelection):
+    candidate_ref: str = Field(min_length=1)
+
+
+class ProtectedRecordSelection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    evidence: list[EvidenceSelection] = Field(default_factory=list, max_length=128)
+    candidate_evidence: list[CandidateEvidenceSelection] = Field(
         default_factory=list, max_length=128
     )
 

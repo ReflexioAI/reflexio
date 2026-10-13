@@ -989,7 +989,7 @@ class PlaybookExtractor:
 
         playbook_content = ensure_playbook_content(entry.content, entry)
 
-        return UserPlaybook(
+        playbook = UserPlaybook(
             playbook_name=get_extractor_name(self.config),
             user_id=self.service_config.user_id,
             agent_version=self.service_config.agent_version,
@@ -1002,3 +1002,14 @@ class PlaybookExtractor:
             notes=entry.notes,
             reader_angle=entry.reader_angle or entry.evidence_kind,
         )
+        coordinator = current_overflow_coordinator.get()
+        if coordinator is not None:
+            saved_run = coordinator.saved_run
+            if saved_run is None or saved_run.created_at is None:
+                raise InputBudgetConfigurationError(
+                    "Overflow candidate lacks its persisted creation time"
+                )
+            # Rebuilding a saved candidate must not change proposal prompts on
+            # every resumed turn and spend quota on already completed work.
+            playbook.created_at = int(saved_run.created_at.timestamp())
+        return playbook

@@ -665,7 +665,11 @@ class PlaybookCandidateReviewer:
         for candidate_index, candidate in enumerate(candidates, start=1):
             candidate_id = f"C{candidate_index}"
             decision = decisions[candidate_id]
-            if decision.decision == "reject":
+            if decision.decision == "reject" or (
+                coordinator is not None and decision.decision == "revise"
+            ):
+                # Overflow recovery publishes only drafts accepted unchanged.
+                # A rewrite can introduce claims absent from the literal source.
                 continue
             if decision.decision == "accept":
                 updates: dict[str, Any] = {
@@ -793,7 +797,13 @@ class PlaybookCandidateReviewer:
             return PlaybookReviewOutcome(
                 PlaybookCandidateReviewOutput(decisions=decisions), units, supporting
             )
+        scope_messages: list[dict[str, str]] = []
         if coordinator is not None:
+            from reflexio.server.services.playbook.components.overflow_evidence import (
+                EVIDENCE_SCOPE_POLICY,
+            )
+
+            scope_messages.append({"role": "system", "content": EVIDENCE_SCOPE_POLICY})
             candidate = candidates[0]
             record = coordinator.candidate_records.get(
                 coordinator.playbook_key(candidate)
@@ -871,7 +881,7 @@ class PlaybookCandidateReviewer:
         prompt = self.request_context.prompt_manager.render_prompt(
             self.PROMPT_ID, variables
         )
-        messages = [{"role": "user", "content": prompt}]
+        messages = [*scope_messages, {"role": "user", "content": prompt}]
         response_format: (
             type[PlaybookCandidateReviewOutput] | type[EvidenceFirstReviewOutput]
         ) = PlaybookCandidateReviewOutput
@@ -893,6 +903,7 @@ class PlaybookCandidateReviewer:
             }
             messages = [
                 {"role": "system", "content": prompt},
+                *scope_messages,
                 {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
             ]
             response_format = EvidenceFirstReviewOutput

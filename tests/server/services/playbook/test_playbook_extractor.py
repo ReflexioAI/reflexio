@@ -11,6 +11,9 @@ Tests the extractor's new responsibilities for:
 
 import os
 import tempfile
+from datetime import UTC, datetime
+from types import SimpleNamespace
+from typing import cast
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -53,6 +56,81 @@ from reflexio.server.services.playbook.service import (
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 from reflexio.server.services.storage.storage_base import AgentRunStatus
 from reflexio.test_support.llm_mock import make_structured_finish
+
+
+@pytest.mark.parametrize("missing", ["run", "created_at"])
+def test_overflow_candidate_refuses_missing_persisted_creation_time(
+    request_context, mock_llm_client, extractor_config, service_config, missing
+):
+    from reflexio.server.llm.input_budget import InputBudgetConfigurationError
+    from reflexio.server.services.extraction.overflow_coordinator import (
+        OverflowCoordinator,
+        current_overflow_coordinator,
+    )
+
+    extractor = PlaybookExtractor(
+        request_context=request_context,
+        llm_client=mock_llm_client,
+        extractor_config=extractor_config,
+        service_config=service_config,
+        agent_context="Test agent",
+    )
+    coordinator = SimpleNamespace(
+        saved_run=None if missing == "run" else SimpleNamespace(created_at=None)
+    )
+    token = current_overflow_coordinator.set(cast(OverflowCoordinator, coordinator))
+    try:
+        with pytest.raises(
+            InputBudgetConfigurationError, match="persisted creation time"
+        ):
+            extractor._build_user_playbook(
+                StructuredPlaybookContent(
+                    content="Require separate deployment approval."
+                ),
+                source_interaction_ids=[7],
+            )
+    finally:
+        current_overflow_coordinator.reset(token)
+
+
+def test_overflow_rebuilt_candidate_uses_parent_time_despite_ambient_clock_changes(
+    monkeypatch, request_context, mock_llm_client, extractor_config, service_config
+):
+    from reflexio.models.api_schema.domain import entities
+    from reflexio.server.services.extraction.overflow_coordinator import (
+        OverflowCoordinator,
+        current_overflow_coordinator,
+    )
+
+    extractor = PlaybookExtractor(
+        request_context=request_context,
+        llm_client=mock_llm_client,
+        extractor_config=extractor_config,
+        service_config=service_config,
+        agent_context="Test agent",
+    )
+    created = datetime(2026, 10, 1, 12, 0, tzinfo=UTC)
+    coordinator = SimpleNamespace(saved_run=SimpleNamespace(created_at=created))
+    entry = StructuredPlaybookContent(content="Require separate deployment approval.")
+    token = current_overflow_coordinator.set(cast(OverflowCoordinator, coordinator))
+    try:
+        candidates = []
+        for minute in (1, 20):
+            ambient = datetime(2026, 10, 1, 13, minute, tzinfo=UTC)
+            monkeypatch.setattr(
+                entities,
+                "datetime",
+                SimpleNamespace(now=lambda _, frozen=ambient: frozen),
+            )
+            candidate = extractor._build_user_playbook(
+                entry, source_interaction_ids=[7]
+            )
+            assert candidate is not None
+            candidates.append(candidate)
+        assert candidates[0].model_dump() == candidates[1].model_dump()
+        assert candidates[0].created_at == int(created.timestamp())
+    finally:
+        current_overflow_coordinator.reset(token)
 
 
 def _evidence_unit(

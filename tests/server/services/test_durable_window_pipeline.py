@@ -1008,8 +1008,7 @@ def test_historical_consolidation_scans_complete_source_and_replays_without_call
     )
     from reflexio.server.services.playbook.components.overflow_consolidation import (
         ConsolidationVerification,
-        HistoricalQuote,
-        HistoricalScan,
+        HistoricalScanSelection,
         verified_consolidation_decisions,
     )
 
@@ -1096,26 +1095,29 @@ def test_historical_consolidation_scans_complete_source_and_replays_without_call
             provenance, RunTokenTotals(prompt_tokens=100, completion_tokens=10)
         )
         payload_data = json.loads(kwargs["messages"][-1]["content"])
-        if kwargs["response_format"] is HistoricalScan:
+        if kwargs["response_format"] is HistoricalScanSelection:
             chunk = payload_data["chunk"]
             primary_ranges.append((chunk["primary_start"], chunk["primary_end"]))
-            assert chunk["text"] == old_text[chunk["start"] : chunk["end"]]
+            assert (
+                "".join(item["text"] for item in chunk["snippets"])
+                == old_text[chunk["start"] : chunk["end"]]
+            )
             assert payload_data["author_role"] == "unknown"
-            quotes = []
             quote = "Deployment needs separate approval."
-            if quote in chunk["text"]:
-                start = old_text.index(quote)
-                quotes.append(
-                    HistoricalQuote(start=start, end=start + len(quote), text=quote)
-                )
-            result = HistoricalScan(coverage="complete", quotes=quotes)
+            result = HistoricalScanSelection(
+                coverage="complete",
+                snippet_ids=[
+                    item["snippet_id"]
+                    for item in chunk["snippets"]
+                    if quote in item["text"]
+                ],
+            )
             assert kwargs["structured_output_validator"](result) == []
         else:
             assert kwargs["response_format"] is ConsolidationVerification
-            assert (
-                payload_data["historical_evidence"][0]["quotes"][-1]["text"]
-                == "Deployment needs separate approval."
-            )
+            assert payload_data["historical_evidence"][0]["quotes"][-1][
+                "text"
+            ].endswith("Deployment needs separate approval.")
             assert old_text not in kwargs["messages"][-1]["content"]
             result = ConsolidationVerification(
                 verdict=verdict, reason="fixture verdict"
@@ -2311,9 +2313,6 @@ def test_protected_pass_keeps_scoped_approval_and_adverse_outcomes_on_replay(
                                             if index == 0
                                             else "uncertainty",
                                             "evidence_refs": [span.evidence_ref],
-                                            "quote": span.text,
-                                            "source_order": 99,
-                                            "role": "user",
                                         }
                                     ]
                                 }
@@ -3758,7 +3757,7 @@ def test_single_chunk_adopted_empty_output_scans_source_and_publishes(
 
     from reflexio.server.llm._litellm_types import ModelProvenance
     from reflexio.server.services.extraction.protected_record import (
-        ProtectedRecordUpdate,
+        ProtectedRecordSelection,
     )
 
     _, storage, window, token, executor, _, _, _, _, run = _saved_legacy_window(
@@ -3766,7 +3765,7 @@ def test_single_chunk_adopted_empty_output_scans_source_and_publishes(
     )
     scan = Mock(
         return_value=SimpleNamespace(
-            value=ProtectedRecordUpdate(), provenance=ModelProvenance()
+            value=ProtectedRecordSelection(), provenance=ModelProvenance()
         )
     )
     monkeypatch.setattr(executor.client, "generate_chat_response_with_provenance", scan)
@@ -3787,9 +3786,14 @@ def test_single_chunk_adopted_empty_output_scans_source_and_publishes(
     assert storage.get_user_playbooks(user_id=window.user_id) == []
 
 
-@pytest.mark.parametrize("kind", ["profile", "playbook"])
 @pytest.mark.parametrize(
-    "failure", [None, "unsupported_schema", "nonquote", "out_of_source"]
+    ("kind", "failure"),
+    [
+        (kind, failure)
+        for kind in ("profile", "playbook")
+        for failure in (None, "unsupported_schema", "nonquote", "out_of_source")
+    ]
+    + [("playbook", "rewrite")],
 )
 def test_adopted_legacy_output_reaches_complete_publication_with_verified_evidence(
     pipeline, monkeypatch, kind, failure
@@ -3844,7 +3848,7 @@ def test_adopted_legacy_output_reaches_complete_publication_with_verified_eviden
         prompt = json.dumps(params["messages"], ensure_ascii=False)
         # MiniMax requests JSON-object mode; identify the actual template stage.
         if "Select original evidence needed" in prompt:
-            name = "ProtectedRecordUpdate"
+            name = "ProtectedRecordSelection"
         elif "reason_code" in prompt:
             name = (
                 "EvidenceFirstReviewOutput"
@@ -3854,7 +3858,7 @@ def test_adopted_legacy_output_reaches_complete_publication_with_verified_eviden
         elif "unique_ids" in prompt:
             name = "ProfileDeduplicationOutput"
         schemas.append(name)
-        if "ProtectedRecordUpdate" in name:
+        if "ProtectedRecordSelection" in name:
             result = {
                 "candidate_evidence": [
                     {
@@ -3865,9 +3869,11 @@ def test_adopted_legacy_output_reaches_complete_publication_with_verified_eviden
                             if failure == "out_of_source"
                             else span.evidence_ref
                         ],
-                        "quote": "not an original quotation"
-                        if failure == "nonquote"
-                        else span.text,
+                        **(
+                            {"quote": "not an original quotation"}
+                            if failure == "nonquote"
+                            else {}
+                        ),
                     }
                 ]
             }
@@ -3882,6 +3888,16 @@ def test_adopted_legacy_output_reaches_complete_publication_with_verified_eviden
                     }
                 ],
             }
+            if failure == "rewrite":
+                result["decisions"][0].update(
+                    decision="revise",
+                    reason_code="unsupported_evidence",
+                    revision={
+                        "content": "Deploy without requesting approval.",
+                        "trigger": "Before deploying",
+                        "rationale": "The model inferred a new approval rule.",
+                    },
+                )
             if "EvidenceFirstReviewOutput" in name:
                 result["supporting_evidence"] = [
                     {
@@ -3919,7 +3935,7 @@ def test_adopted_legacy_output_reaches_complete_publication_with_verified_eviden
         )
 
     monkeypatch.setattr(executor.client, "_completion_with_hard_timeout", respond)
-    if failure:
+    if failure and failure != "rewrite":
         from reflexio.server.llm._litellm_types import StructuredOutputRepairError
         from reflexio.server.llm.input_budget import InputBudgetConfigurationError
 
@@ -3953,20 +3969,25 @@ def test_adopted_legacy_output_reaches_complete_publication_with_verified_eviden
         )
         if kind == "playbook":
             persisted = storage.get_user_playbooks(user_id=window.user_id)
-            assert len(persisted) == 1
-            candidate = persisted[0]
-            assert (
-                candidate.content
-                == run.committed_output["output"]["playbooks"][0]["content"]
-            )
-            assert (
-                candidate.source_interaction_ids == run.binding.source_interaction_ids
-            )
-            assert (
-                candidate.source_span == span.text
-                and candidate.reader_angle is None
-                and candidate.rationale is None
-            )
+            if failure == "rewrite":
+                assert persisted == []
+                assert storage.count_all_profiles() == 0
+            else:
+                assert len(persisted) == 1
+                candidate = persisted[0]
+                assert (
+                    candidate.content
+                    == run.committed_output["output"]["playbooks"][0]["content"]
+                )
+                assert (
+                    candidate.source_interaction_ids
+                    == run.binding.source_interaction_ids
+                )
+                assert (
+                    candidate.source_span == span.text
+                    and candidate.reader_angle is None
+                    and candidate.rationale is None
+                )
             assert any("ReviewOutput" in name for name in schemas)
         else:
             persisted_profiles = storage.get_user_profile(window.user_id)

@@ -24,7 +24,7 @@ information, and resumes outside the request path.
 | `outcome.py` | Provides the generic extraction outcome wrapper used by callers. |
 | `input_preparation.py` | Builds bounded, lossless text chunks with original field/character spans before legacy clipping. |
 | `protected_record.py` | Accumulates source-verified quotations for cross-chunk context; capacity failure never silently removes an earlier correction. |
-| `protected_pass.py` | Builds that context with checkpointed source-validated model passes; keeps scoped approvals and reported versus observed outcomes distinct in its instructions. |
+| `protected_pass.py` | Builds that context with checkpointed source-validated model passes; keeps scoped approvals and reported versus observed outcomes distinct. Bounded repair feedback identifies invalid quotation entries without disclosing source text; inner-JSON escaping and exact spelling remain source invariants. |
 | `overflow_coordinator.py` | Owns scoped provider admission, monotonic durable attempt reservations, immutable step receipts and historical observed usage. Never publishes child learnings. |
 | `overflow_presentation.py` | Supplies prepared history only to extraction prompts, retaining original models and global source labels. |
 | `overflow_pipeline.py` | Stages all original chunks, reconciles candidates, verifies coverage and reuses source-bound saved output. |
@@ -101,6 +101,23 @@ New `MOCK_LLM_RESPONSE` simulations retain the ordinary mock extraction path,
 without admitting a provider-budget protocol. Switching an existing durable
 agent run to mock mode refuses computation before publication; resume that work
 in real mode to preserve its saved output, source coverage and consumed quota.
+
+New protected passes ask the model to select IDs for bounded original snippets;
+the server copies their exact text. Every selected ID becomes a separate
+quotation bound to one original field. A contained range can narrow one shown
+snippet; an offsetless field ID resolves only when it names one shown snippet.
+Canonical source offsets are retained. Unknown or ambiguous IDs and record-capacity
+overflow cannot become saved receipts or publish output. Existing v1 quotation
+receipts remain reusable under their original source and quota checks.
+Complete-prompt admission targets 65,536 budgeted tokens after the 20% counting
+margin, while reserving output and respecting each model's actual capacity.
+One capacity correction may select fewer new snippets; a failed correction
+remains a typed capacity hold and cannot spend fallback calls. Shared quotations
+already physically covered are reused without duplicating their record cost.
+Reconstructed playbooks retain the persisted parent's creation time, and each
+consolidation receipt binds only its participating historical witnesses. Resumed
+turns therefore reuse unchanged decisions as time passes or other history is read;
+the complete historical witness set still fences publication.
 
 Protected context exposes only its literal quotation at original source offsets.
 Final reconciliation and cached recovery reuse proof carried by registered child

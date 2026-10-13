@@ -107,15 +107,15 @@ def test_empty_declarations_mean_unset():
     assert declared_context_limits(" ") == {}
 
 
-def test_approved_32k_target_preserves_margin_and_actual_model_output_capacity(counter):
-    counter.return_value = 20000
+def test_approved_64k_target_preserves_margin_and_actual_model_output_capacity(counter):
+    counter.return_value = 40000
     reserve = Mock()
     guard = extraction_request_guard(
-        context_limits={"test-model": 65536}, reserve_attempt=reserve
+        context_limits={"test-model": 512000}, reserve_attempt=reserve
     )
     guard(params(), 120, (), False)
     reserve.assert_called_once()
-    counter.return_value = 29000
+    counter.return_value = 55000
     with pytest.raises(InputBudgetExceededError):
         guard(params(), 120, (), False)
     assert reserve.call_count == 1

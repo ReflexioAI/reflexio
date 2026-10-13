@@ -223,6 +223,20 @@ the combined decisions before applying the original storage models. Equal source
 bytes share source geometry; row-specific semantic receipts, fingerprints and
 original source IDs remain distinct. Unsafe or insufficient evidence blocks
 publication. Final row locks protect scope, status, content and evidence changes.
+Missing historical scan receipts now use lossless bounded original snippets:
+the model selects displayed IDs, and the server copies exact text and absolute
+character ranges into the existing quotation receipt format. Every primary and
+neighbor character remains visible, author role stays unknown, and earlier
+quotations cannot be removed. Physical quoted coverage avoids saving repeated
+neighbor evidence. Conservative snippet costs guide selection within the unchanged
+2048-token carrier limit; insufficient coverage or capacity blocks publication.
+Valid v1 quotation receipts remain reusable without provider calls; missing work
+and new receipts use a separate v2 key bound to the complete presentation and schema.
+Overflow review and final verification preserve the local scope of code examples
+and test values, including conditional permission checks and admission versus
+execution. Incomplete upstream excerpts cannot establish omitted prerequisites
+or universal requirements. Their trusted policy is separate from source data;
+normal non-overflow reviewer prompts remain unchanged.
 
 Inline consolidation always runs during generation (the legacy `deduplicator` feature flag is retired). The enterprise repo additionally ships a **scheduled second-pass job** (`reflexio_ext/server/services/playbook_reconsolidation/`) that re-runs consolidation daily over already-persisted rows — user playbooks per `(user_id, agent_version)` and agent playbooks per `agent_version` — by rendering each duplicate group as NEW candidates against an empty EXISTING side via `_consolidation_decisions`, then tombstoning merged sources with `merge_records` lineage.
 
@@ -331,3 +345,21 @@ admission and active receipt polling register that organization's local worker;
 polling can resume persisted work after process registration is lost. Terminal
 receipt reads do not start workers. Platform and self-host deployments retain
 their enterprise scheduler ownership.
+
+Historical source selection uses the same one-correction capacity guard as original
+selection. An oversized selection can reduce only its new snippets once; retained
+quotations and the 2,048-token carrier ceiling remain fixed. A second over-capacity
+result stops with a typed hold before further fallback dispatch or a new receipt.
+
+Overflow review also rejects inferred defaults and workflow details absent from
+the source: inspecting or searching a file cannot establish execution, and a
+selective exclusion cannot establish a default that excludes every other case.
+Conditional rules must retain their supported applicability and exceptions.
+
+Overflow recovery applies a conservative publication rule: only drafts accepted
+unchanged by source review survive. Drafts requiring a rewrite are discarded;
+their originals and review receipts remain available. Accepted drafts retain
+their original content, trigger, rationale and generation provenance. Ordinary
+non-overflow review continues to support revisions. A fully covered window may
+complete with no new learnings when every draft is unsupported or already covered
+by existing rules; original inputs and existing learning constraints stay intact.
