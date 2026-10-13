@@ -146,6 +146,87 @@ def test_overflow_review_preserves_original_roles_and_does_not_attribute_context
         current_overflow_coordinator.reset(token)
 
 
+@pytest.mark.parametrize("accepted", [False, True])
+def test_overflow_review_discards_rewrites_without_changing_original_drafts(accepted):
+    from reflexio.server.llm._litellm_types import ModelProvenance
+    from reflexio.server.services.extraction.overflow_coordinator import (
+        OverflowCoordinator,
+        current_overflow_coordinator,
+    )
+
+    candidate = _candidate(
+        1, "Keep corrections explicit.", content="Keep corrections explicit."
+    )
+    original = candidate.model_dump(mode="json")
+    assert candidate.user_id is not None
+    from reflexio.server.services.extraction.protected_record import ProtectedRecord
+    from reflexio.server.services.storage.storage_base._extraction_stream import Window
+
+    coordinator = OverflowCoordinator(
+        MagicMock(),
+        Window("w", candidate.user_id, "playbook", "", 0, 1, [], {}, False, False),
+        "token",
+        OverflowCoordinator.initial_manifest("fixture-source"),
+        source_digest="fixture-source",
+        context_limits={},
+    )
+    key = coordinator.playbook_key(candidate)
+    record = ProtectedRecord()
+    model = ModelProvenance(model_name="original-model")
+    coordinator.candidate_models[key] = model
+    coordinator.review_models[key] = ModelProvenance(model_name="review-model")
+    coordinator.candidate_records[key] = record
+    coordinator.candidate_evidence_refs[key] = ("original-ref",)
+    coordinator.candidate_historical_matches[key] = (51,)
+    decision = CandidateReviewDecision(
+        id="C1",
+        decision="accept" if accepted else "revise",
+        reason_code="grounded_useful" if accepted else "unsupported_evidence",
+        evidence_ids=["C1-E1"],
+        revision=None
+        if accepted
+        else CandidateRevision(
+            content="Always infer unstated intent.",
+            trigger="When responding to a correction",
+            rationale="The source explicitly requests this behavior.",
+        ),
+    )
+    units = {
+        "C1": [
+            CandidateEvidenceUnit(
+                evidence_id="C1-E1",
+                turn_ref="T1",
+                source_span="Keep corrections explicit.",
+                interaction_id=1,
+                role="user",
+            )
+        ]
+    }
+    token = current_overflow_coordinator.set(coordinator)
+    try:
+        result = PlaybookCandidateReviewer._apply_decisions(
+            [candidate], PlaybookCandidateReviewOutput(decisions=[decision]), units
+        )
+        assert candidate.model_dump(mode="json") == original
+        if accepted:
+            assert len(result) == 1
+            assert (result[0].content, result[0].trigger, result[0].rationale) == (
+                candidate.content,
+                candidate.trigger,
+                candidate.rationale,
+            )
+            assert result[0].source_span == "Keep corrections explicit."
+            survivor_key = coordinator.playbook_key(result[0])
+            assert coordinator.candidate_models[survivor_key] is model
+            assert coordinator.candidate_records[survivor_key] is record
+        else:
+            assert result == []
+            assert coordinator.candidate_models == {key: model}
+            assert coordinator.candidate_records == {key: record}
+    finally:
+        current_overflow_coordinator.reset(token)
+
+
 def _interaction_model(
     interaction_id: int, content: str, *, role: str = "user"
 ) -> RequestInteractionDataModel:

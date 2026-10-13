@@ -665,7 +665,11 @@ class PlaybookCandidateReviewer:
         for candidate_index, candidate in enumerate(candidates, start=1):
             candidate_id = f"C{candidate_index}"
             decision = decisions[candidate_id]
-            if decision.decision == "reject":
+            if decision.decision == "reject" or (
+                coordinator is not None and decision.decision == "revise"
+            ):
+                # Overflow recovery publishes only drafts accepted unchanged.
+                # A rewrite can introduce claims absent from the literal source.
                 continue
             if decision.decision == "accept":
                 updates: dict[str, Any] = {

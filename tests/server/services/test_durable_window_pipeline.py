@@ -3786,9 +3786,14 @@ def test_single_chunk_adopted_empty_output_scans_source_and_publishes(
     assert storage.get_user_playbooks(user_id=window.user_id) == []
 
 
-@pytest.mark.parametrize("kind", ["profile", "playbook"])
 @pytest.mark.parametrize(
-    "failure", [None, "unsupported_schema", "nonquote", "out_of_source"]
+    ("kind", "failure"),
+    [
+        (kind, failure)
+        for kind in ("profile", "playbook")
+        for failure in (None, "unsupported_schema", "nonquote", "out_of_source")
+    ]
+    + [("playbook", "rewrite")],
 )
 def test_adopted_legacy_output_reaches_complete_publication_with_verified_evidence(
     pipeline, monkeypatch, kind, failure
@@ -3883,6 +3888,16 @@ def test_adopted_legacy_output_reaches_complete_publication_with_verified_eviden
                     }
                 ],
             }
+            if failure == "rewrite":
+                result["decisions"][0].update(
+                    decision="revise",
+                    reason_code="unsupported_evidence",
+                    revision={
+                        "content": "Deploy without requesting approval.",
+                        "trigger": "Before deploying",
+                        "rationale": "The model inferred a new approval rule.",
+                    },
+                )
             if "EvidenceFirstReviewOutput" in name:
                 result["supporting_evidence"] = [
                     {
@@ -3920,7 +3935,7 @@ def test_adopted_legacy_output_reaches_complete_publication_with_verified_eviden
         )
 
     monkeypatch.setattr(executor.client, "_completion_with_hard_timeout", respond)
-    if failure:
+    if failure and failure != "rewrite":
         from reflexio.server.llm._litellm_types import StructuredOutputRepairError
         from reflexio.server.llm.input_budget import InputBudgetConfigurationError
 
@@ -3954,20 +3969,25 @@ def test_adopted_legacy_output_reaches_complete_publication_with_verified_eviden
         )
         if kind == "playbook":
             persisted = storage.get_user_playbooks(user_id=window.user_id)
-            assert len(persisted) == 1
-            candidate = persisted[0]
-            assert (
-                candidate.content
-                == run.committed_output["output"]["playbooks"][0]["content"]
-            )
-            assert (
-                candidate.source_interaction_ids == run.binding.source_interaction_ids
-            )
-            assert (
-                candidate.source_span == span.text
-                and candidate.reader_angle is None
-                and candidate.rationale is None
-            )
+            if failure == "rewrite":
+                assert persisted == []
+                assert storage.count_all_profiles() == 0
+            else:
+                assert len(persisted) == 1
+                candidate = persisted[0]
+                assert (
+                    candidate.content
+                    == run.committed_output["output"]["playbooks"][0]["content"]
+                )
+                assert (
+                    candidate.source_interaction_ids
+                    == run.binding.source_interaction_ids
+                )
+                assert (
+                    candidate.source_span == span.text
+                    and candidate.reader_angle is None
+                    and candidate.rationale is None
+                )
             assert any("ReviewOutput" in name for name in schemas)
         else:
             persisted_profiles = storage.get_user_profile(window.user_id)

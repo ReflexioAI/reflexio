@@ -355,3 +355,11 @@ Overflow review also rejects inferred defaults and workflow details absent from
 the source: inspecting or searching a file cannot establish execution, and a
 selective exclusion cannot establish a default that excludes every other case.
 Conditional rules must retain their supported applicability and exceptions.
+
+Overflow recovery applies a conservative publication rule: only drafts accepted
+unchanged by source review survive. Drafts requiring a rewrite are discarded;
+their originals and review receipts remain available. Accepted drafts retain
+their original content, trigger, rationale and generation provenance. Ordinary
+non-overflow review continues to support revisions. A fully covered window may
+complete with no new learnings when every draft is unsupported or already covered
+by existing rules; original inputs and existing learning constraints stay intact.
