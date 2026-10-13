@@ -1186,3 +1186,65 @@ Three pairs/six logical/provider requests, zero repairs, two full candidate pass
 Prospectively reviewed final-contract clarification checks content and applicable use trigger independently for that application task's assigned/available variable inputs. Task-relative meaning is flexible; no fixed words or language heuristic. A scoped trigger cannot compensate for unscoped content. Whole collection/use workflows retain earliest collection entry before inputs exist, with availability limited to use branches; grounded fixed future instructions/bounds stay fixed. No schema/runtime/validator/repair/other-policy change beyond version routing. Every full22/contrast source judgment and subsequent adoption gate remain required; active v1.3.0 unchanged.
 
 Inactive v1.39 implementation checks: 569 affected actual parser/repair/fallback, stored review/apply, complete-workflow, client/private writer and mock/prompt tests passed (eight snapshots). Ten separate native observer/driver identity checks passed. Ruff/formatting and six-file Pyright passed. Seven schema hashes, all earlier policy bytes and active v1.3.0 are unchanged. Independent source/design/code reviews and local Codex found no actionable defects; root runtime/type receipts cover read-only Codex limitations. Two pre-output source reviews retain all22/three-contrast judgments. These checks do not establish model reliability or later product/staging qualification.
+
+
+## Preserved isolated binary failures and withheld repeat proposal
+
+Two private original-only Boolean probes already failed with valid native
+responses: MiniMax-M3 at temperature 0.7 stopped after one pass and one failure
+(supplied-budget use incorrectly false); temperature zero stopped after 22 passes
+and one failure (generic completion incorrectly true). They used the same
+strict Boolean schema, policy and original-only inputs. Neither qualifies a
+runtime classifier. The independently verified history receipt is
+`fdbde7b4eb84cdefaffa815b21833b3275030d3c0ef8d4a978973738a63fbe70`.
+The later source-added versus original-only proposal was withheld before any
+implementation or provider calls because its motivation omitted these trials.
+Root withholding receipt:
+`344b2c896baa5c591ef2c126deec5c9cafb8cec40e23ea3d2afc208c54252112`.
+Historical files, grades and earlier provisional design clearance are preserved.
+
+## Private source-bound rationale construction prototype
+
+This construction-only experiment is separate from the failed v149/v150 model
+trials. It tests two narrowly scoped revised-rationale forms: an actual own-User
+instruction for a complete original action, and an own-User assignment for an
+original task-input reference. It leaves candidates, actual review assessments,
+decisions and accepted annotations unchanged. Exact source excerpts remain
+private. A deterministic renderer adds a request or singular recorded-assignment
+premise; substring validation proves provenance, not support or applicability.
+There is no new reviewer version, native provider schema, runtime stage, default
+activation or production change from this prototype.
+
+All 18 preregistered source-only constructor controls matched their expected
+structural outcomes. Independent audits found two supported rendered premises,
+three intentionally unsupported or incomplete rendered premises, one
+source-supported but grammatically unqualified parameter reference, and 12
+refused constructions with no rendered text. These are mock construction
+controls, not model responses or whole-review semantic passes. In particular,
+the budget mock does not qualify full content/trigger availability conditions;
+its unrelated placeholder rationale remains unqualified. No old failed output
+was transformed into a pass.
+
+Bindings: prospective plan
+`652316b01c440e0fef92c7a571221cc0d48d5bd7c0785d009beb1dad780c3787`,
+pre-output controls
+`925dc2eed3c418d6a5d4efc33bace08c81226b92811d9892f0c71fae8918dd74`,
+actual observations
+`094fee4aeb7cf5e42dca950b05de8ec268b79a6742c9d7d3042ef833ebe58b8e`,
+independent architecture audit
+`ac6a701e25b4cd1e538d39a31cfab82832f797c7e3f7ede387f1f1592d04990d`,
+and adversarial audit
+`4862b9c392c85b8276baccdb51afc23807956c6bb60951cb6b0358e6b082482c`.
+
+The constructor trusts the existing source-preparation seam. A separate
+metadata-mutation check showed it accepts a foreign interaction ID when local
+source ID/text/role match; it cannot be presented as independently certifying
+ownership. The scoped native/security audit is
+`afdfc63451258196ef95f8b32be07d3589d4b07dd394815a19b48e333c8dfe86`.
+Correct this binding gap and the parameter-fragment grammar before a separately
+reviewed native diagnostic. Actual request-source origin, original/context/cache
+binding, raw DTO/projection correspondence and protected child provenance also
+remain live-interface requirements. Correction, observed-failure and other
+premise forms remain unqualified; missing forms cannot reject valid guidance or
+fabricate false assessments. All existing model, coverage, holdout, product,
+storage, staging, review and CI adoption gates remain pending.
