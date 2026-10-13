@@ -694,3 +694,38 @@ def test_later_receipt_cannot_reduce_acknowledged_reference_budget(monkeypatch):
     assert state.published_reference_count(records) == 1
     _, turns = state.unpublished_slice(records)
     assert "retrieved_learnings" not in turns[0]
+
+
+def test_receipts_survive_disk_buffer_and_preserve_distinct_versions() -> None:
+    entries = [
+        {
+            "id": "first",
+            "kind": "playbook",
+            "source_kind": "user_playbook",
+            "real_id": "7",
+            "exposure_receipt": "served-version-one",
+        },
+        {
+            "id": "second",
+            "kind": "playbook",
+            "source_kind": "user_playbook",
+            "real_id": "7",
+            "exposure_receipt": "served-version-two",
+        },
+    ]
+    state.append_injected("receipt-session", entries)
+    state.append_retrieved_learning_refs("receipt-session", entries)
+    state.append("receipt-session", {"role": "Assistant", "content": "answer"})
+    _, interactions = state.unpublished_slice(state.read_all("receipt-session"))
+    assert interactions[0]["retrieved_learnings"] == [
+        {
+            "kind": "user_playbook",
+            "learning_id": "7",
+            "exposure_receipt": "served-version-one",
+        },
+        {
+            "kind": "user_playbook",
+            "learning_id": "7",
+            "exposure_receipt": "served-version-two",
+        },
+    ]

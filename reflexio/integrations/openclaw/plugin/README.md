@@ -47,3 +47,14 @@ in flight. Successful publish markers record the cumulative number of references
 sent, preserving the session-wide evaluation limit. Older buffers lack that
 receipt, so their historical references are counted conservatively; this may
 trim new references sooner, but avoids exceeding the server's limit after upgrade.
+
+### Publish-time playbook evidence
+
+User-playbook search receipts travel with the injected learning references in the
+on-disk buffer and are sent unchanged on publish. Distinct receipts for one
+playbook are retained, so a later revision cannot overwrite an earlier injection.
+Reflexio stores exposure evidence with the interaction rather than writing it on
+search. ID-only references remain supported but have unverified served versions.
+Update the SDK/server together to receive this metadata; older search response
+models may omit receipts. The server stores only a receipt digest in the
+interaction, and client recovery uses it to compare the original submission.

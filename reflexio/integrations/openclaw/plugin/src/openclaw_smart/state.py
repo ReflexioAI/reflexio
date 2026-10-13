@@ -265,7 +265,11 @@ def _normalize_registry_ref(entry: Any) -> dict[str, str] | None:
         wire_kind = str(entry["source_kind"])
     else:
         return None
-    return {"kind": wire_kind, "learning_id": learning_id}
+    ref = {"kind": wire_kind, "learning_id": learning_id}
+    receipt = entry.get("exposure_receipt")
+    if isinstance(receipt, str) and len(receipt) <= 8_192:
+        ref["exposure_receipt"] = receipt
+    return ref
 
 
 def append_retrieved_learning_refs(
@@ -379,7 +383,11 @@ def _wire_retrieved_ref(value: Any) -> dict[str, str] | None:
         return None
     if not isinstance(learning_id, str) or not learning_id:
         return None
-    return {"kind": str(kind), "learning_id": learning_id}
+    ref = {"kind": str(kind), "learning_id": learning_id}
+    receipt = value.get("exposure_receipt")
+    if isinstance(receipt, str) and len(receipt) <= 8_192:
+        ref["exposure_receipt"] = receipt
+    return ref
 
 
 def _published_watermarks(records: list[dict[str, Any]]) -> list[int]:
@@ -521,9 +529,13 @@ def unpublished_slice(
                     turn["tools_used"] = pending_tools
                     pending_tools = []
                 retrieved: list[dict[str, str]] = []
-                seen: set[tuple[str, str]] = set()
+                seen: set[tuple[str, str, str]] = set()
                 for ref in pending_refs:
-                    key = (ref["kind"], ref["learning_id"])
+                    key = (
+                        ref["kind"],
+                        ref["learning_id"],
+                        ref.get("exposure_receipt", ""),
+                    )
                     if key in seen:
                         continue
                     seen.add(key)

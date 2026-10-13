@@ -173,6 +173,9 @@ def _append_playbook_bullet(
             "source_kind": source_kind,
         }
     )
+    receipt = _field(pb, "exposure_receipt")
+    if isinstance(receipt, str) and len(receipt) <= 8_192:
+        entries[-1]["exposure_receipt"] = receipt
     return rank
 
 

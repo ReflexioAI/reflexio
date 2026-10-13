@@ -285,7 +285,7 @@ class GenerationService:
             check_admission_deadline()
             with publish_timing.phase("commit_scope"), storage.commit_scope():
                 with publish_timing.phase("lock_stream"):
-                    storage.lock_extraction_stream(user_id)
+                    storage.lock_publish_stream(user_id, new_interactions)
                 check_admission_deadline()
                 if admission_participant is not None:
                     receipt = admission_participant.claim(request_id, user_id)

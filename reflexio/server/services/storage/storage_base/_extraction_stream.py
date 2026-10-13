@@ -15,6 +15,7 @@ from dataclasses import dataclass, fields
 from datetime import UTC, datetime
 from typing import Any, Literal, Protocol
 
+from reflexio.models.api_schema.domain import Interaction
 from reflexio.server.work_scope import current_project_id
 
 Kind = Literal["profile", "playbook"]
@@ -250,6 +251,14 @@ class ExtractionStreamStore:
                     f"WHERE user_id=? AND interaction_id IN ({placeholders})",
                     (*values, user_id, *ids),
                 )
+
+    def lock_publish_stream(
+        self,
+        user_id: str,
+        interactions: list[Interaction],  # noqa: ARG002
+    ) -> None:
+        """Lock publication; enterprise adds the complete exposure subject set."""
+        self.lock_extraction_stream(user_id)
 
     def lock_extraction_stream(self, user_id: str) -> None:
         with self._stream_sql() as db:
