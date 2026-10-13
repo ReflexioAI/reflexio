@@ -72,7 +72,9 @@ claim, not independent proof. Implementation approval is not deployment approval
 Keep conflicts and chronology. Choose concise complete evidence, avoiding routine
 or repeated tool output. Empty selections are valid when nothing material is new.
 The shared protected_record is append-only and limited to 2048 tokens including
-its JSON framing. Use protected_tokens_remaining to budget NEW shared evidence.
+its JSON framing. Use protected_tokens_remaining and candidate_tokens_remaining
+with snippet_record_tokens to budget NEW evidence. Do not select a routine
+snippet whose cost exceeds the destination record's remaining space.
 Reserve shared evidence for constraints, corrections or consequential context
 needed across chunks. Routine per-tool actions and repeated outcomes remain in
 the original chunks; they do not all need shared entries. Never repeat or evict
@@ -325,6 +327,26 @@ def build_protected_record(
                 body["protected_record"] = shown_record.model_dump(mode="json")
                 body.update(protected_source_origins(prepared, shown_record))
                 encoding = tiktoken.get_encoding("cl100k_base")
+                body["snippet_record_tokens"] = {
+                    span.evidence_ref: len(
+                        encoding.encode(
+                            json.dumps(
+                                ProtectedEvidence(
+                                    kind="uncertainty",
+                                    evidence_refs=(span.evidence_ref,),
+                                    quote=span.text,
+                                    role=span.role,
+                                    source_order=span.source_order,
+                                ).model_dump(mode="json"),
+                                ensure_ascii=False,
+                                separators=(",", ":"),
+                            ),
+                            disallowed_special=(),
+                        )
+                    )
+                    + 8
+                    for span in visible_spans
+                }
                 body["protected_tokens_remaining"] = max(
                     0,
                     2048 - len(encoding.encode(record.render(), disallowed_special=())),
