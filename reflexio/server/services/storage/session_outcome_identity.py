@@ -95,6 +95,25 @@ def _canonical_json_column(value: object, *, default: object) -> object:
     return value
 
 
+def _canonical_retrieved_learnings(value: object) -> object:
+    refs = _canonical_json_column(value, default=[])
+    if not isinstance(refs, list):
+        return refs
+    result = []
+    for ref in refs:
+        if not isinstance(ref, dict):
+            result.append(ref)
+            continue
+        normalized = dict(ref)
+        receipt = normalized.pop("exposure_receipt", None)
+        if isinstance(receipt, str):
+            normalized["exposure_receipt_digest"] = sha256(receipt.encode()).hexdigest()
+        elif normalized.get("exposure_receipt_digest") is None:
+            normalized.pop("exposure_receipt_digest", None)
+        result.append(normalized)
+    return result
+
+
 def _canonical_int(value: object) -> int:
     if not isinstance(value, int | str):
         raise TypeError("canonical integer field must be an integer or integer text")
@@ -124,8 +143,8 @@ def _canonical_interaction(
         "expert_content": str(interaction["expert_content"] or ""),
         "tools_used": _canonical_json_column(interaction["tools_used"], default=[]),
         "citations": _canonical_json_column(interaction["citations"], default=[]),
-        "retrieved_learnings": _canonical_json_column(
-            interaction["retrieved_learnings"], default=[]
+        "retrieved_learnings": _canonical_retrieved_learnings(
+            interaction["retrieved_learnings"]
         ),
     }
 

@@ -232,10 +232,11 @@ type LearningImpact = Literal["positive", "negative", "neutral"]
 class RetrievedLearning(CapturesUnknownFields):
     """A learning the caller retrieved and injected into the agent context.
 
-    Deliberately minimal — just the identity pair. It does NOT reuse
-    ``Citation``: citations carry injection-time debug fields (``tag``,
-    ``title``) that callers should not need to supply (or see) when declaring
-    what was retrieved.
+    Identity-only references remain supported. User-playbook search responses
+    can also carry an opaque signed ``exposure_receipt``; preserve it in the
+    pending publish payload to attribute the original served version. Stored
+    interactions retain only its server-derived SHA256 digest, not the token.
+    This does not reuse ``Citation``: injection and claimed causal use differ.
 
     Attributes:
         kind (RetrievedLearningKind): Which kind of learning this references.
@@ -246,6 +247,47 @@ class RetrievedLearning(CapturesUnknownFields):
 
     kind: RetrievedLearningKind
     learning_id: str = Field(min_length=1, max_length=1_000)
+    exposure_receipt: str | None = Field(
+        default=None, max_length=8_192, exclude_if=lambda value: value is None
+    )
+    exposure_receipt_digest: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$", exclude_if=lambda value: value is None
+    )
+    _stored_receipt_identity: tuple[str, str, str | None] | None = PrivateAttr(
+        default=None
+    )
+
+    @classmethod
+    def from_stored_payload(cls, payload: dict) -> Self:
+        """Hydrate a database reference; HTTP input never receives this marker."""
+        reference = cls.model_validate(payload)
+        reference._stored_receipt_identity = (
+            reference.kind,
+            reference.learning_id,
+            reference.exposure_receipt_digest,
+        )
+        return reference
+
+    def persistence_payload(self) -> dict:
+        """Strip the submitted receipt, retaining only its server-derived digest."""
+        data = self.model_dump(mode="json", exclude_none=True)
+        data.pop("exposure_receipt", None)
+        data.pop("exposure_receipt_digest", None)
+        if self.exposure_receipt is not None:
+            data["exposure_receipt_digest"] = sha256(
+                self.exposure_receipt.encode("utf-8")
+            ).hexdigest()
+        elif (
+            self.exposure_receipt_digest is not None
+            and (
+                self.kind,
+                self.learning_id,
+                self.exposure_receipt_digest,
+            )
+            == self._stored_receipt_identity
+        ):
+            data["exposure_receipt_digest"] = self.exposure_receipt_digest
+        return data
 
 
 # information about the user interaction sent by the client

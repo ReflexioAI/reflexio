@@ -859,7 +859,11 @@ def _row_to_interaction(row: sqlite3.Row | Mapping[str, Any]) -> Interaction:
     )
     retrieved_learnings_raw = _json_loads(d.get("retrieved_learnings"))
     retrieved_learnings = (
-        [RetrievedLearning(**c) for c in retrieved_learnings_raw if isinstance(c, dict)]
+        [
+            RetrievedLearning.from_stored_payload(c)
+            for c in retrieved_learnings_raw
+            if isinstance(c, dict)
+        ]
         if retrieved_learnings_raw and isinstance(retrieved_learnings_raw, list)
         else []
     )

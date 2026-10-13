@@ -1,4 +1,4 @@
-"""Optional synchronous recording boundary for served user playbooks."""
+"""Served-version receipts and legacy exposure-recording compatibility."""
 
 from __future__ import annotations
 
@@ -23,6 +23,43 @@ from reflexio.server.services.playbook.publication import (
 logger = logging.getLogger(__name__)
 
 MAX_EXPOSURE_EVENTS_PER_BATCH = 100
+
+
+class SearchExposureReceiptIssuer(Protocol):
+    """Issue stateless served-version receipts without persisting exposures."""
+
+    def issue(self, batch: SearchExposureBatch) -> dict[int, str]: ...
+
+
+SEARCH_EXPOSURE_RECEIPT_ISSUER = ServiceKey[SearchExposureReceiptIssuer](
+    "search_exposure_receipt_issuer"
+)
+
+
+def issue_search_exposure_receipts(batch: SearchExposureBatch) -> dict[int, str]:
+    """Validate returned ownership and ask the optional issuer for receipts."""
+    validate_search_exposure_batch(batch)
+    if not batch.user_playbooks:
+        return {}
+    issuer = get_service(SEARCH_EXPOSURE_RECEIPT_ISSUER)
+    if issuer is None:
+        return {}
+    try:
+        receipts = issuer.issue(batch)
+        if not isinstance(receipts, dict) or any(
+            type(key) is not int
+            or key <= 0
+            or not isinstance(value, str)
+            or len(value) > 8_192
+            for key, value in receipts.items()
+        ):
+            raise TypeError("receipt issuer returned an invalid mapping")
+        return receipts
+    except Exception:
+        logger.exception("event=search_exposure_receipt_failed org_id=%s", batch.org_id)
+        capture_anomaly("search_exposure.receipt_failed", org_id=batch.org_id)
+        return {}
+
 
 # An uncorrelated exposure is per-search, so at fleet scale it is a firehose:
 # the deployment that motivated this signal stored roughly 95k of them. The
@@ -432,6 +469,9 @@ def build_user_playbook_exposure_event(
 __all__ = [
     "MAX_EXPOSURE_EVENTS_PER_BATCH",
     "SEARCH_EXPOSURE_RECORDER",
+    "SEARCH_EXPOSURE_RECEIPT_ISSUER",
+    "SearchExposureReceiptIssuer",
+    "issue_search_exposure_receipts",
     "ExposureEventWriteResult",
     "SearchExposureBatch",
     "SearchExposureOutcome",

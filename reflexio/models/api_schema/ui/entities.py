@@ -80,6 +80,9 @@ class UserPlaybookView(BaseModel):
     """User-facing UserPlaybook — excludes embedding."""
 
     user_playbook_id: int = 0
+    exposure_receipt: str | None = Field(
+        default=None, max_length=8_192, exclude_if=lambda value: value is None
+    )
     user_id: str | None = None
     agent_version: str
     request_id: str

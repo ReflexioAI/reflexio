@@ -137,7 +137,7 @@ class InteractionStoreMixin:
                             ),
                             _json_dumps(
                                 [
-                                    c.model_dump()
+                                    c.persistence_payload()
                                     for c in interaction.retrieved_learnings
                                 ]
                             ),
@@ -176,7 +176,7 @@ class InteractionStoreMixin:
                             ),
                             _json_dumps(
                                 [
-                                    c.model_dump()
+                                    c.persistence_payload()
                                     for c in interaction.retrieved_learnings
                                 ]
                             ),
