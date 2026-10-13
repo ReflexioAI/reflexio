@@ -227,7 +227,10 @@ def test_existing_mixed_image_manifest_holds_without_reset_or_publication(
         }
     ]
     manifest["checkpoint"]["completed_steps"] = {
-        "frozen-step": {"output": {"profiles": []}}
+        "frozen-step": {
+            "output": {"profiles": []},
+            "model_provenance": {"model_name": None, "provider": None},
+        }
     }
     run = replace(run, id=f"window:{window.window_id}")
     run.generation_request_snapshot["overflow"] = manifest

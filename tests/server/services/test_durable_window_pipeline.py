@@ -159,7 +159,7 @@ def _overflow_coordinator(pipeline, *, attempts=(), actual_source=False, legacy=
                             "source_digest": source_digest,
                             "attempt_limit": 128,
                             "attempts": list(attempts),
-                            "checkpoint": {"stage": "prepare"},
+                            "checkpoint": {"stage": "prepare", "completed_steps": {}},
                         }
                     }
                 ),
@@ -1685,7 +1685,7 @@ def test_overflow_checkpoint_quota_is_atomic_and_usage_is_immutable(pipeline):
             "usage": usage,
             "model_provenance": {"model_name": "fixture", "provider": None},
         },
-        checkpoint={"stage": "protected-record"},
+        checkpoint={"stage": "protected-record", "completed_steps": {}},
     )
     assert manifest["revision"] == 2 and len(manifest["attempts"]) == 1
     with pytest.raises(OverflowCheckpointConflictError, match="immutable"):
@@ -1722,7 +1722,7 @@ def test_overflow_checkpoint_quota_is_atomic_and_usage_is_immutable(pipeline):
     )
     for invalid in (
         {**checkpoint, "output_schema_name": "StructuredPlaybookList"},
-        {"stage": "protected-record"},
+        {"stage": "protected-record", "completed_steps": {}},
     ):
         with pytest.raises(
             OverflowCheckpointConflictError, match="schema is immutable"
@@ -1996,7 +1996,12 @@ def test_invalidating_overflow_scrubs_child_evidence_and_fences_future_checkpoin
         reserve_attempt_id="spent-before-erasure",
         checkpoint={
             "stage": "extract",
-            "completed_steps": {"first": {"output": "private original quotation"}},
+            "completed_steps": {
+                "first": {
+                    "output": "private original quotation",
+                    "model_provenance": {"model_name": None, "provider": None},
+                }
+            },
         },
     )
     storage.invalidate_extraction(window, token)
@@ -2402,7 +2407,7 @@ def test_overflow_checkpoint_cannot_refund_quota_or_write_after_lease_loss(pipel
             "superseded",
             expected_revision=0,
             source_digest="captured-source",
-            checkpoint={"stage": "complete"},
+            checkpoint={"stage": "complete", "completed_steps": {}},
         )
     with pytest.raises(OverflowCheckpointConflictError):
         storage.checkpoint_extraction_overflow(
@@ -2410,7 +2415,7 @@ def test_overflow_checkpoint_cannot_refund_quota_or_write_after_lease_loss(pipel
             token,
             expected_revision=0,
             source_digest="replaced-source",
-            checkpoint={"stage": "complete"},
+            checkpoint={"stage": "complete", "completed_steps": {}},
         )
     saved = storage.get_agent_run(
         f"window:{window.window_id}"

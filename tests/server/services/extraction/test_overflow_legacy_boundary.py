@@ -124,7 +124,12 @@ def test_public_corrected_consumed_answer_keeps_protocol_parent_out_of_legacy_wo
             ],
             "checkpoint": {
                 "stage": "extracted",
-                "completed_steps": {"saved": {"output": {"profiles": []}}},
+                "completed_steps": {
+                    "saved": {
+                        "output": {"profiles": []},
+                        "model_provenance": {"model_name": None, "provider": None},
+                    }
+                },
             },
         }
     with storage._stream_sql() as db:

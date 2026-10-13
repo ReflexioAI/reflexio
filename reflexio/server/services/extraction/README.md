@@ -72,6 +72,10 @@ handling would otherwise bypass admission; it cannot reset the attempt journal.
 The full saved attempt journal is validated both on load and under the locked
 provider reservation. Damaged usage or provenance cannot dispatch a paid call;
 reserved attempts with unknown usage remain consumed and are never refunded.
+The saved checkpoint must retain its stage and bounded completed-step map;
+missing progress is refused rather than treated as a fresh extraction.
+Completed steps retain a structured receipt even for false or empty outputs;
+null receipts are refused before another provider reservation.
 Corrections to consumed answers
 after protocol completion remain durable and unconsumed; automatic recomputation
 of these completed protocol runs is currently unsupported. The original output

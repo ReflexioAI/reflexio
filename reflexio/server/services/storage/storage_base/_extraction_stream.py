@@ -119,9 +119,20 @@ class OverflowAttemptBudgetExceededError(RuntimeError):
     """The logical extraction has consumed all durable provider attempts."""
 
 
+def _valid_overflow_provenance(provenance: Any) -> bool:
+    from reflexio.server.llm._litellm_types import ModelProvenance
+
+    return (
+        isinstance(provenance, dict)
+        and set(provenance).issubset(field.name for field in fields(ModelProvenance))
+        and all(
+            value is None or isinstance(value, str) for value in provenance.values()
+        )
+    )
+
+
 def validate_extraction_overflow_manifest(manifest: Any) -> dict[str, Any]:
     """Reject damaged saved quota before mutation or provider admission."""
-    from reflexio.server.llm._litellm_types import ModelProvenance
     from reflexio.server.llm.token_accounting import RunTokenTotals
 
     if (
@@ -135,11 +146,29 @@ def validate_extraction_overflow_manifest(manifest: Any) -> dict[str, Any]:
         or not isinstance(manifest.get("attempts"), list)
     ):
         raise OverflowCheckpointConflictError("Invalid extraction overflow marker")
+    checkpoint = manifest.get("checkpoint")
+    if (
+        not isinstance(checkpoint, dict)
+        or not isinstance(checkpoint.get("stage"), str)
+        or not checkpoint["stage"]
+        or not isinstance(checkpoint.get("completed_steps"), dict)
+        or len(checkpoint["completed_steps"]) > 128
+    ):
+        raise OverflowCheckpointConflictError("Invalid extraction checkpoint")
+    for key, receipt in checkpoint["completed_steps"].items():
+        if (
+            not isinstance(key, str)
+            or not key
+            or not isinstance(receipt, dict)
+            or "output" not in receipt
+            or "model_provenance" not in receipt
+            or not _valid_overflow_provenance(receipt["model_provenance"])
+        ):
+            raise OverflowCheckpointConflictError("Invalid extraction step receipt")
     attempts = manifest["attempts"]
     if len(attempts) > 128:
         raise OverflowCheckpointConflictError("Invalid extraction attempt journal")
     usage_fields = {field.name for field in fields(RunTokenTotals)}
-    provenance_fields = {field.name for field in fields(ModelProvenance)}
     identities: set[str] = set()
     for attempt in attempts:
         if (
@@ -160,14 +189,7 @@ def validate_extraction_overflow_manifest(manifest: Any) -> dict[str, Any]:
         ):
             raise OverflowCheckpointConflictError("Invalid extraction attempt usage")
         provenance = attempt["model_provenance"]
-        if provenance is not None and (
-            not isinstance(provenance, dict)
-            or not set(provenance).issubset(provenance_fields)
-            or any(
-                value is not None and not isinstance(value, str)
-                for value in provenance.values()
-            )
-        ):
+        if provenance is not None and not _valid_overflow_provenance(provenance):
             raise OverflowCheckpointConflictError("Invalid extraction model provenance")
     return manifest
 
@@ -1252,6 +1274,9 @@ class ExtractionStreamStore:
                     )
                 attempt["usage"], attempt["model_provenance"] = usage, provenance
             if checkpoint is not None:
+                validate_extraction_overflow_manifest(
+                    {**manifest, "checkpoint": checkpoint}
+                )
                 previous_steps = manifest.get("checkpoint", {}).get(
                     "completed_steps", {}
                 )
