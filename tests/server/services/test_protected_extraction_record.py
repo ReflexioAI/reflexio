@@ -15,6 +15,7 @@ from reflexio.server.services.extraction.protected_pass import (
     _protected_validator,
     _selection_spans,
     _selection_update,
+    _selection_validator,
     build_protected_record,
 )
 from reflexio.server.services.extraction.protected_record import (
@@ -565,3 +566,73 @@ def test_reused_shared_evidence_copies_only_shown_quote_not_surrounding_source(u
         stored = coordinator.complete_step.call_args.args[1]["candidate_evidence"][0]
         assert stored["quote"] == quotation
         assert stored["evidence_refs"] == [ref]
+
+
+def test_oversized_selection_gets_repair_feedback_without_accepting_or_evicting():
+    source = span(1, " x" * 5000)
+    pieces = _selection_spans((source,))
+    selected = ProtectedRecordSelection(
+        evidence=[
+            EvidenceSelection(
+                kind="instruction",
+                evidence_refs=tuple(s.evidence_ref for s in pieces[:8]),
+            )
+        ]
+    )
+    record = ProtectedRecord()
+    validator = _selection_validator(pieces, _protected_validator(record, pieces))
+    errors = validator(selected)
+    assert len(errors) == 1 and "2048-token" in errors[0]
+    assert record.evidence == ()
+    corrected = ProtectedRecordSelection(
+        evidence=[
+            EvidenceSelection(
+                kind="instruction",
+                evidence_refs=(pieces[0].evidence_ref,),
+            )
+        ]
+    )
+    assert validator(corrected) == []
+
+
+def test_reselecting_shown_shared_quote_cannot_fill_record_again():
+    source = span(1, "Do not deploy yet.")
+    existing = ProtectedRecord().merge(update(source), visible_spans=(source,))
+    selected = ProtectedRecordSelection(
+        evidence=[
+            EvidenceSelection(
+                kind="uncertainty",
+                evidence_refs=(source.evidence_ref,),
+            )
+        ],
+        candidate_evidence=[
+            CandidateEvidenceSelection(
+                candidate_ref="C1",
+                kind="instruction",
+                evidence_refs=(source.evidence_ref,),
+            )
+        ],
+    )
+    copied = _selection_update(selected, (source,), existing)
+    assert copied.evidence == []
+    assert copied.candidate_evidence[0].quote == source.text
+    assert existing.evidence[0].quote == source.text
+
+
+def test_expanded_selection_limit_feedback_never_copies_source_content():
+    source = span(1, "PRIVATE-SOURCE-MUST-NOT-ENTER-REPAIR-FEEDBACK")
+    selected = ProtectedRecordSelection(
+        evidence=[
+            EvidenceSelection(
+                kind="instruction",
+                evidence_refs=(source.evidence_ref,) * 8,
+            )
+        ]
+        * 17
+    )
+    validator = _selection_validator(
+        (source,), _protected_validator(ProtectedRecord(), (source,))
+    )
+    assert validator(selected) == [
+        "Select at most 128 individual snippets per evidence field."
+    ]

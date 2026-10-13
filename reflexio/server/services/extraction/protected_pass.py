@@ -6,7 +6,7 @@ from dataclasses import replace
 from typing import Any
 
 import tiktoken
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from reflexio.server.llm.input_budget import InputBudgetExceededError
 from reflexio.server.llm.litellm_client import LiteLLMClient
@@ -97,10 +97,16 @@ def _selection_spans(spans: tuple[SourceSpan, ...]) -> tuple[SourceSpan, ...]:
 
 
 def _selection_update(
-    selection: ProtectedRecordSelection, visible_spans: tuple[SourceSpan, ...]
+    selection: ProtectedRecordSelection,
+    visible_spans: tuple[SourceSpan, ...],
+    existing: ProtectedRecord | None = None,
 ) -> ProtectedRecordUpdate:
     by_ref = {span.evidence_ref: span for span in visible_spans}
     result: dict[str, list[dict[str, Any]]] = {"evidence": [], "candidate_evidence": []}
+    already_shown = {
+        (item.evidence_refs, item.quote)
+        for item in (existing or ProtectedRecord()).evidence
+    }
     errors = []
     for field in result:
         for index, item in enumerate(getattr(selection, field)):
@@ -110,6 +116,8 @@ def _selection_update(
                 )
                 continue
             for ref in item.evidence_refs:
+                if field == "evidence" and ((ref,), by_ref[ref].text) in already_shown:
+                    continue
                 result[field].append(
                     {
                         **item.model_dump(),
@@ -125,6 +133,7 @@ def _selection_update(
 def _selection_validator(
     visible_spans: tuple[SourceSpan, ...],
     validate_update: Callable[[BaseModel], list[str]],
+    existing: ProtectedRecord | None = None,
 ) -> Callable[[BaseModel], list[str]]:
     def validate(output: BaseModel) -> list[str]:
         try:
@@ -135,10 +144,22 @@ def _selection_validator(
                 "do not return quote strings."
             ]
         try:
-            update = _selection_update(selection, visible_spans)
+            update = _selection_update(selection, visible_spans, existing)
+        except ValidationError:
+            return ["Select at most 128 individual snippets per evidence field."]
         except ValueError as error:
             return str(error).splitlines()
-        return validate_update(update)
+        try:
+            return validate_update(update)
+        except InputBudgetExceededError:
+            # An oversized proposal may be corrected within the existing single
+            # structured-repair attempt; it is never accepted or persisted.
+            return [
+                "The NEW selections exceed the 2048-token shared or per-candidate "
+                "record limit. Preserve existing evidence and select fewer NEW "
+                "snippets within the displayed remaining capacity. Routine tool "
+                "results remain in the fully covered original chunks."
+            ]
 
     return validate
 
@@ -355,7 +376,7 @@ def build_protected_record(
                     response_format=ProtectedRecordSelection,
                     model_role=ModelRole.EXTRACTION_AGENT,
                     structured_output_validator=_selection_validator(
-                        visible_spans, validate_update
+                        visible_spans, validate_update, shown_record
                     ),
                 )
             if not isinstance(result.value, ProtectedRecordSelection):
@@ -363,7 +384,7 @@ def build_protected_record(
                     "Protected record requires structured source selections"
                 )
             # Capacity failures are terminal; never evict an older quotation.
-            update = _selection_update(result.value, visible_spans)
+            update = _selection_update(result.value, visible_spans, shown_record)
             merged = record.merge(update, visible_spans=visible_spans)
             protected_quote_view(prepared, merged)
             candidate_records = _merge_candidate_evidence(
