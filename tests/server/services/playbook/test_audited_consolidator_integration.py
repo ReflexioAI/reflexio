@@ -521,8 +521,9 @@ def test_overflow_uses_verified_quotations_not_full_large_interaction(
     coordinator.require_full_source_coverage.assert_called_once()
 
 
+@pytest.mark.parametrize("tool_and_repair", [False, True])
 def test_uncapped_client_durable_admission_suspends_and_resumes_once_per_call(
-    durable_pipeline, monkeypatch
+    durable_pipeline, monkeypatch, tool_and_repair
 ):
     monkeypatch.setenv("OPENAI_API_KEY", "test-key-no-provider")
     monkeypatch.setenv("MOCK_LLM_RESPONSE", "false")
@@ -537,10 +538,34 @@ def test_uncapped_client_durable_admission_suspends_and_resumes_once_per_call(
         ]
     )
     requests = []
+    active = []
+    allowance = 4 if tool_and_repair else 2
 
     def dispatch(params, _hard_timeout):
         requests.append(params)
         assert params.get("max_tokens", params.get("max_completion_tokens", 0)) > 0
+        if tool_and_repair and len(requests) <= 2:
+            # End each worker turn after one successful provider response.
+            active[0]._deadline = 0
+            if len(requests) == 1:
+                answer = response({})
+                answer.choices[0].message.content = None
+                answer.choices[0].message.tool_calls = [
+                    litellm.ChatCompletionMessageToolCall(**call)
+                    for call in [
+                        {
+                            "id": "search-1",
+                            "type": "function",
+                            "function": {
+                                "name": "search_playbooks",
+                                "arguments": '{"query":"authorization"}',
+                            },
+                        }
+                    ]
+                ]
+                answer.choices[0].finish_reason = "tool_calls"
+                return answer
+            return response({"decisions": []})
         return response(next(answers))
 
     monkeypatch.setattr(client, "_completion_with_hard_timeout", dispatch)
@@ -560,7 +585,7 @@ def test_uncapped_client_durable_admission_suspends_and_resumes_once_per_call(
 
     first = coordinator(1)
     with first.provider_scope():
-        engine = Reconciler(client, "gpt-4o", max_calls=2)
+        engine = Reconciler(client, "gpt-4o", max_calls=allowance)
         with pytest.raises(OverflowSuspendedError):
             engine.run(reconciliation_payload(), {("request", 17): object()})
         assert engine.calls == 0
@@ -569,15 +594,32 @@ def test_uncapped_client_durable_admission_suspends_and_resumes_once_per_call(
     assert parent is not None
     assert parent.generation_request_snapshot["overflow"]["attempts"] == []
 
+    if tool_and_repair:
+        for spent in (1, 2):
+            partial = coordinator(300)
+            active[:] = [partial]
+            with partial.provider_scope():
+                engine = Reconciler(client, "gpt-4o", max_calls=allowance)
+                with pytest.raises(OverflowSuspendedError):
+                    engine.run(reconciliation_payload(), {("request", 17): object()})
+                assert engine.calls == spent
+        state = partial.checkpoint["audited_conversation"]
+        assert state["turn"] == 2 and state["repaired"] is True
+        assert any(message["role"] == "tool" for message in state["messages"])
+
     resumed = coordinator(300)
+    active[:] = [resumed]
     with resumed.provider_scope():
-        engine = Reconciler(client, "gpt-4o", max_calls=2)
+        engine = Reconciler(client, "gpt-4o", max_calls=allowance)
         engine.run(reconciliation_payload(), {("request", 17): object()})
-        assert engine.calls == 2
-    assert len(requests) == 2
+        assert engine.calls == allowance
+    assert len(requests) == allowance
     parent = storage.get_agent_run(f"window:{window.window_id}")
     assert parent is not None
     attempts = parent.generation_request_snapshot["overflow"]["attempts"]
-    assert len(attempts) == 2
-    assert resumed.checkpoint["audited_consolidation_budget"]["calls"] == 2
+    assert len(attempts) == allowance
+    assert resumed.checkpoint["audited_consolidation_budget"]["calls"] == allowance
+    if tool_and_repair:
+        assert requests[2].get("tools") is None
+        assert "deterministic validation" in requests[2]["messages"][-1]["content"]
     assert all(attempt["usage"] is not None for attempt in attempts)

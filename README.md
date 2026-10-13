@@ -251,7 +251,9 @@ It drafts Create/Replace/Remove decisions, audits the complete proposed memory,
 and repairs affected decisions before saving. Replace can produce multiple
 playbooks. One 24-request allowance covers draft, read-only searches, audits,
 repairs and provider fallback attempts. Exhaustion or failed audits preserve
-committed memory; drafts are never saved as a fallback.
+committed memory; drafts are never saved as a fallback. Durable continuation
+retains bounded tool history and validation-repair progress within each stage,
+as well as validated stage results, without resetting the request allowance.
 
 The default `"legacy"` keeps the existing four-action behavior and is the rollback
 setting. First audited rollouts require new candidates with persisted, owner-scoped

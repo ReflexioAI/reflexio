@@ -191,6 +191,14 @@ def validation_errors(value: BaseModel, validate: Callable) -> tuple[str, ...]:
     return ()
 
 
+class _ConversationState(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    key: Text
+    messages: list[dict[str, Any]] = Field(min_length=2, max_length=14)
+    turn: int = Field(ge=0, le=3)
+    repaired: bool
+
+
 class Reconciler:
     """One owner-scoped audit loop and one shared physical-request allowance."""
 
@@ -323,7 +331,27 @@ class Reconciler:
         ]
         repaired = False
         turn = 0
+        if self.coordinator is not None and receipt_key is not None:
+            saved = self.coordinator.checkpoint.get("audited_conversation")
+            if saved is not None and saved.get("key") == receipt_key:
+                state = _ConversationState.model_validate(saved)
+                if state.messages[:2] != messages:
+                    raise AuditedConsolidationAbstainedError(
+                        "Audited conversation binding changed"
+                    )
+                messages, turn, repaired = state.messages, state.turn, state.repaired
         while turn < 4:
+            if self.coordinator is not None and receipt_key is not None:
+                state = _ConversationState(
+                    key=receipt_key, messages=messages, turn=turn, repaired=repaired
+                )
+                if len(state.model_dump_json().encode()) > 1_000_000:
+                    raise AuditedConsolidationAbstainedError(
+                        "Audited conversation checkpoint exceeds bounded history"
+                    )
+                checkpoint = self.coordinator.checkpoint
+                checkpoint["audited_conversation"] = state.model_dump(mode="json")
+                self.coordinator.save_checkpoint(checkpoint)
             guard_token = extraction_provider_guard.set(self.provider_guard)
             try:
                 completion = self.client.generate_chat_response_with_provenance(
