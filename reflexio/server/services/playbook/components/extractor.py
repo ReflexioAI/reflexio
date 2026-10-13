@@ -11,12 +11,14 @@ from reflexio.models.api_schema.service_schemas import UserPlaybook
 from reflexio.models.config_schema import PlaybookConfig
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.env_utils import env_bool
+from reflexio.server.llm.input_budget import InputBudgetConfigurationError
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.llm.model_defaults import ModelRole, resolve_model_name
 from reflexio.server.llm.token_accounting import RunTokenTotals, sum_trace_tokens
 from reflexio.server.services.deferred_learning_plan import ExtractorBookmarkAdvance
 from reflexio.server.services.extraction.outcome import ExtractionOutcome
 from reflexio.server.services.extraction.overflow_coordinator import (
+    OverflowCoordinator,
     current_overflow_coordinator,
 )
 from reflexio.server.services.extraction.overflow_pipeline import OverflowExtractionCall
@@ -77,6 +79,66 @@ logger = logging.getLogger(__name__)
 Extract agent evolvement playbook entries from agent to improve its performance through self evolvement.
 Make better decisions on what to improve next time.
 """
+
+
+def _adopted_playbook_schema(
+    coordinator: OverflowCoordinator | None,
+) -> type[BaseModel] | None:
+    if (
+        coordinator is None
+        or coordinator.saved_run is None
+        or coordinator.saved_run.committed_output is None
+        or coordinator.checkpoint.get("extraction_policy")
+    ):
+        return None
+    schema_name = coordinator.saved_run.generation_request_snapshot.get(
+        "output_schema_name"
+    )
+    schemas = {
+        model.__name__: model
+        for model in (
+            StructuredPlaybookList,
+            StructuredExtractedPlaybookList,
+            StructuredReferencedExtractedPlaybookList,
+        )
+    }
+    schema = schemas.get(schema_name) if isinstance(schema_name, str) else None
+    if schema is None:
+        raise InputBudgetConfigurationError("Saved playbook schema is incompatible")
+    return schema
+
+
+def _validate_legacy_evidence(
+    output: StructuredPlaybookList, coordinator: OverflowCoordinator | None
+) -> list[str]:
+    if coordinator is None or coordinator.saved_run is None:
+        raise InputBudgetConfigurationError("Saved playbook source is unavailable")
+    spans = tuple(
+        span
+        for chunk in coordinator.require_prepared().chunks
+        for span in (*chunk.neighbors, *chunk.spans)
+    )
+    by_ref = {span.evidence_ref: span for span in spans}
+    source_ids = set(coordinator.saved_run.binding.source_interaction_ids)
+    for index, _entry in enumerate(output.playbooks, 1):
+        if not _entry.has_content:
+            return ["Saved candidate lacks usable content."]
+        record = ProtectedRecord.model_validate(
+            coordinator.checkpoint.get("candidate_evidence", {}).get(f"C{index}", {})
+        )
+        if not record.evidence:
+            return ["Saved candidate lacks verified original evidence."]
+        checked = ProtectedRecord().merge(
+            ProtectedRecordUpdate(evidence=list(record.evidence)),
+            visible_spans=spans,
+        )
+        if any(
+            by_ref[ref].interaction_id not in source_ids
+            for item in checked.evidence
+            for ref in item.evidence_refs
+        ):
+            return ["Saved candidate evidence is outside original attribution."]
+    return []
 
 
 class PlaybookExtractor:
@@ -349,11 +411,10 @@ class PlaybookExtractor:
         log_llm_messages(logger, "Playbook extraction", messages)
 
         coordinator = current_overflow_coordinator.get()
-        if coordinator is not None and not (
-            coordinator.saved_run
-            and coordinator.saved_run.committed_output is not None
-            and not coordinator.checkpoint.get("extraction_policy")
-        ):
+        stored_schema = _adopted_playbook_schema(coordinator)
+        adopted_output = stored_schema is not None
+        legacy_output = stored_schema is StructuredPlaybookList
+        if coordinator is not None and not adopted_output:
             sources: dict[str, PlaybookEvidenceSource] = {}
             units: dict[str, PlaybookEvidenceUnit] = {}
             prepared = coordinator.require_prepared()
@@ -384,6 +445,8 @@ class PlaybookExtractor:
         def validate_all(
             output: BaseModel, context: PlaybookPromptContext
         ) -> list[str]:
+            if legacy_output and isinstance(output, StructuredPlaybookList):
+                return _validate_legacy_evidence(output, coordinator)
             if not isinstance(
                 output,
                 StructuredReferencedExtractedPlaybookList
@@ -446,7 +509,7 @@ class PlaybookExtractor:
             )
             return OverflowExtractionCall(
                 chunk_messages,
-                chunk_contract.schema,
+                stored_schema or chunk_contract.schema,
                 lambda output: validate_all(output, visible),
             )
 
@@ -499,6 +562,19 @@ class PlaybookExtractor:
                     f"{result.finished_reason}"
                 )
             return []
+        if (
+            legacy_output
+            and coordinator is not None
+            and coordinator.saved_run is not None
+        ):
+            # Keep the saved legacy shape and attribution. Verified candidate
+            # records still pass through the normal reviewer and publication fences.
+            return self._process_structured_response_list(
+                result.output,
+                source_interaction_ids=list(
+                    coordinator.saved_run.binding.source_interaction_ids
+                ),
+            )
         if contract.strict or coordinator is not None:
             return self._process_structured_response_list(
                 result.output,
@@ -626,7 +702,7 @@ class PlaybookExtractor:
                         coordinator.candidate_model(raw_entry)
                     )
                     coordinator.candidate_evidence_refs[identity] = tuple(
-                        entry.evidence_refs
+                        ref.strip() for ref in entry.evidence_refs
                     )
                     if coordinator.checkpoint.get("extraction_policy"):
                         spans = tuple(
@@ -636,7 +712,8 @@ class PlaybookExtractor:
                         )
                         by_ref = {span.evidence_ref: span for span in spans}
                         quoted = []
-                        for ref in entry.evidence_refs:
+                        for raw_ref in entry.evidence_refs:
+                            ref = raw_ref.strip()
                             span = by_ref.get(ref)
                             if span is None:
                                 raise ValueError(

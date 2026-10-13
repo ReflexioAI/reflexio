@@ -68,6 +68,7 @@ class ExtractionRunLifecycleMixin(Generic[TExtractorConfig, TGenerationServiceCo
     _last_extractor_run_stats: dict[str, int]
     _last_extraction_run_ids: list[str]
     _last_token_totals: RunTokenTotals | None
+    _window_extractor_timeout_seconds: int
     _last_bookmark_advance: ExtractorBookmarkAdvance | None
     _last_model_provenance: ModelProvenance | None
 
@@ -89,9 +90,15 @@ class ExtractionRunLifecycleMixin(Generic[TExtractorConfig, TGenerationServiceCo
             FALLBACK_EXTRACTOR_TIMEOUT_SECONDS,
         )
 
-        if self.client.config.fallback_models:
-            return FALLBACK_EXTRACTOR_TIMEOUT_SECONDS
-        return EXTRACTOR_TIMEOUT_SECONDS
+        configured_bound = (
+            FALLBACK_EXTRACTOR_TIMEOUT_SECONDS
+            if self.client.config.fallback_models
+            else EXTRACTOR_TIMEOUT_SECONDS
+        )
+        return max(
+            configured_bound,
+            getattr(self, "_window_extractor_timeout_seconds", 0),
+        )
 
     def _execute_extractor(
         self,

@@ -267,6 +267,11 @@ class WindowExecutor:
                     )
         if known is None:
             raise RuntimeError("Extraction coordinator parent is unavailable")
+        turn_seconds = max(240, self.client.config.timeout + 60)
+        # The coordinator guards every dispatch against this absolute turn
+        # deadline. Its enclosing extractor future must leave time for the last
+        # admitted call to save usage/output and yield without losing ownership.
+        service._window_extractor_timeout_seconds = turn_seconds + 10
         coordinator = OverflowCoordinator(
             self.storage,
             window,
@@ -281,7 +286,7 @@ class WindowExecutor:
             # A turn must admit at least one configured provider call. The
             # worker renews its user lease while it waits; checkpoints still
             # yield before another call can outlive the remaining turn.
-            turn_seconds=max(240, self.client.config.timeout + 60),
+            turn_seconds=turn_seconds,
         )
         coordinator.saved_run = known
         return coordinator
@@ -320,7 +325,11 @@ class WindowExecutor:
                 }
                 for index, item in enumerate(items, 1)
             }
-        if len(prepared.chunks) > 1 or claims:
+        if (
+            len(prepared.chunks) > 1
+            or claims
+            or (saved_run is not None and saved_run.committed_output is not None)
+        ):
             coordinator.record = build_protected_record(
                 coordinator=coordinator,
                 prepared=prepared,

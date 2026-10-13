@@ -50,6 +50,13 @@ def _recover_saved_output(
         raise InputBudgetConfigurationError("Extraction has no prepared chunks")
     with present_extraction_chunk(prepared, prepared.chunks[0], coordinator.record):
         cached_call = build_call()
+    stored_schema = saved_run.generation_request_snapshot.get("output_schema_name")
+    if stored_schema != cached_call.schema.__name__ and not (
+        coordinator.window.kind == "profile"
+        and stored_schema is None
+        and cached_call.schema.__name__ == "StructuredProfilesOutput"
+    ):
+        raise InputBudgetConfigurationError("Saved extraction schema is incompatible")
     payload, cached_provenance = decode_committed_output(saved_run.committed_output)
     output = cached_call.schema.model_validate(payload)
     if final_validator is not None and final_validator(output):

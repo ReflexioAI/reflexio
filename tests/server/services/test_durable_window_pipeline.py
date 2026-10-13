@@ -1367,6 +1367,10 @@ def test_cached_overflow_output_preserves_child_models_and_prompt_contract(
     coordinator.save_checkpoint(checkpoint)
     coordinator.saved_run = replace(
         run,
+        generation_request_snapshot={
+            **run.generation_request_snapshot,
+            "output_schema_name": Candidates.__name__,
+        },
         committed_output=encode_committed_output(
             output, ModelProvenance("reconciler-Z", "provider")
         ),
@@ -2744,7 +2748,7 @@ def test_http_overflow_human_answer_resumes_same_window_and_commits_once(
                             "trigger": "When preparing a release",
                             "rationale": "The user restricts approval to preparation.",
                             "evidence_kind": "correction",
-                            "evidence_refs": [f"i1:content:0:{len(source_text)}"],
+                            "evidence_refs": [f"  i1:content:0:{len(source_text)}  "],
                         }
                     ]
                 }
@@ -3473,3 +3477,245 @@ def test_erasure_cancels_uncommitted_window_run_instead_of_resuming_it(
         storage.get_agent_run(f"window:{window_id}").status == AgentRunStatus.CANCELLED
     )
     assert storage.count_all_profiles() == 0
+
+
+def _saved_legacy_window(pipeline, monkeypatch, *, kind, empty=False, schema=None):
+    """Create a real source-bound completed run before overflow admission."""
+    from dataclasses import replace
+
+    from reflexio.lib._base import create_generation_litellm_client
+    from reflexio.models.config_schema import UserPlaybookExtractorConfig
+    from reflexio.server.services.durable_learning.window_executor import (
+        WindowExecutor,
+        load_window_inputs,
+    )
+    from reflexio.server.services.extraction.agent_run_records import (
+        build_extractor_agent_run_record,
+    )
+    from reflexio.server.services.extraction.resumable_agent import (
+        encode_committed_output,
+    )
+    from reflexio.server.services.playbook.playbook_service_utils import (
+        StructuredPlaybookList,
+    )
+    from reflexio.server.services.profile.profile_generation_service_utils import (
+        StructuredProfilesOutput,
+    )
+    from reflexio.server.services.storage.storage_base import AgentRunStatus
+
+    engine, _, http = pipeline
+    if kind == "playbook":
+        configurator = engine.request_context.configurator
+        configurator.set_config(
+            configurator.get_config().model_copy(
+                update={
+                    "profile_extractor_config": None,
+                    "user_playbook_extractor_config": UserPlaybookExtractorConfig(
+                        extraction_definition_prompt="Extract scoped approval practices."
+                    ),
+                }
+            )
+        )
+    monkeypatch.setenv("MOCK_LLM_RESPONSE", "false")
+    monkeypatch.setenv("REFLEXIO_EXTRACTION_OVERFLOW_ENABLED", "true")
+    source_text = "Prepare a draft only; obtain separate approval before deploying."
+    data = payload("legacy-saved", force=True)
+    data["agent_version"] = "v1"
+    for interaction in data["interaction_data_list"]:
+        interaction["content"] = source_text
+    assert http.post("/api/publish_interaction", json=data).json()["success"]
+    storage = engine.get_storage()
+    user, token = storage.claim_extraction("legacy-test", 300)
+    window = storage.prepare_extraction(user, token)
+    assert window is not None
+    assert window.kind == kind
+    executor = WindowExecutor(
+        engine.request_context, create_generation_litellm_client(engine.request_context)
+    )
+    service, request, config = executor.service(window)
+    groups = load_window_inputs(storage, window)
+    output = (
+        StructuredPlaybookList.model_validate(
+            {
+                "playbooks": []
+                if empty
+                else [
+                    {
+                        "content": "Prepare a draft and obtain separate deployment approval.",
+                        "trigger": "When preparing a release",
+                    }
+                ]
+            }
+        )
+        if kind == "playbook"
+        else StructuredProfilesOutput(profiles=[])
+    )
+    run = build_extractor_agent_run_record(
+        org_id=storage.org_id,
+        extractor_kind=kind,
+        user_id=user,
+        generation_request_id=request.request_id,
+        agent_version=getattr(request, "agent_version", None),
+        source=request.source,
+        request_interaction_data_models=groups,
+        extractor_config=config,
+        service_config=service.service_config,
+        agent_context=engine.request_context.configurator.get_agent_context(),
+        output_schema_name=schema or type(output).__name__,
+    )
+    run = replace(
+        run,
+        id=f"window:{window.window_id}",
+        status=AgentRunStatus.AGENT_COMPLETED,
+        committed_output=encode_committed_output(output, None),
+    )
+    storage.create_agent_run(run)
+    return (
+        engine,
+        storage,
+        window,
+        token,
+        executor,
+        service,
+        request,
+        config,
+        groups,
+        run,
+    )
+
+
+@pytest.mark.parametrize("kind", ["profile", "playbook"])
+def test_single_chunk_adopted_empty_output_scans_source_and_publishes(
+    pipeline, monkeypatch, kind
+):
+    from types import SimpleNamespace
+
+    from reflexio.server.llm._litellm_types import ModelProvenance
+    from reflexio.server.services.extraction.protected_record import (
+        ProtectedRecordUpdate,
+    )
+
+    _, storage, window, token, executor, _, _, _, _, run = _saved_legacy_window(
+        pipeline, monkeypatch, kind=kind, empty=True
+    )
+    scan = Mock(
+        return_value=SimpleNamespace(
+            value=ProtectedRecordUpdate(), provenance=ModelProvenance()
+        )
+    )
+    monkeypatch.setattr(executor.client, "generate_chat_response_with_provenance", scan)
+    monkeypatch.setattr(
+        executor.client,
+        "_completion_with_hard_timeout",
+        Mock(side_effect=AssertionError("Saved extraction must not redispatch")),
+    )
+    executor.execute(window, token)
+    assert scan.call_count == 1
+    parent = storage.get_agent_run(run.id)
+    checkpoint = parent.generation_request_snapshot["overflow"]["checkpoint"]
+    assert len(checkpoint["protected_coverage"]) == 1
+    assert checkpoint["source_coverage"] == checkpoint["protected_coverage"]
+    assert parent.committed_output == run.committed_output
+    assert storage.extraction_status(window.user_id, "legacy-saved")["status"] == "done"
+    assert storage.count_all_profiles() == 0
+    assert storage.get_user_playbooks(user_id=window.user_id) == []
+
+
+@pytest.mark.parametrize("failure", [None, "unsupported_schema", "nonquote"])
+def test_adopted_legacy_playbook_keeps_schema_and_verified_attribution(
+    pipeline, monkeypatch, failure
+):
+    from types import SimpleNamespace
+
+    from reflexio.server.llm._litellm_types import ModelProvenance
+    from reflexio.server.llm.input_budget import InputBudgetConfigurationError
+    from reflexio.server.services.extraction.protected_record import (
+        CandidateEvidenceQuote,
+        ProtectedRecordUpdate,
+    )
+    from reflexio.server.services.playbook.components.extractor import PlaybookExtractor
+    from reflexio.server.services.playbook.components.reviewer import (
+        PlaybookCandidateReviewer,
+    )
+    from reflexio.server.services.playbook.playbook_service_utils import (
+        build_playbook_prompt_context,
+    )
+
+    engine, storage, window, token, executor, service, request, config, groups, run = (
+        _saved_legacy_window(
+            pipeline,
+            monkeypatch,
+            kind="playbook",
+            schema="UntrustedSchema" if failure == "unsupported_schema" else None,
+        )
+    )
+    coordinator = executor._coordinator(window, token, service, request, config)
+    assert coordinator is not None
+    prepared = coordinator.require_prepared()
+    span = prepared.chunks[0].spans[0]
+    update = ProtectedRecordUpdate(
+        candidate_evidence=[
+            CandidateEvidenceQuote(
+                candidate_ref="C1",
+                kind="instruction",
+                evidence_refs=(span.evidence_ref,),
+                quote="not an original quotation"
+                if failure == "nonquote"
+                else span.text,
+            )
+        ]
+    )
+    scan = Mock(
+        return_value=SimpleNamespace(value=update, provenance=ModelProvenance())
+    )
+    monkeypatch.setattr(executor.client, "generate_chat_response_with_provenance", scan)
+    dispatch = Mock(side_effect=AssertionError("Saved extraction must not redispatch"))
+    monkeypatch.setattr(executor.client, "_completion_with_hard_timeout", dispatch)
+    if failure == "nonquote":
+        with pytest.raises(ValueError, match="original visible source"):
+            executor._prepare_overflow_context(coordinator, config)
+        assert (
+            storage.extraction_status(window.user_id, "legacy-saved")["status"]
+            != "done"
+        )
+        return
+    executor._prepare_overflow_context(coordinator, config)
+    extractor = PlaybookExtractor(
+        engine.request_context,
+        executor.client,
+        config,
+        service.service_config,
+        engine.request_context.configurator.get_agent_context(),
+    )
+    with coordinator.provider_scope():
+        if failure == "unsupported_schema":
+            with pytest.raises(
+                InputBudgetConfigurationError, match="schema is incompatible"
+            ):
+                extractor.extract_playbook_entries(groups)
+            assert (
+                storage.extraction_status(window.user_id, "legacy-saved")["status"]
+                != "done"
+            )
+        else:
+            candidates = extractor.extract_playbook_entries(groups)
+            assert len(candidates) == 1
+            candidate = candidates[0]
+            assert candidate.rationale is None
+            assert (
+                candidate.source_interaction_ids == run.binding.source_interaction_ids
+            )
+            assert run.committed_output is not None
+            assert (
+                candidate.content
+                == run.committed_output["output"]["playbooks"][0]["content"]
+            )
+            units = PlaybookCandidateReviewer._candidate_evidence_units(
+                candidates, build_playbook_prompt_context(groups, label_turns=True)
+            )
+            assert units["C1"][0].source_span == span.text
+            assert units["C1"][0].interaction_id == span.interaction_id
+            coordinator.require_full_source_coverage()
+    dispatch.assert_not_called()
+    assert storage.get_agent_run(run.id).committed_output == run.committed_output
+    assert storage.get_user_playbooks(user_id=window.user_id) == []
