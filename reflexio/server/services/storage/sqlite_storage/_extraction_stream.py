@@ -9,6 +9,7 @@ from typing import Any
 from reflexio.server.services.storage.storage_base._extraction_stream import (
     Kind,
     StreamSQL,
+    source_request_row,
 )
 
 SCHEMA = """
@@ -81,6 +82,9 @@ class SQLiteStreamSQL:
             "requests",
             "interactions",
             "_agent_runs",
+            "_pending_tool_calls",
+            "_run_tool_dependencies",
+            "user_playbooks",
         }:
             raise ValueError("Unknown extraction table")
         return name
@@ -100,6 +104,17 @@ class SQLiteStreamSQL:
 
     def input_lock(self) -> str:
         return ""
+
+    def source_witness_bytes(self, row: dict[str, Any]) -> bytes:
+        from reflexio.server.services.extraction.input_preparation import (
+            source_witness_bytes,
+        )
+
+        from ._base import _row_to_interaction, _row_to_request
+
+        return source_witness_bytes(
+            _row_to_request(source_request_row(row)), _row_to_interaction(row)
+        )
 
     def project_filter(self) -> str:
         return "? = ''"

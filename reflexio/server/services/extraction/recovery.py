@@ -35,6 +35,9 @@ from reflexio.server.services.storage.storage_base import (
     AgentRunStatus,
     build_scope_hash,
 )
+from reflexio.server.services.storage.storage_base.agent_run._agent_run_store import (
+    is_overflow_protocol_run,
+)
 
 
 class RecoveryRefusedError(RuntimeError):
@@ -125,6 +128,38 @@ def _source_version_blockers(context: RequestContext, run: AgentRunRecord) -> li
     return [] if current_digests == expected else ["source_changed"]
 
 
+def _saved_output_blockers(run: AgentRunRecord) -> list[str]:
+    """Validate the saved schema and payload without changing recovery state."""
+    blockers: list[str] = []
+    schemas = {
+        model.__name__: model
+        for model in (
+            StructuredProfilesOutput,
+            StructuredPlaybookList,
+            StructuredExtractedPlaybookList,
+            StructuredReferencedExtractedPlaybookList,
+        )
+    }
+    name = run.generation_request_snapshot.get("output_schema_name")
+    model = schemas.get(name) if isinstance(name, str) else None
+    if run.binding.extractor_kind == "profile" and name is None:
+        # Profile output has one stable contract; playbooks have multiple contracts.
+        model = StructuredProfilesOutput
+    if model is None or (
+        (model is StructuredProfilesOutput) != (run.binding.extractor_kind == "profile")
+    ):
+        blockers.append("missing_or_incompatible_schema")
+    elif run.committed_output is not None:
+        try:
+            output, _ = decode_committed_output(run.committed_output)
+            _validate_saved_output(model, output)
+        except (ValueError, TypeError, ValidationError):
+            blockers.append("invalid_saved_output")
+    if run.committed_output is None:
+        blockers.append("saved_output_missing")
+    return blockers
+
+
 def inspect_run(
     context: RequestContext,
     run: AgentRunRecord,
@@ -145,6 +180,8 @@ def inspect_run(
     blockers: list[str] = (
         ["receipt_results_missing"] if facts["receipt_missing_results"] else []
     )
+    if is_overflow_protocol_run(run):
+        blockers.append("overflow_protocol_recovery_unsupported")
     if run.status not in (
         AgentRunStatus.AGENT_COMPLETED,
         AgentRunStatus.FINALIZATION_FAILED,
@@ -189,32 +226,7 @@ def inspect_run(
     )
     if not config_hash or config_hash != run.binding.extractor_config_hash:
         blockers.append("configuration_changed")
-    schemas = {
-        model.__name__: model
-        for model in (
-            StructuredProfilesOutput,
-            StructuredPlaybookList,
-            StructuredExtractedPlaybookList,
-            StructuredReferencedExtractedPlaybookList,
-        )
-    }
-    name = run.generation_request_snapshot.get("output_schema_name")
-    model = schemas.get(name) if isinstance(name, str) else None
-    if run.binding.extractor_kind == "profile" and name is None:
-        # Profile output has one stable contract; playbooks have multiple contracts.
-        model = StructuredProfilesOutput
-    if model is None or (
-        (model is StructuredProfilesOutput) != (run.binding.extractor_kind == "profile")
-    ):
-        blockers.append("missing_or_incompatible_schema")
-    elif run.committed_output is not None:
-        try:
-            output, _ = decode_committed_output(run.committed_output)
-            _validate_saved_output(model, output)
-        except (ValueError, TypeError, ValidationError):
-            blockers.append("invalid_saved_output")
-    if run.committed_output is None:
-        blockers.append("saved_output_missing")
+    blockers.extend(_saved_output_blockers(run))
     return {
         "run_id": run.id,
         "org_id": run.binding.org_id,
@@ -265,6 +277,8 @@ def validate_selection(
     *,
     owned_claim: bool = False,
 ) -> None:
+    if is_overflow_protocol_run(run):
+        raise RecoveryRefusedError("overflow_protocol_recovery_unsupported")
     report = inspect_run(context, run, owned_claim=owned_claim)
     if (
         run.id != selection.run_id

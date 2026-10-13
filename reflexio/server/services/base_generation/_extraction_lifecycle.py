@@ -30,7 +30,10 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 from reflexio.server.api_endpoints.request_context import RequestContext
-from reflexio.server.llm._litellm_types import ModelProvenance
+from reflexio.server.llm._litellm_types import (
+    ModelProvenance,
+    ProviderRequestGuardError,
+)
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.llm.token_accounting import RunTokenTotals
 from reflexio.server.services.deferred_learning_plan import ExtractorBookmarkAdvance
@@ -65,6 +68,7 @@ class ExtractionRunLifecycleMixin(Generic[TExtractorConfig, TGenerationServiceCo
     _last_extractor_run_stats: dict[str, int]
     _last_extraction_run_ids: list[str]
     _last_token_totals: RunTokenTotals | None
+    _window_extractor_timeout_seconds: int
     _last_bookmark_advance: ExtractorBookmarkAdvance | None
     _last_model_provenance: ModelProvenance | None
 
@@ -86,9 +90,15 @@ class ExtractionRunLifecycleMixin(Generic[TExtractorConfig, TGenerationServiceCo
             FALLBACK_EXTRACTOR_TIMEOUT_SECONDS,
         )
 
-        if self.client.config.fallback_models:
-            return FALLBACK_EXTRACTOR_TIMEOUT_SECONDS
-        return EXTRACTOR_TIMEOUT_SECONDS
+        configured_bound = (
+            FALLBACK_EXTRACTOR_TIMEOUT_SECONDS
+            if self.client.config.fallback_models
+            else EXTRACTOR_TIMEOUT_SECONDS
+        )
+        return max(
+            configured_bound,
+            getattr(self, "_window_extractor_timeout_seconds", 0),
+        )
 
     def _execute_extractor(
         self,
@@ -167,6 +177,10 @@ class ExtractionRunLifecycleMixin(Generic[TExtractorConfig, TGenerationServiceCo
                 last_error=error_msg,
             )
             raise ExtractorExecutionError(error_msg) from exc
+        except ProviderRequestGuardError:
+            # The durable coordinator must distinguish suspension/admission from
+            # an extractor failure; do not replace its type with a wrapper.
+            raise
         except Exception as exc:
             self._last_extractor_run_stats = {"total": 1, "failed": 1, "timed_out": 0}
             error_msg = (

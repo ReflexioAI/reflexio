@@ -12,6 +12,10 @@ from pydantic import BaseModel
 
 from reflexio.models.api_schema.internal_schema import RequestInteractionDataModel
 from reflexio.server.llm._litellm_types import ModelProvenance
+from reflexio.server.llm.input_budget import (
+    InputBudgetConfigurationError,
+    InputBudgetExceededError,
+)
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.llm.model_defaults import ModelRole
 from reflexio.server.llm.tools import Tool, ToolLoopTrace, ToolRegistry, run_tool_loop
@@ -39,6 +43,9 @@ from reflexio.server.usage_metrics import record_usage_event
 
 if TYPE_CHECKING:
     from reflexio.server.api_endpoints.request_context import RequestContext
+    from reflexio.server.services.extraction.overflow_pipeline import (
+        OverflowExtractionCall,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -230,8 +237,54 @@ def run_resumable_extraction_agent(
     output_schema: type[BaseModel],
     log_label: str,
     structured_output_validator: (Callable[[BaseModel], Sequence[str]] | None) = None,
+    overflow_call_factory: Callable[[], OverflowExtractionCall] | None = None,
+    overflow_final_validator: Callable[[BaseModel], Sequence[str]] | None = None,
 ) -> AgentRunResult:
     """Run and finalize a config-gated classic extraction agent pass."""
+    from reflexio.server.services.extraction.overflow_coordinator import (
+        current_overflow_coordinator,
+    )
+    from reflexio.server.services.extraction.overflow_presentation import (
+        current_overflow_presentation,
+    )
+
+    coordinator = current_overflow_coordinator.get()
+    if coordinator is not None and current_overflow_presentation.get() is None:
+        if overflow_call_factory is None:
+            raise InputBudgetConfigurationError(
+                "Extraction requires a prepared-source call factory"
+            )
+        from reflexio.server.services.extraction.overflow_pipeline import (
+            extract_overflow_window,
+        )
+
+        def execute_child(call: OverflowExtractionCall) -> AgentRunResult:
+            return run_resumable_extraction_agent(
+                request_context=request_context,
+                client=client,
+                extractor_kind=extractor_kind,
+                user_id=user_id,
+                request_id=request_id,
+                agent_version=agent_version,
+                source=source,
+                request_interaction_data_models=request_interaction_data_models,
+                extractor_config=extractor_config,
+                service_config=service_config,
+                agent_context=agent_context,
+                messages=call.messages,
+                output_schema=call.schema,
+                log_label=log_label,
+                structured_output_validator=call.validator,
+            )
+
+        return extract_overflow_window(
+            coordinator=coordinator,
+            client=client,
+            build_call=overflow_call_factory,
+            execute_call=execute_child,
+            final_validator=overflow_final_validator,
+        )
+
     generation_request_id = request_id
     pending_config = _pending_tool_call_config(request_context)
     storage = request_context.storage
@@ -324,6 +377,24 @@ class ResumableExtractionAgent:
         ) = None,
     ) -> AgentRunResult:
         """Create the run row, execute the tool loop, and store completed output."""
+        from reflexio.server.services.extraction.overflow_coordinator import (
+            current_overflow_coordinator,
+        )
+        from reflexio.server.services.extraction.overflow_presentation import (
+            current_overflow_presentation,
+        )
+
+        coordinator = current_overflow_coordinator.get()
+        if coordinator is not None and current_overflow_presentation.get() is not None:
+            return self._start_overflow_step(
+                run=run,
+                messages=messages,
+                output_schema=output_schema,
+                extra_tools=extra_tools,
+                extra_tool_context=extra_tool_context,
+                log_label=log_label,
+                structured_output_validator=structured_output_validator,
+            )
         run = replace(
             run,
             max_steps_remaining=(
@@ -380,6 +451,158 @@ class ResumableExtractionAgent:
             extra_tool_context=extra_tool_context,
             log_label=log_label,
             structured_output_validator=structured_output_validator,
+        )
+
+    def _start_overflow_step(
+        self,
+        *,
+        run: AgentRunRecord,
+        messages: list[dict[str, Any]],
+        output_schema: type[BaseModel],
+        extra_tools: list[Tool] | None,
+        extra_tool_context: Any | None,
+        log_label: str | None,
+        structured_output_validator: Callable[[BaseModel], Sequence[str]] | None,
+    ) -> AgentRunResult:
+        """Stage a child receipt; only the full window owns parent completion."""
+        from reflexio.server.services.extraction.overflow_coordinator import (
+            OverflowSuspendedError,
+            current_overflow_coordinator,
+        )
+        from reflexio.server.services.extraction.overflow_presentation import (
+            current_overflow_presentation,
+        )
+
+        coordinator = current_overflow_coordinator.get()
+        presentation = current_overflow_presentation.get()
+        if (
+            coordinator is None
+            or presentation is None
+            or presentation.prepared.source_digest != coordinator.source_digest
+        ):
+            raise RuntimeError("Overflow extraction presentation binding changed")
+        if not presentation.is_present_in(messages):
+            raise InputBudgetConfigurationError(
+                "Extraction template omits prepared source"
+            )
+        existing = self.storage.get_agent_run(run.id)
+        if (
+            run.id != f"window:{coordinator.window.window_id}"
+            or existing is None
+            or existing.binding != run.binding
+        ):
+            raise RuntimeError("Overflow extraction child parent binding changed")
+        checkpoint = coordinator.checkpoint
+        selected_schema = checkpoint.get("output_schema_name")
+        if selected_schema is not None and selected_schema != output_schema.__name__:
+            raise InputBudgetConfigurationError(
+                "Overflow extraction output schema changed"
+            )
+        if selected_schema is None:
+            checkpoint["output_schema_name"] = output_schema.__name__
+            coordinator.save_checkpoint(checkpoint)
+        registry = ToolRegistry(list(extra_tools or []))
+        key = coordinator.step_key(
+            "extract-v1",
+            {
+                "messages": messages,
+                "schema": output_schema.model_json_schema(),
+                "tools": [tool.openai_spec() for tool in (extra_tools or [])],
+            },
+        )
+        coordinator.register_extraction_child(presentation.chunk.text, key)
+        saved = coordinator.completed_step(key)
+        if saved is not None:
+            payload = saved["output"]
+            return AgentRunResult(
+                run_id=run.id,
+                output=output_schema.model_validate(payload["output"]),
+                pending_tool_call_ids=[],
+                messages=[],
+                trace=ToolLoopTrace.model_validate(payload["trace"]),
+                finished_reason="structured_output",
+                model_provenance=ModelProvenance(**saved["model_provenance"]),
+            )
+        # A pending child is resumed by the coordinator's protocol, never by
+        # restarting its seed prompt and attaching another human request.
+        from reflexio.server.services.extraction.overflow_answers import (
+            resume_waiting_child,
+        )
+
+        resume_waiting_child(coordinator, key)
+        active = coordinator.checkpoint.get("active_child")
+        if active is not None and active["key"] != key:
+            raise InputBudgetConfigurationError(
+                "Overflow extraction active child binding changed"
+            )
+        remaining = active["max_steps_remaining"] if active else self.max_steps
+        current_messages = active["messages"] if active else messages
+        trace = (
+            ToolLoopTrace.model_validate(active["trace"]) if active else ToolLoopTrace()
+        )
+        while remaining > 0:
+            # One model turn at a time preserves synchronous tool progress before
+            # a deadline yield; the original per-child step limit is not reset.
+            result = run_tool_loop(
+                client=self.client,
+                messages=current_messages,
+                registry=registry,
+                model_role=self.model_role,
+                max_steps=1,
+                ctx=extra_tool_context,
+                response_format=output_schema,
+                structured_output_validator=structured_output_validator,
+                tool_choice="auto",
+                log_label=log_label,
+            )
+            remaining -= 1
+            trace.turns.extend(result.trace.turns)
+            trace.finished = result.trace.finished
+            if (
+                result.finished_reason == "structured_output"
+                and result.structured_output is not None
+                and not result.pending_tool_call_ids
+            ):
+                break
+            checkpoint = coordinator.checkpoint
+            checkpoint["active_child"] = {
+                "key": key,
+                "messages": result.messages,
+                "max_steps_remaining": remaining,
+                "output_schema_name": output_schema.__name__,
+                "trace": trace.model_dump(mode="json"),
+            }
+            if result.pending_tool_call_ids:
+                checkpoint["waiting_child"] = {
+                    **checkpoint["active_child"],
+                    "pending_tool_call_ids": result.pending_tool_call_ids,
+                }
+            coordinator.save_checkpoint(checkpoint)
+            if result.pending_tool_call_ids:
+                raise OverflowSuspendedError("Extraction child awaits human/tool input")
+            if result.finished_reason != "max_steps":
+                raise RuntimeError("Overflow extraction child did not finish")
+            current_messages = result.messages
+        else:
+            raise InputBudgetExceededError(
+                "Overflow extraction child step budget exhausted"
+            )
+        coordinator.complete_step(
+            key,
+            {
+                "output": result.structured_output.model_dump(mode="json"),
+                "trace": trace.model_dump(mode="json"),
+            },
+            result.provenance or ModelProvenance(),
+        )
+        return AgentRunResult(
+            run_id=run.id,
+            output=result.structured_output,
+            pending_tool_call_ids=[],
+            messages=result.messages,
+            trace=trace,
+            finished_reason=result.finished_reason,
+            model_provenance=result.provenance,
         )
 
     def resume(

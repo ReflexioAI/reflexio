@@ -36,6 +36,9 @@ from reflexio.server.services.deferred_learning_plan import (
     ProfileWritePlan,
     _FinalizationReceiptAlreadyExistsError,
 )
+from reflexio.server.services.extraction.overflow_presentation import (
+    current_overflow_presentation,
+)
 from reflexio.server.services.profile.components.extractor import ProfileExtractor
 from reflexio.server.services.profile.profile_generation_service_utils import (
     ProfileGenerationRequest,
@@ -233,12 +236,21 @@ class ProfileGenerationService(
             self.storage.precompute_profile_embeddings(all_new_profiles)  # type: ignore[reportOptionalMemberAccess]
 
         lineage_contexts: list[LineageContext] = []
+        from reflexio.server.services.extraction.overflow_coordinator import (
+            current_overflow_coordinator,
+        )
+
+        coordinator = current_overflow_coordinator.get()
         for index, profile in enumerate(all_new_profiles):
             provenance = (
                 consolidation_provenance
                 if index in consolidated_output_indices
                 else self._last_model_provenance
             )
+            if coordinator is not None and index not in consolidated_output_indices:
+                provenance = coordinator.candidate_models.get(
+                    str(profile.profile_id), provenance
+                )
             lineage_contexts.append(
                 LineageContext(
                     op_kind="create",
@@ -520,7 +532,12 @@ class ProfileGenerationService(
         Returns:
             str | None: The rendered prompt, or None if no criteria to check
         """
-        new_interactions = format_sessions_to_history_string(session_data_models)
+        presentation = current_overflow_presentation.get()
+        new_interactions = (
+            presentation.text
+            if presentation is not None
+            else format_sessions_to_history_string(session_data_models)
+        )
         agent_context = self.configurator.get_agent_context()
         prompt_manager = self.request_context.prompt_manager
 

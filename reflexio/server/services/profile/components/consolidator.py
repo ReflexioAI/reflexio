@@ -23,6 +23,7 @@ from reflexio.server.llm.litellm_client import (
     StructuredOutputRepairError,
 )
 from reflexio.server.services.deduplication_utils import (
+    EXTRACTION_CONTROL_ERRORS,
     BaseDeduplicator,
     format_dedup_timestamp,
     parse_item_id,
@@ -46,6 +47,49 @@ _format_profile_timestamp = format_dedup_timestamp
 # that skips the LLM step must strip these markers before returning so they
 # are never persisted as facts.
 _DELETION_MARKER_PREFIX = "Requested removal of"
+
+# UserProfile.source_span remains text. Multiple stored values are explicitly
+# a collection, not a new claim that their concatenation was one original quote.
+_SOURCE_EVIDENCE_COLLECTION_PREFIX = (
+    "Original source evidence values (separate excerpts):\n"
+)
+
+
+def _merged_provenance(
+    profiles: list[UserProfile],
+) -> tuple[str | None, str | None, str | None]:
+    source_values = list(
+        dict.fromkeys(
+            profile.source_span for profile in profiles if profile.source_span
+        )
+    )
+    source_span = next(iter(source_values), None)
+    if len(source_values) > 1:
+        source_span = _SOURCE_EVIDENCE_COLLECTION_PREFIX + (
+            "\n\n--- Separate source evidence value ---\n\n".join(source_values)
+        )
+    note_values = list(
+        dict.fromkeys(profile.notes for profile in profiles if profile.notes)
+    )
+    angles = list(
+        dict.fromkeys(
+            profile.reader_angle for profile in profiles if profile.reader_angle
+        )
+    )
+    reader_angle = None
+    if len(angles) == 1 and all(
+        profile.reader_angle == angles[0] for profile in profiles
+    ):
+        reader_angle = angles[0]
+    elif angles:
+        # NEW members are not individually persisted, so keep their perspectives
+        # when no honest single angle survives. No collection parsing/escaping.
+        note_values.append(
+            "Contributing reader angles (no single perspective selected):\n"
+            + "\n".join(angles)
+        )
+    return source_span, "\n\n".join(note_values) or None, reader_angle
+
 
 # Deduplication search is bounded candidate generation for a second-stage LLM,
 # not user-facing retrieval. Keep its threshold independent from the active
@@ -485,6 +529,8 @@ class ProfileConsolidator(BaseDeduplicator):
                     if profile.profile_id and profile.profile_id not in seen_ids:
                         seen_ids.add(profile.profile_id)
                         existing_profiles.append(profile)
+            except EXTRACTION_CONTROL_ERRORS:
+                raise
             except Exception as e:  # noqa: PERF203
                 logger.warning(
                     "Failed to search existing profiles for query %d: %s", i, e
@@ -610,6 +656,10 @@ class ProfileConsolidator(BaseDeduplicator):
                 return _strip_deletion_markers(new_profiles), [], []
 
             dedup_output = response
+        except EXTRACTION_CONTROL_ERRORS:
+            # Admission, quota, suspension and ownership are publication
+            # barriers, not transient errors eligible for best-effort output.
+            raise
         except Exception as e:
             # Graceful degradation: dedup is best-effort — on any failure
             # (commonly a transient minimax timeout/overload) keep the profiles
@@ -825,6 +875,9 @@ class ProfileConsolidator(BaseDeduplicator):
                     for source_id in profile.source_interaction_ids
                 )
             )
+            merged_source_span, merged_notes, reader_angle = _merged_provenance(
+                group_profiles_in_item_order
+            )
 
             # Determine TTL
             try:
@@ -850,6 +903,9 @@ class ProfileConsolidator(BaseDeduplicator):
                 status=template_profile.status,
                 extractor_names=merged_extractor_names,
                 source_interaction_ids=merged_source_interaction_ids,
+                source_span=merged_source_span,
+                notes=merged_notes,
+                reader_angle=reader_angle,
             )
             self.consolidated_output_indices.add(len(result_profiles))
             result_profiles.append(merged_profile)

@@ -44,6 +44,116 @@ from reflexio.server.services.profile.components.consolidator import (
     validate_profile_dedup_output,
 )
 
+
+@pytest.mark.parametrize("group_kind", ["new", "mixed", "existing"])
+@pytest.mark.parametrize("same_angle", [False, True])
+def test_merged_profiles_preserve_all_canonical_evidence_and_perspectives(
+    mock_request_context, mock_llm_client, group_kind, same_angle
+):
+    first = UserProfile(
+        profile_id="first",
+        user_id="u",
+        content="Concise answers",
+        last_modified_timestamp=100,
+        generated_from_request_id="one",
+        source_span='Keep answers short. "Exact quote" \\ path',
+        notes="First original caveat",
+        reader_angle="preferences",
+        source_interaction_ids=[1, 2],
+        custom_features={"topic": "answers"},
+    )
+    second = first.model_copy(
+        update={
+            "profile_id": "second",
+            "source_span": "Include examples while staying brief.",
+            "notes": "Second original caveat",
+            "reader_angle": "preferences" if same_angle else "communication",
+            "source_interaction_ids": [2, 3],
+            "custom_features": {"format": "examples"},
+        }
+    )
+    assert first.source_span is not None and second.source_span is not None
+    assert first.notes is not None and second.notes is not None
+    if group_kind == "new":
+        new, existing, labels = [first, second], [], ["NEW-0", "NEW-1"]
+    elif group_kind == "mixed":
+        new, existing, labels = [first], [second], ["NEW-0", "EXISTING-0"]
+    else:
+        new, existing, labels = [], [first, second], ["EXISTING-0", "EXISTING-1"]
+    consolidator = ProfileConsolidator(
+        request_context=mock_request_context, llm_client=mock_llm_client
+    )
+    output = ProfileDeduplicationOutput(
+        duplicate_groups=[
+            ProfileDuplicateGroup(
+                item_ids=labels,
+                merged_content="Concise answers with examples",
+                merged_time_to_live="infinity",
+            )
+        ]
+    )
+    merged = consolidator._build_deduplicated_results(
+        new_profiles=new,
+        existing_profiles=existing,
+        dedup_output=output,
+        user_id="u",
+        request_id="merge",
+    )[0][0]
+    assert merged.source_span is not None and merged.notes is not None
+    assert merged.source_span.startswith(
+        "Original source evidence values (separate excerpts):"
+    )
+    assert (
+        first.source_span in merged.source_span
+        and second.source_span in merged.source_span
+    )
+    assert first.notes in merged.notes and second.notes in merged.notes
+    assert merged.source_interaction_ids == [1, 2, 3]
+    assert merged.reader_angle == ("preferences" if same_angle else None)
+    if not same_angle:
+        assert "preferences" in merged.notes and "communication" in merged.notes
+    expected_customs = (
+        first.custom_features
+        if group_kind == "mixed"
+        else {"topic": "answers", "format": "examples"}
+    )
+    assert merged.custom_features == expected_customs
+    # Repeated merges preserve complete values without repeatedly JSON-escaping
+    # a prior collection or losing perspectives of consumed NEW-only members.
+    initial_length = len(merged.source_span)
+    for index in range(4):
+        extra = first.model_copy(update={"profile_id": f"extra-{index}"})
+        previous = merged
+        merged = consolidator._build_deduplicated_results(
+            new_profiles=[extra],
+            existing_profiles=[previous],
+            dedup_output=ProfileDeduplicationOutput(
+                duplicate_groups=[
+                    ProfileDuplicateGroup(
+                        item_ids=["EXISTING-0", "NEW-0"],
+                        merged_content="Concise answers",
+                        merged_time_to_live="infinity",
+                    )
+                ]
+            ),
+            user_id="u",
+            request_id=f"merge-{index}",
+        )[0][0]
+        assert merged.source_span is not None and merged.notes is not None
+        assert previous.source_span is not None
+        assert previous.source_span in merged.source_span
+        assert (
+            first.source_span in merged.source_span
+            and second.source_span in merged.source_span
+        )
+        assert len(merged.source_span) - initial_length <= (index + 1) * (
+            len(first.source_span) + 120
+        )
+        if not same_angle:
+            assert merged.reader_angle is None
+            assert "communication" in merged.notes
+
+
 # ===============================
 # Fixtures
 # ===============================

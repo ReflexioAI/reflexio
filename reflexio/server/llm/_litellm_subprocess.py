@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import litellm
+from litellm.exceptions import ContextWindowExceededError
 
 from reflexio.server.llm._litellm_types import completion_metadata
 from reflexio.server.llm._model_compat import model_completion
@@ -71,6 +72,7 @@ class _CompletionErrorSnapshot:
     message: str
     model: str | None = None
     llm_provider: str | None = None
+    input_capacity_exceeded: bool = False
 
 
 def _snapshot_completion_error(
@@ -83,6 +85,7 @@ def _snapshot_completion_error(
         message=str(exc),
         model=str(model) if model else None,
         llm_provider=str(llm_provider) if llm_provider else None,
+        input_capacity_exceeded=isinstance(exc, ContextWindowExceededError),
     )
 
 

@@ -41,6 +41,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import litellm
+from litellm.exceptions import ContextWindowExceededError
 from pydantic import BaseModel
 
 from reflexio.server import search_runtime
@@ -51,6 +52,8 @@ from reflexio.server.llm._litellm_types import (
     LiteLLMClientError,
     LLMHardTimeoutError,
     ModelProvenance,
+    ProviderRequestGuard,
+    ProviderRequestGuardError,
     StructuredOutputParseError,
     StructuredOutputRepairError,
     ToolCallingChatResponse,
@@ -72,13 +75,18 @@ from reflexio.server.llm.image_utils import (
 from reflexio.server.llm.image_utils import (
     encode_image_to_base64 as _encode_image_to_base64,
 )
+from reflexio.server.llm.input_budget import (
+    extraction_provider_guard,
+    extraction_usage_observer,
+    supply_extraction_output_reservation,
+)
 from reflexio.server.llm.llm_utils import is_pydantic_model
 from reflexio.server.llm.model_defaults import (
     ModelRole,
     default_max_tokens_for_model,
     resolve_model_name,
 )
-from reflexio.server.llm.token_accounting import run_token_capture
+from reflexio.server.llm.token_accounting import RunTokenTotals, run_token_capture
 from reflexio.server.operational_metrics import record_health
 
 if TYPE_CHECKING:
@@ -501,16 +509,6 @@ def _rung_reason(error: Exception | None) -> str:
     return "transport_error"
 
 
-class ProviderRequestGuardError(RuntimeError):
-    """Raised when a caller rejects built params at the provider boundary."""
-
-
-ProviderRequestGuard = Callable[
-    [dict[str, Any], float, tuple[str, ...], bool],
-    None,
-]
-
-
 class TextGenerationMixin:
     """Chat/response generation, completion-param build, hard-timeout, cost, multimodal.
 
@@ -904,6 +902,10 @@ class TextGenerationMixin:
         params["messages"] = self._apply_prompt_caching(
             params["messages"], params["model"]
         )
+        # Apply only to scoped extraction, after endpoint/caller resolution.
+        # Every fallback rung is rebuilt independently and reserves its own cap.
+        if extraction_provider_guard.get() is not None:
+            supply_extraction_output_reservation(params)
         # Apply after caller overrides and the seed temperature override.
         apply_model_request_policy(params)
 
@@ -1114,7 +1116,19 @@ class TextGenerationMixin:
         hard_timeout = max(0.001, hard_timeout)
 
         if not self._should_process_isolate_completion(timeout_seconds, grace_seconds):
-            return model_completion(params)
+            try:
+                return model_completion(params)
+            except ContextWindowExceededError:
+                if extraction_provider_guard.get() is not None:
+                    from reflexio.server.llm.input_budget import (
+                        ProviderInputOverflowError,
+                        extraction_request_identity,
+                    )
+
+                    raise ProviderInputOverflowError(
+                        extraction_request_identity.get()
+                    ) from None
+                raise
 
         process_context = multiprocessing.get_context()
         result_queue = process_context.Queue(maxsize=1)
@@ -1196,6 +1210,18 @@ class TextGenerationMixin:
 
             if status == "ok":
                 return payload
+            if (
+                payload.input_capacity_exceeded
+                and extraction_provider_guard.get() is not None
+            ):
+                from reflexio.server.llm.input_budget import (
+                    ProviderInputOverflowError,
+                    extraction_request_identity,
+                )
+
+                # Only a typed upstream capacity error qualifies. Generic400,
+                # provider codes/messages, timeouts and schema failures do not.
+                raise ProviderInputOverflowError(extraction_request_identity.get())
             # The worker always reports errors as a picklable snapshot.
             context_parts = [f"model={payload.model}"]
             if payload.llm_provider:
@@ -1295,6 +1321,28 @@ class TextGenerationMixin:
                 ),
                 cache_write_input_tokens=cache_creation,
             )
+
+        observer = extraction_usage_observer.get()
+        if observer is not None:
+            observed = RunTokenTotals()
+            observed.add(
+                prompt_tokens=getattr(usage, "prompt_tokens", None),
+                completion_tokens=getattr(usage, "completion_tokens", None),
+                cache_read_input_tokens=(
+                    cache_read
+                    if cache_read is not None
+                    else getattr(details, "cached_tokens", None)
+                ),
+                cache_write_input_tokens=cache_creation,
+            )
+            try:
+                observer(self._build_model_provenance(response), observed)
+            except ProviderRequestGuardError:
+                raise
+            except Exception as exc:
+                raise ProviderRequestGuardError(
+                    "Durable extraction usage checkpoint failed"
+                ) from exc
 
         cost = self._compute_cost_usd(response, params.get("model"))
         cost_suffix = f", cost: ${cost:.6f}" if cost is not None else ""
@@ -1584,6 +1632,17 @@ class TextGenerationMixin:
                     )
                     if provider_request_guard is not None:
                         provider_request_guard(
+                            turn_params,
+                            turn_hard_timeout,
+                            tuple(ladder),
+                            turn_parse_structured_output,
+                        )
+                    scoped_guard = extraction_provider_guard.get()
+                    if (
+                        scoped_guard is not None
+                        and scoped_guard is not provider_request_guard
+                    ):
+                        scoped_guard(
                             turn_params,
                             turn_hard_timeout,
                             tuple(ladder),

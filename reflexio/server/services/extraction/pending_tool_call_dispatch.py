@@ -16,6 +16,7 @@ from reflexio.server.llm.tools import (
     AsyncAccepted,
     AsyncInfoTool,
     AsyncRequestSpec,
+    Completed,
     Tool,
 )
 from reflexio.server.services.storage.storage_base import (
@@ -132,7 +133,7 @@ def _question_embedding(
 def handle_ask_human(
     args: AskHumanArgs,
     ctx: PendingToolCallToolContext,
-) -> AsyncAccepted:
+) -> AsyncAccepted | Completed:
     if not ctx.run_id:
         raise ValueError("ask_human requires a durable agent run_id")
 
@@ -223,6 +224,27 @@ def handle_ask_human(
             upsert.pending_tool_call.tool_name,
         )
 
+    from reflexio.server.services.extraction.overflow_coordinator import (
+        current_overflow_coordinator,
+    )
+
+    if (
+        current_overflow_coordinator.get() is not None
+        and upsert.pending_tool_call.status == PendingToolCallStatus.RESOLVED
+    ):
+        from reflexio.server.services.extraction.overflow_answers import (
+            pin_overflow_answer,
+        )
+
+        pin_overflow_answer(upsert.pending_tool_call)
+        return Completed(
+            result={
+                "status": "already_resolved",
+                "pending_tool_call_id": upsert.pending_tool_call.id,
+                "question": upsert.pending_tool_call.question_text,
+                "result": upsert.pending_tool_call.result or {},
+            }
+        )
     return AsyncAccepted(
         pending_tool_call_id=upsert.pending_tool_call.id,
         result={
@@ -239,7 +261,7 @@ def handle_ask_human(
 def handle_attach_pending_info_request(
     args: AttachPendingInfoRequestArgs,
     ctx: PendingToolCallToolContext,
-) -> dict[str, Any]:
+) -> dict[str, Any] | AsyncAccepted:
     if not ctx.run_id:
         raise ValueError("attach_pending_info_request requires a durable agent run_id")
 
@@ -269,6 +291,11 @@ def handle_attach_pending_info_request(
                     "or call ask_human if the information is still needed."
                 ),
             }
+        from reflexio.server.services.extraction.overflow_answers import (
+            pin_overflow_answer,
+        )
+
+        pin_overflow_answer(record)
         return {
             "status": "already_resolved",
             "pending_tool_call_id": record.id,
@@ -307,7 +334,7 @@ def handle_attach_pending_info_request(
         record.id,
         record.tool_name,
     )
-    return {
+    result = {
         "status": "attached_for_followup",
         "pending_tool_call_id": record.id,
         "instruction": (
@@ -315,9 +342,16 @@ def handle_attach_pending_info_request(
             "This run will be resumed when the pending answer arrives."
         ),
     }
+    from reflexio.server.services.extraction.overflow_coordinator import (
+        current_overflow_coordinator,
+    )
+
+    if current_overflow_coordinator.get() is not None:
+        return AsyncAccepted(pending_tool_call_id=record.id, result=result)
+    return result
 
 
-def _handle_ask_human_tool(args: BaseModel, ctx: Any) -> AsyncAccepted:
+def _handle_ask_human_tool(args: BaseModel, ctx: Any) -> AsyncAccepted | Completed:
     if not isinstance(args, AskHumanArgs):
         raise TypeError(f"Expected AskHumanArgs, got {type(args).__name__}")
     ctx = getattr(ctx, "extra_tool_context", ctx)
@@ -330,7 +364,7 @@ def _handle_ask_human_tool(args: BaseModel, ctx: Any) -> AsyncAccepted:
 
 def _handle_attach_pending_info_request_tool(
     args: BaseModel, ctx: Any
-) -> dict[str, Any]:
+) -> dict[str, Any] | AsyncAccepted:
     if not isinstance(args, AttachPendingInfoRequestArgs):
         raise TypeError(
             f"Expected AttachPendingInfoRequestArgs, got {type(args).__name__}"

@@ -3,6 +3,7 @@
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from typing import Any
 from unittest.mock import Mock, patch
 
 import pytest
@@ -20,6 +21,2442 @@ from reflexio.server.services.durable_learning.worker import DurableLearningWork
 from reflexio.server.services.profile.service import ProfileGenerationService
 
 pytestmark = pytest.mark.integration
+
+
+def _prepared_presentation_text() -> str:
+    from reflexio.server.services.extraction.overflow_presentation import (
+        current_overflow_presentation,
+    )
+
+    presentation = current_overflow_presentation.get()
+    assert presentation is not None
+    return presentation.text
+
+
+@pytest.mark.parametrize("configuration_error", [False, True])
+def test_input_budget_failure_reports_failed_without_immediate_replay_or_losing_inputs(
+    pipeline, monkeypatch, configuration_error
+):
+    from reflexio.server.llm._litellm_types import ProviderRequestGuardError
+    from reflexio.server.llm.input_budget import (
+        InputBudgetConfigurationError,
+        InputBudgetExceededError,
+    )
+    from reflexio.server.services.storage.sqlite_storage._extraction_stream import (
+        SQLiteStreamSQL,
+    )
+
+    engine, worker, client = pipeline
+    storage = engine.get_storage()
+    with storage._stream_sql(read_only=True) as db:
+        started = db.now()
+    monkeypatch.setattr(SQLiteStreamSQL, "now", lambda _: started)
+    monkeypatch.setenv("MOCK_LLM_RESPONSE", "false")
+    monkeypatch.setenv("REFLEXIO_EXTRACTION_OVERFLOW_ENABLED", "true")
+    dispatch = Mock(
+        side_effect=AssertionError("Guard failure must not reach a provider")
+    )
+    monkeypatch.setattr(
+        "reflexio.server.llm.litellm_client.LiteLLMClient._completion_with_hard_timeout",
+        dispatch,
+    )
+    reason = (
+        "input_budget_configuration_error"
+        if configuration_error
+        else "input_budget_exceeded"
+    )
+    budget = (
+        InputBudgetConfigurationError("Sensitive details are not a status reason")
+        if configuration_error
+        else InputBudgetExceededError("Sensitive details are not a status reason")
+    )
+    wrapped = ProviderRequestGuardError("Guard rejected the operation")
+    wrapped.__cause__ = budget
+    compute = Mock(side_effect=wrapped)
+    monkeypatch.setattr(ProfileGenerationService, "compute_generation", compute)
+    assert client.post(
+        "/api/publish_interaction", json=payload("budget-failure", force=True)
+    ).json()["success"]
+    assert worker.drain_org("stream-test", 1, 300) == 0
+    assert client.get(
+        "/api/learning_status", params={"request_id": "budget-failure"}
+    ).json() == {"status": "failed", "reason": reason}
+    storage = engine.get_storage()
+    assert storage.count_all_profiles() == 0
+    assert len(storage.get_user_interaction("u")) == 10
+    with storage._stream_sql() as db:
+        rows = db.query("SELECT id FROM _agent_runs WHERE user_id=? LIMIT 2", ("u",))
+    assert len(rows) == 1
+    run = storage.get_agent_run(rows[0]["id"])
+    assert run.status.value == "failed"
+    assert run.last_error == reason
+    assert run.generation_request_snapshot["overflow"]["attempts"] == []
+    worker.drain_org("stream-test", 2, 300)
+    assert compute.call_count == 1
+    dispatch.assert_not_called()
+    assert storage.pending_extraction_effects() == []
+
+
+def _overflow_coordinator(pipeline, *, attempts=(), actual_source=False, legacy=False):
+    from reflexio.server.services.storage.storage_base import (
+        AgentBinding,
+        AgentRunRecord,
+        AgentRunStatus,
+    )
+
+    engine, _, client = pipeline
+    assert client.post(
+        "/api/publish_interaction", json=payload("overflow-checkpoint", force=True)
+    ).json()["success"]
+    storage = engine.get_storage()
+    user, token = storage.claim_extraction("checkpoint-test", 300)
+    window = storage.prepare_extraction(user, token)
+    source_digest = "captured-source"
+    source_digests = {}
+    if actual_source:
+        from reflexio.server.services.durable_learning.window_executor import (
+            load_window_inputs,
+        )
+        from reflexio.server.services.extraction.agent_run_records import (
+            source_interaction_digest,
+        )
+        from reflexio.server.services.extraction.input_preparation import (
+            prepare_extraction_input,
+        )
+
+        groups = load_window_inputs(storage, window)
+        source_digest = prepare_extraction_input(groups, user_id=user).source_digest
+        source_digests = {
+            str(item.interaction_id): source_interaction_digest(item)
+            for group in groups
+            for item in group.interactions
+        }
+    storage.create_agent_run(
+        AgentRunRecord(
+            id=f"window:{window.window_id}",
+            binding=AgentBinding(
+                org_id=storage.org_id,
+                user_id=user,
+                extractor_kind=window.kind,
+                request_id="overflow-checkpoint",
+                agent_version=None,
+                source="test",
+            ),
+            status=AgentRunStatus.AGENT_COMPLETED if legacy else AgentRunStatus.RUNNING,
+            committed_output={"profiles": []} if legacy else None,
+            generation_request_snapshot={
+                "source_interaction_ids": [
+                    item["interaction_id"] for item in window.manifest
+                ],
+                "source_interaction_digests": source_digests,
+                **(
+                    {}
+                    if legacy
+                    else {
+                        "overflow": {
+                            "version": 1,
+                            "revision": 0,
+                            "source_digest": source_digest,
+                            "attempt_limit": 128,
+                            "attempts": list(attempts),
+                            "checkpoint": {"stage": "prepare"},
+                        }
+                    }
+                ),
+            },
+        )
+    )
+    return storage, window, token
+
+
+@pytest.mark.parametrize(
+    "change", ["result", "question", "withdraw", "supersede", "expire", "delete"]
+)
+def test_overflow_prior_answer_is_complete_pinned_and_fenced(
+    pipeline, monkeypatch, change
+):
+    from datetime import UTC, datetime, timedelta
+
+    from reflexio.server.llm.input_budget import InputBudgetConfigurationError
+    from reflexio.server.services.extraction.overflow_coordinator import (
+        OverflowCoordinator,
+    )
+    from reflexio.server.services.extraction.prior_answer_search import (
+        append_prior_knowledge_context,
+    )
+    from reflexio.server.services.storage.storage_base import (
+        PendingToolCallRecord,
+        PendingToolCallStatus,
+        PriorAnswerMatch,
+        build_scope_hash,
+        human_feedback_scope,
+    )
+
+    storage, window, token = _overflow_coordinator(pipeline)
+    run = storage.get_agent_run(f"window:{window.window_id}")
+    coordinator = OverflowCoordinator(
+        storage,
+        window,
+        token,
+        run.generation_request_snapshot["overflow"],
+        source_digest="captured-source",
+        context_limits={},
+    )
+    now = datetime.now(UTC)
+    answer = {
+        "answer": "Evidence " * 300
+        + "Only prepare; do not deploy until separately approved."
+    }
+    scope = human_feedback_scope(storage.org_id)
+    record = storage.create_pending_tool_call(
+        PendingToolCallRecord(
+            id="ptc_overflow_answer",
+            org_id=storage.org_id,
+            scope=scope,
+            scope_hash=build_scope_hash(scope),
+            tool_name="ask_human",
+            dedup_key="overflow-answer",
+            status=PendingToolCallStatus.RESOLVED,
+            question_text="May I deploy?",
+            result=answer,
+            resolved_at=now,
+            expires_at=now + timedelta(days=1),
+            cache_until=now + timedelta(hours=1),
+            valid_until=now + timedelta(hours=1),
+        )
+    )
+    matches = Mock(
+        return_value=[
+            PriorAnswerMatch(
+                pending_tool_call_id=record.id,
+                status=record.status,
+                question_text=record.question_text,
+                result=record.result,
+                resolved_at=record.resolved_at,
+                valid_until=record.valid_until,
+            )
+        ]
+    )
+    monkeypatch.setattr(
+        "reflexio.server.services.extraction.prior_answer_search.find_prior_answer_matches",
+        matches,
+    )
+    kwargs = {
+        "messages": [{"role": "user", "content": "original source"}],
+        "storage": storage,
+        "org_id": storage.org_id,
+        "extractor_kind": "profile",
+        "extractor_config": None,
+        "source": None,
+        "agent_version": None,
+    }
+    with coordinator.provider_scope():
+        first = append_prior_knowledge_context(**kwargs)
+    assert (
+        "Only prepare; do not deploy until separately approved." in first[-1]["content"]
+    )
+    witnesses = coordinator.checkpoint["answer_witnesses"]
+    with storage.commit_scope():
+        storage.validate_extraction_answers(witnesses)
+    mutations = {
+        "result": (
+            "UPDATE _pending_tool_calls SET result=? WHERE id=?",
+            ('{"answer":"Deploy now"}', record.id),
+        ),
+        "question": (
+            "UPDATE _pending_tool_calls SET question_text=? WHERE id=?",
+            ("Changed scope", record.id),
+        ),
+        "withdraw": (
+            "UPDATE _pending_tool_calls SET status=? WHERE id=?",
+            ("cancelled", record.id),
+        ),
+        "supersede": (
+            "UPDATE _pending_tool_calls SET superseded_by=? WHERE id=?",
+            ("new-answer", record.id),
+        ),
+        "expire": (
+            "UPDATE _pending_tool_calls SET valid_until=? WHERE id=?",
+            ((now - timedelta(seconds=1)).isoformat(), record.id),
+        ),
+        "delete": ("DELETE FROM _pending_tool_calls WHERE id=?", (record.id,)),
+    }
+    with storage.commit_scope(), storage._stream_sql() as db:
+        db.query(*mutations[change])
+    with coordinator.provider_scope():
+        second = append_prior_knowledge_context(**kwargs)
+    assert second == first
+    matches.assert_called_once()
+    with (
+        storage.commit_scope(),
+        pytest.raises(InputBudgetConfigurationError, match="answer changed"),
+    ):
+        storage.validate_extraction_answers(witnesses)
+    assert coordinator.checkpoint["answer_witnesses"] == witnesses
+    assert coordinator.checkpoint["stage"] == "prepare"
+    assert storage.count_all_profiles() == 0
+
+
+@pytest.mark.parametrize("answer_before_checkpoint", [False, True])
+@pytest.mark.parametrize("checkpoint_fault", [False, True])
+def test_waiting_overflow_child_resumes_saved_messages_and_consumes_only_its_answer(
+    pipeline, monkeypatch, answer_before_checkpoint, checkpoint_fault
+):
+    from datetime import UTC, datetime, timedelta
+
+    from reflexio.server.llm.tools import ToolLoopResult, ToolLoopTrace
+    from reflexio.server.services.durable_learning.window_executor import (
+        load_window_inputs,
+    )
+    from reflexio.server.services.extraction.input_preparation import (
+        prepare_extraction_input,
+    )
+    from reflexio.server.services.extraction.overflow_coordinator import (
+        OverflowCoordinator,
+        OverflowSuspendedError,
+    )
+    from reflexio.server.services.extraction.overflow_presentation import (
+        present_extraction_chunk,
+    )
+    from reflexio.server.services.extraction.resumable_agent import (
+        ResumableExtractionAgent,
+    )
+    from reflexio.server.services.profile.profile_generation_service_utils import (
+        StructuredProfilesOutput,
+    )
+    from reflexio.server.services.storage.storage_base import (
+        PendingToolCallRecord,
+        PendingToolCallStatus,
+        RunToolDependencyRecord,
+        build_scope_hash,
+        human_feedback_scope,
+    )
+
+    storage, window, token = _overflow_coordinator(pipeline, actual_source=True)
+    prepared = prepare_extraction_input(
+        load_window_inputs(storage, window), user_id=window.user_id
+    )
+    run = storage.get_agent_run(f"window:{window.window_id}")
+    now = datetime.now(UTC)
+    scope = human_feedback_scope(storage.org_id)
+    for call_id in ("child-answer", "unrelated-answer"):
+        storage.create_pending_tool_call(
+            PendingToolCallRecord(
+                id=call_id,
+                org_id=storage.org_id,
+                scope=scope,
+                scope_hash=build_scope_hash(scope),
+                tool_name="ask_human",
+                dedup_key=call_id,
+                status=PendingToolCallStatus.PENDING,
+                question_text="What is approved?",
+                expires_at=now + timedelta(days=1),
+                cache_until=now + timedelta(hours=1),
+            )
+        )
+        storage.attach_run_tool_dependency(
+            RunToolDependencyRecord(run_id=run.id, pending_tool_call_id=call_id)
+        )
+    qualifier = "Only prepare; production deployment needs separate approval."
+
+    def resolve(call_id):
+        storage.resolve_pending_tool_call(
+            call_id, result={"answer": qualifier}, valid_for_seconds=3600
+        )
+
+    resolve("unrelated-answer")
+    if answer_before_checkpoint:
+        resolve("child-answer")
+
+    def coordinator_from_storage():
+        parent = storage.get_agent_run(run.id)
+        return OverflowCoordinator(
+            storage,
+            window,
+            token,
+            parent.generation_request_snapshot["overflow"],
+            source_digest=prepared.source_digest,
+            context_limits={},
+            prepared=prepared,
+        )
+
+    coordinator = coordinator_from_storage()
+    agent = ResumableExtractionAgent(client=Mock(), storage=storage)
+    progress = []
+
+    def wait_loop(**kwargs):
+        progress.extend(
+            [
+                *kwargs["messages"],
+                {
+                    "role": "tool",
+                    "content": "saved tool output",
+                    "tool_call_id": "lookup",
+                },
+            ]
+        )
+        return ToolLoopResult(
+            ctx=None,
+            trace=ToolLoopTrace(),
+            finished_reason="max_steps",
+            messages=progress,
+            pending_tool_call_ids=["child-answer"],
+        )
+
+    loop = Mock(side_effect=wait_loop)
+    monkeypatch.setattr(
+        "reflexio.server.services.extraction.resumable_agent.run_tool_loop", loop
+    )
+    with (
+        coordinator.provider_scope(),
+        present_extraction_chunk(prepared, prepared.chunks[0], coordinator.record),
+    ):
+        seed = [{"role": "user", "content": _prepared_presentation_text()}]
+        with pytest.raises(OverflowSuspendedError):
+            agent.start(run=run, messages=seed, output_schema=StructuredProfilesOutput)
+    assert coordinator.checkpoint["active_child"]["max_steps_remaining"] == 7
+    assert storage.get_agent_run(run.id).committed_output is None
+    if not answer_before_checkpoint:
+        with (
+            coordinator.provider_scope(),
+            present_extraction_chunk(prepared, prepared.chunks[0], coordinator.record),
+            pytest.raises(OverflowSuspendedError),
+        ):
+            agent.start(run=run, messages=seed, output_schema=StructuredProfilesOutput)
+        assert loop.call_count == 1
+        resolve("child-answer")
+
+    if checkpoint_fault:
+        original_save = storage.checkpoint_extraction_overflow
+
+        def fail_after_write(*args, **kwargs):
+            result = original_save(*args, **kwargs)
+            if kwargs.get("checkpoint", {}).get("answer_dependencies"):
+                raise RuntimeError("Injected checkpoint failure")
+            return result
+
+        monkeypatch.setattr(storage, "checkpoint_extraction_overflow", fail_after_write)
+        with (
+            coordinator.provider_scope(),
+            present_extraction_chunk(prepared, prepared.chunks[0], coordinator.record),
+            pytest.raises(RuntimeError, match="Injected checkpoint failure"),
+        ):
+            agent.start(run=run, messages=seed, output_schema=StructuredProfilesOutput)
+        monkeypatch.setattr(storage, "checkpoint_extraction_overflow", original_save)
+        with storage._stream_sql() as db:
+            assert (
+                db.query(
+                    "SELECT consumed_at FROM _run_tool_dependencies WHERE pending_tool_call_id=?",
+                    ("child-answer",),
+                )[0]["consumed_at"]
+                is None
+            )
+        assert "waiting_child" in coordinator_from_storage().checkpoint
+        coordinator = coordinator_from_storage()
+
+    completion = ToolLoopResult(
+        ctx=None,
+        trace=ToolLoopTrace(finished=True),
+        finished_reason="structured_output",
+        messages=[],
+        structured_output=StructuredProfilesOutput(profiles=[]),
+    )
+    loop.side_effect = None
+    loop.return_value = completion
+    with (
+        coordinator.provider_scope(),
+        present_extraction_chunk(prepared, prepared.chunks[0], coordinator.record),
+    ):
+        result = agent.start(
+            run=run, messages=seed, output_schema=StructuredProfilesOutput
+        )
+        replay = agent.start(
+            run=run, messages=seed, output_schema=StructuredProfilesOutput
+        )
+    assert result.output == replay.output == StructuredProfilesOutput(profiles=[])
+    assert loop.call_count == 2
+    resumed = loop.call_args.kwargs["messages"]
+    assert resumed[:-1] == progress
+    assert qualifier in resumed[-1]["content"]
+    assert "waiting_child" not in coordinator.checkpoint
+    with storage.commit_scope():
+        storage.validate_extraction_answers(coordinator.checkpoint["answer_witnesses"])
+        storage.validate_extraction_answer_dependencies(
+            window, coordinator.checkpoint["answer_dependencies"]
+        )
+    with storage._stream_sql() as db:
+        deps = {
+            row["pending_tool_call_id"]: row["consumed_at"]
+            for row in db.query(
+                "SELECT pending_tool_call_id,consumed_at FROM _run_tool_dependencies WHERE run_id=?",
+                (run.id,),
+            )
+        }
+    assert deps["child-answer"] is not None
+    assert deps["unrelated-answer"] is None
+    assert storage.get_agent_run(run.id).committed_output is None
+    assert storage.count_all_profiles() == 0
+    assert storage.pending_extraction_effects() == []
+
+
+def test_overflow_human_tools_wait_for_pending_and_reuse_complete_resolved_answers(
+    pipeline,
+):
+    from reflexio.server.llm.tools import AsyncAccepted, Completed, ToolRegistry
+    from reflexio.server.services.extraction.overflow_coordinator import (
+        OverflowCoordinator,
+    )
+    from reflexio.server.services.extraction.pending_tool_call_dispatch import (
+        PendingToolCallToolContext,
+        create_ask_human_tool,
+        create_attach_pending_info_request_tool,
+    )
+
+    storage, window, token = _overflow_coordinator(pipeline)
+    run = storage.get_agent_run(f"window:{window.window_id}")
+    coordinator = OverflowCoordinator(
+        storage,
+        window,
+        token,
+        run.generation_request_snapshot["overflow"],
+        source_digest="captured-source",
+        context_limits={},
+    )
+    ctx = PendingToolCallToolContext(
+        storage=storage,
+        run_id=run.id,
+        org_id=storage.org_id,
+        extractor_kind="profile",
+        user_id=window.user_id,
+    )
+    registry = ToolRegistry(
+        [create_ask_human_tool(), create_attach_pending_info_request_tool()]
+    )
+    with coordinator.provider_scope():
+        requested = registry.handle_outcome(
+            "ask_human", '{"question":"What is approved?"}', ctx
+        )
+        assert isinstance(requested, AsyncAccepted)
+        call_id = requested.pending_tool_call_id
+        attached = registry.handle_outcome(
+            "attach_pending_info_request",
+            '{"pending_tool_call_id":"' + call_id + '"}',
+            ctx,
+        )
+        assert isinstance(attached, AsyncAccepted)
+        assert attached.pending_tool_call_id == call_id
+        answer = {
+            "answer": "Reasoning " * 300
+            + "Only prepare, never deploy without approval."
+        }
+        storage.resolve_pending_tool_call(
+            call_id, result=answer, valid_for_seconds=3600
+        )
+        reused = registry.handle_outcome(
+            "attach_pending_info_request",
+            '{"pending_tool_call_id":"' + call_id + '"}',
+            ctx,
+        )
+        assert isinstance(reused, Completed)
+        assert reused.result["result"] == answer
+        assert coordinator.checkpoint["answer_witnesses"][call_id]["result"] == answer
+    assert storage.get_agent_run(run.id).committed_output is None
+    assert storage.count_all_profiles() == 0
+    assert storage.pending_extraction_effects() == []
+
+
+@pytest.mark.parametrize("cached_gate", [False, True])
+@pytest.mark.parametrize(
+    "cached_children,reserved,reconcile_fault",
+    [(31, 79, False), (48, 127, False), (48, 127, True)],
+)
+def test_48_chunk_restart_counts_only_uncached_children(
+    pipeline, monkeypatch, cached_gate, cached_children, reserved, reconcile_fault
+):
+    from dataclasses import replace
+
+    from reflexio.server.llm._litellm_types import CompletionResult, ModelProvenance
+    from reflexio.server.llm.tools import ToolLoopResult, ToolLoopTrace
+    from reflexio.server.services.durable_learning.window_executor import (
+        load_window_inputs,
+    )
+    from reflexio.server.services.extraction.chunk_gate import judge_extraction_chunks
+    from reflexio.server.services.extraction.input_preparation import (
+        PreparedChunk,
+        PreparedExtractionInput,
+        prepare_extraction_input,
+    )
+    from reflexio.server.services.extraction.overflow_coordinator import (
+        OverflowCoordinator,
+    )
+    from reflexio.server.services.extraction.overflow_pipeline import (
+        OverflowExtractionCall,
+        extract_overflow_window,
+    )
+    from reflexio.server.services.extraction.overflow_presentation import (
+        present_extraction_chunk,
+    )
+    from reflexio.server.services.extraction.resumable_agent import (
+        ResumableExtractionAgent,
+    )
+    from reflexio.server.services.profile.profile_generation_service_utils import (
+        StructuredProfilesOutput,
+    )
+
+    attempts = tuple(
+        {"id": f"earlier-{i}", "usage": None, "model_provenance": None}
+        for i in range(reserved)
+    )
+    storage, window, token = _overflow_coordinator(
+        pipeline, actual_source=True, attempts=attempts
+    )
+    original = prepare_extraction_input(
+        load_window_inputs(storage, window), user_id=window.user_id
+    )
+    spans = [span for chunk in original.chunks for span in chunk.spans]
+    assert len(spans) == 10
+    slices = []
+    for index, span in enumerate(spans):
+        count = 5 if index < 8 else 4
+        for part in range(count):
+            start = len(span.text) * part // count
+            end = len(span.text) * (part + 1) // count
+            slices.append(
+                replace(span, start=start, end=end, text=span.text[start:end])
+            )
+    prepared = PreparedExtractionInput(
+        original.source_digest,
+        tuple(PreparedChunk(i, (span,)) for i, span in enumerate(slices)),
+    )
+    assert len(prepared.chunks) == 48
+    parent = storage.get_agent_run(f"window:{window.window_id}")
+    coordinator = OverflowCoordinator(
+        storage,
+        window,
+        token,
+        parent.generation_request_snapshot["overflow"],
+        source_digest=prepared.source_digest,
+        context_limits={},
+        prepared=prepared,
+    )
+    policy = coordinator.step_key(
+        "extraction-policy-v1",
+        {
+            "messages": [
+                {"role": "system", "content": "contract"},
+                {"role": "user", "content": "<prepared-source>"},
+            ],
+            "schema": StructuredProfilesOutput.model_json_schema(),
+        },
+    )
+    checkpoint = coordinator.checkpoint
+    checkpoint["extraction_policy"] = policy
+    coordinator.save_checkpoint(checkpoint)
+    provenance = ModelProvenance("observed", "fixture")
+
+    def build_call():
+        return OverflowExtractionCall(
+            messages=[
+                {"role": "system", "content": "contract"},
+                {"role": "user", "content": _prepared_presentation_text()},
+            ],
+            schema=StructuredProfilesOutput,
+        )
+
+    for chunk in prepared.chunks[:cached_children]:
+        with present_extraction_chunk(prepared, chunk, coordinator.record):
+            call = build_call()
+        key = coordinator.step_key(
+            "extract-v1",
+            {
+                "messages": call.messages,
+                "schema": StructuredProfilesOutput.model_json_schema(),
+                "tools": [],
+            },
+        )
+        coordinator.register_extraction_child(chunk.text, key)
+        coordinator.complete_step(
+            key,
+            {
+                "output": StructuredProfilesOutput.model_validate(
+                    {
+                        "profiles": [
+                            {
+                                "content": "shared lesson",
+                                "time_to_live": "infinity",
+                                "source_span": chunk.spans[0].text,
+                            }
+                        ]
+                        if reconcile_fault
+                        else [],
+                    }
+                ).model_dump(mode="json"),
+                "trace": {"turns": [], "finished": True},
+            },
+            provenance,
+        )
+    if cached_gate:
+        with present_extraction_chunk(prepared, prepared.chunks[0], coordinator.record):
+            gate_prompt = _prepared_presentation_text()
+        gate_key = coordinator.step_key(
+            "gate-v1",
+            {
+                "model": "fixture",
+                "messages": [{"role": "user", "content": gate_prompt}],
+            },
+        )
+        coordinator.complete_step(gate_key, True, provenance)
+    parent = storage.get_agent_run(parent.id)
+    coordinator = OverflowCoordinator(
+        storage,
+        window,
+        token,
+        parent.generation_request_snapshot["overflow"],
+        source_digest=prepared.source_digest,
+        context_limits={},
+        prepared=prepared,
+    )
+    agent = ResumableExtractionAgent(client=Mock(), storage=storage)
+
+    def complete_uncached(**kwargs):
+        coordinator._advance(reserve_attempt_id=f"continued-{loop.call_count}")
+        return ToolLoopResult(
+            ctx=None,
+            trace=ToolLoopTrace(finished=True),
+            finished_reason="structured_output",
+            messages=kwargs["messages"],
+            structured_output=StructuredProfilesOutput(profiles=[]),
+            provenance=provenance,
+        )
+
+    loop = Mock(side_effect=complete_uncached)
+    monkeypatch.setattr(
+        "reflexio.server.services.extraction.resumable_agent.run_tool_loop", loop
+    )
+    gate_client = Mock()
+    reconciliation_client = Mock()
+
+    def reconcile(**kwargs):
+        coordinator._advance(reserve_attempt_id="reconciliation-after-127")
+        return CompletionResult(
+            StructuredProfilesOutput.model_validate(
+                {
+                    "profiles": [
+                        {
+                            "content": "shared lesson",
+                            "time_to_live": "infinity",
+                            "source_span": prepared.chunks[0].spans[0].text,
+                        }
+                    ],
+                }
+            ),
+            provenance,
+        )
+
+    reconciliation_client.generate_chat_response_with_provenance.side_effect = reconcile
+
+    def extract():
+        return extract_overflow_window(
+            coordinator=coordinator,
+            client=reconciliation_client,
+            build_call=build_call,
+            execute_call=lambda call: agent.start(
+                run=parent, messages=call.messages, output_schema=call.schema
+            ),
+            final_validator=None,
+        )
+
+    if reconcile_fault:
+        original_update = storage.update_agent_run_status
+
+        def fault_after_parent_write(*args, **kwargs):
+            original_update(*args, **kwargs)
+            raise RuntimeError("Injected parent completion failure")
+
+        monkeypatch.setattr(
+            storage, "update_agent_run_status", fault_after_parent_write
+        )
+        with (
+            coordinator.provider_scope(),
+            pytest.raises(RuntimeError, match="parent completion failure"),
+        ):
+            extract()
+        monkeypatch.setattr(storage, "update_agent_run_status", original_update)
+        parent = storage.get_agent_run(parent.id)
+        assert parent.committed_output is None
+        assert len(parent.generation_request_snapshot["overflow"]["attempts"]) == 128
+        coordinator = OverflowCoordinator(
+            storage,
+            window,
+            token,
+            parent.generation_request_snapshot["overflow"],
+            source_digest=prepared.source_digest,
+            context_limits={},
+            prepared=prepared,
+        )
+    with coordinator.provider_scope():
+        if cached_gate:
+            assert judge_extraction_chunks(
+                coordinator=coordinator,
+                prepared=prepared,
+                record=coordinator.record,
+                client=gate_client,
+                model="fixture",
+                build_prompt=lambda: _prepared_presentation_text(),
+                minimum_after_positive=51,
+            )
+        result = extract()
+    assert result.output == StructuredProfilesOutput.model_validate(
+        {
+            "profiles": [
+                {
+                    "content": "shared lesson",
+                    "time_to_live": "infinity",
+                    "source_span": prepared.chunks[0].spans[0].text,
+                }
+            ]
+            if reconcile_fault
+            else [],
+        }
+    )
+    assert (
+        reconciliation_client.generate_chat_response_with_provenance.call_count
+        == int(reconcile_fault)
+    )
+    assert loop.call_count == 48 - cached_children
+    gate_client.generate_chat_response_with_provenance.assert_not_called()
+    journal = storage.get_agent_run(parent.id).generation_request_snapshot["overflow"]
+    assert len(journal["attempts"]) == reserved + 48 - cached_children + int(
+        reconcile_fault
+    )
+    assert len(journal["checkpoint"]["source_coverage"]) == 48
+    assert coordinator.unfinished_extraction_chunks(prepared) == 0
+    assert storage.count_all_profiles() == 0
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "content",
+        "source_span",
+        "source_ids",
+        "notes",
+        "status",
+        "user",
+        "version",
+        "retire",
+        "delete",
+    ],
+)
+def test_historical_playbook_fence_keeps_full_evidence_and_rejects_stale_rows(
+    pipeline, change
+):
+    import json
+    from datetime import UTC, datetime
+
+    from reflexio.models.api_schema.service_schemas import UserPlaybook
+    from reflexio.server.llm.input_budget import InputBudgetConfigurationError
+    from reflexio.server.services.extraction.overflow_coordinator import (
+        OverflowCoordinator,
+    )
+
+    storage, window, token = _overflow_coordinator(pipeline)
+    parent = storage.get_agent_run(f"window:{window.window_id}")
+    coordinator = OverflowCoordinator(
+        storage,
+        window,
+        token,
+        parent.generation_request_snapshot["overflow"],
+        source_digest="captured-source",
+        context_limits={},
+    )
+    now = datetime.now(UTC)
+    span = (
+        "Stored historical tool evidence " * 4000
+        + "Prepare only; separate approval is needed to deploy."
+    )
+    source_ids = [window.manifest[0]["interaction_id"]]
+    with storage.commit_scope(), storage._stream_sql() as db:
+        playbook_id = db.query(
+            "INSERT INTO user_playbooks (user_id,playbook_name,created_at,request_id,agent_version,content,trigger,rationale,source,source_interaction_ids,source_span,notes,reader_angle,tags,expanded_terms) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING user_playbook_id",
+            (
+                window.user_id,
+                "deployment",
+                now.isoformat(),
+                "overflow-checkpoint",
+                "v1",
+                "Prepare only",
+                "when planning",
+                "Require explicit approval",
+                "test",
+                json.dumps(source_ids),
+                span,
+                "Original note",
+                "instruction",
+                '["control"]',
+                "planning approval",
+            ),
+        )[0]["user_playbook_id"]
+    historical = UserPlaybook(
+        user_playbook_id=playbook_id,
+        user_id=window.user_id,
+        playbook_name="deployment",
+        created_at=int(now.timestamp()),
+        request_id="overflow-checkpoint",
+        agent_version="v1",
+        content="Prepare only",
+        trigger="when planning",
+        rationale="Require explicit approval",
+        source="test",
+        source_interaction_ids=source_ids,
+        source_span=span,
+        notes="Original note",
+        reader_angle="instruction",
+        tags=["control"],
+        expanded_terms="planning approval",
+    )
+    coordinator.remember_historical_playbooks([historical])
+    witnesses = coordinator.checkpoint["historical_playbooks"]
+    assert len(witnesses[str(playbook_id)]) == 64
+    assert len(json.dumps(coordinator.checkpoint)) < 2048
+    assert historical.source_span == span
+    with storage.commit_scope():
+        storage.validate_extraction_historical_playbooks(window, witnesses)
+    mutations = {
+        "content": (
+            "UPDATE user_playbooks SET content=? WHERE user_playbook_id=?",
+            ("Deploy now", playbook_id),
+        ),
+        "source_span": (
+            "UPDATE user_playbooks SET source_span=? WHERE user_playbook_id=?",
+            (span + " Changed final condition", playbook_id),
+        ),
+        "source_ids": (
+            "UPDATE user_playbooks SET source_interaction_ids=? WHERE user_playbook_id=?",
+            ("[]", playbook_id),
+        ),
+        "notes": (
+            "UPDATE user_playbooks SET notes=? WHERE user_playbook_id=?",
+            ("Changed control note", playbook_id),
+        ),
+        "status": (
+            "UPDATE user_playbooks SET status=? WHERE user_playbook_id=?",
+            ("archived", playbook_id),
+        ),
+        "user": (
+            "UPDATE user_playbooks SET user_id=? WHERE user_playbook_id=?",
+            ("another-user", playbook_id),
+        ),
+        "version": (
+            "UPDATE user_playbooks SET agent_version=? WHERE user_playbook_id=?",
+            ("v2", playbook_id),
+        ),
+        "retire": (
+            "UPDATE user_playbooks SET retired_at=? WHERE user_playbook_id=?",
+            (int(now.timestamp()), playbook_id),
+        ),
+        "delete": (
+            "DELETE FROM user_playbooks WHERE user_playbook_id=?",
+            (playbook_id,),
+        ),
+    }
+    with storage.commit_scope(), storage._stream_sql() as db:
+        db.query(*mutations[change])
+    with (
+        storage.commit_scope(),
+        pytest.raises(
+            InputBudgetConfigurationError, match="Historical playbook changed"
+        ),
+    ):
+        storage.validate_extraction_historical_playbooks(window, witnesses)
+    assert coordinator.checkpoint["historical_playbooks"] == witnesses
+    assert historical.source_span == span
+    assert storage.count_all_profiles() == 0
+    assert storage.pending_extraction_effects() == []
+
+
+@pytest.mark.parametrize("verdict", ["verified", "unsafe", "undetermined"])
+def test_historical_consolidation_scans_complete_source_and_replays_without_calls(
+    pipeline, monkeypatch, verdict
+):
+    import json
+
+    from reflexio.models.api_schema.service_schemas import UserPlaybook
+    from reflexio.models.config_schema import DeduplicationConfig
+    from reflexio.server.llm._litellm_types import CompletionResult, ModelProvenance
+    from reflexio.server.llm.input_budget import InputBudgetConfigurationError
+    from reflexio.server.llm.token_accounting import RunTokenTotals
+    from reflexio.server.services.durable_learning.window_executor import (
+        load_window_inputs,
+    )
+    from reflexio.server.services.extraction.input_preparation import (
+        prepare_extraction_input,
+    )
+    from reflexio.server.services.extraction.overflow_coordinator import (
+        OverflowCoordinator,
+    )
+    from reflexio.server.services.extraction.protected_record import (
+        ProtectedEvidence,
+        ProtectedRecord,
+        ProtectedRecordUpdate,
+    )
+    from reflexio.server.services.playbook.components.consolidator import (
+        PlaybookConsolidationOutput,
+        PlaybookConsolidator,
+        UnifyDecision,
+    )
+    from reflexio.server.services.playbook.components.overflow_consolidation import (
+        ConsolidationVerification,
+        HistoricalQuote,
+        HistoricalScan,
+        verified_consolidation_decisions,
+    )
+
+    storage, window, token = _overflow_coordinator(pipeline, actual_source=True)
+    prepared = prepare_extraction_input(
+        load_window_inputs(storage, window), user_id=window.user_id
+    )
+    span = prepared.chunks[0].spans[0]
+    record = ProtectedRecord().merge(
+        ProtectedRecordUpdate(
+            evidence=[
+                ProtectedEvidence(
+                    kind="instruction",
+                    evidence_refs=(span.evidence_ref,),
+                    quote=span.text,
+                    role=span.role,
+                    source_order=span.source_order,
+                )
+            ]
+        ),
+        visible_spans=(span,),
+    )
+    old_text = (
+        "tool result with no new policy. " * 12000
+        + "Deployment needs separate approval."
+    )
+    old = UserPlaybook(
+        user_playbook_id=51,
+        user_id=window.user_id,
+        agent_version="v1",
+        request_id="older",
+        content="Prepare only. Deployment needs separate approval.",
+        trigger="after preparation",
+        rationale="Preserve approval scope",
+        source_span=old_text,
+        source_interaction_ids=[9001],
+        notes="Original note",
+    )
+    new = old.model_copy(
+        update={
+            "user_playbook_id": 0,
+            "request_id": "current",
+            "source_interaction_ids": [span.interaction_id],
+            "source_span": span.text,
+        }
+    )
+    output = PlaybookConsolidationOutput(
+        decisions=[
+            UnifyDecision(
+                new_id="NEW-0",
+                archive_existing_ids=[0],
+                content=old.content,
+                trigger=old.trigger or "",
+                rationale=old.rationale or "",
+            )
+        ]
+    )
+    owner = PlaybookConsolidator.__new__(PlaybookConsolidator)
+    owner.model_name = "gpt-4o"
+    owner.model_provenance = None
+    owner._dedup_config = DeduplicationConfig()
+    owner.consolidated_output_indices = set()
+    owner.request_context = pipeline[0].request_context
+    calls = []
+    primary_ranges = []
+    active = None
+    provenance = ModelProvenance(model_name="gpt-4o", provider="openai")
+
+    def dispatch(**kwargs):
+        assert active is not None
+        calls.append(kwargs["response_format"])
+        active._guard(
+            {
+                "model": "gpt-4o",
+                "messages": kwargs["messages"],
+                "max_tokens": 4096,
+                "response_format": kwargs["response_format"],
+            },
+            1,
+            (),
+            True,
+        )
+        active._observe(
+            provenance, RunTokenTotals(prompt_tokens=100, completion_tokens=10)
+        )
+        payload_data = json.loads(kwargs["messages"][-1]["content"])
+        if kwargs["response_format"] is HistoricalScan:
+            chunk = payload_data["chunk"]
+            primary_ranges.append((chunk["primary_start"], chunk["primary_end"]))
+            assert chunk["text"] == old_text[chunk["start"] : chunk["end"]]
+            assert payload_data["author_role"] == "unknown"
+            quotes = []
+            quote = "Deployment needs separate approval."
+            if quote in chunk["text"]:
+                start = old_text.index(quote)
+                quotes.append(
+                    HistoricalQuote(start=start, end=start + len(quote), text=quote)
+                )
+            result = HistoricalScan(coverage="complete", quotes=quotes)
+            assert kwargs["structured_output_validator"](result) == []
+        else:
+            assert kwargs["response_format"] is ConsolidationVerification
+            assert (
+                payload_data["historical_evidence"][0]["quotes"][-1]["text"]
+                == "Deployment needs separate approval."
+            )
+            assert old_text not in kwargs["messages"][-1]["content"]
+            result = ConsolidationVerification(
+                verdict=verdict, reason="fixture verdict"
+            )
+        return CompletionResult(value=result, provenance=provenance)
+
+    owner.client = Mock(
+        generate_chat_response_with_provenance=Mock(side_effect=dispatch)
+    )
+    monkeypatch.setattr(
+        owner, "_render_consolidation_prompt", lambda *_: "metadata-only proposal"
+    )
+
+    def propose(*_):
+        assert active is not None
+        active._guard(
+            {
+                "model": "gpt-4o",
+                "messages": [{"role": "user", "content": "metadata-only proposal"}],
+                "max_tokens": 4096,
+            },
+            1,
+            (),
+            True,
+        )
+        active._observe(
+            provenance, RunTokenTotals(prompt_tokens=100, completion_tokens=10)
+        )
+        owner.model_provenance = provenance
+        calls.append("proposal")
+        return output
+
+    monkeypatch.setattr(owner, "_consolidation_decisions", propose)
+
+    def replay():
+        nonlocal active
+        parent = storage.get_agent_run(f"window:{window.window_id}")
+        active = OverflowCoordinator(
+            storage,
+            window,
+            token,
+            parent.generation_request_snapshot["overflow"],
+            source_digest=prepared.source_digest,
+            context_limits={"gpt-4o": 65536},
+            prepared=prepared,
+        )
+        active.candidate_records[active.playbook_key(new)] = record
+        active.remember_historical_playbooks([old])
+        with active.provider_scope():
+            return verified_consolidation_decisions(owner, active, [new], [old])
+
+    if verdict == "verified":
+        assert replay() == output
+    else:
+        with pytest.raises(
+            InputBudgetConfigurationError, match="unsafe or undetermined"
+        ):
+            replay()
+    assert len(primary_ranges) > 1
+    assert primary_ranges[0][0] == 0 and primary_ranges[-1][1] == len(old_text)
+    assert all(
+        a[1] == b[0] for a, b in zip(primary_ranges, primary_ranges[1:], strict=False)
+    )
+    first_calls = len(calls)
+    assert active is not None
+    first_usage = active.token_totals.prompt_tokens
+    # Fully completed history and verification remain reusable even when all
+    # provider capacity has since been reserved. No speculative call is needed.
+    current = storage.get_agent_run(
+        f"window:{window.window_id}"
+    ).generation_request_snapshot["overflow"]
+    for index in range(len(current["attempts"]), 128):
+        current = storage.checkpoint_extraction_overflow(
+            window,
+            token,
+            expected_revision=current["revision"],
+            source_digest=prepared.source_digest,
+            reserve_attempt_id=f"reserved-{index}",
+        )
+    if verdict == "verified":
+        assert replay() == output
+        rows, archived, groups = owner._build_deduplicated_results(
+            new_playbooks=[new],
+            existing_playbooks=[old],
+            dedup_output=output,
+            generation_request_id="current",
+            agent_version="v1",
+        )
+        assert archived == [51] and groups == [(0, [51])]
+        assert rows[0].source_span is not None
+        assert old_text in rows[0].source_span
+        assert 9001 in rows[0].source_interaction_ids
+    else:
+        with pytest.raises(InputBudgetConfigurationError):
+            replay()
+    assert len(calls) == first_calls
+    assert active is not None
+    assert active.token_totals.prompt_tokens == first_usage
+    assert len(active.checkpoint["historical_chunks"]) == 1
+    assert old.source_span == old_text and old.notes == "Original note"
+    assert storage.count_all_profiles() == 0
+    assert storage.pending_extraction_effects() == []
+
+
+@pytest.mark.parametrize("observed", [False, True])
+def test_saved_legacy_usage_is_fenced_and_added_once_without_fake_old_attempts(
+    pipeline, observed
+):
+    import json
+    from dataclasses import asdict
+
+    from reflexio.server.services.extraction.overflow_coordinator import (
+        OverflowCoordinator,
+        legacy_observed_usage,
+    )
+    from reflexio.server.services.storage.storage_base._extraction_stream import (
+        OverflowCheckpointConflictError,
+    )
+
+    storage, window, token = _overflow_coordinator(
+        pipeline, actual_source=True, legacy=True
+    )
+    parent = storage.get_agent_run(f"window:{window.window_id}")
+    payload_data = dict(parent.committed_output)
+    payload_data["trace"] = {
+        "finished": True,
+        "turns": [
+            {
+                "tool_name": "structured_output",
+                "args": {},
+                "result": {},
+                "latency_ms": 1,
+                "prompt_tokens": 100 if observed else None,
+                "completion_tokens": 20 if observed else None,
+            }
+        ],
+    }
+    with storage._stream_sql() as db:
+        db.query(
+            "UPDATE _agent_runs SET committed_output=? WHERE id=?",
+            (json.dumps(payload_data), parent.id),
+        )
+    from reflexio.server.services.durable_learning.window_executor import (
+        load_window_inputs,
+    )
+    from reflexio.server.services.extraction.input_preparation import (
+        prepare_extraction_input,
+    )
+
+    prepared = prepare_extraction_input(
+        load_window_inputs(storage, window), user_id=window.user_id
+    )
+    manifest = OverflowCoordinator.initial_manifest(prepared.source_digest)
+    witness = legacy_observed_usage(payload_data)
+    if witness is not None:
+        manifest["legacy_observed_usage"] = witness
+    incorrect = dict(
+        manifest,
+        legacy_observed_usage={
+            "prompt_tokens": 999,
+            "completion_tokens": 20,
+            "cache_read_input_tokens": 0,
+            "cache_write_input_tokens": 0,
+        },
+    )
+    with (
+        storage.commit_scope(),
+        pytest.raises(OverflowCheckpointConflictError, match="usage changed"),
+    ):
+        storage.adopt_extraction_overflow(
+            window,
+            token,
+            source_digest=prepared.source_digest,
+            source_digests=parent.generation_request_snapshot[
+                "source_interaction_digests"
+            ],
+            manifest=incorrect,
+        )
+    with storage.commit_scope():
+        adopted = storage.adopt_extraction_overflow(
+            window,
+            token,
+            source_digest=prepared.source_digest,
+            source_digests=parent.generation_request_snapshot[
+                "source_interaction_digests"
+            ],
+            manifest=manifest,
+        )
+    assert adopted["attempts"] == []
+    coordinator = OverflowCoordinator(
+        storage,
+        window,
+        token,
+        adopted,
+        source_digest=prepared.source_digest,
+        context_limits={},
+    )
+    assert coordinator.token_totals.prompt_tokens == (100 if observed else 0)
+    coordinator._advance(reserve_attempt_id="new-observation")
+    coordinator._advance(
+        observed_attempt={
+            "id": "new-observation",
+            "usage": {
+                "prompt_tokens": 7,
+                "completion_tokens": 3,
+                "cache_read_input_tokens": 0,
+                "cache_write_input_tokens": 0,
+            },
+            "model_provenance": {"model_name": "test"},
+        }
+    )
+    saved = storage.get_agent_run(parent.id).generation_request_snapshot["overflow"]
+    resumed = OverflowCoordinator(
+        storage,
+        window,
+        token,
+        saved,
+        source_digest=prepared.source_digest,
+        context_limits={},
+    )
+    assert len(saved["attempts"]) == 1
+    assert asdict(resumed.token_totals) == asdict(coordinator.token_totals)
+    assert resumed.token_totals.prompt_tokens == (107 if observed else 7)
+    assert resumed.token_totals.completion_tokens == (23 if observed else 3)
+
+
+@pytest.mark.parametrize("changed_policy", [False, True])
+def test_cached_overflow_output_preserves_child_models_and_prompt_contract(
+    pipeline, changed_policy
+):
+    from dataclasses import asdict, replace
+
+    from reflexio.server.llm._litellm_types import ModelProvenance
+    from reflexio.server.llm.input_budget import InputBudgetConfigurationError
+    from reflexio.server.services.durable_learning.window_executor import (
+        load_window_inputs,
+    )
+    from reflexio.server.services.extraction.input_preparation import (
+        PreparedChunk,
+        PreparedExtractionInput,
+        prepare_extraction_input,
+    )
+    from reflexio.server.services.extraction.overflow_coordinator import (
+        OverflowCoordinator,
+    )
+    from reflexio.server.services.extraction.overflow_pipeline import (
+        OverflowExtractionCall,
+        extract_overflow_window,
+    )
+    from reflexio.server.services.extraction.overflow_presentation import (
+        current_overflow_presentation,
+        present_extraction_chunk,
+    )
+    from reflexio.server.services.extraction.resumable_agent import (
+        encode_committed_output,
+    )
+    from reflexio.server.services.profile.components.extractor import (
+        _profile_evidence_validation_errors,
+    )
+    from reflexio.server.services.profile.profile_generation_service_utils import (
+        StructuredProfilesOutput,
+    )
+
+    storage, window, token = _overflow_coordinator(pipeline, actual_source=True)
+    original = prepare_extraction_input(
+        load_window_inputs(storage, window), user_id=window.user_id
+    )
+    spans = tuple(span for chunk in original.chunks for span in chunk.spans)
+    midpoint = len(spans) // 2
+    prepared = PreparedExtractionInput(
+        original.source_digest,
+        (
+            PreparedChunk(0, spans[:midpoint]),
+            PreparedChunk(1, spans[midpoint:]),
+        ),
+    )
+    run = storage.get_agent_run(f"window:{window.window_id}")
+    coordinator = OverflowCoordinator(
+        storage,
+        window,
+        token,
+        run.generation_request_snapshot["overflow"],
+        source_digest=prepared.source_digest,
+        context_limits={},
+        prepared=prepared,
+    )
+    output = StructuredProfilesOutput.model_validate(
+        {
+            "profiles": [
+                {
+                    "content": "first supported lesson",
+                    "time_to_live": "infinity",
+                    "source_span": spans[0].text,
+                },
+                {
+                    "content": "second supported lesson",
+                    "time_to_live": "infinity",
+                    "source_span": spans[-1].text,
+                },
+            ]
+        }
+    )
+    assert output.profiles is not None
+    child_models = {
+        coordinator.candidate_key(candidate): asdict(ModelProvenance(model, "provider"))
+        for candidate, model in zip(
+            output.profiles, ["child-X", "child-Y"], strict=True
+        )
+    }
+    policy = coordinator.step_key(
+        "extraction-policy-v1",
+        {
+            "messages": [
+                {"role": "system", "content": "original contract"},
+                {"role": "user", "content": "<prepared-source>"},
+            ],
+            "schema": StructuredProfilesOutput.model_json_schema(),
+        },
+    )
+    checkpoint = coordinator.checkpoint
+    checkpoint["extraction_policy"] = policy
+    coordinator.save_checkpoint(checkpoint)
+    coordinator.saved_run = replace(
+        run,
+        generation_request_snapshot={
+            **run.generation_request_snapshot,
+            "output_schema_name": StructuredProfilesOutput.__name__,
+        },
+        committed_output=encode_committed_output(
+            output, ModelProvenance("reconciler-Z", "provider")
+        ),
+    )
+
+    def build_call():
+        presentation = current_overflow_presentation.get()
+        assert presentation is not None
+        return OverflowExtractionCall(
+            messages=[
+                {
+                    "role": "system",
+                    "content": "changed contract"
+                    if changed_policy
+                    else "original contract",
+                },
+                {"role": "user", "content": presentation.text},
+            ],
+            schema=StructuredProfilesOutput,
+            validator=lambda value: _profile_evidence_validation_errors(
+                value, presentation.visible_spans
+            ),
+        )
+
+    for chunk, candidate, model in zip(
+        prepared.chunks, output.profiles, ["child-X", "child-Y"], strict=True
+    ):
+        with present_extraction_chunk(prepared, chunk, coordinator.record):
+            call = build_call()
+        # Freeze the original call contract even in the changed-policy case;
+        # the cached final parent must still reject the changed prompt below.
+        original_messages = [
+            {"role": "system", "content": "original contract"},
+            call.messages[1],
+        ]
+        key = coordinator.step_key(
+            "extract-v1",
+            {
+                "messages": original_messages,
+                "schema": StructuredProfilesOutput.model_json_schema(),
+                "tools": [],
+            },
+        )
+        coordinator.register_extraction_child(chunk.text, key)
+        coordinator.complete_step(
+            key,
+            {
+                "output": StructuredProfilesOutput(profiles=[candidate]).model_dump(
+                    mode="json"
+                ),
+                "trace": {"turns": [], "finished": True},
+            },
+            ModelProvenance(model, "provider"),
+        )
+
+    checkpoint = coordinator.checkpoint
+    checkpoint.update(
+        candidate_models=child_models,
+        source_coverage=[coordinator.candidate_key(c.text) for c in prepared.chunks],
+        stage="extracted",
+    )
+    coordinator.save_checkpoint(checkpoint)
+
+    execute = Mock(side_effect=AssertionError("Saved output must not dispatch models"))
+    if changed_policy:
+        with pytest.raises(InputBudgetConfigurationError, match="policy changed"):
+            extract_overflow_window(
+                coordinator=coordinator,
+                client=Mock(),
+                build_call=build_call,
+                execute_call=execute,
+                final_validator=None,
+            )
+        assert coordinator.checkpoint["stage"] == "extracted"
+    else:
+        result = extract_overflow_window(
+            coordinator=coordinator,
+            client=Mock(),
+            build_call=build_call,
+            execute_call=execute,
+            final_validator=None,
+        )
+        assert result.output == output
+        assert coordinator.checkpoint["stage"] == "recovered"
+        assert coordinator.carried_source_spans is not None
+        assert {
+            (span.interaction_id, span.text)
+            for span in coordinator.carried_source_spans
+        } == {
+            (spans[0].interaction_id, spans[0].text),
+            (spans[-1].interaction_id, spans[-1].text),
+        }
+    assert coordinator.checkpoint["candidate_models"] == child_models
+    execute.assert_not_called()
+
+
+def test_saved_output_adoption_requires_original_witnesses_and_retains_output(pipeline):
+    from reflexio.server.services.durable_learning.window_executor import (
+        load_window_inputs,
+    )
+    from reflexio.server.services.extraction.input_preparation import (
+        prepare_extraction_input,
+    )
+    from reflexio.server.services.extraction.overflow_coordinator import (
+        OverflowCoordinator,
+    )
+    from reflexio.server.services.storage.storage_base._extraction_stream import (
+        OverflowCheckpointConflictError,
+    )
+
+    storage, window, token = _overflow_coordinator(
+        pipeline, actual_source=True, legacy=True
+    )
+    run = storage.get_agent_run(f"window:{window.window_id}")
+    original = run.generation_request_snapshot["source_interaction_digests"]
+    prepared = prepare_extraction_input(
+        load_window_inputs(storage, window), user_id=window.user_id
+    )
+    manifest = OverflowCoordinator.initial_manifest(prepared.source_digest)
+    for invalid in ({}, dict.fromkeys(original, "changed")):
+        with storage.commit_scope(), pytest.raises(OverflowCheckpointConflictError):
+            storage.validate_extraction_source_digest(window, prepared.source_digest)
+            storage.adopt_extraction_overflow(
+                window,
+                token,
+                source_digest=prepared.source_digest,
+                source_digests=invalid,
+                manifest=manifest,
+            )
+        assert (
+            "overflow" not in storage.get_agent_run(run.id).generation_request_snapshot
+        )
+    with storage.commit_scope():
+        storage.validate_extraction_source_digest(window, prepared.source_digest)
+        adopted = storage.adopt_extraction_overflow(
+            window,
+            token,
+            source_digest=prepared.source_digest,
+            source_digests=original,
+            manifest=manifest,
+        )
+    saved = storage.get_agent_run(run.id)
+    assert adopted["attempts"] == []
+    assert saved.committed_output == run.committed_output
+    assert saved.generation_request_snapshot["source_interaction_digests"] == original
+    assert (
+        storage.extraction_status(window.user_id, "overflow-checkpoint")["status"]
+        != "done"
+    )
+    assert storage.count_all_profiles() == 0
+
+
+def test_overflow_publication_requires_complete_coverage_even_for_cached_plans(
+    pipeline,
+):
+    from reflexio.server.llm._litellm_types import ProviderRequestGuardError
+    from reflexio.server.services.durable_learning.window_executor import (
+        load_window_inputs,
+    )
+    from reflexio.server.services.extraction.input_preparation import (
+        prepare_extraction_input,
+    )
+    from reflexio.server.services.extraction.overflow_coordinator import (
+        OverflowCoordinator,
+    )
+
+    storage, window, token = _overflow_coordinator(pipeline, actual_source=True)
+    prepared = prepare_extraction_input(
+        load_window_inputs(storage, window), user_id=window.user_id
+    )
+    coordinator = OverflowCoordinator(
+        storage,
+        window,
+        token,
+        storage.get_agent_run(f"window:{window.window_id}").generation_request_snapshot[
+            "overflow"
+        ],
+        source_digest=prepared.source_digest,
+        context_limits={},
+        prepared=prepared,
+    )
+    with pytest.raises(ProviderRequestGuardError, match="full source coverage"):
+        coordinator.require_full_source_coverage()
+    checkpoint = coordinator.checkpoint
+    checkpoint["stage"] = "extracted"
+    checkpoint["source_coverage"] = ["another-source"]
+    coordinator.save_checkpoint(checkpoint)
+    with pytest.raises(ProviderRequestGuardError, match="full source coverage"):
+        coordinator.require_full_source_coverage()
+    checkpoint["source_coverage"] = [
+        coordinator.candidate_key(chunk.text) for chunk in prepared.chunks
+    ]
+    coordinator.save_checkpoint(checkpoint)
+    coordinator.require_full_source_coverage()
+    assert storage.count_all_profiles() == 0
+    assert (
+        storage.extraction_status(window.user_id, "overflow-checkpoint")["status"]
+        != "done"
+    )
+
+
+def test_overflow_checkpoint_quota_is_atomic_and_usage_is_immutable(pipeline):
+    from reflexio.server.services.storage.storage_base._extraction_stream import (
+        OverflowCheckpointConflictError,
+    )
+
+    storage, window, token = _overflow_coordinator(pipeline)
+    manifest = storage.checkpoint_extraction_overflow(
+        window,
+        token,
+        expected_revision=0,
+        source_digest="captured-source",
+        reserve_attempt_id="attempt-1",
+    )
+    assert manifest["attempts"] == [
+        {"id": "attempt-1", "usage": None, "model_provenance": None}
+    ]
+    with pytest.raises(OverflowCheckpointConflictError):
+        storage.checkpoint_extraction_overflow(
+            window,
+            token,
+            expected_revision=0,
+            source_digest="captured-source",
+            reserve_attempt_id="attempt-stale",
+        )
+    usage = {
+        "prompt_tokens": 120,
+        "completion_tokens": 30,
+        "cache_read_input_tokens": 10,
+        "cache_write_input_tokens": 20,
+    }
+    manifest = storage.checkpoint_extraction_overflow(
+        window,
+        token,
+        expected_revision=1,
+        source_digest="captured-source",
+        observed_attempt={
+            "id": "attempt-1",
+            "usage": usage,
+            "model_provenance": {"model": "fixture"},
+        },
+        checkpoint={"stage": "protected-record"},
+    )
+    assert manifest["revision"] == 2 and len(manifest["attempts"]) == 1
+    with pytest.raises(OverflowCheckpointConflictError, match="immutable"):
+        storage.checkpoint_extraction_overflow(
+            window,
+            token,
+            expected_revision=2,
+            source_digest="captured-source",
+            observed_attempt={
+                "id": "attempt-1",
+                "usage": {**usage, "prompt_tokens": 0},
+                "model_provenance": {"model": "fixture"},
+            },
+        )
+    saved = storage.get_agent_run(
+        f"window:{window.window_id}"
+    ).generation_request_snapshot["overflow"]
+    assert saved == manifest
+    checkpoint = {
+        **manifest["checkpoint"],
+        "output_schema_name": "StructuredProfilesOutput",
+    }
+    manifest = storage.checkpoint_extraction_overflow(
+        window,
+        token,
+        expected_revision=2,
+        source_digest="captured-source",
+        checkpoint=checkpoint,
+    )
+    parent = storage.get_agent_run(f"window:{window.window_id}")
+    assert (
+        parent.generation_request_snapshot["output_schema_name"]
+        == "StructuredProfilesOutput"
+    )
+    for invalid in (
+        {**checkpoint, "output_schema_name": "StructuredPlaybookList"},
+        {"stage": "protected-record"},
+    ):
+        with pytest.raises(
+            OverflowCheckpointConflictError, match="schema is immutable"
+        ):
+            storage.checkpoint_extraction_overflow(
+                window,
+                token,
+                expected_revision=3,
+                source_digest="captured-source",
+                checkpoint=invalid,
+            )
+    assert (
+        storage.get_agent_run(f"window:{window.window_id}").generation_request_snapshot[
+            "overflow"
+        ]
+        == manifest
+    )
+    assert storage.count_all_profiles() == 0
+    assert storage.pending_extraction_effects() == []
+    assert storage.extraction_status("u", "overflow-checkpoint")["status"] != "done"
+
+
+def test_overflow_controller_reloads_history_without_refunding_or_double_counting(
+    pipeline, monkeypatch
+):
+    from reflexio.server.llm._litellm_types import ModelProvenance
+    from reflexio.server.llm.input_budget import (
+        extraction_provider_guard,
+        extraction_usage_observer,
+    )
+    from reflexio.server.llm.token_accounting import RunTokenTotals
+    from reflexio.server.services.extraction.overflow_coordinator import (
+        OverflowCoordinator,
+        current_overflow_coordinator,
+    )
+    from reflexio.server.services.storage.storage_base._extraction_stream import (
+        OverflowAttemptBudgetExceededError,
+        OverflowCheckpointConflictError,
+    )
+
+    storage, window, token = _overflow_coordinator(pipeline)
+    monkeypatch.setattr(
+        "reflexio.server.llm.input_budget.litellm.token_counter", lambda **_: 100
+    )
+
+    def reload():
+        return OverflowCoordinator(
+            storage,
+            window,
+            token,
+            storage.get_agent_run(
+                f"window:{window.window_id}"
+            ).generation_request_snapshot["overflow"],
+            source_digest="captured-source",
+            context_limits={"fixture": 32768},
+        )
+
+    params = {
+        "model": "fixture",
+        "max_tokens": 8192,
+        "messages": [{"role": "user", "content": "source"}],
+    }
+    first = reload()
+    provenance = ModelProvenance(model_name="fixture", provider="fixture-provider")
+    key = first.step_key("extract", {"chunk": 0, "record": [], "prompt": "v1"})
+    with first.provider_scope():
+        assert current_overflow_coordinator.get() is first
+        guard, observe = (
+            extraction_provider_guard.get(),
+            extraction_usage_observer.get(),
+        )
+        assert guard is not None and observe is not None
+        # First transport result is uncertain. Its reservation stays consumed.
+        guard(params, 30, (), True)
+        guard(params, 30, (), True)
+        observe(provenance, RunTokenTotals(101, 11, 20, 30))
+        first.complete_step(key, {"candidate": "verified evidence"}, provenance)
+    assert current_overflow_coordinator.get() is None
+    assert extraction_provider_guard.get() is None
+    assert extraction_usage_observer.get() is None
+
+    resumed = reload()
+    assert resumed.token_totals == RunTokenTotals(101, 11, 20, 30)
+    receipt = resumed.completed_step(key)
+    assert receipt is not None
+    assert receipt["output"] == {"candidate": "verified evidence"}
+    assert (
+        resumed.step_key("extract", {"chunk": 0, "record": [], "prompt": "v2"}) != key
+    )
+    resumed.require_remaining_work(126)
+    with pytest.raises(OverflowAttemptBudgetExceededError):
+        resumed.require_remaining_work(127)
+    with resumed.provider_scope():
+        guard, observe = (
+            extraction_provider_guard.get(),
+            extraction_usage_observer.get(),
+        )
+        assert guard is not None and observe is not None
+        guard(params, 30, (), True)
+        observe(provenance, RunTokenTotals(202, 22, 40, 60))
+    assert reload().token_totals == RunTokenTotals(303, 33, 60, 90)
+    with pytest.raises(OverflowCheckpointConflictError):
+        resumed.complete_step(key, {"candidate": "changed"}, provenance)
+    # The SQL transition also rejects a caller bypassing complete_step().
+    with pytest.raises(OverflowCheckpointConflictError):
+        resumed.save_checkpoint({"stage": "reconcile", "completed_steps": {}})
+    assert storage.count_all_profiles() == 0
+    assert storage.extraction_status("u", "overflow-checkpoint")["status"] != "done"
+
+
+@pytest.mark.parametrize("suspend_midway", [False, True])
+def test_overflow_agent_child_stages_output_without_completing_parent(
+    pipeline, monkeypatch, suspend_midway
+):
+    from reflexio.server.llm._litellm_types import ModelProvenance
+    from reflexio.server.llm.input_budget import InputBudgetConfigurationError
+    from reflexio.server.llm.tools import ToolLoopResult, ToolLoopTrace
+    from reflexio.server.services.durable_learning.window_executor import (
+        load_window_inputs,
+    )
+    from reflexio.server.services.extraction.input_preparation import (
+        prepare_extraction_input,
+    )
+    from reflexio.server.services.extraction.overflow_coordinator import (
+        OverflowCoordinator,
+        OverflowSuspendedError,
+    )
+    from reflexio.server.services.extraction.overflow_presentation import (
+        OverflowPresentation,
+        present_extraction_chunk,
+    )
+    from reflexio.server.services.extraction.protected_record import ProtectedRecord
+    from reflexio.server.services.extraction.resumable_agent import (
+        ResumableExtractionAgent,
+    )
+    from reflexio.server.services.profile.profile_generation_service_utils import (
+        StructuredProfilesOutput,
+    )
+
+    storage, window, token = _overflow_coordinator(pipeline, actual_source=True)
+    prepared = prepare_extraction_input(
+        load_window_inputs(storage, window), user_id=window.user_id
+    )
+    run = storage.get_agent_run(f"window:{window.window_id}")
+    coordinator = OverflowCoordinator(
+        storage,
+        window,
+        token,
+        run.generation_request_snapshot["overflow"],
+        source_digest=prepared.source_digest,
+        context_limits={},
+    )
+    completion = ToolLoopResult(
+        ctx=None,
+        trace=ToolLoopTrace(finished=True),
+        finished_reason="structured_output",
+        messages=[],
+        structured_output=StructuredProfilesOutput(profiles=[]),
+        provenance=ModelProvenance(model_name="served-fixture", provider="fixture"),
+    )
+    seed = [
+        {
+            "role": "user",
+            "content": OverflowPresentation(
+                prepared, prepared.chunks[0], ProtectedRecord()
+            ).text,
+        }
+    ]
+    progress_messages = [
+        *seed,
+        {"role": "tool", "content": "saved lookup result", "tool_call_id": "lookup-1"},
+    ]
+    loop = Mock(return_value=completion)
+    if suspend_midway:
+        loop.side_effect = [
+            ToolLoopResult(
+                ctx=None,
+                trace=ToolLoopTrace(),
+                finished_reason="max_steps",
+                messages=progress_messages,
+            ),
+            OverflowSuspendedError("next worker turn"),
+            completion,
+        ]
+    monkeypatch.setattr(
+        "reflexio.server.services.extraction.resumable_agent.run_tool_loop", loop
+    )
+    agent = ResumableExtractionAgent(client=Mock(), storage=storage)
+    if suspend_midway:
+        with (
+            coordinator.provider_scope(),
+            present_extraction_chunk(prepared, prepared.chunks[0], ProtectedRecord()),
+            pytest.raises(OverflowSuspendedError),
+        ):
+            agent.start(run=run, messages=seed, output_schema=StructuredProfilesOutput)
+        parent = storage.get_agent_run(run.id)
+        assert (
+            parent.generation_request_snapshot["overflow"]["checkpoint"][
+                "active_child"
+            ]["max_steps_remaining"]
+            == 7
+        )
+        coordinator = OverflowCoordinator(
+            storage,
+            window,
+            token,
+            parent.generation_request_snapshot["overflow"],
+            source_digest=prepared.source_digest,
+            context_limits={},
+        )
+    with (
+        coordinator.provider_scope(),
+        present_extraction_chunk(prepared, prepared.chunks[0], ProtectedRecord()),
+    ):
+        first = agent.start(
+            run=run,
+            messages=seed,
+            output_schema=StructuredProfilesOutput,
+        )
+        with pytest.raises(
+            InputBudgetConfigurationError, match="omits prepared source"
+        ):
+            agent.start(
+                run=run,
+                messages=[{"role": "user", "content": "criteria without input"}],
+                output_schema=StructuredProfilesOutput,
+            )
+        cached = agent.start(
+            run=run,
+            messages=seed,
+            output_schema=StructuredProfilesOutput,
+        )
+    assert first.output == cached.output
+    assert first.model_provenance == cached.model_provenance
+    assert loop.call_count == (3 if suspend_midway else 1)
+    if suspend_midway:
+        assert loop.call_args.kwargs["messages"] == progress_messages
+    parent = storage.get_agent_run(run.id)
+    assert parent.status.value == "running"
+    assert parent.committed_output is None
+    assert (
+        "active_child"
+        not in parent.generation_request_snapshot["overflow"]["checkpoint"]
+    )
+    assert (
+        len(
+            parent.generation_request_snapshot["overflow"]["checkpoint"][
+                "completed_steps"
+            ]
+        )
+        == 1
+    )
+    assert storage.count_all_profiles() == 0
+    assert storage.extraction_status("u", "overflow-checkpoint")["status"] != "done"
+
+
+def test_invalidating_overflow_scrubs_child_evidence_and_fences_future_checkpoints(
+    pipeline,
+):
+    from reflexio.server.services.storage.storage_base._extraction_stream import (
+        LeaseLostError,
+        WindowInputsDeletedError,
+    )
+
+    storage, window, token = _overflow_coordinator(pipeline)
+    storage.checkpoint_extraction_overflow(
+        window,
+        token,
+        expected_revision=0,
+        source_digest="captured-source",
+        reserve_attempt_id="spent-before-erasure",
+        checkpoint={
+            "stage": "extract",
+            "completed_steps": {"first": {"output": "private original quotation"}},
+        },
+    )
+    storage.invalidate_extraction(window, token)
+    run = storage.get_agent_run(f"window:{window.window_id}")
+    assert run.status.value == "cancelled"
+    assert run.generation_request_snapshot["overflow"]["checkpoint"] == {
+        "stage": "invalidated"
+    }
+    assert len(run.generation_request_snapshot["overflow"]["attempts"]) == 1
+    assert run.service_config_snapshot == {}
+    assert run.committed_output is None
+    with pytest.raises((LeaseLostError, WindowInputsDeletedError)):
+        storage.checkpoint_extraction_overflow(
+            window,
+            token,
+            expected_revision=1,
+            source_digest="captured-source",
+            reserve_attempt_id="late-orphan",
+        )
+    assert storage.count_all_profiles() == 0
+
+
+def test_overflow_controller_yields_before_dispatch_without_consuming_quota(
+    pipeline, monkeypatch
+):
+    from reflexio.server.llm.input_budget import extraction_provider_guard
+    from reflexio.server.services.extraction.overflow_coordinator import (
+        OverflowCoordinator,
+        OverflowSuspendedError,
+    )
+
+    storage, window, token = _overflow_coordinator(pipeline)
+    monkeypatch.setattr(
+        "reflexio.server.llm.input_budget.litellm.token_counter", lambda **_: 100
+    )
+    coordinator = OverflowCoordinator(
+        storage,
+        window,
+        token,
+        storage.get_agent_run(f"window:{window.window_id}").generation_request_snapshot[
+            "overflow"
+        ],
+        source_digest="captured-source",
+        context_limits={"fixture": 32768},
+        turn_seconds=10,
+    )
+    with coordinator.provider_scope():
+        guard = extraction_provider_guard.get()
+        assert guard is not None
+        with pytest.raises(OverflowSuspendedError):
+            guard(
+                {"model": "fixture", "max_tokens": 8192, "messages": []},
+                30,
+                (),
+                True,
+            )
+    saved = storage.get_agent_run(
+        f"window:{window.window_id}"
+    ).generation_request_snapshot["overflow"]
+    assert saved["attempts"] == []
+    assert saved["revision"] == 0
+
+
+def test_overflow_suspension_never_completes_or_bills_partial_work(
+    pipeline, monkeypatch
+):
+    from reflexio.server.services.extraction.overflow_coordinator import (
+        OverflowSuspendedError,
+    )
+    from reflexio.server.services.profile.components.extractor import ProfileExtractor
+
+    engine, worker, client = pipeline
+    assert client.post(
+        "/api/publish_interaction", json=payload("suspend", force=True)
+    ).json()["success"]
+
+    def suspend(*_args, **_kwargs):
+        raise OverflowSuspendedError("continue saved work")
+
+    monkeypatch.setattr(
+        ProfileExtractor, "_generate_raw_updates_from_sessions", suspend
+    )
+    with patch("reflexio.server.metering_events.record_extraction_tokens") as bill:
+        assert worker.drain_org("stream-test", 1, 300) == 0
+        bill.assert_not_called()
+    storage = engine.get_storage()
+    assert storage.count_all_profiles() == 0
+    assert storage.extraction_status("u", "suspend")["status"] == "pending"
+    with storage._stream_sql(read_only=True) as db:
+        cursor = db.query(
+            "SELECT attempts,completed_seq,last_error FROM extraction_cursors WHERE user_id=? AND kind=?",
+            ("u", "profile"),
+        )[0]
+        saved_window = db.query(
+            "SELECT completed,outcome,effects FROM extraction_windows WHERE user_id=? AND kind=?",
+            ("u", "profile"),
+        )[0]
+    assert cursor["attempts"] == 0
+    assert cursor["completed_seq"] == 0
+    assert cursor["last_error"] is None
+    assert not saved_window["completed"]
+    assert saved_window["outcome"] is None
+    assert saved_window["effects"] is None
+
+
+@pytest.mark.parametrize(
+    "votes,expected",
+    [
+        (["false", "false"], False),
+        (["false", "true"], True),
+        (["false", "unknown"], None),
+    ],
+)
+@pytest.mark.parametrize("reserved_before", [0, 125])
+def test_chunk_gate_requires_complete_valid_negative_coverage(
+    pipeline, monkeypatch, votes, expected, reserved_before
+):
+    from types import SimpleNamespace
+
+    from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
+    from reflexio.server.services.extraction.chunk_gate import judge_extraction_chunks
+    from reflexio.server.services.extraction.input_preparation import (
+        PreparedChunk,
+        PreparedExtractionInput,
+        SourceSpan,
+    )
+    from reflexio.server.services.extraction.overflow_coordinator import (
+        OverflowCoordinator,
+    )
+    from reflexio.server.services.extraction.overflow_presentation import (
+        current_overflow_presentation,
+    )
+    from reflexio.server.services.extraction.protected_record import ProtectedRecord
+
+    storage, window, token = _overflow_coordinator(
+        pipeline,
+        attempts=tuple(
+            {"id": f"spent-{index}", "usage": None, "model_provenance": None}
+            for index in range(reserved_before)
+        ),
+    )
+    monkeypatch.setenv("OPENAI_API_KEY", "fixture-key")
+    monkeypatch.setattr(
+        "reflexio.server.llm.input_budget.litellm.token_counter", lambda **_: 100
+    )
+    client = LiteLLMClient(
+        LiteLLMConfig(model="gpt-4o", max_tokens=8192, fallback_models=[])
+    )
+    prepared = PreparedExtractionInput(
+        "captured-source",
+        (
+            PreparedChunk(
+                0, (SourceSpan(1, "r", "user", "content", 0, 13, "No correction", 1),)
+            ),
+            PreparedChunk(
+                1, (SourceSpan(2, "r", "user", "content", 0, 14, "Do not deploy.", 2),)
+            ),
+        ),
+    )
+    dispatch = Mock(
+        side_effect=[
+            SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(
+                            content=vote, tool_calls=None, refusal=None
+                        ),
+                        finish_reason="stop",
+                    )
+                ],
+                usage=None,
+                model="gpt-4o",
+                _hidden_params={"custom_llm_provider": "openai"},
+            )
+            for vote in votes
+        ]
+    )
+
+    def dispatch_with_source(*args, **kwargs):
+        presentation = current_overflow_presentation.get()
+        assert presentation is not None
+        assert presentation.chunk in prepared.chunks
+        return dispatch(*args, **kwargs)
+
+    monkeypatch.setattr(client, "_completion_with_hard_timeout", dispatch_with_source)
+    coordinator = OverflowCoordinator(
+        storage,
+        window,
+        token,
+        storage.get_agent_run(f"window:{window.window_id}").generation_request_snapshot[
+            "overflow"
+        ],
+        source_digest="captured-source",
+        context_limits={"gpt-4o": 32768},
+    )
+
+    def prompt():
+        presentation = current_overflow_presentation.get()
+        assert presentation is not None
+        return presentation.text
+
+    def judge():
+        return judge_extraction_chunks(
+            coordinator=coordinator,
+            prepared=prepared,
+            record=ProtectedRecord(),
+            client=client,
+            model="gpt-4o",
+            build_prompt=prompt,
+            minimum_after_positive=3,
+        )
+
+    if reserved_before:
+        from reflexio.server.services.storage.storage_base._extraction_stream import (
+            OverflowAttemptBudgetExceededError,
+        )
+
+        with pytest.raises(OverflowAttemptBudgetExceededError):
+            judge()
+        assert dispatch.call_count == 0
+        assert not coordinator.checkpoint.get("completed_steps")
+        assert storage.count_all_profiles() == 0
+        return
+    if expected is None:
+        with pytest.raises(ValueError, match="valid boolean"):
+            judge()
+        assert len(coordinator.checkpoint["completed_steps"]) == 1
+    else:
+        assert judge() is expected
+        assert judge() is expected
+    assert dispatch.call_count == 2
+    assert storage.count_all_profiles() == 0
+    assert storage.extraction_status("u", "overflow-checkpoint")["status"] != "done"
+
+
+def test_protected_pass_keeps_scoped_approval_and_adverse_outcomes_on_replay(
+    pipeline, monkeypatch
+):
+    import json
+    from types import SimpleNamespace
+
+    from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
+    from reflexio.server.services.extraction.input_preparation import (
+        PreparedChunk,
+        PreparedExtractionInput,
+        SourceSpan,
+    )
+    from reflexio.server.services.extraction.overflow_coordinator import (
+        OverflowCoordinator,
+    )
+    from reflexio.server.services.extraction.protected_pass import (
+        build_protected_record,
+    )
+
+    storage, window, token = _overflow_coordinator(pipeline)
+    monkeypatch.setenv("OPENAI_API_KEY", "fixture-key")
+    monkeypatch.setattr(
+        "reflexio.server.llm._litellm_text_generation.resolve_model_name",
+        lambda **_: "gpt-4o",
+    )
+    monkeypatch.setattr(
+        "reflexio.server.llm.input_budget.litellm.token_counter", lambda **_: 100
+    )
+    spans = (
+        SourceSpan(
+            1,
+            "original-request",
+            "user",
+            "content",
+            0,
+            len("Approve implementing the plan; do not deploy yet."),
+            "Approve implementing the plan; do not deploy yet.",
+            0,
+        ),
+        SourceSpan(
+            2,
+            "original-request",
+            "assistant",
+            "content",
+            0,
+            len(
+                "Preparation is complete. Deployment still fails with permission denied."
+            ),
+            "Preparation is complete. Deployment still fails with permission denied.",
+            1,
+        ),
+    )
+    prepared = PreparedExtractionInput(
+        "captured-source",
+        tuple(PreparedChunk(i, (span,)) for i, span in enumerate(spans)),
+    )
+    client = LiteLLMClient(
+        LiteLLMConfig(model="gpt-4o", max_tokens=8192, fallback_models=[])
+    )
+    responses = []
+    for index, span in enumerate(spans):
+        responses.append(
+            SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(
+                            content=json.dumps(
+                                {
+                                    "evidence": [
+                                        {
+                                            "kind": "instruction"
+                                            if index == 0
+                                            else "uncertainty",
+                                            "evidence_refs": [span.evidence_ref],
+                                            "quote": span.text,
+                                            "source_order": 99,
+                                            "role": "user",
+                                        }
+                                    ]
+                                }
+                            ),
+                            tool_calls=None,
+                            refusal=None,
+                        ),
+                        finish_reason="stop",
+                    )
+                ],
+                usage=SimpleNamespace(
+                    prompt_tokens=100 + index,
+                    completion_tokens=10,
+                    total_tokens=110 + index,
+                    cache_read_input_tokens=0,
+                    cache_creation_input_tokens=0,
+                ),
+                model="gpt-4o",
+                _hidden_params={"custom_llm_provider": "openai"},
+            )
+        )
+    dispatch = Mock(side_effect=responses)
+    monkeypatch.setattr(client, "_completion_with_hard_timeout", dispatch)
+
+    def coordinator():
+        return OverflowCoordinator(
+            storage,
+            window,
+            token,
+            storage.get_agent_run(
+                f"window:{window.window_id}"
+            ).generation_request_snapshot["overflow"],
+            source_digest="captured-source",
+            context_limits={"gpt-4o": 32768},
+        )
+
+    first = coordinator()
+    record = build_protected_record(
+        coordinator=first,
+        prepared=prepared,
+        client=client,
+        extraction_criteria="Preserve scope of approvals and observed failures.",
+        agent_context="Deployment assistant",
+        minimum_following_attempts=3,
+    )
+    assert dispatch.call_count == 2
+    assert [entry.quote for entry in record.evidence] == [span.text for span in spans]
+    assert [entry.role for entry in record.evidence] == ["user", "assistant"]
+    assert [entry.source_order for entry in record.evidence] == [0, 1]
+    assert first.token_totals.prompt_tokens == 201
+    resumed = coordinator()
+    assert (
+        build_protected_record(
+            coordinator=resumed,
+            prepared=prepared,
+            client=client,
+            extraction_criteria="Preserve scope of approvals and observed failures.",
+            agent_context="Deployment assistant",
+            minimum_following_attempts=3,
+        )
+        == record
+    )
+    assert dispatch.call_count == 2
+    assert resumed.token_totals == first.token_totals
+    assert storage.count_all_profiles() == 0
+
+
+def test_overflow_checkpoint_cannot_refund_quota_or_write_after_lease_loss(pipeline):
+    from reflexio.server.services.storage.storage_base._extraction_stream import (
+        LeaseLostError,
+        OverflowAttemptBudgetExceededError,
+        OverflowCheckpointConflictError,
+    )
+
+    attempts = tuple(
+        {"id": f"attempt-{index}", "usage": None, "model_provenance": None}
+        for index in range(128)
+    )
+    storage, window, token = _overflow_coordinator(pipeline, attempts=attempts)
+    with pytest.raises(OverflowAttemptBudgetExceededError):
+        storage.checkpoint_extraction_overflow(
+            window,
+            token,
+            expected_revision=0,
+            source_digest="captured-source",
+            reserve_attempt_id="attempt-129",
+        )
+    with pytest.raises(LeaseLostError):
+        storage.checkpoint_extraction_overflow(
+            window,
+            "superseded",
+            expected_revision=0,
+            source_digest="captured-source",
+            checkpoint={"stage": "complete"},
+        )
+    with pytest.raises(OverflowCheckpointConflictError):
+        storage.checkpoint_extraction_overflow(
+            window,
+            token,
+            expected_revision=0,
+            source_digest="replaced-source",
+            checkpoint={"stage": "complete"},
+        )
+    saved = storage.get_agent_run(
+        f"window:{window.window_id}"
+    ).generation_request_snapshot["overflow"]
+    assert len(saved["attempts"]) == 128 and saved["revision"] == 0
+    assert saved["checkpoint"]["stage"] == "prepare"
+
+
+@pytest.mark.parametrize("replacement", ["interaction", "request"])
+def test_overflow_source_witness_rejects_replacement_with_unchanged_sequence(
+    pipeline, replacement
+):
+    from reflexio.server.services.durable_learning.window_executor import (
+        load_window_inputs,
+    )
+    from reflexio.server.services.extraction.input_preparation import (
+        prepare_extraction_input,
+    )
+    from reflexio.server.services.storage.storage_base._extraction_stream import (
+        WindowInputsDeletedError,
+    )
+
+    storage, window, _ = _overflow_coordinator(pipeline)
+    prepared = prepare_extraction_input(
+        load_window_inputs(storage, window), user_id=window.user_id
+    )
+    with storage.commit_scope():
+        storage.validate_extraction_source_digest(window, prepared.source_digest)
+    with storage._stream_sql() as db:
+        if replacement == "interaction":
+            db.query(
+                "UPDATE interactions SET content=? WHERE interaction_id=?",
+                ("Replacement correction", window.manifest[0]["interaction_id"]),
+            )
+        else:
+            db.query(
+                "UPDATE requests SET source=? WHERE request_id=?",
+                ("replacement-source", "overflow-checkpoint"),
+            )
+    with storage.commit_scope():
+        # The old identity-only check passes; the source-content witness must
+        # detect the change before a cached result could publish.
+        storage.validate_extraction_inputs(window)
+        with pytest.raises(WindowInputsDeletedError, match="content was replaced"):
+            storage.validate_extraction_source_digest(window, prepared.source_digest)
+    assert storage.count_all_profiles() == 0
 
 
 @pytest.fixture
@@ -184,8 +2621,496 @@ def test_real_extractor_persist_and_outcome_replay(pipeline):
     assert storage.count_all_profiles() == before
 
 
+@pytest.mark.parametrize("gate_negative", [False, True])
+@pytest.mark.parametrize("fail_commit", [False, True])
+def test_enabled_overflow_profile_uses_real_window_commit_once(
+    pipeline, monkeypatch, gate_negative, fail_commit
+):
+    import json
+    from types import SimpleNamespace
+
+    from reflexio.server.llm.litellm_client import LiteLLMClient
+
+    engine, worker, client = pipeline
+    monkeypatch.setenv("MOCK_LLM_RESPONSE", "false")
+    monkeypatch.setenv("REFLEXIO_EXTRACTION_OVERFLOW_ENABLED", "true")
+    monkeypatch.setenv(
+        "REFLEXIO_LLM_CONTEXT_LIMITS_JSON",
+        '{"minimax/MiniMax-M3":1000000,"gpt-4o":65536}',
+    )
+    monkeypatch.setattr(
+        "reflexio.server.llm.input_budget.litellm.token_counter", lambda **_: 100
+    )
+    completion = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(
+                    content=json.dumps(
+                        {
+                            "profiles": [
+                                {
+                                    "content": "The user prefers concise answers.",
+                                    "time_to_live": "infinity",
+                                    "source_span": "I prefer concise answers with details 0",
+                                }
+                            ]
+                        }
+                    ),
+                    tool_calls=None,
+                    refusal=None,
+                ),
+                finish_reason="stop",
+            )
+        ],
+        usage=SimpleNamespace(
+            prompt_tokens=100,
+            completion_tokens=20,
+            total_tokens=120,
+            cache_read_input_tokens=0,
+            cache_creation_input_tokens=0,
+        ),
+        model="minimax/MiniMax-M3",
+        _hidden_params={"custom_llm_provider": "minimax"},
+    )
+
+    def respond(params, hard_timeout):
+        from copy import deepcopy
+
+        response = deepcopy(completion)
+        response_format = params.get("response_format")
+        schema_name = getattr(response_format, "__name__", "") or json.dumps(
+            response_format, default=str
+        )
+        if gate_negative and response_format is None:
+            response.choices[0].message.content = "false"
+        if "ProfileDeduplicationOutput" in schema_name or any(
+            "unique_ids" in str(message.get("content", ""))
+            for message in params["messages"]
+        ):
+            response.choices[0].message.content = json.dumps(
+                {"duplicate_groups": [], "unique_ids": ["NEW-0"], "deletions": []}
+            )
+        return response
+
+    dispatch = Mock(side_effect=respond)
+    monkeypatch.setattr(LiteLLMClient, "_completion_with_hard_timeout", dispatch)
+    assert client.post(
+        "/api/publish_interaction",
+        json=payload("overflow-enabled", force=not gate_negative),
+    ).json()["success"]
+    storage = engine.get_storage()
+    if fail_commit:
+        complete = storage.complete_extraction
+        attempts = 0
+
+        def fail_first_commit(*args):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise RuntimeError(
+                    "Injected failure after learning writes, before coverage commit"
+                )
+            return complete(*args)
+
+        monkeypatch.setattr(storage, "complete_extraction", fail_first_commit)
+    worker.drain_org("stream-test", 1, 300)
+    if fail_commit:
+        assert storage.count_all_profiles() == 0
+        assert storage.extraction_status("u", "overflow-enabled")["status"] != "done"
+        with storage._stream_sql() as db:
+            db.query(
+                "UPDATE learning_work SET due_at=0 WHERE org_id=? AND user_id=?",
+                (storage.org_id, "u"),
+            )
+            db.query("UPDATE extraction_cursors SET retry_at=0 WHERE user_id=?", ("u",))
+        worker.drain_org("stream-test", 1, 300)
+        assert attempts == 2
+    assert storage.extraction_status("u", "overflow-enabled")["status"] == "done"
+    assert storage.count_all_profiles() == (0 if gate_negative else 1)
+    expected_calls = 1 if gate_negative else 2
+    assert dispatch.call_count == expected_calls
+    with storage._stream_sql() as db:
+        rows = db.query("SELECT id FROM _agent_runs WHERE user_id=? LIMIT 2", ("u",))
+    assert len(rows) == 1
+    run = storage.get_agent_run(rows[0]["id"])
+    assert run.status.value == ("finalized" if gate_negative else "agent_completed")
+    attempts = run.generation_request_snapshot["overflow"]["attempts"]
+    assert len(attempts) == expected_calls
+    assert (
+        sum(attempt["usage"]["prompt_tokens"] for attempt in attempts)
+        == 100 * expected_calls
+    )
+    worker.drain_org("stream-test", 1, 300)
+    assert storage.count_all_profiles() == (0 if gate_negative else 1)
+    assert dispatch.call_count == expected_calls
+    assert storage.get_agent_run(run.id).status.value == "finalized"
+
+
+@pytest.mark.parametrize("kind", ["profile", "playbook"])
+@pytest.mark.parametrize("fail_commit", [False, True])
+def test_http_overflow_human_answer_resumes_same_window_and_commits_once(
+    pipeline, monkeypatch, kind, fail_commit
+):
+    import json
+    from types import SimpleNamespace
+
+    from reflexio.models.config_schema import (
+        PendingToolCallConfig,
+        UserPlaybookExtractorConfig,
+    )
+    from reflexio.server.llm.litellm_client import LiteLLMClient
+
+    engine, worker, client = pipeline
+    config = engine.request_context.configurator
+    root = config.get_config()
+    updates: dict[str, Any] = {
+        "pending_tool_call_config": PendingToolCallConfig(enabled=True)
+    }
+    if kind == "playbook":
+        updates.update(
+            profile_extractor_config=None,
+            user_playbook_extractor_config=UserPlaybookExtractorConfig(
+                extraction_definition_prompt="Extract scoped approval practices."
+            ),
+        )
+    config.set_config(root.model_copy(update=updates))
+    monkeypatch.setenv("MOCK_LLM_RESPONSE", "false")
+    monkeypatch.setenv("REFLEXIO_EXTRACTION_OVERFLOW_ENABLED", "true")
+    monkeypatch.setenv(
+        "REFLEXIO_LLM_CONTEXT_LIMITS_JSON",
+        '{"minimax/MiniMax-M3":1000000,"gpt-4o":65536}',
+    )
+    monkeypatch.setattr(
+        "reflexio.server.services.extraction.resumable_agent.is_resumable_extraction_agent_feature_enabled",
+        lambda _: True,
+    )
+    requested = False
+    answered_messages = []
+    source_text = "Prepare a draft only; obtain separate approval before deploying."
+    answer = (
+        "Preparation is approved. "
+        + "Background context. " * 100
+        + "Deployment is not approved; ask separately."
+    )
+    if kind == "profile":
+        from datetime import UTC, datetime, timedelta
+
+        from reflexio.server.services.storage.storage_base import (
+            PendingToolCallRecord,
+            PendingToolCallStatus,
+            build_scope_hash,
+            human_feedback_scope,
+        )
+
+        scope = human_feedback_scope(engine.get_storage().org_id)
+        now = datetime.now(UTC)
+        engine.get_storage().create_pending_tool_call(
+            PendingToolCallRecord(
+                id="existing-human-scope",
+                org_id=engine.get_storage().org_id,
+                scope=scope,
+                scope_hash=build_scope_hash(scope),
+                tool_name="ask_human",
+                dedup_key="existing-human-scope",
+                status=PendingToolCallStatus.PENDING,
+                question_text="What actions are approved?",
+                expires_at=now + timedelta(days=1),
+                cache_until=now + timedelta(hours=1),
+            )
+        )
+
+    def respond(params, hard_timeout):
+        nonlocal requested
+        schema = params.get("response_format")
+        name = getattr(schema, "__name__", "") or json.dumps(schema, default=str)
+        tool_calls = None
+        finish = "stop"
+        if params.get("tools") and not requested:
+            requested = True
+            result = None
+            tool_calls = [
+                SimpleNamespace(
+                    id="ask-scope",
+                    type="function",
+                    function=SimpleNamespace(
+                        name="ask_human"
+                        if kind == "playbook"
+                        else "attach_pending_info_request",
+                        arguments=json.dumps(
+                            {"question": "What actions are approved?"}
+                            if kind == "playbook"
+                            else {"pending_tool_call_id": "existing-human-scope"}
+                        ),
+                    ),
+                )
+            ]
+            finish = "tool_calls"
+        elif (
+            "Review" in name
+            or "reason_code" in name
+            or any(
+                "reason_code" in str(message.get("content", ""))
+                for message in params["messages"]
+            )
+        ):
+            result = {
+                "decisions": [
+                    {
+                        "id": "C1",
+                        "decision": "accept",
+                        "reason_code": "grounded_useful",
+                        "evidence_ids": ["C1-E1"],
+                    }
+                ]
+            }
+        elif "ProfileDeduplicationOutput" in name or any(
+            "unique_ids" in str(message.get("content", ""))
+            for message in params["messages"]
+        ):
+            result = {"duplicate_groups": [], "unique_ids": ["NEW-0"], "deletions": []}
+        else:
+            answered_messages.extend(params["messages"])
+            assert answer in json.dumps(params["messages"], ensure_ascii=False)
+            if kind == "profile":
+                result = {
+                    "profiles": [
+                        {
+                            "content": "The user requires separate deployment approval.",
+                            "time_to_live": "infinity",
+                            "source_span": source_text,
+                        }
+                    ]
+                }
+            else:
+                result = {
+                    "playbooks": [
+                        {
+                            "content": "Prepare a draft and ask separately before deploying.",
+                            "trigger": "When preparing a release",
+                            "rationale": "The user restricts approval to preparation.",
+                            "evidence_kind": "correction",
+                            "evidence_refs": [f"  i1:content:0:{len(source_text)}  "],
+                        }
+                    ]
+                }
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content=json.dumps(result) if result is not None else None,
+                        tool_calls=tool_calls,
+                        refusal=None,
+                    ),
+                    finish_reason=finish,
+                )
+            ],
+            usage=SimpleNamespace(
+                prompt_tokens=100,
+                completion_tokens=20,
+                total_tokens=120,
+                cache_read_input_tokens=0,
+                cache_creation_input_tokens=0,
+            ),
+            model="minimax/MiniMax-M3",
+            _hidden_params={"custom_llm_provider": "minimax"},
+        )
+
+    dispatch = Mock(side_effect=respond)
+    monkeypatch.setattr(LiteLLMClient, "_completion_with_hard_timeout", dispatch)
+    data = payload("human-overflow", force=True)
+    data["agent_version"] = "v1"
+    for item in data["interaction_data_list"]:
+        item["content"] = source_text
+    assert client.post("/api/publish_interaction", json=data).json()["success"]
+    storage = engine.get_storage()
+    worker.drain_org("stream-test", 1, 300)
+    assert requested and dispatch.call_count == 1
+    assert storage.extraction_status("u", "human-overflow")["status"] != "done"
+    assert storage.count_all_profiles() == 0
+    with storage._stream_sql() as db:
+        pending = db.query("SELECT id,status FROM _pending_tool_calls LIMIT 2")
+        assert len(pending) == 1 and pending[0]["status"] == "pending"
+        parent_id = db.query("SELECT id FROM _agent_runs LIMIT 2")[0]["id"]
+    parent = storage.get_agent_run(parent_id)
+    assert parent.generation_request_snapshot["output_schema_name"] == (
+        "StructuredReferencedExtractedPlaybookList"
+        if kind == "playbook"
+        else "StructuredProfilesOutput"
+    )
+    assert parent.generation_request_snapshot["overflow"]["checkpoint"][
+        "waiting_child"
+    ]["pending_tool_call_ids"] == [pending[0]["id"]]
+    storage.resolve_pending_tool_call(
+        pending[0]["id"], result={"answer": answer}, valid_for_seconds=3600
+    )
+    with storage._stream_sql() as db:
+        db.query("UPDATE learning_work SET due_at=0")
+        db.query("UPDATE extraction_cursors SET retry_at=0")
+    if fail_commit:
+        complete = storage.complete_extraction
+        first_commit = True
+
+        def fail_once(*args):
+            nonlocal first_commit
+            if first_commit:
+                first_commit = False
+                raise RuntimeError("Injected answer-window commit rollback")
+            return complete(*args)
+
+        monkeypatch.setattr(storage, "complete_extraction", fail_once)
+    worker.drain_org("stream-test", 1, 300)
+    calls_after_compute = dispatch.call_count
+    if fail_commit:
+        assert storage.count_all_profiles() == 0
+        assert storage.extraction_status("u", "human-overflow")["status"] != "done"
+        with storage._stream_sql() as db:
+            db.query("UPDATE learning_work SET due_at=0")
+            db.query("UPDATE extraction_cursors SET retry_at=0")
+        worker.drain_org("stream-test", 1, 300)
+        assert dispatch.call_count == calls_after_compute
+    assert storage.extraction_status("u", "human-overflow")["status"] == "done"
+    assert answer in json.dumps(answered_messages, ensure_ascii=False)
+    with storage._stream_sql() as db:
+        rows = db.query(
+            "SELECT user_playbook_id,source_interaction_ids,source_span FROM user_playbooks WHERE user_id='u' LIMIT 2"
+        )
+        deps = db.query(
+            "SELECT consumed_at FROM _run_tool_dependencies WHERE run_id=? LIMIT 2",
+            (parent_id,),
+        )
+    assert storage.count_all_profiles() == (1 if kind == "profile" else 0)
+    assert len(rows) == (1 if kind == "playbook" else 0)
+    if rows:
+        assert json.loads(rows[0]["source_interaction_ids"]) == [1]
+        assert rows[0]["source_span"] == source_text
+    assert len(deps) == 1 and deps[0]["consumed_at"] is not None
+    final = storage.get_agent_run(parent_id)
+    attempts = final.generation_request_snapshot["overflow"]["attempts"]
+    assert len(attempts) == calls_after_compute
+    assert (
+        sum(item["usage"]["prompt_tokens"] for item in attempts)
+        == 100 * calls_after_compute
+    )
+    worker.drain_org("stream-test", 1, 300)
+    assert dispatch.call_count == calls_after_compute
+
+
+@pytest.mark.parametrize("reject_again", [False, True])
+def test_http_capacity_rejection_freezes_one_smaller_plan_without_refunding_work(
+    pipeline, monkeypatch, reject_again
+):
+    import json
+    from types import SimpleNamespace
+
+    from reflexio.server.llm.input_budget import (
+        ProviderInputOverflowError,
+        extraction_request_identity,
+    )
+    from reflexio.server.llm.litellm_client import LiteLLMClient
+
+    engine, worker, client = pipeline
+    monkeypatch.setenv("MOCK_LLM_RESPONSE", "false")
+    monkeypatch.setenv("REFLEXIO_EXTRACTION_OVERFLOW_ENABLED", "true")
+    monkeypatch.setenv(
+        "REFLEXIO_LLM_CONTEXT_LIMITS_JSON",
+        '{"minimax/MiniMax-M3":1000000,"gpt-4o":65536}',
+    )
+    rejected = []
+    original_attempts = []
+    accepted = []
+
+    def respond(params, hard_timeout):
+        identity = extraction_request_identity.get()
+        assert identity is not None
+        prompt = json.dumps(params["messages"], ensure_ascii=False)
+        is_protection = "Select original evidence needed" in prompt
+        if not is_protection and (not rejected or reject_again):
+            rejected.append(identity["request_fingerprint"])
+            raise ProviderInputOverflowError(identity)
+        accepted.append(identity["request_fingerprint"])
+        result = (
+            {"evidence": [], "candidate_evidence": []}
+            if is_protection
+            else {"profiles": []}
+        )
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content=json.dumps(result), tool_calls=None, refusal=None
+                    ),
+                    finish_reason="stop",
+                )
+            ],
+            usage=SimpleNamespace(
+                prompt_tokens=100,
+                completion_tokens=20,
+                total_tokens=120,
+                cache_read_input_tokens=0,
+                cache_creation_input_tokens=0,
+            ),
+            model="minimax/MiniMax-M3",
+            _hidden_params={"custom_llm_provider": "minimax"},
+        )
+
+    dispatch = Mock(side_effect=respond)
+    monkeypatch.setattr(LiteLLMClient, "_completion_with_hard_timeout", dispatch)
+    data = payload("repartition", force=True)
+    data["interaction_data_list"][0]["content"] = "Synthetic tool progress. " * 6000
+    assert client.post("/api/publish_interaction", json=data).json()["success"]
+    storage = engine.get_storage()
+    assert worker.drain_org("stream-test", 1, 300) == 0
+    with storage._stream_sql() as db:
+        parent_id = db.query("SELECT id FROM _agent_runs LIMIT 1")[0]["id"]
+        cursor = db.query(
+            "SELECT attempts FROM extraction_cursors WHERE kind='profile' LIMIT 1"
+        )[0]
+    parent = storage.get_agent_run(parent_id)
+    manifest = parent.generation_request_snapshot["overflow"]
+    plan = manifest["checkpoint"]["repartition"]
+    assert (
+        plan["count"] == 1
+        and len(plan["chunk_digests"]) == len(manifest["chunk_digests"]) + 1
+    )
+    assert cursor["attempts"] == 0
+    original_attempts = list(manifest["attempts"])
+    original_receipts = dict(manifest["checkpoint"]["completed_steps"])
+    assert original_attempts[-1]["usage"] is None
+    assert (
+        storage.count_all_profiles() == 0 and storage.pending_extraction_effects() == []
+    )
+    # A new worker reconstructs the already-frozen source plan after the yield.
+    with storage._stream_sql() as db:
+        db.query("UPDATE learning_work SET due_at=0")
+        db.query("UPDATE extraction_cursors SET retry_at=0")
+    worker.drain_org("stream-test", 1, 300)
+    after = storage.get_agent_run(parent_id).generation_request_snapshot["overflow"]
+    assert after["checkpoint"]["repartition"] == plan
+    assert after["attempts"][: len(original_attempts)] == original_attempts
+    assert all(
+        after["checkpoint"]["completed_steps"][key] == value
+        for key, value in original_receipts.items()
+    )
+    assert len(after["attempts"]) == dispatch.call_count <= 128
+    assert accepted.count(rejected[0]) == 0
+    assert len(rejected) == len(set(rejected))
+    if reject_again:
+        assert storage.extraction_status("u", "repartition") == {
+            "status": "failed",
+            "reason": "input_budget_exceeded",
+        }
+        before = dispatch.call_count
+        worker.drain_org("stream-test", 1, 300)
+        assert dispatch.call_count == before
+    else:
+        assert storage.extraction_status("u", "repartition")["status"] == "done"
+        assert after["checkpoint"]["source_coverage"] == plan["chunk_digests"]
+    assert len(storage.get_user_interaction("u")) == 10
+
+
+@pytest.mark.parametrize("enable_before_retry", [False, True])
 def test_computed_outcome_survives_failed_commit_without_model_replay(
-    pipeline, monkeypatch
+    pipeline, monkeypatch, enable_before_retry
 ):
     engine, worker, client = pipeline
     assert client.post(
@@ -202,6 +3127,16 @@ def test_computed_outcome_survives_failed_commit_without_model_replay(
     assert storage.count_all_profiles() == 0
     assert storage.extraction_status("u", "recover")["reason"] == "retrying"
     monkeypatch.setattr(ProfileGenerationService, "persist_generation", original)
+    if enable_before_retry:
+        monkeypatch.setenv("MOCK_LLM_RESPONSE", "false")
+        monkeypatch.setenv("REFLEXIO_EXTRACTION_OVERFLOW_ENABLED", "true")
+    dispatch = Mock(
+        side_effect=AssertionError("Cached outcome must not reach a provider")
+    )
+    monkeypatch.setattr(
+        "reflexio.server.llm.litellm_client.LiteLLMClient._completion_with_hard_timeout",
+        dispatch,
+    )
     monkeypatch.setattr(
         ProfileGenerationService,
         "compute_generation",
@@ -214,6 +3149,7 @@ def test_computed_outcome_survives_failed_commit_without_model_replay(
     assert worker.drain_org("stream-test", 1, 300) == 1
     assert storage.extraction_status("u", "recover")["status"] == "done"
     assert storage.count_all_profiles() > 0
+    dispatch.assert_not_called()
 
 
 def test_billing_retry_does_not_repeat_extraction(pipeline, monkeypatch):
@@ -691,3 +3627,553 @@ def test_erasure_cancels_uncommitted_window_run_instead_of_resuming_it(
         storage.get_agent_run(f"window:{window_id}").status == AgentRunStatus.CANCELLED
     )
     assert storage.count_all_profiles() == 0
+
+
+def _saved_legacy_window(pipeline, monkeypatch, *, kind, empty=False, schema=None):
+    """Create a real source-bound completed run before overflow admission."""
+    from dataclasses import replace
+
+    from reflexio.lib._base import create_generation_litellm_client
+    from reflexio.models.config_schema import UserPlaybookExtractorConfig
+    from reflexio.server.services.durable_learning.window_executor import (
+        WindowExecutor,
+        load_window_inputs,
+    )
+    from reflexio.server.services.extraction.agent_run_records import (
+        build_extractor_agent_run_record,
+    )
+    from reflexio.server.services.extraction.resumable_agent import (
+        encode_committed_output,
+    )
+    from reflexio.server.services.playbook.playbook_service_utils import (
+        StructuredPlaybookList,
+    )
+    from reflexio.server.services.profile.profile_generation_service_utils import (
+        StructuredProfilesOutput,
+    )
+    from reflexio.server.services.storage.storage_base import AgentRunStatus
+
+    engine, _, http = pipeline
+    if kind == "playbook":
+        configurator = engine.request_context.configurator
+        configurator.set_config(
+            configurator.get_config().model_copy(
+                update={
+                    "profile_extractor_config": None,
+                    "user_playbook_extractor_config": UserPlaybookExtractorConfig(
+                        extraction_definition_prompt="Extract scoped approval practices."
+                    ),
+                }
+            )
+        )
+    monkeypatch.setenv("MOCK_LLM_RESPONSE", "false")
+    monkeypatch.setenv("REFLEXIO_EXTRACTION_OVERFLOW_ENABLED", "true")
+    source_text = "Prepare a draft only; obtain separate approval before deploying."
+    data = payload("legacy-saved", force=True)
+    data["agent_version"] = "v1"
+    for interaction in data["interaction_data_list"]:
+        interaction["content"] = source_text
+    assert http.post("/api/publish_interaction", json=data).json()["success"]
+    storage = engine.get_storage()
+    user, token = storage.claim_extraction("legacy-test", 300)
+    window = storage.prepare_extraction(user, token)
+    assert window is not None
+    assert window.kind == kind
+    executor = WindowExecutor(
+        engine.request_context, create_generation_litellm_client(engine.request_context)
+    )
+    service, request, config = executor.service(window)
+    groups = load_window_inputs(storage, window)
+    output = (
+        StructuredPlaybookList.model_validate(
+            {
+                "playbooks": []
+                if empty
+                else [
+                    {
+                        "content": "Prepare a draft and obtain separate deployment approval.",
+                        "trigger": "When preparing a release",
+                    }
+                ]
+            }
+        )
+        if kind == "playbook"
+        else StructuredProfilesOutput.model_validate(
+            {
+                "profiles": []
+                if empty
+                else [
+                    {
+                        "content": "The user requires separate deployment approval.",
+                        "time_to_live": "infinity",
+                    }
+                ]
+            }
+        )
+    )
+    run = build_extractor_agent_run_record(
+        org_id=storage.org_id,
+        extractor_kind=kind,
+        user_id=user,
+        generation_request_id=request.request_id,
+        agent_version=getattr(request, "agent_version", None),
+        source=request.source,
+        request_interaction_data_models=groups,
+        extractor_config=config,
+        service_config=service.service_config,
+        agent_context=engine.request_context.configurator.get_agent_context(),
+        output_schema_name=schema or type(output).__name__,
+    )
+    run = replace(
+        run,
+        id=f"window:{window.window_id}",
+        status=AgentRunStatus.AGENT_COMPLETED,
+        committed_output=encode_committed_output(output, None),
+    )
+    storage.create_agent_run(run)
+    return (
+        engine,
+        storage,
+        window,
+        token,
+        executor,
+        service,
+        request,
+        config,
+        groups,
+        run,
+    )
+
+
+@pytest.mark.parametrize("kind", ["profile", "playbook"])
+def test_single_chunk_adopted_empty_output_scans_source_and_publishes(
+    pipeline, monkeypatch, kind
+):
+    from types import SimpleNamespace
+
+    from reflexio.server.llm._litellm_types import ModelProvenance
+    from reflexio.server.services.extraction.protected_record import (
+        ProtectedRecordUpdate,
+    )
+
+    _, storage, window, token, executor, _, _, _, _, run = _saved_legacy_window(
+        pipeline, monkeypatch, kind=kind, empty=True
+    )
+    scan = Mock(
+        return_value=SimpleNamespace(
+            value=ProtectedRecordUpdate(), provenance=ModelProvenance()
+        )
+    )
+    monkeypatch.setattr(executor.client, "generate_chat_response_with_provenance", scan)
+    monkeypatch.setattr(
+        executor.client,
+        "_completion_with_hard_timeout",
+        Mock(side_effect=AssertionError("Saved extraction must not redispatch")),
+    )
+    executor.execute(window, token)
+    assert scan.call_count == 1
+    parent = storage.get_agent_run(run.id)
+    checkpoint = parent.generation_request_snapshot["overflow"]["checkpoint"]
+    assert len(checkpoint["protected_coverage"]) == 1
+    assert checkpoint["source_coverage"] == checkpoint["protected_coverage"]
+    assert parent.committed_output == run.committed_output
+    assert storage.extraction_status(window.user_id, "legacy-saved")["status"] == "done"
+    assert storage.count_all_profiles() == 0
+    assert storage.get_user_playbooks(user_id=window.user_id) == []
+
+
+@pytest.mark.parametrize("kind", ["profile", "playbook"])
+@pytest.mark.parametrize(
+    "failure", [None, "unsupported_schema", "nonquote", "out_of_source"]
+)
+def test_adopted_legacy_output_reaches_complete_publication_with_verified_evidence(
+    pipeline, monkeypatch, kind, failure
+):
+    import json
+    from types import SimpleNamespace
+
+    from reflexio.server.services.durable_learning.window_executor import (
+        load_window_inputs,
+    )
+    from reflexio.server.services.extraction.input_preparation import (
+        prepare_extraction_input,
+    )
+    from reflexio.server.services.playbook.components.reviewer import (
+        PlaybookCandidateReviewer,
+    )
+    from reflexio.server.services.playbook.playbook_service_utils import (
+        uses_evidence_grounded_extraction,
+    )
+
+    engine, storage, window, token, executor, _, _, _, _, run = _saved_legacy_window(
+        pipeline,
+        monkeypatch,
+        kind=kind,
+        schema="UntrustedSchema" if failure == "unsupported_schema" else None,
+    )
+    assert run.committed_output is not None
+    prepared = prepare_extraction_input(
+        load_window_inputs(storage, window), user_id=window.user_id
+    )
+    assert len(prepared.chunks) == 1
+    span = prepared.chunks[0].spans[0]
+    monkeypatch.setenv(
+        "REFLEXIO_LLM_CONTEXT_LIMITS_JSON",
+        '{"minimax/MiniMax-M3":1000000,"gpt-4o":65536}',
+    )
+    monkeypatch.setattr(
+        storage, "_get_embedding", lambda *_args, **_kwargs: [0.1] * 512
+    )
+    monkeypatch.setattr(storage, "_expand_document", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(PlaybookCandidateReviewer, "is_enabled", lambda _: True)
+    if kind == "playbook":
+        assert uses_evidence_grounded_extraction(
+            engine.request_context.prompt_manager, expert=False
+        )
+    schemas = []
+
+    def respond(params, hard_timeout):
+        name = getattr(params.get("response_format"), "__name__", "") or json.dumps(
+            params.get("response_format"), default=str
+        )
+        prompt = json.dumps(params["messages"], ensure_ascii=False)
+        # MiniMax requests JSON-object mode; identify the actual template stage.
+        if "Select original evidence needed" in prompt:
+            name = "ProtectedRecordUpdate"
+        elif "reason_code" in prompt:
+            name = (
+                "EvidenceFirstReviewOutput"
+                if "supporting_evidence" in prompt
+                else "ReviewOutput"
+            )
+        elif "unique_ids" in prompt:
+            name = "ProfileDeduplicationOutput"
+        schemas.append(name)
+        if "ProtectedRecordUpdate" in name:
+            result = {
+                "candidate_evidence": [
+                    {
+                        "candidate_ref": "C1",
+                        "kind": "instruction",
+                        "evidence_refs": [
+                            "i999999:content:0:10"
+                            if failure == "out_of_source"
+                            else span.evidence_ref
+                        ],
+                        "quote": "not an original quotation"
+                        if failure == "nonquote"
+                        else span.text,
+                    }
+                ]
+            }
+        elif "ReviewOutput" in name:
+            result = {
+                "decisions": [
+                    {
+                        "id": "C1",
+                        "decision": "accept",
+                        "reason_code": "grounded_useful",
+                        "evidence_ids": ["C1-E1"],
+                    }
+                ],
+            }
+            if "EvidenceFirstReviewOutput" in name:
+                result["supporting_evidence"] = [
+                    {
+                        "id": "C1",
+                        "excerpts": [{"evidence_id": "C1-E1", "text": span.text}],
+                    }
+                ]
+        elif "ProfileDeduplicationOutput" in name or any(
+            "unique_ids" in str(message.get("content", ""))
+            for message in params["messages"]
+        ):
+            result = {"duplicate_groups": [], "unique_ids": ["NEW-0"], "deletions": []}
+        else:
+            raise AssertionError(f"Saved extraction must not redispatch: {name}")
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content=json.dumps(result),
+                        tool_calls=None,
+                        refusal=None,
+                    ),
+                    finish_reason="stop",
+                )
+            ],
+            usage=SimpleNamespace(
+                prompt_tokens=100,
+                completion_tokens=20,
+                total_tokens=120,
+                cache_read_input_tokens=0,
+                cache_creation_input_tokens=0,
+            ),
+            model="minimax/MiniMax-M3",
+            _hidden_params={"custom_llm_provider": "minimax"},
+        )
+
+    monkeypatch.setattr(executor.client, "_completion_with_hard_timeout", respond)
+    if failure:
+        from reflexio.server.llm._litellm_types import StructuredOutputRepairError
+        from reflexio.server.llm.input_budget import InputBudgetConfigurationError
+
+        expected_error = (
+            InputBudgetConfigurationError
+            if failure == "unsupported_schema"
+            else StructuredOutputRepairError
+        )
+        with pytest.raises(expected_error):
+            executor.execute(window, token)
+        assert (
+            storage.extraction_status(window.user_id, "legacy-saved")["status"]
+            != "done"
+        )
+        assert storage.count_all_profiles() == 0
+        assert storage.get_user_playbooks(user_id=window.user_id) == []
+        assert not any(
+            "ReviewOutput" in name or "DeduplicationOutput" in name for name in schemas
+        )
+    else:
+        executor.execute(window, token)
+        assert (
+            storage.extraction_status(window.user_id, "legacy-saved")["status"]
+            == "done"
+        )
+        parent = storage.get_agent_run(run.id)
+        checkpoint = parent.generation_request_snapshot["overflow"]["checkpoint"]
+        assert checkpoint["source_coverage"] == checkpoint["protected_coverage"]
+        assert (
+            checkpoint["candidate_evidence"]["C1"]["evidence"][0]["quote"] == span.text
+        )
+        if kind == "playbook":
+            persisted = storage.get_user_playbooks(user_id=window.user_id)
+            assert len(persisted) == 1
+            candidate = persisted[0]
+            assert (
+                candidate.content
+                == run.committed_output["output"]["playbooks"][0]["content"]
+            )
+            assert (
+                candidate.source_interaction_ids == run.binding.source_interaction_ids
+            )
+            assert (
+                candidate.source_span == span.text
+                and candidate.reader_angle is None
+                and candidate.rationale is None
+            )
+            assert any("ReviewOutput" in name for name in schemas)
+        else:
+            persisted_profiles = storage.get_user_profile(window.user_id)
+            assert len(persisted_profiles) == 1
+            assert (
+                persisted_profiles[0].content
+                == run.committed_output["output"]["profiles"][0]["content"]
+            )
+            assert (
+                persisted_profiles[0].source_interaction_ids
+                == run.binding.source_interaction_ids
+            )
+            assert (persisted_profiles[0].custom_features or {}).get(
+                "source_span"
+            ) is None
+            assert any("ProfileDeduplicationOutput" in name for name in schemas)
+    assert storage.get_agent_run(run.id).committed_output == run.committed_output
+
+
+@pytest.mark.parametrize(
+    "failure", ["guard", "budget", "quota", "suspend", "checkpoint", "lease"]
+)
+def test_profile_consolidation_control_failure_preserves_extracted_window_without_publication(
+    pipeline, monkeypatch, failure
+):
+    import json
+    from types import SimpleNamespace
+
+    from reflexio.lib._base import create_generation_litellm_client
+    from reflexio.server.llm._litellm_types import ProviderRequestGuardError
+    from reflexio.server.llm.input_budget import InputBudgetExceededError
+    from reflexio.server.services.durable_learning.window_executor import WindowExecutor
+    from reflexio.server.services.extraction.overflow_coordinator import (
+        OverflowSuspendedError,
+        current_overflow_coordinator,
+    )
+    from reflexio.server.services.profile.components.consolidator import (
+        ProfileDeduplicationOutput,
+    )
+    from reflexio.server.services.storage.storage_base._extraction_stream import (
+        LeaseLostError,
+        OverflowAttemptBudgetExceededError,
+        OverflowCheckpointConflictError,
+    )
+
+    engine, _, http = pipeline
+    monkeypatch.setenv("MOCK_LLM_RESPONSE", "false")
+    monkeypatch.setenv("REFLEXIO_EXTRACTION_OVERFLOW_ENABLED", "true")
+    monkeypatch.setenv(
+        "REFLEXIO_LLM_CONTEXT_LIMITS_JSON",
+        '{"minimax/MiniMax-M3":1000000,"gpt-4o":65536}',
+    )
+    data = payload("profile-consolidation-stop", force=True)
+    quote = "The user prefers concise explanations with clear examples."
+    for item in data["interaction_data_list"]:
+        item["content"] = quote
+    assert http.post("/api/publish_interaction", json=data).json()["success"]
+    storage = engine.get_storage()
+    user, token = storage.claim_extraction("guard-consolidation", 300)
+    window = storage.prepare_extraction(user, token)
+    assert window is not None
+    executor = WindowExecutor(
+        engine.request_context, create_generation_litellm_client(engine.request_context)
+    )
+    error = {
+        "guard": ProviderRequestGuardError,
+        "budget": InputBudgetExceededError,
+        "quota": OverflowAttemptBudgetExceededError,
+        "suspend": OverflowSuspendedError,
+        "checkpoint": OverflowCheckpointConflictError,
+        "lease": LeaseLostError,
+    }[failure]("Injected stop after full source coverage")
+    monkeypatch.setattr(
+        storage, "_get_embedding", lambda *_args, **_kwargs: [0.1] * 512
+    )
+    monkeypatch.setattr(storage, "_expand_document", lambda *_args, **_kwargs: None)
+
+    def respond(params, hard_timeout):
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content=json.dumps(
+                            {
+                                "profiles": [
+                                    {
+                                        "content": "The user prefers concise explanations.",
+                                        "time_to_live": "infinity",
+                                        "source_span": quote,
+                                    }
+                                ]
+                            }
+                        ),
+                        tool_calls=None,
+                        refusal=None,
+                    ),
+                    finish_reason="stop",
+                )
+            ],
+            usage=SimpleNamespace(
+                prompt_tokens=100,
+                completion_tokens=20,
+                total_tokens=120,
+                cache_read_input_tokens=0,
+                cache_creation_input_tokens=0,
+            ),
+            model="minimax/MiniMax-M3",
+            _hidden_params={"custom_llm_provider": "minimax"},
+        )
+
+    dispatch = Mock(side_effect=respond)
+    monkeypatch.setattr(executor.client, "_completion_with_hard_timeout", dispatch)
+    generate = executor.client.generate_chat_response_with_provenance
+    checkpoints = []
+
+    def fail_consolidation(*args, **kwargs):
+        if kwargs.get("response_format") is ProfileDeduplicationOutput:
+            coordinator = current_overflow_coordinator.get()
+            assert coordinator is not None
+            coordinator.require_full_source_coverage()
+            checkpoints.append(coordinator.checkpoint)
+            raise error
+        return generate(*args, **kwargs)
+
+    monkeypatch.setattr(
+        executor.client, "generate_chat_response_with_provenance", fail_consolidation
+    )
+    writes = {}
+    for name in (
+        "add_user_profile",
+        "save_extraction_outcome",
+        "complete_extraction",
+        "update_operation_state",
+        "upsert_operation_state",
+    ):
+        spy = Mock(wraps=getattr(storage, name))
+        monkeypatch.setattr(storage, name, spy)
+        writes[name] = spy
+    billing = Mock(wraps=executor._billing_snapshot)
+    monkeypatch.setattr(executor, "_billing_snapshot", billing)
+    with patch("reflexio.server.metering_events.record_extraction_tokens") as bill:
+        with pytest.raises(type(error)) as caught:
+            executor.execute(window, token)
+        assert caught.value is error
+        bill.assert_not_called()
+    billing.assert_not_called()
+    for write in writes.values():
+        write.assert_not_called()
+    assert storage.count_all_profiles() == 0
+    assert (
+        storage.extraction_status(window.user_id, "profile-consolidation-stop")[
+            "status"
+        ]
+        != "done"
+    )
+    assert len(checkpoints) == 1 and checkpoints[0]["stage"] == "extracted"
+    parent = storage.get_agent_run(f"window:{window.window_id}")
+    assert parent.committed_output is not None
+    assert (
+        parent.generation_request_snapshot["overflow"]["checkpoint"] == checkpoints[0]
+    )
+    with storage._stream_sql(read_only=True) as db:
+        cursor = db.query(
+            "SELECT completed_seq FROM extraction_cursors WHERE user_id=? AND kind=?",
+            (user, "profile"),
+        )[0]
+        saved = db.query(
+            "SELECT completed,outcome,effects FROM extraction_windows WHERE window_id=?",
+            (window.window_id,),
+        )[0]
+    assert cursor["completed_seq"] == 0
+    assert (
+        not saved["completed"] and saved["outcome"] is None and saved["effects"] is None
+    )
+    # The durable raw result remains readable for a later turn, not abandoned.
+    assert parent.committed_output["output"]["profiles"][0]["source_span"] == quote
+    assert dispatch.call_count == 1
+
+
+@pytest.mark.parametrize(
+    "failure", ["guard", "quota", "checkpoint", "lease", "operational"]
+)
+def test_dedup_embedding_fallback_preserves_control_errors(failure):
+    from types import SimpleNamespace
+
+    from reflexio.server.llm._litellm_types import ProviderRequestGuardError
+    from reflexio.server.services.deduplication_utils import (
+        resolve_dedup_query_embeddings,
+    )
+    from reflexio.server.services.storage.storage_base._extraction_stream import (
+        LeaseLostError,
+        OverflowAttemptBudgetExceededError,
+        OverflowCheckpointConflictError,
+    )
+
+    error = {
+        "guard": ProviderRequestGuardError,
+        "quota": OverflowAttemptBudgetExceededError,
+        "checkpoint": OverflowCheckpointConflictError,
+        "lease": LeaseLostError,
+        "operational": RuntimeError,
+    }[failure]("embedding failure")
+    storage = SimpleNamespace(
+        embedding_model_name="fixture", _get_embedding=Mock(side_effect=error)
+    )
+    if failure == "operational":
+        assert resolve_dedup_query_embeddings(
+            storage, Mock(), ["query"], entity_label="Profile"
+        ) == [None]
+    else:
+        with pytest.raises(type(error)) as caught:
+            resolve_dedup_query_embeddings(
+                storage, Mock(), ["query"], entity_label="Profile"
+            )
+        assert caught.value is error

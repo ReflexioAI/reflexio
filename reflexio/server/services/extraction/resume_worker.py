@@ -82,12 +82,22 @@ from reflexio.server.services.storage.storage_base import (
     PendingToolCallRecord,
     PendingToolCallStatus,
 )
+from reflexio.server.services.storage.storage_base.agent_run._agent_run_store import (
+    is_overflow_protocol_run,
+)
 from reflexio.server.services.tagging.tagging_scheduler import schedule_tagging
 from reflexio.server.site_var.site_var_manager import SiteVarManager
 from reflexio.server.usage_metrics import UsageEventDeliveryStatus
 from reflexio.server.work_scope import WorkScope, bind_work_scope
 
 logger = logging.getLogger(__name__)
+
+
+def _refuse_overflow_protocol_run(run: AgentRunRecord) -> None:
+    if is_overflow_protocol_run(run):
+        from reflexio.server.services.extraction.recovery import RecoveryRefusedError
+
+        raise RecoveryRefusedError("overflow_protocol_recovery_unsupported")
 
 
 class ResumeWorkerError(RuntimeError):
@@ -433,6 +443,7 @@ class ExtractionResumeWorker:
         finalization_retry: bool,
         selection: Any = None,
     ) -> AgentRunRecord:
+        _refuse_overflow_protocol_run(run)
         from reflexio.server.services.durable_learning.user_lease import (
             UserLeaseBusyError,
             user_extraction_lease,
@@ -462,6 +473,7 @@ class ExtractionResumeWorker:
                         or latest.claimed_at != run.claimed_at
                     ):
                         return latest or run
+                    _refuse_overflow_protocol_run(latest)
                     self._active_claim = latest
                     receipt = (
                         self.storage.get_agent_run_finalization_receipt(
@@ -597,6 +609,7 @@ class ExtractionResumeWorker:
         every tenant write it makes -- the resume, the finalization, and each of
         the four ``update_agent_run_status`` exit paths.
         """
+        _refuse_overflow_protocol_run(run)
         if run.max_steps_remaining is not None and run.max_steps_remaining <= 0:
             return self._update_claimed_status(
                 run.id,
@@ -726,6 +739,7 @@ class ExtractionResumeWorker:
             )
 
     def _retry_finalization(self, run: AgentRunRecord) -> AgentRunRecord | None:
+        _refuse_overflow_protocol_run(run)
         config = self.request_context.configurator.get_config()
         pending_config = config.pending_tool_call_config
         try:
@@ -836,6 +850,7 @@ class ExtractionResumeWorker:
         run: AgentRunRecord,
         resolved_calls: list[PendingToolCallRecord],
     ) -> tuple[list[Any], list[str], ModelProvenance | None]:
+        _refuse_overflow_protocol_run(run)
         request_interaction_data_models = _request_interaction_models_from_ids(
             self.storage,
             run.binding.source_interaction_ids,
@@ -1274,6 +1289,7 @@ class ExtractionResumeWorker:
         *,
         model_provenance: ModelProvenance | None = None,
     ) -> FinalizationResult:
+        _refuse_overflow_protocol_run(run)
         if run.binding.extractor_kind == "profile":
             service = ProfileGenerationService(
                 llm_client=self.client,

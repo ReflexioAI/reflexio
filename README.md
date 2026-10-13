@@ -456,6 +456,13 @@ A partial window waits for more input or an eligible `force_extraction` request.
 Provider fallback remains enabled. Existing extracted data is preserved, and
 interactions stored before stream admission are not automatically replayed.
 
+Overflow extraction meters source input using the complete original primary
+fields once, rejoining their pieces before canonical `cl100k_base` tokenization.
+Neighbor context, evidence framing and repeated model calls do not multiply this
+source-input count. Provider prompt, output and cache totals separately retain
+all observed calls, and the durable billing snapshot survives delivery retries.
+Legacy extraction keeps its existing input formatter and billing behavior.
+
 A caller waiting for coverage — `publish_interaction()`, or `POST
 /api/publish_interaction?wait_for_response=true` — is never held for a window only
 new input can close. It returns as soon as every eligible cursor is either covered

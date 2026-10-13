@@ -125,6 +125,37 @@ def test_sibling_cursor_survives_retries_and_other_users_claim(storage):
     assert [w.user_id for w in windows] == ["v"]
 
 
+@pytest.mark.parametrize(
+    "reason", ["input_budget_exceeded", "input_budget_configuration_error"]
+)
+def test_terminal_input_budget_failure_holds_coverage_and_keeps_siblings_runnable(
+    storage, reason
+):
+    publish(storage, 10, playbook=True)
+    user, token = storage.claim_extraction("worker", 300)
+    failed = storage.prepare_extraction(user, token)
+    storage.fail_extraction_input_budget(failed, token, reason)
+    assert storage.extraction_status(user, "r") == {
+        "status": "failed",
+        "reason": reason,
+    }
+    assert len(storage.get_user_interaction(user)) == 10
+    with pytest.raises(LeaseLostError):
+        storage.fail_extraction_input_budget(failed, token, reason)
+    user, token = storage.claim_extraction("sibling", 300)
+    sibling = storage.prepare_extraction(user, token)
+    assert sibling.kind != failed.kind
+    storage.complete_extraction(sibling, token, {})
+    storage.ack_extraction_effects(sibling.window_id)
+    assert drain(storage) == []
+    assert storage.extraction_status(user, "r") == {
+        "status": "failed",
+        "reason": reason,
+    }
+    publish(storage, 10, user="v", request_id="other")
+    assert [window.user_id for window in drain(storage)] == ["v"]
+
+
 def _backdate_backlog(storage, seconds):
     with storage._stream_sql() as db:
         db.query(

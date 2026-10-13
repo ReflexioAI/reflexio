@@ -309,6 +309,49 @@ def _llm_client() -> LiteLLMClient:
     return LiteLLMClient(LiteLLMConfig(model="gpt-4o-mini"))
 
 
+def test_overflow_extractor_future_does_not_abort_an_admitted_turn(monkeypatch):
+    """A 330s multi-chunk turn fits its 360s deadline, beyond legacy 300s."""
+    from concurrent.futures import TimeoutError as FutureTimeoutError
+
+    client = LiteLLMClient(
+        LiteLLMConfig(model="gpt-4o-mini", timeout=300, fallback_models=[])
+    )
+    storage = MagicMock()
+    service = _CharService(
+        client,
+        _request_context(storage),
+        results_by_user={"deadline-user": ["completed"]},
+    )
+    service.service_config = _CharRequest(
+        user_id="deadline-user", request_id="deadline-request"
+    )
+    assert service._extractor_timeout_seconds() == 300
+    service._window_extractor_timeout_seconds = 370
+    executor = MagicMock()
+
+    def submit(fn, *args):
+        future = MagicMock()
+
+        def result(*, timeout):
+            if timeout <= 330:
+                raise FutureTimeoutError("Simulated enclosing future expired")
+            return fn(*args)
+
+        future.result.side_effect = result
+        return future
+
+    executor.submit.side_effect = submit
+    monkeypatch.setattr(
+        "reflexio.server.services.base_generation._extraction_lifecycle.ThreadPoolExecutor",
+        lambda **_: executor,
+    )
+    assert service._execute_extractor(
+        service._load_extractor_config(), "deadline-user"
+    ) == ["completed"]
+    storage.fail_running_agent_runs_for_request.assert_not_called()
+    assert client.config.timeout == 300
+
+
 # ---------------------------------------------------------------------------
 # Test 1: billing drain-ordering + terminal-emitter + double-bill + no-swallow.
 # ---------------------------------------------------------------------------
