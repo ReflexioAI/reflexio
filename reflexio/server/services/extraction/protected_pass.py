@@ -21,6 +21,7 @@ from reflexio.server.services.extraction.overflow_presentation import (
     ProtectedQuoteAmbiguityError,
     present_extraction_chunk,
     protected_quote_view,
+    protected_source_origins,
 )
 from reflexio.server.services.extraction.protected_record import (
     ProtectedEvidence,
@@ -141,6 +142,7 @@ def build_protected_record(
                             "protected_record": record.model_dump(mode="json"),
                             "original_chunk": json.loads(chunk.text),
                             "untrusted_candidate_claims": candidates or {},
+                            **protected_source_origins(prepared, record),
                         },
                         ensure_ascii=False,
                         separators=(",", ":"),

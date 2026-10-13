@@ -232,3 +232,66 @@ def test_new_preparation_preserves_original_dates_for_relative_time_claims():
     # Already admitted version1 geometry retains its original serialization.
     old = prepare_extraction_input([session], user_id="u")
     assert "created_at" not in json.loads(old.chunks[0].text)["sources"]["7"]
+
+
+@pytest.mark.parametrize("producer", ["system", "internal", ""])
+def test_v3_origin_preserves_request_source_independently_of_transcript_role(producer):
+    session = source(
+        "A generated user-role turn is not human deployment approval.", role="User"
+    )
+    session.request.source = producer
+    session.request.created_at = 946684800
+    session.interactions[0].created_at = 946771200
+    before = session.model_dump(mode="json")
+    old_v1 = prepare_extraction_input([session], user_id="u")
+    old_v2 = prepare_extraction_input([session], user_id="u", require_overlap=True)
+    new = prepare_extraction_input(
+        [session], user_id="u", require_overlap=True, include_request_source=True
+    )
+    origins = [
+        json.loads(plan.chunks[0].text)["sources"]["7"]
+        for plan in (old_v1, old_v2, new)
+    ]
+    assert "request_source" not in origins[0] and "request_source" not in origins[1]
+    assert origins[2]["request_source"] == producer and origins[2]["role"] == "User"
+    assert old_v1.source_digest == old_v2.source_digest == new.source_digest
+    assert all(
+        span.request_source is None
+        for plan in (old_v1, old_v2)
+        for chunk in plan.chunks
+        for span in chunk.spans
+    )
+    assert all(
+        span.request_source == producer for chunk in new.chunks for span in chunk.spans
+    )
+    assert session.model_dump(mode="json") == before
+    # Golden admitted framing prevents optional metadata from changing v1/v2 hashes.
+    payload = {
+        "sources": {"7": {"request_id": "r", "role": "User", "source_order": 1}},
+        "neighbor_evidence": [],
+        "evidence": [
+            {
+                "evidence_ref": f"i7:content:0:{len(session.interactions[0].content)}",
+                "text": session.interactions[0].content,
+            }
+        ],
+    }
+    assert old_v1.chunks[0].text == json.dumps(
+        payload, ensure_ascii=False, separators=(",", ":")
+    )
+    payload["sources"]["7"].update(
+        created_at="2000-01-02T00:00:00+00:00",
+        request_created_at="2000-01-01T00:00:00+00:00",
+        session_id="s",
+    )
+    assert old_v2.chunks[0].text == json.dumps(
+        payload, ensure_ascii=False, separators=(",", ":")
+    )
+    assert (
+        len(
+            tiktoken.get_encoding("cl100k_base").encode(
+                new.chunks[0].text, disallowed_special=()
+            )
+        )
+        <= 8192
+    )

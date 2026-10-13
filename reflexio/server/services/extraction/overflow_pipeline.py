@@ -25,6 +25,7 @@ from reflexio.server.services.extraction.overflow_presentation import (
     current_overflow_presentation,
     present_extraction_chunk,
     protected_quote_view,
+    protected_source_origins,
 )
 from reflexio.server.services.extraction.protected_record import ProtectedRecord
 from reflexio.server.services.extraction.resumable_agent import (
@@ -384,6 +385,11 @@ def extract_overflow_window(
                             "answer_witnesses", {}
                         ),
                         "candidates": candidates,
+                        **protected_source_origins(
+                            prepared,
+                            protected,
+                            source_spans=coordinator.carried_source_spans or (),
+                        ),
                     },
                     ensure_ascii=False,
                     separators=(",", ":"),

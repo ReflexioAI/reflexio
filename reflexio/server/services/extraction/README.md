@@ -59,6 +59,18 @@ Extraction records durable agent state and pending human calls; the scheduler di
 
 ### Overflow recovery
 
+New preparation version 3 includes the original `Request.source` alongside
+transcript role, including an empty source as unknown. Protected quotations and
+carried proof retain verified producer labels: a `User` role alone does not prove
+human authorship or approval. Frozen version 1/2 plans keep their prior framing
+and receipts.
+
+Any `overflow` key in a parent snapshot excludes it from legacy retry,
+finalization, discovery and selected recovery. Corrections to consumed answers
+after protocol completion remain durable and unconsumed; automatic recomputation
+of these completed protocol runs is currently unsupported. The original output
+and attempt journal remain intact.
+
 Overflow runs preserve original timestamps and session identities in their
 prepared sources. A typed provider context-capacity rejection can freeze one
 smaller source plan before the next worker turn, retaining all consumed quota,

@@ -20,6 +20,9 @@ from reflexio.server.llm.input_budget import (
     InputBudgetExceededError,
 )
 from reflexio.server.services.extraction.overflow_coordinator import OverflowCoordinator
+from reflexio.server.services.extraction.overflow_presentation import (
+    protected_source_origins,
+)
 from reflexio.server.services.playbook.components.overflow_evidence import (
     historical_playbook_digest,
 )
@@ -575,6 +578,7 @@ def verified_consolidation_decisions(
         for row in selected
     ]
     records = []
+    origin_records = []
     for row in new:
         record = coordinator.candidate_records.get(coordinator.playbook_key(row))
         if record is None:
@@ -582,6 +586,7 @@ def verified_consolidation_decisions(
                 "Consolidation candidate lacks original evidence"
             )
         records.append(record.model_dump(mode="json"))
+        origin_records.append(record)
     messages = [
         {"role": "system", "content": VERIFY_POLICY},
         {
@@ -596,6 +601,11 @@ def verified_consolidation_decisions(
                     "reference_convention": "All bare existing integers resolve by list position FIRST, then database ID.",
                     "protected_context": coordinator.record.model_dump(mode="json"),
                     "human_answers": coordinator.checkpoint.get("answer_witnesses", {}),
+                    **protected_source_origins(
+                        coordinator.require_prepared(),
+                        coordinator.record,
+                        *origin_records,
+                    ),
                 },
                 ensure_ascii=False,
             ),

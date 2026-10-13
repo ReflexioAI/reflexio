@@ -20,6 +20,38 @@ from reflexio.server.services.extraction.protected_record import (
 )
 
 
+def protected_source_origins(
+    prepared: PreparedExtractionInput,
+    *records: ProtectedRecord,
+    source_spans: tuple[SourceSpan, ...] = (),
+) -> dict[str, Any]:
+    """V3 source attribution is contextual metadata, never a rewritten record."""
+    approved = tuple(
+        span for chunk in prepared.chunks for span in (*chunk.neighbors, *chunk.spans)
+    )
+    if not any(span.request_source is not None for span in approved):
+        return {}
+    origins = {}
+    for carried in source_spans:
+        span = resolve_evidence_span(carried.evidence_ref, approved)
+        if span != carried:
+            raise InputBudgetConfigurationError("Carried source origin changed")
+        origins[span.evidence_ref] = span.origin_payload()
+    for record in records:
+        for item in record.evidence:
+            for ref in item.evidence_refs:
+                span = resolve_evidence_span(ref, approved)
+                origins[ref] = span.origin_payload()
+    return {
+        "protected_source_origins": origins,
+        "source_attribution_policy": (
+            "Request source identifies the producer or workflow. Transcript role User "
+            "does not prove direct human authorship or permission. Generated or internal "
+            "requests are not user approval; an empty source is unknown, not human approval."
+        ),
+    }
+
+
 class ProtectedQuoteAmbiguityError(InputBudgetConfigurationError):
     """A quotation needs a more specific original range before freezing."""
 
@@ -98,6 +130,7 @@ class OverflowPresentation:
                     0
                 ].model_dump(mode="json"),
                 "original_chunk": original,
+                **protected_source_origins(self.prepared, self.record),
             },
             ensure_ascii=False,
             separators=(",", ":"),

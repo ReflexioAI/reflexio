@@ -200,8 +200,8 @@ class WindowExecutor:
         chunk_tokens = manifest.get("input_chunk_tokens", 8192) if manifest else 10000
         if type(chunk_tokens) is not int or chunk_tokens not in {8192, 10000}:
             raise InputBudgetConfigurationError("Extraction partition changed")
-        preparation_version = manifest.get("preparation_version", 1) if manifest else 2
-        if preparation_version not in {1, 2}:
+        preparation_version = manifest.get("preparation_version", 1) if manifest else 3
+        if type(preparation_version) is not int or preparation_version not in {1, 2, 3}:
             raise InputBudgetConfigurationError(
                 "Unknown extraction preparation version"
             )
@@ -209,7 +209,8 @@ class WindowExecutor:
             groups,
             user_id=window.user_id,
             chunk_tokens=chunk_tokens,
-            require_overlap=preparation_version == 2,
+            require_overlap=preparation_version >= 2,
+            include_request_source=preparation_version == 3,
         )
         if not prepared.chunks:
             if manifest is not None:
@@ -440,7 +441,9 @@ class WindowExecutor:
                 if finalized is None:
                     raise RuntimeError("Extraction gate parent lost ownership")
             effects = encode_plan(plan, service)
-            effects["billing"] = self._billing_snapshot(window, service, plan)
+            effects["billing"] = self._billing_snapshot(
+                window, service, plan, coordinator
+            )
             self.storage.complete_extraction(window, token, effects)
         record_health("worker.commits")
 
@@ -521,7 +524,11 @@ class WindowExecutor:
         )
 
     def _billing_snapshot(
-        self, window: Window, service: Any, plan: Any
+        self,
+        window: Window,
+        service: Any,
+        plan: Any,
+        coordinator: OverflowCoordinator | None = None,
     ) -> dict[str, Any] | None:
         from reflexio.server.llm.token_accounting import RunTokenTotals
         from reflexio.server.metering_signals import (
@@ -542,15 +549,25 @@ class WindowExecutor:
         if plan.finalization_result is not None:
             ids = plan.finalization_result.learning_ids
         totals = plan.token_totals or RunTokenTotals()
+        if coordinator is not None:
+            fields: dict[tuple[int, str, str], list[str]] = {}
+            for chunk in coordinator.require_prepared().chunks:
+                for span in chunk.spans:
+                    fields.setdefault(
+                        (span.interaction_id, span.request_id, span.field), []
+                    ).append(span.text)
+            # Rejoin primary pieces before tokenizing: partition boundaries,
+            # neighbors and repeated provider calls are not new source input.
+            input_text = "\n".join("".join(pieces) for pieces in fields.values())
+        else:
+            input_text = service._extraction_input_text(plan.prepared)
         return {
             "ids": ids,
             "created_at": time.time(),
             "platform_llm": platform_llm_from_config(
                 self.context.configurator.get_config()
             ),
-            "input_tokens": count_input_tokens(
-                service._extraction_input_text(plan.prepared)
-            ),
+            "input_tokens": count_input_tokens(input_text),
             "prompt_tokens": totals.prompt_tokens,
             "completion_tokens": totals.completion_tokens,
             # `.get(...)` on the read side, not here: an effects blob written by

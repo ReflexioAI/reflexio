@@ -15,6 +15,11 @@ from typing import Any
 from ._models import AgentRunRecord, AgentRunStatus
 
 
+def is_overflow_protocol_run(run: AgentRunRecord) -> bool:
+    """A durable protocol marker assigns execution to the window coordinator."""
+    return "overflow" in run.generation_request_snapshot
+
+
 class AgentRunStoreABC:
     """Backend-neutral agent-run lifecycle store contract."""
 
@@ -94,6 +99,7 @@ class AgentRunStoreABC:
         now: datetime | None = None,
         claim_ttl_seconds: int = 600,
     ) -> AgentRunRecord | None:
+        """Claim legacy work only; overflow-marked runs belong to window workers."""
         raise NotImplementedError(f"{type(self).__name__} does not support agent runs")
 
     def claim_finalization_failed_agent_run(
@@ -104,6 +110,7 @@ class AgentRunStoreABC:
         now: datetime | None = None,
         claim_ttl_seconds: int = 600,
     ) -> AgentRunRecord | None:
+        """Claim legacy finalization only, excluding any durable overflow marker."""
         raise NotImplementedError(f"{type(self).__name__} does not support agent runs")
 
     def claim_agent_run_for_recovery(

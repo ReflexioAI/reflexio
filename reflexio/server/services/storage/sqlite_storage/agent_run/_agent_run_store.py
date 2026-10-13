@@ -56,6 +56,7 @@ class SQLiteAgentRunStoreMixin:
                 finalized_at = COALESCE(finalized_at, ?),
                 updated_at = ?
             WHERE status = ?
+              AND json_type(generation_request_snapshot, '$.overflow') IS NULL
               AND NOT EXISTS (
                 SELECT 1
                 FROM _run_tool_dependencies d
@@ -123,6 +124,7 @@ class SQLiteAgentRunStoreMixin:
                 finalized_at = COALESCE(finalized_at, ?),
                 updated_at = ?
             WHERE status IN (?, ?)
+              AND json_type(generation_request_snapshot, '$.overflow') IS NULL
               AND EXISTS (
                 SELECT 1
                 FROM _run_tool_dependencies changed
@@ -455,6 +457,7 @@ class SQLiteAgentRunStoreMixin:
                 SELECT r.*
                 FROM _agent_runs r
                 WHERE r.org_id = ?
+                  AND json_type(r.generation_request_snapshot, '$.overflow') IS NULL
                   AND (
                     r.status = ?
                     OR (r.status = ? AND r.claimed_at < ?)
@@ -539,6 +542,7 @@ class SQLiteAgentRunStoreMixin:
                 SELECT *
                 FROM _agent_runs r
                 WHERE org_id = ?
+                  AND json_type(r.generation_request_snapshot, '$.overflow') IS NULL
                   AND (
                     status = ?
                     OR (status = ? AND claimed_at < ?)
@@ -642,6 +646,7 @@ class SQLiteAgentRunStoreMixin:
                 """UPDATE _agent_runs SET status='finalizing', claimed_by=?,
                   claimed_at=?, updated_at=?, recovery_operation_id=?
                 WHERE id=? AND org_id=? AND org_id=? AND updated_at=?
+                  AND json_type(generation_request_snapshot, '$.overflow') IS NULL
                   AND (status='finalization_failed'
                     OR (status='agent_completed' AND updated_at<?)
                     OR (status='finalizing' AND claimed_at<?))
@@ -691,6 +696,7 @@ class SQLiteAgentRunStoreMixin:
                 SELECT r.org_id
                 FROM _agent_runs r
                 WHERE r.status IN (?, ?)
+                  AND json_type(r.generation_request_snapshot, '$.overflow') IS NULL
                   AND EXISTS (
                     SELECT 1
                     FROM _run_tool_dependencies d
@@ -705,6 +711,7 @@ class SQLiteAgentRunStoreMixin:
                 UNION
                 SELECT org_id FROM _agent_runs
                 WHERE status IN (?, ?, ?)
+                  AND json_type(generation_request_snapshot, '$.overflow') IS NULL
                 UNION
                 SELECT org_id FROM _pending_tool_calls
                 WHERE status = ?

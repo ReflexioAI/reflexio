@@ -49,6 +49,7 @@ class SourceSpan:
     created_at: int | None = None
     request_created_at: int | None = None
     session_id: str | None = None
+    request_source: str | None = None
 
     @property
     def evidence_ref(self) -> str:
@@ -87,6 +88,8 @@ class SourceSpan:
             ).isoformat()
         if self.session_id is not None:
             payload["session_id"] = self.session_id
+        if self.request_source is not None:
+            payload["request_source"] = self.request_source
         return payload
 
 
@@ -227,6 +230,7 @@ def _split_field(
     created_at: int | None = None,
     request_created_at: int | None = None,
     session_id: str | None = None,
+    request_source: str | None = None,
 ) -> Iterator[SourceSpan]:
     start = 0
     while start < len(text):
@@ -259,6 +263,7 @@ def _split_field(
             created_at,
             request_created_at,
             session_id,
+            request_source,
         )
         start = best
 
@@ -272,12 +277,15 @@ def prepare_extraction_input(
     max_chunks: int = 48,
     overlap_tokens: int = 256,
     require_overlap: bool = False,
+    include_request_source: bool = False,
 ) -> PreparedExtractionInput:
     """Build bounded chunks without dropping or mutating source text.
 
     Inputs must already be loaded from the scoped storage reference. This extra
     owner check rejects accidental mixed-owner input; project/tenant checks stay
     at that storage boundary. Chunk capacities include JSON evidence framing.
+    ``include_request_source`` selects v3 attribution; keep it false when
+    rebuilding an admitted v1/v2 plan so its framing and receipts remain stable.
     """
     if (
         not user_id
@@ -352,6 +360,9 @@ def prepare_extraction_input(
                     if require_overlap
                     else None,
                     session_id=session.session_id if require_overlap else None,
+                    request_source=session.request.source
+                    if include_request_source
+                    else None,
                 ):
                     evidence_cost = (
                         len(

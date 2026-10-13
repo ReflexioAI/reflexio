@@ -399,3 +399,120 @@ def test_quote_only_protected_rendering_retains_the_record_capacity_guard():
     pytest.fail(
         "Fixture must cross the rendered-ref capacity boundary while the stored record still fits"
     )
+
+
+@pytest.mark.parametrize("producer", ["system", "internal", ""])
+def test_v3_provider_context_keeps_internal_producer_and_original_quote_role(
+    monkeypatch, producer
+):
+    from dataclasses import replace
+    from types import SimpleNamespace
+
+    from reflexio.server.llm.input_budget import InputBudgetConfigurationError
+    from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
+    from reflexio.server.services.extraction.overflow_presentation import (
+        protected_source_origins,
+    )
+    from reflexio.server.services.profile.profile_generation_service_utils import (
+        StructuredProfilesOutput,
+    )
+
+    text = "This generated user-role message reports approval."
+    earlier = RequestInteractionDataModel(
+        session_id="s",
+        request=Request(request_id="r", user_id="u", session_id="s", source=producer),
+        interactions=[
+            Interaction(
+                interaction_id=7, request_id="r", user_id="u", role="User", content=text
+            )
+        ],
+    )
+    plan = prepare_extraction_input(
+        [earlier], user_id="u", require_overlap=True, include_request_source=True
+    )
+    span = plan.chunks[0].spans[0]
+    record = ProtectedRecord().merge(
+        ProtectedRecordUpdate(
+            evidence=[
+                ProtectedEvidence(
+                    kind="instruction",
+                    evidence_refs=(span.evidence_ref,),
+                    quote="reports approval",
+                    role="Assistant",
+                )
+            ]
+        ),
+        visible_spans=(span,),
+    )
+    assert (
+        record.evidence[0].role == "User" and record.evidence[0].kind == "instruction"
+    )
+    original_record = record.model_dump(mode="json")
+    # Protected schema and durable serialization remain unchanged across versions.
+    assert '"request_source"' not in json.dumps(
+        ProtectedRecordUpdate.model_json_schema()
+    )
+    assert all("request_source" not in item for item in original_record["evidence"])
+    metadata = protected_source_origins(plan, record)
+    origin = metadata["protected_source_origins"][span.evidence_ref]
+    assert origin["request_source"] == producer and origin["role"] == "User"
+    assert "not user approval" in metadata["source_attribution_policy"]
+    # Raw carried proof receives the same producer context even with no record.
+    carried = protected_source_origins(plan, source_spans=(span,))
+    assert (
+        carried["protected_source_origins"][span.evidence_ref]["request_source"]
+        == producer
+    )
+    with pytest.raises(InputBudgetConfigurationError, match="origin changed"):
+        protected_source_origins(
+            plan, source_spans=(replace(span, request_source="forged-human"),)
+        )
+    manager = Mock()
+    manager.render_prompt.side_effect = lambda _prompt, variables: json.dumps(variables)
+    with present_extraction_chunk(plan, plan.chunks[0], record):
+        messages = construct_profile_extraction_messages_from_sessions(
+            manager, [earlier], [], "agent", "context", "definition"
+        )
+    seen = []
+
+    def respond(params, hard_timeout):
+        seen.append(params["messages"])
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content='{"profiles":[]}', tool_calls=None, refusal=None
+                    ),
+                    finish_reason="stop",
+                )
+            ],
+            usage=SimpleNamespace(
+                prompt_tokens=100, completion_tokens=20, total_tokens=120
+            ),
+            model="gpt-4o",
+            _hidden_params={"custom_llm_provider": "openai"},
+        )
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key-no-provider")
+    client = LiteLLMClient(
+        LiteLLMConfig(model="gpt-4o", max_tokens=1024, fallback_models=[])
+    )
+    monkeypatch.setattr(client, "_completion_with_hard_timeout", respond)
+    result = client.generate_chat_response_with_provenance(
+        messages=messages, response_format=StructuredProfilesOutput
+    )
+    assert result.value == StructuredProfilesOutput(profiles=[])
+    assert len(seen) == 1
+    wire = json.dumps(seen[0]).replace("\\", "").replace(" ", "")
+    assert f'"request_source":"{producer}"' in wire
+    assert "doesnotprovedirecthumanauthorship" in wire
+    assert record.model_dump(mode="json") == original_record
+    for dated in (False, True):
+        old = prepare_extraction_input([earlier], user_id="u", require_overlap=dated)
+        assert protected_source_origins(old, record) == {}
+        with present_extraction_chunk(old, old.chunks[0], record):
+            presentation = current_overflow_presentation.get()
+            assert presentation is not None
+            shown = json.loads(presentation.text)
+        assert set(shown) == {"protected_record", "original_chunk"}
+        assert "request_source" not in json.dumps(shown)

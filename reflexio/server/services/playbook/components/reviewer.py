@@ -22,6 +22,9 @@ from reflexio.server.services.extraction.input_preparation import resolve_eviden
 from reflexio.server.services.extraction.overflow_coordinator import (
     current_overflow_coordinator,
 )
+from reflexio.server.services.extraction.overflow_presentation import (
+    protected_source_origins,
+)
 from reflexio.server.services.extraction.protected_record import (
     ProtectedRecord,
     ProtectedRecordUpdate,
@@ -823,6 +826,9 @@ class PlaybookCandidateReviewer:
                             "answer_witnesses", {}
                         ),
                         "scope": "Additional context does not alter the candidate's original source mapping.",
+                        **protected_source_origins(
+                            coordinator.require_prepared(), coordinator.record, record
+                        ),
                     },
                     ensure_ascii=False,
                 ),
