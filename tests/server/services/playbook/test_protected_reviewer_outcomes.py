@@ -34,7 +34,7 @@ from tests.server.services.playbook.test_primary_assessed_playbook_reviewer impo
 )
 
 
-@pytest.mark.parametrize("version", ["1.3.0", "1.47.0", "1.48.0", "1.49.0"])
+@pytest.mark.parametrize("version", ["1.3.0", "1.47.0", "1.48.0", "1.49.0", "1.50.0"])
 def test_protected_combined_review_binds_originals_and_preserves_children(version):
     groups = [_interaction_model(i, "Use width 800.") for i in (101, 102)]
     prepared = prepare_extraction_input(groups, user_id="user-1")
@@ -152,7 +152,7 @@ def test_protected_combined_review_binds_originals_and_preserves_children(versio
         current_overflow_coordinator.reset(token)
 
 
-@pytest.mark.parametrize("version", ["1.3.0", "1.47.0", "1.48.0", "1.49.0"])
+@pytest.mark.parametrize("version", ["1.3.0", "1.47.0", "1.48.0", "1.49.0", "1.50.0"])
 def test_protected_review_cache_identity_records_only_declared_override(version):
     reviewer, client = _reviewer(PlaybookCandidateReviewOutput(decisions=[]))
     coordinator = MagicMock(spec=OverflowCoordinator)
@@ -179,7 +179,7 @@ def test_protected_review_cache_identity_records_only_declared_override(version)
         "reasoning_effort": reviewer.reasoning_effort,
     }
     options = client.generate_chat_response_with_provenance.call_args.kwargs
-    if version in ("1.48.0", "1.49.0"):
+    if version in ("1.48.0", "1.49.0", "1.50.0"):
         identity["temperature_override"] = 0.0
         assert options["temperature"] == 0.0
     else:

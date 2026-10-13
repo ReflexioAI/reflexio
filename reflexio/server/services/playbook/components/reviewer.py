@@ -1637,7 +1637,7 @@ class PlaybookCandidateReviewer:
     ) -> tuple[object, str | None, ModelProvenance | None]:
         """Keep generation settings and cached native output identity together."""
         inference_options: dict[str, Any] = {}
-        if version in ("1.48.0", "1.49.0"):
+        if version in ("1.48.0", "1.49.0", "1.50.0"):
             inference_options["temperature"] = 0.0
         if self.max_tokens is not None:
             inference_options["max_tokens"] = self.max_tokens
@@ -1780,6 +1780,7 @@ class PlaybookCandidateReviewer:
             "1.47.0",
             "1.48.0",
             "1.49.0",
+            "1.50.0",
         }
         inventory_assessed = version in {"1.40.0", "1.41.0"}
         input_use_assessed = version in {
@@ -1819,6 +1820,7 @@ class PlaybookCandidateReviewer:
             "1.47.0",
             "1.48.0",
             "1.49.0",
+            "1.50.0",
         }
         evidence_first = version in {
             "1.14.0",
@@ -1857,6 +1859,7 @@ class PlaybookCandidateReviewer:
             "1.47.0",
             "1.48.0",
             "1.49.0",
+            "1.50.0",
         }
         variables = {
             "agent_context_prompt": agent_context,

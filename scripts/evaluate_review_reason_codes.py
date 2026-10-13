@@ -213,9 +213,10 @@ def _validate_evaluation_arguments(
         "1.47.0",
         "1.48.0",
         "1.49.0",
+        "1.50.0",
     ):
         raise ValueError(
-            "candidate_version must be an experimental reviewer version from 1.4.0 through 1.49.0"
+            "candidate_version must be an experimental reviewer version from 1.4.0 through 1.50.0"
         )
     if baseline_version not in ("1.3.0", "1.40.0"):
         raise ValueError("baseline_version must be 1.3.0 or 1.40.0")
@@ -231,9 +232,12 @@ def _validate_evaluation_arguments(
         raise ValueError(
             "reasoning profile is qualified for the GLM-5.2 experiment only"
         )
-    if candidate_version in ("1.48.0", "1.49.0") and client.config.temperature != 0.0:
+    if (
+        candidate_version in ("1.48.0", "1.49.0", "1.50.0")
+        and client.config.temperature != 0.0
+    ):
         raise ValueError(
-            "v1.48.0/v1.49.0 paired evaluation requires temperature=0 for both arms"
+            "v1.48.0/v1.49.0/v1.50.0 paired evaluation requires temperature=0 for both arms"
         )
 
 
@@ -538,6 +542,7 @@ def main() -> int:
             "1.47.0",
             "1.48.0",
             "1.49.0",
+            "1.50.0",
         ),
         default="1.4.0",
     )
