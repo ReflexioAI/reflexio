@@ -18,7 +18,11 @@ EVIDENCE_SCOPE_POLICY = (
     "supported condition. Before returning a revision, check that content, trigger "
     "and rationale agree on the exact conditions permitting or prohibiting action. "
     "If the original excerpt does not establish those conditions, reject instead "
-    "of inventing a permission rule."
+    "of inventing a permission rule. Do not infer unseen defaults or workflow steps "
+    "from names, searches or file inspection. An exclusion does not establish "
+    "that unlisted cases are excluded. Require evidence for a conditional rule's "
+    "applicability and exceptions; inspecting an example does not prove its steps "
+    "were executed or justify prescribing unstated details."
 )
 
 HISTORICAL_PLAYBOOK_FIELDS = (

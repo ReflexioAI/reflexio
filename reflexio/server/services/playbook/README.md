@@ -350,3 +350,8 @@ Historical source selection uses the same one-correction capacity guard as origi
 selection. An oversized selection can reduce only its new snippets once; retained
 quotations and the 2,048-token carrier ceiling remain fixed. A second over-capacity
 result stops with a typed hold before further fallback dispatch or a new receipt.
+
+Overflow review also rejects inferred defaults and workflow details absent from
+the source: inspecting or searching a file cannot establish execution, and a
+selective exclusion cannot establish a default that excludes every other case.
+Conditional rules must retain their supported applicability and exceptions.
