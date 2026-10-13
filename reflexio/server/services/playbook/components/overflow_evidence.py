@@ -7,6 +7,17 @@ from typing import Any
 
 from reflexio.models.api_schema.service_schemas import UserPlaybook
 
+EVIDENCE_SCOPE_POLICY = (
+    " Code and test excerpts may be incomplete upstream. Preserve visible branch "
+    "conditions, expected outcomes and uncertainty. Names, array positions and "
+    "fixture-specific values establish only their shown local case, not universal "
+    "requirements. Keep checks for required permissions distinct from negative "
+    "controls, and admission distinct from observed execution. A reusable rule "
+    "must state the supported prerequisite and scope; narrow or reject it when "
+    "those conditions are unavailable. Revision must not reverse or broaden a "
+    "supported condition."
+)
+
 HISTORICAL_PLAYBOOK_FIELDS = (
     "user_playbook_id",
     "user_id",

@@ -232,6 +232,11 @@ neighbor evidence. Conservative snippet costs guide selection within the unchang
 2048-token carrier limit; insufficient coverage or capacity blocks publication.
 Valid v1 quotation receipts remain reusable without provider calls; missing work
 and new receipts use a separate v2 key bound to the complete presentation and schema.
+Overflow review and final verification preserve the local scope of code examples
+and test values, including conditional permission checks and admission versus
+execution. Incomplete upstream excerpts cannot establish omitted prerequisites
+or universal requirements. Their trusted policy is separate from source data;
+normal non-overflow reviewer prompts remain unchanged.
 
 Inline consolidation always runs during generation (the legacy `deduplicator` feature flag is retired). The enterprise repo additionally ships a **scheduled second-pass job** (`reflexio_ext/server/services/playbook_reconsolidation/`) that re-runs consolidation daily over already-persisted rows — user playbooks per `(user_id, agent_version)` and agent playbooks per `agent_version` — by rendering each duplicate group as NEW candidates against an empty EXISTING side via `_consolidation_decisions`, then tombstoning merged sources with `merge_records` lineage.
 
