@@ -11,7 +11,7 @@ import hashlib
 import json
 import uuid
 from contextlib import AbstractContextManager
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from datetime import UTC, datetime
 from typing import Any, Literal, Protocol
 
@@ -117,6 +117,81 @@ class OverflowCheckpointConflictError(RuntimeError):
 
 class OverflowAttemptBudgetExceededError(RuntimeError):
     """The logical extraction has consumed all durable provider attempts."""
+
+
+def _valid_overflow_provenance(provenance: Any) -> bool:
+    from reflexio.server.llm._litellm_types import ModelProvenance
+
+    return (
+        isinstance(provenance, dict)
+        and set(provenance).issubset(field.name for field in fields(ModelProvenance))
+        and all(
+            value is None or isinstance(value, str) for value in provenance.values()
+        )
+    )
+
+
+def validate_extraction_overflow_manifest(manifest: Any) -> dict[str, Any]:
+    """Reject damaged saved quota before mutation or provider admission."""
+    from reflexio.server.llm.token_accounting import RunTokenTotals
+
+    if (
+        not isinstance(manifest, dict)
+        or type(manifest.get("version")) is not int
+        or manifest["version"] != 1
+        or not isinstance(manifest.get("source_digest"), str)
+        or type(manifest.get("attempt_limit")) is not int
+        or manifest["attempt_limit"] != 128
+        or type(manifest.get("revision")) is not int
+        or not isinstance(manifest.get("attempts"), list)
+    ):
+        raise OverflowCheckpointConflictError("Invalid extraction overflow marker")
+    checkpoint = manifest.get("checkpoint")
+    if (
+        not isinstance(checkpoint, dict)
+        or not isinstance(checkpoint.get("stage"), str)
+        or not checkpoint["stage"]
+        or not isinstance(checkpoint.get("completed_steps"), dict)
+        or len(checkpoint["completed_steps"]) > 128
+    ):
+        raise OverflowCheckpointConflictError("Invalid extraction checkpoint")
+    for key, receipt in checkpoint["completed_steps"].items():
+        if (
+            not isinstance(key, str)
+            or not key
+            or not isinstance(receipt, dict)
+            or "output" not in receipt
+            or "model_provenance" not in receipt
+            or not _valid_overflow_provenance(receipt["model_provenance"])
+        ):
+            raise OverflowCheckpointConflictError("Invalid extraction step receipt")
+    attempts = manifest["attempts"]
+    if len(attempts) > 128:
+        raise OverflowCheckpointConflictError("Invalid extraction attempt journal")
+    usage_fields = {field.name for field in fields(RunTokenTotals)}
+    identities: set[str] = set()
+    for attempt in attempts:
+        if (
+            not isinstance(attempt, dict)
+            or not isinstance(attempt.get("id"), str)
+            or not attempt["id"]
+            or attempt["id"] in identities
+            or "usage" not in attempt
+            or "model_provenance" not in attempt
+        ):
+            raise OverflowCheckpointConflictError("Invalid extraction attempt journal")
+        identities.add(attempt["id"])
+        usage = attempt["usage"]
+        if usage is not None and (
+            not isinstance(usage, dict)
+            or set(usage) != usage_fields
+            or any(type(value) is not int or value < 0 for value in usage.values())
+        ):
+            raise OverflowCheckpointConflictError("Invalid extraction attempt usage")
+        provenance = attempt["model_provenance"]
+        if provenance is not None and not _valid_overflow_provenance(provenance):
+            raise OverflowCheckpointConflictError("Invalid extraction model provenance")
+    return manifest
 
 
 class ExtractionStreamStore:
@@ -1065,7 +1140,8 @@ class ExtractionStreamStore:
                 )
             snapshot = decoded(rows[0]["generation_request_snapshot"])
             existing = snapshot.get("overflow")
-            if existing is not None:
+            if "overflow" in snapshot:
+                existing = validate_extraction_overflow_manifest(existing)
                 if existing.get("source_digest") != source_digest:
                     raise OverflowCheckpointConflictError(
                         "Extraction source binding changed"
@@ -1155,14 +1231,10 @@ class ExtractionStreamStore:
                     "Extraction coordinator is unavailable"
                 )
             snapshot = decoded(rows[0]["generation_request_snapshot"])
-            manifest = snapshot.get("overflow")
+            manifest = validate_extraction_overflow_manifest(snapshot.get("overflow"))
             if (
-                not isinstance(manifest, dict)
-                or manifest.get("version") != 1
-                or manifest.get("revision") != expected_revision
+                manifest.get("revision") != expected_revision
                 or manifest.get("source_digest") != source_digest
-                or manifest.get("attempt_limit") != 128
-                or not isinstance(manifest.get("attempts"), list)
             ):
                 raise OverflowCheckpointConflictError(
                     "Extraction checkpoint binding changed"
@@ -1190,17 +1262,7 @@ class ExtractionStreamStore:
                     )
                 attempt = matches[0]
                 usage = observed_attempt.get("usage")
-                fields = {
-                    "prompt_tokens",
-                    "completion_tokens",
-                    "cache_read_input_tokens",
-                    "cache_write_input_tokens",
-                }
-                if (
-                    not isinstance(usage, dict)
-                    or set(usage) != fields
-                    or any(type(n) is not int or n < 0 for n in usage.values())
-                ):
+                if not isinstance(usage, dict):
                     raise ValueError("Invalid provider usage observation")
                 provenance = observed_attempt.get("model_provenance")
                 if attempt["usage"] is not None and (
@@ -1212,6 +1274,9 @@ class ExtractionStreamStore:
                     )
                 attempt["usage"], attempt["model_provenance"] = usage, provenance
             if checkpoint is not None:
+                validate_extraction_overflow_manifest(
+                    {**manifest, "checkpoint": checkpoint}
+                )
                 previous_steps = manifest.get("checkpoint", {}).get(
                     "completed_steps", {}
                 )
@@ -1269,6 +1334,7 @@ class ExtractionStreamStore:
                 if schema_name is not None:
                     snapshot["output_schema_name"] = schema_name
                 manifest["checkpoint"] = checkpoint
+            validate_extraction_overflow_manifest(manifest)
             manifest["revision"] += 1
             db.query(
                 f"UPDATE {db.table('_agent_runs')} SET generation_request_snapshot=? WHERE id=? AND org_id=? AND user_id=?",
