@@ -778,3 +778,93 @@ def test_http_receipt_issuance_does_not_open_an_exposure_writer(path):
     assert response.json()["user_playbooks"][0]["exposure_receipt"] == "test-receipt"
     assert len(issuer.batches) == 1
     reflexio.get_storage.return_value._writer_connection.assert_not_called()
+
+
+@pytest.mark.parametrize("path", ["/api/search", "/api/search_user_playbooks"])
+def test_legacy_recorder_serves_final_results_when_receipt_issuer_is_absent(
+    path: str,
+) -> None:
+    from reflexio.server.services.search_exposure import SEARCH_EXPOSURE_RECORDER
+
+    recorder = MagicMock()
+    register_service(SEARCH_EXPOSURE_RECORDER, recorder)
+    playbooks = [_playbook(11, "First"), _playbook(12, "Second")]
+    with _search_results(playbooks):
+        dashboard = _client("dashboard").post(
+            path, json={"query": "inspect", "user_id": "user-1"}
+        )
+        response = _client().post(
+            path, json={"query": "answer", "user_id": "user-1", "request_id": "served"}
+        )
+    assert dashboard.status_code == response.status_code == 200
+    recorder.record.assert_called_once()
+    batch = recorder.record.call_args.args[0]
+    assert batch.user_playbooks == tuple(playbooks)
+    assert batch.org_id == "org-1"
+    assert batch.request_id == "served"
+
+
+@pytest.mark.parametrize("path", ["/api/search", "/api/search_user_playbooks"])
+def test_receipt_issuer_does_not_duplicate_legacy_recording(path: str) -> None:
+    from reflexio.server.services.search_exposure import SEARCH_EXPOSURE_RECORDER
+
+    recorder = MagicMock()
+    issuer = _Issuer()
+    register_service(SEARCH_EXPOSURE_RECORDER, recorder)
+    register_service(SEARCH_EXPOSURE_RECEIPT_ISSUER, issuer)
+    with _search_results([_playbook(11, "First")]):
+        response = _client().post(path, json={"query": "answer", "user_id": "user-1"})
+    assert response.status_code == 200
+    assert len(issuer.batches) == 1
+    recorder.record.assert_not_called()
+
+
+@pytest.mark.parametrize("path", ["/api/search", "/api/search_user_playbooks"])
+def test_legacy_recorder_does_not_record_failed_search(path: str) -> None:
+    from reflexio.server.services.search_exposure import SEARCH_EXPOSURE_RECORDER
+
+    recorder = MagicMock()
+    register_service(SEARCH_EXPOSURE_RECORDER, recorder)
+    with _search_results([_playbook(11, "First")]) as reflexio:
+        reflexio.unified_search.return_value.success = False
+        reflexio.search_user_playbooks.return_value.success = False
+        response = _client().post(path, json={"query": "answer", "user_id": "user-1"})
+    # Dedicated searches retain their existing 200/success=False contract.
+    assert response.status_code == (503 if path == "/api/search" else 200)
+    if path != "/api/search":
+        assert response.json()["success"] is False
+    recorder.record.assert_not_called()
+
+
+@pytest.mark.parametrize("path", ["/api/search", "/api/search_user_playbooks"])
+def test_search_without_either_exposure_provider_remains_supported(path: str) -> None:
+    with _search_results([_playbook(11, "First")]):
+        response = _client().post(path, json={"query": "answer", "user_id": "user-1"})
+    assert response.status_code == 200
+    assert [row["content"] for row in response.json()["user_playbooks"]] == ["First"]
+
+
+def test_unified_legacy_recording_waits_for_response_acceptance() -> None:
+    from reflexio.server.services.search_exposure import SEARCH_EXPOSURE_RECORDER
+
+    recorder = MagicMock()
+    register_service(SEARCH_EXPOSURE_RECORDER, recorder)
+    callbacks = []
+    with (
+        _search_results([_playbook(11, "First")]),
+        patch(
+            "reflexio.server.routes.search.search_runtime.on_response_accepted",
+            side_effect=lambda name, callback, *, order: callbacks.append(
+                (name, callback, order)
+            ),
+        ),
+    ):
+        response = _client().post(
+            "/api/search", json={"query": "answer", "user_id": "user-1"}
+        )
+    assert response.status_code == 200
+    recorder.record.assert_not_called()
+    exposure = [item for item in callbacks if item[0] == "exposure"]
+    assert len(exposure) == 1 and exposure[0][2] == 0
+    exposure[0][1]()
+    recorder.record.assert_called_once()
