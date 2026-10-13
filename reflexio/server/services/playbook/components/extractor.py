@@ -112,6 +112,10 @@ def _adopted_playbook_schema(
     return schema
 
 
+class _AmbiguousFreshEvidenceError(ValueError):
+    """A coarse quotation identifies more than one original source location."""
+
+
 def _fresh_candidate_record(
     entry: StructuredPlaybookContent,
     context: PlaybookPromptContext,
@@ -133,20 +137,50 @@ def _fresh_candidate_record(
         quote = resolve_verbatim_source_span(
             item.source_span.strip(), source.evidence_texts
         )
-        matches = [
-            span
-            for span in spans
-            if span.interaction_id == source.interaction_id
-            and quote is not None
-            and quote in span.text
-        ]
-        if not matches or quote is None:
+        if quote is None:
             raise ValueError("Candidate quote lacks its original source")
-        quoted.extend(
+        # The supplied context pins visibility; identical text elsewhere in the
+        # same original turn must not become this child's supporting evidence.
+        occurrences: dict[tuple[int, str, int, int], list[SourceSpan]] = {}
+        for unit in context.evidence_units.values():
+            if (
+                unit.turn_ref != item.turn_ref.strip()
+                or unit.interaction_id != source.interaction_id
+                or unit.request_id != source.request_id
+            ):
+                continue
+            span = by_ref.get(unit.evidence_ref)
+            if (
+                span is None
+                or span.interaction_id != unit.interaction_id
+                or span.request_id != unit.request_id
+                or span.text != unit.source_span
+            ):
+                raise ValueError("Candidate visible evidence binding changed")
+            offset = span.text.find(quote)
+            while offset >= 0:
+                physical = (
+                    span.interaction_id,
+                    span.field,
+                    span.start + offset,
+                    span.start + offset + len(quote),
+                )
+                occurrences.setdefault(physical, []).append(span)
+                offset = span.text.find(quote, offset + 1)
+        if not occurrences:
+            raise ValueError("Candidate quote lacks its visible original source")
+        if len(occurrences) != 1:
+            raise _AmbiguousFreshEvidenceError("Candidate quote is ambiguous")
+        # Neighbor and primary frames may expose the same physical occurrence.
+        # Keep one deterministic containing range, never duplicate its cost.
+        matched = min(
+            next(iter(occurrences.values())),
+            key=lambda span: (span.end - span.start, span.start, span.evidence_ref),
+        )
+        quoted.append(
             ProtectedEvidence(
-                kind="uncertainty", evidence_refs=(span.evidence_ref,), quote=quote
+                kind="uncertainty", evidence_refs=(matched.evidence_ref,), quote=quote
             )
-            for span in matches
         )
     record = ProtectedRecord().merge(
         ProtectedRecordUpdate(evidence=quoted), visible_spans=spans
@@ -177,6 +211,13 @@ def _fresh_output_validation_errors(
                     "clause remains supported, or shorter exact original quotations when "
                     "the supplied schema permits them. Never truncate evidence or omit a "
                     "supported candidate merely to satisfy the bound."
+                )
+            except _AmbiguousFreshEvidenceError:
+                reason = (
+                    "ambiguous_source_quote: quote enough exact original surrounding "
+                    "text to identify one physical occurrence, or use exact evidence_refs "
+                    "when the supplied schema permits them. Do not attach every matching "
+                    "occurrence, paraphrase evidence, or omit a supported candidate."
                 )
         if reason is not None:
             errors.append(f"playbooks[{index}]: {reason}")

@@ -48,7 +48,11 @@ from reflexio.server.services.profile.profile_generation_service_utils import (
     ProfileGenerationRequest,
 )
 from reflexio.server.services.profile.service import ProfileGenerationService
-from reflexio.server.services.storage.storage_base import AgentRunStatus, BaseStorage
+from reflexio.server.services.storage.storage_base import (
+    AgentRunRecord,
+    AgentRunStatus,
+    BaseStorage,
+)
 from reflexio.server.services.storage.storage_base._extraction_stream import (
     Window,
     WindowInputsDeletedError,
@@ -134,6 +138,26 @@ class WindowExecutor:
         service._last_precheck_sessions = groups
         return service, request, config
 
+    @staticmethod
+    def _bypass_overflow_admission(
+        window: Window,
+        known: AgentRunRecord | None,
+        manifest: dict[str, Any] | None,
+    ) -> bool:
+        if env_bool("MOCK_LLM_RESPONSE", default=False):
+            if known is not None:
+                # A mode toggle must not replace durable real work with fake
+                # results, fabricate source coverage, or refund its quota.
+                raise InputBudgetConfigurationError(
+                    "Mock mode cannot replace an existing extraction agent run"
+                )
+            # Simulations have no provider input to budget. Keep their established
+            # mock extraction/persistence behavior without admitting a protocol.
+            return True
+        # Enabling admission cannot strand a validated legacy write plan whose
+        # computation finished before its persistence retry.
+        return manifest is None and window.outcome is not None
+
     def _coordinator(
         self,
         window: Window,
@@ -144,9 +168,7 @@ class WindowExecutor:
     ) -> OverflowCoordinator | None:
         known = self.storage.get_agent_run(f"window:{window.window_id}")
         manifest = known.generation_request_snapshot.get("overflow") if known else None
-        if manifest is None and window.outcome is not None:
-            # Enabling admission cannot strand a validated legacy write plan
-            # whose computation finished before its persistence retry.
+        if self._bypass_overflow_admission(window, known, manifest):
             return None
         if manifest is None and not env_bool(
             "REFLEXIO_EXTRACTION_OVERFLOW_ENABLED", default=False

@@ -73,6 +73,54 @@ def _evidence_unit(
     )
 
 
+def _fresh_quote_context(spans):
+    from reflexio.server.services.playbook.playbook_service_utils import (
+        PlaybookPromptContext,
+    )
+
+    sources = {}
+    units = {}
+    for span in spans:
+        turn = f"T{span.source_order}"
+        previous = sources.get(turn)
+        sources[turn] = PlaybookEvidenceSource(
+            span.interaction_id,
+            span.request_id,
+            (*previous.evidence_texts, span.text) if previous else (span.text,),
+            role=span.role,
+        )
+        units[span.evidence_ref] = PlaybookEvidenceUnit(
+            evidence_ref=span.evidence_ref,
+            turn_ref=turn,
+            source_span=span.text,
+            interaction_id=span.interaction_id,
+            request_id=span.request_id,
+            role=span.role,
+        )
+    return PlaybookPromptContext("", sources, units)
+
+
+def _fresh_quote_output(quotation):
+    from reflexio.server.services.playbook.playbook_service_utils import (
+        StructuredExtractedPlaybookContent,
+        StructuredExtractedPlaybookList,
+    )
+
+    return StructuredExtractedPlaybookList(
+        playbooks=[
+            StructuredExtractedPlaybookContent(
+                rationale="The user corrected the scope of preparation.",
+                evidence_kind="correction",
+                trigger="When preparing a change",
+                content="Respect the user's scoped preparation instruction.",
+                evidence=[
+                    StructuredPlaybookEvidence(turn_ref="T1", source_span=quotation)
+                ],
+            )
+        ]
+    )
+
+
 @pytest.mark.parametrize(
     "quotation",
     [
@@ -87,18 +135,13 @@ def test_fresh_overflow_carrier_uses_the_validated_original_quotation(quotation)
         _fresh_output_validation_errors,
     )
     from reflexio.server.services.playbook.playbook_service_utils import (
-        PlaybookPromptContext,
         StructuredExtractedPlaybookContent,
         StructuredExtractedPlaybookList,
     )
 
     text = "Deliver the “finished artifact” now."
     span = SourceSpan(7, "request-7", "user", "content", 0, len(text), text, 1)
-    context = PlaybookPromptContext(
-        "",
-        {"T1": PlaybookEvidenceSource(7, "request-7", (text,), role="user")},
-        {},
-    )
+    context = _fresh_quote_context((span,))
     output = StructuredExtractedPlaybookList(
         playbooks=[
             StructuredExtractedPlaybookContent(
@@ -122,6 +165,91 @@ def test_fresh_overflow_carrier_uses_the_validated_original_quotation(quotation)
     assert len(record.evidence) == 1
     assert record.evidence[0].quote == text
     assert record.evidence[0].evidence_refs == (span.evidence_ref,)
+
+
+def test_fresh_quote_uses_only_visible_chunks_and_global_ambiguity_needs_repair():
+    from reflexio.server.services.extraction.input_preparation import SourceSpan
+    from reflexio.server.services.playbook.components.extractor import (
+        _fresh_candidate_record,
+        _fresh_output_validation_errors,
+    )
+    from reflexio.server.services.playbook.playbook_evidence import as_playbook_content
+
+    text = "Prepare only."
+    first = SourceSpan(7, "request-7", "user", "content", 0, len(text), text, 1)
+    second = SourceSpan(
+        7, "request-7", "user", "content", 1000, 1000 + len(text), text, 1
+    )
+    output = _fresh_quote_output(text)
+    visible = _fresh_quote_context((first,))
+    assert _fresh_output_validation_errors(output, visible, (first, second)) == []
+    record = _fresh_candidate_record(
+        as_playbook_content(output.playbooks[0]), visible, (first, second)
+    )
+    assert len(record.evidence) == 1
+    assert record.evidence[0].evidence_refs == (first.evidence_ref,)
+    global_context = _fresh_quote_context((first, second))
+    errors = _fresh_output_validation_errors(output, global_context, (first, second))
+    assert len(errors) == 1
+    assert "ambiguous_source_quote" in errors[0]
+    assert "Do not attach every matching occurrence" in errors[0]
+
+
+def test_fresh_quote_overlap_frames_count_one_physical_occurrence():
+    from reflexio.server.services.extraction.input_preparation import SourceSpan
+    from reflexio.server.services.playbook.components.extractor import (
+        _fresh_candidate_record,
+        _fresh_output_validation_errors,
+    )
+    from reflexio.server.services.playbook.playbook_evidence import as_playbook_content
+
+    text = "Before. Prepare only. Afterwards."
+    quote = "Prepare only."
+    start = text.index(quote)
+    primary = SourceSpan(7, "request-7", "user", "content", 0, len(text), text, 1)
+    neighbor = SourceSpan(
+        7, "request-7", "user", "content", start, start + len(quote), quote, 1
+    )
+    spans = (primary, neighbor, primary)
+    context = _fresh_quote_context(spans)
+    output = _fresh_quote_output(quote)
+    assert _fresh_output_validation_errors(output, context, spans) == []
+    record = _fresh_candidate_record(
+        as_playbook_content(output.playbooks[0]), context, spans
+    )
+    assert len(record.evidence) == 1
+    assert record.evidence[0].quote == quote
+    assert record.evidence[0].evidence_refs == (neighbor.evidence_ref,)
+
+
+def test_repeated_quote_within_one_visible_span_requires_unambiguous_repair():
+    from reflexio.server.services.extraction.input_preparation import SourceSpan
+    from reflexio.server.services.playbook.components.extractor import (
+        _fresh_output_validation_errors,
+    )
+
+    text = "Prepare only. Later: Prepare only."
+    span = SourceSpan(7, "request-7", "user", "content", 0, len(text), text, 1)
+    context = _fresh_quote_context((span,))
+    errors = _fresh_output_validation_errors(
+        _fresh_quote_output("Prepare only."), context, (span,)
+    )
+    assert len(errors) == 1 and "ambiguous_source_quote" in errors[0]
+    repaired = _fresh_quote_output("Later: Prepare only.")
+    assert _fresh_output_validation_errors(repaired, context, (span,)) == []
+    # Exact range references remain unambiguous even when their text repeats.
+    referenced = StructuredReferencedExtractedPlaybookList(
+        playbooks=[
+            StructuredReferencedExtractedPlaybookContent(
+                rationale="The instruction bounds preparation.",
+                evidence_kind="correction",
+                trigger="When preparing a change",
+                content="Prepare only.",
+                evidence_refs=[span.evidence_ref],
+            )
+        ]
+    )
+    assert _fresh_output_validation_errors(referenced, context, (span,)) == []
 
 
 def test_fresh_overflow_capacity_reaches_repair_before_output_is_accepted(monkeypatch):

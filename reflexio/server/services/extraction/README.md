@@ -69,6 +69,11 @@ write plans keep their existing publication path, and adoption preserves known
 original usage separately from new attempts. Unknown historical usage is never
 manufactured. Admission remains disabled by default.
 
+New `MOCK_LLM_RESPONSE` simulations retain the ordinary mock extraction path,
+without admitting a provider-budget protocol. Switching an existing durable
+agent run to mock mode refuses computation before publication; resume that work
+in real mode to preserve its saved output, source coverage and consumed quota.
+
 ### Resume discovery
 
 
