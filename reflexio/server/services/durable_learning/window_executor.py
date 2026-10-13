@@ -393,6 +393,40 @@ class WindowExecutor:
                 ),
             )
 
+    def _restore_saved_output_parent(self, window: Window) -> None:
+        """Join the publication transaction; never rewind human-resume progress."""
+        run = self.storage.get_agent_run(f"window:{window.window_id}")
+        if (
+            run is None
+            or run.committed_output is None
+            or run.status not in (AgentRunStatus.RUNNING, AgentRunStatus.FAILED)
+        ):
+            return
+        if (
+            run.binding.org_id != self.storage.org_id
+            or run.binding.user_id != window.user_id
+            or run.binding.extractor_kind != window.kind
+        ):
+            raise OverflowCheckpointConflictError(
+                "Saved extraction parent scope changed"
+            )
+        # Recheck the saved quota before a recovered plan can write or bill.
+        self._overflow_manifest(run)
+        restored = self.storage.update_agent_run_status(
+            run.id,
+            AgentRunStatus.AGENT_COMPLETED,
+            expected_statuses=(run.status,),
+        )
+        # Some backends return the current row after a status CAS miss.
+        if (
+            restored is None
+            or restored.status != AgentRunStatus.AGENT_COMPLETED
+            or restored.committed_output != run.committed_output
+        ):
+            raise OverflowCheckpointConflictError(
+                "Saved extraction parent completion lost ownership"
+            )
+
     def execute(self, window: Window, token: str) -> None:
         service, request, config = self.service(window)
         coordinator = self._coordinator(window, token, service, request, config)
@@ -441,6 +475,7 @@ class WindowExecutor:
                     plan.token_totals = coordinator.token_totals
                     service._last_token_totals = plan.token_totals
             if plan is not None:
+                self._restore_saved_output_parent(window)
                 service.persist_generation(plan)
             elif (
                 coordinator is not None

@@ -76,6 +76,10 @@ The saved checkpoint must retain its stage and bounded completed-step map;
 missing progress is refused rather than treated as a fresh extraction.
 Completed steps retain a structured receipt even for false or empty outputs;
 null receipts are refused before another provider reservation.
+After a configuration failure, validated saved output regains its completed
+agent state inside the learning-write transaction before publication. Cached
+write plans and custom extractors share this recovery fence; human-resume and
+already-finalized states are preserved.
 Corrections to consumed answers
 after protocol completion remain durable and unconsumed; automatic recomputation
 of these completed protocol runs is currently unsupported. The original output
