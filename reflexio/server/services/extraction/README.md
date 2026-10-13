@@ -81,7 +81,9 @@ agent state inside the learning-write transaction before publication. Cached
 write plans and custom extractors share this recovery fence; human-resume and
 already-finalized states are preserved.
 Corrections to consumed answers
-after protocol completion remain durable and unconsumed; automatic recomputation
+after protocol completion remain durable and unconsumed while the protocol
+parent retains its finalized state; answer readiness never assigns legacy
+resume ownership. Automatic recomputation
 of these completed protocol runs is currently unsupported. The original output
 and attempt journal remain intact.
 

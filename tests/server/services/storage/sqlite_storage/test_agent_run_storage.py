@@ -1,6 +1,7 @@
 import tempfile
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -622,6 +623,126 @@ def test_sqlite_mark_not_applicable_keeps_other_actionable_dependency_ready(stor
     run = storage.get_agent_run("run_1")
     assert run is not None
     assert run.status == AgentRunStatus.RESUME_READY
+
+
+@pytest.mark.parametrize("operation", ["resolve", "correct", "not_applicable"])
+@pytest.mark.parametrize("marker", ["absent", "protocol", "null", "malformed"])
+@pytest.mark.parametrize("status", [AgentRunStatus.FINALIZED, AgentRunStatus.RUNNING])
+def test_answer_updates_never_assign_overflow_parents_legacy_readiness(
+    storage, operation, marker, status
+):
+    now = datetime(2026, 5, 28, tzinfo=UTC)
+    snapshot: dict[str, Any] = {"request_id": "request_1"}
+    if marker != "absent":
+        snapshot["overflow"] = (
+            {
+                "version": 1,
+                "revision": 4,
+                "source_digest": "frozen-original-source",
+                "attempt_limit": 128,
+                "attempts": [{"id": "spent", "usage": None, "model_provenance": None}],
+                "checkpoint": {"stage": "recovered", "completed_steps": {}},
+            }
+            if marker == "protocol"
+            else None
+            if marker == "null"
+            else "invalid"
+        )
+    parent = storage.create_agent_run(
+        replace(
+            _agent_run("run_1", status),
+            generation_request_snapshot=snapshot,
+            committed_output={"profiles": [{"content": "Retained original output"}]},
+            pending_tool_call_ids=["ptc_1"],
+        )
+    )
+    call = _pending_call("ptc_1", now=now)
+    if operation == "correct":
+        call = replace(
+            call,
+            status=PendingToolCallStatus.RESOLVED,
+            result={"answer": "Old answer"},
+            resolved_at=now - timedelta(minutes=2),
+            valid_until=now + timedelta(hours=1),
+        )
+    storage.create_pending_tool_call(call)
+    storage.attach_run_tool_dependency(
+        RunToolDependencyRecord(
+            run_id=parent.id,
+            pending_tool_call_id=call.id,
+            resolved_at=call.resolved_at,
+            consumed_at=now - timedelta(minutes=1) if operation == "correct" else None,
+        )
+    )
+    if operation == "not_applicable":
+        # Another real unconsumed answer exercises the earlier actionable-ready
+        # branch, rather than the already-guarded no-actionable finalize branch.
+        storage.create_pending_tool_call(
+            replace(
+                _pending_call("ptc_other", now=now),
+                dedup_key="other-question",
+                status=PendingToolCallStatus.RESOLVED,
+                result={"answer": "Other answer"},
+                resolved_at=now - timedelta(minutes=1),
+                valid_until=now + timedelta(hours=1),
+            )
+        )
+        storage.attach_run_tool_dependency(
+            RunToolDependencyRecord(
+                run_id=parent.id,
+                pending_tool_call_id="ptc_other",
+                resolved_at=now - timedelta(minutes=1),
+            )
+        )
+        updated = storage.mark_pending_tool_call_not_applicable(
+            call.id,
+            resolved_at=now,
+            valid_for_seconds=3600,
+        )
+    elif operation == "correct":
+        updated = storage.update_resolved_pending_tool_call_result(
+            call.id,
+            result={"answer": "Corrected answer"},
+            resolved_at=now,
+            valid_for_seconds=3600,
+        )
+    else:
+        updated = storage.resolve_pending_tool_call(
+            call.id,
+            result={"answer": "New answer"},
+            resolved_at=now,
+            valid_for_seconds=3600,
+        )
+    assert updated is not None and updated.status == PendingToolCallStatus.RESOLVED
+    assert updated.resolved_at == now
+    assert updated.result == (
+        {
+            "answer": "User does not have information about this question.",
+            "not_applicable": True,
+        }
+        if operation == "not_applicable"
+        else {"answer": "Corrected answer" if operation == "correct" else "New answer"}
+    )
+    after = storage.get_agent_run(parent.id)
+    assert after is not None
+    assert after.status == (
+        AgentRunStatus.RESUME_READY
+        if marker == "absent" and status == AgentRunStatus.FINALIZED
+        else status
+    )
+    assert after.generation_request_snapshot == parent.generation_request_snapshot
+    assert after.committed_output == parent.committed_output
+    assert after.pending_tool_call_ids == parent.pending_tool_call_ids
+    dependencies = {
+        dep.pending_tool_call_id: dep
+        for dep in storage.list_run_tool_dependencies(parent.id)
+    }
+    assert dependencies[call.id].resolved_at == now
+    assert dependencies[call.id].consumed_at == (
+        now if operation == "not_applicable" else None
+    )
+    if operation == "not_applicable":
+        assert dependencies["ptc_other"].consumed_at is None
 
 
 def test_sqlite_resolve_supersedes_older_valid_answer_for_same_dedup_key(storage):
