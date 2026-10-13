@@ -850,6 +850,7 @@ def test_private_evaluator_retains_positive_original_facts_on_fatal_reject(
         "1.45.0",
         "1.46.0",
         "1.47.0",
+        "1.48.0",
     ],
 )
 @pytest.mark.parametrize("fatal", [False, True])
@@ -906,16 +907,26 @@ def test_private_evaluator_roundtrips_actual_binary_nested_assessment(
         "1.45.0",
         "1.46.0",
         "1.47.0",
+        "1.48.0",
     }:
         del raw["assessments"][0]["original_rule_span"]
         del raw["decisions"][0]["reason_code"]
-    if version in {"1.42.0", "1.43.0", "1.44.0", "1.45.0", "1.46.0", "1.47.0"}:
+    if version in {
+        "1.42.0",
+        "1.43.0",
+        "1.44.0",
+        "1.45.0",
+        "1.46.0",
+        "1.47.0",
+        "1.48.0",
+    }:
         a = raw["assessments"][0]
         a["primary_defect"] = a.pop("defect_codes")[0]
         a["duplicates_existing_core"] = False
     output_type = (
         PrimaryAssessedReviewOutput
-        if version in {"1.42.0", "1.43.0", "1.44.0", "1.45.0", "1.46.0", "1.47.0"}
+        if version
+        in {"1.42.0", "1.43.0", "1.44.0", "1.45.0", "1.46.0", "1.47.0", "1.48.0"}
         else InventoryAssessedReviewOutput
         if version
         in {
@@ -927,6 +938,7 @@ def test_private_evaluator_roundtrips_actual_binary_nested_assessment(
             "1.45.0",
             "1.46.0",
             "1.47.0",
+            "1.48.0",
         }
         else InputUseAssessedReviewOutput
     )
@@ -939,9 +951,10 @@ def test_private_evaluator_roundtrips_actual_binary_nested_assessment(
         )
 
     path = tmp_path / "binary.json"
-    report = evaluate(
-        [case], observed_client(respond), 1, candidate_version=version, checkpoint=path
-    )
+    client = observed_client(respond)
+    if version == "1.48.0":
+        client.config.temperature = 0.0
+    report = evaluate([case], client, 1, candidate_version=version, checkpoint=path)
     assert report["errors"] == report["measurement_errors"] == []
     assert report["candidate_version"] == version
     row = report["rows"][1]
@@ -962,10 +975,12 @@ def test_private_evaluator_roundtrips_actual_binary_nested_assessment(
         "1.45.0",
         "1.46.0",
         "1.47.0",
+        "1.48.0",
     }:
         raw_field = (
             "raw_primary_output"
-            if version in {"1.42.0", "1.43.0", "1.44.0", "1.45.0", "1.46.0", "1.47.0"}
+            if version
+            in {"1.42.0", "1.43.0", "1.44.0", "1.45.0", "1.46.0", "1.47.0", "1.48.0"}
             else "raw_inventory_output"
         )
         assert report["calls"][1][raw_field] == raw
@@ -1047,7 +1062,8 @@ def test_full_and_compact_arms_keep_native_raw_output_and_truthful_accounting(tm
 
 
 @pytest.mark.parametrize(
-    "candidate_version", ["1.42.0", "1.43.0", "1.44.0", "1.45.0", "1.46.0", "1.47.0"]
+    "candidate_version",
+    ["1.42.0", "1.43.0", "1.44.0", "1.45.0", "1.46.0", "1.47.0", "1.48.0"],
 )
 def test_inventory_and_primary_pair_uses_actual_native_types_and_raw_once(
     tmp_path, candidate_version
@@ -1083,6 +1099,8 @@ def test_inventory_and_primary_pair_uses_actual_native_types_and_raw_once(
         [inventory, primary, primary, inventory], version="1.40.0"
     )
     path = tmp_path / "paired.json"
+    if candidate_version == "1.48.0":
+        reviewer.client.config.temperature = 0.0
     with transport:
         report = evaluate(
             [case],
@@ -1142,3 +1160,13 @@ def test_invalid_paired_arms_fail_before_preparation_or_provider_io(
         )
     prepare.assert_not_called()
     client.generate_chat_response.assert_not_called()
+
+
+@pytest.mark.parametrize("temperature", [0.2, 0.7])
+def test_primary_148_rejects_unregistered_temperature_before_either_arm(temperature):
+    case = load_cases(DEFAULT_CASES)[0]
+    client = observed_client(lambda *_, **__: None)
+    client.config.temperature = temperature
+    with pytest.raises(ValueError, match="temperature"):
+        evaluate([case], client, 1, candidate_version="1.48.0")
+    assert cast(MagicMock, client._completion_with_hard_timeout).call_count == 0

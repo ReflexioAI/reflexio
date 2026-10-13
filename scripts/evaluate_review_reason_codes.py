@@ -156,20 +156,16 @@ def prepare_case(
     return sessions, candidates, existing
 
 
-def evaluate(
+def _validate_evaluation_arguments(
     cases: list[Case],
     client: LiteLLMClient,
     repeats: int,
-    checkpoint: Path | None = None,
-    *,
-    candidate_version: str = "1.4.0",
-    baseline_version: str = "1.3.0",
-    max_tokens: int | None = None,
-    reasoning_effort: Literal["high", "none"] | None = None,
-    expected_response_model: str | None = None,
-) -> dict:
-    if checkpoint is not None:
-        _require_private_artifact_support()
+    candidate_version: str,
+    baseline_version: str,
+    max_tokens: int | None,
+    reasoning_effort: Literal["high", "none"] | None,
+) -> None:
+    """Reject unsupported or unequal inference profiles before either arm runs."""
     if candidate_version not in (
         "1.4.0",
         "1.5.0",
@@ -215,9 +211,10 @@ def evaluate(
         "1.45.0",
         "1.46.0",
         "1.47.0",
+        "1.48.0",
     ):
         raise ValueError(
-            "candidate_version must be an experimental reviewer version from 1.4.0 through 1.47.0"
+            "candidate_version must be an experimental reviewer version from 1.4.0 through 1.48.0"
         )
     if baseline_version not in ("1.3.0", "1.40.0"):
         raise ValueError("baseline_version must be 1.3.0 or 1.40.0")
@@ -233,6 +230,35 @@ def evaluate(
         raise ValueError(
             "reasoning profile is qualified for the GLM-5.2 experiment only"
         )
+    if candidate_version == "1.48.0" and client.config.temperature != 0.0:
+        raise ValueError(
+            "v1.48.0 paired evaluation requires temperature=0 for both arms"
+        )
+
+
+def evaluate(
+    cases: list[Case],
+    client: LiteLLMClient,
+    repeats: int,
+    checkpoint: Path | None = None,
+    *,
+    candidate_version: str = "1.4.0",
+    baseline_version: str = "1.3.0",
+    max_tokens: int | None = None,
+    reasoning_effort: Literal["high", "none"] | None = None,
+    expected_response_model: str | None = None,
+) -> dict:
+    if checkpoint is not None:
+        _require_private_artifact_support()
+    _validate_evaluation_arguments(
+        cases,
+        client,
+        repeats,
+        candidate_version,
+        baseline_version,
+        max_tokens,
+        reasoning_effort,
+    )
     expected_temperature = client.config.temperature
     prompt_identities = {
         version: PromptManager(
@@ -509,6 +535,7 @@ def main() -> int:
             "1.45.0",
             "1.46.0",
             "1.47.0",
+            "1.48.0",
         ),
         default="1.4.0",
     )

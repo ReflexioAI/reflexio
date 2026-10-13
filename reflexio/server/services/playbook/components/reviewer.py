@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
 from functools import partial
 from typing import Any, Literal, get_args
@@ -23,6 +23,7 @@ from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.llm.model_defaults import ModelRole
 from reflexio.server.services.extraction.input_preparation import resolve_evidence_span
 from reflexio.server.services.extraction.overflow_coordinator import (
+    OverflowCoordinator,
     current_overflow_coordinator,
 )
 from reflexio.server.services.extraction.overflow_presentation import (
@@ -548,6 +549,9 @@ class PlaybookReviewOutcome:
     source_parameter_facts: list[SourceParameterFact] = field(default_factory=list)
     inventory_output: InventoryAssessedReviewOutput | None = None
     primary_output: PrimaryAssessedReviewOutput | None = None
+    # Combined public aliases are not one native response. Keep each actual
+    # child outcome, with its local IDs and private raw assessment metadata.
+    child_outcomes: tuple[PlaybookReviewOutcome, ...] = ()
 
 
 def _append_review_note(
@@ -1508,6 +1512,207 @@ class PlaybookCandidateReviewer:
             )
         return survivors
 
+    def _decide_protected_batch(
+        self,
+        *,
+        candidates: list[UserPlaybook],
+        request_interaction_data_models: list[RequestInteractionDataModel],
+        existing_playbooks: list[UserPlaybook],
+        agent_context: str,
+        playbook_definition: str,
+        tool_context: str,
+        original_digest: str,
+    ) -> PlaybookReviewOutcome:
+        """Merge public aliases while retaining each independently validated child."""
+        decisions = []
+        units: dict[str, list[CandidateEvidenceUnit]] = {}
+        supporting = []
+        children: list[PlaybookReviewOutcome] = []
+        for index, candidate in enumerate(candidates, 1):
+            child = self.decide(
+                candidates=[candidate],
+                request_interaction_data_models=request_interaction_data_models,
+                existing_playbooks=existing_playbooks,
+                agent_context=agent_context,
+                playbook_definition=playbook_definition,
+                tool_context=tool_context,
+            )
+            children.append(child)
+            target = f"C{index}"
+            names = {
+                unit.evidence_id: unit.evidence_id.replace("C1-", f"{target}-", 1)
+                for unit in child.units_by_candidate["C1"]
+            }
+            decisions.append(
+                child.output.decisions[0].model_copy(
+                    update={
+                        "candidate_id": target,
+                        "evidence_ids": [
+                            names[ref] for ref in child.output.decisions[0].evidence_ids
+                        ],
+                    }
+                )
+            )
+            units[target] = [
+                replace(unit, evidence_id=names[unit.evidence_id])
+                for unit in child.units_by_candidate["C1"]
+            ]
+            supporting.extend(
+                proof.model_copy(
+                    update={
+                        "candidate_id": target,
+                        "excerpts": [
+                            quote.model_copy(
+                                update={"evidence_id": names[quote.evidence_id]}
+                            )
+                            for quote in proof.excerpts
+                        ],
+                    }
+                )
+                for proof in child.supporting_evidence
+            )
+        return PlaybookReviewOutcome(
+            output=PlaybookCandidateReviewOutput(decisions=decisions),
+            units_by_candidate=units,
+            supporting_evidence=supporting,
+            original_candidates_sha256=original_digest,
+            child_outcomes=tuple(children),
+        )
+
+    @staticmethod
+    def _protected_prompt_context(
+        coordinator: OverflowCoordinator,
+        candidate: UserPlaybook,
+        request_interaction_data_models: list[RequestInteractionDataModel],
+    ) -> PlaybookPromptContext:
+        """Use the coordinator's verified record without rewriting source ownership."""
+        record = coordinator.candidate_records.get(coordinator.playbook_key(candidate))
+        if record is None:
+            raise PlaybookCandidateEvidenceError(
+                "Candidate lacks its verified evidence record"
+            )
+        requests = {
+            group.request.request_id: group.request
+            for group in request_interaction_data_models
+        }
+        sources = {
+            f"T{span.source_order}": PlaybookEvidenceSource(
+                interaction_id=span.interaction_id,
+                request_id=span.request_id,
+                evidence_texts=(),
+                role=span.role,
+                request_source=requests[span.request_id].source or "",
+            )
+            for chunk in coordinator.require_prepared().chunks
+            for span in (*chunk.neighbors, *chunk.spans)
+        }
+        return PlaybookPromptContext(
+            json.dumps(
+                {
+                    "protected_record": coordinator.record.model_dump(mode="json"),
+                    "candidate_context": record.model_dump(mode="json"),
+                    "human_answers": coordinator.checkpoint.get("answer_witnesses", {}),
+                    "scope": "Additional context does not alter the candidate's original source mapping.",
+                    **protected_source_origins(
+                        coordinator.require_prepared(), coordinator.record, record
+                    ),
+                },
+                ensure_ascii=False,
+            ),
+            sources,
+            {},
+        )
+
+    def _generate_review(
+        self,
+        *,
+        messages: list[dict[str, str]],
+        response_format: type[BaseModel],
+        validator: Callable[
+            [object, dict[str, list[CandidateEvidenceUnit]]], tuple[str, ...]
+        ],
+        units_by_candidate: dict[str, list[CandidateEvidenceUnit]],
+        version: str | None,
+        coordinator: OverflowCoordinator | None,
+    ) -> tuple[object, str | None, ModelProvenance | None]:
+        """Keep generation settings and cached native output identity together."""
+        inference_options: dict[str, Any] = {}
+        if version == "1.48.0":
+            inference_options["temperature"] = 0.0
+        if self.max_tokens is not None:
+            inference_options["max_tokens"] = self.max_tokens
+        if self.reasoning_effort is not None:
+            # Z.ai's reasoning_effort is absent from the installed LiteLLM
+            # standard-param allowlist. extra_body preserves it on the wire.
+            inference_options["extra_body"] = {
+                "reasoning_effort": self.reasoning_effort,
+                "thinking": {
+                    "type": "disabled" if self.reasoning_effort == "none" else "enabled"
+                },
+            }
+        if self.provider_request_guard is not None:
+            inference_options["provider_request_guard"] = self.provider_request_guard
+        options = dict(
+            model_role=ModelRole.GENERATION,
+            max_retries=0,
+            response_format=response_format,
+            parse_structured_output=True,
+            structured_output_validator=lambda value: validator(
+                value, units_by_candidate
+            ),
+            **inference_options,
+        )
+        review_key = None
+        review_provenance = None
+        if coordinator is not None:
+            review_identity: dict[str, Any] = {
+                "messages": messages,
+                "schema": response_format.model_json_schema(),
+                "max_tokens": self.max_tokens,
+                "reasoning_effort": self.reasoning_effort,
+            }
+            if "temperature" in inference_options:
+                review_identity["temperature_override"] = inference_options[
+                    "temperature"
+                ]
+            review_key = coordinator.step_key("review-v1", review_identity)
+            saved = coordinator.completed_step(review_key)
+            if saved is None:
+                coordinator.require_remaining_work(1)
+                result = self.client.generate_chat_response_with_provenance(
+                    messages, **options
+                )
+                output, review_provenance = result.value, result.provenance
+            else:
+                output = response_format.model_validate(saved["output"])
+                review_provenance = ModelProvenance(**saved["model_provenance"])
+        else:
+            output = self.client.generate_chat_response(messages, **options)
+        return output, review_key, review_provenance
+
+    @staticmethod
+    def _record_validated_review(
+        coordinator: OverflowCoordinator | None,
+        review_key: str | None,
+        review_provenance: ModelProvenance | None,
+        raw_output: object,
+        candidate: UserPlaybook,
+    ) -> None:
+        """Publish the raw child checkpoint only after review validation passes."""
+        if (
+            coordinator is not None
+            and review_key is not None
+            and review_provenance is not None
+        ):
+            if not isinstance(raw_output, BaseModel):
+                raise ValueError("Reviewer lacks validated structured output")
+            coordinator.complete_step(
+                review_key, raw_output.model_dump(mode="json"), review_provenance
+            )
+            coordinator.review_models[coordinator.playbook_key(candidate)] = (
+                review_provenance
+            )
+
     def decide(
         self,
         *,
@@ -1536,54 +1741,14 @@ class PlaybookCandidateReviewer:
             )
         coordinator = current_overflow_coordinator.get()
         if coordinator is not None and len(candidates) > 1:
-            decisions = []
-            units: dict[str, list[CandidateEvidenceUnit]] = {}
-            supporting = []
-            for index, candidate in enumerate(candidates, 1):
-                child = self.decide(
-                    candidates=[candidate],
-                    request_interaction_data_models=request_interaction_data_models,
-                    existing_playbooks=existing_playbooks,
-                    agent_context=agent_context,
-                    playbook_definition=playbook_definition,
-                    tool_context=tool_context,
-                )
-                target = f"C{index}"
-                names = {
-                    unit.evidence_id: unit.evidence_id.replace("C1-", f"{target}-", 1)
-                    for unit in child.units_by_candidate["C1"]
-                }
-                decisions.append(
-                    child.output.decisions[0].model_copy(
-                        update={
-                            "candidate_id": target,
-                            "evidence_ids": [
-                                names[ref]
-                                for ref in child.output.decisions[0].evidence_ids
-                            ],
-                        }
-                    )
-                )
-                units[target] = [
-                    replace(unit, evidence_id=names[unit.evidence_id])
-                    for unit in child.units_by_candidate["C1"]
-                ]
-                supporting.extend(
-                    proof.model_copy(
-                        update={
-                            "candidate_id": target,
-                            "excerpts": [
-                                quote.model_copy(
-                                    update={"evidence_id": names[quote.evidence_id]}
-                                )
-                                for quote in proof.excerpts
-                            ],
-                        }
-                    )
-                    for proof in child.supporting_evidence
-                )
-            return PlaybookReviewOutcome(
-                PlaybookCandidateReviewOutput(decisions=decisions), units, supporting
+            return self._decide_protected_batch(
+                candidates=candidates,
+                request_interaction_data_models=request_interaction_data_models,
+                existing_playbooks=existing_playbooks,
+                agent_context=agent_context,
+                playbook_definition=playbook_definition,
+                tool_context=tool_context,
+                original_digest=original_digest,
             )
         scope_messages: list[dict[str, str]] = []
         if coordinator is not None:
@@ -1592,46 +1757,8 @@ class PlaybookCandidateReviewer:
             )
 
             scope_messages.append({"role": "system", "content": EVIDENCE_SCOPE_POLICY})
-            candidate = candidates[0]
-            record = coordinator.candidate_records.get(
-                coordinator.playbook_key(candidate)
-            )
-            if record is None:
-                raise PlaybookCandidateEvidenceError(
-                    "Candidate lacks its verified evidence record"
-                )
-            requests = {
-                group.request.request_id: group.request
-                for group in request_interaction_data_models
-            }
-            sources = {
-                f"T{span.source_order}": PlaybookEvidenceSource(
-                    interaction_id=span.interaction_id,
-                    request_id=span.request_id,
-                    evidence_texts=(),
-                    role=span.role,
-                    request_source=requests[span.request_id].source or "",
-                )
-                for chunk in coordinator.require_prepared().chunks
-                for span in (*chunk.neighbors, *chunk.spans)
-            }
-            prompt_context = PlaybookPromptContext(
-                json.dumps(
-                    {
-                        "protected_record": coordinator.record.model_dump(mode="json"),
-                        "candidate_context": record.model_dump(mode="json"),
-                        "human_answers": coordinator.checkpoint.get(
-                            "answer_witnesses", {}
-                        ),
-                        "scope": "Additional context does not alter the candidate's original source mapping.",
-                        **protected_source_origins(
-                            coordinator.require_prepared(), coordinator.record, record
-                        ),
-                    },
-                    ensure_ascii=False,
-                ),
-                sources,
-                {},
+            prompt_context = self._protected_prompt_context(
+                coordinator, candidates[0], request_interaction_data_models
             )
             agent_context = coordinator.agent_context
         else:
@@ -1651,6 +1778,7 @@ class PlaybookCandidateReviewer:
             "1.45.0",
             "1.46.0",
             "1.47.0",
+            "1.48.0",
         }
         inventory_assessed = version in {"1.40.0", "1.41.0"}
         input_use_assessed = version in {
@@ -1688,6 +1816,7 @@ class PlaybookCandidateReviewer:
             "1.45.0",
             "1.46.0",
             "1.47.0",
+            "1.48.0",
         }
         evidence_first = version in {
             "1.14.0",
@@ -1724,6 +1853,7 @@ class PlaybookCandidateReviewer:
             "1.45.0",
             "1.46.0",
             "1.47.0",
+            "1.48.0",
         }
         variables = {
             "agent_context_prompt": agent_context,
@@ -1820,54 +1950,14 @@ class PlaybookCandidateReviewer:
                 return validate_assessed(value, units, originals)
 
             validator = validate_original
-        inference_options: dict[str, Any] = {}
-        if self.max_tokens is not None:
-            inference_options["max_tokens"] = self.max_tokens
-        if self.reasoning_effort is not None:
-            # Z.ai's reasoning_effort is absent from the installed LiteLLM
-            # standard-param allowlist. extra_body preserves it on the wire.
-            inference_options["extra_body"] = {
-                "reasoning_effort": self.reasoning_effort,
-                "thinking": {
-                    "type": "disabled" if self.reasoning_effort == "none" else "enabled"
-                },
-            }
-        if self.provider_request_guard is not None:
-            inference_options["provider_request_guard"] = self.provider_request_guard
-        options = dict(
-            model_role=ModelRole.GENERATION,
-            max_retries=0,
+        output, review_key, review_provenance = self._generate_review(
+            messages=messages,
             response_format=response_format,
-            parse_structured_output=True,
-            structured_output_validator=lambda value: validator(
-                value, units_by_candidate
-            ),
-            **inference_options,
+            validator=validator,
+            units_by_candidate=units_by_candidate,
+            version=version,
+            coordinator=coordinator,
         )
-        review_key = None
-        review_provenance = None
-        if coordinator is not None:
-            review_key = coordinator.step_key(
-                "review-v1",
-                {
-                    "messages": messages,
-                    "schema": response_format.model_json_schema(),
-                    "max_tokens": self.max_tokens,
-                    "reasoning_effort": self.reasoning_effort,
-                },
-            )
-            saved = coordinator.completed_step(review_key)
-            if saved is None:
-                coordinator.require_remaining_work(1)
-                result = self.client.generate_chat_response_with_provenance(
-                    messages, **options
-                )
-                output, review_provenance = result.value, result.provenance
-            else:
-                output = response_format.model_validate(saved["output"])
-                review_provenance = ModelProvenance(**saved["model_provenance"])
-        else:
-            output = self.client.generate_chat_response(messages, **options)
         raw_output = output
         supporting_evidence: list[CandidateSupportingEvidence] = []
         assessments: list[
@@ -1918,19 +2008,9 @@ class PlaybookCandidateReviewer:
         errors = self._validation_errors(output, units_by_candidate)
         if errors:
             raise ValueError("; ".join(errors))
-        if (
-            coordinator is not None
-            and review_key is not None
-            and review_provenance is not None
-        ):
-            if not isinstance(raw_output, BaseModel):
-                raise ValueError("Reviewer lacks validated structured output")
-            coordinator.complete_step(
-                review_key, raw_output.model_dump(mode="json"), review_provenance
-            )
-            coordinator.review_models[coordinator.playbook_key(candidates[0])] = (
-                review_provenance
-            )
+        self._record_validated_review(
+            coordinator, review_key, review_provenance, raw_output, candidates[0]
+        )
         counts = dict.fromkeys(("accept", "revise", "reject"), 0)
         reason_counts: dict[str, int] = {}
         for decision in output.decisions:

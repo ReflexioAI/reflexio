@@ -217,6 +217,9 @@ source unions and reviewer revisions and prevent overlapping duplicate survivors
 
 When extraction overflow admission is enabled, the grounding reviewer uses each
 candidate's original quotations and leaves historical redundancy to consolidation.
+Combined review outcomes bind the ordered original batch and retain actual child
+outcomes with their private native assessments; changed or reordered originals
+cannot be applied. `test_protected_reviewer_outcomes.py` covers this boundary.
 Consolidation proposes actions from per-candidate retrieval metadata, scans the
 complete selected historical spans into bounded exact quotations, then verifies
 the combined decisions before applying the original storage models. Equal source
