@@ -200,6 +200,9 @@ class Reconciler:
         self.provenance = None
         self.coordinator = current_overflow_coordinator.get()
         self.scoped_guard = extraction_provider_guard.get()
+        # Keep one bound-method identity in both seams: LiteLLM uses identity
+        # to avoid invoking its scoped guard again after the explicit guard.
+        self.provider_guard = self.guard
         self.budget_key: str | None = None
         self.transport = {
             name: getattr(getattr(client, "config", None), name, None)
@@ -321,14 +324,14 @@ class Reconciler:
         repaired = False
         turn = 0
         while turn < 4:
-            guard_token = extraction_provider_guard.set(None)
+            guard_token = extraction_provider_guard.set(self.provider_guard)
             try:
                 completion = self.client.generate_chat_response_with_provenance(
                     messages=messages,
                     model=self.model,
                     tools=tools if turn < 2 else None,
                     response_format=None if turn < 2 else schema,
-                    provider_request_guard=self.guard,
+                    provider_request_guard=self.provider_guard,
                     structured_output_validator=(
                         (lambda value: validation_errors(value, validate))
                         if turn >= 2

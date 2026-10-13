@@ -19,6 +19,8 @@ from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 from reflexio.server.services.extraction.input_preparation import SourceSpan
 from reflexio.server.services.extraction.overflow_coordinator import (
+    OverflowCoordinator,
+    OverflowSuspendedError,
     current_overflow_coordinator,
 )
 from reflexio.server.services.extraction.overflow_presentation import (
@@ -30,11 +32,25 @@ from reflexio.server.services.playbook.components.consolidator import (
 )
 from reflexio.server.services.playbook.components.reconciliation import (
     AuditedConsolidationAbstainedError,
+    Reconciler,
 )
 from reflexio.server.services.playbook.review_window import PlaybookReviewWindowError
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
+from tests.server.services.playbook.test_audited_reconciliation import (
+    payload as reconciliation_payload,
+)
+from tests.server.services.playbook.test_audited_reconciliation import (
+    replacement as reconciliation_replacement,
+)
+from tests.server.services.test_durable_window_pipeline import (
+    _overflow_coordinator,
+)
+from tests.server.services.test_durable_window_pipeline import (
+    pipeline as imported_durable_pipeline,
+)
 
 pytestmark = pytest.mark.integration
+durable_pipeline = imported_durable_pipeline
 
 
 @pytest.fixture
@@ -503,3 +519,65 @@ def test_overflow_uses_verified_quotations_not_full_large_interaction(
         assert shown["sessions"][0]["messages"][0]["content"] == quote
         assert len(json.dumps(shown)) < 4000
     coordinator.require_full_source_coverage.assert_called_once()
+
+
+def test_uncapped_client_durable_admission_suspends_and_resumes_once_per_call(
+    durable_pipeline, monkeypatch
+):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key-no-provider")
+    monkeypatch.setenv("MOCK_LLM_RESPONSE", "false")
+    storage, window, token = _overflow_coordinator(durable_pipeline)
+    client = LiteLLMClient(
+        LiteLLMConfig(model="gpt-4o", max_tokens=None, fallback_models=[])
+    )
+    answers = iter(
+        [
+            {"decisions": [reconciliation_replacement()]},
+            {"findings": []},
+        ]
+    )
+    requests = []
+
+    def dispatch(params, _hard_timeout):
+        requests.append(params)
+        assert params.get("max_tokens", params.get("max_completion_tokens", 0)) > 0
+        return response(next(answers))
+
+    monkeypatch.setattr(client, "_completion_with_hard_timeout", dispatch)
+
+    def coordinator(seconds):
+        parent = storage.get_agent_run(f"window:{window.window_id}")
+        assert parent is not None
+        return OverflowCoordinator(
+            storage,
+            window,
+            token,
+            parent.generation_request_snapshot["overflow"],
+            source_digest="captured-source",
+            context_limits={"gpt-4o": 128000},
+            turn_seconds=seconds,
+        )
+
+    first = coordinator(1)
+    with first.provider_scope():
+        engine = Reconciler(client, "gpt-4o", max_calls=2)
+        with pytest.raises(OverflowSuspendedError):
+            engine.run(reconciliation_payload(), {("request", 17): object()})
+        assert engine.calls == 0
+    assert requests == []
+    parent = storage.get_agent_run(f"window:{window.window_id}")
+    assert parent is not None
+    assert parent.generation_request_snapshot["overflow"]["attempts"] == []
+
+    resumed = coordinator(300)
+    with resumed.provider_scope():
+        engine = Reconciler(client, "gpt-4o", max_calls=2)
+        engine.run(reconciliation_payload(), {("request", 17): object()})
+        assert engine.calls == 2
+    assert len(requests) == 2
+    parent = storage.get_agent_run(f"window:{window.window_id}")
+    assert parent is not None
+    attempts = parent.generation_request_snapshot["overflow"]["attempts"]
+    assert len(attempts) == 2
+    assert resumed.checkpoint["audited_consolidation_budget"]["calls"] == 2
+    assert all(attempt["usage"] is not None for attempt in attempts)
