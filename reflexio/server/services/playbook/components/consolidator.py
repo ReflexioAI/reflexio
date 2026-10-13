@@ -617,6 +617,17 @@ class PlaybookConsolidator(BaseDeduplicator):
             playbook_name = playbook.playbook_name or "unknown"
             source = playbook.source or "unknown"
             created_date = format_dedup_timestamp(playbook.created_at)
+            from reflexio.server.services.extraction.overflow_coordinator import (
+                current_overflow_coordinator,
+            )
+
+            coordinator = current_overflow_coordinator.get()
+            evidence_span = playbook.source_span or ""
+            if coordinator is not None:
+                if prefix == "EXISTING":
+                    evidence_span = "Not yet scanned; metadata-only proposal."
+                else:
+                    evidence_span = "Original evidence checked separately before apply."
             # ``Trigger`` and ``Rationale`` are included alongside ``Content``
             # so the model can actually compare the fields it is asked to
             # refine (``differentiate``, same-trigger contradictions, trigger
@@ -626,7 +637,7 @@ class PlaybookConsolidator(BaseDeduplicator):
                 f'[{prefix}-{idx}] Content: "{playbook.content}"'
                 f' | Trigger: "{playbook.trigger or ""}"'
                 f' | Rationale: "{playbook.rationale or ""}"'
-                f' | Evidence Span: "{playbook.source_span or ""}"'
+                f' | Evidence Span: "{evidence_span}"'
                 f' | Evidence Group: "{evidence_groups[idx] if evidence_groups else "none"}"'
                 f" | Name: {playbook_name}"
                 f" | Source: {source} | Last Modified: {created_date}"
@@ -662,10 +673,12 @@ class PlaybookConsolidator(BaseDeduplicator):
 
         # Collect trigger strings for embedding
         query_texts = []
+        query_playbooks = []
         for playbook in new_playbooks:
             trigger = playbook.trigger or playbook.content
             if trigger and trigger.strip():
                 query_texts.append(trigger.strip())
+                query_playbooks.append(playbook)
 
         if not query_texts:
             return []
@@ -695,11 +708,13 @@ class PlaybookConsolidator(BaseDeduplicator):
                 results = storage.search_user_playbooks(  # type: ignore[reportOptionalMemberAccess]
                     search_request, search_options
                 )
+                self._remember_retrieval_matches(query_playbooks[i], results)
                 for fb in results:
                     if fb.user_playbook_id and fb.user_playbook_id not in seen_ids:
                         seen_ids.add(fb.user_playbook_id)
                         existing_playbooks.append(fb)
             except ReadinessUnavailableError as exc:  # noqa: PERF203
+                self._raise_overflow_retrieval_error(exc)
                 # Embedding not ready yet (a new task's warm-up after a deploy):
                 # expected and self-clearing, so not an ERROR. Recall degrades
                 # exactly as for any other failed search below.
@@ -709,7 +724,8 @@ class PlaybookConsolidator(BaseDeduplicator):
                     i,
                     exc,
                 )
-            except Exception:  # noqa: PERF203 — per-query isolation is the point
+            except Exception as exc:  # noqa: PERF203 — per-query isolation is the point
+                self._raise_overflow_retrieval_error(exc)
                 logger.exception(
                     "event=playbook_consolidation_search_failed query_index=%d", i
                 )
@@ -722,6 +738,32 @@ class PlaybookConsolidator(BaseDeduplicator):
             agent_version,
         )
         return existing_playbooks
+
+    @staticmethod
+    def _raise_overflow_retrieval_error(error: Exception) -> None:
+        from reflexio.server.llm._litellm_types import ProviderRequestGuardError
+        from reflexio.server.services.extraction.overflow_coordinator import (
+            current_overflow_coordinator,
+        )
+
+        if current_overflow_coordinator.get() is not None:
+            raise ProviderRequestGuardError(
+                "Historical retrieval is undetermined"
+            ) from error
+
+    @staticmethod
+    def _remember_retrieval_matches(
+        candidate: UserPlaybook, results: list[UserPlaybook]
+    ) -> None:
+        from reflexio.server.services.extraction.overflow_coordinator import (
+            current_overflow_coordinator,
+        )
+
+        coordinator = current_overflow_coordinator.get()
+        if coordinator is not None:
+            coordinator.candidate_historical_matches[
+                coordinator.playbook_key(candidate)
+            ] = tuple(row.user_playbook_id for row in results if row.user_playbook_id)
 
     def _format_new_and_existing_for_prompt(
         self,
@@ -1001,6 +1043,11 @@ class PlaybookConsolidator(BaseDeduplicator):
                 new_playbooks, user_id=user_id, agent_version=agent_version
             )
 
+        from reflexio.server.services.playbook.components.overflow_evidence import (
+            remember_historical_playbooks,
+        )
+
+        remember_historical_playbooks(existing_playbooks)
         # Evidence-validated first-pass candidates need no probabilistic
         # consolidation when there is no existing retrieval match. Exact
         # same-batch duplicates were already removed before this component; the
@@ -1061,7 +1108,7 @@ class PlaybookConsolidator(BaseDeduplicator):
 
         # Run the LLM decision step (prompt render + LLM call + parse only).
         try:
-            dedup_output = self._consolidation_decisions(
+            dedup_output = self._window_consolidation_decisions(
                 new_playbooks, existing_playbooks
             )
         except Exception as e:
@@ -1116,6 +1163,25 @@ class PlaybookConsolidator(BaseDeduplicator):
             raise ValueError("; ".join(overlap_errors))
         return consolidated
 
+    def _window_consolidation_decisions(
+        self,
+        new_playbooks: list[UserPlaybook],
+        existing_playbooks: list[UserPlaybook],
+    ) -> PlaybookConsolidationOutput:
+        from reflexio.server.services.extraction.overflow_coordinator import (
+            current_overflow_coordinator,
+        )
+        from reflexio.server.services.playbook.components.overflow_consolidation import (
+            verified_consolidation_decisions,
+        )
+
+        coordinator = current_overflow_coordinator.get()
+        if coordinator is not None:
+            return verified_consolidation_decisions(
+                self, coordinator, new_playbooks, existing_playbooks
+            )
+        return self._consolidation_decisions(new_playbooks, existing_playbooks)
+
     def _merge_replayed_evidence_duplicates(
         self,
         new_playbooks: list[UserPlaybook],
@@ -1135,6 +1201,19 @@ class PlaybookConsolidator(BaseDeduplicator):
         consolidation. For matches, an explicit reviewer revision wins; otherwise
         persisted wording wins. Provenance and notes are unioned in stable order.
         """
+        from reflexio.server.services.extraction.overflow_coordinator import (
+            current_overflow_coordinator,
+        )
+
+        if (
+            current_overflow_coordinator.get() is not None
+            and not self._has_only_exact_replay_matches(
+                new_playbooks, existing_playbooks
+            )
+        ):
+            # Shared interaction IDs and lexical overlap cannot justify
+            # discarding a historical constraint or widening a reviewed rule.
+            return None
         matches: dict[int, tuple[UserPlaybook, list[UserPlaybook]]] = {}
         # Keyed by list position, never by ``id()``: two equal candidate objects
         # would otherwise collide and silently drop one of them.
@@ -1236,6 +1315,39 @@ class PlaybookConsolidator(BaseDeduplicator):
             merge_groups.append((len(survivors) - 1, [existing_id]))
 
         return survivors, archive_ids, merge_groups
+
+    @staticmethod
+    def _has_only_exact_replay_matches(
+        candidates: list[UserPlaybook], existing_rows: list[UserPlaybook]
+    ) -> bool:
+        fields = (
+            "content",
+            "trigger",
+            "rationale",
+            "reader_angle",
+            "blocking_issue",
+            "user_id",
+            "agent_version",
+            "playbook_name",
+            "source",
+            "tags",
+            "expanded_terms",
+        )
+        return all(
+            sum(
+                bool(existing.user_playbook_id)
+                and existing.status is None
+                and existing.merged_into is None
+                and existing.superseded_by is None
+                and all(
+                    getattr(candidate, field) == getattr(existing, field)
+                    for field in fields
+                )
+                for existing in existing_rows
+            )
+            == 1
+            for candidate in candidates
+        )
 
     @staticmethod
     def _find_suspicious_under_consumed_new_rows(

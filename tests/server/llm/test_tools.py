@@ -132,6 +132,22 @@ def test_registry_handle_converts_validation_error_to_tool_error():
     assert ctx.calls == []
 
 
+def test_tool_handler_request_guard_error_is_not_converted_into_a_model_retry():
+    from reflexio.server.llm._litellm_types import ProviderRequestGuardError
+
+    failure = ProviderRequestGuardError("Input or answer witness rejected")
+    handler = MagicMock(side_effect=failure)
+    registry = ToolRegistry(
+        [Tool(name="guarded", args_model=EmitProfileArgs, handler=handler)]
+    )
+    with pytest.raises(ProviderRequestGuardError) as observed:
+        registry.handle(
+            "guarded", json.dumps({"content": "hi", "time_to_live": "persistent"}), None
+        )
+    assert observed.value is failure
+    handler.assert_called_once()
+
+
 def test_registry_rejects_unknown_tool():
     reg = ToolRegistry()
     result = reg.handle("not_a_tool", "{}", None)
@@ -258,6 +274,33 @@ def test_run_tool_loop_drives_multiple_turns_until_finish(
     assert len(result.trace.turns) == 3
     assert ctx.emitted == ["alpha", "beta"]
     assert ctx.finished is True
+
+
+def test_native_tool_loop_preserves_coordinator_suspension(monkeypatch):
+    from reflexio.server.llm.input_budget import extraction_provider_guard
+    from reflexio.server.services.extraction.overflow_coordinator import (
+        OverflowSuspendedError,
+    )
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.delenv("CLAUDE_SMART_USE_LOCAL_CLI", raising=False)
+    client = LiteLLMClient(LiteLLMConfig(model="claude-sonnet-4-6"))
+    ctx = LoopCtx()
+    guard = MagicMock(side_effect=OverflowSuspendedError("continue next turn"))
+    token = extraction_provider_guard.set(guard)
+    try:
+        with patch("litellm.completion") as dispatch:
+            with pytest.raises(OverflowSuspendedError):
+                run_tool_loop(
+                    client=client,
+                    messages=[{"role": "user", "content": "go"}],
+                    registry=_make_registry(ctx),
+                    model_role=ModelRole.EXTRACTION_AGENT,
+                    ctx=ctx,
+                )
+            dispatch.assert_not_called()
+    finally:
+        extraction_provider_guard.reset(token)
 
 
 def test_run_tool_loop_empty_registry_omits_tool_choice_for_structured_finish(

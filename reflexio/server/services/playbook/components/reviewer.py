@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -15,12 +15,21 @@ from reflexio.models.api_schema.internal_schema import RequestInteractionDataMod
 from reflexio.models.structured_output import normalize_provider_value
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm._litellm_text_generation import ProviderRequestGuard
+from reflexio.server.llm._litellm_types import ModelProvenance
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.llm.model_defaults import ModelRole
+from reflexio.server.services.extraction.overflow_coordinator import (
+    current_overflow_coordinator,
+)
+from reflexio.server.services.extraction.protected_record import (
+    ProtectedRecord,
+    ProtectedRecordUpdate,
+)
 from reflexio.server.services.playbook.playbook_evidence import (
     contains_call_local_turn_ref,
 )
 from reflexio.server.services.playbook.playbook_service_utils import (
+    PlaybookEvidenceSource,
     PlaybookPromptContext,
     build_playbook_prompt_context,
 )
@@ -348,6 +357,54 @@ class PlaybookCandidateReviewer:
         candidates: list[UserPlaybook],
         prompt_context: PlaybookPromptContext,
     ) -> dict[str, list[CandidateEvidenceUnit]]:
+        coordinator = current_overflow_coordinator.get()
+        if coordinator is not None:
+            spans = tuple(
+                span
+                for chunk in coordinator.require_prepared().chunks
+                for span in (*chunk.neighbors, *chunk.spans)
+            )
+            by_ref = {span.evidence_ref: span for span in spans}
+            result: dict[str, list[CandidateEvidenceUnit]] = {}
+            for index, candidate in enumerate(candidates, 1):
+                candidate_id = f"C{index}"
+                record = coordinator.candidate_records.get(
+                    coordinator.playbook_key(candidate)
+                )
+                if record is None:
+                    raise PlaybookCandidateEvidenceError(
+                        "Candidate lacks verified quotation context"
+                    )
+                checked = ProtectedRecord().merge(
+                    ProtectedRecordUpdate(evidence=list(record.evidence)),
+                    visible_spans=spans,
+                )
+                units = []
+                for item in checked.evidence:
+                    first = by_ref[item.evidence_refs[0]]
+                    # Additional contradictions/scope context is shown separately;
+                    # it cannot silently become this candidate's historical source.
+                    if first.interaction_id not in candidate.source_interaction_ids:
+                        continue
+                    source = prompt_context.evidence_sources.get(
+                        f"T{first.source_order}"
+                    )
+                    units.append(
+                        CandidateEvidenceUnit(
+                            evidence_id=f"{candidate_id}-E{len(units) + 1}",
+                            turn_ref=f"T{first.source_order}",
+                            source_span=item.quote,
+                            interaction_id=first.interaction_id,
+                            role=first.role,
+                            request_source=source.request_source if source else "",
+                        )
+                    )
+                if not units:
+                    raise PlaybookCandidateEvidenceError(
+                        "Candidate lacks quotations from its original source mapping"
+                    )
+                result[candidate_id] = units
+            return result
         by_interaction_id: dict[int, list[Any]] = {}
         for unit in prompt_context.evidence_units.values():
             if unit.interaction_id:
@@ -422,6 +479,17 @@ class PlaybookCandidateReviewer:
 
     @staticmethod
     def _format_existing(existing_playbooks: list[UserPlaybook]) -> str:
+        from reflexio.server.services.playbook.components.overflow_evidence import (
+            remember_historical_playbooks,
+        )
+
+        remember_historical_playbooks(existing_playbooks)
+        if current_overflow_coordinator.get() is not None:
+            return (
+                "Historical comparison runs separately after this review. "
+                "Review only this candidate's grounding in its own original evidence; "
+                "do not reject it because another stored learning might cover it."
+            )
         if not existing_playbooks:
             return "(none)"
         return "\n".join(
@@ -564,23 +632,53 @@ class PlaybookCandidateReviewer:
             decision.candidate_id.strip(): decision for decision in output.decisions
         }
         survivors: list[UserPlaybook] = []
+        coordinator = current_overflow_coordinator.get()
+
+        def add_survivor(
+            original: UserPlaybook, survivor: UserPlaybook, *, revised: bool
+        ) -> None:
+            if coordinator is not None:
+                old_key, new_key = (
+                    coordinator.playbook_key(original),
+                    coordinator.playbook_key(survivor),
+                )
+                coordinator.candidate_models[new_key] = (
+                    coordinator.review_models.get(old_key)
+                    if revised
+                    else coordinator.candidate_models.get(old_key)
+                )
+                coordinator.candidate_records[new_key] = coordinator.candidate_records[
+                    old_key
+                ]
+                coordinator.candidate_evidence_refs[new_key] = (
+                    coordinator.candidate_evidence_refs.get(old_key, ())
+                )
+                if old_key in coordinator.candidate_historical_matches:
+                    coordinator.candidate_historical_matches[new_key] = (
+                        coordinator.candidate_historical_matches[old_key]
+                    )
+            survivors.append(survivor)
+
         for candidate_index, candidate in enumerate(candidates, start=1):
             candidate_id = f"C{candidate_index}"
             decision = decisions[candidate_id]
             if decision.decision == "reject":
                 continue
             if decision.decision == "accept":
-                survivors.append(
-                    candidate.model_copy(
-                        update={
-                            "notes": _append_review_note(
-                                candidate.notes,
-                                "accepted",
-                                decision.reason_code,
-                                decision.reason,
-                            )
-                        }
+                updates: dict[str, Any] = {
+                    "notes": _append_review_note(
+                        candidate.notes,
+                        "accepted",
+                        decision.reason_code,
+                        decision.reason,
                     )
+                }
+                if coordinator is not None:
+                    updates["source_span"] = "\n\n".join(
+                        unit.source_span for unit in units_by_candidate[candidate_id]
+                    )
+                add_survivor(
+                    candidate, candidate.model_copy(update=updates), revised=False
                 )
                 continue
 
@@ -599,7 +697,8 @@ class PlaybookCandidateReviewer:
             revision = decision.revision
             if revision is None:  # Guarded by structured semantic validation.
                 raise ValueError(f"Reviewer omitted revision for {candidate_id}")
-            survivors.append(
+            add_survivor(
+                candidate,
                 candidate.model_copy(
                     update={
                         "content": revision.content,
@@ -614,7 +713,8 @@ class PlaybookCandidateReviewer:
                             decision.reason,
                         ),
                     }
-                )
+                ),
+                revised=True,
             )
         return survivors
 
@@ -639,13 +739,105 @@ class PlaybookCandidateReviewer:
                 output=PlaybookCandidateReviewOutput(decisions=[]),
                 units_by_candidate={},
             )
-        prompt_context = build_playbook_prompt_context(
-            request_interaction_data_models,
-            expert=False,
-            # The service invokes the reviewer only for strict normal extraction,
-            # whose validated evidence units are keyed by these local labels.
-            label_turns=True,
-        )
+        coordinator = current_overflow_coordinator.get()
+        if coordinator is not None and len(candidates) > 1:
+            decisions = []
+            units: dict[str, list[CandidateEvidenceUnit]] = {}
+            supporting = []
+            for index, candidate in enumerate(candidates, 1):
+                child = self.decide(
+                    candidates=[candidate],
+                    request_interaction_data_models=request_interaction_data_models,
+                    existing_playbooks=existing_playbooks,
+                    agent_context=agent_context,
+                    playbook_definition=playbook_definition,
+                    tool_context=tool_context,
+                )
+                target = f"C{index}"
+                names = {
+                    unit.evidence_id: unit.evidence_id.replace("C1-", f"{target}-", 1)
+                    for unit in child.units_by_candidate["C1"]
+                }
+                decisions.append(
+                    child.output.decisions[0].model_copy(
+                        update={
+                            "candidate_id": target,
+                            "evidence_ids": [
+                                names[ref]
+                                for ref in child.output.decisions[0].evidence_ids
+                            ],
+                        }
+                    )
+                )
+                units[target] = [
+                    replace(unit, evidence_id=names[unit.evidence_id])
+                    for unit in child.units_by_candidate["C1"]
+                ]
+                supporting.extend(
+                    proof.model_copy(
+                        update={
+                            "candidate_id": target,
+                            "excerpts": [
+                                quote.model_copy(
+                                    update={"evidence_id": names[quote.evidence_id]}
+                                )
+                                for quote in proof.excerpts
+                            ],
+                        }
+                    )
+                    for proof in child.supporting_evidence
+                )
+            return PlaybookReviewOutcome(
+                PlaybookCandidateReviewOutput(decisions=decisions), units, supporting
+            )
+        if coordinator is not None:
+            candidate = candidates[0]
+            record = coordinator.candidate_records.get(
+                coordinator.playbook_key(candidate)
+            )
+            if record is None:
+                raise PlaybookCandidateEvidenceError(
+                    "Candidate lacks its verified evidence record"
+                )
+            requests = {
+                group.request.request_id: group.request
+                for group in request_interaction_data_models
+            }
+            sources = {
+                f"T{span.source_order}": PlaybookEvidenceSource(
+                    interaction_id=span.interaction_id,
+                    request_id=span.request_id,
+                    evidence_texts=(),
+                    role=span.role,
+                    request_source=requests[span.request_id].source or "",
+                )
+                for chunk in coordinator.require_prepared().chunks
+                for span in (*chunk.neighbors, *chunk.spans)
+            }
+            prompt_context = PlaybookPromptContext(
+                json.dumps(
+                    {
+                        "protected_record": coordinator.record.model_dump(mode="json"),
+                        "candidate_context": record.model_dump(mode="json"),
+                        "human_answers": coordinator.checkpoint.get(
+                            "answer_witnesses", {}
+                        ),
+                        "scope": "Additional context does not alter the candidate's original source mapping.",
+                    },
+                    ensure_ascii=False,
+                ),
+                sources,
+                {},
+            )
+            agent_context = coordinator.agent_context
+        else:
+            prompt_context = build_playbook_prompt_context(
+                request_interaction_data_models,
+                expert=False,
+                # The service invokes the reviewer only for strict normal extraction,
+                # whose validated evidence units are keyed by these local labels.
+                label_turns=True,
+            )
         units_by_candidate = self._candidate_evidence_units(candidates, prompt_context)
         version = self.request_context.prompt_manager.get_active_version(self.PROMPT_ID)
         evidence_first = version in {
@@ -713,8 +905,7 @@ class PlaybookCandidateReviewer:
             }
         if self.provider_request_guard is not None:
             inference_options["provider_request_guard"] = self.provider_request_guard
-        output = self.client.generate_chat_response(
-            messages,
+        options = dict(
             model_role=ModelRole.GENERATION,
             max_retries=0,
             response_format=response_format,
@@ -724,6 +915,31 @@ class PlaybookCandidateReviewer:
             ),
             **inference_options,
         )
+        review_key = None
+        review_provenance = None
+        if coordinator is not None:
+            review_key = coordinator.step_key(
+                "review-v1",
+                {
+                    "messages": messages,
+                    "schema": response_format.model_json_schema(),
+                    "max_tokens": self.max_tokens,
+                    "reasoning_effort": self.reasoning_effort,
+                },
+            )
+            saved = coordinator.completed_step(review_key)
+            if saved is None:
+                coordinator.require_remaining_work(1)
+                result = self.client.generate_chat_response_with_provenance(
+                    messages, **options
+                )
+                output, review_provenance = result.value, result.provenance
+            else:
+                output = response_format.model_validate(saved["output"])
+                review_provenance = ModelProvenance(**saved["model_provenance"])
+        else:
+            output = self.client.generate_chat_response(messages, **options)
+        raw_output = output
         supporting_evidence: list[CandidateSupportingEvidence] = []
         if evidence_first:
             errors = validator(output, units_by_candidate)
@@ -740,6 +956,19 @@ class PlaybookCandidateReviewer:
         errors = self._validation_errors(output, units_by_candidate)
         if errors:
             raise ValueError("; ".join(errors))
+        if (
+            coordinator is not None
+            and review_key is not None
+            and review_provenance is not None
+        ):
+            if not isinstance(raw_output, BaseModel):
+                raise ValueError("Reviewer lacks validated structured output")
+            coordinator.complete_step(
+                review_key, raw_output.model_dump(mode="json"), review_provenance
+            )
+            coordinator.review_models[coordinator.playbook_key(candidates[0])] = (
+                review_provenance
+            )
         counts = dict.fromkeys(("accept", "revise", "reject"), 0)
         reason_counts: dict[str, int] = {}
         for decision in output.decisions:

@@ -43,6 +43,9 @@ from reflexio.server.services.deferred_learning_plan import (
     PlaybookWritePlan,
     _FinalizationReceiptAlreadyExistsError,
 )
+from reflexio.server.services.extraction.overflow_presentation import (
+    current_overflow_presentation,
+)
 from reflexio.server.services.playbook.aggregation_trigger import (
     maybe_trigger_user_playbook_aggregation,
 )
@@ -317,13 +320,18 @@ class PlaybookGenerationService(
         Returns:
             str | None: The rendered prompt, or None if no definitions to check
         """
+        presentation = current_overflow_presentation.get()
         # Check for expert content — use expert-specific should-generate prompt
         all_interactions = extract_interactions_from_request_interaction_data_models(
             session_data_models
         )
         if has_expert_content(all_interactions):
             agent_context = self.configurator.get_agent_context()
-            comparison_pairs = format_expert_comparison_pairs(session_data_models)
+            comparison_pairs = (
+                presentation.text
+                if presentation is not None
+                else format_expert_comparison_pairs(session_data_models)
+            )
             return self.request_context.prompt_manager.render_prompt(
                 PlaybookServiceConstants.PLAYBOOK_SHOULD_GENERATE_EXPERT_PROMPT_ID,
                 {
@@ -332,7 +340,11 @@ class PlaybookGenerationService(
                 },
             )
 
-        new_interactions = format_sessions_to_history_string(session_data_models)
+        new_interactions = (
+            presentation.text
+            if presentation is not None
+            else format_sessions_to_history_string(session_data_models)
+        )
 
         combined_definition = (
             scoped_config.extraction_definition_prompt.strip()
@@ -569,12 +581,21 @@ class PlaybookGenerationService(
         self.storage.precompute_user_playbook_embeddings(all_playbooks)  # type: ignore[reportOptionalMemberAccess]
 
         lineage_contexts: list[LineageContext] = []
+        from reflexio.server.services.extraction.overflow_coordinator import (
+            current_overflow_coordinator,
+        )
+
+        coordinator = current_overflow_coordinator.get()
         for index, _playbook in enumerate(all_playbooks):
             provenance = (
                 consolidation_provenance
                 if index in consolidated_output_indices
                 else self._last_model_provenance
             )
+            if coordinator is not None and index not in consolidated_output_indices:
+                provenance = coordinator.candidate_models.get(
+                    coordinator.playbook_key(_playbook), provenance
+                )
             lineage_contexts.append(
                 LineageContext(
                     op_kind="create",

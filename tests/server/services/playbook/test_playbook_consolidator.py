@@ -2505,6 +2505,56 @@ class TestOverlappingSurvivors:
 class TestReplayedEvidenceMerge:
     """The deterministic merge is narrow: it defers whenever a match is unclear."""
 
+    @pytest.mark.parametrize("changed", [False, True])
+    def test_overflow_shortcut_requires_exact_rule_and_scope(
+        self, mock_consolidator, changed
+    ):
+        from reflexio.server.services.extraction.overflow_coordinator import (
+            current_overflow_coordinator,
+        )
+
+        content = (
+            "Prepare the deployment plan and wait for separate deployment approval."
+        )
+        existing = _make_user_playbook(
+            1,
+            user_playbook_id=51,
+            content=content,
+            trigger="when production deployment is requested",
+            source_interaction_ids=[5],
+            source_span="Original complete historical evidence",
+            reader_angle="observed-failure",
+        )
+        candidate = _make_user_playbook(
+            0,
+            content="Prepare the deployment plan and deploy after implementation approval."
+            if changed
+            else content,
+            trigger=existing.trigger,
+            source_interaction_ids=[5],
+            source_span="Verified new quotation",
+            reader_angle=existing.reader_angle,
+            notes="First-pass reviewer: revised (bounded evidence)",
+        )
+        token = current_overflow_coordinator.set(MagicMock())
+        try:
+            result = mock_consolidator._merge_replayed_evidence_duplicates(
+                [candidate], [existing], generation_request_id="new-request"
+            )
+        finally:
+            current_overflow_coordinator.reset(token)
+        if changed:
+            assert result is None
+        else:
+            survivors, archive_ids, merge_groups = result
+            assert survivors[0].content == content
+            assert survivors[0].trigger == existing.trigger
+            assert existing.source_span in survivors[0].source_span
+            assert archive_ids == [51]
+            assert merge_groups == [(0, [51])]
+        assert existing.content == content
+        assert existing.source_span == "Original complete historical evidence"
+
     def test_ambiguous_multi_match_falls_through_to_llm(self, mock_consolidator):
         content = "Retry the same request once with unchanged parameters."
         candidate = _make_user_playbook(

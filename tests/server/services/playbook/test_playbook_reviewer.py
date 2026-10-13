@@ -25,6 +25,122 @@ from reflexio.server.services.playbook.components.reviewer import (
 )
 
 
+def test_overflow_review_preserves_original_roles_and_does_not_attribute_context_as_support():
+    from reflexio.server.llm._litellm_types import ModelProvenance
+    from reflexio.server.services.extraction.input_preparation import (
+        prepare_extraction_input,
+    )
+    from reflexio.server.services.extraction.overflow_coordinator import (
+        OverflowCoordinator,
+        current_overflow_coordinator,
+    )
+    from reflexio.server.services.extraction.protected_record import (
+        ProtectedEvidence,
+        ProtectedRecord,
+        ProtectedRecordUpdate,
+    )
+    from reflexio.server.services.playbook.playbook_service_utils import (
+        PlaybookPromptContext,
+    )
+    from reflexio.server.services.storage.storage_base._extraction_stream import Window
+
+    instruction = "Approve local verification only; do not deploy."
+    failure = "The operation failed with permission denied."
+    groups = [
+        _interaction_model(1, "tool progress " * 6000 + instruction),
+        _interaction_model(2, failure, role="assistant"),
+    ]
+    prepared = prepare_extraction_input(groups, user_id="user-1")
+    spans = tuple(span for chunk in prepared.chunks for span in chunk.spans)
+    quotes = [
+        next(span for span in spans if text in span.text)
+        for text in (instruction, failure)
+    ]
+    record = ProtectedRecord().merge(
+        ProtectedRecordUpdate(
+            evidence=[
+                ProtectedEvidence(
+                    kind="instruction",
+                    evidence_refs=(quotes[0].evidence_ref,),
+                    quote=instruction,
+                    role="assistant",
+                ),
+                ProtectedEvidence(
+                    kind="uncertainty",
+                    evidence_refs=(quotes[1].evidence_ref,),
+                    quote=failure,
+                    role="user",
+                ),
+            ]
+        ),
+        visible_spans=spans,
+    )
+    coordinator = OverflowCoordinator(
+        MagicMock(),
+        Window("w", "user-1", "playbook", "", 0, 2, [], {}, False, False),
+        "token",
+        OverflowCoordinator.initial_manifest(prepared.source_digest),
+        source_digest=prepared.source_digest,
+        context_limits={},
+        prepared=prepared,
+    )
+    candidates = [
+        _candidate(
+            1,
+            groups[0].interactions[0].content,
+            content="Keep approval scoped to local verification.",
+        ),
+        _candidate(
+            2, failure, content="Verify permissions before claiming completion."
+        ),
+    ]
+    assert [candidate.user_playbook_id for candidate in candidates] == [0, 0]
+    for index, candidate in enumerate(candidates):
+        key = coordinator.playbook_key(candidate)
+        coordinator.candidate_records[key] = record
+        coordinator.candidate_models[key] = ModelProvenance(model_name=f"child-{index}")
+    assert len(coordinator.candidate_records) == 2
+    token = current_overflow_coordinator.set(coordinator)
+    try:
+        units = PlaybookCandidateReviewer._candidate_evidence_units(
+            candidates, PlaybookPromptContext("", {}, {})
+        )
+        assert [unit.interaction_id for unit in units["C1"]] == [1]
+        assert [unit.role for unit in units["C1"]] == ["user"]
+        assert [unit.role for unit in units["C2"]] == ["assistant"]
+        assert units["C1"][0].source_span == instruction
+        assert "tool progress" not in PlaybookCandidateReviewer._format_candidates(
+            candidates, units
+        )
+        output = PlaybookCandidateReviewOutput(
+            decisions=[
+                CandidateReviewDecision(
+                    id=f"C{index}",
+                    decision="accept",
+                    reason_code="grounded_useful",
+                    evidence_ids=[f"C{index}-E1"],
+                )
+                for index in (1, 2)
+            ]
+        )
+        survivors = PlaybookCandidateReviewer._apply_decisions(
+            candidates, output, units
+        )
+        assert survivors[0].source_span == instruction
+        assert survivors[0].source_interaction_ids == [1]
+        first_model = coordinator.candidate_models[
+            coordinator.playbook_key(survivors[0])
+        ]
+        second_model = coordinator.candidate_models[
+            coordinator.playbook_key(survivors[1])
+        ]
+        assert first_model is not None and second_model is not None
+        assert first_model.model_name == "child-0"
+        assert second_model.model_name == "child-1"
+    finally:
+        current_overflow_coordinator.reset(token)
+
+
 def _interaction_model(
     interaction_id: int, content: str, *, role: str = "user"
 ) -> RequestInteractionDataModel:

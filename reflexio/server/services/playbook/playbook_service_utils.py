@@ -16,6 +16,10 @@ from reflexio.models.structured_output import (
     normalize_provider_value,
 )
 from reflexio.server.prompt.prompt_manager import PromptManager
+from reflexio.server.services.extraction.overflow_presentation import (
+    OverflowPresentation,
+    current_overflow_presentation,
+)
 from reflexio.server.services.playbook.playbook_service_constants import (
     PlaybookServiceConstants,
 )
@@ -612,6 +616,44 @@ def _ordered_playbook_requests(
     return ordered_runs
 
 
+def _prepared_playbook_prompt_context(
+    sessions: list[RequestInteractionDataModel], presentation: OverflowPresentation
+) -> PlaybookPromptContext:
+    origins = {
+        interaction.interaction_id: (interaction, model.request)
+        for model in sessions
+        for interaction in model.interactions
+    }
+    evidence_sources: dict[str, PlaybookEvidenceSource] = {}
+    evidence_units: dict[str, PlaybookEvidenceUnit] = {}
+    for span in presentation.visible_spans:
+        origin = origins.get(span.interaction_id)
+        if origin is None or origin[1].request_id != span.request_id:
+            raise ValueError("Prepared playbook evidence source binding changed")
+        interaction, request = origin
+        turn_ref = f"T{span.source_order}"
+        previous = evidence_sources.get(turn_ref)
+        evidence_sources[turn_ref] = PlaybookEvidenceSource(
+            interaction_id=span.interaction_id,
+            request_id=span.request_id,
+            evidence_texts=(*previous.evidence_texts, span.text)
+            if previous
+            else (span.text,),
+            role=interaction.role,
+            request_source=request.source or "",
+        )
+        evidence_units[span.evidence_ref] = PlaybookEvidenceUnit(
+            evidence_ref=span.evidence_ref,
+            turn_ref=turn_ref,
+            source_span=span.text,
+            interaction_id=span.interaction_id,
+            request_id=span.request_id,
+            role=interaction.role,
+            request_source=request.source or "",
+        )
+    return PlaybookPromptContext(presentation.text, evidence_sources, evidence_units)
+
+
 def build_playbook_prompt_context(
     sessions: list[RequestInteractionDataModel],
     *,
@@ -625,6 +667,9 @@ def build_playbook_prompt_context(
     remain unlabelled unless their selected prompt version explicitly opts into
     evidence-grounded extraction.
     """
+    presentation = current_overflow_presentation.get()
+    if presentation is not None:
+        return _prepared_playbook_prompt_context(sessions, presentation)
     ordered_sessions = _ordered_playbook_requests(sessions)
     evidence_sources: dict[str, PlaybookEvidenceSource] = {}
     evidence_units: dict[str, PlaybookEvidenceUnit] = {}

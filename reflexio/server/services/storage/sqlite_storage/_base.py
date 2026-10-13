@@ -16,7 +16,7 @@ import re
 import sqlite3
 import threading
 import unicodedata
-from collections.abc import Callable, Generator, Sequence
+from collections.abc import Callable, Generator, Mapping, Sequence
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
@@ -843,7 +843,7 @@ def _row_to_profile(row: sqlite3.Row) -> UserProfile:
     )
 
 
-def _row_to_interaction(row: sqlite3.Row) -> Interaction:
+def _row_to_interaction(row: sqlite3.Row | Mapping[str, Any]) -> Interaction:
     d = dict(row)
     tools_used_raw = _json_loads(d.get("tools_used"))
     tools_used = (
@@ -883,7 +883,7 @@ def _row_to_interaction(row: sqlite3.Row) -> Interaction:
     )
 
 
-def _row_to_request(row: sqlite3.Row) -> Request:
+def _row_to_request(row: sqlite3.Row | Mapping[str, Any]) -> Request:
     d = dict(row)
     return Request(
         request_id=d["request_id"],

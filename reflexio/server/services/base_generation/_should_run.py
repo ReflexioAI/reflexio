@@ -136,6 +136,28 @@ class ShouldRunPrecheckMixin(Generic[TExtractorConfig, TGenerationServiceConfig]
             )
             return False
 
+        from reflexio.server.services.extraction.chunk_gate import (
+            judge_extraction_chunks,
+        )
+        from reflexio.server.services.extraction.overflow_coordinator import (
+            current_overflow_coordinator,
+        )
+
+        coordinator = current_overflow_coordinator.get()
+        if coordinator is not None:
+            prepared = coordinator.require_prepared()
+            return judge_extraction_chunks(
+                coordinator=coordinator,
+                prepared=prepared,
+                record=coordinator.record,
+                client=self.client,
+                model=self._resolve_should_run_model(),
+                build_prompt=lambda: self._build_should_run_prompt(
+                    scoped_config, session_data_models
+                ),
+                minimum_after_positive=len(prepared.chunks) + 3,
+            )
+
         # Cheap pre-filter: apply user-text-only heuristics (slash-commands,
         # short turns, extractor-prompt echoes) without burning a 5–7s LLM
         # call. Batches with no non-empty user text bypass these heuristics;

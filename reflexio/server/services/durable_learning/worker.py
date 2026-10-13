@@ -25,6 +25,10 @@ from reflexio.server.services.durable_learning.window_executor import (
     WindowExecutor,
     WindowInputsDeletedError,
 )
+from reflexio.server.services.extraction.overflow_coordinator import (
+    OverflowSuspendedError,
+)
+from reflexio.server.services.storage.storage_base import BaseStorage
 from reflexio.server.services.storage.storage_base._extraction_stream import (
     LeaseLostError,
     Window,
@@ -177,6 +181,35 @@ def _release() -> None:
         _budget.release()
 
 
+def _input_budget_failure_reason(exc: BaseException) -> str | None:
+    from reflexio.server.llm.input_budget import (
+        InputBudgetConfigurationError,
+        InputBudgetExceededError,
+    )
+    from reflexio.server.services.extraction.input_preparation import (
+        ExtractionInputBudgetExceededError,
+    )
+    from reflexio.server.services.storage.storage_base._extraction_stream import (
+        OverflowAttemptBudgetExceededError,
+    )
+
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, InputBudgetConfigurationError):
+            return "input_budget_configuration_error"
+        if isinstance(
+            current,
+            InputBudgetExceededError
+            | ExtractionInputBudgetExceededError
+            | OverflowAttemptBudgetExceededError,
+        ):
+            return "input_budget_exceeded"
+        current = current.__cause__ or current.__context__
+    return None
+
+
 class DurableLearningWorker:
     def __init__(
         self,
@@ -248,6 +281,36 @@ class DurableLearningWorker:
             user_ref = _user_ref(record.user_id)
             report_background_success(f"durable-learning-turn:{org_id}:{user_ref}")
         return completed
+
+    @staticmethod
+    def _handle_window_failure(
+        storage: BaseStorage, window: Window, token: str, exc: Exception
+    ) -> str:
+        if isinstance(exc, OverflowSuspendedError):
+            storage.suspend_extraction(window, token)
+            return "suspended"
+        reason = _input_budget_failure_reason(exc)
+        if reason is not None:
+            storage.fail_extraction_input_budget(window, token, reason)
+            record_health("worker.input_budget_failures", reason=reason)
+            return "input_budget_failure"
+        where = exception_locator(exc)
+        logger.warning(
+            "Extraction window failed kind=%s error=%s at=%s",
+            window.kind,
+            type(exc).__name__,
+            where,
+        )
+        # Only class/source coordinates are stored; messages may contain customer
+        # content. An already committed window retries its durable effects.
+        try:
+            storage.retry_extraction(window, token, f"{type(exc).__name__}@{where}")
+        except LeaseLostError:
+            storage.retry_extraction_effects(window)
+            record_health("worker.retries", phase="effects")
+        else:
+            record_health("worker.retries", phase="window")
+        return "failure"
 
     def _turn(
         self, org_id: str, lease_seconds: int, record: _TurnRecord | None = None
@@ -369,28 +432,7 @@ class DurableLearningWorker:
                     outcome = "lease_lost"
                     return 0
                 except Exception as exc:
-                    where = exception_locator(exc)
-                    logger.warning(
-                        "Extraction window failed kind=%s error=%s at=%s",
-                        window.kind,
-                        type(exc).__name__,
-                        where,
-                    )
-                    # The stored error stays a bounded class name plus our own
-                    # source coordinates, never customer content: no ``exc``,
-                    # ``str(exc)``, ``exc.args`` or ``exc_info``. An exception
-                    # message on this path can quote the customer's data.
-                    # If commit already succeeded only the outbox remains; it is
-                    # independently retried without reopening cursor coverage.
-                    try:
-                        storage.retry_extraction(
-                            window, token, f"{type(exc).__name__}@{where}"
-                        )
-                    except LeaseLostError:
-                        storage.retry_extraction_effects(window)
-                        record_health("worker.retries", phase="effects")
-                    else:
-                        record_health("worker.retries", phase="window")
+                    outcome = self._handle_window_failure(storage, window, token, exc)
                     return 0
             # Reached only when the window executed or was invalidated.
             record.completed = True

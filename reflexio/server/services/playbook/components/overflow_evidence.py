@@ -1,0 +1,69 @@
+"""Authoritative historical snapshots for bounded overflow comparisons."""
+
+import hashlib
+import json
+from datetime import UTC, datetime
+from typing import Any
+
+from reflexio.models.api_schema.service_schemas import UserPlaybook
+
+HISTORICAL_PLAYBOOK_FIELDS = (
+    "user_playbook_id",
+    "user_id",
+    "playbook_name",
+    "request_id",
+    "agent_version",
+    "created_at",
+    "content",
+    "trigger",
+    "rationale",
+    "blocking_issue",
+    "source_interaction_ids",
+    "status",
+    "source",
+    "expanded_terms",
+    "tags",
+    "source_span",
+    "notes",
+    "reader_angle",
+    "merged_into",
+    "superseded_by",
+)
+
+
+def historical_playbook_digest(playbook: UserPlaybook) -> str:
+    payload = playbook.model_dump(mode="json", include=set(HISTORICAL_PLAYBOOK_FIELDS))
+    return hashlib.sha256(
+        json.dumps(
+            payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode()
+    ).hexdigest()
+
+
+def historical_playbook_row_digest(row: dict[str, Any]) -> str:
+    """Normalize SQL JSON/time types exactly as the existing read models do."""
+    values = dict(row)
+    for field in ("blocking_issue", "source_interaction_ids", "tags"):
+        if isinstance(values[field], str):
+            values[field] = json.loads(values[field])
+    values["blocking_issue"] = values["blocking_issue"] or None
+    values["source_interaction_ids"] = values["source_interaction_ids"] or []
+    created = values["created_at"]
+    if isinstance(created, str):
+        created = datetime.fromisoformat(created)
+    if isinstance(created, datetime):
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=UTC)
+        created = int(created.timestamp())
+    values["created_at"] = created
+    return historical_playbook_digest(UserPlaybook.model_validate(values))
+
+
+def remember_historical_playbooks(playbooks: list[UserPlaybook]) -> None:
+    from reflexio.server.services.extraction.overflow_coordinator import (
+        current_overflow_coordinator,
+    )
+
+    coordinator = current_overflow_coordinator.get()
+    if coordinator is not None:
+        coordinator.remember_historical_playbooks(playbooks)

@@ -22,6 +22,8 @@ Description: Evidence-grounded playbook extraction, candidate review, aggregatio
 | `playbook_service_constants.py` | Prompt IDs for all playbook operations |
 | `playbook_service_utils.py` | Request dataclasses, Pydantic output schemas, message construction utilities |
 | `playbook_evidence.py` | Strict evidence validation, call-local reference checks, and persisted provenance helpers |
+| `components/overflow_consolidation.py` | Bounded metadata proposals, exact historical quotations, and semantic verification before overflow consolidation applies original rows |
+| `components/overflow_evidence.py` | Canonical historical row fingerprints checked under final commit locks |
 | `review_window.py` | Shared fail-closed reconstruction of persisted review chronology for automatic and manual review |
 | `review_service.py` | Time-window selection, persisted evidence reconstruction, reporting, and newest-first per-playbook apply |
 | `aggregation_trigger.py` | Converts post-generation activity into an idempotent durable scheduling signal |
@@ -212,6 +214,15 @@ partition-invalid, or overlapping-survivor decisions receive one bounded repair
 attempt. Reject-all is a valid result. If repair exhausts, the batch fails closed
 rather than inserting unreviewed candidates. Deterministic guards preserve
 source unions and reviewer revisions and prevent overlapping duplicate survivors.
+
+When extraction overflow admission is enabled, the grounding reviewer uses each
+candidate's original quotations and leaves historical redundancy to consolidation.
+Consolidation proposes actions from per-candidate retrieval metadata, scans the
+complete selected historical spans into bounded exact quotations, then verifies
+the combined decisions before applying the original storage models. Equal source
+bytes share source geometry; row-specific semantic receipts, fingerprints and
+original source IDs remain distinct. Unsafe or insufficient evidence blocks
+publication. Final row locks protect scope, status, content and evidence changes.
 
 Inline consolidation always runs during generation (the legacy `deduplicator` feature flag is retired). The enterprise repo additionally ships a **scheduled second-pass job** (`reflexio_ext/server/services/playbook_reconsolidation/`) that re-runs consolidation daily over already-persisted rows — user playbooks per `(user_id, agent_version)` and agent playbooks per `agent_version` — by rendering each duplicate group as NEW candidates against an empty EXISTING side via `_consolidation_decisions`, then tombstoning merged sources with `merge_records` lineage.
 

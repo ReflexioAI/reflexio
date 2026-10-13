@@ -1,0 +1,161 @@
+"""Complete-request admission at the existing provider dispatch boundary."""
+
+import json
+import math
+from collections.abc import Callable, Mapping
+from contextvars import ContextVar
+from typing import Any
+
+import litellm
+
+from reflexio.server.llm._litellm_types import (
+    ModelProvenance,
+    ProviderRequestGuard,
+    ProviderRequestGuardError,
+)
+from reflexio.server.llm.token_accounting import RunTokenTotals
+
+# Scoped to one logical extraction; copied worker contexts carry the same
+# durable coordinator callback. Other LLM callers keep their existing behavior.
+extraction_provider_guard: ContextVar[ProviderRequestGuard | None] = ContextVar(
+    "extraction_provider_guard", default=None
+)
+extraction_usage_observer: ContextVar[
+    Callable[[ModelProvenance, RunTokenTotals], None] | None
+] = ContextVar("extraction_usage_observer", default=None)
+extraction_request_identity: ContextVar[dict[str, Any] | None] = ContextVar(
+    "extraction_request_identity", default=None
+)
+
+
+class InputBudgetConfigurationError(ProviderRequestGuardError):
+    """A safe effective model/endpoint capacity could not be established."""
+
+
+class InputBudgetExceededError(ProviderRequestGuardError):
+    """The complete prompt plus reserved output exceeds its admission budget."""
+
+
+class ProviderInputOverflowError(InputBudgetExceededError):
+    """An explicitly classified provider rejection, before fallback/retry."""
+
+    def __init__(self, identity: dict[str, Any] | None):
+        super().__init__("Provider rejected extraction input capacity")
+        self.identity = dict(identity or {})
+
+
+def declared_context_limits(raw: str) -> dict[str, int]:
+    """Parse endpoint-specific operator declarations without permissive coercion.
+
+    Keys are the actual model for ordinary provider endpoints, or
+    ``model@api_base`` for a custom endpoint. Empty values mean no declarations.
+    """
+    try:
+        value = json.loads(raw.strip() or "{}")
+    except (ValueError, TypeError) as exc:
+        raise InputBudgetConfigurationError(
+            "Invalid context-limit declarations"
+        ) from exc
+    if not isinstance(value, dict) or any(
+        not isinstance(key, str)
+        or not key.strip()
+        or type(limit) is not int
+        or limit <= 0
+        for key, limit in value.items()
+    ):
+        raise InputBudgetConfigurationError("Context limits require positive integers")
+    return value
+
+
+def check_request_input_budget(
+    params: Mapping[str, Any],
+    *,
+    context_limits: Mapping[str, int],
+    prompt_target: int = 32768,
+) -> int:
+    """Check actual built params; return conservatively budgeted input tokens.
+
+    Caller invokes this for each repair, continuation and fallback rung. Custom
+    endpoints never inherit another deployment's advertised model capacity.
+    No credentials or prompt text appear in failure messages.
+    """
+    model = params.get("model")
+    if not isinstance(model, str) or not model or prompt_target <= 0:
+        raise InputBudgetConfigurationError("Missing effective model or prompt target")
+    api_base = params.get("api_base") or params.get("base_url")
+    key = f"{model}@{api_base}" if api_base else model
+    context_limit = context_limits.get(key)
+    if context_limit is None:
+        if api_base:
+            raise InputBudgetConfigurationError(
+                "Custom endpoint requires a context declaration"
+            )
+        try:
+            info = litellm.get_model_info(model)
+        except Exception as exc:
+            raise InputBudgetConfigurationError(
+                "Unknown model context capacity"
+            ) from exc
+        context_limit = info.get("max_input_tokens")
+        # A generic max_tokens can describe OUTPUT capacity; do not treat it as
+        # a context-window declaration when max_input_tokens is absent.
+    if type(context_limit) is not int or context_limit <= 0:
+        raise InputBudgetConfigurationError("Unknown model context capacity")
+    output_tokens = params.get("max_completion_tokens", params.get("max_tokens"))
+    if type(output_tokens) is not int or output_tokens <= 0:
+        raise InputBudgetConfigurationError("Effective output reservation is required")
+    messages = params.get("messages")
+    if not isinstance(messages, list):
+        raise InputBudgetConfigurationError("Complete provider messages are required")
+    try:
+        tokens = litellm.token_counter(
+            model=model,
+            messages=messages,
+            tools=params.get("tools"),
+            tool_choice=params.get("tool_choice"),
+        )
+        response_format = params.get("response_format")
+        if response_format:
+            if hasattr(response_format, "model_json_schema"):
+                response_format = response_format.model_json_schema()
+            tokens += litellm.token_counter(
+                model=model,
+                text=json.dumps(response_format, ensure_ascii=False, sort_keys=True),
+            )
+    except Exception as exc:
+        raise InputBudgetConfigurationError("Complete prompt counting failed") from exc
+    budgeted_tokens = math.ceil(tokens * 1.2)
+    if budgeted_tokens > min(prompt_target, context_limit - output_tokens):
+        raise InputBudgetExceededError(
+            "Complete extraction prompt exceeds input capacity"
+        )
+    return budgeted_tokens
+
+
+def extraction_request_guard(
+    *,
+    context_limits: Mapping[str, int],
+    reserve_attempt: Callable[[], None],
+    prompt_target: int = 32768,
+) -> Callable[[dict[str, Any], float, tuple[str, ...], bool], None]:
+    """Reserve durable quota only after request admission, before dispatch."""
+
+    def guard(
+        params: dict[str, Any],
+        _hard_timeout: float,
+        _ladder: tuple[str, ...],
+        _parse_structured_output: bool,
+    ) -> None:
+        check_request_input_budget(
+            params, context_limits=context_limits, prompt_target=prompt_target
+        )
+        try:
+            reserve_attempt()
+        except ProviderRequestGuardError:
+            raise
+        except Exception as exc:
+            raise ProviderRequestGuardError(
+                "Durable extraction attempt reservation failed"
+            ) from exc
+
+    return guard

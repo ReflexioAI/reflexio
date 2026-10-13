@@ -30,7 +30,10 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 from reflexio.server.api_endpoints.request_context import RequestContext
-from reflexio.server.llm._litellm_types import ModelProvenance
+from reflexio.server.llm._litellm_types import (
+    ModelProvenance,
+    ProviderRequestGuardError,
+)
 from reflexio.server.llm.litellm_client import LiteLLMClient
 from reflexio.server.llm.token_accounting import RunTokenTotals
 from reflexio.server.services.deferred_learning_plan import ExtractorBookmarkAdvance
@@ -167,6 +170,10 @@ class ExtractionRunLifecycleMixin(Generic[TExtractorConfig, TGenerationServiceCo
                 last_error=error_msg,
             )
             raise ExtractorExecutionError(error_msg) from exc
+        except ProviderRequestGuardError:
+            # The durable coordinator must distinguish suspension/admission from
+            # an extractor failure; do not replace its type with a wrapper.
+            raise
         except Exception as exc:
             self._last_extractor_run_stats = {"total": 1, "failed": 1, "timed_out": 0}
             error_msg = (

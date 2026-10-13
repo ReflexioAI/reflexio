@@ -16,6 +16,9 @@ from reflexio.models.api_schema.service_schemas import (
 )
 from reflexio.models.structured_output import StrictStructuredOutput
 from reflexio.server.prompt.prompt_manager import PromptManager
+from reflexio.server.services.extraction.overflow_presentation import (
+    current_overflow_presentation,
+)
 from reflexio.server.services.service_utils import (
     MessageConstructionConfig,
     PromptConfig,
@@ -258,13 +261,14 @@ def construct_profile_extraction_messages_from_sessions(
 
     # Configure final user message (after interactions)
     # Only dynamic per-call data goes in user message
+    presentation = current_overflow_presentation.get()
     user_config = PromptConfig(
         prompt_id=ProfileGenerationServiceConstants.PROFILE_UPDATE_MAIN_PROMPT_ID,
         variables={
             "existing_profiles": formatted_existing_profiles,
-            "interactions": format_sessions_to_history_string(
-                request_interaction_data_models
-            ),
+            "interactions": presentation.text
+            if presentation is not None
+            else format_sessions_to_history_string(request_interaction_data_models),
         },
     )
 

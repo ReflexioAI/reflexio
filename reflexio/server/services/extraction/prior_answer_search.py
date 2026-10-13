@@ -123,14 +123,16 @@ def _format_datetime(value: datetime | None) -> str:
     return value.date().isoformat() if value else "unknown"
 
 
-def _format_result(result: dict[str, Any] | None) -> str:
+def _format_result(result: dict[str, Any] | None, *, truncate: bool = True) -> str:
     text = canonical_json(result or {})
-    if len(text) > MAX_RESULT_CHARS:
+    if truncate and len(text) > MAX_RESULT_CHARS:
         return f"{text[:MAX_RESULT_CHARS]}..."
     return text
 
 
-def format_prior_knowledge_context(matches: list[PriorAnswerMatch]) -> str | None:
+def format_prior_knowledge_context(
+    matches: list[PriorAnswerMatch], *, truncate_results: bool = True
+) -> str | None:
     """Return a seed-context block, or None when there is no prior knowledge."""
     if not matches:
         return None
@@ -153,7 +155,7 @@ def format_prior_knowledge_context(matches: list[PriorAnswerMatch]) -> str | Non
                 [
                     f"- pending_tool_call_id: {match.pending_tool_call_id}",
                     f"  question: {match.question_text}",
-                    f"  answer: {_format_result(match.result)}",
+                    f"  answer: {_format_result(match.result, truncate=truncate_results)}",
                     f"  resolved_at: {_format_datetime(match.resolved_at)}",
                     f"  valid_until: {_format_datetime(match.valid_until)}",
                 ]
@@ -190,6 +192,31 @@ def append_prior_knowledge_context(
     similarity_threshold: float = 0.0,
     exclude_pending_tool_call_ids: set[str] | None = None,
 ) -> list[dict[str, Any]]:
+    from reflexio.server.services.extraction.overflow_answers import pin_overflow_answer
+    from reflexio.server.services.extraction.overflow_coordinator import (
+        current_overflow_coordinator,
+    )
+
+    coordinator = current_overflow_coordinator.get()
+    context_key = None
+    if coordinator is not None:
+        context_key = coordinator.step_key(
+            "prior-context-v1",
+            {
+                "messages": messages,
+                "org_id": org_id,
+                "extractor_kind": extractor_kind,
+                "config": str(extractor_config),
+                "source": source,
+                "agent_version": agent_version,
+                "limit": limit,
+                "similarity_threshold": similarity_threshold,
+                "excluded": sorted(exclude_pending_tool_call_ids or []),
+            },
+        )
+        saved = coordinator.checkpoint.get("prior_contexts", {})
+        if context_key in saved:
+            return [*messages, *saved[context_key]]
     query = build_knowledge_need_query(
         extractor_kind=extractor_kind,
         extractor_config=extractor_config,
@@ -205,7 +232,32 @@ def append_prior_knowledge_context(
         similarity_threshold=similarity_threshold,
         exclude_pending_tool_call_ids=exclude_pending_tool_call_ids,
     )
-    context = format_prior_knowledge_context(matches)
+    if coordinator is not None:
+        for match in matches:
+            if match.status == PendingToolCallStatus.RESOLVED:
+                record = storage.get_pending_tool_call(match.pending_tool_call_id)
+                if record is None or (
+                    record.question_text != match.question_text
+                    or record.result != match.result
+                    or record.resolved_at != match.resolved_at
+                    or record.valid_until != match.valid_until
+                ):
+                    from reflexio.server.llm.input_budget import (
+                        InputBudgetConfigurationError,
+                    )
+
+                    raise InputBudgetConfigurationError(
+                        "Prior answer changed during capture"
+                    )
+                pin_overflow_answer(record)
+    context = format_prior_knowledge_context(
+        matches, truncate_results=coordinator is None
+    )
+    suffix = [{"role": "user", "content": context}] if context is not None else []
+    if coordinator is not None:
+        checkpoint = coordinator.checkpoint
+        checkpoint.setdefault("prior_contexts", {})[context_key] = suffix
+        coordinator.save_checkpoint(checkpoint)
     if context is None:
         return messages
     logger.info(

@@ -13,7 +13,11 @@ logger = logging.getLogger(__name__)
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from reflexio.server.llm._litellm_types import ModelProvenance, completion_metadata
+from reflexio.server.llm._litellm_types import (
+    ModelProvenance,
+    ProviderRequestGuardError,
+    completion_metadata,
+)
 from reflexio.server.llm._model_compat import ensure_model_capabilities
 from reflexio.server.llm.llm_utils import (
     assert_provider_safe_schema,
@@ -139,6 +143,8 @@ class ToolRegistry:
             return Completed(result={"error": f"invalid args for {name}: {e}"})
         try:
             return _coerce_tool_outcome(tool.handler(args, ctx))
+        except ProviderRequestGuardError:
+            raise
         except Exception as e:  # handler errors are recoverable tool-turn errors
             logger.exception("tool handler %s failed", name)
             return Completed(result={"error": f"handler error: {type(e).__name__}"})
@@ -488,6 +494,18 @@ def _run_multi_stage_fallback(
     )
 
 
+def _log_tool_loop_error(error: Exception) -> None:
+    from reflexio.server.llm.litellm_client import LiteLLMClientError
+
+    if isinstance(error, ProviderRequestGuardError):
+        # These are admission, lease and suspension decisions, not model errors.
+        raise error
+    if isinstance(error, LiteLLMClientError):
+        logger.warning("event=tool_loop_llm_error error=%s", error)
+    else:
+        logger.exception("Tool loop raised an unexpected exception")
+
+
 def run_tool_loop(
     client: LiteLLMClient,
     messages: list[dict[str, Any]],
@@ -664,7 +682,6 @@ def run_tool_loop(
 
     # ---- Native tool loop ---------------------------------------------
     # Local import keeps litellm_client a type-only dependency of this module.
-    from reflexio.server.llm.litellm_client import LiteLLMClientError
 
     local_msgs = list(messages)
     provenance: ModelProvenance | None = None
@@ -808,22 +825,8 @@ def run_tool_loop(
                     max_steps_remaining=max_steps - _step - 1,
                     provenance=provenance,
                 )
-    except LiteLLMClientError as e:
-        # LLM failure after the client exhausted its retries and fallbacks —
-        # a known failure mode (timeouts, provider errors), not a bug. Log at
-        # warning so it doesn't surface as a reported error.
-        logger.warning("event=tool_loop_llm_error error=%s", e)
-        trace.finished = False
-        return ToolLoopResult(
-            ctx=ctx,
-            trace=trace,
-            finished_reason="error",
-            messages=local_msgs,
-            pending_tool_call_ids=pending_tool_call_ids,
-            max_steps_remaining=0,
-        )
-    except Exception:
-        logger.exception("Tool loop raised an unexpected exception")
+    except Exception as error:
+        _log_tool_loop_error(error)
         trace.finished = False
         return ToolLoopResult(
             ctx=ctx,

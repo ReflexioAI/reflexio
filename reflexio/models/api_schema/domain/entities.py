@@ -1754,8 +1754,8 @@ class LearningStatusResponse(BaseModel):
     """Arrival-range coverage across the request's eligible extractor kinds.
 
     Transient errors stay pending and retry. Historical requests without
-    admission metadata return not_tracked. The failed value remains accepted
-    for client compatibility with older servers.
+    admission metadata return not_tracked. Input-budget or configuration failures
+    remain incomplete and report failed until explicitly recovered.
     """
 
     status: Literal["pending", "processing", "done", "failed", "not_tracked"]

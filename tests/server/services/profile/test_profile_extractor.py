@@ -30,8 +30,12 @@ from reflexio.models.config_schema import (
 )
 from reflexio.server.api_endpoints.request_context import RequestContext
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
+from reflexio.server.services.extraction.input_preparation import SourceSpan
 from reflexio.server.services.extraction.outcome import ExtractionOutcome
-from reflexio.server.services.profile.components.extractor import ProfileExtractor
+from reflexio.server.services.profile.components.extractor import (
+    ProfileExtractor,
+    _profile_evidence_validation_errors,
+)
 from reflexio.server.services.profile.profile_generation_service_utils import (
     StructuredProfilesOutput,
 )
@@ -52,6 +56,35 @@ from reflexio.test_support.llm_mock import make_structured_finish
 # ===============================
 # Fixtures
 # ===============================
+
+
+def test_overflow_profile_quote_cannot_splice_sources_or_cross_a_missing_region():
+    output = StructuredProfilesOutput.model_validate(
+        {
+            "profiles": [
+                {
+                    "content": "Scoped approval",
+                    "time_to_live": "one_day",
+                    "source_span": "Do not deploy.",
+                }
+            ]
+        }
+    )
+    first = SourceSpan(1, "r", "User", "content", 0, 6, "Do not")
+    adjacent = SourceSpan(1, "r", "User", "content", 6, 14, " deploy.")
+    assert not _profile_evidence_validation_errors(output, (first, adjacent))
+    overlapping = SourceSpan(1, "r", "User", "content", 3, 6, "not")
+    assert not _profile_evidence_validation_errors(
+        output, (first, overlapping, adjacent)
+    )
+    conflict = SourceSpan(1, "r", "User", "content", 3, 6, "yes")
+    assert _profile_evidence_validation_errors(output, (first, conflict, adjacent))
+    foreign = SourceSpan(2, "r", "User", "content", 6, 14, " deploy.")
+    assert _profile_evidence_validation_errors(output, (first, foreign))
+    different_field = SourceSpan(1, "r", "Tool", "tools_used[0]", 6, 14, " deploy.")
+    assert _profile_evidence_validation_errors(output, (first, different_field))
+    gap = SourceSpan(1, "r", "User", "content", 7, 15, " deploy.")
+    assert _profile_evidence_validation_errors(output, (first, gap))
 
 
 @pytest.fixture
