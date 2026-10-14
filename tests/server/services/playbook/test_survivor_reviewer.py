@@ -564,3 +564,47 @@ def test_sampling_experiment_keeps_rendered_policy_identical():
     assert previous.render_prompt(
         "playbook_candidate_review", {}
     ) == experiment.render_prompt("playbook_candidate_review", {})
+
+
+@pytest.mark.parametrize("version", ["1.51.0", "1.52.0", "1.53.0", "1.54.0"])
+@pytest.mark.parametrize("seed", ["7", "", "not-an-integer"])
+def test_explicit_seed_uses_sdk_effective_temperature_without_binding_failure(
+    monkeypatch, version, seed
+):
+    monkeypatch.setenv("REFLEXIO_LLM_SEED", seed)
+    reviewer, requests = _actual_reviewer(
+        monkeypatch,
+        [_assignment_response("assigned_input"), _assignment_response()],
+        version=version,
+    )
+    sources, candidate = _source_and_candidate()
+    outcome = _decide(reviewer, sources, candidate)
+    assert len(requests) == 2
+    assert all(request["temperature"] == 0 for request in requests)
+    assert all(request["seed"] == (7 if seed == "7" else 42) for request in requests)
+    assert all(
+        request.get("top_p") == (0.95 if version == "1.54.0" else None)
+        for request in requests
+    )
+    assert reviewer.client.config.temperature == 0.7
+    assert reviewer.client.config.top_p == 1
+    assert reviewer.apply_decisions(candidates=[candidate], outcome=outcome)
+
+
+def test_explicit_seed_added_after_response_is_profile_drift(monkeypatch):
+    monkeypatch.delenv("REFLEXIO_LLM_SEED", raising=False)
+    reviewer, requests = _actual_reviewer(
+        monkeypatch, [_assignment_response()], version="1.54.0"
+    )
+    completion = reviewer.client._completion_with_hard_timeout
+
+    def mutate_seed(params, hard_timeout):
+        response = completion(params, hard_timeout)
+        monkeypatch.setenv("REFLEXIO_LLM_SEED", "42")
+        return response
+
+    monkeypatch.setattr(reviewer.client, "_completion_with_hard_timeout", mutate_seed)
+    sources, candidate = _source_and_candidate()
+    with pytest.raises(ProviderRequestGuardError):
+        _decide(reviewer, sources, candidate)
+    assert len(requests) == 1

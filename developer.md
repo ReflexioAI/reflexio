@@ -574,7 +574,9 @@ the meaning of a quotation; fresh model qualification remains required.
 
 Inactive v1.54 preserves v1.53 instructions/schema and tests only per-call
 temperature 1 / top_p 0.95. Client configuration remains unchanged. Existing
-provider compatibility rules apply; fallback quality remains unqualified.
+provider compatibility rules apply, including the explicit-seed temperature-zero
+override on unrestricted models. Bound effective temperatures reflect that
+override; fallback quality remains unqualified.
 
 The existing SDK owns parsing, repairs and fallback. Native calls bind the
 originals, source chronology, catalog, prompt and nonsecret inference settings;

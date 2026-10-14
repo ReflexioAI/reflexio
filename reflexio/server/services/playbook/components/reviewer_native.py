@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import urlsplit
@@ -485,6 +486,15 @@ def _sampling_settings(reviewer: PlaybookCandidateReviewer) -> dict[str, float]:
     return {"temperature": 0.0, "top_p": reviewer.client.config.top_p}
 
 
+def _effective_temperature(
+    reviewer: PlaybookCandidateReviewer, model: str, requested: float
+) -> float:
+    """Mirror SDK model restrictions and its explicit-seed determinism override."""
+    if reviewer.client._is_temperature_restricted_model(model):
+        return 1.0
+    return 0.0 if "REFLEXIO_LLM_SEED" in os.environ else requested
+
+
 def _dispatch_settings(
     reviewer: PlaybookCandidateReviewer,
     model: str,
@@ -504,9 +514,7 @@ def _dispatch_settings(
     expected: dict[str, Any] = {
         "model": model,
         "messages": messages,
-        "temperature": 1.0
-        if client._is_temperature_restricted_model(model)
-        else sampling["temperature"],
+        "temperature": _effective_temperature(reviewer, model, sampling["temperature"]),
         "seed": seed,
     }
     cap = (
@@ -719,9 +727,9 @@ def review_native(
                 "max_tokens": reviewer.max_tokens,
                 "requested_temperature": sampling["temperature"],
                 "effective_temperatures": {
-                    name: 1.0
-                    if client._is_temperature_restricted_model(name)
-                    else sampling["temperature"]
+                    name: _effective_temperature(
+                        reviewer, name, sampling["temperature"]
+                    )
                     for name in client._resolve_ladder(model_role=ModelRole.GENERATION)
                 },
                 "ladder": client._resolve_ladder(model_role=ModelRole.GENERATION),
