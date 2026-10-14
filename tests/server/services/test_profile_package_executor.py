@@ -392,6 +392,15 @@ def test_frozen_old_projection_replays_without_vectors_or_new_search(
     frozen = parent.generation_request_snapshot["overflow"]["checkpoint"][
         "profile_dedup_inputs"
     ]["old"]
+    assert parent.service_config_snapshot is not None
+    assert "existing_data" not in parent.service_config_snapshot
+    assert "window_interactions" not in parent.service_config_snapshot
+    context = parent.generation_request_snapshot["profile_package_preparation"][
+        "context_profiles"
+    ]
+    assert len(context) == 1
+    assert context[0]["profile_id"] == old.profile_id
+    assert context[0]["content"] == old.content
     assert set(frozen[0]) == set(PROFILE_WITNESS_FIELDS)
     assert frozen[0]["notes"] == old.notes
     assert frozen[0]["custom_features"] == old.custom_features
