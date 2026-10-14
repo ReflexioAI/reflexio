@@ -22,6 +22,7 @@ Description: Evidence-grounded playbook extraction, candidate review, aggregatio
 | `playbook_service_constants.py` | Prompt IDs for all playbook operations |
 | `playbook_service_utils.py` | Request dataclasses, Pydantic output schemas, message construction utilities |
 | `playbook_evidence.py` | Strict evidence validation, call-local reference checks, and persisted provenance helpers |
+| `components/reviewer_native.py` | Inactive v1.51 survivor-witness DTOs, provenance projection and source/profile/cache integrity checks; default remains v1.3 |
 | `components/overflow_consolidation.py` | Bounded metadata proposals, exact historical quotations, and semantic verification before overflow consolidation applies original rows |
 | `components/overflow_evidence.py` | Canonical historical row fingerprints checked under final commit locks |
 | `review_window.py` | Shared fail-closed reconstruction of persisted review chronology for automatic and manual review |

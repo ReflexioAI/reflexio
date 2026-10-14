@@ -264,6 +264,7 @@ def _candidate(
     reader_angle: str = "correction",
 ) -> UserPlaybook:
     return UserPlaybook(
+        created_at=1_700_000_000 + interaction_id,
         agent_version="1.0",
         request_id="generation-request-secret",
         user_id="user-1",

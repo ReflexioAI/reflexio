@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
-from dataclasses import dataclass, field, replace
-from typing import Any, Literal
+from dataclasses import asdict, dataclass, field, replace
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -37,6 +38,11 @@ from reflexio.server.services.playbook.playbook_service_utils import (
     PlaybookPromptContext,
     build_playbook_prompt_context,
 )
+
+if TYPE_CHECKING:
+    from reflexio.server.services.playbook.components.reviewer_native import (
+        SurvivorReviewOutput,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -313,6 +319,44 @@ class PlaybookReviewOutcome:
     # Only private evaluation artifacts may retain these. apply_decisions never
     # copies them into saved playbooks, notes, or public response models.
     supporting_evidence: list[CandidateSupportingEvidence] = field(default_factory=list)
+
+    native_output: SurvivorReviewOutput | None = None
+    child_outcomes: tuple[PlaybookReviewOutcome, ...] = ()
+    original_candidates_sha256: str | None = None
+    validated_projection_sha256: str | None = None
+
+
+def _json_digest(value: Any) -> str:
+    return hashlib.sha256(
+        json.dumps(value, sort_keys=True, ensure_ascii=False).encode()
+    ).hexdigest()
+
+
+def _candidate_digest(candidates: list[UserPlaybook]) -> str:
+    return _json_digest([candidate.model_dump(mode="json") for candidate in candidates])
+
+
+def _outcome_payload(outcome: PlaybookReviewOutcome) -> dict[str, Any]:
+    # Recompute recursive payloads, never trust stored child seals. Frozen
+    # dataclasses still contain mutable public models and evidence collections.
+    return {
+        "output": outcome.output.model_dump(mode="json"),
+        "units": {
+            key: [asdict(unit) for unit in units]
+            for key, units in outcome.units_by_candidate.items()
+        },
+        "native": outcome.native_output.model_dump(mode="json")
+        if outcome.native_output is not None
+        else None,
+        "originals": outcome.original_candidates_sha256,
+        "children": [_outcome_payload(child) for child in outcome.child_outcomes],
+    }
+
+
+def _seal_outcome(outcome: PlaybookReviewOutcome) -> PlaybookReviewOutcome:
+    return replace(
+        outcome, validated_projection_sha256=_json_digest(_outcome_payload(outcome))
+    )
 
 
 def _append_review_note(
@@ -725,78 +769,14 @@ class PlaybookCandidateReviewer:
             )
         return survivors
 
-    def decide(
-        self,
-        *,
+    @staticmethod
+    def _review_context(
         candidates: list[UserPlaybook],
         request_interaction_data_models: list[RequestInteractionDataModel],
-        existing_playbooks: list[UserPlaybook],
         agent_context: str,
-        playbook_definition: str,
-        tool_context: str,
-    ) -> PlaybookReviewOutcome:
-        """Run one fresh same-model review and return its validated decisions.
-
-        The returned outcome carries the resolved evidence units alongside the
-        decisions so ``apply_decisions`` never has to rebuild the prompt context
-        (an O(window) walk) a second time.
-        """
-        if not candidates:
-            return PlaybookReviewOutcome(
-                output=PlaybookCandidateReviewOutput(decisions=[]),
-                units_by_candidate={},
-            )
+    ) -> tuple[PlaybookPromptContext, str, list[dict[str, str]]]:
+        """Own the same source preparation for legacy and native review."""
         coordinator = current_overflow_coordinator.get()
-        if coordinator is not None and len(candidates) > 1:
-            decisions = []
-            units: dict[str, list[CandidateEvidenceUnit]] = {}
-            supporting = []
-            for index, candidate in enumerate(candidates, 1):
-                child = self.decide(
-                    candidates=[candidate],
-                    request_interaction_data_models=request_interaction_data_models,
-                    existing_playbooks=existing_playbooks,
-                    agent_context=agent_context,
-                    playbook_definition=playbook_definition,
-                    tool_context=tool_context,
-                )
-                target = f"C{index}"
-                names = {
-                    unit.evidence_id: unit.evidence_id.replace("C1-", f"{target}-", 1)
-                    for unit in child.units_by_candidate["C1"]
-                }
-                decisions.append(
-                    child.output.decisions[0].model_copy(
-                        update={
-                            "candidate_id": target,
-                            "evidence_ids": [
-                                names[ref]
-                                for ref in child.output.decisions[0].evidence_ids
-                            ],
-                        }
-                    )
-                )
-                units[target] = [
-                    replace(unit, evidence_id=names[unit.evidence_id])
-                    for unit in child.units_by_candidate["C1"]
-                ]
-                supporting.extend(
-                    proof.model_copy(
-                        update={
-                            "candidate_id": target,
-                            "excerpts": [
-                                quote.model_copy(
-                                    update={"evidence_id": names[quote.evidence_id]}
-                                )
-                                for quote in proof.excerpts
-                            ],
-                        }
-                    )
-                    for proof in child.supporting_evidence
-                )
-            return PlaybookReviewOutcome(
-                PlaybookCandidateReviewOutput(decisions=decisions), units, supporting
-            )
         scope_messages: list[dict[str, str]] = []
         if coordinator is not None:
             from reflexio.server.services.playbook.components.overflow_evidence import (
@@ -853,6 +833,135 @@ class PlaybookCandidateReviewer:
                 # The service invokes the reviewer only for strict normal extraction,
                 # whose validated evidence units are keyed by these local labels.
                 label_turns=True,
+            )
+        return prompt_context, agent_context, scope_messages
+
+    def _decide_protected_batch(
+        self,
+        *,
+        candidates: list[UserPlaybook],
+        request_interaction_data_models: list[RequestInteractionDataModel],
+        existing_playbooks: list[UserPlaybook],
+        agent_context: str,
+        playbook_definition: str,
+        tool_context: str,
+    ) -> PlaybookReviewOutcome:
+        """Keep real local child DTOs while aliasing only the public projection."""
+        decisions = []
+        units: dict[str, list[CandidateEvidenceUnit]] = {}
+        supporting = []
+        children: list[PlaybookReviewOutcome] = []
+        original_digest = _candidate_digest(candidates)
+        for index, candidate in enumerate(candidates, 1):
+            child = self.decide(
+                candidates=[candidate],
+                request_interaction_data_models=request_interaction_data_models,
+                existing_playbooks=existing_playbooks,
+                agent_context=agent_context,
+                playbook_definition=playbook_definition,
+                tool_context=tool_context,
+            )
+            children.append(child)
+            target = f"C{index}"
+            names = {
+                unit.evidence_id: unit.evidence_id.replace("C1-", f"{target}-", 1)
+                for unit in child.units_by_candidate["C1"]
+            }
+            decisions.append(
+                child.output.decisions[0].model_copy(
+                    update={
+                        "candidate_id": target,
+                        "evidence_ids": [
+                            names[ref] for ref in child.output.decisions[0].evidence_ids
+                        ],
+                    }
+                )
+            )
+            units[target] = [
+                replace(unit, evidence_id=names[unit.evidence_id])
+                for unit in child.units_by_candidate["C1"]
+            ]
+            supporting.extend(
+                proof.model_copy(
+                    update={
+                        "candidate_id": target,
+                        "excerpts": [
+                            quote.model_copy(
+                                update={"evidence_id": names[quote.evidence_id]}
+                            )
+                            for quote in proof.excerpts
+                        ],
+                    }
+                )
+                for proof in child.supporting_evidence
+            )
+        output = PlaybookCandidateReviewOutput(decisions=decisions)
+        errors = self._validation_errors(output, units)
+        if errors:
+            raise ValueError("; ".join(errors))
+        outcome = PlaybookReviewOutcome(output, units, supporting)
+        if any(child.original_candidates_sha256 is not None for child in children):
+            if original_digest != _candidate_digest(candidates):
+                raise ValueError("Original candidates changed during review")
+            outcome = _seal_outcome(
+                replace(
+                    outcome,
+                    child_outcomes=tuple(children),
+                    original_candidates_sha256=original_digest,
+                )
+            )
+        return outcome
+
+    def decide(
+        self,
+        *,
+        candidates: list[UserPlaybook],
+        request_interaction_data_models: list[RequestInteractionDataModel],
+        existing_playbooks: list[UserPlaybook],
+        agent_context: str,
+        playbook_definition: str,
+        tool_context: str,
+    ) -> PlaybookReviewOutcome:
+        """Run one fresh same-model review and return its validated decisions.
+
+        The returned outcome carries the resolved evidence units alongside the
+        decisions so ``apply_decisions`` never has to rebuild the prompt context
+        (an O(window) walk) a second time.
+        """
+        if not candidates:
+            return PlaybookReviewOutcome(
+                output=PlaybookCandidateReviewOutput(decisions=[]),
+                units_by_candidate={},
+            )
+        coordinator = current_overflow_coordinator.get()
+        if coordinator is not None and len(candidates) > 1:
+            return self._decide_protected_batch(
+                candidates=candidates,
+                request_interaction_data_models=request_interaction_data_models,
+                existing_playbooks=existing_playbooks,
+                agent_context=agent_context,
+                playbook_definition=playbook_definition,
+                tool_context=tool_context,
+            )
+        prompt_context, agent_context, scope_messages = self._review_context(
+            candidates, request_interaction_data_models, agent_context
+        )
+        if (
+            self.request_context.prompt_manager.get_active_version(self.PROMPT_ID)
+            == "1.51.0"
+        ):
+            from reflexio.server.services.playbook.components.reviewer_native import (
+                review_native,
+            )
+
+            return review_native(
+                self,
+                candidates=candidates,
+                request_interaction_data_models=request_interaction_data_models,
+                existing_playbooks=existing_playbooks,
+                agent_context=agent_context,
+                playbook_definition=playbook_definition,
+                tool_context=tool_context,
             )
         units_by_candidate = self._candidate_evidence_units(candidates, prompt_context)
         version = self.request_context.prompt_manager.get_active_version(self.PROMPT_ID)
@@ -986,6 +1095,15 @@ class PlaybookCandidateReviewer:
             coordinator.review_models[coordinator.playbook_key(candidates[0])] = (
                 review_provenance
             )
+        self._log_review_counts(output)
+        return PlaybookReviewOutcome(
+            output=output,
+            units_by_candidate=units_by_candidate,
+            supporting_evidence=supporting_evidence,
+        )
+
+    @staticmethod
+    def _log_review_counts(output: PlaybookCandidateReviewOutput) -> None:
         counts = dict.fromkeys(("accept", "revise", "reject"), 0)
         reason_counts: dict[str, int] = {}
         for decision in output.decisions:
@@ -1003,11 +1121,6 @@ class PlaybookCandidateReviewer:
                 f"{reason_code}:{count}"
                 for reason_code, count in sorted(reason_counts.items())
             ),
-        )
-        return PlaybookReviewOutcome(
-            output=output,
-            units_by_candidate=units_by_candidate,
-            supporting_evidence=supporting_evidence,
         )
 
     def review(
@@ -1040,6 +1153,19 @@ class PlaybookCandidateReviewer:
         outcome: PlaybookReviewOutcome,
     ) -> list[UserPlaybook]:
         """Apply already-validated decisions without making another model call."""
+        native = (
+            outcome.original_candidates_sha256 is not None
+            or outcome.native_output is not None
+            or bool(outcome.child_outcomes)
+            or outcome.validated_projection_sha256 is not None
+        )
+        if native and (
+            outcome.original_candidates_sha256 != _candidate_digest(candidates)
+            or outcome.validated_projection_sha256 is None
+            or outcome.validated_projection_sha256
+            != _json_digest(_outcome_payload(outcome))
+        ):
+            raise ValueError("Native reviewer original/projection integrity changed")
         return self._apply_decisions(
             candidates, outcome.output, outcome.units_by_candidate
         )

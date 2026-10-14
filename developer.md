@@ -547,6 +547,31 @@ current v1.3 default uses its existing messages and response schema. Qualificati
 still audits complete instructions, triggers and rationales, including healthy
 multi-turn workflows, before holdout, staging and a separate activation change.
 
+Inactive v1.51.0 uses the internal `reviewer_native.py` survivor-witness
+contract. It separates literal original-candidate anchors from source quotations
+and records positive support for retained actions. Revision premises distinguish
+actual User instructions/input, non-User task assignments, prerequisites and
+reported limitations; the saved rationale is rendered from that premise. A
+non-User source cannot be relabeled as a User request. Role-repair feedback
+points to the truthful alternative without treating a format error as proof
+that no supported rule remains. Substring, role and structural validation do not
+prove semantic support; real-model source audits remain required.
+
+The existing SDK owns parsing, repairs and fallback. Native calls bind the
+originals, source chronology, catalog, prompt and nonsecret inference settings;
+admission checks verify the actual request and refuse drift without falling
+back or treating it as a repairable model response. Provider-specific sampling
+restrictions still apply. The model receives an explicit evidence-field allowlist,
+not full stored models, embeddings, private notes or binding hashes. Protected
+checkpoints retain the actual native output and provenance and revalidate it on
+cache reads. Protected batches keep actual child outputs with local IDs while
+aliasing only the public decisions; the existing rule suppressing protected
+revisions still applies. A recursive integrity seal checks the validated raw
+output, public projection, evidence units and original candidate batch before
+application. This prevents in-memory divergence; existing publication freshness
+and ownership fences remain necessary. The production default remains v1.3.0.
+No model-quality, holdout or staging qualification is implied by these guards.
+
 Inactive v1.15 keeps the evidence-first contract and explicitly scopes selected
 parameters to their current task. Historical values cannot become standing
 preferences; acknowledgment occurrence proves neither a requirement nor a benefit.
