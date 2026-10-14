@@ -376,8 +376,9 @@ historical retirement, so duplicate lessons and conservative omissions are possi
 
 A versioned `source_quoted_publication` receipt binds source, scope, selection and
 row meaning before the existing fenced write plan. It separately seals vectors
-at storage float32 precision. Initial row IDs must be zero, and active/waiting
-child continuations cannot be bypassed. Cached multi-chunk protocol
+at storage float32 precision. Validated vectors are checkpointed with their digest and reused after an
+interruption before outcome caching, without another embedding call.
+Initial row IDs must be zero, and active/waiting child continuations cannot be bypassed. Cached multi-chunk protocol
 plans without that receipt, changed text/vectors, and retirement/merge proposals are
 refused. Existing drafts and attempt journals are not rewritten or reset. Copied
 rows receive their creation timestamp from the trusted clock at fenced persistence,

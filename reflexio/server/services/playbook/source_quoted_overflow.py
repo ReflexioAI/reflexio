@@ -281,7 +281,21 @@ def compute_source_quoted_plan(
     from reflexio.server.services.storage.storage_base import AgentRunStatus
 
     rows, receipt = _projection(coordinator, service)
-    if rows:
+    checkpoint = coordinator.checkpoint
+    previous = checkpoint.get("source_quoted_publication")
+    if previous is not None:
+        vectors = checkpoint.get("source_quoted_vectors")
+        if (
+            not isinstance(vectors, list)
+            or len(vectors) != len(rows)
+            or any(not isinstance(vector, list) for vector in vectors)
+        ):
+            raise InputBudgetConfigurationError(
+                "Source projection lost its sealed search vectors"
+            )
+        for row, vector in zip(rows, vectors, strict=True):
+            row.embedding = vector
+    elif rows:
         coordinator.storage.precompute_user_playbook_embeddings(
             rows, expand_documents=False
         )
@@ -292,13 +306,12 @@ def compute_source_quoted_plan(
                 "Source projection search vectors are unavailable"
             )
     receipt["embedding_digests"] = [_embedding_digest(row) for row in rows]
-    checkpoint = coordinator.checkpoint
-    previous = checkpoint.get("source_quoted_publication")
     if previous is not None and previous != receipt:
         raise InputBudgetConfigurationError(
             "Source projection publication policy changed"
         )
     checkpoint["source_quoted_publication"] = receipt
+    checkpoint["source_quoted_vectors"] = [list(row.embedding) for row in rows]
     checkpoint["source_coverage"] = [
         coordinator.candidate_key(chunk.text)
         for chunk in coordinator.require_prepared().chunks

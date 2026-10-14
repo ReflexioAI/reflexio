@@ -2541,12 +2541,14 @@ def payload(request_id, count=10, user_id="u", force=False):
         "token_cache",
         "merge_shape_cache",
         "retire_shape_cache",
+        "seal_replay",
     ],
 )
 def test_source_quoted_overflow_http_commit_replay_and_cached_plan_fence(
     pipeline, monkeypatch, replay
 ):
     import json
+    from unittest.mock import DEFAULT
 
     from reflexio.models.api_schema.service_schemas import UserPlaybook
     from reflexio.models.config_schema import UserPlaybookExtractorConfig
@@ -2614,9 +2616,22 @@ def test_source_quoted_overflow_http_commit_replay_and_cached_plan_fence(
 
     monkeypatch.setattr(WindowExecutor, "_prepare_overflow_context", prepare)
     monkeypatch.setattr(storage, "_get_embedding", lambda *_: [0.1] * 512)
-    if replay == "embedding_outage":
+    embedding_attempts = {
+        "embedding_outage": [[], [0.1] * 512],
+        "seal_replay": [[0.1] * 512, AssertionError("Sealed vectors must be reused")],
+    }
+    if replay in embedding_attempts:
         monkeypatch.setattr(
-            storage, "_get_embedding", Mock(side_effect=[[], [0.1] * 512])
+            storage, "_get_embedding", Mock(side_effect=embedding_attempts[replay])
+        )
+    if replay == "seal_replay":
+        monkeypatch.setattr(
+            storage,
+            "save_extraction_outcome",
+            Mock(
+                wraps=storage.save_extraction_outcome,
+                side_effect=[RuntimeError("Crash after vector checkpoint"), DEFAULT],
+            ),
         )
     storage._enable_document_expansion = True
     expansion = Mock(
@@ -2658,7 +2673,12 @@ def test_source_quoted_overflow_http_commit_replay_and_cached_plan_fence(
     def fail_once(*args, **kwargs):
         nonlocal calls
         calls += 1
-        if calls == 1 and replay not in {"clean", "empty", "embedding_outage"}:
+        if calls == 1 and replay not in {
+            "clean",
+            "empty",
+            "embedding_outage",
+            "seal_replay",
+        }:
             raise RuntimeError("Crash before commit")
         return complete(*args, **kwargs)
 
@@ -2676,7 +2696,7 @@ def test_source_quoted_overflow_http_commit_replay_and_cached_plan_fence(
                 ("u",),
             )[0]
             outcome = json.loads(row["outcome"] or "{}")
-            if replay == "embedding_outage":
+            if replay in {"embedding_outage", "seal_replay"}:
                 assert row["outcome"] is None
             if replay == "missing_cache":
                 del outcome["write_plan"]["lineage_contexts"]
@@ -2721,7 +2741,7 @@ def test_source_quoted_overflow_http_commit_replay_and_cached_plan_fence(
                     "UPDATE _agent_runs SET generation_request_snapshot=? WHERE id=?",
                     (json.dumps(run.generation_request_snapshot), run.id),
                 )
-            if replay != "embedding_outage":
+            if replay not in {"embedding_outage", "seal_replay"}:
                 db.query(
                     "UPDATE extraction_windows SET outcome=? WHERE window_id=?",
                     (json.dumps(outcome), row["window_id"]),
@@ -2729,11 +2749,15 @@ def test_source_quoted_overflow_http_commit_replay_and_cached_plan_fence(
             now = db.now()
         monkeypatch.setattr(SQLiteStreamSQL, "now", lambda _: now + 600)
         assert worker.drain_org("stream-test", 1, 300) == (
-            1 if replay in {"commit_failure", "clock_cache", "embedding_outage"} else 0
+            1
+            if replay
+            in {"commit_failure", "clock_cache", "embedding_outage", "seal_replay"}
+            else 0
         )
     expected = (
         2
-        if replay in {"clean", "commit_failure", "clock_cache", "embedding_outage"}
+        if replay
+        in {"clean", "commit_failure", "clock_cache", "embedding_outage", "seal_replay"}
         else 1
     )
     rows = storage.get_user_playbooks(user_id="u", include_embedding=True)
@@ -2755,6 +2779,7 @@ def test_source_quoted_overflow_http_commit_replay_and_cached_plan_fence(
         "commit_failure",
         "clock_cache",
         "embedding_outage",
+        "seal_replay",
     }:
         # Commit and its durable effects are separate worker turns.
         token_bill.assert_not_called()
