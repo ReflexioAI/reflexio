@@ -220,8 +220,11 @@ Key files:
 - API keys read from environment variables (OPENAI_API_KEY, ANTHROPIC_API_KEY) or `ApiKeyConfig`
 - Interface: `generate_response()`, `generate_chat_response()`, `get_embedding()`
 - `get_completion_request_contract()` resolves the actual primary route, role,
-  generation policy and output cap without dispatch. Its fixed key set includes
-  `None` for absent fields, matching internal comparison/hash contracts. API keys
+  selected generation fields and output cap without dispatch. The ten primary
+  fields preserve `None` for absent values; `generation_policy_digest` binds built
+  reasoning settings and arbitrary native extra-body settings by canonical hash,
+  without returning sensitive custom data. Callers still bind their own
+  messages/tools/schemas. Legacy hashes can explicitly select the ten fields. API keys
   and messages are excluded; endpoint URLs may contain credentials, so the
   descriptor is internal and must not be logged or exposed.
 - `get_completion_model_ladder()` returns an immutable ordered tuple from the

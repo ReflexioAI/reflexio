@@ -10,6 +10,8 @@ from reflexio.models.config_schema import (
 from reflexio.server.llm.litellm_client import LiteLLMClient, LiteLLMConfig
 from reflexio.server.llm.model_defaults import ModelRole
 
+pytestmark = pytest.mark.unit
+
 KEYS = (
     "model",
     "api_base",
@@ -63,8 +65,11 @@ def test_contract_matches_actual_builder_and_preserves_none_keys(
         0
     ]
     identity = client.get_completion_request_contract(**overrides)
-    assert identity == {key: params.get(key) for key in KEYS}
-    assert tuple(identity) == KEYS
+    assert {key: identity[key] for key in KEYS} == {
+        key: params.get(key) for key in KEYS
+    }
+    assert tuple(identity) == (*KEYS, "generation_policy_digest")
+    assert len(identity["generation_policy_digest"]) == 64
     assert identity["seed"] == 19
     assert identity["base_url"] is None
     assert identity["custom_llm_provider"] is None
@@ -105,7 +110,9 @@ def test_custom_route_wins_role_and_descriptor_is_for_hashing_not_logging(monkey
         max_tokens=777,
         temperature=0,
     )[0]
-    assert identity == {key: params.get(key) for key in KEYS}
+    assert {key: identity[key] for key in KEYS} == {
+        key: params.get(key) for key in KEYS
+    }
     assert identity["model"] == "openai/custom-contract"
     assert "route-credential" in identity["api_base"]
     assert identity["max_tokens"] == 777
@@ -187,3 +194,61 @@ def test_public_ladder_uses_role_precedence_and_custom_endpoint_pin(monkeypatch)
         client.get_completion_request_contract(**overrides)["model"] == "openai/pinned"
     )
     dispatch.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "reasoning_effort",
+        "reasoning",
+        "thinking",
+        "reasoning_split",
+        "output_config",
+        "extra_body",
+    ],
+)
+def test_contract_binds_actual_reasoning_policy_without_exporting_native_custom_data(
+    monkeypatch, field
+):
+    from unittest.mock import Mock
+
+    import litellm
+
+    dispatch = Mock(side_effect=AssertionError("No dispatch for contract resolution"))
+    monkeypatch.setattr(litellm, "completion", dispatch)
+    client = LiteLLMClient(LiteLLMConfig(model="gpt-4o-mini"))
+    options = {
+        "reasoning_effort": ("low", "high"),
+        "reasoning": ({"effort": "low"}, {"effort": "high"}),
+        "thinking": (
+            {"type": "enabled", "budget_tokens": 100},
+            {"type": "enabled", "budget_tokens": 200},
+        ),
+        "reasoning_split": (False, True),
+        "output_config": ({"effort": "low"}, {"effort": "high"}),
+        "extra_body": (
+            {"reasoning_effort": "low", "private_key": "test-custom-secret"},
+            {"reasoning_effort": "high", "private_key": "test-custom-secret"},
+        ),
+    }
+    low, high = (
+        client.get_completion_request_contract(**{field: value})
+        for value in options[field]
+    )
+    assert {key: low[key] for key in KEYS} == {key: high[key] for key in KEYS}
+    assert low["generation_policy_digest"] != high["generation_policy_digest"]
+    assert "test-custom-secret" not in str(low)
+    assert "extra_body" not in low
+    assert low == client.get_completion_request_contract(**{field: options[field][0]})
+    dispatch.assert_not_called()
+
+
+def test_reasoning_digest_uses_canonical_native_mapping_order():
+    client = LiteLLMClient(LiteLLMConfig(model="gpt-4o-mini"))
+    left = client.get_completion_request_contract(
+        extra_body={"reasoning_effort": "low", "thinking": {"type": "enabled"}}
+    )
+    right = client.get_completion_request_contract(
+        extra_body={"thinking": {"type": "enabled"}, "reasoning_effort": "low"}
+    )
+    assert left == right

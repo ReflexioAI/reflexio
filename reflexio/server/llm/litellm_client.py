@@ -5,6 +5,8 @@ This module provides a unified interface to multiple LLM providers (OpenAI, Clau
 using LiteLLM. It maintains the same interface as the existing LLMClient for easy replacement.
 """
 
+import hashlib
+import json
 import logging
 import os
 from typing import Any
@@ -298,13 +300,16 @@ class LiteLLMClient(TextGenerationMixin, EmbeddingMixin, StructuredOutputMixin):
         Generation overrides preserve explicit None values; fallback_models=None
         uses configured fallbacks, as in public chat generation. Fixed keys and
         absent values are stable for internal admission comparison/hashing.
+        The generation-policy digest binds built reasoning and native extra-body
+        settings without exposing arbitrary custom data. This selected identity
+        does not replace caller-owned message/tool/schema witnesses.
         API keys, messages and observability metadata are excluded, but route
         URLs can contain credentials: do not log or expose this descriptor.
         """
         if kwargs.get("fallback_models") is None:
             kwargs.pop("fallback_models", None)
         params = self._build_completion_params(messages=[], **kwargs)[0]
-        return {
+        contract = {
             key: params.get(key)
             for key in (
                 "model",
@@ -319,6 +324,25 @@ class LiteLLMClient(TextGenerationMixin, EmbeddingMixin, StructuredOutputMixin):
                 "max_completion_tokens",
             )
         }
+        contract["generation_policy_digest"] = hashlib.sha256(
+            json.dumps(
+                {
+                    key: params.get(key)
+                    for key in (
+                        "reasoning_effort",
+                        "reasoning",
+                        "thinking",
+                        "reasoning_split",
+                        "output_config",
+                        "extra_body",
+                    )
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            ).encode()
+        ).hexdigest()
+        return contract
 
     def get_completion_model_ladder(self, **kwargs: Any) -> tuple[str, ...]:
         """Resolve the ordered transport ladder without provider dispatch.
