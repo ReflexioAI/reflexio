@@ -4717,7 +4717,9 @@ def test_ordinary_window_marker_notes_cannot_claim_source_projection(
     assert storage.extraction_status(user, "ordinary-marker")["status"] == "done"
 
 
-@pytest.mark.parametrize("phase", ["runner", "evaluation", "metering"])
+@pytest.mark.parametrize(
+    "phase", ["index", "index_rollback", "runner", "evaluation", "metering"]
+)
 def test_post_commit_followup_failure_preserves_admission(pipeline, monkeypatch, phase):
     from reflexio.server.services.generation_service import GenerationService
 
@@ -4726,7 +4728,30 @@ def test_post_commit_followup_failure_preserves_admission(pipeline, monkeypatch,
     def fail(*_args, **_kwargs):
         raise RuntimeError("follow-up unavailable")
 
-    if phase == "runner":
+    evaluations = []
+    if phase in {"index", "index_rollback", "runner"}:
+        monkeypatch.setattr(
+            GenerationService,
+            "_schedule_post_publish_evaluations",
+            lambda *_args, **kwargs: evaluations.append(
+                kwargs["new_request"].request_id
+            ),
+        )
+    if phase in {"index", "index_rollback"}:
+        storage = engine.get_storage()
+        monkeypatch.setattr(storage, "_flush_index_op", fail)
+        if phase == "index_rollback":
+            connection = storage.conn
+
+            class BrokenRollback:
+                def __getattr__(self, name):
+                    return getattr(connection, name)
+
+                def rollback(self):
+                    raise RuntimeError("rollback unavailable")
+
+            monkeypatch.setattr(storage, "conn", BrokenRollback())
+    elif phase == "runner":
         monkeypatch.setattr(
             "reflexio.server.services.durable_learning.local.ensure_local_extraction",
             fail,
@@ -4750,3 +4775,5 @@ def test_post_commit_followup_failure_preserves_admission(pipeline, monkeypatch,
     assert storage.get_request("followup") is not None
     assert len(storage.get_user_interaction("u")) == 10
     assert storage.extraction_status("u", "followup")["status"] != "not_tracked"
+    if phase in {"index", "index_rollback", "runner"}:
+        assert evaluations == ["followup"]

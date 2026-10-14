@@ -1,12 +1,13 @@
 """Failed standalone writes and interrupted scopes release real SQLite locks."""
 
 import sqlite3
+import threading
 from unittest.mock import patch
 
 import pytest
 
 from reflexio.models.api_schema.domain.entities import Request
-from reflexio.server.services.storage.error import StorageError
+from reflexio.server.services.storage.error import PostCommitStorageError, StorageError
 from reflexio.server.services.storage.sqlite_storage import SQLiteStorage
 
 
@@ -104,17 +105,20 @@ def test_prepared_playbook_save_skips_model_calls_inside_writer(
         trigger="Deploying",
     )
     vector = [0.0] * 512
+    probe_lock = threading.Lock()
 
     def embed(_text):
         assert not storage.conn.in_transaction
         # Another writer can commit while model preparation is running.
-        with sqlite3.connect(storage.db_path, timeout=0.05) as writer:
+        # Serialize the test's independent writers, not the storage connection.
+        with probe_lock, sqlite3.connect(storage.db_path, timeout=0.05) as writer:
             writer.execute("INSERT INTO cleanup_probe VALUES (5)")
         return vector
 
     def expand_document(_text):
         assert not storage.conn.in_transaction
-        with sqlite3.connect(storage.db_path, timeout=0.05) as writer:
+        # Serialize the test's independent writers, not the storage connection.
+        with probe_lock, sqlite3.connect(storage.db_path, timeout=0.05) as writer:
             writer.execute("INSERT INTO cleanup_probe VALUES (6)")
         return expanded_terms
 
@@ -187,7 +191,7 @@ def test_failed_index_replace_restores_old_index_and_releases_writer(storage):
 def test_failed_deferred_index_releases_writer_after_primary_commit(storage):
     storage._execute("CREATE VIRTUAL TABLE cleanup_fts USING fts5(content)")
     storage._fts_upsert_now("cleanup_fts", 1, content="existing")
-    with pytest.raises(sqlite3.OperationalError), storage.commit_scope():
+    with pytest.raises(PostCommitStorageError), storage.commit_scope():
         storage._execute("INSERT INTO cleanup_probe VALUES (4)")
         storage._fts_upsert("cleanup_fts", 1, missing_column="invalid")
     # Primary data was committed before index flushing, so rollback applies
@@ -218,3 +222,43 @@ def test_prepared_save_rejects_missing_embedding_before_writes(storage):
         )
     assert storage.get_agent_playbooks() == []
     assert not storage.conn.in_transaction
+
+
+def test_rollback_failure_preserves_original_write_error(storage, monkeypatch):
+    class BrokenRollback:
+        def execute(self, *_args):
+            raise sqlite3.IntegrityError("original write failure")
+
+        def rollback(self):
+            raise sqlite3.OperationalError("rollback unavailable")
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(storage, "conn", BrokenRollback())
+        with pytest.raises(sqlite3.IntegrityError, match="original write failure"):
+            storage._execute("INSERT INTO cleanup_probe VALUES (1)")
+
+
+def test_failed_scope_rollback_preserves_committed_index_error(storage, monkeypatch):
+    connection = storage.conn
+
+    class BrokenRollback:
+        def __getattr__(self, name):
+            return getattr(connection, name)
+
+        def rollback(self):
+            raise sqlite3.OperationalError("rollback unavailable")
+
+    def fail_flush(*_args):
+        raise RuntimeError("index unavailable")
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(storage, "conn", BrokenRollback())
+        scoped.setattr(storage, "_flush_index_op", fail_flush)
+        with pytest.raises(PostCommitStorageError) as error, storage.commit_scope():
+            storage._execute("INSERT INTO cleanup_probe VALUES (4)")
+            storage._fts_upsert("cleanup_fts", 1, content="new")
+        assert isinstance(error.value.__cause__, RuntimeError)
+        assert storage._scope_depth == 0
+        assert storage._deferred_index_ops == []
+    assert storage._fetchone("SELECT id FROM cleanup_probe WHERE id=4") is not None
+    _assert_second_writer_succeeds(storage)

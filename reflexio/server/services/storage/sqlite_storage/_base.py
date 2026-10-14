@@ -57,6 +57,7 @@ from reflexio.server.llm.providers.embedding_service_provider import (
 )
 from reflexio.server.services.embedding_text import embedding_input
 from reflexio.server.services.storage.error import (
+    PostCommitStorageError,
     StorageError,
     require_non_empty_session_id,
 )
@@ -1148,7 +1149,10 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
         """Release a failed standalone write without undoing an outer scope."""
         with self._lock:
             if self._own_transaction():
-                self.conn.rollback()
+                try:
+                    self.conn.rollback()
+                except Exception:
+                    logger.warning("Rollback after failed write failed", exc_info=True)
 
     @contextlib.contextmanager
     def commit_scope(self) -> Generator[None, None, None]:
@@ -1177,10 +1181,18 @@ class SQLiteStorageBase(RetentionMixin, BaseStorage):
                 with publish_timing.phase("scope_commit"):
                     self.conn.commit()
                 ops, self._deferred_index_ops = self._deferred_index_ops, []
-                for kind, args in ops:
-                    self._flush_index_op(kind, args)  # self-commits — fine post-commit
+                try:
+                    for kind, args in ops:
+                        self._flush_index_op(kind, args)
+                except Exception as error:
+                    raise PostCommitStorageError(
+                        "Primary rows committed; deferred index update failed"
+                    ) from error
             except BaseException:
-                self.conn.rollback()
+                try:
+                    self.conn.rollback()
+                except Exception:
+                    logger.warning("Rollback after failed scope failed", exc_info=True)
                 self._deferred_index_ops = []
                 raise
             finally:

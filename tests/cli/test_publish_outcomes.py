@@ -1,10 +1,12 @@
-"""Rejected publication is a CLI failure, including mixed-success input batches."""
+"""Server-reported publication failure exits nonzero, including mixed batches."""
 
 import json
 
 import pytest
 
 from reflexio.models.api_schema.service_schemas import PublishUserInteractionResponse
+
+pytestmark = pytest.mark.unit
 
 
 def _payload(user="alice"):

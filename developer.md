@@ -371,6 +371,10 @@ When working in a git worktree, services must run on different ports to avoid co
 
 ### Storage requirements for publishing
 
+SQLite deferred index failures raise `PostCommitStorageError` after the primary
+commit; publish preserves the admitted request and reports deferred follow-up.
+Extraction-runner and evaluation scheduling failures are contained independently
+so one cannot prevent the other follow-up from running.
 SQLite standalone write failures roll back their owned implicit transactions;
 failures inside `commit_scope` leave rollback to the outer owner. Interrupted
 scopes also roll back. Self-committing FTS/vector index operations roll back a
